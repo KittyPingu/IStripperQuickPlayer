@@ -5,8 +5,6 @@ VisualStudioVersion = 17.1.32210.238
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "IStripperQuickPlayer", "IstripperQuickPlayer\IStripperQuickPlayer.csproj", "{96D603D1-DBEB-4861-BE3F-6692570285F4}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ColorSlider", "ColorSlider\ColorSlider.csproj", "{16E224DC-7FF0-4908-8318-D6A3AC2E797A}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -17,10 +15,6 @@ Global
 		{96D603D1-DBEB-4861-BE3F-6692570285F4}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{96D603D1-DBEB-4861-BE3F-6692570285F4}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{96D603D1-DBEB-4861-BE3F-6692570285F4}.Release|Any CPU.Build.0 = Release|Any CPU
-		{16E224DC-7FF0-4908-8318-D6A3AC2E797A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{16E224DC-7FF0-4908-8318-D6A3AC2E797A}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{16E224DC-7FF0-4908-8318-D6A3AC2E797A}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{16E224DC-7FF0-4908-8318-D6A3AC2E797A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
