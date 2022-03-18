@@ -79,7 +79,7 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private void PopulateModelListview()
+        internal void PopulateModelListview()
         {
             listModels.Items.Clear();
             listModels.BeginUpdate();
@@ -90,6 +90,8 @@ namespace IStripperQuickPlayer
                 || c.tags.Contains(txtSearch.Text)).ToList();
             else
                 currentCards = Datastore.modelcards;
+
+            currentCards = Filter(currentCards);
 
             switch (cmbSortBy.Text)
             {
@@ -149,6 +151,22 @@ namespace IStripperQuickPlayer
             listModels.LargeImageList = blankimagelist;
             listModels.EndUpdate();
             lblModelsLoaded.Text = "Cards Shown: " + listModels.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips.Count > 0).Count();
+        }
+
+        private List<ModelCard>? Filter(List<ModelCard>? currentCards)
+        {            
+            currentCards = currentCards.Where(c => Decimal.Parse(c.modelAge) >= FilterSettings.minAge && Decimal.Parse(c.modelAge) <= FilterSettings.maxAge
+                && c.bust >= FilterSettings.minBust && c.bust <= FilterSettings.maxBust     
+                && c.rating-5M >= FilterSettings.minRating && c.rating-5M <= FilterSettings.maxRating     
+                ).ToList();
+
+            if (!String.IsNullOrEmpty(FilterSettings.tags))
+            {
+                List<string> taglist = FilterSettings.tags.ToLower().Split("or").Select(p => p.Trim()).ToList();
+                currentCards = currentCards.Where(c => c.tags.Any(x => taglist.Contains(x))).ToList();
+            }
+
+            return currentCards;
         }
 
         internal List<ModelCard>? Deserialize(String filename)  
@@ -314,22 +332,26 @@ namespace IStripperQuickPlayer
 
         private void ShowNowPlaying(string path)
         {
-            string nowPlaying = path;
-            if (path == "") return;
-            if (Datastore.modelcards.Count > 0)
+            try
             {
-                ModelCard model = Datastore.findCardByTag(path.Split("\\")[0]);
-                if (model == null) return;
-                ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).FirstOrDefault();
-                nowPlaying = model.modelName + ", " + model.outfit + " (Clip " + modelClip.clipNumber + ")";
-                //nowPlayingTag = path.Split("\\")[0]
-                nowPlayingTag = model.modelName + "\r\n" + model.outfit;
-                nowPlayingClipNumber = modelClip.clipNumber;
+                string nowPlaying = path;
+                if (path == "") return;
+                if (Datastore.modelcards.Count > 0)
+                {
+                    ModelCard model = Datastore.findCardByTag(path.Split("\\")[0]);
+                    if (model == null) return;
+                    ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).FirstOrDefault();
+                    nowPlaying = model.modelName + ", " + model.outfit + " (Clip " + modelClip.clipNumber + ")";
+                    //nowPlayingTag = path.Split("\\")[0]
+                    nowPlayingTag = model.modelName + "\r\n" + model.outfit;
+                    nowPlayingClipNumber = modelClip.clipNumber;
+                }
+                if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
+                if (listClips.Items.Count == 0)
+                    this.BeginInvoke((Action)(() => NowPlayingClick(true)));
+                listModels.BeginInvoke((Action)(() => listModels.Refresh()));
             }
-            if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
-            if (listClips.Items.Count == 0)
-                this.BeginInvoke((Action)(() => NowPlayingClick(true)));
-            listModels.BeginInvoke((Action)(() => listModels.Refresh()));
+            catch (Exception ex){ }
         }
 
         private void chk_CheckedChanged(object sender, EventArgs e)
@@ -610,7 +632,7 @@ namespace IStripperQuickPlayer
             string newtag = nowPlayingTag;
             while (newtag == nowPlayingTag)
             {
-                Int64 newr = r.NextInt64(listModels.Items.Count);
+                Int64 newr = r.Next(listModels.Items.Count);
                 newtag = listModels.Items[(int)newr].Text;
             }
             listModels.SelectedItems.Clear();
@@ -624,7 +646,7 @@ namespace IStripperQuickPlayer
             
             //choose a random clip from those shown
             if (listClips.Items.Count == 0) return;
-            var itemnum = r.NextInt64(listClips.Items.Count);
+            var itemnum = r.Next(listClips.Items.Count);
             listClips.SelectedItems.Clear();
             var j = listClips.Items[(int)itemnum];
             if (j != null)
@@ -651,6 +673,19 @@ namespace IStripperQuickPlayer
             Hotkeys hkeys = new Hotkeys();
             hkeys.ShowDialog();
             AssignHooks();
+        }
+
+        private void cmdFilter_Click(object sender, EventArgs e)
+        {
+            var frm = Application.OpenForms.Cast<Form>().Where(x => x.Name == "Filter").FirstOrDefault();
+            if (frm == null)
+            {
+                frm = new Filter();
+                frm.StartPosition = FormStartPosition.CenterParent;
+                frm.Show(this);                    
+                frm.TopMost = true;
+            }
+            frm.BringToFront();
         }
     }
 }

@@ -24,7 +24,7 @@ namespace IStripperQuickPlayer.BLL
             if (file != null)
             {
                 
-                Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();
+                Form1 frm = (Form1)Application.OpenForms.Cast<Form>().Where(x => x.Name == "Form1").FirstOrDefault();
                 //frm.listModels.BeginUpdate();
                 using (var stream = File.Open(file.FullName, FileMode.Open))
                 {

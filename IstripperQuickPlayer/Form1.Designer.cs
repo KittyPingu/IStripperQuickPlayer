@@ -60,10 +60,11 @@
             this.fileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.reloadModelslstToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.exitToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            this.lblTags = new System.Windows.Forms.Label();
-            this.lblCipListDetails = new System.Windows.Forms.Label();
             this.settingsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.hotkeysToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.lblTags = new System.Windows.Forms.Label();
+            this.lblCipListDetails = new System.Windows.Forms.Label();
+            this.cmdFilter = new System.Windows.Forms.Button();
             this.menuStrip1.SuspendLayout();
             this.SuspendLayout();
             // 
@@ -394,16 +395,31 @@
             // 
             this.reloadModelslstToolStripMenuItem.Name = "reloadModelslstToolStripMenuItem";
             this.reloadModelslstToolStripMenuItem.ShortcutKeys = System.Windows.Forms.Keys.F5;
-            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
+            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
             this.reloadModelslstToolStripMenuItem.Text = "Reload Models";
             this.reloadModelslstToolStripMenuItem.Click += new System.EventHandler(this.cmdLoadModels_Click);
             // 
             // exitToolStripMenuItem
             // 
             this.exitToolStripMenuItem.Name = "exitToolStripMenuItem";
-            this.exitToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
+            this.exitToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
             this.exitToolStripMenuItem.Text = "Exit";
             this.exitToolStripMenuItem.Click += new System.EventHandler(this.exitToolStripMenuItem_Click);
+            // 
+            // settingsToolStripMenuItem
+            // 
+            this.settingsToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
+            this.hotkeysToolStripMenuItem});
+            this.settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
+            this.settingsToolStripMenuItem.Size = new System.Drawing.Size(76, 24);
+            this.settingsToolStripMenuItem.Text = "Settings";
+            // 
+            // hotkeysToolStripMenuItem
+            // 
+            this.hotkeysToolStripMenuItem.Name = "hotkeysToolStripMenuItem";
+            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.hotkeysToolStripMenuItem.Text = "Hotkeys..";
+            this.hotkeysToolStripMenuItem.Click += new System.EventHandler(this.hotkeysToolStripMenuItem_Click);
             // 
             // lblTags
             // 
@@ -425,26 +441,22 @@
             this.lblCipListDetails.Size = new System.Drawing.Size(0, 28);
             this.lblCipListDetails.TabIndex = 27;
             // 
-            // settingsToolStripMenuItem
+            // cmdFilter
             // 
-            this.settingsToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this.hotkeysToolStripMenuItem});
-            this.settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
-            this.settingsToolStripMenuItem.Size = new System.Drawing.Size(76, 24);
-            this.settingsToolStripMenuItem.Text = "Settings";
-            // 
-            // hotkeysToolStripMenuItem
-            // 
-            this.hotkeysToolStripMenuItem.Name = "hotkeysToolStripMenuItem";
-            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
-            this.hotkeysToolStripMenuItem.Text = "Hotkeys..";
-            this.hotkeysToolStripMenuItem.Click += new System.EventHandler(this.hotkeysToolStripMenuItem_Click);
+            this.cmdFilter.Location = new System.Drawing.Point(343, 66);
+            this.cmdFilter.Name = "cmdFilter";
+            this.cmdFilter.Size = new System.Drawing.Size(119, 28);
+            this.cmdFilter.TabIndex = 28;
+            this.cmdFilter.Text = "Filter...";
+            this.cmdFilter.UseVisualStyleBackColor = true;
+            this.cmdFilter.Click += new System.EventHandler(this.cmdFilter_Click);
             // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1760, 1033);
+            this.Controls.Add(this.cmdFilter);
             this.Controls.Add(this.lblCipListDetails);
             this.Controls.Add(this.lblTags);
             this.Controls.Add(this.cmdNextClip);
@@ -524,5 +536,6 @@
         internal Label lblCipListDetails;
         private ToolStripMenuItem settingsToolStripMenuItem;
         private ToolStripMenuItem hotkeysToolStripMenuItem;
+        private Button cmdFilter;
     }
 }
