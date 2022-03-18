@@ -1,0 +1,21 @@
+﻿<?xml version='1.0' encoding='utf-8'?>
+<SettingsFile xmlns="http://schemas.microsoft.com/VisualStudio/2004/01/settings" CurrentProfile="(Default)" GeneratedClassNamespace="IStripperQuickPlayer.Properties" GeneratedClassName="Settings">
+  <Profiles />
+  <Settings>
+    <Setting Name="SortBy" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Model Name</Value>
+    </Setting>
+    <Setting Name="NextClipEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="NextClipString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+N</Value>
+    </Setting>
+    <Setting Name="NextCardEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="NextCardString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+C</Value>
+    </Setting>
+  </Settings>
+</SettingsFile>
