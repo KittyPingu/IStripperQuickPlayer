@@ -51,7 +51,6 @@ namespace IStripperQuickPlayer
             ModelsLstLoader lstLoader = new ModelsLstLoader();
             listModels.Items.Clear();
             Datastore.modelcards.Clear();
-            for (int i =0; i< 30; i++)
                 lstLoader.LoadModels();
             PopulateModelListview();
             PersistModels();
