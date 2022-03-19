@@ -17,5 +17,7 @@ namespace IStripperQuickPlayer
         internal HotnessCode hotnessCode;
         internal string clipType;
         internal int clipNumber;
+        internal bool isFavourite;
+        internal decimal myRating;
     }
 }

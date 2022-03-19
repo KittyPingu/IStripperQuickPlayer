@@ -11,7 +11,7 @@ namespace IStripperQuickPlayer.BLL
                  /// <summary>
     /// The period in ms between registry polls.
     /// </summary>
-    private const int PERIOD = 1000;
+    private const int PERIOD = 100;
 
     /// <summary>
     /// The current reg values to be compared against.
@@ -56,7 +56,7 @@ namespace IStripperQuickPlayer.BLL
         foreach (Tuple<string, string> reg in toWatch)
         {
             object newValue = Registry.GetValue(reg.Item1, reg.Item2, null);
-            if (currentRegValues[reg] != newValue)
+            if (currentRegValues[reg].ToString() != newValue.ToString())
             {
                 RegistryChange?.Invoke(this, new RegistryChangeEventArgs(reg.Item1, reg.Item2, newValue));
                 currentRegValues[reg] = newValue;

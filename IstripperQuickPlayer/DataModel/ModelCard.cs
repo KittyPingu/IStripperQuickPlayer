@@ -77,6 +77,7 @@ namespace IStripperQuickPlayer
         internal bool exclusive;
         internal string[] userTags;
         internal bool isFavourite;
+        internal decimal myRating;
         internal string height;
         internal string city;
         internal string country;

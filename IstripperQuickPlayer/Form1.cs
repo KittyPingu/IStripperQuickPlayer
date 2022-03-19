@@ -5,6 +5,7 @@ using IStripperQuickPlayer.DataModel;
 using Microsoft.Win32;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.Globalization;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 
@@ -16,6 +17,9 @@ namespace IStripperQuickPlayer
         private string nowPlayingTag = "";
         private int nowPlayingClipNumber;
         private bool changesort = false;
+        private MyData myData = null;
+        private bool fontInstalled = false;
+        internal FilterSettings filterSettings = new FilterSettings();
 
         //global hotkeys
         Combination nextClip;// = Combination.FromString("Control+Alt+N");
@@ -30,7 +34,7 @@ namespace IStripperQuickPlayer
 
         private  void actNextCard()
         {
-           if (Properties.Settings.Default.NextCardEnabled) GetNextCard();
+           if (Properties.Settings.Default.NextCardEnabled) this.BeginInvoke((Action)(() => GetNextCard()));
         }
 
         public Form1()
@@ -51,7 +55,7 @@ namespace IStripperQuickPlayer
             ModelsLstLoader lstLoader = new ModelsLstLoader();
             listModels.Items.Clear();
             Datastore.modelcards.Clear();
-                lstLoader.LoadModels();
+            lstLoader.LoadModels();
             PopulateModelListview();
             PersistModels();
         }
@@ -95,6 +99,9 @@ namespace IStripperQuickPlayer
 
             switch (cmbSortBy.Text)
             {
+                case "My Rating":
+                    currentCards = currentCards.OrderByDescending(i => myData.GetCardRating(i.name)).ToList();
+                    break;
                 case "":
                 case "Model Name":
                     currentCards = currentCards.OrderBy(i => i.modelName).ToList();
@@ -154,17 +161,20 @@ namespace IStripperQuickPlayer
         }
 
         private List<ModelCard>? Filter(List<ModelCard>? currentCards)
-        {    
-            if (FilterSettings.maxTimesPlayed ==0 && Datastore.modelcards.Count > 0) FilterSettings.maxTimesPlayed = Datastore.modelcards.Max(c => c.timesPlayed);
-            currentCards = currentCards.Where(c => Decimal.Parse(c.modelAge) >= FilterSettings.minAge && Decimal.Parse(c.modelAge) <= FilterSettings.maxAge
-                && c.bust >= FilterSettings.minBust && c.bust <= FilterSettings.maxBust     
-                && c.rating-5M >= FilterSettings.minRating && c.rating-5M <= FilterSettings.maxRating  
-                && c.timesPlayed >= FilterSettings.minTimesPlayed && c.timesPlayed <= FilterSettings.maxTimesPlayed
+        {   
+            if (chkFavourite.Checked)
+                currentCards = currentCards.Where(c => myData.GetCardFavourite(c.name)).ToList();
+            if (filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10)
+                currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating 
+                && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();  
+            currentCards = currentCards.Where(c => Decimal.Parse(c.modelAge) >= filterSettings.minAge && Decimal.Parse(c.modelAge) <= filterSettings.maxAge
+                && c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust     
+                && c.rating-5M >= filterSettings.minRating && c.rating-5M <= filterSettings.maxRating           
                 ).ToList();
 
-            if (!String.IsNullOrEmpty(FilterSettings.tags))
+            if (!String.IsNullOrEmpty(filterSettings.tags))
             {
-                string[] parts = FilterSettings.tags.ToLower().Split("and").Select(p => p.Trim()).ToArray();
+                string[] parts = filterSettings.tags.ToLower().Split("and").Select(p => p.Trim()).ToArray();
                 foreach(string p in parts)
                 { 
                     List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
@@ -173,15 +183,15 @@ namespace IStripperQuickPlayer
                 
             }
             List<Enum> enabledcollections = new List<Enum>{ };
-            if (FilterSettings.IStripperXXX) enabledcollections.Add(Enums.CollectionType.IStripperXXX);
-            if (FilterSettings.DeskBabes) enabledcollections.Add(Enums.CollectionType.DeskBabes);
-            if (FilterSettings.IStripperClassic) enabledcollections.Add(Enums.CollectionType.IStripperClassic);
-            if (FilterSettings.VGClassic) enabledcollections.Add(Enums.CollectionType.VGClassic);
-            if (FilterSettings.IStripper) enabledcollections.Add(Enums.CollectionType.IStripper);
+            if (filterSettings.IStripperXXX) enabledcollections.Add(Enums.CollectionType.IStripperXXX);
+            if (filterSettings.DeskBabes) enabledcollections.Add(Enums.CollectionType.DeskBabes);
+            if (filterSettings.IStripperClassic) enabledcollections.Add(Enums.CollectionType.IStripperClassic);
+            if (filterSettings.VGClassic) enabledcollections.Add(Enums.CollectionType.VGClassic);
+            if (filterSettings.IStripper) enabledcollections.Add(Enums.CollectionType.IStripper);
 
-            if (FilterSettings.Normal && !FilterSettings.Special)
+            if (filterSettings.Normal && !filterSettings.Special)
                 currentCards = currentCards.Where(c => !c.exclusive).ToList();
-            else if (FilterSettings.Special && !FilterSettings.Normal)
+            else if (filterSettings.Special && !filterSettings.Normal)
                 currentCards = currentCards.Where(c => c.exclusive).ToList();
 
             currentCards = currentCards.Where(c=> enabledcollections.Contains(c.collection)).ToList();
@@ -217,6 +227,67 @@ namespace IStripperQuickPlayer
             ms.Close();  
             ms.Dispose();  
         } 
+
+        internal void SaveMyData()
+        {
+            string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
+            string mdatafolder = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer");
+            if (!Directory.Exists(mdatafolder))
+                Directory.CreateDirectory(mdatafolder);
+            
+            System.IO.Stream ms = File.OpenWrite(mdatafilepath);     
+            BinaryFormatter formatter = new BinaryFormatter();              
+            formatter.Serialize(ms, myData);  
+            ms.Flush();  
+            ms.Close();  
+            ms.Dispose();  
+        }
+
+        internal void LoadDefaultFilters()
+        { 
+            try
+            {
+                string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "filters.bin");
+                if (!File.Exists(mdatafilepath)) return ;
+                BinaryFormatter formatter = new BinaryFormatter();  
+   
+                //Reading the file from the server  
+                FileStream fs = File.Open(mdatafilepath, FileMode.Open);   
+                object obj = formatter.Deserialize(fs);  
+                filterSettings = (FilterSettings)obj;  
+                fs.Flush();  
+                fs.Close();  
+                fs.Dispose(); 
+            }
+            catch (Exception ex){
+                MessageBox.Show("Error reading MyData file\r\n" + ex.Message);
+                filterSettings = new FilterSettings();
+            } 
+         }
+
+        internal MyData RetrieveMyData()
+        {
+            
+            try
+            {
+                string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
+                if (!File.Exists(mdatafilepath)) return new MyData();
+                BinaryFormatter formatter = new BinaryFormatter();  
+   
+                //Reading the file from the server  
+                FileStream fs = File.Open(mdatafilepath, FileMode.Open);   
+                object obj = formatter.Deserialize(fs);  
+                MyData m = (MyData)obj;  
+                fs.Flush();  
+                fs.Close();  
+                fs.Dispose(); 
+                return m;
+            }
+            catch (Exception ex){
+                MessageBox.Show("Error reading MyData file\r\n" + ex.Message);
+                return new MyData();
+            }            
+        }
 
         private void lblModelsLoaded_Click(object sender, EventArgs e)
         {
@@ -283,7 +354,8 @@ namespace IStripperQuickPlayer
             listClips.EndUpdate();
             txtDescription.Text = card.description;
             lblAge.Text = "Age: "+card.modelAge;
-            lblHotness.Text = "Rating: "+(Convert.ToDecimal(card.rating)-5m).ToString();
+            lblStats.Text = "Stats: "+card.bust+"/"+card.waist+"/"+card.hips;
+            lblRatingScore.Text = "Rating: "+(Convert.ToDecimal(card.rating)-5m).ToString();
             lblCollection.Text = "CardType: "+card.collection.GetDescription();
             lblResolution.Text = "Res: " + card.resolution.GetDescription();
             lblTags.Text = "Tags: " + String.Join(",", card.tags);
@@ -312,12 +384,22 @@ namespace IStripperQuickPlayer
         private void Form1_Load(object sender, EventArgs e)
         {
             AssignHooks();
+            //check if we Segoe Fluent Icons font - this comes with windows 11
+            var fontsCollection = new InstalledFontCollection();
+            foreach (var fontFamily in fontsCollection.Families)
+            {
+                if (fontFamily.Name == "Segoe Fluent Icons")
+                    fontInstalled = true;
+            }
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
+            chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
+            menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
             if (Properties.Settings.Default.MinSizeMB != 0)
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
             }
-            
+            LoadDefaultFilters();
+            myData = RetrieveMyData();
             listModels.SetDoubleBuffered();
             string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
@@ -353,7 +435,28 @@ namespace IStripperQuickPlayer
 
         private void RegistryChanged(object? sender, RegistryWatcher.RegistryChangeEventArgs e)
         {
-            ShowNowPlaying(e.Value.ToString());
+            string newcardstring = e.Value.ToString();
+            if (string.IsNullOrEmpty(newcardstring))
+            {
+                this.BeginInvoke((Action)(() => lblNowPlaying.Text = ""));
+                return;
+            }
+            if (!EnforceNowPlaying(newcardstring))
+                ShowNowPlaying(newcardstring);
+        }
+
+        private bool EnforceNowPlaying(string nowplaying)
+        {
+            ModelCard model = Datastore.findCardByTag(nowplaying.Split("\\")[0]);   
+            ListViewItem res = null;
+            this.Invoke((Action)(() => res = listModels.FindItemWithText(model.modelName + "\r\n" + model.outfit)));
+            if (res == null)
+            {
+                //play a clip from a filtered card instead
+                this.BeginInvoke((Action)(() => GetNextCard()));
+                return true;
+            }
+            return false;
         }
 
         private void ShowNowPlaying(string path)
@@ -447,13 +550,18 @@ namespace IStripperQuickPlayer
             {
                    
                 //e.DrawFocusRectangle();
-                e.Graphics.FillRectangle(Brushes.Bisque, e.Bounds);
+                e.Graphics.FillRectangle(Brushes.PaleGreen, e.Bounds);
             }
             e.Graphics.DrawImage(Datastore.findCardByTag(e.Item.Tag.ToString()).image, imgrect);
             string text = "";
             ModelCard card = Datastore.findCardByTag(e.Item.Tag.ToString());
+            decimal myrating=0M;
             switch (cmbSortBy.Text)
             {
+                case "My Rating":
+                    myrating = myData.GetCardRating(card.name);
+                    if (myrating > 0) text = myrating.ToString();
+                    break;
                 case "":
                 case "Model Name":
                     text = "";
@@ -503,6 +611,78 @@ namespace IStripperQuickPlayer
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Yellow, 1), p);
                 e.Graphics.FillPath(Brushes.Red, p);     
+            }
+
+            if (myData.GetCardFavourite(card.name))
+            {
+                e.Graphics.InterpolationMode = InterpolationMode.High;
+                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
+
+                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                GraphicsPath p = new GraphicsPath(); 
+                if (fontInstalled)
+                     p.AddString(
+                        "\uE00B",            
+                        new FontFamily("Segoe Fluent Icons"), 
+                        (int) FontStyle.Bold,     
+                        e.Graphics.DpiY * 14 / 72,      
+                        new Point(e.Bounds.Left + 126, e.Bounds.Top),            
+                        new StringFormat());  
+                else
+                    p.AddString(
+                        "+",            
+                        new FontFamily("Verdana"), 
+                        (int) FontStyle.Bold,     
+                        e.Graphics.DpiY * 16 / 72,      
+                        new Point(e.Bounds.Left + 126, e.Bounds.Top -2),            
+                        new StringFormat());         
+                e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
+                e.Graphics.FillPath(Brushes.LightGreen, p);     
+            }
+            if (fontInstalled && Properties.Settings.Default.ShowRatingStars)
+            {
+                e.Graphics.InterpolationMode = InterpolationMode.High;
+                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
+
+                string ratingstr = "".PadLeft(5,'\uE0B4');
+             
+                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                GraphicsPath p = new GraphicsPath(); 
+                p.AddString(
+                    ratingstr,            
+                    new FontFamily("Segoe Fluent Icons"), 
+                    (int) FontStyle.Bold,     
+                    e.Graphics.DpiY * 14 / 72,      
+                    new Point(e.Bounds.Left + 28, e.Bounds.Top + 114),            
+                    new StringFormat());         
+                //e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
+                e.Graphics.FillPath(new SolidBrush(Color.FromArgb(180, Color.Black)), p);     
+            }
+            if (myrating > 0 && fontInstalled && Properties.Settings.Default.ShowRatingStars)
+            {
+                e.Graphics.InterpolationMode = InterpolationMode.High;
+                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
+
+                string ratingstr = "".PadLeft((int)myrating/2,'\uE0B4');
+                if (myrating%2 > 0)
+                    ratingstr += '\uE7C6';
+                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                GraphicsPath p = new GraphicsPath(); 
+                p.AddString(
+                    ratingstr,            
+                    new FontFamily("Segoe Fluent Icons"), 
+                    (int) FontStyle.Bold,     
+                    e.Graphics.DpiY * 14 / 72,      
+                    new Point(e.Bounds.Left + 28, e.Bounds.Top + 114),            
+                    new StringFormat());         
+                e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
+                e.Graphics.FillPath(Brushes.Yellow, p);     
             }
 
             if (text != "" )
@@ -585,11 +765,12 @@ namespace IStripperQuickPlayer
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             Properties.Settings.Default.Save();
+            SaveMyData();
         }
 
         private void cmdNextClip_Click(object sender, EventArgs e)
         {
-            GetNextClip();
+            this.BeginInvoke((Action)(() => GetNextClip()));
 
         }
 
@@ -728,7 +909,7 @@ namespace IStripperQuickPlayer
             var frm = Application.OpenForms.Cast<Form>().Where(x => x.Name == "Filter").FirstOrDefault();
             if (frm == null)
             {
-                frm = new Filter();
+                frm = new Filter(filterSettings);
                 frm.StartPosition = FormStartPosition.CenterParent;
                 frm.Show(this);                    
                 frm.TopMost = true;
@@ -751,6 +932,92 @@ namespace IStripperQuickPlayer
         private void numMinSizeMB_ValueChanged(object sender, EventArgs e)
         {
             ValidateMinSizeMB();
+        }
+
+        private void enforceCardFilterToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.EnforceCardFilter = enforceCardFilterToolStripMenuItem.Checked;
+        }
+
+
+        private void menuCardList_Opening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            if (mousedownCard == null)return;
+            currentMenuCard=mousedownCard;
+            ModelCard c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
+            if (myData.GetCardRating(c.name.ToString()) != null && myData.GetCardRating(c.name.ToString()) > 0)
+                ratingSlider.Value = myData.GetCardRating(c.name.ToString());
+                //cmbMenuCardRating.Text = "My Rating: " + myData.GetCardRating(c.name.ToString());
+            else
+                cmbMenuCardRating.Text = "Rate Me..";
+            menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
+            ratingToolStripMenuItem.Text = "Rating: " + (c.rating-5M).ToString();
+            statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
+            nameToolStripMenuItem.Text = c.modelName;
+            outfitToolStripMenuItem.Text = c.outfit;
+            CultureInfo cultureInfo   = Thread.CurrentThread.CurrentCulture;  
+            TextInfo textInfo = cultureInfo.TextInfo;  
+            hairToolStripMenuItem.Text =  "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
+            purchasedToolStripMenuItem.Text = "Purchased: " + c.datePurchased.ToShortDateString();
+            hotnessToolStripMenuItem.Text = "Hotness: " + ((Enums.HotnessCode)Convert.ToInt32(c.hotnessLevel)).GetDescription();
+            ageToolStripMenuItem.Text = "Age: " + c.modelAge;
+        }
+
+        private ListViewItem mousedownCard=null;
+        private ListViewItem currentMenuCard=null;
+        private void listModels_MouseDown(object sender, MouseEventArgs e)
+        {
+            if ( e.Button == MouseButtons.Right )
+            {
+                //select the item under the mouse pointer
+                Point localPoint = listModels.PointToClient(e.Location);
+                mousedownCard = listModels.GetItemAt(e.Location.X,e.Location.Y);
+                if ( mousedownCard != null)
+                {
+                    menuCardList.Show();   
+                }        
+            }
+        }
+
+        private void menuCardFavourite_CheckedChanged(object sender, EventArgs e)
+        {
+            if (myData.GetCardFavourite(currentMenuCard.Tag.ToString()) != menuCardFavourite.Checked)
+            { 
+                myData.AddCardFavourite(currentMenuCard.Tag.ToString(), menuCardFavourite.Checked);
+                this.BeginInvoke((Action)(() => listModels.Refresh()));
+            }
+        }
+
+        private void chkFavourite_CheckedChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.FavouritesFilter = chkFavourite.Checked;
+            PopulateModelListview();
+        }
+
+        private void cmbMenuCardRating_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            myData.AddCardRating(currentMenuCard.Tag.ToString(), cmbMenuCardRating.SelectedIndex+1);
+        }
+
+        
+        private void RatingSlider_ValueChanged(object sender, EventArgs e)
+        {
+            myData.AddCardRating(currentMenuCard.Tag.ToString(), ratingSlider.Value);
+        }
+
+        private void chkShowRatingStars_CheckedChanged(object sender, EventArgs e)
+        {
+            bool r = Properties.Settings.Default.ShowRatingStars;
+            if (r != menuShowRatingsStars.Checked)
+            {
+                Properties.Settings.Default.ShowRatingStars = menuShowRatingsStars.Checked;
+                listModels.Refresh();
+            }
+        }
+
+        private void menuCardList_Closing(object sender, ToolStripDropDownClosingEventArgs e)
+        {
+            currentMenuCard = null;
         }
     }
 }

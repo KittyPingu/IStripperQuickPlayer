@@ -5,6 +5,8 @@ using System.ComponentModel;
 using System.Data;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -16,15 +18,29 @@ namespace IStripperQuickPlayer
         ColorSlider.ColorSlider rangeRating;
         ColorSlider.ColorSlider rangeAge;
         ColorSlider.ColorSlider rangeBreastSize;
-        ColorSlider.ColorSlider rangeTimesPlayed;
+        ColorSlider.ColorSlider rangeMyRating;
         bool isLoaded = false;
+        bool ok = false;
+        public FilterSettings filterSettings;
+        byte[] savedSettings;
 
-        public Filter()
+        public Filter(FilterSettings filter)
         {
-
+            filterSettings = filter;
+            Save();
             InitializeComponent();
+            ReadValues();
+            this.Controls.Add(rangeRating);
+            this.Controls.Add(rangeMyRating);
+            this.Controls.Add(rangeBreastSize);
+            this.Controls.Add(rangeAge);
+            isLoaded = true;
+        }
+
+        private void ReadValues()
+        {
             rangeRating = new ColorSlider.ColorSlider();
-            rangeRating.Location = new Point(110,110);
+            rangeRating.Location = new Point(110, 110);
             rangeRating.Height = 60;
             rangeRating.Width = 650;
             rangeRating.ForeColor = Color.Black;
@@ -33,16 +49,16 @@ namespace IStripperQuickPlayer
             rangeRating.ScaleDivisions = 30;
             rangeRating.SmallChange = 0.1M;
             rangeRating.LargeChange = 0.5M;
-            rangeRating.Value =  FilterSettings.minRating;
-            rangeRating.Value2 = FilterSettings.maxRating;
+            rangeRating.Value = filterSettings.minRating;
+            rangeRating.Value2 = filterSettings.maxRating;
             rangeRating.BackColor = Color.Transparent;
             rangeRating.TickColor = Color.Black;
             rangeRating.ElapsedInnerColor = Color.Green;
             rangeRating.ValueChanged += Range_ValueChanged;
-            this.Controls.Add(rangeRating);
+            
 
             rangeBreastSize = new ColorSlider.ColorSlider();
-            rangeBreastSize.Location = new Point(110,186);
+            rangeBreastSize.Location = new Point(110, 186);
             rangeBreastSize.Height = 60;
             rangeBreastSize.Width = 650;
             rangeBreastSize.ForeColor = Color.Black;
@@ -51,16 +67,16 @@ namespace IStripperQuickPlayer
             rangeBreastSize.ScaleDivisions = 25;
             rangeBreastSize.SmallChange = 1M;
             rangeBreastSize.LargeChange = 2M;
-            rangeBreastSize.Value = FilterSettings.minBust;
-            rangeBreastSize.Value2 = FilterSettings.maxBust;
+            rangeBreastSize.Value = filterSettings.minBust;
+            rangeBreastSize.Value2 = filterSettings.maxBust;
             rangeBreastSize.BackColor = Color.Transparent;
             rangeBreastSize.TickColor = Color.Black;
             rangeBreastSize.ElapsedInnerColor = Color.Green;
             rangeBreastSize.ValueChanged += Range_ValueChanged;
-            this.Controls.Add(rangeBreastSize);
+            
 
             rangeAge = new ColorSlider.ColorSlider();
-            rangeAge.Location = new Point(110,262);
+            rangeAge.Location = new Point(110, 262);
             rangeAge.Height = 60;
             rangeAge.Width = 650;
             rangeAge.ForeColor = Color.Black;
@@ -69,43 +85,40 @@ namespace IStripperQuickPlayer
             rangeAge.ScaleDivisions = 25;
             rangeAge.SmallChange = 1M;
             rangeAge.LargeChange = 2M;
-            rangeAge.Value = FilterSettings.minAge;
-            rangeAge.Value2 = FilterSettings.maxAge;
+            rangeAge.Value = filterSettings.minAge;
+            rangeAge.Value2 = filterSettings.maxAge;
             rangeAge.BackColor = Color.Transparent;
             rangeAge.TickColor = Color.Black;
             rangeAge.ElapsedInnerColor = Color.Green;
             rangeAge.ValueChanged += Range_ValueChanged;
-            this.Controls.Add(rangeAge);
+            
 
-            rangeTimesPlayed = new ColorSlider.ColorSlider();
-            rangeTimesPlayed.Location = new Point(110,340);
-            rangeTimesPlayed.Height = 60;
-            rangeTimesPlayed.Width = 650;
-            rangeTimesPlayed.ForeColor = Color.Black;
-            rangeTimesPlayed.Minimum = 0;
-            rangeTimesPlayed.Maximum = Datastore.modelcards.Max(c => c.timesPlayed);
-            rangeTimesPlayed.ScaleDivisions = 0;
-            rangeTimesPlayed.ScaleSubDivisions = rangeTimesPlayed.Maximum;
-            rangeTimesPlayed.SmallChange = 1M;
-            rangeTimesPlayed.LargeChange = 2M;
-            rangeTimesPlayed.Value = FilterSettings.minTimesPlayed;
-            if (FilterSettings.maxTimesPlayed==0)
-                FilterSettings.maxTimesPlayed = Datastore.modelcards.Max(c => c.timesPlayed);
-            rangeTimesPlayed.Value2 = FilterSettings.maxTimesPlayed;
-            rangeTimesPlayed.BackColor = Color.Transparent;
-            rangeTimesPlayed.TickColor = Color.Black;
-            rangeTimesPlayed.ElapsedInnerColor = Color.Green;
-            rangeTimesPlayed.ValueChanged += Range_ValueChanged;
-            this.Controls.Add(rangeTimesPlayed);
+            rangeMyRating = new ColorSlider.ColorSlider();
+            rangeMyRating.Location = new Point(110, 340);
+            rangeMyRating.Height = 60;
+            rangeMyRating.Width = 650;
+            rangeMyRating.ForeColor = Color.Black;
+            rangeMyRating.Minimum = 0;
+            rangeMyRating.Maximum = 10;
+            rangeMyRating.ScaleDivisions = 0;
+            rangeMyRating.ScaleSubDivisions = rangeMyRating.Maximum;
+            rangeMyRating.SmallChange = 1M;
+            rangeMyRating.LargeChange = 2M;
+            rangeMyRating.Value = filterSettings.minMyRating; ;
+            rangeMyRating.Value2 = filterSettings.maxMyRating;
+            rangeMyRating.BackColor = Color.Transparent;
+            rangeMyRating.TickColor = Color.Black;
+            rangeMyRating.ElapsedInnerColor = Color.Green;
+            rangeMyRating.ValueChanged += Range_ValueChanged;
+            
 
-            chkDeskBabes.Checked = FilterSettings.DeskBabes;
-            chkIStripper.Checked = FilterSettings.IStripper;
-            chkIStripperClassic.Checked = FilterSettings.IStripperClassic;
-            chkIStripperXXX.Checked = FilterSettings.IStripperXXX;
-            chkVGClassic.Checked = FilterSettings.VGClassic;
-            chkSpecial.Checked = FilterSettings.Special;
-            chkNormal.Checked = FilterSettings.Normal;
-            isLoaded = true;
+            chkDeskBabes.Checked = filterSettings.DeskBabes;
+            chkIStripper.Checked = filterSettings.IStripper;
+            chkIStripperClassic.Checked = filterSettings.IStripperClassic;
+            chkIStripperXXX.Checked = filterSettings.IStripperXXX;
+            chkVGClassic.Checked = filterSettings.VGClassic;
+            chkSpecial.Checked = filterSettings.Special;
+            chkNormal.Checked = filterSettings.Normal;
         }
 
         private void Range_ValueChanged(object? sender, EventArgs e)
@@ -128,6 +141,7 @@ namespace IStripperQuickPlayer
 
         private void cmdOK_Click(object sender, EventArgs e)
         {           
+            ok = true;
             ApplySettings();
             this.Close();
         }
@@ -135,30 +149,32 @@ namespace IStripperQuickPlayer
         private  void ApplySettings()
         {
             if (!isLoaded)return;
-            FilterSettings.minAge = rangeAge.Value;
-            FilterSettings.maxAge = rangeAge.Value2;
-            FilterSettings.minBust = rangeBreastSize.Value;
-            FilterSettings.maxBust = rangeBreastSize.Value2;
-            FilterSettings.minRating = rangeRating.Value;
-            FilterSettings.maxRating = rangeRating.Value2;
-            FilterSettings.tags = txtTags.Text;
+            filterSettings.minAge = rangeAge.Value;
+            filterSettings.maxAge = rangeAge.Value2;
+            filterSettings.minBust = rangeBreastSize.Value;
+            filterSettings.maxBust = rangeBreastSize.Value2;
+            filterSettings.minRating = rangeRating.Value;
+            filterSettings.maxRating = rangeRating.Value2;
+            filterSettings.minMyRating = rangeMyRating.Value;
+            filterSettings.maxMyRating = rangeMyRating.Value2;
+            filterSettings.tags = txtTags.Text;
 
             
-            FilterSettings.DeskBabes = chkDeskBabes.Checked;
-            FilterSettings.IStripper = chkIStripper.Checked;
-            FilterSettings.IStripperClassic = chkIStripperClassic.Checked;
-            FilterSettings.IStripperXXX = chkIStripperXXX.Checked;
-            FilterSettings.VGClassic = chkVGClassic.Checked;
+            filterSettings.DeskBabes = chkDeskBabes.Checked;
+            filterSettings.IStripper = chkIStripper.Checked;
+            filterSettings.IStripperClassic = chkIStripperClassic.Checked;
+            filterSettings.IStripperXXX = chkIStripperXXX.Checked;
+            filterSettings.VGClassic = chkVGClassic.Checked;
 
-            FilterSettings.Special = chkSpecial.Checked;
-            FilterSettings.Normal = chkNormal.Checked;
+            filterSettings.Special = chkSpecial.Checked;
+            filterSettings.Normal = chkNormal.Checked;
             
-            FilterSettings.minTimesPlayed = rangeTimesPlayed.Value;
-            FilterSettings.maxTimesPlayed = rangeTimesPlayed.Value2;
-
             Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();
             if (frm != null)
+            {
+                frm.filterSettings = filterSettings;
                 frm.PopulateModelListview();
+            }
         }
 
         private void cmdApply_Click(object sender, EventArgs e)
@@ -179,6 +195,67 @@ namespace IStripperQuickPlayer
         private void txtTags_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Enter) ApplySettings();
+        }
+
+        private void Filter_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (!ok) Restore();
+        }
+
+        internal void Save()
+        { 
+            using (MemoryStream memStream = new MemoryStream())
+            {
+                BinaryFormatter binSerializer = new BinaryFormatter();
+                binSerializer.Serialize(memStream, filterSettings);
+                savedSettings = memStream.ToArray();
+            }
+        }
+
+        
+        internal void Restore()
+        { 
+            BinaryFormatter binSerializer = new BinaryFormatter();
+            filterSettings = (FilterSettings)binSerializer.Deserialize(new MemoryStream(savedSettings));
+            Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();
+            if (frm != null)
+            {
+                frm.filterSettings = filterSettings;
+                frm.PopulateModelListview();
+            }
+         }
+
+        private void cmdRevert_Click(object sender, EventArgs e)
+        {
+            BinaryFormatter binSerializer = new BinaryFormatter();
+            filterSettings = (FilterSettings)binSerializer.Deserialize(new MemoryStream(savedSettings));
+            isLoaded = false;            
+            ReadValues();
+            this.Controls.RemoveAt(this.Controls.Count-1);
+            this.Controls.RemoveAt(this.Controls.Count-1);
+            this.Controls.RemoveAt(this.Controls.Count-1);
+            this.Controls.RemoveAt(this.Controls.Count-1);
+
+            this.Controls.Add(rangeRating);
+            this.Controls.Add(rangeMyRating);
+            this.Controls.Add(rangeBreastSize);
+            this.Controls.Add(rangeAge);
+            isLoaded = true;
+            ApplySettings();
+        }
+
+        private void cmdSaveDefault_Click(object sender, EventArgs e)
+        {
+            string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "filters.bin");
+            string mdatafolder = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer");
+            if (!Directory.Exists(mdatafolder))
+                Directory.CreateDirectory(mdatafolder);
+            System.IO.Stream ms = File.OpenWrite(mdatafilepath);     
+            BinaryFormatter formatter = new BinaryFormatter();              
+            formatter.Serialize(ms, filterSettings);  
+            ms.Flush();  
+            ms.Close();  
+            ms.Dispose();  
         }
     }
 }

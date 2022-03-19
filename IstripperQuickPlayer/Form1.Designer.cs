@@ -31,6 +31,19 @@
             this.components = new System.ComponentModel.Container();
             this.lblModelsLoaded = new System.Windows.Forms.Label();
             this.listModels = new System.Windows.Forms.ListView();
+            this.menuCardList = new System.Windows.Forms.ContextMenuStrip(this.components);
+            this.menuCardFavourite = new System.Windows.Forms.ToolStripMenuItem();
+            this.ratingSlider = new IStripperQuickPlayer.TrackBarMenuItem();
+            this.toolStripSeparator1 = new System.Windows.Forms.ToolStripSeparator();
+            this.nameToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.outfitToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.ratingToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.hotnessToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.statsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.ageToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.hairToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.purchasedToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.cmbMenuCardRating = new System.Windows.Forms.ToolStripComboBox();
             this.listClips = new System.Windows.Forms.ListView();
             this.ClipNumber = new System.Windows.Forms.ColumnHeader();
             this.ClipName = new System.Windows.Forms.ColumnHeader();
@@ -49,7 +62,7 @@
             this.lblNowPlaying = new System.Windows.Forms.Label();
             this.lblAge = new System.Windows.Forms.Label();
             this.lblCollection = new System.Windows.Forms.Label();
-            this.lblHotness = new System.Windows.Forms.Label();
+            this.lblRatingScore = new System.Windows.Forms.Label();
             this.txtDescription = new System.Windows.Forms.TextBox();
             this.lblResolution = new System.Windows.Forms.Label();
             this.txtSearch = new System.Windows.Forms.TextBox();
@@ -63,12 +76,17 @@
             this.exitToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.settingsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.hotkeysToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.enforceCardFilterToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.menuShowRatingsStars = new System.Windows.Forms.ToolStripMenuItem();
             this.lblTags = new System.Windows.Forms.Label();
             this.lblCipListDetails = new System.Windows.Forms.Label();
             this.cmdFilter = new System.Windows.Forms.Button();
             this.label3 = new System.Windows.Forms.Label();
             this.errorProvider1 = new System.Windows.Forms.ErrorProvider(this.components);
             this.numMinSizeMB = new System.Windows.Forms.NumericUpDown();
+            this.lblStats = new System.Windows.Forms.Label();
+            this.chkFavourite = new System.Windows.Forms.CheckBox();
+            this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.numMinSizeMB)).BeginInit();
@@ -87,6 +105,7 @@
             // 
             // listModels
             // 
+            this.listModels.ContextMenuStrip = this.menuCardList;
             this.listModels.Location = new System.Drawing.Point(24, 94);
             this.listModels.Name = "listModels";
             this.listModels.OwnerDraw = true;
@@ -95,6 +114,164 @@
             this.listModels.UseCompatibleStateImageBehavior = false;
             this.listModels.DrawItem += new System.Windows.Forms.DrawListViewItemEventHandler(this.listModels_DrawItem);
             this.listModels.SelectedIndexChanged += new System.EventHandler(this.listModels_SelectedIndexChanged);
+            this.listModels.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModels_MouseDown);
+            // 
+            // menuCardList
+            // 
+            this.menuCardList.ImageScalingSize = new System.Drawing.Size(20, 20);
+            this.menuCardList.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
+            this.menuCardFavourite,
+            this.ratingSlider,
+            this.toolStripSeparator1,
+            this.nameToolStripMenuItem,
+            this.outfitToolStripMenuItem,
+            this.ratingToolStripMenuItem,
+            this.hotnessToolStripMenuItem,
+            this.statsToolStripMenuItem,
+            this.ageToolStripMenuItem,
+            this.hairToolStripMenuItem,
+            this.purchasedToolStripMenuItem});
+            this.menuCardList.Name = "menuCardList";
+            this.menuCardList.Size = new System.Drawing.Size(211, 349);
+            this.menuCardList.Closing += new System.Windows.Forms.ToolStripDropDownClosingEventHandler(this.menuCardList_Closing);
+            this.menuCardList.Opening += new System.ComponentModel.CancelEventHandler(this.menuCardList_Opening);
+            // 
+            // menuCardFavourite
+            // 
+            this.menuCardFavourite.CheckOnClick = true;
+            this.menuCardFavourite.Name = "menuCardFavourite";
+            this.menuCardFavourite.Size = new System.Drawing.Size(210, 28);
+            this.menuCardFavourite.Text = "Favourite";
+            this.menuCardFavourite.CheckedChanged += new System.EventHandler(this.menuCardFavourite_CheckedChanged);
+            // 
+            // ratingSlider
+            // 
+            this.ratingSlider.BackColor = System.Drawing.Color.White;
+            this.ratingSlider.ClientSize = new System.Drawing.Size(108, 56);
+            this.ratingSlider.Font = new System.Drawing.Font("Microsoft Sans Serif", 6F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.ratingSlider.ForeColor = System.Drawing.Color.White;
+            this.ratingSlider.Has2Values = false;
+            this.ratingSlider.LargeChange = new decimal(new int[] {
+            5,
+            0,
+            0,
+            0});
+            this.ratingSlider.Maximum = new decimal(new int[] {
+            10,
+            0,
+            0,
+            0});
+            this.ratingSlider.Minimum = new decimal(new int[] {
+            0,
+            0,
+            0,
+            0});
+            this.ratingSlider.Name = "ratingSlider";
+            this.ratingSlider.ScaleDivisions = new decimal(new int[] {
+            5,
+            0,
+            0,
+            0});
+            this.ratingSlider.Size = new System.Drawing.Size(108, 56);
+            this.ratingSlider.SmallChange = new decimal(new int[] {
+            1,
+            0,
+            0,
+            0});
+            this.ratingSlider.TickColor = System.Drawing.Color.Black;
+            this.ratingSlider.TickStyle = System.Windows.Forms.TickStyle.Both;
+            this.ratingSlider.TrackbarColor = System.Drawing.Color.White;
+            this.ratingSlider.Value = new decimal(new int[] {
+            0,
+            0,
+            0,
+            0});
+            this.ratingSlider.Value2 = new decimal(new int[] {
+            0,
+            0,
+            0,
+            0});
+            // 
+            // toolStripSeparator1
+            // 
+            this.toolStripSeparator1.Name = "toolStripSeparator1";
+            this.toolStripSeparator1.Size = new System.Drawing.Size(207, 6);
+            // 
+            // nameToolStripMenuItem
+            // 
+            this.nameToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
+            this.nameToolStripMenuItem.Name = "nameToolStripMenuItem";
+            this.nameToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.nameToolStripMenuItem.Text = "Name:";
+            // 
+            // outfitToolStripMenuItem
+            // 
+            this.outfitToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
+            this.outfitToolStripMenuItem.Name = "outfitToolStripMenuItem";
+            this.outfitToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.outfitToolStripMenuItem.Text = "Outfit:";
+            // 
+            // ratingToolStripMenuItem
+            // 
+            this.ratingToolStripMenuItem.AutoToolTip = true;
+            this.ratingToolStripMenuItem.Name = "ratingToolStripMenuItem";
+            this.ratingToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.ratingToolStripMenuItem.Tag = "Rating";
+            this.ratingToolStripMenuItem.Text = "Rating:";
+            this.ratingToolStripMenuItem.ToolTipText = "Official Rating";
+            // 
+            // hotnessToolStripMenuItem
+            // 
+            this.hotnessToolStripMenuItem.Name = "hotnessToolStripMenuItem";
+            this.hotnessToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.hotnessToolStripMenuItem.Text = "Hotness:";
+            // 
+            // statsToolStripMenuItem
+            // 
+            this.statsToolStripMenuItem.AutoToolTip = true;
+            this.statsToolStripMenuItem.Name = "statsToolStripMenuItem";
+            this.statsToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.statsToolStripMenuItem.Tag = "Stats";
+            this.statsToolStripMenuItem.Text = "Stats:";
+            this.statsToolStripMenuItem.ToolTipText = "Model\'s Stats";
+            // 
+            // ageToolStripMenuItem
+            // 
+            this.ageToolStripMenuItem.Name = "ageToolStripMenuItem";
+            this.ageToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.ageToolStripMenuItem.Text = "Age:";
+            // 
+            // hairToolStripMenuItem
+            // 
+            this.hairToolStripMenuItem.Name = "hairToolStripMenuItem";
+            this.hairToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.hairToolStripMenuItem.Text = "Hair:";
+            // 
+            // purchasedToolStripMenuItem
+            // 
+            this.purchasedToolStripMenuItem.Name = "purchasedToolStripMenuItem";
+            this.purchasedToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.purchasedToolStripMenuItem.Text = "Purchased:";
+            // 
+            // cmbMenuCardRating
+            // 
+            this.cmbMenuCardRating.Items.AddRange(new object[] {
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10"});
+            this.cmbMenuCardRating.MaxDropDownItems = 10;
+            this.cmbMenuCardRating.Name = "cmbMenuCardRating";
+            this.cmbMenuCardRating.Size = new System.Drawing.Size(121, 28);
+            this.cmbMenuCardRating.Text = "My Rating";
+            this.cmbMenuCardRating.ToolTipText = "Select a rating for this card";
+            this.cmbMenuCardRating.SelectedIndexChanged += new System.EventHandler(this.cmbMenuCardRating_SelectedIndexChanged);
             // 
             // listClips
             // 
@@ -237,6 +414,7 @@
             // 
             this.cmbSortBy.FormattingEnabled = true;
             this.cmbSortBy.Items.AddRange(new object[] {
+            "My Rating",
             "Model Name",
             "Rating",
             "Age",
@@ -287,7 +465,7 @@
             // 
             this.lblCollection.AutoSize = true;
             this.lblCollection.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblCollection.Location = new System.Drawing.Point(1070, 784);
+            this.lblCollection.Location = new System.Drawing.Point(1190, 784);
             this.lblCollection.Name = "lblCollection";
             this.lblCollection.Size = new System.Drawing.Size(94, 25);
             this.lblCollection.TabIndex = 16;
@@ -295,13 +473,13 @@
             // 
             // lblHotness
             // 
-            this.lblHotness.AutoSize = true;
-            this.lblHotness.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblHotness.Location = new System.Drawing.Point(1586, 784);
-            this.lblHotness.Name = "lblHotness";
-            this.lblHotness.Size = new System.Drawing.Size(81, 25);
-            this.lblHotness.TabIndex = 17;
-            this.lblHotness.Text = "Hotness:";
+            this.lblRatingScore.AutoSize = true;
+            this.lblRatingScore.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.lblRatingScore.Location = new System.Drawing.Point(1586, 784);
+            this.lblRatingScore.Name = "lblHotness";
+            this.lblRatingScore.Size = new System.Drawing.Size(81, 25);
+            this.lblRatingScore.TabIndex = 17;
+            this.lblRatingScore.Text = "Hotness:";
             // 
             // txtDescription
             // 
@@ -317,7 +495,7 @@
             // 
             this.lblResolution.AutoSize = true;
             this.lblResolution.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblResolution.Location = new System.Drawing.Point(1376, 784);
+            this.lblResolution.Location = new System.Drawing.Point(1423, 784);
             this.lblResolution.Name = "lblResolution";
             this.lblResolution.Size = new System.Drawing.Size(99, 25);
             this.lblResolution.TabIndex = 19;
@@ -416,7 +594,9 @@
             // settingsToolStripMenuItem
             // 
             this.settingsToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this.hotkeysToolStripMenuItem});
+            this.hotkeysToolStripMenuItem,
+            this.enforceCardFilterToolStripMenuItem,
+            this.menuShowRatingsStars});
             this.settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
             this.settingsToolStripMenuItem.Size = new System.Drawing.Size(76, 24);
             this.settingsToolStripMenuItem.Text = "Settings";
@@ -424,9 +604,27 @@
             // hotkeysToolStripMenuItem
             // 
             this.hotkeysToolStripMenuItem.Name = "hotkeysToolStripMenuItem";
-            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(151, 26);
+            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(231, 26);
             this.hotkeysToolStripMenuItem.Text = "Hotkeys..";
             this.hotkeysToolStripMenuItem.Click += new System.EventHandler(this.hotkeysToolStripMenuItem_Click);
+            // 
+            // enforceCardFilterToolStripMenuItem
+            // 
+            this.enforceCardFilterToolStripMenuItem.Checked = true;
+            this.enforceCardFilterToolStripMenuItem.CheckOnClick = true;
+            this.enforceCardFilterToolStripMenuItem.CheckState = System.Windows.Forms.CheckState.Checked;
+            this.enforceCardFilterToolStripMenuItem.Name = "enforceCardFilterToolStripMenuItem";
+            this.enforceCardFilterToolStripMenuItem.Size = new System.Drawing.Size(231, 26);
+            this.enforceCardFilterToolStripMenuItem.Text = "Enforce Card Filter";
+            this.enforceCardFilterToolStripMenuItem.Click += new System.EventHandler(this.enforceCardFilterToolStripMenuItem_Click);
+            // 
+            // menuShowRatingsStars
+            // 
+            this.menuShowRatingsStars.CheckOnClick = true;
+            this.menuShowRatingsStars.Name = "menuShowRatingsStars";
+            this.menuShowRatingsStars.Size = new System.Drawing.Size(231, 26);
+            this.menuShowRatingsStars.Text = "Show MyRating Stars";
+            this.menuShowRatingsStars.CheckedChanged += new System.EventHandler(this.chkShowRatingStars_CheckedChanged);
             // 
             // lblTags
             // 
@@ -450,7 +648,7 @@
             // 
             // cmdFilter
             // 
-            this.cmdFilter.Location = new System.Drawing.Point(343, 66);
+            this.cmdFilter.Location = new System.Drawing.Point(420, 66);
             this.cmdFilter.Name = "cmdFilter";
             this.cmdFilter.Size = new System.Drawing.Size(119, 28);
             this.cmdFilter.TabIndex = 28;
@@ -489,11 +687,34 @@
             this.numMinSizeMB.TabIndex = 30;
             this.numMinSizeMB.ValueChanged += new System.EventHandler(this.numMinSizeMB_ValueChanged);
             // 
+            // lblStats
+            // 
+            this.lblStats.AutoSize = true;
+            this.lblStats.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.lblStats.Location = new System.Drawing.Point(1019, 784);
+            this.lblStats.Name = "lblStats";
+            this.lblStats.Size = new System.Drawing.Size(54, 25);
+            this.lblStats.TabIndex = 31;
+            this.lblStats.Text = "Stats:";
+            // 
+            // chkFavourite
+            // 
+            this.chkFavourite.AutoSize = true;
+            this.chkFavourite.Location = new System.Drawing.Point(275, 69);
+            this.chkFavourite.Name = "chkFavourite";
+            this.chkFavourite.Size = new System.Drawing.Size(131, 24);
+            this.chkFavourite.TabIndex = 32;
+            this.chkFavourite.Text = "Only Favourites";
+            this.chkFavourite.UseVisualStyleBackColor = true;
+            this.chkFavourite.CheckedChanged += new System.EventHandler(this.chkFavourite_CheckedChanged);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1760, 1033);
+            this.Controls.Add(this.chkFavourite);
+            this.Controls.Add(this.lblStats);
             this.Controls.Add(this.numMinSizeMB);
             this.Controls.Add(this.label3);
             this.Controls.Add(this.cmdFilter);
@@ -506,7 +727,7 @@
             this.Controls.Add(this.txtSearch);
             this.Controls.Add(this.lblResolution);
             this.Controls.Add(this.txtDescription);
-            this.Controls.Add(this.lblHotness);
+            this.Controls.Add(this.lblRatingScore);
             this.Controls.Add(this.lblCollection);
             this.Controls.Add(this.lblAge);
             this.Controls.Add(this.lblNowPlaying);
@@ -532,6 +753,7 @@
             this.Text = "IStripper QuickPlayer";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Form1_FormClosing);
             this.Load += new System.EventHandler(this.Form1_Load);
+            this.menuCardList.ResumeLayout(false);
             this.menuStrip1.ResumeLayout(false);
             this.menuStrip1.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).EndInit();
@@ -540,6 +762,7 @@
             this.PerformLayout();
 
         }
+
 
         #endregion
         internal Label lblModelsLoaded;
@@ -562,7 +785,7 @@
         private ColumnHeader ClipNumber;
         private Label lblAge;
         private Label lblCollection;
-        private Label lblHotness;
+        private Label lblRatingScore;
         private TextBox txtDescription;
         private Label lblResolution;
         private TextBox txtSearch;
@@ -582,5 +805,22 @@
         private Label label3;
         private ErrorProvider errorProvider1;
         private NumericUpDown numMinSizeMB;
+        private ToolStripMenuItem enforceCardFilterToolStripMenuItem;
+        private Label lblStats;
+        private ContextMenuStrip menuCardList;
+        private ToolStripMenuItem menuCardFavourite;
+        private ToolStripComboBox cmbMenuCardRating;
+        private ToolStripSeparator toolStripSeparator1;
+        private ToolStripMenuItem ratingToolStripMenuItem;
+        private ToolStripMenuItem statsToolStripMenuItem;
+        private CheckBox chkFavourite;
+        private ToolStripMenuItem menuShowRatingsStars;
+        private TrackBarMenuItem ratingSlider;
+        private ToolStripMenuItem nameToolStripMenuItem;
+        private ToolStripMenuItem outfitToolStripMenuItem;
+        private ToolStripMenuItem hotnessToolStripMenuItem;
+        private ToolStripMenuItem ageToolStripMenuItem;
+        private ToolStripMenuItem hairToolStripMenuItem;
+        private ToolStripMenuItem purchasedToolStripMenuItem;
     }
 }

@@ -94,5 +94,41 @@ namespace IStripperQuickPlayer.Properties {
                 this["MinSizeMB"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool EnforceCardFilter {
+            get {
+                return ((bool)(this["EnforceCardFilter"]));
+            }
+            set {
+                this["EnforceCardFilter"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool FavouritesFilter {
+            get {
+                return ((bool)(this["FavouritesFilter"]));
+            }
+            set {
+                this["FavouritesFilter"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ShowRatingStars {
+            get {
+                return ((bool)(this["ShowRatingStars"]));
+            }
+            set {
+                this["ShowRatingStars"] = value;
+            }
+        }
     }
 }

@@ -16,7 +16,8 @@ namespace IStripperQuickPlayer.DataModel
         {
             foreach(ModelCard card in modelcards)
             {
-                if (card.name == tag) return card;
+                if (card.name == tag)
+                    return card;
             }
             return null;
         }

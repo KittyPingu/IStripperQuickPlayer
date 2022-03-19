@@ -45,6 +45,8 @@
             this.chkNormal = new System.Windows.Forms.CheckBox();
             this.chkSpecial = new System.Windows.Forms.CheckBox();
             this.label4 = new System.Windows.Forms.Label();
+            this.cmdRevert = new System.Windows.Forms.Button();
+            this.cmdSaveDefault = new System.Windows.Forms.Button();
             ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).BeginInit();
             this.SuspendLayout();
             // 
@@ -202,15 +204,37 @@
             this.label4.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.label4.Location = new System.Drawing.Point(12, 358);
             this.label4.Name = "label4";
-            this.label4.Size = new System.Drawing.Size(77, 25);
+            this.label4.Size = new System.Drawing.Size(93, 25);
             this.label4.TabIndex = 14;
-            this.label4.Text = "* Played";
+            this.label4.Text = "My Rating";
+            // 
+            // cmdRevert
+            // 
+            this.cmdRevert.Location = new System.Drawing.Point(532, 499);
+            this.cmdRevert.Name = "cmdRevert";
+            this.cmdRevert.Size = new System.Drawing.Size(106, 45);
+            this.cmdRevert.TabIndex = 15;
+            this.cmdRevert.Text = "Revert";
+            this.cmdRevert.UseVisualStyleBackColor = true;
+            this.cmdRevert.Click += new System.EventHandler(this.cmdRevert_Click);
+            // 
+            // cmdSaveDefault
+            // 
+            this.cmdSaveDefault.Location = new System.Drawing.Point(386, 499);
+            this.cmdSaveDefault.Name = "cmdSaveDefault";
+            this.cmdSaveDefault.Size = new System.Drawing.Size(106, 45);
+            this.cmdSaveDefault.TabIndex = 16;
+            this.cmdSaveDefault.Text = "Save Default";
+            this.cmdSaveDefault.UseVisualStyleBackColor = true;
+            this.cmdSaveDefault.Click += new System.EventHandler(this.cmdSaveDefault_Click);
             // 
             // Filter
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(800, 556);
+            this.Controls.Add(this.cmdSaveDefault);
+            this.Controls.Add(this.cmdRevert);
             this.Controls.Add(this.label4);
             this.Controls.Add(this.chkSpecial);
             this.Controls.Add(this.chkNormal);
@@ -235,6 +259,7 @@
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
             this.Text = "Filter";
             this.Activated += new System.EventHandler(this.Filter_Activated);
+            this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Filter_FormClosing);
             this.Load += new System.EventHandler(this.Filter_Load);
             ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).EndInit();
             this.ResumeLayout(false);
@@ -261,5 +286,7 @@
         private CheckBox chkNormal;
         private CheckBox chkSpecial;
         private Label label4;
+        private Button cmdRevert;
+        private Button cmdSaveDefault;
     }
 }
