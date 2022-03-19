@@ -950,7 +950,7 @@ namespace IStripperQuickPlayer
                 ratingSlider.Value = myData.GetCardRating(c.name.ToString());
                 //cmbMenuCardRating.Text = "My Rating: " + myData.GetCardRating(c.name.ToString());
             else
-                cmbMenuCardRating.Text = "Rate Me..";
+                ratingSlider.Value = 0;
             menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
             ratingToolStripMenuItem.Text = "Rating: " + (c.rating-5M).ToString();
             statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
@@ -1022,7 +1022,7 @@ namespace IStripperQuickPlayer
 
         private void menuCardList_Closing(object sender, ToolStripDropDownClosingEventArgs e)
         {
-            currentMenuCard = null;
+            //currentMenuCard = null;
         }
     }
 }
