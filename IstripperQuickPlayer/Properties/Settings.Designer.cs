@@ -82,5 +82,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["NextCardString"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0")]
+        public long MinSizeMB {
+            get {
+                return ((long)(this["MinSizeMB"]));
+            }
+            set {
+                this["MinSizeMB"] = value;
+            }
+        }
     }
 }

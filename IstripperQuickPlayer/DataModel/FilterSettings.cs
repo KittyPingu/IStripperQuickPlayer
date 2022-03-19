@@ -15,5 +15,14 @@ namespace IStripperQuickPlayer.DataModel
         internal static decimal minRating=2;
         internal static string tags="";
         internal static decimal maxRating=5;
+        internal static bool IStripper=true;
+        internal static bool IStripperClassic=true;
+        internal static bool IStripperXXX=true;
+        internal static bool VGClassic=true;
+        internal static bool DeskBabes =true;
+        internal static bool Special=true;
+        internal static bool Normal=true;
+        internal static decimal maxTimesPlayed;
+        internal static decimal minTimesPlayed;
     }
 }

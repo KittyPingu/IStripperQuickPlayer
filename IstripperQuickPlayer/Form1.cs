@@ -51,7 +51,8 @@ namespace IStripperQuickPlayer
             ModelsLstLoader lstLoader = new ModelsLstLoader();
             listModels.Items.Clear();
             Datastore.modelcards.Clear();
-            lstLoader.LoadModels();
+            for (int i =0; i< 30; i++)
+                lstLoader.LoadModels();
             PopulateModelListview();
             PersistModels();
         }
@@ -154,17 +155,37 @@ namespace IStripperQuickPlayer
         }
 
         private List<ModelCard>? Filter(List<ModelCard>? currentCards)
-        {            
+        {    
+            if (FilterSettings.maxTimesPlayed ==0 && Datastore.modelcards.Count > 0) FilterSettings.maxTimesPlayed = Datastore.modelcards.Max(c => c.timesPlayed);
             currentCards = currentCards.Where(c => Decimal.Parse(c.modelAge) >= FilterSettings.minAge && Decimal.Parse(c.modelAge) <= FilterSettings.maxAge
                 && c.bust >= FilterSettings.minBust && c.bust <= FilterSettings.maxBust     
-                && c.rating-5M >= FilterSettings.minRating && c.rating-5M <= FilterSettings.maxRating     
+                && c.rating-5M >= FilterSettings.minRating && c.rating-5M <= FilterSettings.maxRating  
+                && c.timesPlayed >= FilterSettings.minTimesPlayed && c.timesPlayed <= FilterSettings.maxTimesPlayed
                 ).ToList();
 
             if (!String.IsNullOrEmpty(FilterSettings.tags))
             {
-                List<string> taglist = FilterSettings.tags.ToLower().Split("or").Select(p => p.Trim()).ToList();
-                currentCards = currentCards.Where(c => c.tags.Any(x => taglist.Contains(x))).ToList();
+                string[] parts = FilterSettings.tags.ToLower().Split("and").Select(p => p.Trim()).ToArray();
+                foreach(string p in parts)
+                { 
+                    List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
+                    currentCards = currentCards.Where(c => c.tags.Any(x => taglist.Contains(x))).ToList();
+                }
+                
             }
+            List<Enum> enabledcollections = new List<Enum>{ };
+            if (FilterSettings.IStripperXXX) enabledcollections.Add(Enums.CollectionType.IStripperXXX);
+            if (FilterSettings.DeskBabes) enabledcollections.Add(Enums.CollectionType.DeskBabes);
+            if (FilterSettings.IStripperClassic) enabledcollections.Add(Enums.CollectionType.IStripperClassic);
+            if (FilterSettings.VGClassic) enabledcollections.Add(Enums.CollectionType.VGClassic);
+            if (FilterSettings.IStripper) enabledcollections.Add(Enums.CollectionType.IStripper);
+
+            if (FilterSettings.Normal && !FilterSettings.Special)
+                currentCards = currentCards.Where(c => !c.exclusive).ToList();
+            else if (FilterSettings.Special && !FilterSettings.Normal)
+                currentCards = currentCards.Where(c => c.exclusive).ToList();
+
+            currentCards = currentCards.Where(c=> enabledcollections.Contains(c.collection)).ToList();
 
             return currentCards;
         }
@@ -252,6 +273,7 @@ namespace IStripperQuickPlayer
                     default:
                         break;
                 }
+                if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
                 if (clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
                 if (addThis)
                 {
@@ -292,6 +314,11 @@ namespace IStripperQuickPlayer
         {
             AssignHooks();
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
+            if (Properties.Settings.Default.MinSizeMB != 0)
+            {
+                numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
+            }
+            
             listModels.SetDoubleBuffered();
             string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
@@ -459,6 +486,26 @@ namespace IStripperQuickPlayer
 
             e.Graphics.DrawString(e.Item.Text, new Font("Segoe UI", 9), new SolidBrush(Color.Black), e.Bounds, stringFormat);
 
+            if (card.exclusive)
+            {
+                 e.Graphics.InterpolationMode = InterpolationMode.High;
+                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
+
+                 Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                GraphicsPath p = new GraphicsPath(); 
+                p.AddString(
+                    "*",            
+                    new FontFamily("Verdana"), 
+                    (int) FontStyle.Bold,     
+                    e.Graphics.DpiY * 16 / 72,      
+                    new Point(e.Bounds.Left + 28, e.Bounds.Top -2),            
+                    new StringFormat());         
+                e.Graphics.DrawPath(new Pen(Color.Yellow, 1), p);
+                e.Graphics.FillPath(Brushes.Red, p);     
+            }
+
             if (text != "" )
             {                         
                 e.Graphics.InterpolationMode = InterpolationMode.High;
@@ -508,6 +555,8 @@ namespace IStripperQuickPlayer
                 e.Graphics.DrawPath(new Pen(Color.Green, 5), p);
                 e.Graphics.FillPath(Brushes.White, p);       
             }
+
+           
 
         }
 
@@ -686,6 +735,23 @@ namespace IStripperQuickPlayer
                 frm.TopMost = true;
             }
             frm.BringToFront();
+        }
+             
+        private void ValidateMinSizeMB()
+        {
+            int minSizeMB = 0;
+            Properties.Settings.Default.MinSizeMB = (long)numMinSizeMB.Value;
+            if (listModels.SelectedItems.Count > 0) loadListClips(listModels.SelectedItems[0].Tag);
+         
+        }
+
+        private void txtSearch_Enter(object sender, EventArgs e)
+        {
+        }
+
+        private void numMinSizeMB_ValueChanged(object sender, EventArgs e)
+        {
+            ValidateMinSizeMB();
         }
     }
 }

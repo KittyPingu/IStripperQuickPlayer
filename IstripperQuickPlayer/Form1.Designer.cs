@@ -28,6 +28,7 @@
         /// </summary>
         private void InitializeComponent()
         {
+            this.components = new System.ComponentModel.Container();
             this.lblModelsLoaded = new System.Windows.Forms.Label();
             this.listModels = new System.Windows.Forms.ListView();
             this.listClips = new System.Windows.Forms.ListView();
@@ -65,7 +66,12 @@
             this.lblTags = new System.Windows.Forms.Label();
             this.lblCipListDetails = new System.Windows.Forms.Label();
             this.cmdFilter = new System.Windows.Forms.Button();
+            this.label3 = new System.Windows.Forms.Label();
+            this.errorProvider1 = new System.Windows.Forms.ErrorProvider(this.components);
+            this.numMinSizeMB = new System.Windows.Forms.NumericUpDown();
             this.menuStrip1.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.numMinSizeMB)).BeginInit();
             this.SuspendLayout();
             // 
             // lblModelsLoaded
@@ -325,6 +331,7 @@
             this.txtSearch.Size = new System.Drawing.Size(246, 27);
             this.txtSearch.TabIndex = 20;
             this.txtSearch.TextChanged += new System.EventHandler(this.txtSearch_TextChanged);
+            this.txtSearch.Enter += new System.EventHandler(this.txtSearch_Enter);
             this.txtSearch.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtSearch_KeyDown);
             // 
             // label2
@@ -395,14 +402,14 @@
             // 
             this.reloadModelslstToolStripMenuItem.Name = "reloadModelslstToolStripMenuItem";
             this.reloadModelslstToolStripMenuItem.ShortcutKeys = System.Windows.Forms.Keys.F5;
-            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.reloadModelslstToolStripMenuItem.Text = "Reload Models";
             this.reloadModelslstToolStripMenuItem.Click += new System.EventHandler(this.cmdLoadModels_Click);
             // 
             // exitToolStripMenuItem
             // 
             this.exitToolStripMenuItem.Name = "exitToolStripMenuItem";
-            this.exitToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.exitToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.exitToolStripMenuItem.Text = "Exit";
             this.exitToolStripMenuItem.Click += new System.EventHandler(this.exitToolStripMenuItem_Click);
             // 
@@ -417,7 +424,7 @@
             // hotkeysToolStripMenuItem
             // 
             this.hotkeysToolStripMenuItem.Name = "hotkeysToolStripMenuItem";
-            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(151, 26);
             this.hotkeysToolStripMenuItem.Text = "Hotkeys..";
             this.hotkeysToolStripMenuItem.Click += new System.EventHandler(this.hotkeysToolStripMenuItem_Click);
             // 
@@ -451,11 +458,44 @@
             this.cmdFilter.UseVisualStyleBackColor = true;
             this.cmdFilter.Click += new System.EventHandler(this.cmdFilter_Click);
             // 
+            // label3
+            // 
+            this.label3.AutoSize = true;
+            this.label3.Location = new System.Drawing.Point(1538, 94);
+            this.label3.Name = "label3";
+            this.label3.Size = new System.Drawing.Size(101, 20);
+            this.label3.TabIndex = 29;
+            this.label3.Text = "Min Size (MB)";
+            // 
+            // errorProvider1
+            // 
+            this.errorProvider1.ContainerControl = this;
+            // 
+            // numMinSizeMB
+            // 
+            this.numMinSizeMB.Increment = new decimal(new int[] {
+            10,
+            0,
+            0,
+            0});
+            this.numMinSizeMB.Location = new System.Drawing.Point(1645, 92);
+            this.numMinSizeMB.Maximum = new decimal(new int[] {
+            9999,
+            0,
+            0,
+            0});
+            this.numMinSizeMB.Name = "numMinSizeMB";
+            this.numMinSizeMB.Size = new System.Drawing.Size(77, 27);
+            this.numMinSizeMB.TabIndex = 30;
+            this.numMinSizeMB.ValueChanged += new System.EventHandler(this.numMinSizeMB_ValueChanged);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1760, 1033);
+            this.Controls.Add(this.numMinSizeMB);
+            this.Controls.Add(this.label3);
             this.Controls.Add(this.cmdFilter);
             this.Controls.Add(this.lblCipListDetails);
             this.Controls.Add(this.lblTags);
@@ -494,6 +534,8 @@
             this.Load += new System.EventHandler(this.Form1_Load);
             this.menuStrip1.ResumeLayout(false);
             this.menuStrip1.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.numMinSizeMB)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -537,5 +579,8 @@
         private ToolStripMenuItem settingsToolStripMenuItem;
         private ToolStripMenuItem hotkeysToolStripMenuItem;
         private Button cmdFilter;
+        private Label label3;
+        private ErrorProvider errorProvider1;
+        private NumericUpDown numMinSizeMB;
     }
 }

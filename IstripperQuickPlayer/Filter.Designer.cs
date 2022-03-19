@@ -37,6 +37,14 @@
             this.label2 = new System.Windows.Forms.Label();
             this.label3 = new System.Windows.Forms.Label();
             this.cmdApply = new System.Windows.Forms.Button();
+            this.chkIStripperXXX = new System.Windows.Forms.CheckBox();
+            this.chkIStripper = new System.Windows.Forms.CheckBox();
+            this.chkVGClassic = new System.Windows.Forms.CheckBox();
+            this.chkDeskBabes = new System.Windows.Forms.CheckBox();
+            this.chkIStripperClassic = new System.Windows.Forms.CheckBox();
+            this.chkNormal = new System.Windows.Forms.CheckBox();
+            this.chkSpecial = new System.Windows.Forms.CheckBox();
+            this.label4 = new System.Windows.Forms.Label();
             ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).BeginInit();
             this.SuspendLayout();
             // 
@@ -55,9 +63,10 @@
             this.txtTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.txtTags.Location = new System.Drawing.Point(100, 31);
             this.txtTags.Name = "txtTags";
-            this.txtTags.Size = new System.Drawing.Size(483, 31);
+            this.txtTags.PlaceholderText = "separate multiple tags with \"or\" and/or \"and\"";
+            this.txtTags.Size = new System.Drawing.Size(566, 31);
             this.txtTags.TabIndex = 1;
-            this.txtTags.TextChanged += new System.EventHandler(this.txtTags_TextChanged);
+            this.txtTags.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtTags_KeyDown);
             // 
             // lblTags
             // 
@@ -102,19 +111,114 @@
             // 
             // cmdApply
             // 
-            this.cmdApply.Location = new System.Drawing.Point(549, 499);
+            this.cmdApply.Location = new System.Drawing.Point(672, 32);
             this.cmdApply.Name = "cmdApply";
-            this.cmdApply.Size = new System.Drawing.Size(106, 45);
+            this.cmdApply.Size = new System.Drawing.Size(106, 31);
             this.cmdApply.TabIndex = 6;
             this.cmdApply.Text = "Apply";
             this.cmdApply.UseVisualStyleBackColor = true;
             this.cmdApply.Click += new System.EventHandler(this.cmdApply_Click);
+            // 
+            // chkIStripperXXX
+            // 
+            this.chkIStripperXXX.AutoSize = true;
+            this.chkIStripperXXX.Location = new System.Drawing.Point(602, 427);
+            this.chkIStripperXXX.Name = "chkIStripperXXX";
+            this.chkIStripperXXX.Size = new System.Drawing.Size(119, 24);
+            this.chkIStripperXXX.TabIndex = 7;
+            this.chkIStripperXXX.Text = "iStripper XXX";
+            this.chkIStripperXXX.UseVisualStyleBackColor = true;
+            this.chkIStripperXXX.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            // 
+            // chkIStripper
+            // 
+            this.chkIStripper.AutoSize = true;
+            this.chkIStripper.Location = new System.Drawing.Point(477, 427);
+            this.chkIStripper.Name = "chkIStripper";
+            this.chkIStripper.Size = new System.Drawing.Size(88, 24);
+            this.chkIStripper.TabIndex = 8;
+            this.chkIStripper.Text = "iStripper";
+            this.chkIStripper.UseVisualStyleBackColor = true;
+            this.chkIStripper.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            // 
+            // chkVGClassic
+            // 
+            this.chkVGClassic.AutoSize = true;
+            this.chkVGClassic.Location = new System.Drawing.Point(336, 427);
+            this.chkVGClassic.Name = "chkVGClassic";
+            this.chkVGClassic.Size = new System.Drawing.Size(98, 24);
+            this.chkVGClassic.TabIndex = 9;
+            this.chkVGClassic.Text = "VG Classic";
+            this.chkVGClassic.UseVisualStyleBackColor = true;
+            this.chkVGClassic.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            // 
+            // chkDeskBabes
+            // 
+            this.chkDeskBabes.AutoSize = true;
+            this.chkDeskBabes.Location = new System.Drawing.Point(195, 427);
+            this.chkDeskBabes.Name = "chkDeskBabes";
+            this.chkDeskBabes.Size = new System.Drawing.Size(107, 24);
+            this.chkDeskBabes.TabIndex = 10;
+            this.chkDeskBabes.Text = "Desk Babes";
+            this.chkDeskBabes.UseVisualStyleBackColor = true;
+            this.chkDeskBabes.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            // 
+            // chkIStripperClassic
+            // 
+            this.chkIStripperClassic.AutoSize = true;
+            this.chkIStripperClassic.Location = new System.Drawing.Point(21, 427);
+            this.chkIStripperClassic.Name = "chkIStripperClassic";
+            this.chkIStripperClassic.Size = new System.Drawing.Size(136, 24);
+            this.chkIStripperClassic.TabIndex = 11;
+            this.chkIStripperClassic.Text = "iStripper Classic";
+            this.chkIStripperClassic.UseVisualStyleBackColor = true;
+            this.chkIStripperClassic.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            // 
+            // chkNormal
+            // 
+            this.chkNormal.AutoSize = true;
+            this.chkNormal.Location = new System.Drawing.Point(21, 468);
+            this.chkNormal.Name = "chkNormal";
+            this.chkNormal.Size = new System.Drawing.Size(81, 24);
+            this.chkNormal.TabIndex = 12;
+            this.chkNormal.Text = "Normal";
+            this.chkNormal.UseVisualStyleBackColor = true;
+            this.chkNormal.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            // 
+            // chkSpecial
+            // 
+            this.chkSpecial.AutoSize = true;
+            this.chkSpecial.Location = new System.Drawing.Point(195, 468);
+            this.chkSpecial.Name = "chkSpecial";
+            this.chkSpecial.Size = new System.Drawing.Size(79, 24);
+            this.chkSpecial.TabIndex = 13;
+            this.chkSpecial.Text = "Special";
+            this.chkSpecial.UseVisualStyleBackColor = true;
+            this.chkSpecial.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            // 
+            // label4
+            // 
+            this.label4.AutoSize = true;
+            this.label4.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.label4.Location = new System.Drawing.Point(12, 358);
+            this.label4.Name = "label4";
+            this.label4.Size = new System.Drawing.Size(77, 25);
+            this.label4.TabIndex = 14;
+            this.label4.Text = "* Played";
             // 
             // Filter
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(800, 556);
+            this.Controls.Add(this.label4);
+            this.Controls.Add(this.chkSpecial);
+            this.Controls.Add(this.chkNormal);
+            this.Controls.Add(this.chkIStripperClassic);
+            this.Controls.Add(this.chkDeskBabes);
+            this.Controls.Add(this.chkVGClassic);
+            this.Controls.Add(this.chkIStripper);
+            this.Controls.Add(this.chkIStripperXXX);
             this.Controls.Add(this.cmdApply);
             this.Controls.Add(this.label3);
             this.Controls.Add(this.label2);
@@ -149,5 +253,13 @@
         private Label label2;
         private Label label3;
         private Button cmdApply;
+        private CheckBox chkIStripperXXX;
+        private CheckBox chkIStripper;
+        private CheckBox chkVGClassic;
+        private CheckBox chkDeskBabes;
+        private CheckBox chkIStripperClassic;
+        private CheckBox chkNormal;
+        private CheckBox chkSpecial;
+        private Label label4;
     }
 }

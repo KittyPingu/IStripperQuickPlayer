@@ -16,6 +16,8 @@ namespace IStripperQuickPlayer
         ColorSlider.ColorSlider rangeRating;
         ColorSlider.ColorSlider rangeAge;
         ColorSlider.ColorSlider rangeBreastSize;
+        ColorSlider.ColorSlider rangeTimesPlayed;
+        bool isLoaded = false;
 
         public Filter()
         {
@@ -75,6 +77,35 @@ namespace IStripperQuickPlayer
             rangeAge.ValueChanged += Range_ValueChanged;
             this.Controls.Add(rangeAge);
 
+            rangeTimesPlayed = new ColorSlider.ColorSlider();
+            rangeTimesPlayed.Location = new Point(110,340);
+            rangeTimesPlayed.Height = 60;
+            rangeTimesPlayed.Width = 650;
+            rangeTimesPlayed.ForeColor = Color.Black;
+            rangeTimesPlayed.Minimum = 0;
+            rangeTimesPlayed.Maximum = Datastore.modelcards.Max(c => c.timesPlayed);
+            rangeTimesPlayed.ScaleDivisions = 0;
+            rangeTimesPlayed.ScaleSubDivisions = rangeTimesPlayed.Maximum;
+            rangeTimesPlayed.SmallChange = 1M;
+            rangeTimesPlayed.LargeChange = 2M;
+            rangeTimesPlayed.Value = FilterSettings.minTimesPlayed;
+            if (FilterSettings.maxTimesPlayed==0)
+                FilterSettings.maxTimesPlayed = Datastore.modelcards.Max(c => c.timesPlayed);
+            rangeTimesPlayed.Value2 = FilterSettings.maxTimesPlayed;
+            rangeTimesPlayed.BackColor = Color.Transparent;
+            rangeTimesPlayed.TickColor = Color.Black;
+            rangeTimesPlayed.ElapsedInnerColor = Color.Green;
+            rangeTimesPlayed.ValueChanged += Range_ValueChanged;
+            this.Controls.Add(rangeTimesPlayed);
+
+            chkDeskBabes.Checked = FilterSettings.DeskBabes;
+            chkIStripper.Checked = FilterSettings.IStripper;
+            chkIStripperClassic.Checked = FilterSettings.IStripperClassic;
+            chkIStripperXXX.Checked = FilterSettings.IStripperXXX;
+            chkVGClassic.Checked = FilterSettings.VGClassic;
+            chkSpecial.Checked = FilterSettings.Special;
+            chkNormal.Checked = FilterSettings.Normal;
+            isLoaded = true;
         }
 
         private void Range_ValueChanged(object? sender, EventArgs e)
@@ -82,10 +113,6 @@ namespace IStripperQuickPlayer
             if (Control.MouseButtons != MouseButtons.Left) ApplySettings();
         }
 
-        private void txtTags_TextChanged(object sender, EventArgs e)
-        {
-
-        }
 
         private void label1_Click(object sender, EventArgs e)
         {
@@ -93,7 +120,7 @@ namespace IStripperQuickPlayer
         }
 
         private void Filter_Load(object sender, EventArgs e)
-        {                       Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();           
+        {   Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();           
             if (frm != null)
                 Location = new Point(frm.Location.X + frm.Width / 2 - Width / 2,
                     frm.Location.Y + frm.Height / 2 - Height / 2);
@@ -107,6 +134,7 @@ namespace IStripperQuickPlayer
 
         private  void ApplySettings()
         {
+            if (!isLoaded)return;
             FilterSettings.minAge = rangeAge.Value;
             FilterSettings.maxAge = rangeAge.Value2;
             FilterSettings.minBust = rangeBreastSize.Value;
@@ -114,6 +142,20 @@ namespace IStripperQuickPlayer
             FilterSettings.minRating = rangeRating.Value;
             FilterSettings.maxRating = rangeRating.Value2;
             FilterSettings.tags = txtTags.Text;
+
+            
+            FilterSettings.DeskBabes = chkDeskBabes.Checked;
+            FilterSettings.IStripper = chkIStripper.Checked;
+            FilterSettings.IStripperClassic = chkIStripperClassic.Checked;
+            FilterSettings.IStripperXXX = chkIStripperXXX.Checked;
+            FilterSettings.VGClassic = chkVGClassic.Checked;
+
+            FilterSettings.Special = chkSpecial.Checked;
+            FilterSettings.Normal = chkNormal.Checked;
+            
+            FilterSettings.minTimesPlayed = rangeTimesPlayed.Value;
+            FilterSettings.maxTimesPlayed = rangeTimesPlayed.Value2;
+
             Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();
             if (frm != null)
                 frm.PopulateModelListview();
@@ -127,6 +169,16 @@ namespace IStripperQuickPlayer
         private void Filter_Activated(object sender, EventArgs e)
         {
 
+        }
+
+        private void chk_CheckedChanged(object sender, EventArgs e)
+        {
+            ApplySettings();
+        }
+
+        private void txtTags_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter) ApplySettings();
         }
     }
 }
