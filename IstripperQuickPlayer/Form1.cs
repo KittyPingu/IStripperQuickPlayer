@@ -556,6 +556,7 @@ namespace IStripperQuickPlayer
             string text = "";
             ModelCard card = Datastore.findCardByTag(e.Item.Tag.ToString());
             decimal myrating=0M;
+            myrating = myData.GetCardRating(card.name);
             switch (cmbSortBy.Text)
             {
                 case "My Rating":
@@ -1003,6 +1004,10 @@ namespace IStripperQuickPlayer
         private void RatingSlider_ValueChanged(object sender, EventArgs e)
         {
             myData.AddCardRating(currentMenuCard.Tag.ToString(), ratingSlider.Value);
+            if ( menuShowRatingsStars.Checked)
+            {
+                //listModels.Refresh();
+            }
         }
 
         private void chkShowRatingStars_CheckedChanged(object sender, EventArgs e)

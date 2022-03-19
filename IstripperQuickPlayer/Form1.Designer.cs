@@ -191,6 +191,7 @@
             0,
             0,
             0});
+            this.ratingSlider.ValueChanged += new System.EventHandler(this.RatingSlider_ValueChanged);
             // 
             // toolStripSeparator1
             // 
@@ -471,12 +472,12 @@
             this.lblCollection.TabIndex = 16;
             this.lblCollection.Text = "Collection:";
             // 
-            // lblHotness
+            // lblRatingScore
             // 
             this.lblRatingScore.AutoSize = true;
             this.lblRatingScore.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.lblRatingScore.Location = new System.Drawing.Point(1586, 784);
-            this.lblRatingScore.Name = "lblHotness";
+            this.lblRatingScore.Name = "lblRatingScore";
             this.lblRatingScore.Size = new System.Drawing.Size(81, 25);
             this.lblRatingScore.TabIndex = 17;
             this.lblRatingScore.Text = "Hotness:";
