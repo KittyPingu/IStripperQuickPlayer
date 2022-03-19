@@ -45,6 +45,11 @@
       <AutoGen>True</AutoGen>
       <DependentUpon>Settings.settings</DependentUpon>
     </Compile>
+    <Compile Update="VersionAutoIncrement.cs">
+      <DesignTime>True</DesignTime>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>VersionAutoIncrement.tt</DependentUpon>
+    </Compile>
   </ItemGroup>
 
   <ItemGroup>
