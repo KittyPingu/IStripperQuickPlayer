@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace IStripperQuickPlayer.BLL
 {
@@ -23,6 +24,9 @@ namespace IStripperQuickPlayer.BLL
             PropertiesXML.LoadXml(fulltext);
             mnode = PropertiesXML.SelectNodes("/root/m");
             cnode = PropertiesXML.SelectNodes("/root/c");
+            //var m = XDocument.Parse(fulltext);
+            //var tallest = m.Descendants("m").Where(c => c.Attribute("heig").Value != "").OrderByDescending(c =>  Convert.ToDecimal(c.Attribute("heig").Value)).Take(20);
+            //var biggest = m.Descendants("m").Where(c => c.Attribute("stat").Value.Contains("/")).OrderByDescending(c =>  Convert.ToDecimal((c.Attribute("stat").Value.Split('/')[2]))).Take(20);
         }
 
         internal static ModelProperties getModelByID(string ID)

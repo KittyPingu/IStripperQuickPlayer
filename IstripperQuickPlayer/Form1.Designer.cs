@@ -29,6 +29,7 @@
         private void InitializeComponent()
         {
             this.components = new System.ComponentModel.Container();
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(Form1));
             this.lblModelsLoaded = new System.Windows.Forms.Label();
             this.listModels = new System.Windows.Forms.ListView();
             this.menuCardList = new System.Windows.Forms.ContextMenuStrip(this.components);
@@ -132,7 +133,7 @@
             this.hairToolStripMenuItem,
             this.purchasedToolStripMenuItem});
             this.menuCardList.Name = "menuCardList";
-            this.menuCardList.Size = new System.Drawing.Size(211, 349);
+            this.menuCardList.Size = new System.Drawing.Size(169, 321);
             this.menuCardList.Closing += new System.Windows.Forms.ToolStripDropDownClosingEventHandler(this.menuCardList_Closing);
             this.menuCardList.Opening += new System.ComponentModel.CancelEventHandler(this.menuCardList_Opening);
             // 
@@ -140,7 +141,7 @@
             // 
             this.menuCardFavourite.CheckOnClick = true;
             this.menuCardFavourite.Name = "menuCardFavourite";
-            this.menuCardFavourite.Size = new System.Drawing.Size(210, 28);
+            this.menuCardFavourite.Size = new System.Drawing.Size(168, 28);
             this.menuCardFavourite.Text = "Favourite";
             this.menuCardFavourite.CheckedChanged += new System.EventHandler(this.menuCardFavourite_CheckedChanged);
             // 
@@ -196,27 +197,27 @@
             // toolStripSeparator1
             // 
             this.toolStripSeparator1.Name = "toolStripSeparator1";
-            this.toolStripSeparator1.Size = new System.Drawing.Size(207, 6);
+            this.toolStripSeparator1.Size = new System.Drawing.Size(165, 6);
             // 
             // nameToolStripMenuItem
             // 
             this.nameToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
             this.nameToolStripMenuItem.Name = "nameToolStripMenuItem";
-            this.nameToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.nameToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.nameToolStripMenuItem.Text = "Name:";
             // 
             // outfitToolStripMenuItem
             // 
             this.outfitToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
             this.outfitToolStripMenuItem.Name = "outfitToolStripMenuItem";
-            this.outfitToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.outfitToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.outfitToolStripMenuItem.Text = "Outfit:";
             // 
             // ratingToolStripMenuItem
             // 
             this.ratingToolStripMenuItem.AutoToolTip = true;
             this.ratingToolStripMenuItem.Name = "ratingToolStripMenuItem";
-            this.ratingToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.ratingToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.ratingToolStripMenuItem.Tag = "Rating";
             this.ratingToolStripMenuItem.Text = "Rating:";
             this.ratingToolStripMenuItem.ToolTipText = "Official Rating";
@@ -224,14 +225,14 @@
             // hotnessToolStripMenuItem
             // 
             this.hotnessToolStripMenuItem.Name = "hotnessToolStripMenuItem";
-            this.hotnessToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.hotnessToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.hotnessToolStripMenuItem.Text = "Hotness:";
             // 
             // statsToolStripMenuItem
             // 
             this.statsToolStripMenuItem.AutoToolTip = true;
             this.statsToolStripMenuItem.Name = "statsToolStripMenuItem";
-            this.statsToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.statsToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.statsToolStripMenuItem.Tag = "Stats";
             this.statsToolStripMenuItem.Text = "Stats:";
             this.statsToolStripMenuItem.ToolTipText = "Model\'s Stats";
@@ -239,19 +240,19 @@
             // ageToolStripMenuItem
             // 
             this.ageToolStripMenuItem.Name = "ageToolStripMenuItem";
-            this.ageToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.ageToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.ageToolStripMenuItem.Text = "Age:";
             // 
             // hairToolStripMenuItem
             // 
             this.hairToolStripMenuItem.Name = "hairToolStripMenuItem";
-            this.hairToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.hairToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.hairToolStripMenuItem.Text = "Hair:";
             // 
             // purchasedToolStripMenuItem
             // 
             this.purchasedToolStripMenuItem.Name = "purchasedToolStripMenuItem";
-            this.purchasedToolStripMenuItem.Size = new System.Drawing.Size(210, 28);
+            this.purchasedToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.purchasedToolStripMenuItem.Text = "Purchased:";
             // 
             // cmbMenuCardRating
@@ -747,6 +748,7 @@
             this.Controls.Add(this.menuStrip1);
             this.DoubleBuffered = true;
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
+            this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.MainMenuStrip = this.menuStrip1;
             this.MaximizeBox = false;
             this.Name = "Form1";

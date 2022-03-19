@@ -250,7 +250,7 @@ namespace IStripperQuickPlayer
                 string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "filters.bin");
                 if (!File.Exists(mdatafilepath)) return ;
                 BinaryFormatter formatter = new BinaryFormatter();  
-   
+                   
                 //Reading the file from the server  
                 FileStream fs = File.Open(mdatafilepath, FileMode.Open);   
                 object obj = formatter.Deserialize(fs);  
@@ -381,8 +381,20 @@ namespace IStripperQuickPlayer
             lastchosen = listClips.SelectedItems[0].SubItems[1].Text;
         }
 
+        void SetUserFonts(float scaleFactorX, float scaleFactorY) {
+            var OldFont = Font;
+            Font = new Font(OldFont.FontFamily, 11f * scaleFactorX, OldFont.Style, GraphicsUnit.Pixel); 
+            OldFont.Dispose();
+         }
+         protected override void DefWndProc(ref Message m) {
+             //DPI_Per_Monitor.Check_WM_DPICHANGED(SetUserFonts,m, this.Handle);
+             base.DefWndProc(ref m);
+         }
+
         private void Form1_Load(object sender, EventArgs e)
         {
+            //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
+            this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             AssignHooks();
             //check if we Segoe Fluent Icons font - this comes with windows 11
             var fontsCollection = new InstalledFontCollection();
@@ -544,7 +556,7 @@ namespace IStripperQuickPlayer
                 changesort = false;
                 e.Graphics.Clear(Color.White);
             }
-            Rectangle imgrect = new Rectangle(e.Bounds.Left + 28, e.Bounds.Top, e.Bounds.Width - 55, e.Bounds.Height - 47);
+            Rectangle imgrect = new Rectangle(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*28), e.Bounds.Top, e.Bounds.Width - (int)((e.Graphics.DpiY/192)*55), e.Bounds.Height - (int)((e.Graphics.DpiY/192)*47));
                 
             if (e.Item.Selected)
             {
@@ -560,8 +572,15 @@ namespace IStripperQuickPlayer
             switch (cmbSortBy.Text)
             {
                 case "My Rating":
-                    myrating = myData.GetCardRating(card.name);
-                    if (myrating > 0) text = myrating.ToString();
+                    if (!Properties.Settings.Default.ShowRatingStars)
+                    { 
+                        myrating = myData.GetCardRating(card.name);
+                        if (myrating > 0) text = myrating.ToString();
+                    }
+                    break;
+                case "Height":
+                    decimal decheight = Convert.ToDecimal(card.height);
+                    text = Math.Floor(decheight) + "'" + (int)(24*(decheight-Math.Floor(decheight)))/2.0M + "''";
                     break;
                 case "":
                 case "Model Name":
@@ -592,23 +611,45 @@ namespace IStripperQuickPlayer
             stringFormat.Alignment = StringAlignment.Center;
             stringFormat.LineAlignment = StringAlignment.Far;
 
-            e.Graphics.DrawString(e.Item.Text, new Font("Segoe UI", 9), new SolidBrush(Color.Black), e.Bounds, stringFormat);
+            Rectangle rectName = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*45), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
+            int sztitle=10;
+            Font fontName = new Font("Segoe UI", sztitle);
+            string[] nameoutfit = e.Item.Text.Split("\r\n");
+            var textSizeName = e.Graphics.MeasureString(nameoutfit[0], fontName);
+            while (textSizeName.Width > rectName.Width)
+            { 
+                fontName = new Font("Segoe UI", sztitle--);
+                textSizeName = e.Graphics.MeasureString(nameoutfit[0], fontName);
+            }
+            e.Graphics.DrawString(nameoutfit[0], fontName, new SolidBrush(Color.Black), rectName, stringFormat);
+
+
+            Rectangle rectOutfit = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*20), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
+            int szoutfit=9;
+            Font fontOutfit = new Font("Segoe UI", szoutfit);
+            var textSizeOutfit = e.Graphics.MeasureString(nameoutfit[1], fontOutfit);
+            while (textSizeOutfit.Width > rectOutfit.Width)
+            { 
+                fontOutfit = new Font("Segoe UI", szoutfit--);
+                textSizeOutfit = e.Graphics.MeasureString(nameoutfit[1], fontOutfit);
+            }
+            e.Graphics.DrawString(nameoutfit[1], fontOutfit, new SolidBrush(Color.Black), rectOutfit, stringFormat);
+
 
             if (card.exclusive)
             {
-                 e.Graphics.InterpolationMode = InterpolationMode.High;
+                e.Graphics.InterpolationMode = InterpolationMode.High;
                 e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-
-                 Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                               
                 GraphicsPath p = new GraphicsPath(); 
                 p.AddString(
                     "*",            
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * 16 / 72,      
-                    new Point(e.Bounds.Left + 28, e.Bounds.Top -2),            
+                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*28), e.Bounds.Top -(int)((e.Graphics.DpiY/192)*2)),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Yellow, 1), p);
                 e.Graphics.FillPath(Brushes.Red, p);     
@@ -621,7 +662,6 @@ namespace IStripperQuickPlayer
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
                 GraphicsPath p = new GraphicsPath(); 
                 if (fontInstalled)
                      p.AddString(
@@ -629,7 +669,7 @@ namespace IStripperQuickPlayer
                         new FontFamily("Segoe Fluent Icons"), 
                         (int) FontStyle.Bold,     
                         e.Graphics.DpiY * 14 / 72,      
-                        new Point(e.Bounds.Left + 126, e.Bounds.Top),            
+                        new Point(e.Bounds.Right - (int)((e.Graphics.DpiY/192)*80), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
                         new StringFormat());  
                 else
                     p.AddString(
@@ -637,11 +677,12 @@ namespace IStripperQuickPlayer
                         new FontFamily("Verdana"), 
                         (int) FontStyle.Bold,     
                         e.Graphics.DpiY * 16 / 72,      
-                        new Point(e.Bounds.Left + 126, e.Bounds.Top -2),            
+                        new Point(e.Bounds.Left - (int)((e.Graphics.DpiY/192)*80), e.Bounds.Top -(int)((e.Graphics.DpiY/192)*2)),            
                         new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(Brushes.LightGreen, p);     
             }
+            int szstar=14;
             if (fontInstalled && Properties.Settings.Default.ShowRatingStars)
             {
                 e.Graphics.InterpolationMode = InterpolationMode.High;
@@ -650,14 +691,22 @@ namespace IStripperQuickPlayer
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
                 string ratingstr = "".PadLeft(5,'\uE0B4');
-             
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);
+
+                Font font = new Font("Segoe Fluent Icons", 14);
+                var textSize = e.Graphics.MeasureString(ratingstr, font);
+                while (textSize.Width > rect.Width)
+                { 
+                   font = new Font("Verdana", szstar--);
+                   textSize = e.Graphics.MeasureString(ratingstr, font);
+                }
+                          
                 GraphicsPath p = new GraphicsPath(); 
                 p.AddString(
                     ratingstr,            
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * 14 / 72,      
+                    e.Graphics.DpiY * szstar / 72,      
                     new Point(e.Bounds.Left + 28, e.Bounds.Top + 114),            
                     new StringFormat());         
                 //e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
@@ -679,7 +728,7 @@ namespace IStripperQuickPlayer
                     ratingstr,            
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * 14 / 72,      
+                    e.Graphics.DpiY * szstar / 72,      
                     new Point(e.Bounds.Left + 28, e.Bounds.Top + 114),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
@@ -693,7 +742,7 @@ namespace IStripperQuickPlayer
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
-                Rectangle rect = new Rectangle(e.Bounds.Left+34, e.Bounds.Top + 6, e.Bounds.Width - 44, 40);
+                Rectangle rect = new Rectangle(e.Bounds.Left+(int)((e.Graphics.DpiY/192)*34), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6), e.Bounds.Width - (int)((e.Graphics.DpiY/192)*44), (int)((e.Graphics.DpiY/192)*40));
                 int sz =13;
                 Font font = new Font("Verdana", sz);
                 var textSize = e.Graphics.MeasureString(text, font);
@@ -708,7 +757,7 @@ namespace IStripperQuickPlayer
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Regular,     
                     e.Graphics.DpiY * sz / 72,      
-                    new Point(e.Bounds.Left + 34, e.Bounds.Top + 6),            
+                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*34), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6)),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(Brushes.White, p);            
@@ -723,13 +772,21 @@ namespace IStripperQuickPlayer
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 66, 40);  
+                int szname =14;
+                Font font = new Font("Verdana", szname);
+                var textSize = e.Graphics.MeasureString("Playing", font);
+                while (textSize.Width > rect.Width)
+                { 
+                   font = new Font("Verdana", szname--);
+                   textSize = e.Graphics.MeasureString("Playing", font);
+                }
                 GraphicsPath p = new GraphicsPath(); 
                 p.AddString(
                     "Playing",            
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * 14 / 72,      
+                    e.Graphics.DpiY * szname / 72,      
                     new Point(e.Bounds.Left + 38, e.Bounds.Top +60),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Green, 5), p);

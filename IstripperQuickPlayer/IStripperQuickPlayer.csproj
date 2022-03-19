@@ -8,6 +8,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <DebugType>full</DebugType>
+    <ApplicationIcon>df2284943cc77e7e1a5fa6a0da8ca265.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -18,6 +20,9 @@
 	<OverwriteReadOnlyOutputFiles>true</OverwriteReadOnlyOutputFiles>
 	<TransformOutOfDateOnly>false</TransformOutOfDateOnly>
   </PropertyGroup>
+  <ItemGroup>
+    <Content Include="df2284943cc77e7e1a5fa6a0da8ca265.ico" />
+  </ItemGroup>
   <ItemGroup>
     <None Include="VersionAutoIncrement.cs">
       <DesignTime>True</DesignTime>
