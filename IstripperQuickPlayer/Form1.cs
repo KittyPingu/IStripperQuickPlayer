@@ -948,7 +948,7 @@ namespace IStripperQuickPlayer
             Random r = new Random();
             
             string newtag = nowPlayingTag;
-            while (newtag == nowPlayingTag)
+            while (newtag == nowPlayingTag || listModels.Items.Count == 1)
             {
                 Int64 newr = r.Next(listModels.Items.Count);
                 newtag = listModels.Items[(int)newr].Text;
