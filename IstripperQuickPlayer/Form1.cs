@@ -944,7 +944,7 @@ namespace IStripperQuickPlayer
         private void GetNextCard()
         {
             //find a new model from the filtered cards
-            if (listModels.Items.Count < 2) return;
+            if (listModels.Items.Count < 1) return;
             Random r = new Random();
             
             string newtag = nowPlayingTag;
