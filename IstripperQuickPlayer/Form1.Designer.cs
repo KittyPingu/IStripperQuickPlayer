@@ -117,6 +117,7 @@
             this.listModels.UseCompatibleStateImageBehavior = false;
             this.listModels.DrawItem += new System.Windows.Forms.DrawListViewItemEventHandler(this.listModels_DrawItem);
             this.listModels.RetrieveVirtualItem += new System.Windows.Forms.RetrieveVirtualItemEventHandler(this.listModels_RetrieveVirtualItem);
+            this.listModels.SearchForVirtualItem += new System.Windows.Forms.SearchForVirtualItemEventHandler(this.listModels_SearchForVirtualItem);
             this.listModels.SelectedIndexChanged += new System.EventHandler(this.listModels_SelectedIndexChanged);
             this.listModels.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModels_MouseDown);
             // 

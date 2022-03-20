@@ -180,7 +180,6 @@ namespace IStripperQuickPlayer
                 return;
             }
             //A cache miss, so create a new ListViewItem and pass it back.
-            int x = e.ItemIndex * e.ItemIndex;
             e.Item = items[e.ItemIndex];
             e.Item.ImageIndex = 0;
         }
@@ -408,8 +407,14 @@ namespace IStripperQuickPlayer
             string full = p + "\\" + r;
             if (key != null)
             { 
-                key.SetValue("ForceAnim", full);  
-                key.Close(); 
+                var currentkey = key.GetValue("CurrentAnim");
+                string? currentkeystring = "";
+                if (currentkey != null) currentkeystring = currentkey.ToString();
+                if (currentkey != null && currentkeystring != full)
+                {            
+                    key.SetValue("ForceAnim", full);  
+                    key.Close(); 
+                }
             }
             lastchosen = listClips.SelectedItems[0].SubItems[1].Text;
         }
@@ -564,10 +569,12 @@ namespace IStripperQuickPlayer
                 ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
                 listModels.SelectedIndices.Clear();
                 var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
+                int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);            
                 if (i != null)
                 {
-                    listModels.Items[i.ImageIndex].Selected = true;
-                    listModels.EnsureVisible(i.Index);                    
+                    listModels.SelectedIndices.Add((int)index);
+                    listModels.FindItemWithText(nowPlayingTag);
+                    listModels.EnsureVisible((int)index);                    
                 }
                 else
                 {                    
@@ -581,6 +588,7 @@ namespace IStripperQuickPlayer
                     var k = listClips.FindItemWithText(nowPlayingClipNumber.ToString());
                     if (k != null)
                     {
+                        listClips.SelectedIndices.Add(k.Index);
                         k.Selected = true;
                         listClips.EnsureVisible(k.Index);
                     }
@@ -815,10 +823,10 @@ namespace IStripperQuickPlayer
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 66, 40);  
+                Rectangle rect = new Rectangle(imgrect.Left+4, e.Bounds.Top + 10, imgrect.Width-20, 40);  
                 int szname =14;
                 Font font = new Font("Verdana", szname);
-                var textSize = e.Graphics.MeasureString("Playing", font);
+                var textSize = e.Graphics.MeasureString("Playing", font);                
                 while (textSize.Width > rect.Width)
                 { 
                    font = new Font("Verdana", szname--);
@@ -830,9 +838,10 @@ namespace IStripperQuickPlayer
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * szname / 72,      
-                    new Point(e.Bounds.Left + 38, e.Bounds.Top +60),            
+                    new Point(imgrect.Left+4, e.Bounds.Top +60),            
                     new StringFormat());         
-                e.Graphics.DrawPath(new Pen(Color.Green, 5), p);
+                e.Graphics.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left-6, e.Bounds.Top+60,imgrect.Width-20, (int)textSize.Height));
+                e.Graphics.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left-6, e.Bounds.Top+60,imgrect.Width-20, (int)textSize.Height));
                 e.Graphics.FillPath(Brushes.White, p);       
             }
 
@@ -967,19 +976,20 @@ namespace IStripperQuickPlayer
             Random r = new Random();
             
             string newtag = nowPlayingTag;
-            bool skipAfterOne = false;
-            while (newtag == nowPlayingTag || skipAfterOne)
+            while (newtag == nowPlayingTag)
             {
-                Int64 newr = r.Next(listModels.Items.Count);
-                newtag = listModels.Items[(int)newr].Text;
-                if (items.Length == 1) skipAfterOne = true;
+                Int64 newr = r.Next(items.Length);
+                newtag = items[(int)newr].Text;
+                if (items.Length == 1) break;
             }
             listModels.SelectedIndices.Clear();
-            var i = items.Where(x => x.Text == newtag).First();
-            if (i != null)
+            int? index = items.ToList().FindIndex(x => x.Text == newtag);
+            if (index != null)
             {
-                listModels.Items[i.Index].Selected = true;
-                listModels.EnsureVisible(i.Index);
+                listModels.SelectedIndices.Add((int)index);
+                //listModels.Items[i.Index].Selected = true;
+                listModels.FindItemWithText(newtag);
+                listModels.EnsureVisible((int)index);     
             }
             
             //choose a random clip from those shown
@@ -1029,7 +1039,7 @@ namespace IStripperQuickPlayer
         private void ValidateMinSizeMB()
         {
             Properties.Settings.Default.MinSizeMB = (long)numMinSizeMB.Value;
-            if (listModels.SelectedItems.Count > 0) loadListClips(listModels.SelectedItems[0].Tag);
+            if (items != null && items.Length > 0) loadListClips(listModels.Items[listModels.SelectedIndices[0]].Tag);
          
         }
 
@@ -1147,6 +1157,18 @@ namespace IStripperQuickPlayer
                 ListView.SelectedIndexCollection col = listModels.SelectedIndices;
                 myData.AddCardTags(listModels.Items[col[0]].Tag.ToString(), tags);
             }
+        }
+
+        private void listModels_SearchForVirtualItem(object sender, SearchForVirtualItemEventArgs e)
+        {
+            e.Index = 0;
+            if (items != null)
+            {       
+                ListViewItem? item = items.Where(x => x.Text == e.Text).FirstOrDefault();
+                if (item != null) e.Index = item.ImageIndex;
+            }     
+            return;
+          
         }
     }
 }
