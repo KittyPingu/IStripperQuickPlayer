@@ -84,6 +84,7 @@ namespace IStripperQuickPlayer
             }
         }
 
+        ListViewItem[]? items; //stores the list of virtualized cards for modelList operations
         internal void PopulateModelListview()
         {
             listModels.BeginUpdate();
@@ -141,7 +142,7 @@ namespace IStripperQuickPlayer
             }
 
 
-            ListViewItem[] items = new ListViewItem[currentCards.Count()];
+            items = new ListViewItem[currentCards.Count()];
             int idx = 0;
             foreach (var card in currentCards)
             {
@@ -149,6 +150,7 @@ namespace IStripperQuickPlayer
                 {   
                     items[idx] = new ListViewItem(card.modelName + Environment.NewLine + card.outfit, 0);
                     items[idx].Tag = card.name;
+                    items[idx].ImageIndex = idx;
                     idx++;
                     //listModels.Items.Add(card.name, card.modelName + Environment.NewLine + card.outfit, largeimagelist.Images.Count - 1);
                 }
@@ -160,11 +162,29 @@ namespace IStripperQuickPlayer
             Image newblankimage = new Bitmap(130,180, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             blankimagelist.Images.Add(newblankimage);
 
-            listModels.Items.AddRange(items);
+
+            //listModels.Items.AddRange(items);
             listModels.LargeImageList = blankimagelist;
             listModels.EndUpdate();
+
+            listModels.VirtualListSize = items.Length;
+            listModels.VirtualMode = true;
             lblModelsLoaded.Text = "Cards Shown: " + listModels.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
         }
+
+        void listModels_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
+        { 
+            if (items == null)
+            {       
+                e.Item = new ListViewItem();
+                return;
+            }
+            //A cache miss, so create a new ListViewItem and pass it back.
+            int x = e.ItemIndex * e.ItemIndex;
+            e.Item = items[e.ItemIndex];
+            e.Item.ImageIndex = 0;
+        }
+
 
         private List<ModelCard>? Filter(List<ModelCard>? currentCards)
         {   
@@ -307,8 +327,9 @@ namespace IStripperQuickPlayer
 
         private void FilterClips()
         {
-              if (listModels.SelectedItems.Count > 0)
-                loadListClips(listModels.SelectedItems[0].Tag);
+             ListView.SelectedIndexCollection col = listModels.SelectedIndices;
+             if (col.Count > 0)
+                loadListClips(listModels.Items[col[0]].Tag);
         }
 
         private void loadListClips(object tag)
@@ -481,7 +502,7 @@ namespace IStripperQuickPlayer
             ModelCard? model = Datastore.findCardByTag(nowplaying.Split("\\")[0]);   
             ListViewItem? res = null;
             if (model == null) return false;
-            this.Invoke((Action)(() => res = listModels.FindItemWithText(model.modelName + "\r\n" + model.outfit)));
+            this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
             if (res == null)
             {
                 //play a clip from a filtered card instead
@@ -542,13 +563,12 @@ namespace IStripperQuickPlayer
             {
                 string[] p = nowPlayingTag.Split("\r\n");
                 ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
-                listModels.SelectedItems.Clear();
-                var i = listModels.FindItemWithText(nowPlayingTag);
+                //listModels.SelectedItems.Clear();
+                var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
                 if (i != null)
                 {
-                    i.Selected = true;
-                    listModels.Select();
-                    listModels.EnsureVisible(i.Index);
+                    listModels.Items[i.ImageIndex].Selected = true;
+                    listModels.EnsureVisible(i.Index);                    
                 }
                 else
                 {                    
@@ -944,21 +964,22 @@ namespace IStripperQuickPlayer
         private void GetNextCard()
         {
             //find a new model from the filtered cards
-            if (listModels.Items.Count < 1) return;
+            if (items == null || items.Length < 1) return;
             Random r = new Random();
             
             string newtag = nowPlayingTag;
-            while (newtag == nowPlayingTag || listModels.Items.Count == 1)
+            bool skipAfterOne = false;
+            while (newtag == nowPlayingTag || skipAfterOne)
             {
                 Int64 newr = r.Next(listModels.Items.Count);
                 newtag = listModels.Items[(int)newr].Text;
+                if (items.Length == 1) skipAfterOne = true;
             }
-            listModels.SelectedItems.Clear();
-            var i = listModels.FindItemWithText(newtag);
+            listModels.SelectedIndices.Clear();
+            var i = items.Where(x => x.Text == newtag).First();
             if (i != null)
             {
-                i.Selected = true;
-                listModels.Select();
+                listModels.Items[i.Index].Selected = true;
                 listModels.EnsureVisible(i.Index);
             }
             
@@ -1074,7 +1095,7 @@ namespace IStripperQuickPlayer
             if (myData.GetCardFavourite(currentMenuCard.Tag.ToString()) != menuCardFavourite.Checked)
             { 
                 myData.AddCardFavourite(currentMenuCard.Tag.ToString(), menuCardFavourite.Checked);
-                this.BeginInvoke((Action)(() => listModels.Refresh()));
+                listModels.Invalidate(currentMenuCard.Bounds);
             }
         }
 
@@ -1094,9 +1115,11 @@ namespace IStripperQuickPlayer
         private void RatingSlider_ValueChanged(object sender, EventArgs e)
         {
             if (myData==null||currentMenuCard==null)return;
+            if (myData.GetCardRating(currentMenuCard.Tag.ToString()) == ratingSlider.Value) return;
             myData.AddCardRating(currentMenuCard.Tag.ToString(), ratingSlider.Value);
             if ( menuShowRatingsStars.Checked)
             {
+                listModels.Invalidate(currentMenuCard.Bounds);
                 //listModels.Refresh();
             }
         }
@@ -1119,10 +1142,11 @@ namespace IStripperQuickPlayer
         private void txtUserTags_TextChanged(object sender, EventArgs e)
         {
             if (myData==null)return;
-            if (listModels.SelectedItems.Count > 0)
+            if (items != null && items.Length > 0)
             {
                 List<string> tags = txtUserTags.Text.Split(',').ToList();
-                myData.AddCardTags(listModels.SelectedItems[0].Tag.ToString(), tags);
+                ListView.SelectedIndexCollection col = listModels.SelectedIndices;
+                myData.AddCardTags(listModels.Items[col[0]].Tag.ToString(), tags);
             }
         }
     }
