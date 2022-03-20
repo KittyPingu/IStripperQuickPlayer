@@ -24,6 +24,7 @@
     <Content Include="df2284943cc77e7e1a5fa6a0da8ca265.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\.editorconfig" Link=".editorconfig" />
     <None Include="VersionAutoIncrement.cs">
       <DesignTime>True</DesignTime>
       <AutoGen>True</AutoGen>

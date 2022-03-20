@@ -124,10 +124,4 @@
   <data name="kindpng_4040161" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>..\kindpng_4040161.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
   </data>
-  <data name="toppng_com_clock_clock_icon_circle_500x503" type="System.Resources.ResXFileRef, System.Windows.Forms">
-    <value>..\toppng.com-clock-clock-icon-circle-500x503.png;System.Drawing.Bitmap, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
-  </data>
-  <data name="toppng_com_clock_clock_icon_circle_500x5031" type="System.Resources.ResXFileRef, System.Windows.Forms">
-    <value>..\toppng.com-clock-clock-icon-circle-500x503.ico;System.Drawing.Icon, System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a</value>
-  </data>
 </root>

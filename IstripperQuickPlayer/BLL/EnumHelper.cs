@@ -9,10 +9,11 @@ namespace EnumDescription
             where T : struct, IConvertible
         {
             if (!typeof(T).IsEnum)
-                return null;
+                return "";
 
             var description = enumValue.ToString();
-            var fieldInfo = enumValue.GetType().GetField(enumValue.ToString());
+            if (description == null) return "";
+            var fieldInfo = enumValue.GetType().GetField(description);
 
             if (fieldInfo != null)
             {

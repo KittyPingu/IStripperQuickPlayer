@@ -1,4 +1,5 @@
-﻿using System;
+﻿using IStripperQuickPlayer.BLL;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -20,12 +21,12 @@ namespace IStripperQuickPlayer.DataModel
 
         public CardProperties(XmlNode? element)
         {
-            modelID = element.Attributes["mo"].Value;
-            hair = element.Attributes["ha"].Value;
-            tags = element.Attributes["ca"].Value.Split(",");
-            date = element.Attributes["da"].Value;
-            datesh = element.Attributes["dsh"].Value;
-            switch (element.Attributes["na"].Value)
+            modelID = element.GetAttribute("mo");
+            hair = element.GetAttribute("ha");
+            tags = element.GetAttribute("ca").Split(",");
+            date = element.GetAttribute("da");
+            datesh = element.GetAttribute("dsh");
+            switch (element.GetAttribute("na"))
             {
                 case "Duo":
                     numgirls = 2;
@@ -37,8 +38,8 @@ namespace IStripperQuickPlayer.DataModel
                 numgirls = 3;
             if (tags.Contains("duo"))            
                 numgirls = 3;
-            ethnicity = element.Attributes["ty"].Value;
-            exclusive = element.Attributes["exclusive"].Value == "1";
+            ethnicity = element.GetAttribute("ty");
+            exclusive = element.GetAttribute("exclusive") == "1";
         }
     }
 }

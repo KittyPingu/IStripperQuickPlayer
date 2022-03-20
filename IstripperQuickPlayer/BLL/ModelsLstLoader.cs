@@ -19,12 +19,12 @@ namespace IStripperQuickPlayer.BLL
             //ImageList largeimagelist = new ImageList();
             //largeimagelist.ImageSize = new Size(130,180);
             //largeimagelist.ColorDepth = ColorDepth.Depth32Bit;
-            FileInfo file = findModelFile();
+            FileInfo? file = findModelFile();
 
             if (file != null)
             {
                 
-                Form1 frm = (Form1)Application.OpenForms.Cast<Form>().Where(x => x.Name == "Form1").FirstOrDefault();
+                Form1? frm = Utils.GetMainForm();
                 //frm.listModels.BeginUpdate();
                 using (var stream = File.Open(file.FullName, FileMode.Open))
                 {
@@ -38,7 +38,6 @@ namespace IStripperQuickPlayer.BLL
 
                         for (int c = 0; c < Datastore.numberOfCards; c++)
                         {
-                            Model m = new Model();
                             ModelCard card = new ModelCard();
                             int cardTextLen = getInt32(reader);
                             card.name = getString(reader, cardTextLen).Replace(fc,nc);
@@ -94,36 +93,49 @@ namespace IStripperQuickPlayer.BLL
                             card.s = reader.ReadByte();
 
                             card.XML = loadCardXML(card.name);
-                            card.description = getXMLValue(card, "description");
-                            card.outfit = getXMLValue(card, "outfit").Replace(fc,nc);
-                            card.hair =  getXMLValue(card, "hair");
-                            card.rating =  Convert.ToDecimal(getXMLValue(card, "rate"));
-                            card.hotnessLevel =  getXMLValue(card, "level");
-                            card.frameCount =  Convert.ToInt32(getXMLValue(card, "duration"));
-                            card.xmlSize = getXMLValue(card, "size");
-                            card.modelName = getXMLValue(card, "name");
-                            card.modelAge = getXMLValue(card, "age");
-                            card.image = loadCardImage(card);
-
+                            if (card.XML != null)
+                            {
+                                card.description = getXMLValue(card, "description");
+                                card.outfit = getXMLValue(card, "outfit").Replace(fc,nc);
+                                card.hair =  getXMLValue(card, "hair");
+                                var d = 0M;
+                                Decimal.TryParse(getXMLValue(card, "rate"), out d);
+                                card.rating=d;
+                                card.hotnessLevel =  getXMLValue(card, "level");
+                                int fcnt = 0;
+                                int.TryParse(getXMLValue(card, "duration"), out fcnt);
+                                card.frameCount = fcnt;
+                                card.xmlSize = getXMLValue(card, "size");
+                                card.modelName = getXMLValue(card, "name");
+                                card.modelAge = getXMLValue(card, "age");
+                                card.image = loadCardImage(card);
+                            }
 
                             //read static properties for model
                             var cardProp = StaticPropertiesLoader.getCardByID(card.name);
-                            card.tags = cardProp.tags;
-                            card.ethnicity = cardProp.ethnicity;
-                            card.exclusive = cardProp.exclusive;
-                            card.numgirls = cardProp.numgirls;
-                            string modelID = cardProp.modelID;
-                            if (cardProp.modelID.Contains(","))
-                                modelID = cardProp.modelID.Split(",")[0];
-                            var mProp = StaticPropertiesLoader.getModelByID(modelID);
-                            card.bust = mProp.Bust;
-                            card.waist = mProp.Waist;
-                            card.hips = mProp.Hips;
-                            card.height = mProp.Height;
-                            card.city = mProp.City;
-                            card.country = mProp.Country;
-                            card.birthdate = mProp.Birthdate;
+                            if (cardProp != null)
+                            {
+                                card.tags = cardProp.tags;
+                                card.ethnicity = cardProp.ethnicity;
+                                card.exclusive = cardProp.exclusive;
+                                card.numgirls = cardProp.numgirls;
+                                string modelID = cardProp.modelID;
+                                if (cardProp.modelID.Contains(","))
+                                    modelID = cardProp.modelID.Split(",")[0];
 
+                                var mProp = StaticPropertiesLoader.getModelByID(modelID);
+                                if (mProp != null)
+                                {
+                                    card.bust = mProp.Bust;
+                                    card.waist = mProp.Waist;
+                                    card.hips = mProp.Hips;
+                                    card.height = mProp.Height;
+                                    card.city = mProp.City;
+                                    card.country = mProp.Country;
+                                    card.birthdate = mProp.Birthdate;
+                                }
+                            }
+                           
                             //loop through clips
                             int clipCount = getInt32(reader);
                             for (int i = 0; i < clipCount; i++)
@@ -178,27 +190,30 @@ namespace IStripperQuickPlayer.BLL
                                 if (clip.clipType != "") clip.clipType = clip.clipType.Substring(2);
                                 //skip an unused int
                                 int unused = getInt32(reader);
-                                card.clips.Add(clip);
+                                if (card.clips != null) card.clips.Add(clip);
                             }
-                            if (card.clips.Count > 0) 
+                            if (card.clips != null && card.clips.Count > 0) 
                             {
-                                Datastore.modelcards.Add(card);                            
-                                frm.lblModelsLoaded.Text = "Models Loaded: " + Datastore.modelcards.Count;
-                                Application.DoEvents();
+                                if (Datastore.modelcards != null)
+                                { 
+                                    Datastore.modelcards.Add(card);                            
+                                    if (frm != null) frm.lblModelsLoaded.Text = "Models Loaded: " + Datastore.modelcards.Count;
+                                    Application.DoEvents();
+                                }
                             }
                             
                         }
                     }
                 }
-                frm.listModels.EndUpdate();
+                if (frm != null) frm.listModels.EndUpdate();
             }
             
             return modelsLoaded;
         }
 
-        private Image loadCardImage(ModelCard card) {   
+        private Image? loadCardImage(ModelCard card) {   
 
-            Image image = null;
+            Image? image = null;
             string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string fullpath = Path.Combine(localapp,"vghd\\data\\", card.name, card.name + ".jpg");
             card.imagefile = fullpath;
@@ -208,7 +223,7 @@ namespace IStripperQuickPlayer.BLL
             }
             catch (Exception)
             {
-                throw;
+                //missing an image?
             }
             return image;
         }
@@ -217,7 +232,12 @@ namespace IStripperQuickPlayer.BLL
         {
             try
             {
-                return card.XML.GetElementsByTagName(variable)[0].InnerText;
+                if (card.XML == null) return "";
+                var elements = card.XML.GetElementsByTagName(variable);
+                if (elements == null || elements.Count == 0 || elements[0] == null) return "";
+                var e = elements[0];
+                if (e == null) return "";
+                return e.InnerText;
             }
             catch (Exception)
             {
@@ -230,8 +250,6 @@ namespace IStripperQuickPlayer.BLL
 
         private XmlDocument loadCardXML(string cardnumber)
         {
-            string xml = "";
-
             string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string fullpath = Path.Combine(localapp,"vghd\\data\\", cardnumber, cardnumber + ".xml");
             try
@@ -243,10 +261,9 @@ namespace IStripperQuickPlayer.BLL
             catch (Exception)
             {
 
-                throw;
+                Console.WriteLine("no cardXML for " + cardnumber);
             }
-
-           
+            return new XmlDocument();           
         }
 
         private CardResolutionType getResolution(int cardrescode)
@@ -265,7 +282,7 @@ namespace IStripperQuickPlayer.BLL
                     return CardResolutionType.highest;
                 default:
                     return CardResolutionType.unknown;
-                    break;
+                  
             }
         }
 
@@ -285,7 +302,7 @@ namespace IStripperQuickPlayer.BLL
                     return CardResolutionType.lowest;
                 default:
                     return CardResolutionType.unknown;
-                    break;
+                  
             }
         }
 
@@ -343,7 +360,7 @@ namespace IStripperQuickPlayer.BLL
         }
 
         //find the models.lst file
-        private FileInfo findModelFile()
+        private FileInfo? findModelFile()
         {
             string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string fullpath = Path.Combine(localapp, "vghd\\data\\models.lst");

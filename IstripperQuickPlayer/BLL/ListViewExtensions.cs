@@ -15,10 +15,11 @@ namespace IStripperQuickPlayer.BLL
         /// <param name="doubleBuffered">Double Buffered or not</param>
         public static void SetDoubleBuffered(this System.Windows.Forms.ListView listView, bool doubleBuffered = true)
         {
-            listView
+            var prop = listView
                 .GetType()
-                .GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-                .SetValue(listView, doubleBuffered, null);
+                .GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (prop != null)
+                prop.SetValue(listView, doubleBuffered, null);
         }
     }
 }

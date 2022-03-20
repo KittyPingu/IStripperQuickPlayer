@@ -79,25 +79,5 @@ namespace IStripperQuickPlayer.Properties {
                 return ((System.Drawing.Bitmap)(obj));
             }
         }
-        
-        /// <summary>
-        ///   Looks up a localized resource of type System.Drawing.Bitmap.
-        /// </summary>
-        internal static System.Drawing.Bitmap toppng_com_clock_clock_icon_circle_500x503 {
-            get {
-                object obj = ResourceManager.GetObject("toppng_com_clock_clock_icon_circle_500x503", resourceCulture);
-                return ((System.Drawing.Bitmap)(obj));
-            }
-        }
-        
-        /// <summary>
-        ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
-        /// </summary>
-        internal static System.Drawing.Icon toppng_com_clock_clock_icon_circle_500x5031 {
-            get {
-                object obj = ResourceManager.GetObject("toppng_com_clock_clock_icon_circle_500x5031", resourceCulture);
-                return ((System.Drawing.Icon)(obj));
-            }
-        }
     }
 }

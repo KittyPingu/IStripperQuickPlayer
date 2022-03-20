@@ -10,19 +10,20 @@ using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using IStripperQuickPlayer.BLL;
 
 namespace IStripperQuickPlayer
 {
     public partial class Filter : Form
     {
-        ColorSlider.ColorSlider rangeRating;
-        ColorSlider.ColorSlider rangeAge;
-        ColorSlider.ColorSlider rangeBreastSize;
-        ColorSlider.ColorSlider rangeMyRating;
+        ColorSlider.ColorSlider? rangeRating;
+        ColorSlider.ColorSlider? rangeAge;
+        ColorSlider.ColorSlider? rangeBreastSize;
+        ColorSlider.ColorSlider? rangeMyRating;
         bool isLoaded = false;
         bool ok = false;
-        public FilterSettings filterSettings;
-        byte[] savedSettings;
+        public FilterSettings? filterSettings;
+        byte[]? savedSettings;
 
         public Filter(FilterSettings filter)
         {
@@ -39,6 +40,7 @@ namespace IStripperQuickPlayer
 
         private void ReadValues()
         {
+            if (filterSettings == null) return;
             rangeRating = new ColorSlider.ColorSlider();
             rangeRating.Location = new Point(110, 110);
             rangeRating.Height = 60;
@@ -133,7 +135,9 @@ namespace IStripperQuickPlayer
         }
 
         private void Filter_Load(object sender, EventArgs e)
-        {   Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();           
+        {   
+            
+            Form1? frm = Utils.GetMainForm();           
             if (frm != null)
                 Location = new Point(frm.Location.X + frm.Width / 2 - Width / 2,
                     frm.Location.Y + frm.Height / 2 - Height / 2);
@@ -149,14 +153,27 @@ namespace IStripperQuickPlayer
         private  void ApplySettings()
         {
             if (!isLoaded)return;
-            filterSettings.minAge = rangeAge.Value;
-            filterSettings.maxAge = rangeAge.Value2;
-            filterSettings.minBust = rangeBreastSize.Value;
-            filterSettings.maxBust = rangeBreastSize.Value2;
-            filterSettings.minRating = rangeRating.Value;
-            filterSettings.maxRating = rangeRating.Value2;
-            filterSettings.minMyRating = rangeMyRating.Value;
-            filterSettings.maxMyRating = rangeMyRating.Value2;
+            if (filterSettings == null)return;
+            if (rangeAge != null)
+            { 
+                filterSettings.minAge = rangeAge.Value;
+                filterSettings.maxAge = rangeAge.Value2;
+            }
+            if (rangeBreastSize != null)
+            {
+                filterSettings.minBust = rangeBreastSize.Value;
+                filterSettings.maxBust = rangeBreastSize.Value2;
+            }
+            if (rangeRating != null)
+            {
+                filterSettings.minRating = rangeRating.Value;
+                filterSettings.maxRating = rangeRating.Value2;
+            }
+            if (rangeMyRating != null)
+            {
+                filterSettings.minMyRating = rangeMyRating.Value;
+                filterSettings.maxMyRating = rangeMyRating.Value2;
+            }
             filterSettings.tags = txtTags.Text;
 
             
@@ -169,7 +186,7 @@ namespace IStripperQuickPlayer
             filterSettings.Special = chkSpecial.Checked;
             filterSettings.Normal = chkNormal.Checked;
             
-            Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();
+            Form1? frm = Utils.GetMainForm();
             if (frm != null)
             {
                 frm.filterSettings = filterSettings;
@@ -204,6 +221,7 @@ namespace IStripperQuickPlayer
 
         internal void Save()
         { 
+            if (filterSettings == null) return;
             using (MemoryStream memStream = new MemoryStream())
             {
                 BinaryFormatter binSerializer = new BinaryFormatter();
@@ -217,7 +235,7 @@ namespace IStripperQuickPlayer
         { 
             BinaryFormatter binSerializer = new BinaryFormatter();
             filterSettings = (FilterSettings)binSerializer.Deserialize(new MemoryStream(savedSettings));
-            Form1 frm = Application.OpenForms.Cast<Form1>().Where(x => x.Name == "Form1").FirstOrDefault();
+            Form1? frm = Utils.GetMainForm();
             if (frm != null)
             {
                 frm.filterSettings = filterSettings;

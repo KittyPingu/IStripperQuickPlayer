@@ -1,4 +1,5 @@
-﻿using System;
+﻿using IStripperQuickPlayer.BLL;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
@@ -12,11 +13,12 @@ namespace IStripperQuickPlayer
                                    ToolStripItemDesignerAvailability.ContextMenuStrip)]
 public class TrackBarMenuItem : ToolStripControlHost
 {
-    private ColorSlider.ColorSlider trackBar = null;
+    private ColorSlider.ColorSlider? trackBar;
 
     public TrackBarMenuItem():base(new ColorSlider.ColorSlider())
     {
-        this.trackBar = this.Control as ColorSlider.ColorSlider;
+        if (this.Control != null && this.Control is ColorSlider.ColorSlider)
+            this.trackBar = (ColorSlider.ColorSlider)this.Control;
     }
 
         // Add properties, events etc. you want to expose...
@@ -25,71 +27,76 @@ public class TrackBarMenuItem : ToolStripControlHost
         {
             get
             {
+                if (trackBar == null) return 0;
                 return trackBar.Value;
             }
-            set { trackBar.Value = value; }
+            set { if (trackBar!=null) trackBar.Value = value; }
         }
 
         public decimal Value2
         {
             get
             {
+                if (trackBar == null) return 0;
                 return trackBar.Value;
             }
-            set { trackBar.Value = value; }
+            set { if (trackBar!=null) trackBar.Value = value; }
         }
 
         public decimal Maximum
         {
             get
             {
+                 if (trackBar == null) return 0;
                 return trackBar.Maximum;
             }
-            set { trackBar.Maximum = value; }
+            set { if (trackBar!=null) trackBar.Maximum = value; }
         }
 
         public decimal Minimum
         {
             get
             {
+                 if (trackBar == null) return 0;
                 return trackBar.Minimum;
             }
-            set { trackBar.Minimum = value; }
+            set { if (trackBar!=null) trackBar.Minimum = value; }
         }
 
         public TickStyle TickStyle
         {
             get
             {
+                if (trackBar == null) return TickStyle.None;
                 return trackBar.TickStyle;
             }
-            set { trackBar.TickStyle = value; }
+            set { if (trackBar!=null) trackBar.TickStyle = value; }
         }
 
         public Color TrackbarColor
-        {get {return trackBar.BackColor; } set {trackBar.BackColor = value; } }
+        {get { if (trackBar == null) return Color.White; return trackBar.BackColor; } set {if (trackBar!=null) trackBar.BackColor = value; } }
 
         
         public decimal SmallChange
-        {get {return trackBar.SmallChange; } set {trackBar.SmallChange = value; } }
+        {get { if (trackBar == null) return 0;return trackBar.SmallChange; } set {if (trackBar!=null) trackBar.SmallChange = value; } }
 
                 
         public decimal LargeChange
-        {get {return trackBar.LargeChange; } set {trackBar.LargeChange = value; } }
+        {get { if (trackBar == null) return 0;return trackBar.LargeChange; } set {if (trackBar!=null) trackBar.LargeChange = value; } }
 
                         
         public Size ClientSize
-        {get {return trackBar.ClientSize; } set {trackBar.ClientSize = value; } }
+        {get { if (trackBar == null) return new Size();return trackBar.ClientSize; } set {if (trackBar!=null) trackBar.ClientSize = value; } }
  
 
         public bool Has2Values
-        {get {return trackBar.Has2Values; } set {trackBar.Has2Values = value; } }
+        {get { if (trackBar == null) return false;return trackBar.Has2Values; } set {if (trackBar!=null) trackBar.Has2Values = value; } }
 
         public decimal ScaleDivisions
-        {get {return trackBar.ScaleDivisions; } set {trackBar.ScaleDivisions = value; } }
+        {get { if (trackBar == null) return 0M;return trackBar.ScaleDivisions; } set {if (trackBar!=null) trackBar.ScaleDivisions = value; } }
 
         public Color TickColor
-        {get {return trackBar.TickColor; } set {trackBar.TickColor = value; } }
+        {get { if (trackBar == null) return Color.Black;return trackBar.TickColor; } set {if (trackBar!=null) trackBar.TickColor = value; } }
 
         #endregion Properties
 
@@ -117,10 +124,10 @@ public class TrackBarMenuItem : ToolStripControlHost
                 new EventHandler(OnValueChanged);
         }
 
-        public event EventHandler ValueChanged;
+        public event EventHandler? ValueChanged;
 
         // Raise the DateChanged event.
-        private void OnValueChanged(object sender, EventArgs e)
+        private void OnValueChanged(object? sender, EventArgs e)
         {
             if (ValueChanged != null)
             {

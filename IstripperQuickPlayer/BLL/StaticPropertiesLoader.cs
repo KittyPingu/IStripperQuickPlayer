@@ -11,52 +11,68 @@ namespace IStripperQuickPlayer.BLL
 {
     internal static class StaticPropertiesLoader
     {
-        internal static XmlDocument PropertiesXML;
-        internal static XmlNodeList cnode;
-        internal static XmlNodeList mnode;
+        internal static XmlDocument PropertiesXML = new XmlDocument();
+        internal static XmlNodeList? cnode;
+        internal static XmlNodeList? mnode;
 
         internal static void loadXML()
         {
-            string fulltext = System.IO.File.ReadAllText(findXMLFile().FullName);
+            var path = findXMLFile();
+            if (path == null) return;
+            string fulltext = System.IO.File.ReadAllText(path.FullName);
             int start = fulltext.IndexOf('<');
             fulltext = fulltext.Substring(start);
             PropertiesXML = new XmlDocument();
             PropertiesXML.LoadXml(fulltext);
-            mnode = PropertiesXML.SelectNodes("/root/m");
-            cnode = PropertiesXML.SelectNodes("/root/c");
-            //var m = XDocument.Parse(fulltext);
-            //var tallest = m.Descendants("m").Where(c => c.Attribute("heig").Value != "").OrderByDescending(c =>  Convert.ToDecimal(c.Attribute("heig").Value)).Take(20);
-            //var biggest = m.Descendants("m").Where(c => c.Attribute("stat").Value.Contains("/")).OrderByDescending(c =>  Convert.ToDecimal((c.Attribute("stat").Value.Split('/')[2]))).Take(20);
+            if (PropertiesXML != null && PropertiesXML.ChildNodes != null)
+            {
+#pragma warning disable CS8601 // Possible null reference assignment.
+                mnode = PropertiesXML.SelectNodes("/root/m");
+#pragma warning restore CS8601 // Possible null reference assignment.
+#pragma warning disable CS8601 // Possible null reference assignment.
+                cnode = PropertiesXML.SelectNodes("/root/c");
+#pragma warning restore CS8601 // Possible null reference assignment.
+            }
         }
 
-        internal static ModelProperties getModelByID(string ID)
+        internal static ModelProperties? getModelByID(string ID)
         {
+            if (mnode == null) return null;
             foreach(XmlNode n in mnode)
             {
-               if (n.Attributes["id"].Value == ID)
+                if (n.Attributes != null)
                 {
-                     ModelProperties model = new ModelProperties(n); 
+                var attribute = n.Attributes["id"];
+                if (attribute != null && attribute.Value == ID)
+                {
+                    ModelProperties model = new ModelProperties(n); 
                     return model;
+                }
                 }
             }
             return null;
            
         }
 
-        internal static CardProperties getCardByID(string ID)
+        internal static CardProperties? getCardByID(string ID)
         {
+            if (cnode == null) return null;
             foreach(XmlNode n in cnode)
             {
-               if (n.Attributes["id"].Value == ID)
-               {
-                     CardProperties card = new CardProperties(n);         
-                    return card;
+                if (n.Attributes != null)
+                {
+                    var attribute = n.Attributes["id"];
+                    if (attribute != null && attribute.Value == ID)
+                    {
+                         CardProperties card = new CardProperties(n);         
+                        return card;
+                    }
                 }
             }
             return null;
         }
 
-        private static FileInfo findXMLFile()
+        private static FileInfo? findXMLFile()
         {
             string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string fullpath = Path.Combine(localapp, "vghd\\data\\staticProperties loaded from server.xml");

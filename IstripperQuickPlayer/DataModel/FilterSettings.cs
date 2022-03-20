@@ -25,8 +25,6 @@ namespace IStripperQuickPlayer.DataModel
         internal bool DeskBabes =true;
         internal bool Special=true;
         internal bool Normal=true;
-        internal decimal maxTimesPlayed;
-        internal decimal minTimesPlayed;
         internal decimal minMyRating=0;
         internal decimal maxMyRating=10;
 

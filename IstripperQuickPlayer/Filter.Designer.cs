@@ -272,7 +272,6 @@
         private Button cmdOK;
         private TextBox txtTags;
         private Label lblTags;
-        private Label label1;
         private BindingSource bindingSource1;
         private Label lblMinRating;
         private Label label2;

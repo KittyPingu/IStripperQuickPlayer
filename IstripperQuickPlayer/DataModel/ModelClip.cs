@@ -10,14 +10,12 @@ namespace IStripperQuickPlayer
     [Serializable]
     internal class ModelClip
     {
-        internal string clipName;
-        internal int size;
-        internal int scCode;
-        internal bool isEnabled;
-        internal HotnessCode hotnessCode;
-        internal string clipType;
-        internal int clipNumber;
-        internal bool isFavourite;
-        internal decimal myRating;
+        internal string? clipName;
+        internal int? size;
+        internal int? scCode;
+        internal bool? isEnabled;
+        internal HotnessCode? hotnessCode;
+        internal string? clipType;
+        internal int? clipNumber;
     }
 }

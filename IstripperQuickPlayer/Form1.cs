@@ -13,19 +13,19 @@ namespace IStripperQuickPlayer
 {
     public partial class Form1 : Form
     {
-        private static RegistryWatcher watcher;
+        private static RegistryWatcher? watcher;
         private string nowPlayingTag = "";
         private int nowPlayingClipNumber;
         private bool changesort = false;
-        private MyData myData = null;
+        private MyData? myData = null;
         private bool fontInstalled = false;
         internal FilterSettings filterSettings = new FilterSettings();
 
         //global hotkeys
-        Combination nextClip;// = Combination.FromString("Control+Alt+N");
-        Action actionNextClip = null;
-        Combination nextCard;// = Combination.FromString("Control+Alt+C");
-        Action actionNextCard = null;
+        Combination? nextClip;// = Combination.FromString("Control+Alt+N");
+        Action? actionNextClip = null;
+        Combination? nextCard;// = Combination.FromString("Control+Alt+C");
+        Action? actionNextCard = null;
 
         private void actNextClip()
         {
@@ -54,7 +54,8 @@ namespace IStripperQuickPlayer
             ReloadStaticProperties();
             ModelsLstLoader lstLoader = new ModelsLstLoader();
             listModels.Items.Clear();
-            Datastore.modelcards.Clear();
+            if (Datastore.modelcards != null)
+                Datastore.modelcards.Clear();
             lstLoader.LoadModels();
             PopulateModelListview();
             PersistModels();
@@ -85,12 +86,17 @@ namespace IStripperQuickPlayer
 
         internal void PopulateModelListview()
         {
-            listModels.Items.Clear();
             listModels.BeginUpdate();
+            listModels.Items.Clear();
+            if (Datastore.modelcards == null)
+            {
+                listModels.EndUpdate();
+                return;
+            }
 
-            List<ModelCard> currentCards;
+            List<ModelCard>? currentCards;
             if (txtSearch.Text != "") 
-                currentCards = Datastore.modelcards.Where(i => i != null).Where(c => c.modelName.Contains(txtSearch.Text, StringComparison.CurrentCultureIgnoreCase)
+                currentCards = Datastore.modelcards.Where(i => i != null).Where(c => c.modelName != null && c.modelName.Contains(txtSearch.Text, StringComparison.CurrentCultureIgnoreCase)
                 || c.tags.Contains(txtSearch.Text)).ToList();
             else
                 currentCards = Datastore.modelcards;
@@ -100,7 +106,7 @@ namespace IStripperQuickPlayer
             switch (cmbSortBy.Text)
             {
                 case "My Rating":
-                    currentCards = currentCards.OrderByDescending(i => myData.GetCardRating(i.name)).ToList();
+                    if (myData != null) currentCards = currentCards.OrderByDescending(i => myData.GetCardRating(i.name)).ToList();
                     break;
                 case "":
                 case "Model Name":
@@ -139,7 +145,7 @@ namespace IStripperQuickPlayer
             int idx = 0;
             foreach (var card in currentCards)
             {
-                if (card.clips.Count > 0)
+                if (card.clips != null && card.clips.Count > 0)
                 {   
                     items[idx] = new ListViewItem(card.modelName + Environment.NewLine + card.outfit, 0);
                     items[idx].Tag = card.name;
@@ -157,14 +163,14 @@ namespace IStripperQuickPlayer
             listModels.Items.AddRange(items);
             listModels.LargeImageList = blankimagelist;
             listModels.EndUpdate();
-            lblModelsLoaded.Text = "Cards Shown: " + listModels.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips.Count > 0).Count();
+            lblModelsLoaded.Text = "Cards Shown: " + listModels.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
         }
 
         private List<ModelCard>? Filter(List<ModelCard>? currentCards)
         {   
-            if (chkFavourite.Checked)
+            if (chkFavourite.Checked && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardFavourite(c.name)).ToList();
-            if (filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10)
+            if ((filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10) && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating 
                 && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();  
             currentCards = currentCards.Where(c => Decimal.Parse(c.modelAge) >= filterSettings.minAge && Decimal.Parse(c.modelAge) <= filterSettings.maxAge
@@ -178,7 +184,7 @@ namespace IStripperQuickPlayer
                 foreach(string p in parts)
                 { 
                     List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
-                    currentCards = currentCards.Where(c => c.tags.Any(x => taglist.Contains(x))).ToList();
+                    currentCards = currentCards.Where(c => myData != null && myData.GetCardTags(c.name).Any(x => taglist.Contains(x.Trim())) || c.tags.Any(y => taglist.Contains(y))).ToList();
                 }
                 
             }
@@ -190,9 +196,9 @@ namespace IStripperQuickPlayer
             if (filterSettings.IStripper) enabledcollections.Add(Enums.CollectionType.IStripper);
 
             if (filterSettings.Normal && !filterSettings.Special)
-                currentCards = currentCards.Where(c => !c.exclusive).ToList();
+                currentCards = currentCards.Where(c => c.exclusive != null && !(bool)c.exclusive).ToList();
             else if (filterSettings.Special && !filterSettings.Normal)
-                currentCards = currentCards.Where(c => c.exclusive).ToList();
+                currentCards = currentCards.Where(c => c.exclusive != null && (bool)c.exclusive).ToList();
 
             currentCards = currentCards.Where(c=> enabledcollections.Contains(c.collection)).ToList();
 
@@ -307,10 +313,14 @@ namespace IStripperQuickPlayer
 
         private void loadListClips(object tag)
         {
-            ModelCard card = Datastore.findCardByTag(tag.ToString());
+            ModelCard? card = Datastore.findCardByTag(tag.ToString());           
+            if (card == null) return; 
             lblCipListDetails.Text = card.modelName + ": " +card.outfit;
+            if (myData != null) 
+                txtUserTags.Text = string.Join(",", myData.GetCardTags(tag.ToString()));
             listClips.BeginUpdate();
             listClips.Items.Clear();
+            if (card.clips == null) return;
             foreach(ModelClip clip in card.clips)
             {
                 bool addThis = false;
@@ -344,7 +354,7 @@ namespace IStripperQuickPlayer
                         break;
                 }
                 if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
-                if (clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
+                if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
                 if (addThis)
                 {
                     ListViewItem item = new ListViewItem(new [] {clip.clipNumber.ToString(), clip.clipName, clip.hotnessCode.ToString(), clip.clipType, (clip.size/1024/1024).ToString() +"MB"});
@@ -370,14 +380,16 @@ namespace IStripperQuickPlayer
                 clickingNowPlaying = false;
                 return;
             }
-            RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true); 
+            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true); 
             
             string r = listClips.SelectedItems[0].SubItems[1].Text;
             string p = r.Split("_")[0];
             string full = p + "\\" + r;
-
-            key.SetValue("ForceAnim", full);  
-            key.Close(); 
+            if (key != null)
+            { 
+                key.SetValue("ForceAnim", full);  
+                key.Close(); 
+            }
             lastchosen = listClips.SelectedItems[0].SubItems[1].Text;
         }
 
@@ -439,15 +451,22 @@ namespace IStripperQuickPlayer
 
         private void GetNowPlaying()
         {
-            RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
-            string nowp = key.GetValue("CurrentAnim", "").ToString();
-            ShowNowPlaying(nowp);
-            key.Close();
+            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
+            if (key != null)
+            {
+                var a = key.GetValue("CurrentAnim", "");
+                if (a != null)
+                { 
+                    string nowp = a.ToString() ?? "";
+                    ShowNowPlaying(nowp);
+                    key.Close();
+                }
+            }
         }
 
         private void RegistryChanged(object? sender, RegistryWatcher.RegistryChangeEventArgs e)
         {
-            string newcardstring = e.Value.ToString();
+            string newcardstring = e.Value.ToString() ?? "";
             if (string.IsNullOrEmpty(newcardstring))
             {
                 this.BeginInvoke((Action)(() => lblNowPlaying.Text = ""));
@@ -459,8 +478,9 @@ namespace IStripperQuickPlayer
 
         private bool EnforceNowPlaying(string nowplaying)
         {
-            ModelCard model = Datastore.findCardByTag(nowplaying.Split("\\")[0]);   
-            ListViewItem res = null;
+            ModelCard? model = Datastore.findCardByTag(nowplaying.Split("\\")[0]);   
+            ListViewItem? res = null;
+            if (model == null) return false;
             this.Invoke((Action)(() => res = listModels.FindItemWithText(model.modelName + "\r\n" + model.outfit)));
             if (res == null)
             {
@@ -477,22 +497,24 @@ namespace IStripperQuickPlayer
             {
                 string nowPlaying = path;
                 if (path == "") return;
+                if (Datastore.modelcards == null) return;
                 if (Datastore.modelcards.Count > 0)
                 {
-                    ModelCard model = Datastore.findCardByTag(path.Split("\\")[0]);
+                    ModelCard? model = Datastore.findCardByTag(path.Split("\\")[0]);
                     if (model == null) return;
-                    ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).FirstOrDefault();
+                    ModelClip? modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).FirstOrDefault();
+                    if (modelClip == null) return;
                     nowPlaying = model.modelName + ", " + model.outfit + " (Clip " + modelClip.clipNumber + ")";
                     //nowPlayingTag = path.Split("\\")[0]
                     nowPlayingTag = model.modelName + "\r\n" + model.outfit;
-                    nowPlayingClipNumber = modelClip.clipNumber;
+                    nowPlayingClipNumber = Convert.ToInt32(modelClip.clipNumber);
                 }
                 if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
                 if (listClips.Items.Count == 0)
                     this.BeginInvoke((Action)(() => NowPlayingClick(true)));
                 listModels.BeginInvoke((Action)(() => listModels.Refresh()));
             }
-            catch (Exception ex){ }
+            catch { }
         }
 
         private void chk_CheckedChanged(object sender, EventArgs e)
@@ -535,7 +557,7 @@ namespace IStripperQuickPlayer
 
                 //select the playing clip in list
                 listClips.SelectedItems.Clear();
-                if (nowPlayingClipNumber != null)
+                if (nowPlayingClipNumber != 0)
                 {
                     var k = listClips.FindItemWithText(nowPlayingClipNumber.ToString());
                     if (k != null)
@@ -564,17 +586,18 @@ namespace IStripperQuickPlayer
                 //e.DrawFocusRectangle();
                 e.Graphics.FillRectangle(Brushes.PaleGreen, e.Bounds);
             }
-            e.Graphics.DrawImage(Datastore.findCardByTag(e.Item.Tag.ToString()).image, imgrect);
+            
             string text = "";
-            ModelCard card = Datastore.findCardByTag(e.Item.Tag.ToString());
+            ModelCard? card = Datastore.findCardByTag(e.Item.Tag.ToString());
+            if (card == null) return;
+            e.Graphics.DrawImage(card.image, imgrect);
             decimal myrating=0M;
-            myrating = myData.GetCardRating(card.name);
+            if (myData != null) myrating = myData.GetCardRating(card.name);
             switch (cmbSortBy.Text)
             {
                 case "My Rating":
                     if (!Properties.Settings.Default.ShowRatingStars)
-                    { 
-                        myrating = myData.GetCardRating(card.name);
+                    {
                         if (myrating > 0) text = myrating.ToString();
                     }
                     break;
@@ -590,18 +613,19 @@ namespace IStripperQuickPlayer
                     text = (Convert.ToDecimal(card.rating)-5m).ToString();
                     break;
                 case "Age":
-                    text = card.modelAge.ToString();    
+                    text = (card.modelAge ?? "");    
                     break;
                 case "Ethnicity":
-                    text = card.ethnicity.ToString();    
+                    text = (card.ethnicity ?? "");        
                     break;
                 case "Breast Size":
                 case "Breast Size (Descending)":
-                    text = card.bust.ToString();
+                    text = (card.bust ?? 0).ToString();
                     break;
                 case "Date Purchased":
                 case "Date Purchased (Descending)":
-                    text = card.datePurchased.ToShortDateString();
+                    if (card.datePurchased != null)
+                        text = ((DateTime)card.datePurchased).ToShortDateString();
                     break;
                 default:
                     break;
@@ -636,7 +660,7 @@ namespace IStripperQuickPlayer
             e.Graphics.DrawString(nameoutfit[1], fontOutfit, new SolidBrush(Color.Black), rectOutfit, stringFormat);
 
 
-            if (card.exclusive)
+            if (card.exclusive != null && (bool)card.exclusive)
             {
                 e.Graphics.InterpolationMode = InterpolationMode.High;
                 e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
@@ -655,7 +679,7 @@ namespace IStripperQuickPlayer
                 e.Graphics.FillPath(Brushes.Red, p);     
             }
 
-            if (myData.GetCardFavourite(card.name))
+            if (myData != null && myData.GetCardFavourite(card.name))
             {
                 e.Graphics.InterpolationMode = InterpolationMode.High;
                 e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
@@ -834,15 +858,20 @@ namespace IStripperQuickPlayer
 
         private void GetNextClip()
         {
-            RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
-            string path = key.GetValue("CurrentAnim", "").ToString();
+            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
+            if (key == null) return;
+            var a = key.GetValue("CurrentAnim", "");
+            if (a == null) return;
+            string path = a.ToString() ?? "";
             key.Close();
             if (path == "") return;
+            if (Datastore.modelcards == null) return;
             if (Datastore.modelcards.Count > 0)
             {
-                ModelCard model = Datastore.findCardByTag(path.Split("\\")[0]);
+                ModelCard? model = Datastore.findCardByTag(path.Split("\\")[0]);
+                if (model == null) return;
                 List<ModelClip> clips = new List<ModelClip>();
-
+                if (model.clips == null) return;
                 foreach (ModelClip clip in model.clips)
                 {
                     bool addThis = false;
@@ -875,7 +904,7 @@ namespace IStripperQuickPlayer
                         default:
                             break;
                     }
-                    if (clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
+                    if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
                     if (addThis)
                     {
                         clips.Add(clip);
@@ -884,7 +913,7 @@ namespace IStripperQuickPlayer
 
                 ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).First();
 
-                ModelClip mnew = null;
+                ModelClip? mnew = null;
                 if (modelClip.clipNumber < clips.Last().clipNumber)
                 {
                     //play next
@@ -896,16 +925,18 @@ namespace IStripperQuickPlayer
                     mnew = clips.FirstOrDefault();
                 }
 
-                if (mnew != null)
+                if (mnew != null && mnew.clipName != null)
                 {
-                    RegistryKey keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
+                    RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
 
                     string r = mnew.clipName;
                     string p = r.Split("_")[0];
                     string full = p + "\\" + r;
-
-                    keynew.SetValue("ForceAnim", full);
-                    keynew.Close();
+                    if (keynew != null)
+                    {
+                        keynew.SetValue("ForceAnim", full);
+                        keynew.Close();
+                    }
                 }
             }
         }
@@ -977,7 +1008,6 @@ namespace IStripperQuickPlayer
              
         private void ValidateMinSizeMB()
         {
-            int minSizeMB = 0;
             Properties.Settings.Default.MinSizeMB = (long)numMinSizeMB.Value;
             if (listModels.SelectedItems.Count > 0) loadListClips(listModels.SelectedItems[0].Tag);
          
@@ -1002,27 +1032,28 @@ namespace IStripperQuickPlayer
         {
             if (mousedownCard == null)return;
             currentMenuCard=mousedownCard;
-            ModelCard c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
-            if (myData.GetCardRating(c.name.ToString()) != null && myData.GetCardRating(c.name.ToString()) > 0)
+            ModelCard? c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
+            if (c == null) return;
+            if (myData != null && myData.GetCardRating(c.name.ToString()) > 0)
                 ratingSlider.Value = myData.GetCardRating(c.name.ToString());
                 //cmbMenuCardRating.Text = "My Rating: " + myData.GetCardRating(c.name.ToString());
             else
                 ratingSlider.Value = 0;
-            menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
+            if (myData != null) menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
             ratingToolStripMenuItem.Text = "Rating: " + (c.rating-5M).ToString();
             statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
             nameToolStripMenuItem.Text = c.modelName;
             outfitToolStripMenuItem.Text = c.outfit;
             CultureInfo cultureInfo   = Thread.CurrentThread.CurrentCulture;  
             TextInfo textInfo = cultureInfo.TextInfo;  
-            hairToolStripMenuItem.Text =  "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
-            purchasedToolStripMenuItem.Text = "Purchased: " + c.datePurchased.ToShortDateString();
+            if (c.hair != null) hairToolStripMenuItem.Text =  "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
+            if (c.datePurchased != null) purchasedToolStripMenuItem.Text = "Purchased: " + ((DateTime)c.datePurchased).ToShortDateString();
             hotnessToolStripMenuItem.Text = "Hotness: " + ((Enums.HotnessCode)Convert.ToInt32(c.hotnessLevel)).GetDescription();
             ageToolStripMenuItem.Text = "Age: " + c.modelAge;
         }
 
-        private ListViewItem mousedownCard=null;
-        private ListViewItem currentMenuCard=null;
+        private ListViewItem? mousedownCard=null;
+        private ListViewItem? currentMenuCard=null;
         private void listModels_MouseDown(object sender, MouseEventArgs e)
         {
             if ( e.Button == MouseButtons.Right )
@@ -1039,6 +1070,7 @@ namespace IStripperQuickPlayer
 
         private void menuCardFavourite_CheckedChanged(object sender, EventArgs e)
         {
+            if (myData==null||currentMenuCard==null)return;
             if (myData.GetCardFavourite(currentMenuCard.Tag.ToString()) != menuCardFavourite.Checked)
             { 
                 myData.AddCardFavourite(currentMenuCard.Tag.ToString(), menuCardFavourite.Checked);
@@ -1054,12 +1086,14 @@ namespace IStripperQuickPlayer
 
         private void cmbMenuCardRating_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (myData==null||currentMenuCard==null)return;
             myData.AddCardRating(currentMenuCard.Tag.ToString(), cmbMenuCardRating.SelectedIndex+1);
         }
 
         
         private void RatingSlider_ValueChanged(object sender, EventArgs e)
         {
+            if (myData==null||currentMenuCard==null)return;
             myData.AddCardRating(currentMenuCard.Tag.ToString(), ratingSlider.Value);
             if ( menuShowRatingsStars.Checked)
             {
@@ -1080,6 +1114,16 @@ namespace IStripperQuickPlayer
         private void menuCardList_Closing(object sender, ToolStripDropDownClosingEventArgs e)
         {
             //currentMenuCard = null;
+        }
+
+        private void txtUserTags_TextChanged(object sender, EventArgs e)
+        {
+            if (myData==null)return;
+            if (listModels.SelectedItems.Count > 0)
+            {
+                List<string> tags = txtUserTags.Text.Split(',').ToList();
+                myData.AddCardTags(listModels.SelectedItems[0].Tag.ToString(), tags);
+            }
         }
     }
 }

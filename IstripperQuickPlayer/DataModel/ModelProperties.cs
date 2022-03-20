@@ -1,4 +1,5 @@
-﻿using System;
+﻿using IStripperQuickPlayer.BLL;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -9,21 +10,24 @@ namespace IStripperQuickPlayer.DataModel
 {
     internal class ModelProperties
     {
-        internal string Name;
-        internal string Height;
+        internal string Name="";
+        internal string Height="";
         internal decimal Bust;
         internal decimal Waist;
         internal decimal Hips;
         internal decimal Weight;
-        internal string City;
-        internal string Country;
+        internal string City="";
+        internal string Country="";
         internal DateTime Birthdate;
 
         public ModelProperties(XmlNode? element)
         {
-            Name = element.Attributes["na"].Value;
-            Height = element.Attributes["heig"].Value;
-            string meas = element.Attributes["stat"].Value;
+            if (element == null) return;
+            if (element.Attributes == null) return;
+            
+            Name = element.GetAttribute("id");;
+            Height = element.GetAttribute("heig");
+            string meas = element.GetAttribute("stat");
             if (!string.IsNullOrEmpty(meas))    
             {
                 string[] measurements = meas.Split('/');
@@ -34,10 +38,11 @@ namespace IStripperQuickPlayer.DataModel
                     Hips = decimal.Parse(measurements[2]);
                 }
             }
-            Weight = decimal.Parse(element.Attributes["weig"].Value);
-            City = element.Attributes["city"].Value;
-            Country = element.Attributes["cntry"].Value;
-            DateTime.TryParse(element.Attributes["birth"].Value, out Birthdate);
+            Weight = decimal.Parse(element.GetAttribute("weig"));
+            City = element.GetAttribute("city");;
+            Country = element.GetAttribute("cntry");;
+            DateTime.TryParse(element.GetAttribute("birth"), out Birthdate);
+
         }
     }
 }

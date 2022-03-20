@@ -87,6 +87,8 @@
             this.numMinSizeMB = new System.Windows.Forms.NumericUpDown();
             this.lblStats = new System.Windows.Forms.Label();
             this.chkFavourite = new System.Windows.Forms.CheckBox();
+            this.lblUserTags = new System.Windows.Forms.Label();
+            this.txtUserTags = new System.Windows.Forms.TextBox();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -287,7 +289,7 @@
             this.listClips.Location = new System.Drawing.Point(907, 151);
             this.listClips.MultiSelect = false;
             this.listClips.Name = "listClips";
-            this.listClips.Size = new System.Drawing.Size(815, 623);
+            this.listClips.Size = new System.Drawing.Size(815, 580);
             this.listClips.TabIndex = 13;
             this.listClips.UseCompatibleStateImageBehavior = false;
             this.listClips.View = System.Windows.Forms.View.Details;
@@ -457,7 +459,7 @@
             // 
             this.lblAge.AutoSize = true;
             this.lblAge.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblAge.Location = new System.Drawing.Point(910, 784);
+            this.lblAge.Location = new System.Drawing.Point(910, 749);
             this.lblAge.Name = "lblAge";
             this.lblAge.Size = new System.Drawing.Size(48, 25);
             this.lblAge.TabIndex = 15;
@@ -467,7 +469,7 @@
             // 
             this.lblCollection.AutoSize = true;
             this.lblCollection.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblCollection.Location = new System.Drawing.Point(1190, 784);
+            this.lblCollection.Location = new System.Drawing.Point(1190, 749);
             this.lblCollection.Name = "lblCollection";
             this.lblCollection.Size = new System.Drawing.Size(94, 25);
             this.lblCollection.TabIndex = 16;
@@ -477,7 +479,7 @@
             // 
             this.lblRatingScore.AutoSize = true;
             this.lblRatingScore.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblRatingScore.Location = new System.Drawing.Point(1586, 784);
+            this.lblRatingScore.Location = new System.Drawing.Point(1586, 749);
             this.lblRatingScore.Name = "lblRatingScore";
             this.lblRatingScore.Size = new System.Drawing.Size(81, 25);
             this.lblRatingScore.TabIndex = 17;
@@ -497,7 +499,7 @@
             // 
             this.lblResolution.AutoSize = true;
             this.lblResolution.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblResolution.Location = new System.Drawing.Point(1423, 784);
+            this.lblResolution.Location = new System.Drawing.Point(1423, 749);
             this.lblResolution.Name = "lblResolution";
             this.lblResolution.Size = new System.Drawing.Size(99, 25);
             this.lblResolution.TabIndex = 19;
@@ -632,7 +634,8 @@
             // 
             this.lblTags.AutoSize = true;
             this.lblTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblTags.Location = new System.Drawing.Point(907, 819);
+            this.lblTags.Location = new System.Drawing.Point(907, 785);
+            this.lblTags.MaximumSize = new System.Drawing.Size(815, 30);
             this.lblTags.Name = "lblTags";
             this.lblTags.Size = new System.Drawing.Size(51, 25);
             this.lblTags.TabIndex = 26;
@@ -693,7 +696,7 @@
             // 
             this.lblStats.AutoSize = true;
             this.lblStats.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblStats.Location = new System.Drawing.Point(1019, 784);
+            this.lblStats.Location = new System.Drawing.Point(1019, 749);
             this.lblStats.Name = "lblStats";
             this.lblStats.Size = new System.Drawing.Size(54, 25);
             this.lblStats.TabIndex = 31;
@@ -710,11 +713,33 @@
             this.chkFavourite.UseVisualStyleBackColor = true;
             this.chkFavourite.CheckedChanged += new System.EventHandler(this.chkFavourite_CheckedChanged);
             // 
+            // lblUserTags
+            // 
+            this.lblUserTags.AutoSize = true;
+            this.lblUserTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.lblUserTags.Location = new System.Drawing.Point(907, 822);
+            this.lblUserTags.Name = "lblUserTags";
+            this.lblUserTags.Size = new System.Drawing.Size(91, 25);
+            this.lblUserTags.TabIndex = 33;
+            this.lblUserTags.Text = "User Tags:";
+            // 
+            // txtUserTags
+            // 
+            this.txtUserTags.BackColor = System.Drawing.SystemColors.ControlLightLight;
+            this.txtUserTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.txtUserTags.Location = new System.Drawing.Point(1018, 816);
+            this.txtUserTags.Name = "txtUserTags";
+            this.txtUserTags.Size = new System.Drawing.Size(704, 31);
+            this.txtUserTags.TabIndex = 34;
+            this.txtUserTags.TextChanged += new System.EventHandler(this.txtUserTags_TextChanged);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1760, 1033);
+            this.Controls.Add(this.txtUserTags);
+            this.Controls.Add(this.lblUserTags);
             this.Controls.Add(this.chkFavourite);
             this.Controls.Add(this.lblStats);
             this.Controls.Add(this.numMinSizeMB);
@@ -825,5 +850,7 @@
         private ToolStripMenuItem ageToolStripMenuItem;
         private ToolStripMenuItem hairToolStripMenuItem;
         private ToolStripMenuItem purchasedToolStripMenuItem;
+        private Label lblUserTags;
+        private TextBox txtUserTags;
     }
 }

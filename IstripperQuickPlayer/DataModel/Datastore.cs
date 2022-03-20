@@ -12,8 +12,9 @@ namespace IStripperQuickPlayer.DataModel
         static internal List<ModelCard>? modelcards = new List<ModelCard>{ };
         internal static int numberOfCards = 0;
 
-        internal static ModelCard findCardByTag(string tag)
+        internal static ModelCard? findCardByTag(string tag)
         {
+            if (modelcards == null) return null;
             foreach(ModelCard card in modelcards)
             {
                 if (card.name == tag)

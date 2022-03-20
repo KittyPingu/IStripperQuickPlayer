@@ -16,22 +16,22 @@ namespace IStripperQuickPlayer.BLL
     /// <summary>
     /// The current reg values to be compared against.
     /// </summary>
-    private readonly Dictionary<Tuple<string, string>, object> currentRegValues;
+    private readonly Dictionary<Tuple<string, string>, object?> currentRegValues = new Dictionary<Tuple<string, string>, object?>{ };
 
     /// <summary>
     /// Registry entries to watch.
     /// </summary>
-    private readonly Tuple<string, string>[] toWatch;
+    private readonly Tuple<string, string>[]? toWatch;
 
     /// <summary>
     /// The timer to trigger registry polls.
     /// </summary>
-    private readonly System.Threading.Timer timer;
+    private readonly System.Threading.Timer? timer;
 
     /// <summary>
     /// Occurs when registry value changes.
     /// </summary>
-    public event EventHandler<RegistryChangeEventArgs> RegistryChange;
+    public event EventHandler<RegistryChangeEventArgs>? RegistryChange;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RegistryWatcher"/> class.
@@ -51,19 +51,26 @@ namespace IStripperQuickPlayer.BLL
     /// Checks the registry.
     /// </summary>
     /// <param name="state">The state.</param>
-    private void CheckRegistry(object state)
+    private void CheckRegistry(object? state)
     {
+        if (toWatch == null) return;
+        if (currentRegValues == null) return;
         foreach (Tuple<string, string> reg in toWatch)
         {
-            object newValue = Registry.GetValue(reg.Item1, reg.Item2, null);
-            if (currentRegValues[reg].ToString() != newValue.ToString())
+            if (reg != null && reg.Item1 != null && reg.Item2 != null)
             {
-                RegistryChange?.Invoke(this, new RegistryChangeEventArgs(reg.Item1, reg.Item2, newValue));
-                currentRegValues[reg] = newValue;
-            }
+                object newValue = Registry.GetValue(reg.Item1, reg.Item2, null) ?? "";
+#pragma warning disable CS8602 // Dereference of a possibly null reference.
+                if ((currentRegValues[reg].ToString() ?? "") != newValue.ToString())
+                {
+                    RegistryChange?.Invoke(this, new RegistryChangeEventArgs(reg.Item1, reg.Item2, newValue));
+                    currentRegValues[reg] = newValue;
+                }
+#pragma warning restore CS8602 // Dereference of a possibly null reference.
+                }
         }
 
-        timer.Change(PERIOD, Timeout.Infinite);
+        if (timer != null) timer.Change(PERIOD, Timeout.Infinite);
     }
 
     /// <summary>

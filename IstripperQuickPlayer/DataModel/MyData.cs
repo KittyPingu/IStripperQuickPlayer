@@ -64,5 +64,23 @@ namespace IStripperQuickPlayer.DataModel
             else
                 return false;
         }
+
+        internal void AddCardTags(string tag, List<string> tags)
+        {
+            if (CardTags.ContainsKey(tag))
+            { 
+                    CardTags[tag] = tags; 
+            }
+            else
+                CardTags.Add(tag, tags);
+        }
+
+        internal List<string> GetCardTags(string tag)
+        {
+            if (CardTags.ContainsKey(tag))
+                return CardTags[tag];
+            else
+                return new List<string>{ };
+        }
     }
 }
