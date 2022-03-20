@@ -450,7 +450,6 @@ namespace IStripperQuickPlayer
             watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             watcher.RegistryChange += RegistryChanged;
             clickingNowPlaying = true;
-            GetNowPlaying();
             RetrieveModels();
             GetNowPlaying();
             clickingNowPlaying = false;
@@ -563,7 +562,7 @@ namespace IStripperQuickPlayer
             {
                 string[] p = nowPlayingTag.Split("\r\n");
                 ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
-                //listModels.SelectedItems.Clear();
+                listModels.SelectedIndices.Clear();
                 var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
                 if (i != null)
                 {
