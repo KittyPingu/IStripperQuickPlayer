@@ -1,4 +1,5 @@
 ﻿using IStripperQuickPlayer.DataModel;
+using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,7 +19,11 @@ namespace IStripperQuickPlayer.BLL
         internal static void loadXML()
         {
             var path = findXMLFile();
-            if (path == null) return;
+            if (path == null || string.IsNullOrEmpty(path.FullName)) 
+            {
+                MessageBox.Show("could not find StaticProperties.xml file");
+                return;
+            }
             string fulltext = System.IO.File.ReadAllText(path.FullName);
             int start = fulltext.IndexOf('<');
             fulltext = fulltext.Substring(start);
@@ -74,8 +79,20 @@ namespace IStripperQuickPlayer.BLL
 
         private static FileInfo? findXMLFile()
         {
-            string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string fullpath = Path.Combine(localapp, "vghd\\data\\staticProperties loaded from server.xml");
+            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\System", false);
+            string localapp = "";
+            if (key != null)
+            {
+                var a = key.GetValue("DataPath", "");
+                if (a != null)
+                { 
+                    localapp = a.ToString() ?? "";
+                    key.Close();
+                }
+            }
+
+            
+            string fullpath = Path.Combine(localapp, "staticProperties loaded from server.xml");
             if (File.Exists(fullpath))
             {
                 return new FileInfo(fullpath);

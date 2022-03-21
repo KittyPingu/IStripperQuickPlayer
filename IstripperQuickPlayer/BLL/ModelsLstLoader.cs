@@ -7,6 +7,7 @@ using System.IO;
 using IStripperQuickPlayer.DataModel;
 using static IStripperQuickPlayer.DataModel.Enums;
 using System.Xml;
+using Microsoft.Win32;
 
 namespace IStripperQuickPlayer.BLL
 {
@@ -214,8 +215,8 @@ namespace IStripperQuickPlayer.BLL
         private Image? loadCardImage(ModelCard card) {   
 
             Image? image = null;
-            string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string fullpath = Path.Combine(localapp,"vghd\\data\\", card.name, card.name + ".jpg");
+            string localapp = getDataFolderPath();
+            string fullpath = Path.Combine(localapp, card.name, card.name + ".jpg");
             card.imagefile = fullpath;
             try
             {
@@ -250,8 +251,8 @@ namespace IStripperQuickPlayer.BLL
 
         private XmlDocument loadCardXML(string cardnumber)
         {
-            string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string fullpath = Path.Combine(localapp,"vghd\\data\\", cardnumber, cardnumber + ".xml");
+            string localapp = getDataFolderPath();
+            string fullpath = Path.Combine(localapp, cardnumber, cardnumber + ".xml");
             try
             {
                 XmlDocument doc = new XmlDocument();
@@ -260,7 +261,6 @@ namespace IStripperQuickPlayer.BLL
             }
             catch (Exception)
             {
-
                 Console.WriteLine("no cardXML for " + cardnumber);
             }
             return new XmlDocument();           
@@ -362,14 +362,30 @@ namespace IStripperQuickPlayer.BLL
         //find the models.lst file
         private FileInfo? findModelFile()
         {
-            string localapp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string fullpath = Path.Combine(localapp, "vghd\\data\\models.lst");
+            string localapp = getDataFolderPath();
+            string fullpath = Path.Combine(localapp, "models.lst");
             if (File.Exists(fullpath))
             {
                 return new FileInfo(fullpath);
             }
             else
                 return null;
+        }
+
+        private string getDataFolderPath()
+        {            
+            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\System", false);
+            string localapp = "";
+            if (key != null)
+            {
+                var a = key.GetValue("DataPath", "");
+                if (a != null)
+                { 
+                    localapp = a.ToString() ?? "";
+                    key.Close();
+                }
+            }
+            return localapp;
         }
     }
 }

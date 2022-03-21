@@ -617,7 +617,7 @@ namespace IStripperQuickPlayer
             string text = "";
             ModelCard? card = Datastore.findCardByTag(e.Item.Tag.ToString());
             if (card == null) return;
-            e.Graphics.DrawImage(card.image, imgrect);
+            if (card.image != null) e.Graphics.DrawImage(card.image, imgrect);
             decimal myrating=0M;
             if (myData != null) myrating = myData.GetCardRating(card.name);
             switch (cmbSortBy.Text)
