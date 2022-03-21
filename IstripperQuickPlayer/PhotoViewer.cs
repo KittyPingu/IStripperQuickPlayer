@@ -72,7 +72,7 @@ namespace IStripperQuickPlayer
             if (listView1.SelectedItems.Count == 0) return;
             ImageView img = new ImageView();
             img.LoadImage(photos.getPhoto(listView1.SelectedItems[0].Index));
-            img.ShowDialog();
+            img.Show();
         }
     }
 }
