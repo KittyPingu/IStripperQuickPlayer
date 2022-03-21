@@ -1039,7 +1039,7 @@ namespace IStripperQuickPlayer
         private void ValidateMinSizeMB()
         {
             Properties.Settings.Default.MinSizeMB = (long)numMinSizeMB.Value;
-            if (items != null && items.Length > 0) loadListClips(listModels.Items[listModels.SelectedIndices[0]].Tag);
+            if (items != null && items.Length > 0 && listModels.SelectedIndices.Count > 0) loadListClips(listModels.Items[listModels.SelectedIndices[0]].Tag);
          
         }
 
