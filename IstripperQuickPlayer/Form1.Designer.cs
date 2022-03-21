@@ -89,6 +89,7 @@
             this.chkFavourite = new System.Windows.Forms.CheckBox();
             this.lblUserTags = new System.Windows.Forms.Label();
             this.txtUserTags = new System.Windows.Forms.TextBox();
+            this.cmdPhotos = new System.Windows.Forms.Button();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -529,7 +530,7 @@
             // 
             // button1
             // 
-            this.button1.Location = new System.Drawing.Point(1621, 34);
+            this.button1.Location = new System.Drawing.Point(1621, 35);
             this.button1.Name = "button1";
             this.button1.Size = new System.Drawing.Size(101, 35);
             this.button1.TabIndex = 22;
@@ -553,9 +554,9 @@
             // 
             // cmdNextClip
             // 
-            this.cmdNextClip.Location = new System.Drawing.Point(1518, 35);
+            this.cmdNextClip.Location = new System.Drawing.Point(1435, 35);
             this.cmdNextClip.Name = "cmdNextClip";
-            this.cmdNextClip.Size = new System.Drawing.Size(97, 34);
+            this.cmdNextClip.Size = new System.Drawing.Size(87, 35);
             this.cmdNextClip.TabIndex = 24;
             this.cmdNextClip.Text = "Next Clip";
             this.cmdNextClip.UseVisualStyleBackColor = true;
@@ -735,11 +736,22 @@
             this.txtUserTags.TabIndex = 34;
             this.txtUserTags.TextChanged += new System.EventHandler(this.txtUserTags_TextChanged);
             // 
+            // cmdPhotos
+            // 
+            this.cmdPhotos.Location = new System.Drawing.Point(1635, 151);
+            this.cmdPhotos.Name = "cmdPhotos";
+            this.cmdPhotos.Size = new System.Drawing.Size(87, 28);
+            this.cmdPhotos.TabIndex = 35;
+            this.cmdPhotos.Text = "Photos";
+            this.cmdPhotos.UseVisualStyleBackColor = true;
+            this.cmdPhotos.Click += new System.EventHandler(this.cmdPhotos_Click);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1760, 1033);
+            this.Controls.Add(this.cmdPhotos);
             this.Controls.Add(this.txtUserTags);
             this.Controls.Add(this.lblUserTags);
             this.Controls.Add(this.chkFavourite);
@@ -854,5 +866,6 @@
         private ToolStripMenuItem purchasedToolStripMenuItem;
         private Label lblUserTags;
         private TextBox txtUserTags;
+        private Button cmdPhotos;
     }
 }

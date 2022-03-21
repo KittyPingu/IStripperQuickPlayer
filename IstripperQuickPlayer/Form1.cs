@@ -8,6 +8,7 @@ using System.Drawing.Text;
 using System.Globalization;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
+using Size = System.Drawing.Size;
 
 namespace IStripperQuickPlayer
 {
@@ -16,11 +17,12 @@ namespace IStripperQuickPlayer
         private static RegistryWatcher? watcher;
         private string nowPlayingTag = "";
         private int nowPlayingClipNumber;
+        private string clipListTag = "";
         private bool changesort = false;
         private MyData? myData = null;
         private bool fontInstalled = false;
         internal FilterSettings filterSettings = new FilterSettings();
-
+        static readonly HttpClient client = new HttpClient();
         //global hotkeys
         Combination? nextClip;// = Combination.FromString("Control+Alt+N");
         Action? actionNextClip = null;
@@ -346,6 +348,7 @@ namespace IStripperQuickPlayer
         {
             ModelCard? card = Datastore.findCardByTag(tag.ToString());           
             if (card == null) return; 
+            clipListTag = tag.ToString();
             lblCipListDetails.Text = card.modelName + ": " +card.outfit;
             if (myData != null) 
                 txtUserTags.Text = string.Join(",", myData.GetCardTags(tag.ToString()));
@@ -875,6 +878,17 @@ namespace IStripperQuickPlayer
         {
             txtSearch.Text = nowPlayingTag.Split("\r\n")[0];
             PopulateModelListview();
+            string[] p = nowPlayingTag.Split("\r\n");
+            ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
+            listModels.SelectedIndices.Clear();
+            var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
+            int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);            
+            if (i != null)
+            {
+                listModels.SelectedIndices.Add((int)index);
+                listModels.FindItemWithText(nowPlayingTag);
+                listModels.EnsureVisible((int)index);                    
+            }
         }
 
         private void button2_Click(object sender, EventArgs e)
@@ -1180,6 +1194,20 @@ namespace IStripperQuickPlayer
             }     
             return;
           
+        }
+
+        private async void cmdPhotos_Click(object sender, EventArgs e)
+        {
+            if (!string.IsNullOrEmpty(clipListTag))
+            {
+                CardPhotos photos = new CardPhotos();
+                await photos.LoadCardPhotos(client, clipListTag);
+                PhotoViewer p = new PhotoViewer();
+                p.photos = photos;
+                p.Populate();
+                p.Show();
+                //photos.getPhoto(0);
+            }
         }
     }
 }

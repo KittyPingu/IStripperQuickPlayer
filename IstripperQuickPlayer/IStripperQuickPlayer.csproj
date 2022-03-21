@@ -33,10 +33,14 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="MouseKeyHook" Version="5.6.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="ColorSlider">
       <HintPath>ColorSlider.dll</HintPath>
+    </Reference>
+    <Reference Include="KP-ImageViewerV2">
+      <HintPath>KP-ImageViewerV2.dll</HintPath>
     </Reference>
   </ItemGroup>
 
