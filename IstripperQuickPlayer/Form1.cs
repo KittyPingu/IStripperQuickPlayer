@@ -94,14 +94,25 @@ namespace IStripperQuickPlayer
                 listModels.EndUpdate();
                 return;
             }
-
-            List<ModelCard>? currentCards;
-            if (txtSearch.Text != "") 
-                currentCards = Datastore.modelcards.Where(i => i != null).Where(c => c.modelName != null && c.modelName.Contains(txtSearch.Text, StringComparison.CurrentCultureIgnoreCase)
-                || c.tags.Contains(txtSearch.Text)).ToList();
+            
+            List<ModelCard>? currentCards=null;
+            if (txtSearch.Text != "")
+            {
+                 
+                string[] parts = txtSearch.Text.ToLower().Split("and").Select(p => p.Trim()).ToArray();
+                foreach(string p in parts)
+                { 
+                    List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
+                    currentCards = Datastore.modelcards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.Contains(y,StringComparison.CurrentCultureIgnoreCase)))
+                    || myData != null && myData.GetCardTags(c.name).Any(x => taglist.Contains(x.Trim())) || c.tags.Any(y => taglist.Contains(y))).ToList();
+                }
+                
+            
+            }
             else
                 currentCards = Datastore.modelcards;
 
+            if (currentCards == null) return;
             currentCards = Filter(currentCards);
 
             switch (cmbSortBy.Text)
