@@ -1090,20 +1090,30 @@ namespace IStripperQuickPlayer
 
         }
 
-        private void GetNextClip(bool ChooseRandom = false)
+        private void GetNextClip(ModelCard? model = null)
         {
             RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
-            if (key == null) return;
-            var a = key.GetValue("CurrentAnim", "");
-            if (a == null) return;
-            string path = a.ToString() ?? "";
-            key.Close();
-            if (path == "" && !ChooseRandom) return;
+            string path = "";
+            bool chooseRandom = false;
+            if (model != null)
+            {
+               chooseRandom = true;
+            }
+            else
+            {
+                if (key == null) return;
+                var a = key.GetValue("CurrentAnim", "");
+                if (a == null) return;
+                path = a.ToString() ?? "";
+                key.Close();
+                if (path == "") return;
+            }
+           
 
             if (Datastore.modelcards == null) return;
             if (Datastore.modelcards.Count > 0)
             {
-                ModelCard? model = Datastore.findCardByTag(path.Split("\\")[0]);
+                if (model == null) model = Datastore.findCardByTag(path.Split("\\")[0]);
                 if (model == null) return;
                 List<ModelClip> clips = new List<ModelClip>();
                 if (model.clips == null) return;
@@ -1139,31 +1149,34 @@ namespace IStripperQuickPlayer
                         default:
                             break;
                     }
+                    if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
                     if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
                     if (addThis)
                     {
                         clips.Add(clip);
                     }
                 }
-                if (ChooseRandom)
-                {
-                    Random rnd = new Random();
-                    int idxnew = rnd.Next(clips.Count-1);
-                    path = "random" + "\\" + clips[idxnew].clipName;
-                    listClips.Items[idxnew].Selected = true;
-                }
-                ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).First();
+                
 
                 ModelClip? mnew = null;
-                if (modelClip.clipNumber < clips.Last().clipNumber)
+                if (chooseRandom)
                 {
-                    //play next
-                    mnew = clips.Where((x) => x.clipNumber > modelClip.clipNumber).FirstOrDefault();
+                    Random rand = new Random();
+                    mnew =  clips[rand.Next(clips.Count-1)];
                 }
                 else
                 {
-                    //play first
-                    mnew = clips.FirstOrDefault();
+                    ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).First();
+                    if (modelClip.clipNumber < clips.Last().clipNumber)
+                    {
+                        //play next
+                        mnew = clips.Where((x) => x.clipNumber > modelClip.clipNumber).FirstOrDefault();
+                    }
+                    else
+                    {
+                        //play first
+                        mnew = clips.FirstOrDefault();
+                    }
                 }
 
                 if (mnew != null && mnew.clipName != null)
@@ -1401,7 +1414,7 @@ namespace IStripperQuickPlayer
         private void listModels_DoubleClick(object sender, EventArgs e)
         {
             FilterClips();
-            GetNextClip(true);
+            GetNextClip(Datastore.findCardByText(listModels.Items[listModels.SelectedIndices[0]].Text));
         }
     }
 }
