@@ -85,7 +85,7 @@ namespace IStripperQuickPlayer.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("0")]
+        [global::System.Configuration.DefaultSettingValueAttribute("25")]
         public long MinSizeMB {
             get {
                 return ((long)(this["MinSizeMB"]));

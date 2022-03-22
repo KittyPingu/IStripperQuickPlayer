@@ -3,9 +3,11 @@ using Gma.System.MouseKeyHook;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
 using Microsoft.Win32;
+using Nektra.Deviare2;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using Size = System.Drawing.Size;
@@ -14,7 +16,6 @@ namespace IStripperQuickPlayer
 {
     public partial class Form1 : Form
     {
-        private static RegistryWatcher? watcher;
         private string nowPlayingTag = "";
         private int nowPlayingClipNumber;
         private string clipListTag = "";
@@ -23,11 +24,15 @@ namespace IStripperQuickPlayer
         private bool fontInstalled = false;
         internal FilterSettings filterSettings = new FilterSettings();
         static readonly HttpClient client = new HttpClient();
+        
         //global hotkeys
         Combination? nextClip;// = Combination.FromString("Control+Alt+N");
         Action? actionNextClip = null;
         Combination? nextCard;// = Combination.FromString("Control+Alt+C");
         Action? actionNextCard = null;
+        //deviare2 hooking
+        private NktSpyMgr _spyMgr;
+        private Int32 vghd_procID=0;
 
         private void actNextClip()
         {
@@ -89,6 +94,12 @@ namespace IStripperQuickPlayer
         ListViewItem[]? items; //stores the list of virtualized cards for modelList operations
         internal void PopulateModelListview()
         {
+            //save the selected card, we can reselect it at the end if it's still valid
+            string currentText = "";
+            if (listModels.SelectedIndices.Count > 0)
+            {
+                currentText = listModels.Items[listModels.SelectedIndices[0]].Text;
+            }
             listModels.BeginUpdate();
             listModels.Items.Clear();
             if (Datastore.modelcards == null)
@@ -183,6 +194,21 @@ namespace IStripperQuickPlayer
             listModels.VirtualListSize = items.Length;
             listModels.VirtualMode = true;
             lblModelsLoaded.Text = "Cards Shown: " + listModels.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
+
+            //set the selected card back to what we had selected at start of the function
+            if (currentText != "")
+            {
+                listModels.SelectedIndices.Clear();
+                int? index = items.ToList().FindIndex(x => x.Text == currentText);
+                if (index != null && index > 0)
+                {
+                    listModels.SelectedIndices.Add((int)index);
+                    //listModels.Items[i.Index].Selected = true;
+                    listModels.FindItemWithText(currentText);
+                    listModels.EnsureVisible((int)index);     
+                }
+               
+            }
         }
 
         void listModels_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
@@ -447,7 +473,8 @@ namespace IStripperQuickPlayer
         {
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-            AssignHooks();
+            SetupKeyHooks();
+            SetupRegHooks();
             //check if we Segoe Fluent Icons font - this comes with windows 11
             var fontsCollection = new InstalledFontCollection();
             foreach (var fontFamily in fontsCollection.Families)
@@ -466,15 +493,15 @@ namespace IStripperQuickPlayer
             myData = RetrieveMyData();
             listModels.SetDoubleBuffered();
             string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
-            watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
-            watcher.RegistryChange += RegistryChanged;
+            //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
+            //watcher.RegistryChange += RegistryChanged;
             clickingNowPlaying = true;
             RetrieveModels();
             GetNowPlaying();
             clickingNowPlaying = false;
         }
 
-        private void AssignHooks()
+        private void SetupKeyHooks()
         {
             nextClip = Combination.FromString(Properties.Settings.Default.NextClipString);
             nextCard = Combination.FromString(Properties.Settings.Default.NextCardString);
@@ -487,6 +514,172 @@ namespace IStripperQuickPlayer
             };
             Hook.GlobalEvents().OnCombination(assignment);
         }
+
+        System.Threading.Timer timerhook;
+        NktHook hook;
+        private void SetupRegHooks()
+        {
+            _spyMgr = new NktSpyMgr();
+            _spyMgr.Initialize();
+            _spyMgr.OnFunctionCalled += new DNktSpyMgrEvents_OnFunctionCalledEventHandler(OnFunctionCalled);
+            if (!InjectVGHDProcess()) timerhook = new System.Threading.Timer(new TimerCallback(waitForIStripper), null, 1000, 1000);
+            return ;
+        }
+
+        private bool InjectVGHDProcess()
+        {
+            hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess));
+            hook.Hook(true);
+
+            bool bProcessFound = false;
+            NktProcessesEnum enumProcess = _spyMgr.Processes();
+            NktProcess tempProcess = enumProcess.First();
+            while (tempProcess != null)
+            {
+                if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 32)
+                {
+                    hook.Attach(tempProcess, true);
+                    vghd_procID = tempProcess.Id;
+                    bProcessFound = true;
+                }
+                tempProcess = enumProcess.Next();
+            }
+
+            if (!bProcessFound)
+            {
+                return false;
+                
+            }
+
+            return true;
+        }
+
+        private void waitForIStripper(object state)
+        {
+            if (InjectVGHDProcess()) timerhook.Dispose();
+        }
+
+        private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
+        {
+            string newclip = @"f0954\f0954_6176201.vghd";
+                     
+            var p = hookCallInfo.Params();
+            IntPtr pointer = IntPtr.Zero;
+            string keyname = "";
+            int length = 0;
+            foreach (INktParam param in p)
+            {                
+                if (param.Name == "lpData") pointer = param.PointerVal;
+                if (param.Name == "cbData") 
+                {
+                    length = Convert.ToInt16(param.Value);                     
+                }
+                if (param.Name == "lpValueName") keyname = param.Value.ToString();
+            }
+            if (keyname != "CurrentAnim" || length < 1) return;
+            string str = GetStringFromPointer(pointer, length);
+            System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
+
+            //check if this propsed card is in the filterd list
+            string newcardstring = str ?? "";
+            if (Properties.Settings.Default.EnforceCardFilter)
+            {
+                if (string.IsNullOrEmpty(newcardstring))
+                {
+                    this.BeginInvoke((Action)(() => lblNowPlaying.Text = ""));
+                    return;
+                }
+                else
+                {
+                    ModelCard? model = Datastore.findCardByTag(newcardstring.Split("\\")[0]);   
+                    ListViewItem? res = null;
+                    if (model == null) return;
+                    this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
+                    if (res == null)
+                    {
+                        //play a clip from a filtered card instead
+                        //find a new model from the filtered cards
+                        if (items == null || items.Length < 1) return;
+                        Random r = new Random();
+            
+                        string newtag = nowPlayingTag;
+                        while (newtag == nowPlayingTag)
+                        {
+                            Int64 newr = r.Next(items.Length);
+                            newtag = items[(int)newr].Text;
+                            if (items.Length == 1) break;
+                        }
+                        listModels.BeginInvoke((Action)(() => listModels.SelectedIndices.Clear()));
+                        int? index = items.ToList().FindIndex(x => x.Text == newtag);
+                        if (index != null)
+                        {
+                            listModels.BeginInvoke((Action)(() => listModels.SelectedIndices.Add((int)index)));
+                            listModels.BeginInvoke((Action)(() => listModels.FindItemWithText(newtag)));
+                            listModels.BeginInvoke((Action)(() => listModels.EnsureVisible((int)index)));     
+                        }
+            
+                        //choose a random clip from those shown
+                        var mod = Datastore.findCardByText(newtag);
+                        if (mod.clips.Count == 0) return;
+                        var itemnum = r.Next(mod.clips.Count-1);
+                        newcardstring = mod.clips[itemnum].clipName.Split("_")[0] + "\\" + mod.clips[itemnum].clipName;
+                    
+                    }
+                        
+                }
+            }
+            
+            
+            ShowNowPlaying(newcardstring);
+            if (str != newcardstring)
+            {
+                RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
+
+                string r = nowPlayingTag;
+                string pp = r.Split("_")[0];
+                string full = pp + "\\" + r;
+                if (keynew != null)
+                {
+                    keynew.SetValue("ForceAnim", newcardstring);
+                    keynew.Close();
+                }
+
+                hookCallInfo.Result().LongLongVal = -1;
+                hookCallInfo.Result().LongVal = -1;
+                hookCallInfo.Result().Value = -1;
+                hookCallInfo.LastError = 5;
+            }
+
+            return;
+        }
+
+        public static string readItemText(ListView varControl, int itemnum) {
+            if (varControl.InvokeRequired) {
+                return (string)varControl.Invoke(
+                    new Func<String>(() => readItemText(varControl, itemnum))
+                );
+            }
+            else {
+                string varText = varControl.Items[itemnum].SubItems[1].Text;
+                return varText.Split("_")[0] + "\\" + varText;
+            }
+        }
+
+        private string GetStringFromPointer(IntPtr address, int length)
+        {
+            INktProcessMemory procMem = _spyMgr.ProcessMemoryFromPID((int)vghd_procID);
+            var buffer = new byte[length];
+            var lenptr = new IntPtr(length);
+            GCHandle pinnedBuffer = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            IntPtr pDest = pinnedBuffer.AddrOfPinnedObject();
+            Int64 bytesReaded = procMem.ReadMem(pDest, address, lenptr).ToInt64();
+            procMem.WriteMem(pDest, address, new IntPtr(0));
+            pinnedBuffer.Free();           
+
+            var res = System.Text.Encoding.Unicode.GetString(buffer);
+            return res.Replace("\0", string.Empty);        
+        }
+         
 
         private void GetNowPlaying()
         {
@@ -501,18 +694,6 @@ namespace IStripperQuickPlayer
                     key.Close();
                 }
             }
-        }
-
-        private void RegistryChanged(object? sender, RegistryWatcher.RegistryChangeEventArgs e)
-        {
-            string newcardstring = e.Value.ToString() ?? "";
-            if (string.IsNullOrEmpty(newcardstring))
-            {
-                this.BeginInvoke((Action)(() => lblNowPlaying.Text = ""));
-                return;
-            }
-            if (!EnforceNowPlaying(newcardstring))
-                ShowNowPlaying(newcardstring);
         }
 
         private bool EnforceNowPlaying(string nowplaying)
@@ -909,7 +1090,7 @@ namespace IStripperQuickPlayer
 
         }
 
-        private void GetNextClip()
+        private void GetNextClip(bool ChooseRandom = false)
         {
             RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
             if (key == null) return;
@@ -917,7 +1098,8 @@ namespace IStripperQuickPlayer
             if (a == null) return;
             string path = a.ToString() ?? "";
             key.Close();
-            if (path == "") return;
+            if (path == "" && !ChooseRandom) return;
+
             if (Datastore.modelcards == null) return;
             if (Datastore.modelcards.Count > 0)
             {
@@ -963,7 +1145,13 @@ namespace IStripperQuickPlayer
                         clips.Add(clip);
                     }
                 }
-
+                if (ChooseRandom)
+                {
+                    Random rnd = new Random();
+                    int idxnew = rnd.Next(clips.Count-1);
+                    path = "random" + "\\" + clips[idxnew].clipName;
+                    listClips.Items[idxnew].Selected = true;
+                }
                 ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).First();
 
                 ModelClip? mnew = null;
@@ -1019,7 +1207,7 @@ namespace IStripperQuickPlayer
             
             //choose a random clip from those shown
             if (listClips.Items.Count == 0) return;
-            var itemnum = r.Next(listClips.Items.Count);
+            var itemnum = r.Next(listClips.Items.Count-1);
             listClips.SelectedItems.Clear();
             var j = listClips.Items[(int)itemnum];
             if (j != null)
@@ -1045,7 +1233,7 @@ namespace IStripperQuickPlayer
         {
             Hotkeys hkeys = new Hotkeys();
             hkeys.ShowDialog();
-            AssignHooks();
+            SetupKeyHooks();
         }
 
         private void cmdFilter_Click(object sender, EventArgs e)
@@ -1208,6 +1396,12 @@ namespace IStripperQuickPlayer
                 p.Show();
                 //photos.getPhoto(0);
             }
+        }
+
+        private void listModels_DoubleClick(object sender, EventArgs e)
+        {
+            FilterClips();
+            GetNextClip(true);
         }
     }
 }

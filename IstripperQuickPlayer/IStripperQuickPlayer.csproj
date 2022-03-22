@@ -10,15 +10,25 @@
     <DebugType>full</DebugType>
     <ApplicationIcon>df2284943cc77e7e1a5fa6a0da8ca265.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>AnyCPU;x64</Platforms>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <Optimize>False</Optimize>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Optimize>False</Optimize>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
 	<TransformOnBuild>true</TransformOnBuild>
 	<OverwriteReadOnlyOutputFiles>true</OverwriteReadOnlyOutputFiles>
 	<TransformOutOfDateOnly>false</TransformOutOfDateOnly>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <TransformOnBuild>true</TransformOnBuild>
+    <OverwriteReadOnlyOutputFiles>true</OverwriteReadOnlyOutputFiles>
+    <TransformOutOfDateOnly>false</TransformOutOfDateOnly>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="df2284943cc77e7e1a5fa6a0da8ca265.ico" />
@@ -41,6 +51,9 @@
     </Reference>
     <Reference Include="KP-ImageViewerV2">
       <HintPath>KP-ImageViewerV2.dll</HintPath>
+    </Reference>
+    <Reference Include="Nektra.Deviare2">
+      <HintPath>Deviare\Nektra.Deviare2.dll</HintPath>
     </Reference>
   </ItemGroup>
 
@@ -84,5 +97,8 @@
     <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v17.0\TextTemplating\Microsoft.TextTemplating.targets" />
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Exec Command="xcopy /q /y &quot;$(ProjectDir)dependencies\*.*&quot; &quot;$(TargetDir)&quot;&#xD;&#xA;" />
+  </Target>
 	
 </Project>

@@ -22,5 +22,17 @@ namespace IStripperQuickPlayer.DataModel
             }
             return null;
         }
+
+        internal static ModelCard? findCardByText(string text)
+        {
+            string[] parts = text.Split("\r\n");
+            if (modelcards == null) return null;
+            foreach(ModelCard card in modelcards)
+            {
+                if (card.modelName == parts[0] && card.outfit == parts[1])
+                    return card;
+            }
+            return null;
+        }
     }
 }
