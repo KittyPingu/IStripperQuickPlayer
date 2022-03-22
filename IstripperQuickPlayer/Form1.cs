@@ -595,7 +595,8 @@ namespace IStripperQuickPlayer
                     ListViewItem? res = null;
                     if (model == null) return;
                     this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
-                    if (res == null)
+                    bool found = false;
+                    while (res == null && !found)
                     {
                         //play a clip from a filtered card instead
                         //find a new model from the filtered cards
@@ -620,9 +621,13 @@ namespace IStripperQuickPlayer
             
                         //choose a random clip from those shown
                         var mod = Datastore.findCardByText(newtag);
-                        if (mod.clips.Count == 0) return;
-                        var itemnum = r.Next(mod.clips.Count-1);
-                        newcardstring = mod.clips[itemnum].clipName.Split("_")[0] + "\\" + mod.clips[itemnum].clipName;
+                        List<ModelClip>? clips = FilterClipList(mod.clips);
+                        if (clips.Count > 0)
+                        {
+                            var itemnum = r.Next(clips.Count-1);
+                            newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
+                            found = true;
+                        }
                     
                     }
                         
@@ -651,6 +656,51 @@ namespace IStripperQuickPlayer
             }
 
             return;
+        }
+
+        private List<ModelClip>? FilterClipList(List<ModelClip> clips)
+        {
+            List<ModelClip> clipsnew = new List<ModelClip>();
+            foreach (ModelClip clip in clips)
+            {
+                bool addThis = false;
+                switch (clip.hotnessCode)
+                {
+                    case Enums.HotnessCode.publ:
+                        if (chkPublic.Checked)
+                            addThis = true;
+                        break;
+                    case Enums.HotnessCode.nonudity:
+                        if (chkNoNudity.Checked)
+                            addThis = true;
+                        break;
+                    case Enums.HotnessCode.topless:
+                        if (chkTopless.Checked)
+                            addThis = true;
+                        break;
+                    case Enums.HotnessCode.nudity:
+                        if (chkNudity.Checked)
+                            addThis = true;
+                        break;
+                    case Enums.HotnessCode.fullnudity:
+                        if (chkFullNudity.Checked)
+                            addThis = true;
+                        break;
+                    case Enums.HotnessCode.xxx:
+                        if (chkXXX.Checked)
+                            addThis = true;
+                        break;
+                    default:
+                        break;
+                }
+                if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
+                if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
+                if (addThis)
+                {
+                    clipsnew.Add(clip);
+                }
+            }
+            return clipsnew;
         }
 
         public static string readItemText(ListView varControl, int itemnum) {
@@ -1117,46 +1167,7 @@ namespace IStripperQuickPlayer
                 if (model == null) return;
                 List<ModelClip> clips = new List<ModelClip>();
                 if (model.clips == null) return;
-                foreach (ModelClip clip in model.clips)
-                {
-                    bool addThis = false;
-                    switch (clip.hotnessCode)
-                    {
-                        case Enums.HotnessCode.publ:
-                            if (chkPublic.Checked)
-                                addThis = true;
-                            break;
-                        case Enums.HotnessCode.nonudity:
-                            if (chkNoNudity.Checked)
-                                addThis = true;
-                            break;
-                        case Enums.HotnessCode.topless:
-                            if (chkTopless.Checked)
-                                addThis = true;
-                            break;
-                        case Enums.HotnessCode.nudity:
-                            if (chkNudity.Checked)
-                                addThis = true;
-                            break;
-                        case Enums.HotnessCode.fullnudity:
-                            if (chkFullNudity.Checked)
-                                addThis = true;
-                            break;
-                        case Enums.HotnessCode.xxx:
-                            if (chkXXX.Checked)
-                                addThis = true;
-                            break;
-                        default:
-                            break;
-                    }
-                    if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
-                    if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
-                    if (addThis)
-                    {
-                        clips.Add(clip);
-                    }
-                }
-                
+                clips = FilterClipList(model.clips);                
 
                 ModelClip? mnew = null;
                 if (chooseRandom)
