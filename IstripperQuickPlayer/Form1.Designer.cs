@@ -553,7 +553,7 @@
             this.cmdClearSearch.TabIndex = 23;
             this.cmdClearSearch.UseVisualStyleBackColor = false;
             this.cmdClearSearch.Visible = false;
-            this.cmdClearSearch.Click += new System.EventHandler(this.button2_Click);
+            this.cmdClearSearch.Click += new System.EventHandler(this.cmdClearSearch_Click);
             // 
             // cmdNextClip
             // 

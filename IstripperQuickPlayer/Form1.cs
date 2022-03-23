@@ -1177,14 +1177,16 @@ namespace IStripperQuickPlayer
             {
                 listModels.SelectedIndices.Add((int)index);
                 listModels.FindItemWithText(nowPlayingTag);
-                listModels.EnsureVisible((int)index);                    
+                listModels.EnsureVisible((int)index);               
+                cmdClearSearch.Visible= true;
             }
         }
 
-        private void button2_Click(object sender, EventArgs e)
+        private void cmdClearSearch_Click(object sender, EventArgs e)
         {
             txtSearch.Text = "";
             PopulateModelListview();
+            cmdClearSearch.Visible = false;
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
