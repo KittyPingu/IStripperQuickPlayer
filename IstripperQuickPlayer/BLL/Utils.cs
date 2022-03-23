@@ -67,5 +67,16 @@ namespace IStripperQuickPlayer.BLL
             string r = attribute != null ? attribute.Value : "";
             return r;
         }
+
+        public static bool ContainsWithNot(this string s, string find)
+        {
+            //s = s.Trim();
+            if (find.StartsWith("!"))
+            {
+                return !s.Contains(find.Replace("!","").Trim(), StringComparison.CurrentCultureIgnoreCase);
+            }
+            else
+                return s.Contains(find, StringComparison.CurrentCultureIgnoreCase);
+        }
     }
 }

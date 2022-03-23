@@ -541,15 +541,17 @@
             // 
             // cmdClearSearch
             // 
+            this.cmdClearSearch.BackColor = System.Drawing.SystemColors.Window;
             this.cmdClearSearch.FlatAppearance.BorderSize = 0;
             this.cmdClearSearch.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.cmdClearSearch.Image = global::IStripperQuickPlayer.Properties.Resources.kindpng_4040161;
             this.cmdClearSearch.ImageAlign = System.Drawing.ContentAlignment.MiddleLeft;
-            this.cmdClearSearch.Location = new System.Drawing.Point(802, 67);
+            this.cmdClearSearch.Location = new System.Drawing.Point(843, 67);
+            this.cmdClearSearch.Margin = new System.Windows.Forms.Padding(0);
             this.cmdClearSearch.Name = "cmdClearSearch";
             this.cmdClearSearch.Size = new System.Drawing.Size(45, 25);
             this.cmdClearSearch.TabIndex = 23;
-            this.cmdClearSearch.UseVisualStyleBackColor = true;
+            this.cmdClearSearch.UseVisualStyleBackColor = false;
             this.cmdClearSearch.Visible = false;
             this.cmdClearSearch.Click += new System.EventHandler(this.button2_Click);
             // 
@@ -752,6 +754,7 @@
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1760, 1033);
+            this.Controls.Add(this.txtSearch);
             this.Controls.Add(this.cmdPhotos);
             this.Controls.Add(this.txtUserTags);
             this.Controls.Add(this.lblUserTags);
@@ -766,7 +769,6 @@
             this.Controls.Add(this.cmdClearSearch);
             this.Controls.Add(this.button1);
             this.Controls.Add(this.label2);
-            this.Controls.Add(this.txtSearch);
             this.Controls.Add(this.lblResolution);
             this.Controls.Add(this.txtDescription);
             this.Controls.Add(this.lblRatingScore);

@@ -65,7 +65,7 @@
             this.txtTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.txtTags.Location = new System.Drawing.Point(100, 31);
             this.txtTags.Name = "txtTags";
-            this.txtTags.PlaceholderText = "separate multiple tags with \"or\" and/or \"and\"";
+            this.txtTags.PlaceholderText = "separate multiple tags with \"or\" / \"and\" / \"!\"";
             this.txtTags.Size = new System.Drawing.Size(566, 31);
             this.txtTags.TabIndex = 1;
             this.txtTags.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtTags_KeyDown);

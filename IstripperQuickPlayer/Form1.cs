@@ -108,16 +108,44 @@ namespace IStripperQuickPlayer
                 return;
             }
             
-            List<ModelCard>? currentCards=null;
+            List<ModelCard>? currentCards=Datastore.modelcards;
             if (txtSearch.Text != "")
             {
                  
                 string[] parts = txtSearch.Text.ToLower().Split("and").Select(p => p.Trim()).ToArray();
                 foreach(string p in parts)
                 { 
+                    
                     List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
-                    currentCards = Datastore.modelcards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.Contains(y,StringComparison.CurrentCultureIgnoreCase)))
-                    || myData != null && myData.GetCardTags(c.name).Any(x => taglist.Contains(x.Trim())) || c.tags.Any(y => taglist.Contains(y))).ToList();
+                    if (p.Contains("!"))
+                    {
+                        
+                        List<ModelCard>? poslist=null;
+                        List<ModelCard>? neglist=currentCards;
+                        foreach (string tag in taglist.Where(x => !x.Contains("!")))
+                        {
+                           //do all the positives first
+                           poslist = currentCards.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
+                            || (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",",c.tags).ContainsWithNot(tag)).ToList();                        
+                        }
+                        if (poslist == null) poslist = new List<ModelCard>{ };
+                        foreach (string tag in taglist.Where(x => x.Contains("!")))
+                        {
+                            neglist = neglist.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
+                            && (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",",c.tags).ContainsWithNot(tag)).ToList();         
+                        }
+                        if (poslist == null) currentCards = new List<ModelCard>{ };
+                        else
+                            if (neglist == null) neglist = new List<ModelCard>{ };
+                            currentCards = poslist.Union(neglist).ToList();
+                    }
+                    else
+                    {
+                        currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
+                            || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",",c.tags).ContainsWithNot(y))).ToList();
+                    }
+
+                    
                 }
                 
             
@@ -239,10 +267,39 @@ namespace IStripperQuickPlayer
             if (!String.IsNullOrEmpty(filterSettings.tags))
             {
                 string[] parts = filterSettings.tags.ToLower().Split("and").Select(p => p.Trim()).ToArray();
+
+
                 foreach(string p in parts)
                 { 
+                    
                     List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
-                    currentCards = currentCards.Where(c => myData != null && myData.GetCardTags(c.name).Any(x => taglist.Contains(x.Trim())) || c.tags.Any(y => taglist.Contains(y))).ToList();
+                    if (p.Contains("!"))
+                    {
+                        
+                        List<ModelCard>? poslist=null;
+                        List<ModelCard>? neglist=currentCards;
+                        foreach (string tag in taglist.Where(x => !x.Contains("!")))
+                        {
+                           //do all the positives first
+                           poslist = currentCards.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",",c.tags).ContainsWithNot(tag)).ToList();                        
+                        }
+                        if (poslist == null) poslist = new List<ModelCard>{ };
+                        foreach (string tag in taglist.Where(x => x.Contains("!")))
+                        {
+                            neglist = neglist.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",",c.tags).ContainsWithNot(tag)).ToList();         
+                        }
+                        if (poslist == null) currentCards = new List<ModelCard>{ };
+                        else
+                            if (neglist == null) neglist = new List<ModelCard>{ };
+                            currentCards = poslist.Union(neglist).ToList();
+                    }
+                    else
+                    {
+                        currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
+                            || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",",c.tags).ContainsWithNot(y))).ToList();
+                    }
+
+                    
                 }
                 
             }
@@ -522,36 +579,32 @@ namespace IStripperQuickPlayer
             _spyMgr = new NktSpyMgr();
             _spyMgr.Initialize();
             _spyMgr.OnFunctionCalled += new DNktSpyMgrEvents_OnFunctionCalledEventHandler(OnFunctionCalled);
-            if (!InjectVGHDProcess()) timerhook = new System.Threading.Timer(new TimerCallback(waitForIStripper), null, 1000, 1000);
+            timerhook = new System.Threading.Timer(new TimerCallback(waitForIStripper), null, 1000, 1000);
             return ;
         }
 
         private bool InjectVGHDProcess()
         {
-            hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess));
-            hook.Hook(true);
-
-            bool bProcessFound = false;
             NktProcessesEnum enumProcess = _spyMgr.Processes();
             NktProcess tempProcess = enumProcess.First();
             while (tempProcess != null)
             {
+                hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess));
+                hook.Hook(true);
                 if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 32)
                 {
                     hook.Attach(tempProcess, true);
                     vghd_procID = tempProcess.Id;
-                    bProcessFound = true;
+                    //check that we havent played a new clip while we weren't hooked
+                    clickingNowPlaying = true;
+                    GetNowPlaying();
+                    clickingNowPlaying = false;
+                    return true;
                 }
                 tempProcess = enumProcess.Next();
             }
-
-            if (!bProcessFound)
-            {
-                return false;
-                
-            }
-
-            return true;
+                      
+            return false;
         }
 
         private void waitForIStripper(object state)
@@ -1096,13 +1149,18 @@ namespace IStripperQuickPlayer
 
         private void txtSearch_TextChanged(object sender, EventArgs e)
         {
-            cmdClearSearch.Visible = (txtSearch.Text.Length > 0);
+            
         }
 
         private void txtSearch_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.KeyCode == Keys.Enter)
+            {
+                cmdClearSearch.Visible = (txtSearch.Text.Length > 0);
                 PopulateModelListview();
+            }
+            else
+                cmdClearSearch.Visible = false;
         }
 
         private void button1_Click(object sender, EventArgs e)
