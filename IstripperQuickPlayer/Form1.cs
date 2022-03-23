@@ -126,12 +126,14 @@ namespace IStripperQuickPlayer
                         {
                            //do all the positives first
                            poslist = currentCards.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
+                            || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                             || (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",",c.tags).ContainsWithNot(tag)).ToList();                        
                         }
                         if (poslist == null) poslist = new List<ModelCard>{ };
                         foreach (string tag in taglist.Where(x => x.Contains("!")))
                         {
                             neglist = neglist.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
+                            && (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                             && (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",",c.tags).ContainsWithNot(tag)).ToList();         
                         }
                         if (poslist == null) currentCards = new List<ModelCard>{ };
@@ -142,6 +144,7 @@ namespace IStripperQuickPlayer
                     else
                     {
                         currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
+                            || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                             || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",",c.tags).ContainsWithNot(y))).ToList();
                     }
 
@@ -541,6 +544,7 @@ namespace IStripperQuickPlayer
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
+            includeDescriptionInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowDescInSearch;
             if (Properties.Settings.Default.MinSizeMB != 0)
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
@@ -1487,6 +1491,11 @@ namespace IStripperQuickPlayer
         {
             FilterClips();
             GetNextClip(Datastore.findCardByText(listModels.Items[listModels.SelectedIndices[0]].Text));
+        }
+
+        private void includeDescriptionInSearchToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.ShowDescInSearch = includeDescriptionInSearchToolStripMenuItem.Checked;
         }
     }
 }

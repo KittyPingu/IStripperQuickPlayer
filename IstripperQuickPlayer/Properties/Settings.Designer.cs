@@ -130,5 +130,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["ShowRatingStars"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ShowDescInSearch {
+            get {
+                return ((bool)(this["ShowDescInSearch"]));
+            }
+            set {
+                this["ShowDescInSearch"] = value;
+            }
+        }
     }
 }
