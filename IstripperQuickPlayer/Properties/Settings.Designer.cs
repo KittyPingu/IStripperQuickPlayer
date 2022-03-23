@@ -142,5 +142,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["ShowDescInSearch"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ShowOutfitInSearch {
+            get {
+                return ((bool)(this["ShowOutfitInSearch"]));
+            }
+            set {
+                this["ShowOutfitInSearch"] = value;
+            }
+        }
     }
 }
