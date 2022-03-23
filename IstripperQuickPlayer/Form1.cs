@@ -530,8 +530,7 @@ namespace IStripperQuickPlayer
         {
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-            SetupKeyHooks();
-            SetupRegHooks();
+
             //check if we Segoe Fluent Icons font - this comes with windows 11
             var fontsCollection = new InstalledFontCollection();
             foreach (var fontFamily in fontsCollection.Families)
@@ -556,6 +555,8 @@ namespace IStripperQuickPlayer
             RetrieveModels();
             GetNowPlaying();
             clickingNowPlaying = false;
+            SetupKeyHooks();
+            Task.Run(() => SetupRegHooks());
         }
 
         private void SetupKeyHooks()
