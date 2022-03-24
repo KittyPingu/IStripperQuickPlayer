@@ -80,6 +80,7 @@
             this.enforceCardFilterToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.menuShowRatingsStars = new System.Windows.Forms.ToolStripMenuItem();
             this.includeDescriptionInSearchToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.includeShowTitleInSearchToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.lblTags = new System.Windows.Forms.Label();
             this.lblCipListDetails = new System.Windows.Forms.Label();
             this.cmdFilter = new System.Windows.Forms.Button();
@@ -91,7 +92,6 @@
             this.lblUserTags = new System.Windows.Forms.Label();
             this.txtUserTags = new System.Windows.Forms.TextBox();
             this.cmdPhotos = new System.Windows.Forms.Button();
-            this.includeShowTitleInSearchToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -559,7 +559,7 @@
             // 
             // cmdNextClip
             // 
-            this.cmdNextClip.Location = new System.Drawing.Point(1435, 35);
+            this.cmdNextClip.Location = new System.Drawing.Point(1515, 35);
             this.cmdNextClip.Name = "cmdNextClip";
             this.cmdNextClip.Size = new System.Drawing.Size(87, 35);
             this.cmdNextClip.TabIndex = 24;
@@ -647,6 +647,14 @@
             this.includeDescriptionInSearchToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.includeDescriptionInSearchToolStripMenuItem.Text = "Include Description in Search";
             this.includeDescriptionInSearchToolStripMenuItem.Click += new System.EventHandler(this.includeDescriptionInSearchToolStripMenuItem_Click);
+            // 
+            // includeShowTitleInSearchToolStripMenuItem
+            // 
+            this.includeShowTitleInSearchToolStripMenuItem.CheckOnClick = true;
+            this.includeShowTitleInSearchToolStripMenuItem.Name = "includeShowTitleInSearchToolStripMenuItem";
+            this.includeShowTitleInSearchToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
+            this.includeShowTitleInSearchToolStripMenuItem.Text = "Include Show Title in Search";
+            this.includeShowTitleInSearchToolStripMenuItem.Click += new System.EventHandler(this.includeShowTitleInSearchToolStripMenuItem_Click);
             // 
             // lblTags
             // 
@@ -760,14 +768,6 @@
             this.cmdPhotos.Text = "Photos";
             this.cmdPhotos.UseVisualStyleBackColor = true;
             this.cmdPhotos.Click += new System.EventHandler(this.cmdPhotos_Click);
-            // 
-            // includeShowTitleInSearchToolStripMenuItem
-            // 
-            this.includeShowTitleInSearchToolStripMenuItem.CheckOnClick = true;
-            this.includeShowTitleInSearchToolStripMenuItem.Name = "includeShowTitleInSearchToolStripMenuItem";
-            this.includeShowTitleInSearchToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
-            this.includeShowTitleInSearchToolStripMenuItem.Text = "Include Show Title in Search";
-            this.includeShowTitleInSearchToolStripMenuItem.Click += new System.EventHandler(this.includeShowTitleInSearchToolStripMenuItem_Click);
             // 
             // Form1
             // 

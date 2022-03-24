@@ -112,11 +112,11 @@ namespace IStripperQuickPlayer
             if (txtSearch.Text != "")
             {
                  
-                string[] parts = txtSearch.Text.ToLower().Split("and").Select(p => p.Trim()).ToArray();
+                string[] parts = txtSearch.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
                 foreach(string p in parts)
                 { 
                     
-                    List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
+                    List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
                     if (p.Contains("!"))
                     {
                         
@@ -272,13 +272,13 @@ namespace IStripperQuickPlayer
 
             if (!String.IsNullOrEmpty(filterSettings.tags))
             {
-                string[] parts = filterSettings.tags.ToLower().Split("and").Select(p => p.Trim()).ToArray();
+                string[] parts = filterSettings.tags.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
 
 
                 foreach(string p in parts)
                 { 
                     
-                    List<string> taglist = p.Split("or").Select(p => p.Trim()).ToList();
+                    List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
                     if (p.Contains("!"))
                     {
                         
@@ -492,6 +492,7 @@ namespace IStripperQuickPlayer
             lblCollection.Text = "CardType: "+card.collection.GetDescription();
             lblResolution.Text = "Res: " + card.resolution.GetDescription();
             lblTags.Text = "Tags: " + String.Join(",", card.tags);
+
         }
 
         private string lastchosen = "";
@@ -608,6 +609,8 @@ namespace IStripperQuickPlayer
                     clickingNowPlaying = true;
                     GetNowPlaying();
                     clickingNowPlaying = false;
+
+                    //set up a watch for this process finishing so we can start looking for a new one again
                     return true;
                 }
                 tempProcess = enumProcess.Next();
@@ -1460,8 +1463,7 @@ namespace IStripperQuickPlayer
             if (items != null && items.Length > 0)
             {
                 List<string> tags = txtUserTags.Text.Split(',').ToList();
-                ListView.SelectedIndexCollection col = listModels.SelectedIndices;
-                myData.AddCardTags(listModels.Items[col[0]].Tag.ToString(), tags);
+                if (clipListTag != "") myData.AddCardTags(clipListTag, tags);
             }
         }
 
