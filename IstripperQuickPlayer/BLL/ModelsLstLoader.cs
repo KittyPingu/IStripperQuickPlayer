@@ -112,6 +112,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.xmlSize = getXMLValue(card, "size");
                                 card.modelName = getXMLValue(card, "name");
                                 decimal.TryParse(getXMLValue(card, "age"), style, culture,  out card.modelAge);
+                                if (card.modelAge > 50) card.modelAge = 50;
                                 card.image = loadCardImage(card);
                             }
 
