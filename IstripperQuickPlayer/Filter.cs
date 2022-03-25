@@ -24,8 +24,7 @@ namespace IStripperQuickPlayer
         bool ok = false;
         public FilterSettings? filterSettings;
         byte[]? savedSettings;
-
-        public Filter(FilterSettings filter)
+        internal Filter(FilterSettings filter)
         {
             filterSettings = filter;
             Save();
@@ -46,9 +45,9 @@ namespace IStripperQuickPlayer
             rangeRating.Height = 60;
             rangeRating.Width = 650;
             rangeRating.ForeColor = Color.Black;
-            rangeRating.Minimum = 2;
+            rangeRating.Minimum = 0;
             rangeRating.Maximum = 5;
-            rangeRating.ScaleDivisions = 30;
+            rangeRating.ScaleDivisions = 10;
             rangeRating.SmallChange = 0.1M;
             rangeRating.LargeChange = 0.5M;
             rangeRating.Value = filterSettings.minRating;
@@ -64,13 +63,19 @@ namespace IStripperQuickPlayer
             rangeBreastSize.Height = 60;
             rangeBreastSize.Width = 650;
             rangeBreastSize.ForeColor = Color.Black;
-            rangeBreastSize.Minimum = 25;
-            rangeBreastSize.Maximum = 50;
-            rangeBreastSize.ScaleDivisions = 25;
+            rangeBreastSize.Minimum = 0;
+            var dmin = Datastore.modelcards.Min(x => x.bust);
+            if (dmin != null)
+                rangeBreastSize.Minimum = Math.Floor((decimal)dmin);
+            rangeBreastSize.Maximum = 99;
+               var dmax = Datastore.modelcards.Max(x => x.bust);
+            if (dmax != null)
+                rangeBreastSize.Maximum = Math.Ceiling((decimal)dmax);            
             rangeBreastSize.SmallChange = 1M;
             rangeBreastSize.LargeChange = 2M;
-            rangeBreastSize.Value = filterSettings.minBust;
-            rangeBreastSize.Value2 = filterSettings.maxBust;
+            rangeBreastSize.Value = Math.Min(Math.Max(filterSettings.minBust, rangeBreastSize.Minimum), rangeBreastSize.Maximum);
+            rangeBreastSize.Value2 = Math.Max(Math.Min(filterSettings.maxBust, rangeBreastSize.Maximum), rangeBreastSize.Minimum);
+            rangeBreastSize.ScaleDivisions = rangeBreastSize.Maximum - rangeBreastSize.Minimum;
             rangeBreastSize.BackColor = Color.Transparent;
             rangeBreastSize.TickColor = Color.Black;
             rangeBreastSize.ElapsedInnerColor = Color.Green;

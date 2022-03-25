@@ -13,9 +13,9 @@ namespace IStripperQuickPlayer.DataModel
     {
         internal decimal minAge=18;
         internal decimal maxAge=43;
-        internal decimal minBust=25;
-        internal decimal maxBust=50;
-        internal decimal minRating=2;
+        internal decimal minBust=0;
+        internal decimal maxBust=99;
+        internal decimal minRating=0;
         internal string tags="";
         internal decimal maxRating=5;
         internal bool IStripper=true;
