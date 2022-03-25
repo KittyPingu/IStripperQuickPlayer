@@ -3,6 +3,8 @@ Quick Player for IStripper cards
 
 ![MainWindow](https://github.com/KittyPingu/IStripperQuickPlayer/blob/master/IStripperQuickPlayer.png?raw=true)
 
+If you are not on windows 11 you should install Segoe Fluent Icons font from https://docs.microsoft.com/en-us/windows/apps/design/downloads/#fonts - rating stars won't draw without this font
+
 First Version:
 
 - loads models from local data
