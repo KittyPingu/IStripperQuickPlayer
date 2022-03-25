@@ -12,9 +12,9 @@ namespace IStripperQuickPlayer.DataModel
     {
         internal string Name="";
         internal string Height="";
-        internal decimal Bust;
-        internal decimal Waist;
-        internal decimal Hips;
+        internal decimal Bust=30;
+        internal decimal Waist=30;
+        internal decimal Hips=30;
         internal decimal Weight;
         internal string City="";
         internal string Country="";
