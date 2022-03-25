@@ -67,7 +67,7 @@ namespace IStripperQuickPlayer
         internal string? xmlSize;
         internal Image? image;
         internal string? modelName;
-        internal string? modelAge;
+        internal decimal modelAge;
         internal string? imagefile;
         internal string[] tags;
         internal decimal? bust;
@@ -88,6 +88,7 @@ namespace IStripperQuickPlayer
             description = "";
             outfit = "";
             xmlstring = "";
+            modelAge = 0;
         }
     }
 }

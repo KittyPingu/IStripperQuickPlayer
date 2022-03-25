@@ -33,12 +33,12 @@ namespace IStripperQuickPlayer.DataModel
                 string[] measurements = meas.Split('/');
                 if (measurements.Length > 2)
                 {
-                    Bust = decimal.Parse(measurements[0]);
-                    Waist = decimal.Parse(measurements[1]);                    
-                    Hips = decimal.Parse(measurements[2]);
+                    decimal.TryParse(measurements[0], out Bust);
+                    decimal.TryParse(measurements[1], out Waist);                    
+                    decimal.TryParse(measurements[2], out Hips);
                 }
             }
-            Weight = decimal.Parse(element.GetAttribute("weig"));
+            decimal.TryParse(element.GetAttribute("weig"), out Weight);
             City = element.GetAttribute("city");;
             Country = element.GetAttribute("cntry");;
             DateTime.TryParse(element.GetAttribute("birth"), out Birthdate);

@@ -265,7 +265,7 @@ namespace IStripperQuickPlayer
             if ((filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10) && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating 
                 && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();  
-            currentCards = currentCards.Where(c => Decimal.Parse(c.modelAge) >= filterSettings.minAge && Decimal.Parse(c.modelAge) <= filterSettings.maxAge
+            currentCards = currentCards.Where(c => c.modelAge >= filterSettings.minAge && c.modelAge <= filterSettings.maxAge
                 && c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust     
                 && c.rating-5M >= filterSettings.minRating && c.rating-5M <= filterSettings.maxRating           
                 ).ToList();
@@ -329,6 +329,8 @@ namespace IStripperQuickPlayer
         internal List<ModelCard>? Deserialize(String filename)  
         {  
             //Format the object as Binary  
+            try
+            {
             BinaryFormatter formatter = new BinaryFormatter();  
    
             //Reading the file from the server  
@@ -338,7 +340,13 @@ namespace IStripperQuickPlayer
             fs.Flush();  
             fs.Close();  
             fs.Dispose(); 
+
             return emps;
+            }
+            catch (Exception ex)
+            {
+                return new List<ModelCard>{ };
+            }
         }  
 
         internal void Serialize(List<ModelCard>? emps, String filename)  
@@ -950,7 +958,7 @@ namespace IStripperQuickPlayer
                     text = (Convert.ToDecimal(card.rating)-5m).ToString();
                     break;
                 case "Age":
-                    text = (card.modelAge ?? "");    
+                    text = (card.modelAge.ToString() ?? "");    
                     break;
                 case "Ethnicity":
                     text = (card.ethnicity ?? "");        

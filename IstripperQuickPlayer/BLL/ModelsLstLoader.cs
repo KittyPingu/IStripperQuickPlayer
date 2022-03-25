@@ -108,7 +108,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.frameCount = fcnt;
                                 card.xmlSize = getXMLValue(card, "size");
                                 card.modelName = getXMLValue(card, "name");
-                                card.modelAge = getXMLValue(card, "age");
+                                decimal.TryParse(getXMLValue(card, "age"), out card.modelAge);
                                 card.image = loadCardImage(card);
                             }
 
