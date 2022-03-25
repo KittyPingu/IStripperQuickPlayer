@@ -24,7 +24,9 @@ namespace IStripperQuickPlayer
         private bool fontInstalled = false;
         internal FilterSettings filterSettings = new FilterSettings();
         static readonly HttpClient client = new HttpClient();
-        
+        private NumberStyles style = NumberStyles.AllowDecimalPoint;
+        private CultureInfo culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
+            
         //global hotkeys
         Combination? nextClip;// = Combination.FromString("Control+Alt+N");
         Action? actionNextClip = null;
@@ -545,7 +547,7 @@ namespace IStripperQuickPlayer
         {
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-
+            culture.NumberFormat.NumberDecimalSeparator = ".";
             //check if we Segoe Fluent Icons font - this comes with windows 11
             var fontsCollection = new InstalledFontCollection();
             foreach (var fontFamily in fontsCollection.Families)
@@ -947,8 +949,12 @@ namespace IStripperQuickPlayer
                     }
                     break;
                 case "Height":
-                    decimal decheight = Convert.ToDecimal(card.height);
-                    text = Math.Floor(decheight) + "'" + (int)(24*(decheight-Math.Floor(decheight)))/2.0M + "''";
+                    decimal decheight = 0;
+                    decimal.TryParse(card.height, style, culture, out decheight);
+                    if (RegionInfo.CurrentRegion.IsMetric && CultureInfo.CurrentCulture.Name != "en-GB")
+                       text = (((Math.Floor(decheight)*12) + (decheight-Math.Floor(decheight))*10) * 2.54M).ToString("N1") + "cm";
+                    else
+                       text = Math.Floor(decheight) + "'" + (int)(24*(decheight-Math.Floor(decheight)))/2.0M + "''";
                     break;
                 case "":
                 case "Model Name":
@@ -1491,13 +1497,14 @@ namespace IStripperQuickPlayer
         {
             if (!string.IsNullOrEmpty(clipListTag))
             {
+                this.Cursor = Cursors.WaitCursor;
                 CardPhotos photos = new CardPhotos();
                 await photos.LoadCardPhotos(client, clipListTag);
                 PhotoViewer p = new PhotoViewer();
                 p.photos = photos;
                 p.Populate();
                 p.Show();
-                //photos.getPhoto(0);
+                this.Cursor = Cursors.Arrow;
             }
         }
 
