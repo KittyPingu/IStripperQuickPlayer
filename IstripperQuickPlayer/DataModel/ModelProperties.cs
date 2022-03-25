@@ -1,6 +1,7 @@
 ﻿using IStripperQuickPlayer.BLL;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -22,6 +23,9 @@ namespace IStripperQuickPlayer.DataModel
 
         public ModelProperties(XmlNode? element)
         {
+            var style = NumberStyles.AllowDecimalPoint;
+            var culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
+            culture.NumberFormat.NumberDecimalSeparator = ".";
             if (element == null) return;
             if (element.Attributes == null) return;
             
@@ -33,12 +37,12 @@ namespace IStripperQuickPlayer.DataModel
                 string[] measurements = meas.Split('/');
                 if (measurements.Length > 2)
                 {
-                    decimal.TryParse(measurements[0], out Bust);
-                    decimal.TryParse(measurements[1], out Waist);                    
-                    decimal.TryParse(measurements[2], out Hips);
+                    decimal.TryParse(measurements[0], style, culture, out Bust);
+                    decimal.TryParse(measurements[1], style, culture, out Waist);                    
+                    decimal.TryParse(measurements[2], style, culture, out Hips);
                 }
             }
-            decimal.TryParse(element.GetAttribute("weig"), out Weight);
+            decimal.TryParse(element.GetAttribute("weig"), style, culture, out Weight);
             City = element.GetAttribute("city");;
             Country = element.GetAttribute("cntry");;
             DateTime.TryParse(element.GetAttribute("birth"), out Birthdate);

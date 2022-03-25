@@ -8,6 +8,7 @@ using IStripperQuickPlayer.DataModel;
 using static IStripperQuickPlayer.DataModel.Enums;
 using System.Xml;
 using Microsoft.Win32;
+using System.Globalization;
 
 namespace IStripperQuickPlayer.BLL
 {
@@ -21,7 +22,9 @@ namespace IStripperQuickPlayer.BLL
             //largeimagelist.ImageSize = new Size(130,180);
             //largeimagelist.ColorDepth = ColorDepth.Depth32Bit;
             FileInfo? file = findModelFile();
-
+            var style = NumberStyles.AllowDecimalPoint;
+            var culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
+            culture.NumberFormat.NumberDecimalSeparator = ".";
             if (file != null)
             {
                 
@@ -100,7 +103,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.outfit = getXMLValue(card, "outfit").Replace(fc,nc);
                                 card.hair =  getXMLValue(card, "hair");
                                 var d = 0M;
-                                Decimal.TryParse(getXMLValue(card, "rate"), out d);
+                                Decimal.TryParse(getXMLValue(card, "rate"), style, culture, out d);
                                 card.rating=d;
                                 card.hotnessLevel =  getXMLValue(card, "level");
                                 int fcnt = 0;
@@ -108,7 +111,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.frameCount = fcnt;
                                 card.xmlSize = getXMLValue(card, "size");
                                 card.modelName = getXMLValue(card, "name");
-                                decimal.TryParse(getXMLValue(card, "age"), out card.modelAge);
+                                decimal.TryParse(getXMLValue(card, "age"), style, culture,  out card.modelAge);
                                 card.image = loadCardImage(card);
                             }
 

@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace IStripperQuickPlayer
 {
     internal static class Program
@@ -10,6 +12,7 @@ namespace IStripperQuickPlayer
         {
             // To customize application configuration such as set high DPI settings or default font,
             // see https://aka.ms/applicationconfiguration.
+            //CultureInfo.CurrentCulture = new CultureInfo("en-GB", false);
             ApplicationConfiguration.Initialize();
             Application.Run(new Form1());
         }

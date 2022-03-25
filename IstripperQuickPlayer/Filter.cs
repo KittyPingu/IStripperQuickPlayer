@@ -39,11 +39,23 @@ namespace IStripperQuickPlayer
 
         private void ReadValues()
         {
+            float dx, dy;
+
+            Graphics g = this.CreateGraphics();
+            try
+            {
+                dx = g.DpiX;
+                dy = g.DpiY;
+            }
+            finally
+            {
+                g.Dispose();
+            }
             if (filterSettings == null) return;
             rangeRating = new ColorSlider.ColorSlider();
-            rangeRating.Location = new Point(110, 110);
-            rangeRating.Height = 60;
-            rangeRating.Width = 650;
+            rangeRating.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(100*dx/120));
+            rangeRating.Height = Convert.ToInt32(70*dx/120);
+            rangeRating.Width = Convert.ToInt32(650*dx/120);
             rangeRating.ForeColor = Color.Black;
             rangeRating.Minimum = 0;
             rangeRating.Maximum = 5;
@@ -59,9 +71,9 @@ namespace IStripperQuickPlayer
             
 
             rangeBreastSize = new ColorSlider.ColorSlider();
-            rangeBreastSize.Location = new Point(110, 186);
-            rangeBreastSize.Height = 60;
-            rangeBreastSize.Width = 650;
+            rangeBreastSize.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(186*dx/120));
+            rangeBreastSize.Height = Convert.ToInt32(60*dx/120);
+            rangeBreastSize.Width = Convert.ToInt32(650*dx/120);
             rangeBreastSize.ForeColor = Color.Black;
             rangeBreastSize.Minimum = 0;
             var dmin = Datastore.modelcards.Min(x => x.bust);
@@ -70,7 +82,7 @@ namespace IStripperQuickPlayer
             rangeBreastSize.Maximum = 99;
                var dmax = Datastore.modelcards.Max(x => x.bust);
             if (dmax != null)
-                rangeBreastSize.Maximum = Math.Ceiling((decimal)dmax);            
+                rangeBreastSize.Maximum = Math.Min(125, Math.Ceiling((decimal)dmax));            
             rangeBreastSize.SmallChange = 1M;
             rangeBreastSize.LargeChange = 2M;
             rangeBreastSize.Value = Math.Min(Math.Max(filterSettings.minBust, rangeBreastSize.Minimum), rangeBreastSize.Maximum);
@@ -83,9 +95,9 @@ namespace IStripperQuickPlayer
             
 
             rangeAge = new ColorSlider.ColorSlider();
-            rangeAge.Location = new Point(110, 262);
-            rangeAge.Height = 60;
-            rangeAge.Width = 650;
+            rangeAge.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(262*dx/120));
+            rangeAge.Height = Convert.ToInt32(60*dx/120);
+            rangeAge.Width = Convert.ToInt32(650*dx/120);
             rangeAge.ForeColor = Color.Black;
             var amin = Datastore.modelcards.Min(x => x.modelAge);
             rangeAge.Minimum = Math.Floor((decimal)amin);
@@ -105,9 +117,9 @@ namespace IStripperQuickPlayer
             
 
             rangeMyRating = new ColorSlider.ColorSlider();
-            rangeMyRating.Location = new Point(110, 340);
-            rangeMyRating.Height = 60;
-            rangeMyRating.Width = 650;
+            rangeMyRating.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(346*dx/120));
+            rangeMyRating.Height = Convert.ToInt32(60*dx/120);
+            rangeMyRating.Width = Convert.ToInt32(650*dx/120);
             rangeMyRating.ForeColor = Color.Black;
             rangeMyRating.Minimum = 0;
             rangeMyRating.Maximum = 10;

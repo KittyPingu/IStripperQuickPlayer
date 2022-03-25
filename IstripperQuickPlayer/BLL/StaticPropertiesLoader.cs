@@ -39,7 +39,7 @@ namespace IStripperQuickPlayer.BLL
 #pragma warning disable CS8601 // Possible null reference assignment.
                 cnode = PropertiesXML.SelectNodes("/root/c");
 #pragma warning restore CS8601 // Possible null reference assignment.
-            }
+            }         
         }
 
         internal static ModelProperties? getModelByID(string ID)
