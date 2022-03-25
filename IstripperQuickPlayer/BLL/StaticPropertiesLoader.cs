@@ -89,9 +89,20 @@ namespace IStripperQuickPlayer.BLL
                     localapp = a.ToString() ?? "";
                     key.Close();
                 }
+                else
+                {
+                    MessageBox.Show(@"Could not find registry key @CurrentUser\Software\Totem\vghd\System\DataPath ", "");
+                }
+                if (localapp == "")
+                {
+                    MessageBox.Show(@"Registry key @CurrentUser\Software\Totem\vghd\System\DataPath is empty?", "");
+                }
             }
-
-            
+            else
+            {
+                MessageBox.Show(@"Could not find registry key @CurrentUser\Software\Totem\vghd\System", "");
+            }
+                       
             string fullpath = Path.Combine(localapp, "staticProperties loaded from server.xml");
             if (File.Exists(fullpath))
             {
