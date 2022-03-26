@@ -197,6 +197,12 @@ namespace IStripperQuickPlayer
                 case "Date Purchased":
                     currentCards = currentCards.OrderBy(i => i.datePurchased).ToList();
                     break;
+                case "Release Date (Descending)":
+                    currentCards = currentCards.OrderByDescending(i => i.dateReleased).ToList();
+                    break;
+                case "Release Date":
+                    currentCards = currentCards.OrderBy(i => i.dateReleased).ToList();
+                    break;
                 default:
                     break;
             }
@@ -264,11 +270,12 @@ namespace IStripperQuickPlayer
         {   
             if (chkFavourite.Checked && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardFavourite(c.name)).ToList();
+            currentCards = currentCards.Where(c => c.dateReleased >= filterSettings.minDate && c.dateReleased <= filterSettings.maxDate).ToList();
             if ((filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10) && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating 
                 && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();  
-            currentCards = currentCards.Where(c => c.modelAge >= filterSettings.minAge && c.modelAge <= filterSettings.maxAge
-                && c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust     
+            currentCards = currentCards.Where(c => ((c.modelAge >= filterSettings.minAge && c.modelAge <= filterSettings.maxAge) || c.modelAge == 0 || c.modelAge > 99)
+                && ((c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust) || c.bust == 0 || c.bust > 99)     
                 && c.rating-5M >= filterSettings.minRating && c.rating-5M <= filterSettings.maxRating           
                 ).ToList();
 
@@ -328,6 +335,11 @@ namespace IStripperQuickPlayer
             return currentCards;
         }
 
+        internal void setFilter(string v)
+        {
+            this.BeginInvoke((Action)(() => { PopulateFilterList(); cmbFilter.SelectedItem = v;}));
+        }
+
         internal List<ModelCard>? Deserialize(String filename)  
         {  
             //Format the object as Binary  
@@ -379,28 +391,6 @@ namespace IStripperQuickPlayer
             ms.Close();  
             ms.Dispose();  
         }
-
-        internal void LoadDefaultFilters()
-        { 
-            try
-            {
-                string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "filters.bin");
-                if (!File.Exists(mdatafilepath)) return ;
-                BinaryFormatter formatter = new BinaryFormatter();  
-                   
-                //Reading the file from the server  
-                FileStream fs = File.Open(mdatafilepath, FileMode.Open);   
-                object obj = formatter.Deserialize(fs);  
-                filterSettings = (FilterSettings)obj;  
-                fs.Flush();  
-                fs.Close();  
-                fs.Dispose(); 
-            }
-            catch (Exception ex){
-                MessageBox.Show("Error reading MyData file\r\n" + ex.Message);
-                filterSettings = new FilterSettings();
-            } 
-         }
 
         internal MyData RetrieveMyData()
         {
@@ -564,9 +554,12 @@ namespace IStripperQuickPlayer
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
             }
-            LoadDefaultFilters();
             myData = RetrieveMyData();
             listModels.SetDoubleBuffered();
+            FilterSettingsList.Load();
+            PopulateFilterList();
+            if (FilterSettingsList.filters.ContainsKey("Default"))
+                cmbFilter.SelectedItem = "Default";
             string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             //watcher.RegistryChange += RegistryChanged;
@@ -576,6 +569,36 @@ namespace IStripperQuickPlayer
             clickingNowPlaying = false;
             SetupKeyHooks();
             Task.Run(() => SetupRegHooks());
+        }
+
+        private void PopulateFilterList()
+        {
+            cmbFilter.Items.Clear();
+            foreach (var f in FilterSettingsList.filters)
+                cmbFilter.Items.Add(f.Key);
+        }
+
+        private void AdjustWidthComboBox_DropDown(object sender, System.EventArgs e)
+        {
+            ComboBox senderComboBox = (ComboBox)sender;
+            int width = senderComboBox.DropDownWidth;
+            Graphics g = senderComboBox.CreateGraphics();
+            Font font = senderComboBox.Font;
+            int vertScrollBarWidth = 
+                (senderComboBox.Items.Count>senderComboBox.MaxDropDownItems)
+                ?SystemInformation.VerticalScrollBarWidth:0;
+
+            int newWidth;
+            foreach (string s in senderComboBox.Items)
+            {
+                newWidth = (int) g.MeasureString(s, font).Width 
+                    + vertScrollBarWidth;
+                if (width < newWidth )
+                {
+                    width = newWidth;
+                }
+            }
+            senderComboBox.DropDownWidth = width;
         }
 
         private void SetupKeyHooks()
@@ -978,6 +1001,11 @@ namespace IStripperQuickPlayer
                     if (card.datePurchased != null)
                         text = ((DateTime)card.datePurchased).ToShortDateString();
                     break;
+                case "Release Date":
+                case "Release Date (Descending)":
+                    if (card.dateReleased != null)
+                        text = ((DateTime)card.dateReleased).ToShortDateString();
+                    break;
                 default:
                     break;
             }
@@ -1332,6 +1360,7 @@ namespace IStripperQuickPlayer
         private void ReloadStaticProperties()
         {
             StaticPropertiesLoader.loadXML();
+            PropertiesLoader.loadXML();
         }
 
         private void exitToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1348,15 +1377,23 @@ namespace IStripperQuickPlayer
 
         private void cmdFilter_Click(object sender, EventArgs e)
         {
-            var frm = Application.OpenForms.Cast<Form>().Where(x => x.Name == "Filter").FirstOrDefault();
-            if (frm == null)
-            {
-                frm = new Filter(filterSettings);
+            //var frm = Application.OpenForms.Cast<Form>().Where(x => x.Name == "Filter").FirstOrDefault();
+            //if (frm == null)
+            //{
+                string f = "Default";
+                if (cmbFilter.SelectedItem != null) f = cmbFilter.SelectedItem.ToString();
+                var frm = new Filter(filterSettings, f);
                 frm.StartPosition = FormStartPosition.CenterParent;
-                frm.Show(this);                    
-                frm.TopMost = true;
-            }
-            frm.BringToFront();
+                frm.ShowDialog(this);                   
+                //string currentFilter = "Default";
+                //if (cmbFilter.Items != null && cmbFilter.Items.Count > 0 && cmbFilter.SelectedItem != null)   
+                //    currentFilter = cmbFilter.SelectedItem.ToString();
+                //PopulateFilterList();
+                //if (cmbFilter.Items.Contains(currentFilter)) cmbFilter.SelectedValue = currentFilter;
+                //frm.TopMost = true;
+            //}
+            //frm.BringToFront();
+
         }
              
         private void ValidateMinSizeMB()
@@ -1522,6 +1559,12 @@ namespace IStripperQuickPlayer
         private void includeShowTitleInSearchToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.ShowOutfitInSearch = includeShowTitleInSearchToolStripMenuItem.Checked;        
+        }
+
+        private void cmbFilter_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            filterSettings = FilterSettingsList.GetFilter(cmbFilter.SelectedItem.ToString());
+            PopulateModelListview();
         }
     }
 }

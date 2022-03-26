@@ -47,12 +47,18 @@
             this.label4 = new System.Windows.Forms.Label();
             this.cmdRevert = new System.Windows.Forms.Button();
             this.cmdSaveDefault = new System.Windows.Forms.Button();
+            this.lblShowDate = new System.Windows.Forms.Label();
+            this.cmdSaveAs = new System.Windows.Forms.Button();
+            this.dateTimePickerMin = new System.Windows.Forms.DateTimePicker();
+            this.dateTimePickerMax = new System.Windows.Forms.DateTimePicker();
+            this.label1 = new System.Windows.Forms.Label();
+            this.button1 = new System.Windows.Forms.Button();
             ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).BeginInit();
             this.SuspendLayout();
             // 
             // cmdOK
             // 
-            this.cmdOK.Location = new System.Drawing.Point(672, 499);
+            this.cmdOK.Location = new System.Drawing.Point(672, 609);
             this.cmdOK.Name = "cmdOK";
             this.cmdOK.Size = new System.Drawing.Size(106, 45);
             this.cmdOK.TabIndex = 0;
@@ -66,7 +72,7 @@
             this.txtTags.Location = new System.Drawing.Point(100, 31);
             this.txtTags.Name = "txtTags";
             this.txtTags.PlaceholderText = "separate multiple tags with \"or\" / \"and\" / \"!\"";
-            this.txtTags.Size = new System.Drawing.Size(566, 31);
+            this.txtTags.Size = new System.Drawing.Size(566, 27);
             this.txtTags.TabIndex = 1;
             this.txtTags.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtTags_KeyDown);
             // 
@@ -76,7 +82,7 @@
             this.lblTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.lblTags.Location = new System.Drawing.Point(12, 34);
             this.lblTags.Name = "lblTags";
-            this.lblTags.Size = new System.Drawing.Size(47, 25);
+            this.lblTags.Size = new System.Drawing.Size(38, 20);
             this.lblTags.TabIndex = 2;
             this.lblTags.Text = "Tags";
             this.lblTags.Click += new System.EventHandler(this.label1_Click);
@@ -87,7 +93,7 @@
             this.lblMinRating.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.lblMinRating.Location = new System.Drawing.Point(12, 113);
             this.lblMinRating.Name = "lblMinRating";
-            this.lblMinRating.Size = new System.Drawing.Size(63, 25);
+            this.lblMinRating.Size = new System.Drawing.Size(52, 20);
             this.lblMinRating.TabIndex = 3;
             this.lblMinRating.Text = "Rating";
             // 
@@ -97,7 +103,7 @@
             this.label2.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.label2.Location = new System.Drawing.Point(12, 190);
             this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(46, 25);
+            this.label2.Size = new System.Drawing.Size(37, 20);
             this.label2.TabIndex = 4;
             this.label2.Text = "Bust";
             // 
@@ -107,7 +113,7 @@
             this.label3.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.label3.Location = new System.Drawing.Point(12, 273);
             this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(44, 25);
+            this.label3.Size = new System.Drawing.Size(36, 20);
             this.label3.TabIndex = 5;
             this.label3.Text = "Age";
             // 
@@ -124,9 +130,9 @@
             // chkIStripperXXX
             // 
             this.chkIStripperXXX.AutoSize = true;
-            this.chkIStripperXXX.Location = new System.Drawing.Point(602, 427);
+            this.chkIStripperXXX.Location = new System.Drawing.Point(602, 511);
             this.chkIStripperXXX.Name = "chkIStripperXXX";
-            this.chkIStripperXXX.Size = new System.Drawing.Size(119, 24);
+            this.chkIStripperXXX.Size = new System.Drawing.Size(94, 19);
             this.chkIStripperXXX.TabIndex = 7;
             this.chkIStripperXXX.Text = "iStripper XXX";
             this.chkIStripperXXX.UseVisualStyleBackColor = true;
@@ -135,9 +141,9 @@
             // chkIStripper
             // 
             this.chkIStripper.AutoSize = true;
-            this.chkIStripper.Location = new System.Drawing.Point(477, 427);
+            this.chkIStripper.Location = new System.Drawing.Point(477, 511);
             this.chkIStripper.Name = "chkIStripper";
-            this.chkIStripper.Size = new System.Drawing.Size(88, 24);
+            this.chkIStripper.Size = new System.Drawing.Size(70, 19);
             this.chkIStripper.TabIndex = 8;
             this.chkIStripper.Text = "iStripper";
             this.chkIStripper.UseVisualStyleBackColor = true;
@@ -146,9 +152,9 @@
             // chkVGClassic
             // 
             this.chkVGClassic.AutoSize = true;
-            this.chkVGClassic.Location = new System.Drawing.Point(336, 427);
+            this.chkVGClassic.Location = new System.Drawing.Point(336, 511);
             this.chkVGClassic.Name = "chkVGClassic";
-            this.chkVGClassic.Size = new System.Drawing.Size(98, 24);
+            this.chkVGClassic.Size = new System.Drawing.Size(80, 19);
             this.chkVGClassic.TabIndex = 9;
             this.chkVGClassic.Text = "VG Classic";
             this.chkVGClassic.UseVisualStyleBackColor = true;
@@ -157,9 +163,9 @@
             // chkDeskBabes
             // 
             this.chkDeskBabes.AutoSize = true;
-            this.chkDeskBabes.Location = new System.Drawing.Point(195, 427);
+            this.chkDeskBabes.Location = new System.Drawing.Point(195, 511);
             this.chkDeskBabes.Name = "chkDeskBabes";
-            this.chkDeskBabes.Size = new System.Drawing.Size(107, 24);
+            this.chkDeskBabes.Size = new System.Drawing.Size(85, 19);
             this.chkDeskBabes.TabIndex = 10;
             this.chkDeskBabes.Text = "Desk Babes";
             this.chkDeskBabes.UseVisualStyleBackColor = true;
@@ -168,9 +174,9 @@
             // chkIStripperClassic
             // 
             this.chkIStripperClassic.AutoSize = true;
-            this.chkIStripperClassic.Location = new System.Drawing.Point(21, 427);
+            this.chkIStripperClassic.Location = new System.Drawing.Point(21, 511);
             this.chkIStripperClassic.Name = "chkIStripperClassic";
-            this.chkIStripperClassic.Size = new System.Drawing.Size(136, 24);
+            this.chkIStripperClassic.Size = new System.Drawing.Size(109, 19);
             this.chkIStripperClassic.TabIndex = 11;
             this.chkIStripperClassic.Text = "iStripper Classic";
             this.chkIStripperClassic.UseVisualStyleBackColor = true;
@@ -179,9 +185,9 @@
             // chkNormal
             // 
             this.chkNormal.AutoSize = true;
-            this.chkNormal.Location = new System.Drawing.Point(21, 468);
+            this.chkNormal.Location = new System.Drawing.Point(21, 552);
             this.chkNormal.Name = "chkNormal";
-            this.chkNormal.Size = new System.Drawing.Size(81, 24);
+            this.chkNormal.Size = new System.Drawing.Size(66, 19);
             this.chkNormal.TabIndex = 12;
             this.chkNormal.Text = "Normal";
             this.chkNormal.UseVisualStyleBackColor = true;
@@ -190,9 +196,9 @@
             // chkSpecial
             // 
             this.chkSpecial.AutoSize = true;
-            this.chkSpecial.Location = new System.Drawing.Point(195, 468);
+            this.chkSpecial.Location = new System.Drawing.Point(195, 552);
             this.chkSpecial.Name = "chkSpecial";
-            this.chkSpecial.Size = new System.Drawing.Size(79, 24);
+            this.chkSpecial.Size = new System.Drawing.Size(63, 19);
             this.chkSpecial.TabIndex = 13;
             this.chkSpecial.Text = "Special";
             this.chkSpecial.UseVisualStyleBackColor = true;
@@ -204,13 +210,13 @@
             this.label4.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.label4.Location = new System.Drawing.Point(12, 358);
             this.label4.Name = "label4";
-            this.label4.Size = new System.Drawing.Size(93, 25);
+            this.label4.Size = new System.Drawing.Size(76, 20);
             this.label4.TabIndex = 14;
             this.label4.Text = "My Rating";
             // 
             // cmdRevert
             // 
-            this.cmdRevert.Location = new System.Drawing.Point(532, 499);
+            this.cmdRevert.Location = new System.Drawing.Point(532, 609);
             this.cmdRevert.Name = "cmdRevert";
             this.cmdRevert.Size = new System.Drawing.Size(106, 45);
             this.cmdRevert.TabIndex = 15;
@@ -220,7 +226,7 @@
             // 
             // cmdSaveDefault
             // 
-            this.cmdSaveDefault.Location = new System.Drawing.Point(386, 499);
+            this.cmdSaveDefault.Location = new System.Drawing.Point(21, 609);
             this.cmdSaveDefault.Name = "cmdSaveDefault";
             this.cmdSaveDefault.Size = new System.Drawing.Size(106, 45);
             this.cmdSaveDefault.TabIndex = 16;
@@ -228,11 +234,73 @@
             this.cmdSaveDefault.UseVisualStyleBackColor = true;
             this.cmdSaveDefault.Click += new System.EventHandler(this.cmdSaveDefault_Click);
             // 
+            // lblShowDate
+            // 
+            this.lblShowDate.AutoSize = true;
+            this.lblShowDate.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.lblShowDate.Location = new System.Drawing.Point(12, 439);
+            this.lblShowDate.Name = "lblShowDate";
+            this.lblShowDate.Size = new System.Drawing.Size(81, 20);
+            this.lblShowDate.TabIndex = 17;
+            this.lblShowDate.Text = "Show Date";
+            // 
+            // cmdSaveAs
+            // 
+            this.cmdSaveAs.Location = new System.Drawing.Point(390, 609);
+            this.cmdSaveAs.Name = "cmdSaveAs";
+            this.cmdSaveAs.Size = new System.Drawing.Size(106, 45);
+            this.cmdSaveAs.TabIndex = 18;
+            this.cmdSaveAs.Text = "Save As...";
+            this.cmdSaveAs.UseVisualStyleBackColor = true;
+            this.cmdSaveAs.Click += new System.EventHandler(this.cmdSaveAs_Click);
+            // 
+            // dateTimePickerMin
+            // 
+            this.dateTimePickerMin.Format = System.Windows.Forms.DateTimePickerFormat.Custom;
+            this.dateTimePickerMin.Location = new System.Drawing.Point(120, 436);
+            this.dateTimePickerMin.MinDate = new System.DateTime(2000, 1, 1, 0, 0, 0, 0);
+            this.dateTimePickerMin.Name = "dateTimePickerMin";
+            this.dateTimePickerMin.Size = new System.Drawing.Size(93, 23);
+            this.dateTimePickerMin.TabIndex = 19;
+            // 
+            // dateTimePickerMax
+            // 
+            this.dateTimePickerMax.Format = System.Windows.Forms.DateTimePickerFormat.Custom;
+            this.dateTimePickerMax.Location = new System.Drawing.Point(265, 436);
+            this.dateTimePickerMax.MinDate = new System.DateTime(2000, 1, 1, 0, 0, 0, 0);
+            this.dateTimePickerMax.Name = "dateTimePickerMax";
+            this.dateTimePickerMax.Size = new System.Drawing.Size(93, 23);
+            this.dateTimePickerMax.TabIndex = 20;
+            // 
+            // label1
+            // 
+            this.label1.AutoSize = true;
+            this.label1.Location = new System.Drawing.Point(231, 440);
+            this.label1.Name = "label1";
+            this.label1.Size = new System.Drawing.Size(18, 15);
+            this.label1.TabIndex = 21;
+            this.label1.Text = "to";
+            // 
+            // button1
+            // 
+            this.button1.Location = new System.Drawing.Point(205, 617);
+            this.button1.Name = "button1";
+            this.button1.Size = new System.Drawing.Size(106, 28);
+            this.button1.TabIndex = 22;
+            this.button1.Text = "Delete Filter";
+            this.button1.UseVisualStyleBackColor = true;
+            this.button1.Click += new System.EventHandler(this.button1_Click);
+            // 
             // Filter
             // 
-            this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
-            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(800, 556);
+            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Inherit;
+            this.ClientSize = new System.Drawing.Size(800, 662);
+            this.Controls.Add(this.button1);
+            this.Controls.Add(this.label1);
+            this.Controls.Add(this.dateTimePickerMax);
+            this.Controls.Add(this.dateTimePickerMin);
+            this.Controls.Add(this.cmdSaveAs);
+            this.Controls.Add(this.lblShowDate);
             this.Controls.Add(this.cmdSaveDefault);
             this.Controls.Add(this.cmdRevert);
             this.Controls.Add(this.label4);
@@ -287,5 +355,11 @@
         private Label label4;
         private Button cmdRevert;
         private Button cmdSaveDefault;
+        private Label lblShowDate;
+        private Button cmdSaveAs;
+        private DateTimePicker dateTimePickerMin;
+        private DateTimePicker dateTimePickerMax;
+        private Label label1;
+        private Button button1;
     }
 }

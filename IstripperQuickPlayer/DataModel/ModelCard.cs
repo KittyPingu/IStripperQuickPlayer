@@ -80,6 +80,8 @@ namespace IStripperQuickPlayer
         internal string? country;
         internal DateTime? birthdate;
         internal int? numgirls;
+        internal DateTime dateShow;
+        internal DateTime dateReleased;
 
         public ModelCard()
         {

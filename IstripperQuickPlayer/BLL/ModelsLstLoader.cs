@@ -124,6 +124,9 @@ namespace IStripperQuickPlayer.BLL
                                 card.ethnicity = cardProp.ethnicity;
                                 card.exclusive = cardProp.exclusive;
                                 card.numgirls = cardProp.numgirls;
+                                DateTime tempdate = new DateTime(2000,1,1);
+                                DateTime.TryParse(cardProp.datesh, out tempdate);
+                                card.dateShow = tempdate;
                                 string modelID = cardProp.modelID;
                                 if (cardProp.modelID.Contains(","))
                                     modelID = cardProp.modelID.Split(",")[0];
@@ -140,7 +143,12 @@ namespace IStripperQuickPlayer.BLL
                                     card.birthdate = mProp.Birthdate;
                                 }
                             }
-                           
+                            //read properties to model
+                            var cardProp2 = PropertiesLoader.getCardByID(card.name);
+                            if (cardProp2 != null)
+                            {
+                                card.dateReleased = cardProp2.daterel;
+                            }
                             //loop through clips
                             int clipCount = getInt32(reader);
                             for (int i = 0; i < clipCount; i++)
