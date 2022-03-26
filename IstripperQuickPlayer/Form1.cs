@@ -431,6 +431,8 @@ namespace IStripperQuickPlayer
              ListView.SelectedIndexCollection col = listModels.SelectedIndices;
              if (col.Count > 0)
                 loadListClips(listModels.Items[col[0]].Tag);
+             else
+                loadListClips(clipListTag);
         }
 
         private void loadListClips(object tag)
