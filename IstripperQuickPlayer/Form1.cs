@@ -444,7 +444,43 @@ namespace IStripperQuickPlayer
             listClips.BeginUpdate();
             listClips.Items.Clear();
             if (card.clips == null) return;
-            foreach(ModelClip clip in card.clips)
+
+            var currentClips = card.clips;
+            string[] parts = txtClipType.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
+            foreach(string p in parts)
+            { 
+                    
+                List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
+                if (p.Contains("!"))
+                {
+                        
+                    List<ModelClip>? poslist=null;
+                    List<ModelClip>? neglist=currentClips;
+                    foreach (string t in taglist.Where(x => !x.Contains("!")))
+                    {
+                        //do all the positives first
+                        poslist = currentClips.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
+                    }
+                    if (poslist == null) poslist = new List<ModelClip>{ };
+                    foreach (string t in taglist.Where(x => x.Contains("!")))
+                    {
+                        neglist = neglist.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
+                                         }
+                    if (poslist == null) currentClips = new List<ModelClip>{ };
+                    else
+                        if (neglist == null) neglist = new List<ModelClip>{ };
+                        currentClips = poslist.Union(neglist).ToList();
+                }
+                else
+                {
+                    currentClips = currentClips.Where(c => (c.clipType != null && taglist.Any(y => c.clipType.ContainsWithNot(y)))).ToList();
+                }
+
+                    
+            }
+                
+
+            foreach(ModelClip clip in currentClips)
             {
                 bool addThis = false;
                 switch (clip.hotnessCode)
@@ -478,6 +514,7 @@ namespace IStripperQuickPlayer
                 }
                 if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
                 if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
+                //if (!string.IsNullOrEmpty(txtClipType.Text) && !clip.clipType.ToLower().Contains(txtClipType.Text.ToLower())) addThis = false;
                 if (addThis)
                 {
                     ListViewItem item = new ListViewItem(new [] {clip.clipNumber.ToString(), clip.clipName, clip.hotnessCode.ToString(), clip.clipType, (clip.size/1024/1024).ToString() +"MB"});
@@ -1565,6 +1602,15 @@ namespace IStripperQuickPlayer
         {
             filterSettings = FilterSettingsList.GetFilter(cmbFilter.SelectedItem.ToString());
             PopulateModelListview();
+        }
+
+        private void txtClipType_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                changesort = true;
+                FilterClips();
+            }
         }
     }
 }

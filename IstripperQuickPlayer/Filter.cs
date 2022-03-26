@@ -155,6 +155,7 @@ namespace IStripperQuickPlayer
             dateTimePickerMax.Value = filterSettings.maxDate;
             dateTimePickerMin.ValueChanged += Range_ValueChanged;
             dateTimePickerMax.ValueChanged += Range_ValueChanged;
+            txtTags.Text = filterSettings.tags;
         }
 
         private void Range_ValueChanged(object? sender, EventArgs e)
