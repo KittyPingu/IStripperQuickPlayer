@@ -9,6 +9,7 @@ using static IStripperQuickPlayer.DataModel.Enums;
 using System.Xml;
 using Microsoft.Win32;
 using System.Globalization;
+using System.Diagnostics;
 
 namespace IStripperQuickPlayer.BLL
 {
