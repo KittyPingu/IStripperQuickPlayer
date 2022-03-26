@@ -733,8 +733,14 @@ namespace IStripperQuickPlayer
                     ListViewItem? res = null;
                     if (model == null) return;
                     this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
+                    
+                    //does the new clip match the clip filter?
+                    var clipstest = FilterClipList(model.clips);
+                    string clipstring = newcardstring.Split("\\")[1];
+                    ModelClip? res2 = null;
+                    res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
                     bool found = false;
-                    while (res == null && !found)
+                    while ((res == null || res2 == null) && !found)
                     {
                         //play a clip from a filtered card instead
                         //find a new model from the filtered cards
@@ -798,8 +804,43 @@ namespace IStripperQuickPlayer
 
         private List<ModelClip>? FilterClipList(List<ModelClip> clips)
         {
+            var currentClips = clips;
+
+            string[] parts = txtClipType.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
+            foreach(string p in parts)
+            { 
+                    
+                List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
+                if (p.Contains("!"))
+                {
+                        
+                    List<ModelClip>? poslist=null;
+                    List<ModelClip>? neglist=currentClips;
+                    foreach (string t in taglist.Where(x => !x.Contains("!")))
+                    {
+                        //do all the positives first
+                        poslist = currentClips.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
+                    }
+                    if (poslist == null) poslist = new List<ModelClip>{ };
+                    foreach (string t in taglist.Where(x => x.Contains("!")))
+                    {
+                        neglist = neglist.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
+                                         }
+                    if (poslist == null) currentClips = new List<ModelClip>{ };
+                    else
+                        if (neglist == null) neglist = new List<ModelClip>{ };
+                        currentClips = poslist.Union(neglist).ToList();
+                }
+                else
+                {
+                    currentClips = currentClips.Where(c => (c.clipType != null && taglist.Any(y => c.clipType.ContainsWithNot(y)))).ToList();
+                }
+
+                    
+            }
+
             List<ModelClip> clipsnew = new List<ModelClip>();
-            foreach (ModelClip clip in clips)
+            foreach (ModelClip clip in currentClips)
             {
                 bool addThis = false;
                 switch (clip.hotnessCode)
@@ -1331,7 +1372,7 @@ namespace IStripperQuickPlayer
                 }
                 else
                 {
-                    ModelClip modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).First();
+                    ModelClip modelClip = clips.Where(x => x.clipName == path.Split("\\")[1]).First();
                     if (modelClip.clipNumber < clips.Last().clipNumber)
                     {
                         //play next
