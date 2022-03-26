@@ -10,7 +10,6 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
-using System.Text.RegularExpressions;
 using Size = System.Drawing.Size;
 
 namespace IStripperQuickPlayer
@@ -447,60 +446,42 @@ namespace IStripperQuickPlayer
             if (card.clips == null) return;
 
             var currentClips = card.clips;
-            string[] brackets = Regex.Split(txtClipType.Text, @"(?<=\))\s(?!\))");
-            List<ModelClip>? newClips = new List<ModelClip>{ };
-            foreach (string bracket in brackets)
+
+            string[] parts = txtClipType.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
+            foreach(string p in parts)
             { 
-                var doand = false;
-                var door = false;
-                string pbracket = bracket;
-                if (bracket.Trim().ToLower().StartsWith("or "))
+                    
+                List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
+                if (p.Contains("!"))
                 {
-                    door = true;
-                    pbracket = bracket.Substring(3).Trim();
-                }
-                if (bracket.Trim().ToLower().StartsWith("and "))
-                {
-                    doand = true;
-                    pbracket = bracket.Substring(3).Trim();
-                }
-                List<ModelClip>? newlist=currentClips;
-                string[] parts = pbracket.Replace("(", "").Replace(")","").ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
-                foreach(string p in parts)
-                {  
-                    List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
-                    if (p.Contains("!"))
-                    {
                         
-                        List<ModelClip>? poslist=null;
-                        List<ModelClip>? neglist=currentClips;
-                        foreach (string t in taglist.Where(x => !x.Contains("!")))
-                        {
-                            //do all the positives first
-                            poslist = currentClips.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
-                        }
-                        if (poslist == null) poslist = new List<ModelClip>{ };
-                        foreach (string t in taglist.Where(x => x.Contains("!")))
-                        {
-                            neglist = neglist.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
-                                             }
-                        //if (poslist == null) newlist = new List<ModelClip>{ };
-                        //else
-                            if (neglist == null) neglist = new List<ModelClip>{ };
-                            newlist = newlist.Intersect(poslist.Union(neglist)).ToList();
-                    }
-                    else
+                    List<ModelClip>? poslist=null;
+                    List<ModelClip>? neglist=currentClips;
+                    foreach (string t in taglist.Where(x => !x.Contains("!")))
                     {
-                        newlist = currentClips.Where(c => (c.clipType != null && taglist.Any(y => c.clipType.ContainsWithNot(y)))).ToList();
+                        //do all the positives first
+                        poslist = currentClips.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
                     }
+                    if (poslist == null) poslist = new List<ModelClip>{ };
+                    foreach (string t in taglist.Where(x => x.Contains("!")))
+                    {
+                        neglist = neglist.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
+                                         }
+                    if (poslist == null) currentClips = new List<ModelClip>{ };
+                    else
+                        if (neglist == null) neglist = new List<ModelClip>{ };
+                        currentClips = poslist.Union(neglist).ToList();
                 }
-                if (doand) newClips = newClips.Intersect(newlist).ToList();
-                if (door) newClips = newClips.Union(newlist).ToList();
-                if (!door && !doand) newClips = newlist;    
+                else
+                {
+                    currentClips = currentClips.Where(c => (c.clipType != null && taglist.Any(y => c.clipType.ContainsWithNot(y)))).ToList();
+                }
+
+                    
             }
                 
 
-            foreach(ModelClip clip in newClips)
+            foreach(ModelClip clip in currentClips)
             {
                 bool addThis = false;
                 switch (clip.hotnessCode)
