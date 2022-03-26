@@ -149,6 +149,9 @@ namespace IStripperQuickPlayer.BLL
                             if (cardProp2 != null)
                             {
                                 card.dateReleased = cardProp2.daterel;
+                                if (card.dateReleased.Year == 2007 && card.dateReleased.Month == 1 && card.dateReleased.Day == 1)
+                                    if (card.dateShow != null)
+                                        card.dateReleased = card.dateShow;
                             }
                             //loop through clips
                             int clipCount = getInt32(reader);
