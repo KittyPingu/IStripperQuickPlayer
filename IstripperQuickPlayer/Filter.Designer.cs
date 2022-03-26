@@ -72,7 +72,7 @@
             this.txtTags.Location = new System.Drawing.Point(100, 31);
             this.txtTags.Name = "txtTags";
             this.txtTags.PlaceholderText = "separate multiple tags with \"or\" / \"and\" / \"!\"";
-            this.txtTags.Size = new System.Drawing.Size(566, 27);
+            this.txtTags.Size = new System.Drawing.Size(566, 31);
             this.txtTags.TabIndex = 1;
             this.txtTags.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtTags_KeyDown);
             // 
@@ -82,7 +82,7 @@
             this.lblTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.lblTags.Location = new System.Drawing.Point(12, 34);
             this.lblTags.Name = "lblTags";
-            this.lblTags.Size = new System.Drawing.Size(38, 20);
+            this.lblTags.Size = new System.Drawing.Size(47, 25);
             this.lblTags.TabIndex = 2;
             this.lblTags.Text = "Tags";
             this.lblTags.Click += new System.EventHandler(this.label1_Click);
@@ -93,7 +93,7 @@
             this.lblMinRating.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.lblMinRating.Location = new System.Drawing.Point(12, 113);
             this.lblMinRating.Name = "lblMinRating";
-            this.lblMinRating.Size = new System.Drawing.Size(52, 20);
+            this.lblMinRating.Size = new System.Drawing.Size(63, 25);
             this.lblMinRating.TabIndex = 3;
             this.lblMinRating.Text = "Rating";
             // 
@@ -103,7 +103,7 @@
             this.label2.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.label2.Location = new System.Drawing.Point(12, 190);
             this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(37, 20);
+            this.label2.Size = new System.Drawing.Size(46, 25);
             this.label2.TabIndex = 4;
             this.label2.Text = "Bust";
             // 
@@ -113,7 +113,7 @@
             this.label3.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.label3.Location = new System.Drawing.Point(12, 273);
             this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(36, 20);
+            this.label3.Size = new System.Drawing.Size(44, 25);
             this.label3.TabIndex = 5;
             this.label3.Text = "Age";
             // 
@@ -132,7 +132,7 @@
             this.chkIStripperXXX.AutoSize = true;
             this.chkIStripperXXX.Location = new System.Drawing.Point(602, 511);
             this.chkIStripperXXX.Name = "chkIStripperXXX";
-            this.chkIStripperXXX.Size = new System.Drawing.Size(94, 19);
+            this.chkIStripperXXX.Size = new System.Drawing.Size(119, 24);
             this.chkIStripperXXX.TabIndex = 7;
             this.chkIStripperXXX.Text = "iStripper XXX";
             this.chkIStripperXXX.UseVisualStyleBackColor = true;
@@ -143,7 +143,7 @@
             this.chkIStripper.AutoSize = true;
             this.chkIStripper.Location = new System.Drawing.Point(477, 511);
             this.chkIStripper.Name = "chkIStripper";
-            this.chkIStripper.Size = new System.Drawing.Size(70, 19);
+            this.chkIStripper.Size = new System.Drawing.Size(88, 24);
             this.chkIStripper.TabIndex = 8;
             this.chkIStripper.Text = "iStripper";
             this.chkIStripper.UseVisualStyleBackColor = true;
@@ -154,7 +154,7 @@
             this.chkVGClassic.AutoSize = true;
             this.chkVGClassic.Location = new System.Drawing.Point(336, 511);
             this.chkVGClassic.Name = "chkVGClassic";
-            this.chkVGClassic.Size = new System.Drawing.Size(80, 19);
+            this.chkVGClassic.Size = new System.Drawing.Size(98, 24);
             this.chkVGClassic.TabIndex = 9;
             this.chkVGClassic.Text = "VG Classic";
             this.chkVGClassic.UseVisualStyleBackColor = true;
@@ -165,7 +165,7 @@
             this.chkDeskBabes.AutoSize = true;
             this.chkDeskBabes.Location = new System.Drawing.Point(195, 511);
             this.chkDeskBabes.Name = "chkDeskBabes";
-            this.chkDeskBabes.Size = new System.Drawing.Size(85, 19);
+            this.chkDeskBabes.Size = new System.Drawing.Size(107, 24);
             this.chkDeskBabes.TabIndex = 10;
             this.chkDeskBabes.Text = "Desk Babes";
             this.chkDeskBabes.UseVisualStyleBackColor = true;
@@ -176,7 +176,7 @@
             this.chkIStripperClassic.AutoSize = true;
             this.chkIStripperClassic.Location = new System.Drawing.Point(21, 511);
             this.chkIStripperClassic.Name = "chkIStripperClassic";
-            this.chkIStripperClassic.Size = new System.Drawing.Size(109, 19);
+            this.chkIStripperClassic.Size = new System.Drawing.Size(136, 24);
             this.chkIStripperClassic.TabIndex = 11;
             this.chkIStripperClassic.Text = "iStripper Classic";
             this.chkIStripperClassic.UseVisualStyleBackColor = true;
@@ -187,7 +187,7 @@
             this.chkNormal.AutoSize = true;
             this.chkNormal.Location = new System.Drawing.Point(21, 552);
             this.chkNormal.Name = "chkNormal";
-            this.chkNormal.Size = new System.Drawing.Size(66, 19);
+            this.chkNormal.Size = new System.Drawing.Size(81, 24);
             this.chkNormal.TabIndex = 12;
             this.chkNormal.Text = "Normal";
             this.chkNormal.UseVisualStyleBackColor = true;
@@ -198,7 +198,7 @@
             this.chkSpecial.AutoSize = true;
             this.chkSpecial.Location = new System.Drawing.Point(195, 552);
             this.chkSpecial.Name = "chkSpecial";
-            this.chkSpecial.Size = new System.Drawing.Size(63, 19);
+            this.chkSpecial.Size = new System.Drawing.Size(79, 24);
             this.chkSpecial.TabIndex = 13;
             this.chkSpecial.Text = "Special";
             this.chkSpecial.UseVisualStyleBackColor = true;
@@ -210,7 +210,7 @@
             this.label4.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.label4.Location = new System.Drawing.Point(12, 358);
             this.label4.Name = "label4";
-            this.label4.Size = new System.Drawing.Size(76, 20);
+            this.label4.Size = new System.Drawing.Size(93, 25);
             this.label4.TabIndex = 14;
             this.label4.Text = "My Rating";
             // 
@@ -240,7 +240,7 @@
             this.lblShowDate.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
             this.lblShowDate.Location = new System.Drawing.Point(12, 439);
             this.lblShowDate.Name = "lblShowDate";
-            this.lblShowDate.Size = new System.Drawing.Size(81, 20);
+            this.lblShowDate.Size = new System.Drawing.Size(98, 25);
             this.lblShowDate.TabIndex = 17;
             this.lblShowDate.Text = "Show Date";
             // 
@@ -260,24 +260,24 @@
             this.dateTimePickerMin.Location = new System.Drawing.Point(120, 436);
             this.dateTimePickerMin.MinDate = new System.DateTime(2000, 1, 1, 0, 0, 0, 0);
             this.dateTimePickerMin.Name = "dateTimePickerMin";
-            this.dateTimePickerMin.Size = new System.Drawing.Size(93, 23);
+            this.dateTimePickerMin.Size = new System.Drawing.Size(104, 27);
             this.dateTimePickerMin.TabIndex = 19;
             // 
             // dateTimePickerMax
             // 
             this.dateTimePickerMax.Format = System.Windows.Forms.DateTimePickerFormat.Custom;
-            this.dateTimePickerMax.Location = new System.Drawing.Point(265, 436);
+            this.dateTimePickerMax.Location = new System.Drawing.Point(270, 436);
             this.dateTimePickerMax.MinDate = new System.DateTime(2000, 1, 1, 0, 0, 0, 0);
             this.dateTimePickerMax.Name = "dateTimePickerMax";
-            this.dateTimePickerMax.Size = new System.Drawing.Size(93, 23);
+            this.dateTimePickerMax.Size = new System.Drawing.Size(104, 27);
             this.dateTimePickerMax.TabIndex = 20;
             // 
             // label1
             // 
             this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(231, 440);
+            this.label1.Location = new System.Drawing.Point(238, 439);
             this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(18, 15);
+            this.label1.Size = new System.Drawing.Size(23, 20);
             this.label1.TabIndex = 21;
             this.label1.Text = "to";
             // 
