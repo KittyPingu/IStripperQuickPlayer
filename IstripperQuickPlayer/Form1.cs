@@ -223,7 +223,7 @@ namespace IStripperQuickPlayer
             }
 
             ImageList blankimagelist = new ImageList();
-            blankimagelist.ImageSize = new Size(130, 180);
+            blankimagelist.ImageSize = new Size(130, 190);
             blankimagelist.ColorDepth = ColorDepth.Depth32Bit;
             Image newblankimage = new Bitmap(130,180, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             blankimagelist.Images.Add(newblankimage);
@@ -1029,7 +1029,7 @@ namespace IStripperQuickPlayer
                 changesort = false;
                 e.Graphics.Clear(Color.White);
             }
-            Rectangle imgrect = new Rectangle(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*28), e.Bounds.Top, e.Bounds.Width - (int)((e.Graphics.DpiY/192)*55), e.Bounds.Height - (int)((e.Graphics.DpiY/192)*47));
+            Rectangle imgrect = new Rectangle(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*28), e.Bounds.Top, e.Bounds.Width - (int)((e.Graphics.DpiY/192)*55), e.Bounds.Height - (int)((e.Graphics.DpiY/192)*57));
                 
             if (e.Item.Selected)
             {
@@ -1095,7 +1095,7 @@ namespace IStripperQuickPlayer
             stringFormat.Alignment = StringAlignment.Center;
             stringFormat.LineAlignment = StringAlignment.Far;
 
-            Rectangle rectName = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*45), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
+            Rectangle rectName = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*55), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
             int sztitle=10;
             Font fontName = new Font("Segoe UI", sztitle);
             string[] nameoutfit = e.Item.Text.Split("\r\n");
@@ -1108,7 +1108,7 @@ namespace IStripperQuickPlayer
             e.Graphics.DrawString(nameoutfit[0], fontName, new SolidBrush(Color.Black), rectName, stringFormat);
 
 
-            Rectangle rectOutfit = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*20), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
+            Rectangle rectOutfit = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*30), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
             int szoutfit=9;
             Font fontOutfit = new Font("Segoe UI", szoutfit);
             var textSizeOutfit = e.Graphics.MeasureString(nameoutfit[1], fontOutfit);
