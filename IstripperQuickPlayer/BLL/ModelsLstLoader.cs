@@ -155,7 +155,7 @@ namespace IStripperQuickPlayer.BLL
                                         card.dateReleased = card.dateShow.AddMonths(2);
                             }
                             //if model age is 0, calculate it from release date and birthdate
-                            if (card.modelAge == 0 && card.birthdate != null)
+                            if (card.modelAge == 0 && card.birthdate != null && card.dateReleased != null)
                             {
                                 var rel = LocalDateTime.FromDateTime(card.dateReleased);
                                 var birth = LocalDateTime.FromDateTime((DateTime)card.birthdate);
