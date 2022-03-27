@@ -10,6 +10,7 @@ using System.Xml;
 using Microsoft.Win32;
 using System.Globalization;
 using System.Diagnostics;
+using NodaTime;
 
 namespace IStripperQuickPlayer.BLL
 {
@@ -151,7 +152,16 @@ namespace IStripperQuickPlayer.BLL
                                 card.dateReleased = cardProp2.daterel;
                                 if (card.dateReleased.Year == 2007 && card.dateReleased.Month == 1 && card.dateReleased.Day == 1)
                                     if (card.dateShow != null)
-                                        card.dateReleased = card.dateShow;
+                                        card.dateReleased = card.dateShow.AddMonths(2);
+                            }
+                            //if model age is 0, calculate it from release date and birthdate
+                            if (card.modelAge == 0 && card.birthdate != null)
+                            {
+                                var rel = LocalDateTime.FromDateTime(card.dateReleased);
+                                var birth = LocalDateTime.FromDateTime((DateTime)card.birthdate);
+                                Period period = Period.Between(birth, rel, PeriodUnits.Years);
+
+                                card.modelAge = (int)period.Years;
                             }
                             //loop through clips
                             int clipCount = getInt32(reader);
