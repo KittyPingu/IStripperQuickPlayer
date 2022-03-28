@@ -1767,5 +1767,12 @@ namespace IStripperQuickPlayer
         {
             GetNextCard();
         }
+
+        private void lblNowPlaying_TextChanged(object sender, EventArgs e)
+        {
+            string t = "iStripper QuickPlayer";
+            if (lblNowPlaying.Text.Length > 14) t =lblNowPlaying.Text.Substring(13);
+            this.Text = t;
+        }
     }
 }

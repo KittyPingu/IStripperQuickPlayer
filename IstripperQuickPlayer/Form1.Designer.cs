@@ -468,6 +468,7 @@
             this.lblNowPlaying.Size = new System.Drawing.Size(126, 28);
             this.lblNowPlaying.TabIndex = 14;
             this.lblNowPlaying.Text = "Now Playing:";
+            this.lblNowPlaying.TextChanged += new System.EventHandler(this.lblNowPlaying_TextChanged);
             this.lblNowPlaying.Click += new System.EventHandler(this.lblNowPlaying_Click);
             // 
             // lblAge
@@ -875,7 +876,7 @@
             this.MaximizeBox = false;
             this.Name = "Form1";
             this.SizeGripStyle = System.Windows.Forms.SizeGripStyle.Hide;
-            this.Text = "IStripper QuickPlayer";
+            this.Text = "iStripper QuickPlayer";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Form1_FormClosing);
             this.Load += new System.EventHandler(this.Form1_Load);
             this.Shown += new System.EventHandler(this.Form1_Shown);
