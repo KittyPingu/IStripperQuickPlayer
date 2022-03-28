@@ -3,10 +3,12 @@ using Gma.System.MouseKeyHook;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
 using Microsoft.Win32;
+using Microsoft.WindowsAPICodePack.Taskbar;
 using Nektra.Deviare2;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
@@ -16,6 +18,10 @@ namespace IStripperQuickPlayer
 {
     public partial class Form1 : Form
     {
+
+        [DllImport("dwmapi.dll")]
+        static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
+
         private string nowPlayingTag = "";
         private int nowPlayingClipNumber;
         private string clipListTag = "";
@@ -26,7 +32,7 @@ namespace IStripperQuickPlayer
         static readonly HttpClient client = new HttpClient();
         private NumberStyles style = NumberStyles.AllowDecimalPoint;
         private CultureInfo culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
-            
+        private Bitmap thumbnail = null;
         //global hotkeys
         Combination? nextClip;// = Combination.FromString("Control+Alt+N");
         Action? actionNextClip = null;
@@ -35,6 +41,7 @@ namespace IStripperQuickPlayer
         //deviare2 hooking
         private NktSpyMgr _spyMgr;
         private Int32 vghd_procID=0;
+        private ControlScrollListener _processListViewScrollListener;
 
         private void actNextClip()
         {
@@ -251,6 +258,7 @@ namespace IStripperQuickPlayer
                 }
                
             }
+            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
         void listModels_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
@@ -603,12 +611,19 @@ namespace IStripperQuickPlayer
             string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             //watcher.RegistryChange += RegistryChanged;
-            clickingNowPlaying = true;
+            clickingNowPlaying = true;            
+            _processListViewScrollListener = new ControlScrollListener(listModels);  
+            _processListViewScrollListener.ControlScrolled += ProcessListViewScrollListener_ControlScrolled;
             RetrieveModels();
             GetNowPlaying();
             clickingNowPlaying = false;
             SetupKeyHooks();
-            Task.Run(() => SetupRegHooks());
+            Task.Run(() => SetupRegHooks());       
+        }
+
+        private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)
+        {
+            //this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
         private void PopulateFilterList()
@@ -798,7 +813,7 @@ namespace IStripperQuickPlayer
                 hookCallInfo.Result().Value = -1;
                 hookCallInfo.LastError = 5;
             }
-
+            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
             return;
         }
 
@@ -964,6 +979,7 @@ namespace IStripperQuickPlayer
                 listModels.BeginInvoke((Action)(() => listModels.Refresh()));
             }
             catch { }
+            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
         private void chk_CheckedChanged(object sender, EventArgs e)
@@ -1129,14 +1145,46 @@ namespace IStripperQuickPlayer
                                
                 GraphicsPath p = new GraphicsPath(); 
                 p.AddString(
-                    "*",            
-                    new FontFamily("Verdana"), 
+                    "\uEC19",            
+                    new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * 16 / 72,      
-                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*28), e.Bounds.Top -(int)((e.Graphics.DpiY/192)*2)),            
+                    e.Graphics.DpiY * 10 / 72,      
+                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*24), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
                     new StringFormat());         
-                e.Graphics.DrawPath(new Pen(Color.Yellow, 1), p);
-                e.Graphics.FillPath(Brushes.Red, p);     
+                e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
+                e.Graphics.FillPath(Brushes.Yellow, p);     
+                if (card.hotnessLevel == "5")
+                {
+                    p = new GraphicsPath(); 
+                    p.AddString(
+                        "\uEC8A",            
+                        new FontFamily("Segoe Fluent Icons"), 
+                        (int) FontStyle.Bold,     
+                        e.Graphics.DpiY * 10 / 72,      
+                        new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*54), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
+                        new StringFormat());         
+                    e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
+                    e.Graphics.FillPath(Brushes.Yellow, p);     
+                }
+            }
+
+            else if (card.hotnessLevel == "5")
+            {
+                 e.Graphics.InterpolationMode = InterpolationMode.High;
+                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
+                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
+                               
+                GraphicsPath p = new GraphicsPath(); 
+                p.AddString(
+                    "\uEC8A",            
+                    new FontFamily("Segoe Fluent Icons"), 
+                    (int) FontStyle.Bold,     
+                    e.Graphics.DpiY * 10 / 72,      
+                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*24), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
+                    new StringFormat());         
+                e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
+                e.Graphics.FillPath(Brushes.Yellow, p);     
             }
 
             if (myData != null && myData.GetCardFavourite(card.name))
@@ -1249,8 +1297,10 @@ namespace IStripperQuickPlayer
              
             }
 
+            bool isPlaying = false;
             if (nowPlayingTag == card.modelName + "\r\n" + card.outfit)
             {
+                isPlaying = true;
                 e.Graphics.InterpolationMode = InterpolationMode.High;
                 e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
@@ -1278,7 +1328,12 @@ namespace IStripperQuickPlayer
                 e.Graphics.FillPath(Brushes.White, p);       
             }
 
-           
+                  
+            //if (isPlaying)
+            //{
+            //      thumbnailclip = new Rectangle(listModels.Location.X + e.Bounds.X, listModels.Location.Y + e.Bounds.Y, e.Bounds.Width, e.Bounds.Height);
+            //      this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+            //}
 
         }
 
@@ -1399,6 +1454,7 @@ namespace IStripperQuickPlayer
                     }
                 }
             }
+            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
         private void GetNextCard()
@@ -1423,7 +1479,6 @@ namespace IStripperQuickPlayer
                 listModels.FindItemWithText(newtag);
                 listModels.EnsureVisible((int)index);     
             }
-            
             //choose a random clip from those shown
             if (listClips.Items.Count == 0) return;
             var itemnum = r.Next(listClips.Items.Count-1);
@@ -1435,7 +1490,7 @@ namespace IStripperQuickPlayer
                 listClips.Select();
                 listClips.EnsureVisible(j.Index);
             }
-
+            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
         private void ReloadStaticProperties()
@@ -1525,6 +1580,8 @@ namespace IStripperQuickPlayer
 
         private ListViewItem? mousedownCard=null;
         private ListViewItem? currentMenuCard=null;
+        private Rectangle? thumbnailclip;
+
         private void listModels_MouseDown(object sender, MouseEventArgs e)
         {
             if ( e.Button == MouseButtons.Right )
@@ -1629,7 +1686,7 @@ namespace IStripperQuickPlayer
         private void listModels_DoubleClick(object sender, EventArgs e)
         {
             FilterClips();
-            GetNextClip(Datastore.findCardByText(listModels.Items[listModels.SelectedIndices[0]].Text));
+            GetNextClip(Datastore.findCardByText(listModels.Items[listModels.SelectedIndices[0]].Text));            
         }
 
         private void includeDescriptionInSearchToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1655,6 +1712,60 @@ namespace IStripperQuickPlayer
                 changesort = true;
                 FilterClips();
             }
+        }
+
+        private void Form1_Shown(object sender, EventArgs e)
+        {
+            try
+            {
+                TaskbarThumbnail();
+
+                string cmdPath = Assembly.GetEntryAssembly().Location;
+                ThumbnailToolBarManager tb = TaskbarManager.Instance.ThumbnailToolBars;
+
+                ThumbnailToolBarButton nextclipbtn = new ThumbnailToolBarButton(Properties.Resources.next_clip, "Next Clip");
+                nextclipbtn.Click += new EventHandler<ThumbnailButtonClickedEventArgs>(nextclipButton_click);
+                ThumbnailToolBarButton nextmodelbtn = new ThumbnailToolBarButton(Properties.Resources.next_model, "Next Model");
+                nextmodelbtn.Click += new EventHandler<ThumbnailButtonClickedEventArgs>(nextclipModel_click);
+                ThumbnailToolBarButton[] buttons = new ThumbnailToolBarButton[2]{
+                        nextclipbtn,
+                        nextmodelbtn
+                    };
+
+                tb.AddButtons(this.Handle, buttons);
+
+
+            }
+            catch (Exception ex)
+            { }
+        }
+
+        private void TaskbarThumbnail()
+        {
+            return;
+            TabbedThumbnailManager th = TaskbarManager.Instance.TabbedThumbnail;
+            var r = items.Where(c => c.Text == nowPlayingTag).FirstOrDefault();
+            if (r != null && r.Index >= 0)
+            {
+                var res = DwmInvalidateIconicBitmaps(this.Handle);
+                thumbnailclip = new Rectangle(listModels.Location.X + listModels.Items[r.Index].Bounds.X,
+                    listModels.Location.Y + listModels.Items[r.Index].Bounds.Y,
+                    listModels.Items[r.Index].Bounds.Width,
+                    listModels.Items[r.Index].Bounds.Height);
+            }
+            if (thumbnailclip != null)
+                th.SetThumbnailClip(this.Handle, thumbnailclip);
+            
+        }
+
+        private void nextclipButton_click(object sender, ThumbnailButtonClickedEventArgs e)
+        {
+            this.BeginInvoke((Action)(() => GetNextClip()));
+        }
+
+        private void nextclipModel_click(object sender, ThumbnailButtonClickedEventArgs e)
+        {
+            GetNextCard();
         }
     }
 }

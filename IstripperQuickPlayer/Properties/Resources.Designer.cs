@@ -79,5 +79,25 @@ namespace IStripperQuickPlayer.Properties {
                 return ((System.Drawing.Bitmap)(obj));
             }
         }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
+        /// </summary>
+        internal static System.Drawing.Icon next_clip {
+            get {
+                object obj = ResourceManager.GetObject("next_clip", resourceCulture);
+                return ((System.Drawing.Icon)(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Drawing.Icon similar to (Icon).
+        /// </summary>
+        internal static System.Drawing.Icon next_model {
+            get {
+                object obj = ResourceManager.GetObject("next_model", resourceCulture);
+                return ((System.Drawing.Icon)(obj));
+            }
+        }
     }
 }

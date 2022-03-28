@@ -105,10 +105,10 @@
             // 
             this.lblModelsLoaded.AutoSize = true;
             this.lblModelsLoaded.Font = new System.Drawing.Font("Segoe UI", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblModelsLoaded.Location = new System.Drawing.Point(26, 26);
-            this.lblModelsLoaded.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblModelsLoaded.Location = new System.Drawing.Point(30, 35);
+            this.lblModelsLoaded.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblModelsLoaded.Name = "lblModelsLoaded";
-            this.lblModelsLoaded.Size = new System.Drawing.Size(108, 21);
+            this.lblModelsLoaded.Size = new System.Drawing.Size(135, 28);
             this.lblModelsLoaded.TabIndex = 1;
             this.lblModelsLoaded.Text = "Cards Loaded:";
             this.lblModelsLoaded.Click += new System.EventHandler(this.lblModelsLoaded_Click);
@@ -116,11 +116,11 @@
             // listModels
             // 
             this.listModels.ContextMenuStrip = this.menuCardList;
-            this.listModels.Location = new System.Drawing.Point(26, 87);
-            this.listModels.Margin = new System.Windows.Forms.Padding(4, 3, 4, 4);
+            this.listModels.Location = new System.Drawing.Point(30, 116);
+            this.listModels.Margin = new System.Windows.Forms.Padding(5, 4, 5, 5);
             this.listModels.Name = "listModels";
             this.listModels.OwnerDraw = true;
-            this.listModels.Size = new System.Drawing.Size(900, 882);
+            this.listModels.Size = new System.Drawing.Size(1028, 1175);
             this.listModels.TabIndex = 5;
             this.listModels.UseCompatibleStateImageBehavior = false;
             this.listModels.DrawItem += new System.Windows.Forms.DrawListViewItemEventHandler(this.listModels_DrawItem);
@@ -146,7 +146,7 @@
             this.hairToolStripMenuItem,
             this.purchasedToolStripMenuItem});
             this.menuCardList.Name = "menuCardList";
-            this.menuCardList.Size = new System.Drawing.Size(169, 285);
+            this.menuCardList.Size = new System.Drawing.Size(169, 321);
             this.menuCardList.Closing += new System.Windows.Forms.ToolStripDropDownClosingEventHandler(this.menuCardList_Closing);
             this.menuCardList.Opening += new System.ComponentModel.CancelEventHandler(this.menuCardList_Opening);
             // 
@@ -154,7 +154,7 @@
             // 
             this.menuCardFavourite.CheckOnClick = true;
             this.menuCardFavourite.Name = "menuCardFavourite";
-            this.menuCardFavourite.Size = new System.Drawing.Size(168, 24);
+            this.menuCardFavourite.Size = new System.Drawing.Size(168, 28);
             this.menuCardFavourite.Text = "Favourite";
             this.menuCardFavourite.CheckedChanged += new System.EventHandler(this.menuCardFavourite_CheckedChanged);
             // 
@@ -216,21 +216,21 @@
             // 
             this.nameToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
             this.nameToolStripMenuItem.Name = "nameToolStripMenuItem";
-            this.nameToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.nameToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.nameToolStripMenuItem.Text = "Name:";
             // 
             // outfitToolStripMenuItem
             // 
             this.outfitToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
             this.outfitToolStripMenuItem.Name = "outfitToolStripMenuItem";
-            this.outfitToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.outfitToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.outfitToolStripMenuItem.Text = "Outfit:";
             // 
             // ratingToolStripMenuItem
             // 
             this.ratingToolStripMenuItem.AutoToolTip = true;
             this.ratingToolStripMenuItem.Name = "ratingToolStripMenuItem";
-            this.ratingToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.ratingToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.ratingToolStripMenuItem.Tag = "Rating";
             this.ratingToolStripMenuItem.Text = "Rating:";
             this.ratingToolStripMenuItem.ToolTipText = "Official Rating";
@@ -238,14 +238,14 @@
             // hotnessToolStripMenuItem
             // 
             this.hotnessToolStripMenuItem.Name = "hotnessToolStripMenuItem";
-            this.hotnessToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.hotnessToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.hotnessToolStripMenuItem.Text = "Hotness:";
             // 
             // statsToolStripMenuItem
             // 
             this.statsToolStripMenuItem.AutoToolTip = true;
             this.statsToolStripMenuItem.Name = "statsToolStripMenuItem";
-            this.statsToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.statsToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.statsToolStripMenuItem.Tag = "Stats";
             this.statsToolStripMenuItem.Text = "Stats:";
             this.statsToolStripMenuItem.ToolTipText = "Model\'s Stats";
@@ -253,19 +253,19 @@
             // ageToolStripMenuItem
             // 
             this.ageToolStripMenuItem.Name = "ageToolStripMenuItem";
-            this.ageToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.ageToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.ageToolStripMenuItem.Text = "Age:";
             // 
             // hairToolStripMenuItem
             // 
             this.hairToolStripMenuItem.Name = "hairToolStripMenuItem";
-            this.hairToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.hairToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.hairToolStripMenuItem.Text = "Hair:";
             // 
             // purchasedToolStripMenuItem
             // 
             this.purchasedToolStripMenuItem.Name = "purchasedToolStripMenuItem";
-            this.purchasedToolStripMenuItem.Size = new System.Drawing.Size(168, 24);
+            this.purchasedToolStripMenuItem.Size = new System.Drawing.Size(168, 28);
             this.purchasedToolStripMenuItem.Text = "Purchased:";
             // 
             // cmbMenuCardRating
@@ -297,11 +297,11 @@
             this.ClipType,
             this.ClipSize});
             this.listClips.FullRowSelect = true;
-            this.listClips.Location = new System.Drawing.Point(992, 142);
-            this.listClips.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.listClips.Location = new System.Drawing.Point(1134, 189);
+            this.listClips.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.listClips.MultiSelect = false;
             this.listClips.Name = "listClips";
-            this.listClips.Size = new System.Drawing.Size(891, 544);
+            this.listClips.Size = new System.Drawing.Size(1018, 724);
             this.listClips.TabIndex = 13;
             this.listClips.UseCompatibleStateImageBehavior = false;
             this.listClips.View = System.Windows.Forms.View.Details;
@@ -335,10 +335,10 @@
             // chkPublic
             // 
             this.chkPublic.AutoSize = true;
-            this.chkPublic.Location = new System.Drawing.Point(992, 116);
-            this.chkPublic.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.chkPublic.Location = new System.Drawing.Point(1134, 155);
+            this.chkPublic.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkPublic.Name = "chkPublic";
-            this.chkPublic.Size = new System.Drawing.Size(59, 19);
+            this.chkPublic.Size = new System.Drawing.Size(71, 24);
             this.chkPublic.TabIndex = 6;
             this.chkPublic.Text = "Public";
             this.chkPublic.UseVisualStyleBackColor = true;
@@ -349,10 +349,10 @@
             this.chkNoNudity.AutoSize = true;
             this.chkNoNudity.Checked = true;
             this.chkNoNudity.CheckState = System.Windows.Forms.CheckState.Checked;
-            this.chkNoNudity.Location = new System.Drawing.Point(1068, 116);
-            this.chkNoNudity.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.chkNoNudity.Location = new System.Drawing.Point(1221, 155);
+            this.chkNoNudity.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkNoNudity.Name = "chkNoNudity";
-            this.chkNoNudity.Size = new System.Drawing.Size(81, 19);
+            this.chkNoNudity.Size = new System.Drawing.Size(99, 24);
             this.chkNoNudity.TabIndex = 7;
             this.chkNoNudity.Text = "No Nudity";
             this.chkNoNudity.UseVisualStyleBackColor = true;
@@ -363,10 +363,10 @@
             this.chkTopless.AutoSize = true;
             this.chkTopless.Checked = true;
             this.chkTopless.CheckState = System.Windows.Forms.CheckState.Checked;
-            this.chkTopless.Location = new System.Drawing.Point(1168, 116);
-            this.chkTopless.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.chkTopless.Location = new System.Drawing.Point(1335, 155);
+            this.chkTopless.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkTopless.Name = "chkTopless";
-            this.chkTopless.Size = new System.Drawing.Size(64, 19);
+            this.chkTopless.Size = new System.Drawing.Size(80, 24);
             this.chkTopless.TabIndex = 8;
             this.chkTopless.Text = "Topless";
             this.chkTopless.UseVisualStyleBackColor = true;
@@ -377,10 +377,10 @@
             this.chkNudity.AutoSize = true;
             this.chkNudity.Checked = true;
             this.chkNudity.CheckState = System.Windows.Forms.CheckState.Checked;
-            this.chkNudity.Location = new System.Drawing.Point(1250, 116);
-            this.chkNudity.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.chkNudity.Location = new System.Drawing.Point(1429, 155);
+            this.chkNudity.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkNudity.Name = "chkNudity";
-            this.chkNudity.Size = new System.Drawing.Size(62, 19);
+            this.chkNudity.Size = new System.Drawing.Size(75, 24);
             this.chkNudity.TabIndex = 9;
             this.chkNudity.Text = "Nudity";
             this.chkNudity.UseVisualStyleBackColor = true;
@@ -391,10 +391,10 @@
             this.chkFullNudity.AutoSize = true;
             this.chkFullNudity.Checked = true;
             this.chkFullNudity.CheckState = System.Windows.Forms.CheckState.Checked;
-            this.chkFullNudity.Location = new System.Drawing.Point(1326, 116);
-            this.chkFullNudity.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.chkFullNudity.Location = new System.Drawing.Point(1515, 155);
+            this.chkFullNudity.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkFullNudity.Name = "chkFullNudity";
-            this.chkFullNudity.Size = new System.Drawing.Size(84, 19);
+            this.chkFullNudity.Size = new System.Drawing.Size(102, 24);
             this.chkFullNudity.TabIndex = 10;
             this.chkFullNudity.Text = "Full Nudity";
             this.chkFullNudity.UseVisualStyleBackColor = true;
@@ -405,10 +405,10 @@
             this.chkXXX.AutoSize = true;
             this.chkXXX.Checked = true;
             this.chkXXX.CheckState = System.Windows.Forms.CheckState.Checked;
-            this.chkXXX.Location = new System.Drawing.Point(1430, 116);
-            this.chkXXX.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.chkXXX.Location = new System.Drawing.Point(1634, 155);
+            this.chkXXX.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkXXX.Name = "chkXXX";
-            this.chkXXX.Size = new System.Drawing.Size(47, 19);
+            this.chkXXX.Size = new System.Drawing.Size(58, 24);
             this.chkXXX.TabIndex = 11;
             this.chkXXX.Text = "XXX";
             this.chkXXX.UseVisualStyleBackColor = true;
@@ -417,10 +417,10 @@
             // chkDemo
             // 
             this.chkDemo.AutoSize = true;
-            this.chkDemo.Location = new System.Drawing.Point(1809, 116);
-            this.chkDemo.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.chkDemo.Location = new System.Drawing.Point(2067, 155);
+            this.chkDemo.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkDemo.Name = "chkDemo";
-            this.chkDemo.Size = new System.Drawing.Size(58, 19);
+            this.chkDemo.Size = new System.Drawing.Size(72, 24);
             this.chkDemo.TabIndex = 12;
             this.chkDemo.Text = "Demo";
             this.chkDemo.UseVisualStyleBackColor = true;
@@ -441,20 +441,20 @@
             "Release Date (Descending)",
             "Date Purchased",
             "Date Purchased (Descending)"});
-            this.cmbSortBy.Location = new System.Drawing.Point(80, 63);
-            this.cmbSortBy.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.cmbSortBy.Location = new System.Drawing.Point(91, 84);
+            this.cmbSortBy.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmbSortBy.Name = "cmbSortBy";
-            this.cmbSortBy.Size = new System.Drawing.Size(179, 23);
+            this.cmbSortBy.Size = new System.Drawing.Size(204, 28);
             this.cmbSortBy.TabIndex = 4;
             this.cmbSortBy.SelectedIndexChanged += new System.EventHandler(this.comboBox1_SelectedIndexChanged);
             // 
             // label1
             // 
             this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(26, 67);
-            this.label1.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.label1.Location = new System.Drawing.Point(30, 89);
+            this.label1.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(44, 15);
+            this.label1.Size = new System.Drawing.Size(56, 20);
             this.label1.TabIndex = 3;
             this.label1.Text = "Sort By";
             // 
@@ -462,10 +462,10 @@
             // 
             this.lblNowPlaying.AutoSize = true;
             this.lblNowPlaying.Font = new System.Drawing.Font("Nirmala UI", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblNowPlaying.Location = new System.Drawing.Point(987, 37);
+            this.lblNowPlaying.Location = new System.Drawing.Point(1128, 49);
             this.lblNowPlaying.Margin = new System.Windows.Forms.Padding(0);
             this.lblNowPlaying.Name = "lblNowPlaying";
-            this.lblNowPlaying.Size = new System.Drawing.Size(101, 21);
+            this.lblNowPlaying.Size = new System.Drawing.Size(126, 28);
             this.lblNowPlaying.TabIndex = 14;
             this.lblNowPlaying.Text = "Now Playing:";
             this.lblNowPlaying.Click += new System.EventHandler(this.lblNowPlaying_Click);
@@ -474,10 +474,10 @@
             // 
             this.lblAge.AutoSize = true;
             this.lblAge.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblAge.Location = new System.Drawing.Point(996, 702);
-            this.lblAge.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblAge.Location = new System.Drawing.Point(1138, 936);
+            this.lblAge.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblAge.Name = "lblAge";
-            this.lblAge.Size = new System.Drawing.Size(39, 20);
+            this.lblAge.Size = new System.Drawing.Size(48, 25);
             this.lblAge.TabIndex = 15;
             this.lblAge.Text = "Age:";
             // 
@@ -485,10 +485,10 @@
             // 
             this.lblCollection.AutoSize = true;
             this.lblCollection.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblCollection.Location = new System.Drawing.Point(1302, 702);
-            this.lblCollection.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblCollection.Location = new System.Drawing.Point(1488, 936);
+            this.lblCollection.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblCollection.Name = "lblCollection";
-            this.lblCollection.Size = new System.Drawing.Size(79, 20);
+            this.lblCollection.Size = new System.Drawing.Size(94, 25);
             this.lblCollection.TabIndex = 16;
             this.lblCollection.Text = "Collection:";
             // 
@@ -496,42 +496,42 @@
             // 
             this.lblRatingScore.AutoSize = true;
             this.lblRatingScore.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblRatingScore.Location = new System.Drawing.Point(1734, 702);
-            this.lblRatingScore.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblRatingScore.Location = new System.Drawing.Point(1982, 936);
+            this.lblRatingScore.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblRatingScore.Name = "lblRatingScore";
-            this.lblRatingScore.Size = new System.Drawing.Size(65, 20);
+            this.lblRatingScore.Size = new System.Drawing.Size(81, 25);
             this.lblRatingScore.TabIndex = 17;
             this.lblRatingScore.Text = "Hotness:";
             // 
             // txtDescription
             // 
-            this.txtDescription.Location = new System.Drawing.Point(992, 802);
-            this.txtDescription.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.txtDescription.Location = new System.Drawing.Point(1134, 1069);
+            this.txtDescription.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.txtDescription.Multiline = true;
             this.txtDescription.Name = "txtDescription";
             this.txtDescription.ReadOnly = true;
             this.txtDescription.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
-            this.txtDescription.Size = new System.Drawing.Size(891, 158);
+            this.txtDescription.Size = new System.Drawing.Size(1018, 209);
             this.txtDescription.TabIndex = 18;
             // 
             // lblResolution
             // 
             this.lblResolution.AutoSize = true;
             this.lblResolution.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblResolution.Location = new System.Drawing.Point(1557, 702);
-            this.lblResolution.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblResolution.Location = new System.Drawing.Point(1779, 936);
+            this.lblResolution.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblResolution.Name = "lblResolution";
-            this.lblResolution.Size = new System.Drawing.Size(82, 20);
+            this.lblResolution.Size = new System.Drawing.Size(99, 25);
             this.lblResolution.TabIndex = 19;
             this.lblResolution.Text = "Resolution:";
             // 
             // txtSearch
             // 
-            this.txtSearch.Location = new System.Drawing.Point(657, 63);
-            this.txtSearch.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.txtSearch.Location = new System.Drawing.Point(751, 84);
+            this.txtSearch.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.txtSearch.Name = "txtSearch";
             this.txtSearch.PlaceholderText = "model name or tag";
-            this.txtSearch.Size = new System.Drawing.Size(268, 23);
+            this.txtSearch.Size = new System.Drawing.Size(306, 27);
             this.txtSearch.TabIndex = 20;
             this.txtSearch.TextChanged += new System.EventHandler(this.txtSearch_TextChanged);
             this.txtSearch.Enter += new System.EventHandler(this.txtSearch_Enter);
@@ -540,19 +540,19 @@
             // label2
             // 
             this.label2.AutoSize = true;
-            this.label2.Location = new System.Drawing.Point(605, 67);
-            this.label2.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.label2.Location = new System.Drawing.Point(691, 89);
+            this.label2.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(42, 15);
+            this.label2.Size = new System.Drawing.Size(53, 20);
             this.label2.TabIndex = 21;
             this.label2.Text = "Search";
             // 
             // button1
             // 
-            this.button1.Location = new System.Drawing.Point(1773, 33);
-            this.button1.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.button1.Location = new System.Drawing.Point(2026, 44);
+            this.button1.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.button1.Name = "button1";
-            this.button1.Size = new System.Drawing.Size(110, 33);
+            this.button1.Size = new System.Drawing.Size(126, 44);
             this.button1.TabIndex = 22;
             this.button1.Text = "Show Model";
             this.button1.UseVisualStyleBackColor = true;
@@ -565,10 +565,10 @@
             this.cmdClearSearch.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.cmdClearSearch.Image = global::IStripperQuickPlayer.Properties.Resources.kindpng_4040161;
             this.cmdClearSearch.ImageAlign = System.Drawing.ContentAlignment.MiddleLeft;
-            this.cmdClearSearch.Location = new System.Drawing.Point(922, 62);
+            this.cmdClearSearch.Location = new System.Drawing.Point(1054, 83);
             this.cmdClearSearch.Margin = new System.Windows.Forms.Padding(0);
             this.cmdClearSearch.Name = "cmdClearSearch";
-            this.cmdClearSearch.Size = new System.Drawing.Size(49, 23);
+            this.cmdClearSearch.Size = new System.Drawing.Size(56, 31);
             this.cmdClearSearch.TabIndex = 23;
             this.cmdClearSearch.UseVisualStyleBackColor = false;
             this.cmdClearSearch.Visible = false;
@@ -576,10 +576,10 @@
             // 
             // cmdNextClip
             // 
-            this.cmdNextClip.Location = new System.Drawing.Point(1657, 33);
-            this.cmdNextClip.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.cmdNextClip.Location = new System.Drawing.Point(1894, 44);
+            this.cmdNextClip.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmdNextClip.Name = "cmdNextClip";
-            this.cmdNextClip.Size = new System.Drawing.Size(95, 33);
+            this.cmdNextClip.Size = new System.Drawing.Size(109, 44);
             this.cmdNextClip.TabIndex = 24;
             this.cmdNextClip.Text = "Next Clip";
             this.cmdNextClip.UseVisualStyleBackColor = true;
@@ -593,8 +593,8 @@
             this.settingsToolStripMenuItem});
             this.menuStrip1.Location = new System.Drawing.Point(0, 0);
             this.menuStrip1.Name = "menuStrip1";
-            this.menuStrip1.Padding = new System.Windows.Forms.Padding(7, 3, 0, 3);
-            this.menuStrip1.Size = new System.Drawing.Size(1894, 25);
+            this.menuStrip1.Padding = new System.Windows.Forms.Padding(8, 4, 0, 4);
+            this.menuStrip1.Size = new System.Drawing.Size(2165, 32);
             this.menuStrip1.TabIndex = 25;
             this.menuStrip1.Text = "menuStrip1";
             // 
@@ -604,21 +604,21 @@
             this.reloadModelslstToolStripMenuItem,
             this.exitToolStripMenuItem});
             this.fileToolStripMenuItem.Name = "fileToolStripMenuItem";
-            this.fileToolStripMenuItem.Size = new System.Drawing.Size(37, 19);
+            this.fileToolStripMenuItem.Size = new System.Drawing.Size(46, 24);
             this.fileToolStripMenuItem.Text = "File";
             // 
             // reloadModelslstToolStripMenuItem
             // 
             this.reloadModelslstToolStripMenuItem.Name = "reloadModelslstToolStripMenuItem";
             this.reloadModelslstToolStripMenuItem.ShortcutKeys = System.Windows.Forms.Keys.F5;
-            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(171, 22);
+            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.reloadModelslstToolStripMenuItem.Text = "Reload Models";
             this.reloadModelslstToolStripMenuItem.Click += new System.EventHandler(this.cmdLoadModels_Click);
             // 
             // exitToolStripMenuItem
             // 
             this.exitToolStripMenuItem.Name = "exitToolStripMenuItem";
-            this.exitToolStripMenuItem.Size = new System.Drawing.Size(171, 22);
+            this.exitToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.exitToolStripMenuItem.Text = "Exit";
             this.exitToolStripMenuItem.Click += new System.EventHandler(this.exitToolStripMenuItem_Click);
             // 
@@ -631,13 +631,13 @@
             this.includeDescriptionInSearchToolStripMenuItem,
             this.includeShowTitleInSearchToolStripMenuItem});
             this.settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
-            this.settingsToolStripMenuItem.Size = new System.Drawing.Size(61, 19);
+            this.settingsToolStripMenuItem.Size = new System.Drawing.Size(76, 24);
             this.settingsToolStripMenuItem.Text = "Settings";
             // 
             // hotkeysToolStripMenuItem
             // 
             this.hotkeysToolStripMenuItem.Name = "hotkeysToolStripMenuItem";
-            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(227, 22);
+            this.hotkeysToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.hotkeysToolStripMenuItem.Text = "Hotkeys..";
             this.hotkeysToolStripMenuItem.Click += new System.EventHandler(this.hotkeysToolStripMenuItem_Click);
             // 
@@ -647,7 +647,7 @@
             this.enforceCardFilterToolStripMenuItem.CheckOnClick = true;
             this.enforceCardFilterToolStripMenuItem.CheckState = System.Windows.Forms.CheckState.Checked;
             this.enforceCardFilterToolStripMenuItem.Name = "enforceCardFilterToolStripMenuItem";
-            this.enforceCardFilterToolStripMenuItem.Size = new System.Drawing.Size(227, 22);
+            this.enforceCardFilterToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.enforceCardFilterToolStripMenuItem.Text = "Enforce Card Filter";
             this.enforceCardFilterToolStripMenuItem.Click += new System.EventHandler(this.enforceCardFilterToolStripMenuItem_Click);
             // 
@@ -655,7 +655,7 @@
             // 
             this.menuShowRatingsStars.CheckOnClick = true;
             this.menuShowRatingsStars.Name = "menuShowRatingsStars";
-            this.menuShowRatingsStars.Size = new System.Drawing.Size(227, 22);
+            this.menuShowRatingsStars.Size = new System.Drawing.Size(284, 26);
             this.menuShowRatingsStars.Text = "Show MyRating Stars";
             this.menuShowRatingsStars.CheckedChanged += new System.EventHandler(this.chkShowRatingStars_CheckedChanged);
             // 
@@ -663,7 +663,7 @@
             // 
             this.includeDescriptionInSearchToolStripMenuItem.CheckOnClick = true;
             this.includeDescriptionInSearchToolStripMenuItem.Name = "includeDescriptionInSearchToolStripMenuItem";
-            this.includeDescriptionInSearchToolStripMenuItem.Size = new System.Drawing.Size(227, 22);
+            this.includeDescriptionInSearchToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.includeDescriptionInSearchToolStripMenuItem.Text = "Include Description in Search";
             this.includeDescriptionInSearchToolStripMenuItem.Click += new System.EventHandler(this.includeDescriptionInSearchToolStripMenuItem_Click);
             // 
@@ -671,7 +671,7 @@
             // 
             this.includeShowTitleInSearchToolStripMenuItem.CheckOnClick = true;
             this.includeShowTitleInSearchToolStripMenuItem.Name = "includeShowTitleInSearchToolStripMenuItem";
-            this.includeShowTitleInSearchToolStripMenuItem.Size = new System.Drawing.Size(227, 22);
+            this.includeShowTitleInSearchToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.includeShowTitleInSearchToolStripMenuItem.Text = "Include Show Title in Search";
             this.includeShowTitleInSearchToolStripMenuItem.Click += new System.EventHandler(this.includeShowTitleInSearchToolStripMenuItem_Click);
             // 
@@ -679,11 +679,11 @@
             // 
             this.lblTags.AutoSize = true;
             this.lblTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblTags.Location = new System.Drawing.Point(992, 736);
-            this.lblTags.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
-            this.lblTags.MaximumSize = new System.Drawing.Size(892, 27);
+            this.lblTags.Location = new System.Drawing.Point(1134, 981);
+            this.lblTags.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
+            this.lblTags.MaximumSize = new System.Drawing.Size(1019, 36);
             this.lblTags.Name = "lblTags";
-            this.lblTags.Size = new System.Drawing.Size(41, 20);
+            this.lblTags.Size = new System.Drawing.Size(51, 25);
             this.lblTags.TabIndex = 26;
             this.lblTags.Text = "Tags:";
             // 
@@ -691,18 +691,18 @@
             // 
             this.lblCipListDetails.AutoSize = true;
             this.lblCipListDetails.Font = new System.Drawing.Font("Nirmala UI", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblCipListDetails.Location = new System.Drawing.Point(987, 87);
+            this.lblCipListDetails.Location = new System.Drawing.Point(1128, 116);
             this.lblCipListDetails.Margin = new System.Windows.Forms.Padding(0);
             this.lblCipListDetails.Name = "lblCipListDetails";
-            this.lblCipListDetails.Size = new System.Drawing.Size(0, 21);
+            this.lblCipListDetails.Size = new System.Drawing.Size(0, 28);
             this.lblCipListDetails.TabIndex = 27;
             // 
             // cmdFilter
             // 
-            this.cmdFilter.Location = new System.Drawing.Point(406, 63);
-            this.cmdFilter.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.cmdFilter.Location = new System.Drawing.Point(464, 84);
+            this.cmdFilter.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmdFilter.Name = "cmdFilter";
-            this.cmdFilter.Size = new System.Drawing.Size(54, 22);
+            this.cmdFilter.Size = new System.Drawing.Size(62, 29);
             this.cmdFilter.TabIndex = 28;
             this.cmdFilter.Text = "Filter...";
             this.cmdFilter.UseVisualStyleBackColor = true;
@@ -711,10 +711,10 @@
             // label3
             // 
             this.label3.AutoSize = true;
-            this.label3.Location = new System.Drawing.Point(1682, 87);
-            this.label3.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.label3.Location = new System.Drawing.Point(1922, 116);
+            this.label3.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(80, 15);
+            this.label3.Size = new System.Drawing.Size(101, 20);
             this.label3.TabIndex = 29;
             this.label3.Text = "Min Size (MB)";
             // 
@@ -729,15 +729,15 @@
             0,
             0,
             0});
-            this.numMinSizeMB.Location = new System.Drawing.Point(1799, 86);
-            this.numMinSizeMB.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.numMinSizeMB.Location = new System.Drawing.Point(2056, 115);
+            this.numMinSizeMB.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.numMinSizeMB.Maximum = new decimal(new int[] {
             9999,
             0,
             0,
             0});
             this.numMinSizeMB.Name = "numMinSizeMB";
-            this.numMinSizeMB.Size = new System.Drawing.Size(84, 23);
+            this.numMinSizeMB.Size = new System.Drawing.Size(96, 27);
             this.numMinSizeMB.TabIndex = 30;
             this.numMinSizeMB.ValueChanged += new System.EventHandler(this.numMinSizeMB_ValueChanged);
             // 
@@ -745,20 +745,20 @@
             // 
             this.lblStats.AutoSize = true;
             this.lblStats.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblStats.Location = new System.Drawing.Point(1115, 702);
-            this.lblStats.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblStats.Location = new System.Drawing.Point(1274, 936);
+            this.lblStats.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblStats.Name = "lblStats";
-            this.lblStats.Size = new System.Drawing.Size(44, 20);
+            this.lblStats.Size = new System.Drawing.Size(54, 25);
             this.lblStats.TabIndex = 31;
             this.lblStats.Text = "Stats:";
             // 
             // chkFavourite
             // 
             this.chkFavourite.AutoSize = true;
-            this.chkFavourite.Location = new System.Drawing.Point(275, 67);
-            this.chkFavourite.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.chkFavourite.Location = new System.Drawing.Point(314, 89);
+            this.chkFavourite.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.chkFavourite.Name = "chkFavourite";
-            this.chkFavourite.Size = new System.Drawing.Size(108, 19);
+            this.chkFavourite.Size = new System.Drawing.Size(131, 24);
             this.chkFavourite.TabIndex = 32;
             this.chkFavourite.Text = "Only Favourites";
             this.chkFavourite.UseVisualStyleBackColor = true;
@@ -768,10 +768,10 @@
             // 
             this.lblUserTags.AutoSize = true;
             this.lblUserTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblUserTags.Location = new System.Drawing.Point(992, 770);
-            this.lblUserTags.Margin = new System.Windows.Forms.Padding(4, 0, 4, 0);
+            this.lblUserTags.Location = new System.Drawing.Point(1134, 1027);
+            this.lblUserTags.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblUserTags.Name = "lblUserTags";
-            this.lblUserTags.Size = new System.Drawing.Size(74, 20);
+            this.lblUserTags.Size = new System.Drawing.Size(91, 25);
             this.lblUserTags.TabIndex = 33;
             this.lblUserTags.Text = "User Tags:";
             // 
@@ -779,19 +779,19 @@
             // 
             this.txtUserTags.BackColor = System.Drawing.SystemColors.ControlLightLight;
             this.txtUserTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.txtUserTags.Location = new System.Drawing.Point(1113, 765);
-            this.txtUserTags.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.txtUserTags.Location = new System.Drawing.Point(1272, 1020);
+            this.txtUserTags.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.txtUserTags.Name = "txtUserTags";
-            this.txtUserTags.Size = new System.Drawing.Size(769, 27);
+            this.txtUserTags.Size = new System.Drawing.Size(878, 31);
             this.txtUserTags.TabIndex = 34;
             this.txtUserTags.TextChanged += new System.EventHandler(this.txtUserTags_TextChanged);
             // 
             // cmdPhotos
             // 
-            this.cmdPhotos.Location = new System.Drawing.Point(1788, 142);
-            this.cmdPhotos.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.cmdPhotos.Location = new System.Drawing.Point(2043, 189);
+            this.cmdPhotos.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmdPhotos.Name = "cmdPhotos";
-            this.cmdPhotos.Size = new System.Drawing.Size(95, 26);
+            this.cmdPhotos.Size = new System.Drawing.Size(109, 35);
             this.cmdPhotos.TabIndex = 35;
             this.cmdPhotos.Text = "Photos";
             this.cmdPhotos.UseVisualStyleBackColor = true;
@@ -800,37 +800,36 @@
             // cmbFilter
             // 
             this.cmbFilter.FormattingEnabled = true;
-            this.cmbFilter.Location = new System.Drawing.Point(467, 63);
-            this.cmbFilter.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.cmbFilter.Location = new System.Drawing.Point(534, 84);
+            this.cmbFilter.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmbFilter.Name = "cmbFilter";
-            this.cmbFilter.Size = new System.Drawing.Size(131, 23);
+            this.cmbFilter.Size = new System.Drawing.Size(149, 28);
             this.cmbFilter.TabIndex = 36;
             this.cmbFilter.DropDown += new System.EventHandler(this.AdjustWidthComboBox_DropDown);
             this.cmbFilter.SelectedIndexChanged += new System.EventHandler(this.cmbFilter_SelectedIndexChanged);
             // 
             // txtClipType
             // 
-            this.txtClipType.Location = new System.Drawing.Point(1625, 112);
-            this.txtClipType.Margin = new System.Windows.Forms.Padding(3, 2, 3, 2);
+            this.txtClipType.Location = new System.Drawing.Point(1857, 149);
             this.txtClipType.Name = "txtClipType";
-            this.txtClipType.Size = new System.Drawing.Size(163, 23);
+            this.txtClipType.Size = new System.Drawing.Size(186, 27);
             this.txtClipType.TabIndex = 37;
             this.txtClipType.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtClipType_KeyDown);
             // 
             // label4
             // 
             this.label4.AutoSize = true;
-            this.label4.Location = new System.Drawing.Point(1530, 116);
+            this.label4.Location = new System.Drawing.Point(1749, 155);
             this.label4.Name = "label4";
-            this.label4.Size = new System.Drawing.Size(81, 15);
+            this.label4.Size = new System.Drawing.Size(103, 20);
             this.label4.TabIndex = 38;
             this.label4.Text = "Filter ClipType";
             // 
             // Form1
             // 
-            this.AutoScaleDimensions = new System.Drawing.SizeF(7F, 15F);
+            this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(1894, 981);
+            this.ClientSize = new System.Drawing.Size(2165, 1308);
             this.Controls.Add(this.label4);
             this.Controls.Add(this.txtClipType);
             this.Controls.Add(this.cmbFilter);
@@ -872,13 +871,14 @@
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.MainMenuStrip = this.menuStrip1;
-            this.Margin = new System.Windows.Forms.Padding(4, 3, 4, 3);
+            this.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.MaximizeBox = false;
             this.Name = "Form1";
             this.SizeGripStyle = System.Windows.Forms.SizeGripStyle.Hide;
             this.Text = "IStripper QuickPlayer";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Form1_FormClosing);
             this.Load += new System.EventHandler(this.Form1_Load);
+            this.Shown += new System.EventHandler(this.Form1_Shown);
             this.menuCardList.ResumeLayout(false);
             this.menuStrip1.ResumeLayout(false);
             this.menuStrip1.PerformLayout();
