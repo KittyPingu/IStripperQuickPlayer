@@ -772,7 +772,10 @@
             this.lblNowPlaying.Size = new System.Drawing.Size(101, 21);
             this.lblNowPlaying.TabIndex = 46;
             this.lblNowPlaying.Text = "Now Playing:";
+            this.lblNowPlaying.TextChanged += new System.EventHandler(this.lblNowPlaying_TextChanged);
             this.lblNowPlaying.Click += new System.EventHandler(this.lblNowPlaying_Click);
+            this.lblNowPlaying.MouseEnter += new System.EventHandler(this.lblNowPlaying_MouseEnter);
+            this.lblNowPlaying.MouseLeave += new System.EventHandler(this.lblNowPlaying_MouseLeave);
             // 
             // chkDemo
             // 
