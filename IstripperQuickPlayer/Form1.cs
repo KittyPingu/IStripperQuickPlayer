@@ -1774,5 +1774,29 @@ namespace IStripperQuickPlayer
             if (lblNowPlaying.Text.Length > 14) t =lblNowPlaying.Text.Substring(13);
             this.Text = t;
         }
+
+        private void lblNowPlaying_MouseEnter(object sender, EventArgs e)
+        {
+            this.Cursor = Cursors.Hand;
+        }
+
+        private void lblNowPlaying_MouseLeave(object sender, EventArgs e)
+        {
+            this.Cursor = Cursors.Arrow;
+        }
+
+        private void Form1_Resize(object sender, EventArgs e)
+        {
+            listModels.Size = new Size(900 - 1910 + this.Size.Width, 882 - 1020 + this.Size.Height);
+            txtSearch.Width = listModels.Right - txtSearch.Left;
+            listClips.Left = listModels.Right + 66;
+            listClips.Height = listModels.Height - 328;
+            //lblNowPlaying.Left = listModels.Right + 66;
+            //lblCipListDetails.Left = listModels.Right + 66;
+            cmdClearSearch.Left = listModels.Right;
+            panelModelDetails.Left = listModels.Right + 45;
+            panelModelDetails.Top = listClips.Bottom + 8;
+            panelClip.Left = listModels.Right + 58;
+        }
     }
 }
