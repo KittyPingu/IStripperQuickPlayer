@@ -42,7 +42,8 @@ namespace IStripperQuickPlayer
         private NktSpyMgr _spyMgr;
         private Int32 vghd_procID=0;
         private ControlScrollListener _processListViewScrollListener;
-
+        private int spaceRightOfListModel = 0;
+        private int spaceBelowClipList = 0;
         private void actNextClip()
         {
             if (Properties.Settings.Default.NextClipEnabled) GetNextClip();
@@ -1358,6 +1359,7 @@ namespace IStripperQuickPlayer
             txtSearch.Text = nowPlayingTag.Split("\r\n")[0];
             PopulateModelListview();
             string[] p = nowPlayingTag.Split("\r\n");
+            if (p.Length < 2) return;
             ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
             listModels.SelectedIndices.Clear();
             var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
@@ -1716,6 +1718,8 @@ namespace IStripperQuickPlayer
 
         private void Form1_Shown(object sender, EventArgs e)
         {
+            spaceBelowClipList = this.Height - listClips.Bottom;
+            spaceRightOfListModel = this.Width - listModels.Right;
             try
             {
                 TaskbarThumbnail();
@@ -1787,13 +1791,16 @@ namespace IStripperQuickPlayer
 
         private void Form1_Resize(object sender, EventArgs e)
         {
-            listModels.Size = new Size(900 - 1910 + this.Size.Width, 882 - 1020 + this.Size.Height);
+            if (spaceRightOfListModel == 0) return;
+            listModels.Width = this.Width - listModels.Left - this.spaceRightOfListModel;
             txtSearch.Width = listModels.Right - txtSearch.Left;
             listClips.Left = listModels.Right + 66;
-            listClips.Height = listModels.Height - 328;
+            listClips.Height = this.Height - this.spaceBelowClipList - listClips.Top;
+            listModels.Height = this.Height - listModels.Top - 60;
             //lblNowPlaying.Left = listModels.Right + 66;
             //lblCipListDetails.Left = listModels.Right + 66;
             cmdClearSearch.Left = listModels.Right;
+            cmdPhotos.Left = listClips.Right - cmdPhotos.Width;
             panelModelDetails.Left = listModels.Right + 45;
             panelModelDetails.Top = listClips.Bottom + 8;
             panelClip.Left = listModels.Right + 58;
