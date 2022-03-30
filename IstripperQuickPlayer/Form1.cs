@@ -1856,7 +1856,7 @@ namespace IStripperQuickPlayer
             string m = "";
             foreach (ToolStripMenuItem item in wallpaperToolStripMenuItem.DropDownItems)
             {
-                if (item.Checked)
+                if (item.Checked && item.Tag != null)
                 {
                     if (m == "")
                         m += ((uint)item.Tag+1).ToString();
