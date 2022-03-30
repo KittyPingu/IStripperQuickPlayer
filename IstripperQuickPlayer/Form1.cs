@@ -23,6 +23,7 @@ namespace IStripperQuickPlayer
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
 
+        private string nowPlayingPath = "";
         private string nowPlayingTag = "";
         private int nowPlayingClipNumber;
         private string clipListTag = "";
@@ -982,7 +983,9 @@ namespace IStripperQuickPlayer
         {
             try
             {
-                string nowPlaying = path;
+                if (path == nowPlayingPath) return;
+                nowPlayingPath = path;
+                string nowPlaying = "";
                 if (path == "") return;
                 if (Datastore.modelcards == null) return;
                 if (Datastore.modelcards.Count > 0)
