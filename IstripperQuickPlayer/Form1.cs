@@ -25,6 +25,7 @@ namespace IStripperQuickPlayer
 
         private string nowPlayingPath = "";
         private string nowPlayingTag = "";
+        private string nowPlayingTagShort = "";
         private int nowPlayingClipNumber;
         private string clipListTag = "";
         private bool changesort = false;
@@ -622,7 +623,7 @@ namespace IStripperQuickPlayer
                 }
             }
             catch { }
-            
+            trackbarWallpaperBrightness.Value = Properties.Settings.Default.WallpaperBrightness;
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
 
             myData = RetrieveMyData();
@@ -995,7 +996,7 @@ namespace IStripperQuickPlayer
                     ModelClip? modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).FirstOrDefault();
                     if (modelClip == null) return;
                     nowPlaying = model.modelName + ", " + model.outfit + " (Clip " + modelClip.clipNumber + ")";
-                    //nowPlayingTag = path.Split("\\")[0]
+                    nowPlayingTagShort = path.Split("\\")[0];
                     nowPlayingTag = model.modelName + "\r\n" + model.outfit;
                     nowPlayingClipNumber = Convert.ToInt32(modelClip.clipNumber);
                 }
@@ -1839,14 +1840,16 @@ namespace IStripperQuickPlayer
 
         private async Task ChangeWallpaper()
         {
-            foreach (ToolStripMenuItem item in wallpaperToolStripMenuItem.DropDownItems)
+            if (nowPlayingTagShort == null || nowPlayingTagShort.Length == 0) return;
+            foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
             {
-                if (item.Checked && item.Tag != null)
+                if (item is ToolStripMenuItem)
+                if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
                 {
                     CardPhotos photos = new CardPhotos();
-                    await photos.LoadCardPhotos(client, clipListTag);
+                    await photos.LoadCardPhotos(client, nowPlayingTagShort);
                     Random r = new Random();
-                    Wallpaper.ChangeWallpaper((uint)item.Tag, photos.getRandomWidescreenURL());
+                    Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL());
                 }
             }
         }
@@ -1854,14 +1857,17 @@ namespace IStripperQuickPlayer
         private void WallpaperMonitor_CheckedChanged(object? sender, EventArgs e)
         {
             string m = "";
-            foreach (ToolStripMenuItem item in wallpaperToolStripMenuItem.DropDownItems)
+            foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
             {
-                if (item.Checked && item.Tag != null)
+                if (item is ToolStripMenuItem)
                 {
-                    if (m == "")
-                        m += ((uint)item.Tag+1).ToString();
-                    else
-                        m += "," + ((uint)item.Tag+1).ToString();                    
+                    if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
+                    {
+                        if (m == "")
+                            m += ((uint)((ToolStripMenuItem)item).Tag+1).ToString();
+                        else
+                            m += "," + ((uint)((ToolStripMenuItem)item).Tag+1).ToString();                    
+                    }
                 }
             }
         }
@@ -1869,6 +1875,21 @@ namespace IStripperQuickPlayer
         private void automaticWallpaperToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
         {
             Properties.Settings.Default.AutoWallpaper = automaticWallpaperToolStripMenuItem.Checked;
+        }
+
+        private void trackbarWallpaperBrightness_ValueChanged(object sender, EventArgs e)
+        {
+            trackbarWallpaperBrightness.MouseUp += trackbarWallpaperBrightness_MouseUp;
+            trackbarWallpaperBrightness.ValueChanged -= trackbarWallpaperBrightness_ValueChanged;
+        }
+
+        private async void trackbarWallpaperBrightness_MouseUp(object sender, EventArgs e)
+        {
+            trackbarWallpaperBrightness.MouseUp -= trackbarWallpaperBrightness_MouseUp;
+            trackbarWallpaperBrightness.ValueChanged += trackbarWallpaperBrightness_ValueChanged;
+
+            Properties.Settings.Default.WallpaperBrightness = trackbarWallpaperBrightness.Value;
+            this.BeginInvoke((Action)(() => Wallpaper.ChangeBrightness()));
         }
     }
 }

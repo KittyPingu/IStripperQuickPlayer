@@ -41,5 +41,8 @@
     <Setting Name="WallpaperMonitors" Type="System.String" Scope="User">
       <Value Profile="(Default)">1,2</Value>
     </Setting>
+    <Setting Name="WallpaperBrightness" Type="System.Decimal" Scope="User">
+      <Value Profile="(Default)">60</Value>
+    </Setting>
   </Settings>
 </SettingsFile>
