@@ -26,17 +26,42 @@ namespace IStripperQuickPlayer.BLL
                 if (!originalWallpaper.ContainsKey(monitorNumber)) originalWallpaper.Add(monitorNumber, wallpaper.GetWallpaper(monitorId.ToString()));
 
                 string tempfilepath = Path.GetTempFileName();
-                string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".png");
+                string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".jpg");
                 Bitmap m = await GetImageBitmapFromUrl(url);
                 if (initialImages.ContainsKey(monitorNumber))
                     initialImages[monitorNumber] = m;
                 else
                     initialImages.Add(monitorNumber, m);
-                m = AdjustBrightness(m, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
+                if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(m, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
+                if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
                 m.Save(wpfilepath);
                 wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
+               
             }
             catch (Exception ex){}
+        }
+
+        private static Bitmap AddDetails(Bitmap b, Rect l, int sz = 36)
+        {
+            var p = Utils.GetMainForm().lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
+            StringFormat stringFormat = new StringFormat();
+            stringFormat.Alignment = StringAlignment.Near;
+            stringFormat.LineAlignment = StringAlignment.Near;
+            Graphics g = Graphics.FromImage(b);
+            Font fontName = new Font("Segoe UI", sz);
+            var vratio = ((l.Bottom -l.Top)/ (1.0 * b.Height));
+            var hratio = ((l.Right - l.Left) / (1.0 * b.Width));
+            var ratio = Math.Max(vratio, hratio);
+            bool fitvert = false;
+            if (vratio >= hratio) fitvert = true;
+            if (!fitvert)
+            {
+                var ypos = ((b.Height * ratio) - l.Bottom) / 2;
+                g.DrawString(p, fontName, new SolidBrush(Color.Black), 0, (int)((ypos * ratio) + (int)(40/ratio)));
+            }
+            
+            g.Dispose();
+            return b;
         }
 
         public static async void ChangeBrightness()
@@ -45,20 +70,24 @@ namespace IStripperQuickPlayer.BLL
             {
                 var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
 
-                foreach(var kvp in originalWallpaper)
+                foreach(var kvp in initialImages)
                 {
                     var monitorId = wallpaper.GetMonitorDevicePathAt(kvp.Key);
                    
-                    Bitmap o = AdjustBrightness(initialImages[kvp.Key], (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));                    
-                    o.Save(kvp.Value);
+                    Bitmap o = AdjustBrightness(initialImages[kvp.Key], (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));    
+                    string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + kvp.Key.ToString() + ".jpg");
+                    if (Properties.Settings.Default.WallpaperDetails) o = AddDetails(o, wallpaper.GetMonitorRECT(monitorId));
+
+                    o.Save(wpfilepath);
                     o.Dispose();
-                    wallpaper.SetWallpaper(monitorId.ToString(), kvp.Value);
+
+                    wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
                 }        
             }
-            catch (Exception ex){}
-
-           
+            catch (Exception ex){}           
         }
+
+
 
         static async Task<Bitmap> GetImageBitmapFromUrl( string url)
         {
@@ -127,9 +156,26 @@ namespace IStripperQuickPlayer.BLL
                 {
                         var monitorId = wallpaper.GetMonitorDevicePathAt(paper.Key);
                         wallpaper.SetWallpaper(monitorId.ToString(), paper.Value);
-                    }
                 }
+            }
             catch(Exception ex){}            
+        }
+
+        internal static void RestoreWallpaperByID(uint monitorNumber)
+        {
+            try
+            {
+                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
+             
+                if (originalWallpaper.ContainsKey(monitorNumber))
+                {
+                    var monitorId = wallpaper.GetMonitorDevicePathAt(monitorNumber);
+                    wallpaper.SetWallpaper(monitorId.ToString(), originalWallpaper[monitorNumber]);
+                    originalWallpaper.Remove(monitorNumber);
+                    initialImages.Remove(monitorNumber);
+                }
+            }
+            catch (Exception ex){}
         }
     }
 }

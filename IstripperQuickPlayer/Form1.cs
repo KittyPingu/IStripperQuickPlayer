@@ -625,6 +625,7 @@ namespace IStripperQuickPlayer
             catch { }
             trackbarWallpaperBrightness.Value = Properties.Settings.Default.WallpaperBrightness;
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
+            showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
 
             myData = RetrieveMyData();
             listModels.SetDoubleBuffered();
@@ -1838,7 +1839,7 @@ namespace IStripperQuickPlayer
             ChangeWallpaper();
         }
 
-        private async Task ChangeWallpaper()
+        private async Task ChangeWallpaper(bool NotFromCheck = true)
         {
             if (nowPlayingTagShort == null || nowPlayingTagShort.Length == 0) return;
             foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
@@ -1846,11 +1847,19 @@ namespace IStripperQuickPlayer
                 if (item is ToolStripMenuItem)
                 if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
                 {
-                    CardPhotos photos = new CardPhotos();
-                    await photos.LoadCardPhotos(client, nowPlayingTagShort);
-                    Random r = new Random();
-                    Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL());
+                    if ((NotFromCheck || Properties.Settings.Default.AutoWallpaper))
+                    {
+                        CardPhotos photos = new CardPhotos();
+                        await photos.LoadCardPhotos(client, nowPlayingTagShort);
+                        Random r = new Random();
+                        Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL());
+                    }
                 }
+                else if (((ToolStripMenuItem)item).Tag != null)
+                {
+                    Wallpaper.RestoreWallpaperByID((uint)((ToolStripMenuItem)item).Tag);
+                }
+
             }
         }
 
@@ -1870,6 +1879,7 @@ namespace IStripperQuickPlayer
                     }
                 }
             }
+            if (nowPlayingTag != "") this.BeginInvoke((Action)(() => ChangeWallpaper(false)));
         }
 
         private void automaticWallpaperToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
@@ -1890,6 +1900,12 @@ namespace IStripperQuickPlayer
 
             Properties.Settings.Default.WallpaperBrightness = trackbarWallpaperBrightness.Value;
             this.BeginInvoke((Action)(() => Wallpaper.ChangeBrightness()));
+        }
+
+        private void showTextToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;     
+            this.BeginInvoke((Action)(() => ChangeWallpaper()));
         }
     }
 }

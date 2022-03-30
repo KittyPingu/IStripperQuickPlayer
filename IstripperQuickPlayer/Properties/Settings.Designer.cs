@@ -157,7 +157,7 @@ namespace IStripperQuickPlayer.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
         public bool AutoWallpaper {
             get {
                 return ((bool)(this["AutoWallpaper"]));
@@ -188,6 +188,18 @@ namespace IStripperQuickPlayer.Properties {
             }
             set {
                 this["WallpaperBrightness"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool WallpaperDetails {
+            get {
+                return ((bool)(this["WallpaperDetails"]));
+            }
+            set {
+                this["WallpaperDetails"] = value;
             }
         }
     }

@@ -68,6 +68,7 @@
             this.includeShowTitleInSearchToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.wallpaperToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.automaticWallpaperToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.trackbarWallpaperBrightness = new IStripperQuickPlayer.TrackBarMenuItem();
             this.cmdFilter = new System.Windows.Forms.Button();
             this.errorProvider1 = new System.Windows.Forms.ErrorProvider(this.components);
             this.chkFavourite = new System.Windows.Forms.CheckBox();
@@ -100,7 +101,7 @@
             this.chkTopless = new System.Windows.Forms.CheckBox();
             this.chkNoNudity = new System.Windows.Forms.CheckBox();
             this.chkPublic = new System.Windows.Forms.CheckBox();
-            this.trackbarWallpaperBrightness = new IStripperQuickPlayer.TrackBarMenuItem();
+            this.showTextToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -505,7 +506,8 @@
             // 
             this.wallpaperToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.automaticWallpaperToolStripMenuItem,
-            this.trackbarWallpaperBrightness});
+            this.trackbarWallpaperBrightness,
+            this.showTextToolStripMenuItem});
             this.wallpaperToolStripMenuItem.Name = "wallpaperToolStripMenuItem";
             this.wallpaperToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.wallpaperToolStripMenuItem.Text = "Wallpaper";
@@ -517,6 +519,56 @@
             this.automaticWallpaperToolStripMenuItem.Size = new System.Drawing.Size(274, 26);
             this.automaticWallpaperToolStripMenuItem.Text = "Automatic Wallpaper";
             this.automaticWallpaperToolStripMenuItem.CheckedChanged += new System.EventHandler(this.automaticWallpaperToolStripMenuItem_CheckedChanged);
+            // 
+            // trackbarWallpaperBrightness
+            // 
+            this.trackbarWallpaperBrightness.BackColor = System.Drawing.Color.Transparent;
+            this.trackbarWallpaperBrightness.ClientSize = new System.Drawing.Size(200, 48);
+            this.trackbarWallpaperBrightness.Font = new System.Drawing.Font("Microsoft Sans Serif", 6F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.trackbarWallpaperBrightness.ForeColor = System.Drawing.Color.White;
+            this.trackbarWallpaperBrightness.Has2Values = false;
+            this.trackbarWallpaperBrightness.LargeChange = new decimal(new int[] {
+            10,
+            0,
+            0,
+            0});
+            this.trackbarWallpaperBrightness.Maximum = new decimal(new int[] {
+            100,
+            0,
+            0,
+            0});
+            this.trackbarWallpaperBrightness.Minimum = new decimal(new int[] {
+            0,
+            0,
+            0,
+            0});
+            this.trackbarWallpaperBrightness.Name = "trackbarWallpaperBrightness";
+            this.trackbarWallpaperBrightness.ScaleDivisions = new decimal(new int[] {
+            10,
+            0,
+            0,
+            0});
+            this.trackbarWallpaperBrightness.Size = new System.Drawing.Size(200, 48);
+            this.trackbarWallpaperBrightness.SmallChange = new decimal(new int[] {
+            5,
+            0,
+            0,
+            0});
+            this.trackbarWallpaperBrightness.Text = "trackBarMenuItem1";
+            this.trackbarWallpaperBrightness.TickColor = System.Drawing.Color.White;
+            this.trackbarWallpaperBrightness.TickStyle = System.Windows.Forms.TickStyle.TopLeft;
+            this.trackbarWallpaperBrightness.TrackbarColor = System.Drawing.Color.Transparent;
+            this.trackbarWallpaperBrightness.Value = new decimal(new int[] {
+            60,
+            0,
+            0,
+            0});
+            this.trackbarWallpaperBrightness.Value2 = new decimal(new int[] {
+            60,
+            0,
+            0,
+            0});
+            this.trackbarWallpaperBrightness.ValueChanged += new System.EventHandler(this.trackbarWallpaperBrightness_ValueChanged);
             // 
             // cmdFilter
             // 
@@ -905,55 +957,13 @@
             this.chkPublic.UseVisualStyleBackColor = true;
             this.chkPublic.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
             // 
-            // trackbarWallpaperBrightness
+            // showTextToolStripMenuItem
             // 
-            this.trackbarWallpaperBrightness.BackColor = System.Drawing.Color.Transparent;
-            this.trackbarWallpaperBrightness.ClientSize = new System.Drawing.Size(200, 48);
-            this.trackbarWallpaperBrightness.Font = new System.Drawing.Font("Microsoft Sans Serif", 6F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.trackbarWallpaperBrightness.ForeColor = System.Drawing.Color.White;
-            this.trackbarWallpaperBrightness.Has2Values = false;
-            this.trackbarWallpaperBrightness.LargeChange = new decimal(new int[] {
-            10,
-            0,
-            0,
-            0});
-            this.trackbarWallpaperBrightness.Maximum = new decimal(new int[] {
-            100,
-            0,
-            0,
-            0});
-            this.trackbarWallpaperBrightness.Minimum = new decimal(new int[] {
-            0,
-            0,
-            0,
-            0});
-            this.trackbarWallpaperBrightness.Name = "trackbarWallpaperBrightness";
-            this.trackbarWallpaperBrightness.ScaleDivisions = new decimal(new int[] {
-            10,
-            0,
-            0,
-            0});
-            this.trackbarWallpaperBrightness.Size = new System.Drawing.Size(200, 48);
-            this.trackbarWallpaperBrightness.SmallChange = new decimal(new int[] {
-            5,
-            0,
-            0,
-            0});
-            this.trackbarWallpaperBrightness.Text = "trackBarMenuItem1";
-            this.trackbarWallpaperBrightness.TickColor = System.Drawing.Color.White;
-            this.trackbarWallpaperBrightness.TickStyle = System.Windows.Forms.TickStyle.TopLeft;
-            this.trackbarWallpaperBrightness.TrackbarColor = System.Drawing.Color.Transparent;
-            this.trackbarWallpaperBrightness.Value = new decimal(new int[] {
-            60,
-            0,
-            0,
-            0});
-            this.trackbarWallpaperBrightness.Value2 = new decimal(new int[] {
-            60,
-            0,
-            0,
-            0});
-            this.trackbarWallpaperBrightness.ValueChanged += new System.EventHandler(this.trackbarWallpaperBrightness_ValueChanged);
+            this.showTextToolStripMenuItem.CheckOnClick = true;
+            this.showTextToolStripMenuItem.Name = "showTextToolStripMenuItem";
+            this.showTextToolStripMenuItem.Size = new System.Drawing.Size(274, 26);
+            this.showTextToolStripMenuItem.Text = "Show Text";
+            this.showTextToolStripMenuItem.Click += new System.EventHandler(this.showTextToolStripMenuItem_Click);
             // 
             // Form1
             // 
@@ -1073,5 +1083,6 @@
         private ToolStripMenuItem wallpaperToolStripMenuItem;
         private ToolStripMenuItem automaticWallpaperToolStripMenuItem;
         private TrackBarMenuItem trackbarWallpaperBrightness;
+        private ToolStripMenuItem showTextToolStripMenuItem;
     }
 }

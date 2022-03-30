@@ -36,13 +36,16 @@
       <Value Profile="(Default)">True</Value>
     </Setting>
     <Setting Name="AutoWallpaper" Type="System.Boolean" Scope="User">
-      <Value Profile="(Default)">False</Value>
+      <Value Profile="(Default)">True</Value>
     </Setting>
     <Setting Name="WallpaperMonitors" Type="System.String" Scope="User">
       <Value Profile="(Default)">1,2</Value>
     </Setting>
     <Setting Name="WallpaperBrightness" Type="System.Decimal" Scope="User">
       <Value Profile="(Default)">60</Value>
+    </Setting>
+    <Setting Name="WallpaperDetails" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
     </Setting>
   </Settings>
 </SettingsFile>
