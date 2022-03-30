@@ -606,17 +606,21 @@ namespace IStripperQuickPlayer
             }
 
             //get number of monitors for wallpaper
-            var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());
-            string[] monitorsChecked = Properties.Settings.Default.WallpaperMonitors.Split(",", StringSplitOptions.TrimEntries);
-            for (uint i = 0; i < wallpaper.GetMonitorDevicePathCount(); i++)
+            try
             {
-                ToolStripMenuItem newitem = new ToolStripMenuItem("Monitor " + (i+1).ToString());
-                newitem.CheckOnClick = true;
-                newitem.CheckedChanged += WallpaperMonitor_CheckedChanged;
-                newitem.Tag = i;
-                if (monitorsChecked.Contains((i+1).ToString())) newitem.Checked = true;
-                this.wallpaperToolStripMenuItem.DropDownItems.Add(newitem);
+                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());
+                string[] monitorsChecked = Properties.Settings.Default.WallpaperMonitors.Split(",", StringSplitOptions.TrimEntries);
+                for (uint i = 0; i < wallpaper.GetMonitorDevicePathCount(); i++)
+                {
+                    ToolStripMenuItem newitem = new ToolStripMenuItem("Monitor " + (i+1).ToString());
+                    newitem.CheckOnClick = true;
+                    newitem.CheckedChanged += WallpaperMonitor_CheckedChanged;
+                    newitem.Tag = i;
+                    if (monitorsChecked.Contains((i+1).ToString())) newitem.Checked = true;
+                    this.wallpaperToolStripMenuItem.DropDownItems.Add(newitem);
+                }
             }
+            catch { }
             
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
 

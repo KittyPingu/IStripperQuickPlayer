@@ -15,10 +15,10 @@ namespace IStripperQuickPlayer.BLL
         public static Dictionary<uint, string> originalWallpaper = new Dictionary<uint, string>();
         public static void ChangeWallpaper(uint monitorNumber, string url)
         {
-            if (url == null)return;
-            var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
+            if (url == null)return;            
             try
             {
+                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
                 var monitorId = wallpaper.GetMonitorDevicePathAt(monitorNumber);
                
                 if (!originalWallpaper.ContainsKey(monitorNumber)) originalWallpaper.Add(monitorNumber, wallpaper.GetWallpaper(monitorId.ToString()));
@@ -37,16 +37,16 @@ namespace IStripperQuickPlayer.BLL
 
         public static void RestoreWallpaper()
         {
-            var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
-            foreach(KeyValuePair<uint,string> paper in originalWallpaper)
+            try
             {
-                try
+                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
+                foreach(KeyValuePair<uint,string> paper in originalWallpaper)
                 {
-                    var monitorId = wallpaper.GetMonitorDevicePathAt(paper.Key);
-                    wallpaper.SetWallpaper(monitorId.ToString(), paper.Value);
+                        var monitorId = wallpaper.GetMonitorDevicePathAt(paper.Key);
+                        wallpaper.SetWallpaper(monitorId.ToString(), paper.Value);
+                    }
                 }
-                catch(Exception ex){}
-            }
+            catch(Exception ex){}            
         }
     }
 }
