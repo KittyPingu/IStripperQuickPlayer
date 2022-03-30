@@ -53,6 +53,9 @@
     <Reference Include="ColorSlider">
       <HintPath>ColorSlider.dll</HintPath>
     </Reference>
+    <Reference Include="DesktopWallpaper">
+      <HintPath>dependencies\DesktopWallpaper.dll</HintPath>
+    </Reference>
     <Reference Include="KP-ImageViewerV2">
       <HintPath>KP-ImageViewerV2.dll</HintPath>
     </Reference>

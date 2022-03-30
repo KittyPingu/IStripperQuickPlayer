@@ -154,5 +154,29 @@ namespace IStripperQuickPlayer.Properties {
                 this["ShowOutfitInSearch"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool AutoWallpaper {
+            get {
+                return ((bool)(this["AutoWallpaper"]));
+            }
+            set {
+                this["AutoWallpaper"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1,2")]
+        public string WallpaperMonitors {
+            get {
+                return ((string)(this["WallpaperMonitors"]));
+            }
+            set {
+                this["WallpaperMonitors"] = value;
+            }
+        }
     }
 }

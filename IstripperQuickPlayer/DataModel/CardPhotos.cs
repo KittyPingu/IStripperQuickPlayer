@@ -33,25 +33,51 @@ namespace IStripperQuickPlayer.DataModel
 
         public int getNumberOfPhotos()
         {
+            if (data == null || data.photos == null) return 0;
             return data.photos.Count();
         }
 
         public Image? getPhoto(int number)
         {
             ///fileaccess/image/f0953/VGI1446P02119.jpg/6f9?filename=VGI1446P02119.jpg&private=yes&ui=m28734858&uk=EGNILAPABNIHCKLIIDKGOIPABLEBPAKJ&explicit=1&language=en
+            string? fullpath = getPhotoFullPath(number);
+            if (fullpath == null) return null;
+            return DownloadImageFromUrl(fullpath);
+        }
+
+        public string? getPhotoFullPath(int number)
+        {
             if (number < 0 || number > getNumberOfPhotos()) return null;
             string fullpath = "";
-            if (data.photos[number].access == "public")
+            var p = data.photos[number];
+            return getPhotoFullPathFromPhoto(p);
+        }
+
+        private string? getPhotoFullPathFromPhoto(Photo p)
+        {
+            string? fullpath = null;
+            if (p.access == "public")
             {
-                fullpath = "http://www.istripper.com/" + data.photos[number].files.full;
+                fullpath = "http://www.istripper.com/" + p.files.full;
             }
             else
             {
                 string userkey = getUserKey();
                 string username = getUserName();
-                fullpath = "http://www.istripper.com" + data.photos[number].files.full + "?filename=" + data.photos[number].name + "&private=yes&ui=" + username + "&uk=" + userkey + "&explicit=1&language=en";
+                fullpath = "http://www.istripper.com" + p.files.full + "?filename=" + p.name + "&private=yes&ui=" + username + "&uk=" + userkey + "&explicit=1&language=en";
             }
-            return DownloadImageFromUrl(fullpath);
+            return fullpath;
+        }
+
+        public string? getRandomWidescreenURL()
+        {
+            if (getNumberOfPhotos() == 0) return null;
+            Random rnd = new Random();
+            var p = data.photos.Where(c => c.size.width > c.size.height)
+                  .OrderBy(x => rnd.Next())
+                  .FirstOrDefault();
+            if (p == null) return null;
+            return getPhotoFullPathFromPhoto(p);
         }
 
         public async Task<Bitmap[]> getThumbnails()

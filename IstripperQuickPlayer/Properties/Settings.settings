@@ -35,5 +35,11 @@
     <Setting Name="ShowOutfitInSearch" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>
+    <Setting Name="AutoWallpaper" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="WallpaperMonitors" Type="System.String" Scope="User">
+      <Value Profile="(Default)">1,2</Value>
+    </Setting>
   </Settings>
 </SettingsFile>

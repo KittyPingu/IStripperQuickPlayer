@@ -1,3 +1,4 @@
+using DesktopWallpaper;
 using EnumDescription;
 using Gma.System.MouseKeyHook;
 using IStripperQuickPlayer.BLL;
@@ -603,6 +604,22 @@ namespace IStripperQuickPlayer
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
             }
+
+            //get number of monitors for wallpaper
+            var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());
+            string[] monitorsChecked = Properties.Settings.Default.WallpaperMonitors.Split(",", StringSplitOptions.TrimEntries);
+            for (uint i = 0; i < wallpaper.GetMonitorDevicePathCount(); i++)
+            {
+                ToolStripMenuItem newitem = new ToolStripMenuItem("Monitor " + (i+1).ToString());
+                newitem.CheckOnClick = true;
+                newitem.CheckedChanged += WallpaperMonitor_CheckedChanged;
+                newitem.Tag = i;
+                if (monitorsChecked.Contains((i+1).ToString())) newitem.Checked = true;
+                this.wallpaperToolStripMenuItem.DropDownItems.Add(newitem);
+            }
+            
+            automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
+
             myData = RetrieveMyData();
             listModels.SetDoubleBuffered();
             FilterSettingsList.Load();
@@ -621,6 +638,7 @@ namespace IStripperQuickPlayer
             SetupKeyHooks();
             Task.Run(() => SetupRegHooks());       
         }
+
 
         private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)
         {
@@ -981,6 +999,7 @@ namespace IStripperQuickPlayer
             }
             catch { }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+            if (Properties.Settings.Default.AutoWallpaper) this.BeginInvoke((Action)(() => ChangeWallpaper()));
         }
 
         private void chk_CheckedChanged(object sender, EventArgs e)
@@ -1384,12 +1403,12 @@ namespace IStripperQuickPlayer
         {
             Properties.Settings.Default.Save();
             SaveMyData();
+            Wallpaper.RestoreWallpaper();
         }
 
         private void cmdNextClip_Click(object sender, EventArgs e)
         {
             this.BeginInvoke((Action)(() => GetNextClip()));
-
         }
 
         private void GetNextClip(ModelCard? model = null)
@@ -1804,6 +1823,45 @@ namespace IStripperQuickPlayer
             panelModelDetails.Left = listModels.Right + 45;
             panelModelDetails.Top = listClips.Bottom + 8;
             panelClip.Left = listModels.Right + 58;
+        }
+
+        private async void button2_Click(object sender, EventArgs e)
+        {
+            ChangeWallpaper();
+        }
+
+        private async Task ChangeWallpaper()
+        {
+            foreach (ToolStripMenuItem item in wallpaperToolStripMenuItem.DropDownItems)
+            {
+                if (item.Checked && item.Tag != null)
+                {
+                    CardPhotos photos = new CardPhotos();
+                    await photos.LoadCardPhotos(client, clipListTag);
+                    Random r = new Random();
+                    Wallpaper.ChangeWallpaper((uint)item.Tag, photos.getRandomWidescreenURL());
+                }
+            }
+        }
+
+        private void WallpaperMonitor_CheckedChanged(object? sender, EventArgs e)
+        {
+            string m = "";
+            foreach (ToolStripMenuItem item in wallpaperToolStripMenuItem.DropDownItems)
+            {
+                if (item.Checked)
+                {
+                    if (m == "")
+                        m += ((uint)item.Tag+1).ToString();
+                    else
+                        m += "," + ((uint)item.Tag+1).ToString();                    
+                }
+            }
+        }
+
+        private void automaticWallpaperToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.AutoWallpaper = automaticWallpaperToolStripMenuItem.Checked;
         }
     }
 }
