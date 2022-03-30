@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 using DesktopWallpaper;
 using System.Net;
 using System.Drawing.Imaging;
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 
 namespace IStripperQuickPlayer.BLL
 {
@@ -28,6 +30,7 @@ namespace IStripperQuickPlayer.BLL
                 string tempfilepath = Path.GetTempFileName();
                 string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".jpg");
                 Bitmap m = await GetImageBitmapFromUrl(url);
+                m = ResizeBitmap(m, wallpaper.GetMonitorRECT(monitorId));
                 if (initialImages.ContainsKey(monitorNumber))
                     initialImages[monitorNumber] = m;
                 else
@@ -36,30 +39,61 @@ namespace IStripperQuickPlayer.BLL
                 if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
                 m.Save(wpfilepath);
                 wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
-               
+                m.Dispose();               
             }
             catch (Exception ex){}
         }
 
+        private static Bitmap ResizeBitmap(Bitmap m, Rect rect)
+        {
+            double widthScale = 0, heightScale = 0;
+            if (m.Width != 0)
+                widthScale = (double)(rect.Right - rect.Left) / (double)m.Width;
+            if (m.Height != 0)
+                heightScale = (double)(rect.Bottom - rect.Top) / (double)m.Height;                
+
+            double scale = Math.Max(widthScale, heightScale);
+
+            Size result = new Size((int)(m.Width * scale), 
+                                (int)(m.Height * scale));
+
+            Bitmap b = new Bitmap(rect.Right - rect.Left, rect.Bottom - rect.Top, m.PixelFormat);
+            Graphics g = Graphics.FromImage(b);
+            RectangleF sourceRect;
+            if (widthScale > heightScale)
+            {
+                float hdelta = m.Height - (float)(m.Height * heightScale /widthScale);
+                sourceRect = new RectangleF(0, hdelta/2, m.Width, (float)(m.Height * heightScale /widthScale));
+            }
+            else
+                sourceRect = new RectangleF(0, 0, (float)(m.Width * widthScale / heightScale), m.Height);
+            RectangleF destinationRect = new RectangleF(0,0,b.Width, b.Height);
+            g.DrawImage(m,  destinationRect, sourceRect, GraphicsUnit.Pixel);
+            g.Dispose();
+            return b;
+        }
+
         private static Bitmap AddDetails(Bitmap b, Rect l, int sz = 36)
         {
-            var p = Utils.GetMainForm().lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
+            var str = Utils.GetMainForm().lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
             StringFormat stringFormat = new StringFormat();
             stringFormat.Alignment = StringAlignment.Near;
             stringFormat.LineAlignment = StringAlignment.Near;
             Graphics g = Graphics.FromImage(b);
-            Font fontName = new Font("Segoe UI", sz);
-            var vratio = ((l.Bottom -l.Top)/ (1.0 * b.Height));
-            var hratio = ((l.Right - l.Left) / (1.0 * b.Width));
-            var ratio = Math.Max(vratio, hratio);
-            bool fitvert = false;
-            if (vratio >= hratio) fitvert = true;
-            if (!fitvert)
-            {
-                var ypos = ((b.Height * ratio) - l.Bottom) / 2;
-                g.DrawString(p, fontName, new SolidBrush(Color.Black), 0, (int)((ypos * ratio) + (int)(40/ratio)));
-            }
-            
+            g.InterpolationMode = InterpolationMode.High;
+            g.SmoothingMode = SmoothingMode.HighQuality;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            g.CompositingQuality = CompositingQuality.HighQuality;
+            var p = new GraphicsPath(); 
+            p.AddString(
+                str.ToString(),            
+                new FontFamily("Microsoft Sans Serif"), 
+                (int) FontStyle.Regular,     
+                sz,      
+                new Point(sz, sz),            
+                new StringFormat());         
+            g.DrawPath(new Pen(Color.Gray, 1), p);
+            g.FillPath(Brushes.Black, p);   
             g.Dispose();
             return b;
         }
