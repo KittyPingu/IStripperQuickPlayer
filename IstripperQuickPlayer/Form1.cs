@@ -1474,6 +1474,7 @@ namespace IStripperQuickPlayer
                 ModelClip? mnew = null;
                 if (chooseRandom)
                 {
+                    if (clips.Count == 0) return;
                     Random rand = new Random();
                     mnew =  clips[rand.Next(clips.Count-1)];
                 }
