@@ -632,6 +632,7 @@ namespace IStripperQuickPlayer
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
             includeDescriptionInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowDescInSearch;
             includeShowTitleInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowOutfitInSearch;
+            trackBarCardScale.Value = (decimal)(Properties.Settings.Default.CardScale);
             if (Properties.Settings.Default.MinSizeMB != 0)
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
@@ -1964,9 +1965,13 @@ namespace IStripperQuickPlayer
         private void trackBarCardScale_ValueChanged(object sender, EventArgs e)
         {
             cardScale = (float)(trackBarCardScale.Value);
-            listModels.BeginUpdate();
-            SetModelImageList();
-            listModels.EndUpdate();
+            if (listModels.Items.Count > 0)
+            {
+                listModels.BeginUpdate();
+                SetModelImageList();
+                listModels.EndUpdate();
+            }
+            Properties.Settings.Default.CardScale = (float)(trackBarCardScale.Value);
         }
     }
 }

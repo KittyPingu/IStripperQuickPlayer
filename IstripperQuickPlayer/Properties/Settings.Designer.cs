@@ -214,5 +214,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["ShowKitty"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1")]
+        public float CardScale {
+            get {
+                return ((float)(this["CardScale"]));
+            }
+            set {
+                this["CardScale"] = value;
+            }
+        }
     }
 }
