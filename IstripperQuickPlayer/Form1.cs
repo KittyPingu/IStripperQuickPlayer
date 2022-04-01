@@ -14,6 +14,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using Size = System.Drawing.Size;
+using WebView2.DevTools.Dom;
 
 namespace IStripperQuickPlayer
 {
@@ -50,6 +51,8 @@ namespace IStripperQuickPlayer
         private ControlScrollListener _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
+        private WebView2DevToolsContext devtoolsContext = null;
+
         private void actNextClip()
         {
             if (Properties.Settings.Default.NextClipEnabled) GetNextClip();
@@ -80,7 +83,7 @@ namespace IStripperQuickPlayer
             if (Datastore.modelcards != null)
                 Datastore.modelcards.Clear();
             lstLoader.LoadModels();
-            PopulateModelListview();
+            this.BeginInvoke((Action)(() => { PopulateModelListview();}));
             PersistModels();
         }
 
@@ -96,19 +99,19 @@ namespace IStripperQuickPlayer
         private void RetrieveModels()
         {
             string modelfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "models.bin");
-            if (File.Exists(modelfilepath))
+            if (System.IO.File.Exists(modelfilepath))
             {
                 Datastore.modelcards = Deserialize(modelfilepath);
-                PopulateModelListview();
+                this.BeginInvoke((Action)(() => { PopulateModelListview();}));
             }
             else
             {
-                ReloadModels();
+                this.BeginInvoke((Action)(() => { ReloadModels();}));
             }
         }
 
         ListViewItem[]? items; //stores the list of virtualized cards for modelList operations
-        internal void PopulateModelListview()
+        internal async void PopulateModelListview()
         {
             //save the selected card, we can reselect it at the end if it's still valid
             string currentText = "";
@@ -234,10 +237,12 @@ namespace IStripperQuickPlayer
                     idx++;
                     //listModels.Items.Add(card.name, card.modelName + Environment.NewLine + card.outfit, largeimagelist.Images.Count - 1);
                 }
+
+                //AddCardToWebView(card);
             }
             SetModelImageList();
             listModels.EndUpdate();
-
+            //FinaliseWebView();
             listModels.VirtualListSize = items.Length;
             listModels.VirtualMode = true;
             lblModelsLoaded.Text = "Cards Shown: " + listModels.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
@@ -259,6 +264,36 @@ namespace IStripperQuickPlayer
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
+        private async void AddCardToWebView(ModelCard card)
+        {
+            var r = await devtoolsContext.EvaluateExpressionAsync("document.body.appendChild(document.createElement('img'))");
+        }
+
+        private async void FinaliseWebView()
+        {
+            var imgs = await devtoolsContext.QuerySelectorAllAsync("img");
+            int i = 0;
+            foreach(var im in imgs)
+            {
+                ModelCard? card = Datastore.findCardByTag(items[i].Tag.ToString());
+                ImageConverter _imageConverter = new ImageConverter();
+                Bitmap m = new Bitmap(card.image.Width, card.image.Height+20);                
+                Graphics g = Graphics.FromImage(m);
+                g.DrawImage(card.image, 0, 0);
+                g.DrawString(card.modelName.ToString(), new Font("Segoe UI", 12), Brushes.Black, 10,card.image.Height-5);
+                g.Dispose();
+                byte[] imageArray = (byte[])_imageConverter.ConvertTo(m, typeof(byte[]));
+                string base64ImageRepresentation = Convert.ToBase64String(imageArray);
+                var val = $"data: image/png; base64,{base64ImageRepresentation}";
+                im.SetAttributeAsync("src" , val);
+                im.SetAttributeAsync("width", card.image.Width);
+                im.SetAttributeAsync("height", card.image.Height+20);
+                i++;
+            }
+
+        }
+
+
         private void SetModelImageList()
         {
             float dx, dy;
@@ -274,13 +309,13 @@ namespace IStripperQuickPlayer
                 g.Dispose();
             }
 
-            if (cardScale * 190 > 256 * dy / 96)
-                cardScale = 256 * dy / 96 / 190;
+            if (cardScale * 242 > 256 * dy / 96)
+                cardScale = 256 * dy / 96 / 242;
 
             ImageList blankimagelist = new ImageList();
-            blankimagelist.ImageSize = new Size(Math.Min((int)(256 * dx / 96), (int)(130 * cardScale)), Math.Min((int)(256 * dy / 96), (int)(190 * cardScale)));
+            blankimagelist.ImageSize = new Size(Math.Min((int)(256 * dx / 96), (int)(162 * cardScale)), Math.Min((int)(256 * dy / 96), (int)(242 * cardScale)));
             blankimagelist.ColorDepth = ColorDepth.Depth32Bit;
-            Image newblankimage = new Bitmap((int)(130 * cardScale), (int)(180 * cardScale), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            Image newblankimage = new Bitmap((int)(162 * cardScale), (int)(242 * cardScale), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             blankimagelist.Images.Add(newblankimage);
 
 
@@ -390,7 +425,7 @@ namespace IStripperQuickPlayer
             BinaryFormatter formatter = new BinaryFormatter();  
    
             //Reading the file from the server  
-            FileStream fs = File.Open(filename, FileMode.Open);   
+            FileStream fs = System.IO.File.Open(filename, FileMode.Open);   
             object obj = formatter.Deserialize(fs);  
             List<ModelCard>? emps = (List<ModelCard>?)obj;  
             fs.Flush();  
@@ -408,7 +443,7 @@ namespace IStripperQuickPlayer
         internal void Serialize(List<ModelCard>? emps, String filename)  
         {  
             //Create the stream to add object into it.  
-            System.IO.Stream ms = File.OpenWrite(filename);   
+            System.IO.Stream ms = System.IO.File.OpenWrite(filename);   
             //Format the object as Binary  
   
             BinaryFormatter formatter = new BinaryFormatter();  
@@ -426,7 +461,7 @@ namespace IStripperQuickPlayer
             if (!Directory.Exists(mdatafolder))
                 Directory.CreateDirectory(mdatafolder);
             
-            System.IO.Stream ms = File.OpenWrite(mdatafilepath);     
+            System.IO.Stream ms = System.IO.File.OpenWrite(mdatafilepath);     
             BinaryFormatter formatter = new BinaryFormatter();              
             formatter.Serialize(ms, myData);  
             ms.Flush();  
@@ -440,11 +475,11 @@ namespace IStripperQuickPlayer
             try
             {
                 string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
-                if (!File.Exists(mdatafilepath)) return new MyData();
+                if (!System.IO.File.Exists(mdatafilepath)) return new MyData();
                 BinaryFormatter formatter = new BinaryFormatter();  
    
                 //Reading the file from the server  
-                FileStream fs = File.Open(mdatafilepath, FileMode.Open);   
+                FileStream fs = System.IO.File.Open(mdatafilepath, FileMode.Open);   
                 object obj = formatter.Deserialize(fs);  
                 MyData m = (MyData)obj;  
                 fs.Flush();  
@@ -615,11 +650,13 @@ namespace IStripperQuickPlayer
              base.DefWndProc(ref m);
          }
 
-        private void Form1_Load(object sender, EventArgs e)
+        private async void Form1_Load(object sender, EventArgs e)
         {
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-            culture.NumberFormat.NumberDecimalSeparator = ".";
+            culture.NumberFormat.NumberDecimalSeparator = ".";           
+            await webModels.EnsureCoreWebView2Async();
+            devtoolsContext = await webModels.CoreWebView2.CreateDevToolsContextAsync();
             //check if we Segoe Fluent Icons font - this comes with windows 11
             var fontsCollection = new InstalledFontCollection();
             foreach (var fontFamily in fontsCollection.Families)
@@ -1118,7 +1155,7 @@ namespace IStripperQuickPlayer
                 changesort = false;
                 e.Graphics.Clear(Color.White);
             }
-            Rectangle imgrect = new Rectangle(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*28), e.Bounds.Top, e.Bounds.Width - (int)((e.Graphics.DpiY/192)*55), e.Bounds.Height - (int)((e.Graphics.DpiY/192)*57));
+            Rectangle imgrect = new Rectangle(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*42), e.Bounds.Top, e.Bounds.Width - (int)((e.Graphics.DpiY/192)*69), e.Bounds.Height - (int)((e.Graphics.DpiY/192)*54));
                 
             if (e.Item.Selected)
             {
@@ -1184,7 +1221,7 @@ namespace IStripperQuickPlayer
             stringFormat.Alignment = StringAlignment.Center;
             stringFormat.LineAlignment = StringAlignment.Far;
 
-            Rectangle rectName = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*55), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
+            Rectangle rectName = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*52), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
             int sztitle=10;
             Font fontName = new Font("Segoe UI", sztitle);
             string[] nameoutfit = e.Item.Text.Split("\r\n");
@@ -1197,7 +1234,7 @@ namespace IStripperQuickPlayer
             e.Graphics.DrawString(nameoutfit[0], fontName, new SolidBrush(Color.Black), rectName, stringFormat);
 
 
-            Rectangle rectOutfit = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*30), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
+            Rectangle rectOutfit = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*27), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
             int szoutfit=9;
             Font fontOutfit = new Font("Segoe UI", szoutfit);
             var textSizeOutfit = e.Graphics.MeasureString(nameoutfit[1], fontOutfit);
@@ -1222,7 +1259,7 @@ namespace IStripperQuickPlayer
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * cardScale *10 / 72,      
-                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*24), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
+                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*38), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
                 e.Graphics.FillPath(Brushes.Yellow, p);     
@@ -1234,7 +1271,7 @@ namespace IStripperQuickPlayer
                         new FontFamily("Segoe Fluent Icons"), 
                         (int) FontStyle.Bold,     
                         e.Graphics.DpiY * cardScale * 10 / 72,      
-                        new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*54), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
+                        new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*38) + (int)((e.Graphics.DpiY/192)*30*cardScale), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
                         new StringFormat());         
                     e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
                     e.Graphics.FillPath(Brushes.Yellow, p);     
@@ -1254,7 +1291,7 @@ namespace IStripperQuickPlayer
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * cardScale * 10 / 72,      
-                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*24), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
+                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*38), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
                 e.Graphics.FillPath(Brushes.Yellow, p);     
@@ -1296,7 +1333,7 @@ namespace IStripperQuickPlayer
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
                 string ratingstr = "".PadLeft(5,'\uE0B4');
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - (int)(38*cardScale), 40);
+                Rectangle rect = new Rectangle(e.Bounds.Left+52, e.Bounds.Top + 10, e.Bounds.Width - (int)(52*cardScale), 40);
 
                 Font font = new Font("Segoe Fluent Icons", 14 * cardScale);
                 var textSize = e.Graphics.MeasureString(ratingstr, font);
@@ -1312,7 +1349,7 @@ namespace IStripperQuickPlayer
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * szstar / 72,      
-                    new Point(e.Bounds.Left + 28, e.Bounds.Top + (int)(114*cardScale)),            
+                    new Point(e.Bounds.Left + 52, e.Bounds.Top + (int)(114*cardScale)),            
                     new StringFormat());         
                 //e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(new SolidBrush(Color.FromArgb(180, Color.Black)), p);     
@@ -1327,14 +1364,14 @@ namespace IStripperQuickPlayer
                 string ratingstr = "".PadLeft((int)myrating/2,'\uE0B4');
                 if (myrating%2 > 0)
                     ratingstr += '\uE7C6';
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + (int)(10*cardScale), e.Bounds.Width - (int)(38*cardScale), 40);          
+                Rectangle rect = new Rectangle(e.Bounds.Left+52, e.Bounds.Top + (int)(10*cardScale), e.Bounds.Width - (int)(52*cardScale), 40);          
                 GraphicsPath p = new GraphicsPath(); 
                 p.AddString(
                     ratingstr,            
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * szstar / 72,      
-                    new Point(e.Bounds.Left + 28, e.Bounds.Top + (int)(114*cardScale)),            
+                    new Point(e.Bounds.Left + 52, e.Bounds.Top + (int)(114*cardScale)),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(Brushes.Yellow, p);     
@@ -1347,7 +1384,7 @@ namespace IStripperQuickPlayer
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
-                Rectangle rect = new Rectangle(e.Bounds.Left+(int)((e.Graphics.DpiY/192)*34), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6), e.Bounds.Width - (int)((e.Graphics.DpiY/192)*44), (int)((e.Graphics.DpiY/192)*40));
+                Rectangle rect = new Rectangle(e.Bounds.Left+(int)((e.Graphics.DpiY/192)*48), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6), e.Bounds.Width - (int)((e.Graphics.DpiY/192)*58), (int)((e.Graphics.DpiY/192)*40));
                 int sz =(int)(13* cardScale);
                 Font font = new Font("Verdana", sz);
                 var textSize = e.Graphics.MeasureString(text, font);
@@ -1362,7 +1399,7 @@ namespace IStripperQuickPlayer
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Regular,     
                     e.Graphics.DpiY * sz / 72,      
-                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*34), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6)),            
+                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*48), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6)),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(Brushes.White, p);            
@@ -1379,7 +1416,7 @@ namespace IStripperQuickPlayer
                 e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
-                Rectangle rect = new Rectangle(imgrect.Left+4, e.Bounds.Top + 10, imgrect.Width-20, 40);  
+                Rectangle rect = new Rectangle(imgrect.Left+18, e.Bounds.Top + 10, imgrect.Width-34, 40);  
                 int szname =(int)(14 * cardScale);
                 Font font = new Font("Verdana", szname);
                 var textSize = e.Graphics.MeasureString("Playing", font);                
@@ -1394,7 +1431,7 @@ namespace IStripperQuickPlayer
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * szname / 72,      
-                    new Point(imgrect.Left+4, e.Bounds.Top + (int)(60*cardScale)),            
+                    new Point(imgrect.Left+18, e.Bounds.Top + (int)(60*cardScale)),            
                     new StringFormat());         
                 e.Graphics.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left-6, e.Bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));
                 e.Graphics.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left-6, e.Bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));

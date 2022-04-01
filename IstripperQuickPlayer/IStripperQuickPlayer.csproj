@@ -45,9 +45,11 @@
     <PackageReference Include="DG.EnhancedBoxHelpers" Version="1.0.25907.18" />
     <PackageReference Include="Essy.Tools.InputBox" Version="1.0.0" />
     <PackageReference Include="Microsoft-WindowsAPICodePack-Shell" Version="1.1.4" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.1150.38" />
     <PackageReference Include="MouseKeyHook" Version="5.6.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
     <PackageReference Include="NodaTime" Version="3.0.10" />
+    <PackageReference Include="WebView2.DevTools.Dom" Version="2.0.1" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="ColorSlider">
