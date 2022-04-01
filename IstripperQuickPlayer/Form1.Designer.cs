@@ -63,6 +63,8 @@
             this.settingsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.hotkeysToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.enforceCardFilterToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.cardScaleToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.trackBarCardScale = new IStripperQuickPlayer.TrackBarMenuItem();
             this.menuShowRatingsStars = new System.Windows.Forms.ToolStripMenuItem();
             this.includeDescriptionInSearchToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.includeShowTitleInSearchToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -454,6 +456,7 @@
             this.settingsToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.hotkeysToolStripMenuItem,
             this.enforceCardFilterToolStripMenuItem,
+            this.cardScaleToolStripMenuItem,
             this.menuShowRatingsStars,
             this.includeDescriptionInSearchToolStripMenuItem,
             this.includeShowTitleInSearchToolStripMenuItem,
@@ -479,6 +482,64 @@
             this.enforceCardFilterToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.enforceCardFilterToolStripMenuItem.Text = "Enforce Card Filter";
             this.enforceCardFilterToolStripMenuItem.Click += new System.EventHandler(this.enforceCardFilterToolStripMenuItem_Click);
+            // 
+            // cardScaleToolStripMenuItem
+            // 
+            this.cardScaleToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
+            this.trackBarCardScale});
+            this.cardScaleToolStripMenuItem.Name = "cardScaleToolStripMenuItem";
+            this.cardScaleToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
+            this.cardScaleToolStripMenuItem.Text = "Card Scale";
+            // 
+            // trackBarCardScale
+            // 
+            this.trackBarCardScale.BackColor = System.Drawing.Color.Transparent;
+            this.trackBarCardScale.ClientSize = new System.Drawing.Size(200, 48);
+            this.trackBarCardScale.Font = new System.Drawing.Font("Microsoft Sans Serif", 6F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.trackBarCardScale.ForeColor = System.Drawing.Color.White;
+            this.trackBarCardScale.Has2Values = false;
+            this.trackBarCardScale.LargeChange = new decimal(new int[] {
+            25,
+            0,
+            0,
+            131072});
+            this.trackBarCardScale.Maximum = new decimal(new int[] {
+            2,
+            0,
+            0,
+            0});
+            this.trackBarCardScale.Minimum = new decimal(new int[] {
+            5,
+            0,
+            0,
+            65536});
+            this.trackBarCardScale.Name = "trackBarCardScale";
+            this.trackBarCardScale.ScaleDivisions = new decimal(new int[] {
+            10,
+            0,
+            0,
+            0});
+            this.trackBarCardScale.Size = new System.Drawing.Size(200, 48);
+            this.trackBarCardScale.SmallChange = new decimal(new int[] {
+            5,
+            0,
+            0,
+            131072});
+            this.trackBarCardScale.Text = "trackBarMenuItem1";
+            this.trackBarCardScale.TickColor = System.Drawing.Color.White;
+            this.trackBarCardScale.TickStyle = System.Windows.Forms.TickStyle.TopLeft;
+            this.trackBarCardScale.TrackbarColor = System.Drawing.Color.Transparent;
+            this.trackBarCardScale.Value = new decimal(new int[] {
+            1,
+            0,
+            0,
+            0});
+            this.trackBarCardScale.Value2 = new decimal(new int[] {
+            1,
+            0,
+            0,
+            0});
+            this.trackBarCardScale.ValueChanged += new System.EventHandler(this.trackBarCardScale_ValueChanged);
             // 
             // menuShowRatingsStars
             // 
@@ -1095,5 +1156,7 @@
         private TrackBarMenuItem trackbarWallpaperBrightness;
         private ToolStripMenuItem showTextToolStripMenuItem;
         private ToolStripMenuItem showKittyToolStripMenuItem;
+        private ToolStripMenuItem cardScaleToolStripMenuItem;
+        private TrackBarMenuItem trackBarCardScale;
     }
 }

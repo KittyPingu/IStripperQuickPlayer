@@ -22,6 +22,7 @@ namespace IStripperQuickPlayer
 
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
+        private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
         private string nowPlayingPath = "";
         private string nowPlayingTag = "";
@@ -122,54 +123,54 @@ namespace IStripperQuickPlayer
                 listModels.EndUpdate();
                 return;
             }
-            
-            List<ModelCard>? currentCards=Datastore.modelcards;
+
+            List<ModelCard>? currentCards = Datastore.modelcards;
             if (txtSearch.Text != "")
             {
-                 
+
                 string[] parts = txtSearch.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
-                foreach(string p in parts)
-                { 
-                    
+                foreach (string p in parts)
+                {
+
                     List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
                     if (p.Contains("!"))
                     {
-                        
-                        List<ModelCard>? poslist=null;
-                        List<ModelCard>? neglist=currentCards;
+
+                        List<ModelCard>? poslist = null;
+                        List<ModelCard>? neglist = currentCards;
                         foreach (string tag in taglist.Where(x => !x.Contains("!")))
                         {
-                           //do all the positives first
-                           poslist = currentCards.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
-                            || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))                            
-                            || (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
-                            || (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",",c.tags).ContainsWithNot(tag)).ToList();                        
+                            //do all the positives first
+                            poslist = currentCards.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
+                             || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
+                             || (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
+                             || (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",", c.tags).ContainsWithNot(tag)).ToList();
                         }
-                        if (poslist == null) poslist = new List<ModelCard>{ };
+                        if (poslist == null) poslist = new List<ModelCard> { };
                         foreach (string tag in taglist.Where(x => x.Contains("!")))
                         {
                             neglist = neglist.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
                             && (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                             && (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
-                            && (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",",c.tags).ContainsWithNot(tag)).ToList();         
+                            && (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",", c.tags).ContainsWithNot(tag)).ToList();
                         }
-                        if (poslist == null) currentCards = new List<ModelCard>{ };
+                        if (poslist == null) currentCards = new List<ModelCard> { };
                         else
-                            if (neglist == null) neglist = new List<ModelCard>{ };
-                            currentCards = poslist.Union(neglist).ToList();
+                            if (neglist == null) neglist = new List<ModelCard> { };
+                        currentCards = poslist.Union(neglist).ToList();
                     }
                     else
                     {
                         currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
                             || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                             || (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
-                            || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",",c.tags).ContainsWithNot(y))).ToList();
+                            || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",", c.tags).ContainsWithNot(y))).ToList();
                     }
 
-                    
+
                 }
-                
-            
+
+
             }
             else
                 currentCards = Datastore.modelcards;
@@ -226,7 +227,7 @@ namespace IStripperQuickPlayer
             foreach (var card in currentCards)
             {
                 if (card.clips != null && card.clips.Count > 0)
-                {   
+                {
                     items[idx] = new ListViewItem(card.modelName + Environment.NewLine + card.outfit, 0);
                     items[idx].Tag = card.name;
                     items[idx].ImageIndex = idx;
@@ -234,16 +235,7 @@ namespace IStripperQuickPlayer
                     //listModels.Items.Add(card.name, card.modelName + Environment.NewLine + card.outfit, largeimagelist.Images.Count - 1);
                 }
             }
-
-            ImageList blankimagelist = new ImageList();
-            blankimagelist.ImageSize = new Size(130, 190);
-            blankimagelist.ColorDepth = ColorDepth.Depth32Bit;
-            Image newblankimage = new Bitmap(130,180, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-            blankimagelist.Images.Add(newblankimage);
-
-
-            //listModels.Items.AddRange(items);
-            listModels.LargeImageList = blankimagelist;
+            SetModelImageList();
             listModels.EndUpdate();
 
             listModels.VirtualListSize = items.Length;
@@ -260,11 +252,40 @@ namespace IStripperQuickPlayer
                     listModels.SelectedIndices.Add((int)index);
                     //listModels.Items[i.Index].Selected = true;
                     listModels.FindItemWithText(currentText);
-                    listModels.EnsureVisible((int)index);     
+                    listModels.EnsureVisible((int)index);
                 }
-               
+
             }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+        }
+
+        private void SetModelImageList()
+        {
+            float dx, dy;
+
+            Graphics g = this.CreateGraphics();
+            try
+            {
+                dx = g.DpiX;
+                dy = g.DpiY;
+            }
+            finally
+            {
+                g.Dispose();
+            }
+
+            if (cardScale * 190 > 256 * dy / 96)
+                cardScale = 256 * dy / 96 / 190;
+
+            ImageList blankimagelist = new ImageList();
+            blankimagelist.ImageSize = new Size(Math.Min((int)(256 * dx / 96), (int)(130 * cardScale)), Math.Min((int)(256 * dy / 96), (int)(190 * cardScale)));
+            blankimagelist.ColorDepth = ColorDepth.Depth32Bit;
+            Image newblankimage = new Bitmap((int)(130 * cardScale), (int)(180 * cardScale), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            blankimagelist.Images.Add(newblankimage);
+
+
+            //listModels.Items.AddRange(items);
+            listModels.LargeImageList = blankimagelist;
         }
 
         void listModels_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
@@ -1199,7 +1220,7 @@ namespace IStripperQuickPlayer
                     "\uEC19",            
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * 10 / 72,      
+                    e.Graphics.DpiY * cardScale *10 / 72,      
                     new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*24), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
@@ -1211,7 +1232,7 @@ namespace IStripperQuickPlayer
                         "\uEC8A",            
                         new FontFamily("Segoe Fluent Icons"), 
                         (int) FontStyle.Bold,     
-                        e.Graphics.DpiY * 10 / 72,      
+                        e.Graphics.DpiY * cardScale * 10 / 72,      
                         new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*54), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
                         new StringFormat());         
                     e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
@@ -1231,7 +1252,7 @@ namespace IStripperQuickPlayer
                     "\uEC8A",            
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * 10 / 72,      
+                    e.Graphics.DpiY * cardScale * 10 / 72,      
                     new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*24), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
@@ -1251,21 +1272,21 @@ namespace IStripperQuickPlayer
                         "\uE00B",            
                         new FontFamily("Segoe Fluent Icons"), 
                         (int) FontStyle.Bold,     
-                        e.Graphics.DpiY * 14 / 72,      
-                        new Point(e.Bounds.Right - (int)((e.Graphics.DpiY/192)*80), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
+                        e.Graphics.DpiY * cardScale * 14 / 72,      
+                        new Point(e.Bounds.Right - (int)((e.Graphics.DpiY/192)*34) - (int)((e.Graphics.DpiY/192)*46*cardScale), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
                         new StringFormat());  
                 else
                     p.AddString(
                         "+",            
                         new FontFamily("Verdana"), 
                         (int) FontStyle.Bold,     
-                        e.Graphics.DpiY * 16 / 72,      
+                        e.Graphics.DpiY * cardScale * 16 / 72,      
                         new Point(e.Bounds.Left - (int)((e.Graphics.DpiY/192)*80), e.Bounds.Top -(int)((e.Graphics.DpiY/192)*2)),            
                         new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(Brushes.LightGreen, p);     
             }
-            int szstar=14;
+            int szstar=(int)(14* cardScale);
             if (fontInstalled && Properties.Settings.Default.ShowRatingStars)
             {
                 e.Graphics.InterpolationMode = InterpolationMode.High;
@@ -1274,9 +1295,9 @@ namespace IStripperQuickPlayer
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
                 string ratingstr = "".PadLeft(5,'\uE0B4');
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);
+                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - (int)(38*cardScale), 40);
 
-                Font font = new Font("Segoe Fluent Icons", 14);
+                Font font = new Font("Segoe Fluent Icons", 14 * cardScale);
                 var textSize = e.Graphics.MeasureString(ratingstr, font);
                 while (textSize.Width > rect.Width)
                 { 
@@ -1290,7 +1311,7 @@ namespace IStripperQuickPlayer
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * szstar / 72,      
-                    new Point(e.Bounds.Left + 28, e.Bounds.Top + 114),            
+                    new Point(e.Bounds.Left + 28, e.Bounds.Top + (int)(114*cardScale)),            
                     new StringFormat());         
                 //e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(new SolidBrush(Color.FromArgb(180, Color.Black)), p);     
@@ -1305,14 +1326,14 @@ namespace IStripperQuickPlayer
                 string ratingstr = "".PadLeft((int)myrating/2,'\uE0B4');
                 if (myrating%2 > 0)
                     ratingstr += '\uE7C6';
-                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + 10, e.Bounds.Width - 38, 40);          
+                Rectangle rect = new Rectangle(e.Bounds.Left+38, e.Bounds.Top + (int)(10*cardScale), e.Bounds.Width - (int)(38*cardScale), 40);          
                 GraphicsPath p = new GraphicsPath(); 
                 p.AddString(
                     ratingstr,            
                     new FontFamily("Segoe Fluent Icons"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * szstar / 72,      
-                    new Point(e.Bounds.Left + 28, e.Bounds.Top + 114),            
+                    new Point(e.Bounds.Left + 28, e.Bounds.Top + (int)(114*cardScale)),            
                     new StringFormat());         
                 e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
                 e.Graphics.FillPath(Brushes.Yellow, p);     
@@ -1326,7 +1347,7 @@ namespace IStripperQuickPlayer
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
                 Rectangle rect = new Rectangle(e.Bounds.Left+(int)((e.Graphics.DpiY/192)*34), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6), e.Bounds.Width - (int)((e.Graphics.DpiY/192)*44), (int)((e.Graphics.DpiY/192)*40));
-                int sz =13;
+                int sz =(int)(13* cardScale);
                 Font font = new Font("Verdana", sz);
                 var textSize = e.Graphics.MeasureString(text, font);
                 while (textSize.Width > rect.Width)
@@ -1358,7 +1379,7 @@ namespace IStripperQuickPlayer
                 e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
 
                 Rectangle rect = new Rectangle(imgrect.Left+4, e.Bounds.Top + 10, imgrect.Width-20, 40);  
-                int szname =14;
+                int szname =(int)(14 * cardScale);
                 Font font = new Font("Verdana", szname);
                 var textSize = e.Graphics.MeasureString("Playing", font);                
                 while (textSize.Width > rect.Width)
@@ -1372,10 +1393,10 @@ namespace IStripperQuickPlayer
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Bold,     
                     e.Graphics.DpiY * szname / 72,      
-                    new Point(imgrect.Left+4, e.Bounds.Top +60),            
+                    new Point(imgrect.Left+4, e.Bounds.Top + (int)(60*cardScale)),            
                     new StringFormat());         
-                e.Graphics.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left-6, e.Bounds.Top+60,imgrect.Width-20, (int)textSize.Height));
-                e.Graphics.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left-6, e.Bounds.Top+60,imgrect.Width-20, (int)textSize.Height));
+                e.Graphics.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left-6, e.Bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));
+                e.Graphics.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left-6, e.Bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));
                 e.Graphics.FillPath(Brushes.White, p);       
             }
 
@@ -1938,6 +1959,14 @@ namespace IStripperQuickPlayer
         {
             Properties.Settings.Default.ShowKitty = showKittyToolStripMenuItem.Checked;
             this.BeginInvoke((Action)(() => { PopulateModelListview();}));
+        }
+
+        private void trackBarCardScale_ValueChanged(object sender, EventArgs e)
+        {
+            cardScale = (float)(trackBarCardScale.Value);
+            listModels.BeginUpdate();
+            SetModelImageList();
+            listModels.EndUpdate();
         }
     }
 }
