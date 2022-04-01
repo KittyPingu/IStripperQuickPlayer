@@ -19,7 +19,9 @@ namespace IStripperQuickPlayer.BLL
         public static Dictionary<uint, Bitmap> initialImages = new Dictionary<uint, Bitmap>();
         public static async void ChangeWallpaper(uint monitorNumber, string url)
         {
-            if (url == null)return;            
+            if (url == null)return;       
+            var str = Utils.GetMainForm().lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
+            if (string.IsNullOrEmpty(str)) return;
             try
             {
                 var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  

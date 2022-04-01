@@ -22,10 +22,12 @@ namespace IStripperQuickPlayer
 
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
-
+        private bool isAutoSelecting = false;
         private string nowPlayingPath = "";
         private string nowPlayingTag = "";
         private string nowPlayingTagShort = "";
+        private string nowPlaying = "";
+        private string wallpaperTag = "";
         private int nowPlayingClipNumber;
         private string clipListTag = "";
         private bool changesort = false;
@@ -172,7 +174,7 @@ namespace IStripperQuickPlayer
             else
                 currentCards = Datastore.modelcards;
 
-            if (currentCards == null) return;
+            if (currentCards == null || currentCards.Count == 0) return;
             currentCards = Filter(currentCards);
 
             switch (cmbSortBy.Text)
@@ -343,6 +345,13 @@ namespace IStripperQuickPlayer
                 currentCards = currentCards.Where(c => c.exclusive != null && (bool)c.exclusive).ToList();
 
             currentCards = currentCards.Where(c=> enabledcollections.Contains(c.collection)).ToList();
+
+            try
+            {
+            if (Properties.Settings.Default.ShowKitty)
+                currentCards.Add(Datastore.modelcards.Where(c=>c.name=="f9998").First());
+            }
+            catch (Exception ex){ }
 
             return currentCards;
         }
@@ -626,14 +635,14 @@ namespace IStripperQuickPlayer
             trackbarWallpaperBrightness.Value = Properties.Settings.Default.WallpaperBrightness;
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
-
+            showKittyToolStripMenuItem.Checked = Properties.Settings.Default.ShowKitty;
             myData = RetrieveMyData();
             listModels.SetDoubleBuffered();
             FilterSettingsList.Load();
             PopulateFilterList();
             if (FilterSettingsList.filters.ContainsKey("Default"))
                 cmbFilter.SelectedItem = "Default";
-            string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
+            //string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             //watcher.RegistryChange += RegistryChanged;
             clickingNowPlaying = true;            
@@ -713,7 +722,7 @@ namespace IStripperQuickPlayer
             NktProcess tempProcess = enumProcess.First();
             while (tempProcess != null)
             {
-                hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess));
+                hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
                 hook.Hook(true);
                 if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 32)
                 {
@@ -761,49 +770,59 @@ namespace IStripperQuickPlayer
 
             //check if this propsed card is in the filterd list
             string newcardstring = str ?? "";
+            bool found = true;
             if (Properties.Settings.Default.EnforceCardFilter)
             {
-                if (string.IsNullOrEmpty(newcardstring))
+                if (string.IsNullOrEmpty(newcardstring) && !isAutoSelecting)
                 {
-                    this.BeginInvoke((Action)(() => lblNowPlaying.Text = ""));
+                    this.Invoke((Action)(() => lblNowPlaying.Text = ""));
                     return;
+                }
+                else if (string.IsNullOrEmpty(newcardstring) && isAutoSelecting)
+                {
+                    isAutoSelecting = false;
                 }
                 else
                 {
+                    isAutoSelecting = true;
                     ModelCard? model = Datastore.findCardByTag(newcardstring.Split("\\")[0]);   
                     ListViewItem? res = null;
                     if (model == null) return;
                     this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
                     
                     //does the new clip match the clip filter?
-                    var clipstest = FilterClipList(model.clips);
-                    string clipstring = newcardstring.Split("\\")[1];
                     ModelClip? res2 = null;
-                    res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
-                    bool found = false;
+                    if (res != null)
+                    {
+                        var clipstest = FilterClipList(model.clips);
+                        string clipstring = newcardstring.Split("\\")[1];                    
+                        res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
+                    }
+                    if (res == null || res2 == null) found = false;
                     while ((res == null || res2 == null) && !found)
                     {
                         //play a clip from a filtered card instead
                         //find a new model from the filtered cards
                         if (items == null || items.Length < 1) return;
-                        Random r = new Random();
-            
                         string newtag = nowPlayingTag;
-                        while (newtag == nowPlayingTag)
-                        {
-                            Int64 newr = r.Next(items.Length);
-                            newtag = items[(int)newr].Text;
-                            if (items.Length == 1) break;
+                        Random r = new Random();  
+                        if (res == null) //choose a different card
+                        {                                      
+                            while (newtag == nowPlayingTag)
+                            {
+                                Int64 newr = r.Next(items.Length);
+                                newtag = items[(int)newr].Text;
+                                if (items.Length == 1) break;
+                            }
+                            listModels.Invoke((Action)(() => listModels.SelectedIndices.Clear()));
+                            int? index = items.ToList().FindIndex(x => x.Text == newtag);
+                            if (index != null)
+                            {
+                                listModels.Invoke((Action)(() => listModels.SelectedIndices.Add((int)index)));
+                                listModels.Invoke((Action)(() => listModels.FindItemWithText(newtag)));
+                                listModels.Invoke((Action)(() => listModels.EnsureVisible((int)index)));     
+                            }
                         }
-                        listModels.BeginInvoke((Action)(() => listModels.SelectedIndices.Clear()));
-                        int? index = items.ToList().FindIndex(x => x.Text == newtag);
-                        if (index != null)
-                        {
-                            listModels.BeginInvoke((Action)(() => listModels.SelectedIndices.Add((int)index)));
-                            listModels.BeginInvoke((Action)(() => listModels.FindItemWithText(newtag)));
-                            listModels.BeginInvoke((Action)(() => listModels.EnsureVisible((int)index)));     
-                        }
-            
                         //choose a random clip from those shown
                         var mod = Datastore.findCardByText(newtag);
                         List<ModelClip>? clips = FilterClipList(mod.clips);
@@ -820,8 +839,8 @@ namespace IStripperQuickPlayer
             }
             
             
-            ShowNowPlaying(newcardstring);
-            if (str != newcardstring)
+            ShowNowPlaying(newcardstring, found);
+            if (str != newcardstring && newcardstring != wallpaperTag)
             {
                 RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
 
@@ -832,6 +851,7 @@ namespace IStripperQuickPlayer
                 {
                     keynew.SetValue("ForceAnim", newcardstring);
                     keynew.Close();
+                    wallpaperTag = newcardstring;
                 }
 
                 hookCallInfo.Result().LongLongVal = -1;
@@ -839,7 +859,8 @@ namespace IStripperQuickPlayer
                 hookCallInfo.Result().Value = -1;
                 hookCallInfo.LastError = 5;
             }
-            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+            if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+            isAutoSelecting = true;
             return;
         }
 
@@ -960,7 +981,7 @@ namespace IStripperQuickPlayer
                 if (a != null)
                 { 
                     string nowp = a.ToString() ?? "";
-                    ShowNowPlaying(nowp);
+                    ShowNowPlaying(nowp, !string.IsNullOrEmpty(nowp));
                     key.Close();
                 }
             }
@@ -981,13 +1002,13 @@ namespace IStripperQuickPlayer
             return false;
         }
 
-        private void ShowNowPlaying(string path)
+        private void ShowNowPlaying(string path, bool doWallpaper = false)
         {
             try
             {
                 if (path == nowPlayingPath) return;
                 nowPlayingPath = path;
-                string nowPlaying = "";
+                nowPlaying = "";
                 if (path == "") return;
                 if (Datastore.modelcards == null) return;
                 if (Datastore.modelcards.Count > 0)
@@ -1008,7 +1029,8 @@ namespace IStripperQuickPlayer
             }
             catch { }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-            if (Properties.Settings.Default.AutoWallpaper) this.BeginInvoke((Action)(() => ChangeWallpaper()));
+            if (doWallpaper) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
+            if (Properties.Settings.Default.AutoWallpaper && doWallpaper) this.BeginInvoke((Action)(() => ChangeWallpaper()));
         }
 
         private void chk_CheckedChanged(object sender, EventArgs e)
@@ -1841,7 +1863,9 @@ namespace IStripperQuickPlayer
 
         private async Task ChangeWallpaper(bool NotFromCheck = true)
         {
+            System.Diagnostics.Debug.WriteLine("ChangeWallpaper called with nowPlayingTagShort=" + nowPlayingTagShort  +", lbl=" + lblNowPlaying.Text);
             if (nowPlayingTagShort == null || nowPlayingTagShort.Length == 0) return;
+            if (string.IsNullOrEmpty(lblNowPlaying.Text)) return;
             foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
             {
                 if (item is ToolStripMenuItem)
@@ -1879,6 +1903,7 @@ namespace IStripperQuickPlayer
                     }
                 }
             }
+            Properties.Settings.Default.WallpaperMonitors = m;
             if (nowPlayingTag != "") this.BeginInvoke((Action)(() => ChangeWallpaper(false)));
         }
 
@@ -1906,6 +1931,12 @@ namespace IStripperQuickPlayer
         {
             Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;     
             this.BeginInvoke((Action)(() => ChangeWallpaper()));
+        }
+
+        private void showKittyToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.ShowKitty = showKittyToolStripMenuItem.Checked;
+            this.BeginInvoke((Action)(() => { PopulateModelListview();}));
         }
     }
 }

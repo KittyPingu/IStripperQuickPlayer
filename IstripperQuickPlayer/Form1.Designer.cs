@@ -69,6 +69,8 @@
             this.wallpaperToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.automaticWallpaperToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.trackbarWallpaperBrightness = new IStripperQuickPlayer.TrackBarMenuItem();
+            this.showTextToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.showKittyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.cmdFilter = new System.Windows.Forms.Button();
             this.errorProvider1 = new System.Windows.Forms.ErrorProvider(this.components);
             this.chkFavourite = new System.Windows.Forms.CheckBox();
@@ -101,7 +103,6 @@
             this.chkTopless = new System.Windows.Forms.CheckBox();
             this.chkNoNudity = new System.Windows.Forms.CheckBox();
             this.chkPublic = new System.Windows.Forms.CheckBox();
-            this.showTextToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -456,7 +457,8 @@
             this.menuShowRatingsStars,
             this.includeDescriptionInSearchToolStripMenuItem,
             this.includeShowTitleInSearchToolStripMenuItem,
-            this.wallpaperToolStripMenuItem});
+            this.wallpaperToolStripMenuItem,
+            this.showKittyToolStripMenuItem});
             this.settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
             this.settingsToolStripMenuItem.Size = new System.Drawing.Size(76, 24);
             this.settingsToolStripMenuItem.Text = "Settings";
@@ -569,6 +571,22 @@
             0,
             0});
             this.trackbarWallpaperBrightness.ValueChanged += new System.EventHandler(this.trackbarWallpaperBrightness_ValueChanged);
+            // 
+            // showTextToolStripMenuItem
+            // 
+            this.showTextToolStripMenuItem.CheckOnClick = true;
+            this.showTextToolStripMenuItem.Name = "showTextToolStripMenuItem";
+            this.showTextToolStripMenuItem.Size = new System.Drawing.Size(274, 26);
+            this.showTextToolStripMenuItem.Text = "Show Text";
+            this.showTextToolStripMenuItem.Click += new System.EventHandler(this.showTextToolStripMenuItem_Click);
+            // 
+            // showKittyToolStripMenuItem
+            // 
+            this.showKittyToolStripMenuItem.CheckOnClick = true;
+            this.showKittyToolStripMenuItem.Name = "showKittyToolStripMenuItem";
+            this.showKittyToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
+            this.showKittyToolStripMenuItem.Text = "Show Kitty";
+            this.showKittyToolStripMenuItem.CheckedChanged += new System.EventHandler(this.showKittyToolStripMenuItem_CheckedChanged);
             // 
             // cmdFilter
             // 
@@ -957,14 +975,6 @@
             this.chkPublic.UseVisualStyleBackColor = true;
             this.chkPublic.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
             // 
-            // showTextToolStripMenuItem
-            // 
-            this.showTextToolStripMenuItem.CheckOnClick = true;
-            this.showTextToolStripMenuItem.Name = "showTextToolStripMenuItem";
-            this.showTextToolStripMenuItem.Size = new System.Drawing.Size(274, 26);
-            this.showTextToolStripMenuItem.Text = "Show Text";
-            this.showTextToolStripMenuItem.Click += new System.EventHandler(this.showTextToolStripMenuItem_Click);
-            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
@@ -1084,5 +1094,6 @@
         private ToolStripMenuItem automaticWallpaperToolStripMenuItem;
         private TrackBarMenuItem trackbarWallpaperBrightness;
         private ToolStripMenuItem showTextToolStripMenuItem;
+        private ToolStripMenuItem showKittyToolStripMenuItem;
     }
 }

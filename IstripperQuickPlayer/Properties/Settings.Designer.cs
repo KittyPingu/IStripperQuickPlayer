@@ -202,5 +202,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["WallpaperDetails"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool ShowKitty {
+            get {
+                return ((bool)(this["ShowKitty"]));
+            }
+            set {
+                this["ShowKitty"] = value;
+            }
+        }
     }
 }
