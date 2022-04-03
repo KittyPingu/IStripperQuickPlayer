@@ -81,10 +81,11 @@ namespace IStripperQuickPlayer
         {
             ReloadStaticProperties();
             ModelsLstLoader lstLoader = new ModelsLstLoader();
-            listModels.Items.Clear();
+            listModelsNew.Items.Clear();
             if (Datastore.modelcards != null)
                 Datastore.modelcards.Clear();
-            lstLoader.LoadModels();
+            for (int i = 0; i < 44; i++)
+                lstLoader.LoadModels();
             this.BeginInvoke((Action)(() => { PopulateModelListview();}));
             PersistModels();
         }
@@ -117,15 +118,13 @@ namespace IStripperQuickPlayer
         {
             //save the selected card, we can reselect it at the end if it's still valid
             string currentText = "";
-            if (listModels.SelectedIndices.Count > 0)
+            if (listModelsNew.SelectedItems.Count > 0)
             {
-                currentText = listModels.Items[listModels.SelectedIndices[0]].Text;
+                currentText = listModelsNew.SelectedItems[0].Text;
             }
-            listModels.BeginUpdate();
-            listModels.Items.Clear();
+            listModelsNew.Items.Clear();
             if (Datastore.modelcards == null)
-            {
-                listModels.EndUpdate();
+            {                
                 return;
             }
 
@@ -242,27 +241,23 @@ namespace IStripperQuickPlayer
 
                 //AddCardToWebView(card);
             }
-            SetModelImageList();
             SetModelNewImageList();
-            listModels.EndUpdate();
             //FinaliseWebView();
-            listModels.VirtualListSize = items.Length;
-            listModels.VirtualMode = true;
-            lblModelsLoaded.Text = "Cards Shown: " + listModels.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
+        
+            lblModelsLoaded.Text = "Cards Shown: " + listModelsNew.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
 
             //set the selected card back to what we had selected at start of the function
             if (currentText != "")
             {
-                listModels.SelectedIndices.Clear();
+                listModelsNew.ClearSelection();
                 int? index = items.ToList().FindIndex(x => x.Text == currentText);
                 if (index != null && index > 0)
                 {
-                    listModels.SelectedIndices.Add((int)index);
+                    listModelsNew.SelectWhere(x => x.Text == currentText);
                     //listModels.Items[i.Index].Selected = true;
-                    listModels.FindItemWithText(currentText);
-                    listModels.EnsureVisible((int)index);
+                    listModelsNew.EnsureVisible((int)index);
                 }
-
+                listModelsNew.Refresh();
             }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
@@ -297,77 +292,27 @@ namespace IStripperQuickPlayer
         }
 
 
-        private void SetModelImageList()
-        {
-            float dx, dy;
-
-            Graphics g = this.CreateGraphics();
-            try
-            {
-                dx = g.DpiX;
-                dy = g.DpiY;
-            }
-            finally
-            {
-                g.Dispose();
-            }
-
-            if (cardScale * 242 > 256 * dy / 96)
-                cardScale = 256 * dy / 96 / 242;
-
-            ImageList blankimagelist = new ImageList();
-            blankimagelist.ImageSize = new Size(Math.Min((int)(256 * dx / 96), (int)(162 * cardScale)), Math.Min((int)(256 * dy / 96), (int)(242 * cardScale)));
-            blankimagelist.ColorDepth = ColorDepth.Depth32Bit;
-            Image newblankimage = new Bitmap((int)(162 * cardScale), (int)(242 * cardScale), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-            blankimagelist.Images.Add(newblankimage);
-
-
-            //listModels.Items.AddRange(items);
-            listModels.LargeImageList = blankimagelist;
-        }
-
          private void SetModelNewImageList()
-        {
-            float dx, dy;
-
-            Graphics g = this.CreateGraphics();
-            try
-            {
-                dx = g.DpiX;
-                dy = g.DpiY;
-            }
-            finally
-            {
-                g.Dispose();
-            }
-
-            if (cardScale * 242 > 256 * dy / 96)
-                cardScale = 256 * dy / 96 / 242;
-
-            ImageList blankimagelist = new ImageList();
-            blankimagelist.ImageSize = new Size(Math.Min((int)(256 * dx / 96), (int)(162 * cardScale)), Math.Min((int)(256 * dy / 96), (int)(242 * cardScale)));
-            blankimagelist.ColorDepth = ColorDepth.Depth32Bit;
-            Image newblankimage = new Bitmap((int)(162 * cardScale), (int)(242 * cardScale), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-            blankimagelist.Images.Add(newblankimage);
-
-
+         {           
             var itemsNew = new ImageListViewItem[items.Count()];
             int idx = 0;
+
+            cardRenderer.updating = true;
+            listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
             foreach(var i in items)
             {
                 ModelCard? card = Datastore.findCardByTag(i.Tag.ToString());
                 var im = new ImageListViewItem();
-                im.FileName = card.imagefile;
+                im.FileName = ".";
                 im.Text = i.Text;
                 im.Tag = i.Tag;
                 itemsNew[idx] = im;
                 idx++;
             }
-            cardRenderer = new CardRenderer(myData, Text, cardScale, culture, fontInstalled, style);
-            listModelsNew.SetRenderer(cardRenderer);
-            listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
-            //listModels.Items.AddRange(items);
+              
             listModelsNew.Items.AddRange(itemsNew);
+            cardRenderer.updating = false;
+            listModelsNew.Refresh();
         }
         void listModels_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         { 
@@ -546,14 +491,15 @@ namespace IStripperQuickPlayer
 
         private void listModels_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (listModelsNew.SelectedItems.Count > 0) listModelsNew.SelectedItems[0].Update();
             FilterClips();
         }
 
         private void FilterClips()
         {
-             ListView.SelectedIndexCollection col = listModels.SelectedIndices;
+             var col = listModelsNew.SelectedItems;
              if (col.Count > 0)
-                loadListClips(listModels.Items[col[0]].Tag);
+                loadListClips(listModelsNew.SelectedItems[0].Tag);
              else
                 loadListClips(clipListTag);
         }
@@ -742,17 +688,20 @@ namespace IStripperQuickPlayer
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
             showKittyToolStripMenuItem.Checked = Properties.Settings.Default.ShowKitty;
             myData = RetrieveMyData();
-            listModels.SetDoubleBuffered();
             FilterSettingsList.Load();
             PopulateFilterList();
+            if (cardRenderer == null)
+            {
+                cardRenderer = new CardRenderer(myData, Text, cardScale, culture, fontInstalled, style);  
+                listModelsNew.SetRenderer(cardRenderer);
+            }            
+            
             if (FilterSettingsList.filters.ContainsKey("Default"))
                 cmbFilter.SelectedItem = "Default";
             //string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             //watcher.RegistryChange += RegistryChanged;
             clickingNowPlaying = true;            
-            _processListViewScrollListener = new ControlScrollListener(listModels);  
-            _processListViewScrollListener.ControlScrolled += ProcessListViewScrollListener_ControlScrolled;
             RetrieveModels();
             GetNowPlaying();
             clickingNowPlaying = false;
@@ -760,11 +709,6 @@ namespace IStripperQuickPlayer
             Task.Run(() => SetupRegHooks());       
         }
 
-
-        private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)
-        {
-            //this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-        }
 
         private void PopulateFilterList()
         {
@@ -880,7 +824,7 @@ namespace IStripperQuickPlayer
             {
                 if (string.IsNullOrEmpty(newcardstring) && !isAutoSelecting)
                 {
-                    this.Invoke((Action)(() => lblNowPlaying.Text = ""));
+                    if (lblNowPlaying != null) this.Invoke((Action)(() => lblNowPlaying.Text = ""));
                     return;
                 }
                 else if (string.IsNullOrEmpty(newcardstring) && isAutoSelecting)
@@ -919,13 +863,11 @@ namespace IStripperQuickPlayer
                                 newtag = items[(int)newr].Text;
                                 if (items.Length == 1) break;
                             }
-                            listModels.Invoke((Action)(() => listModels.SelectedIndices.Clear()));
+                            listModelsNew.Invoke((Action)(() => listModelsNew.ClearSelection()));
                             int? index = items.ToList().FindIndex(x => x.Text == newtag);
                             if (index != null)
                             {
-                                listModels.Invoke((Action)(() => listModels.SelectedIndices.Add((int)index)));
-                                listModels.Invoke((Action)(() => listModels.FindItemWithText(newtag)));
-                                listModels.Invoke((Action)(() => listModels.EnsureVisible((int)index)));     
+                                listModelsNew.Invoke((Action)(() => listModelsNew.SelectWhere(x => x.Tag == newtag)));
                             }
                         }
                         //choose a random clip from those shown
@@ -1130,7 +1072,8 @@ namespace IStripperQuickPlayer
                 if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
                 if (listClips.Items.Count == 0)
                     this.BeginInvoke((Action)(() => NowPlayingClick(true)));
-                listModels.BeginInvoke((Action)(() => listModels.Refresh()));
+                cardRenderer.nowPlayingTag = nowPlayingTag;
+                listModelsNew.BeginInvoke((Action)(() => listModelsNew.Refresh()));
             }
             catch { }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
@@ -1163,14 +1106,15 @@ namespace IStripperQuickPlayer
             {
                 string[] p = nowPlayingTag.Split("\r\n");
                 ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
-                listModels.SelectedIndices.Clear();
+                listModelsNew.ClearSelection();
                 var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
                 int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);            
                 if (i != null)
                 {
-                    listModels.SelectedIndices.Add((int)index);
-                    listModels.FindItemWithText(nowPlayingTag);
-                    listModels.EnsureVisible((int)index);                    
+                    listModelsNew.SelectWhere(x => x.Text == nowPlayingTag);
+                    cardRenderer.nowPlayingTag = nowPlayingTag;
+                    listModelsNew.EnsureVisible((int)index);    
+                    listModelsNew.Refresh();
                 }
                 else
                 {                    
@@ -1516,14 +1460,14 @@ namespace IStripperQuickPlayer
             string[] p = nowPlayingTag.Split("\r\n");
             if (p.Length < 2) return;
             ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
-            listModels.SelectedIndices.Clear();
+            listModelsNew.ClearSelection();
             var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
             int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);            
             if (i != null)
             {
-                listModels.SelectedIndices.Add((int)index);
-                listModels.FindItemWithText(nowPlayingTag);
-                listModels.EnsureVisible((int)index);               
+                listModelsNew.SelectWhere(x => x.Text == nowPlayingTag);
+                cardRenderer.nowPlayingTag = (nowPlayingTag);
+                listModelsNew.EnsureVisible((int)index);               
                 cmdClearSearch.Visible= true;
             }
         }
@@ -1628,14 +1572,12 @@ namespace IStripperQuickPlayer
                 newtag = items[(int)newr].Text;
                 if (items.Length == 1) break;
             }
-            listModels.SelectedIndices.Clear();
+            listModelsNew.ClearSelection();
             int? index = items.ToList().FindIndex(x => x.Text == newtag);
             if (index != null)
             {
-                listModels.SelectedIndices.Add((int)index);
-                //listModels.Items[i.Index].Selected = true;
-                listModels.FindItemWithText(newtag);
-                listModels.EnsureVisible((int)index);     
+                listModelsNew.SelectWhere(x => x.Text == newtag);
+                listModelsNew.EnsureVisible((int)index);     
             }
             //choose a random clip from those shown
             if (listClips.Items.Count == 0) return;
@@ -1693,7 +1635,7 @@ namespace IStripperQuickPlayer
         private void ValidateMinSizeMB()
         {
             Properties.Settings.Default.MinSizeMB = (long)numMinSizeMB.Value;
-            if (items != null && items.Length > 0 && listModels.SelectedIndices.Count > 0) loadListClips(listModels.Items[listModels.SelectedIndices[0]].Tag);
+            if (items != null && items.Length > 0 && listModelsNew.SelectedItems.Count > 0) loadListClips(listModelsNew.SelectedItems[0].Tag);
          
         }
 
@@ -1714,7 +1656,12 @@ namespace IStripperQuickPlayer
 
         private void menuCardList_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            if (mousedownCard == null)return;
+
+            if (mousedownCard == null)
+            { 
+                e.Cancel = true;
+                return;
+            }
             currentMenuCard=mousedownCard;
             ModelCard? c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
             if (c == null) return;
@@ -1736,8 +1683,8 @@ namespace IStripperQuickPlayer
             ageToolStripMenuItem.Text = "Age: " + c.modelAge;
         }
 
-        private ListViewItem? mousedownCard=null;
-        private ListViewItem? currentMenuCard=null;
+        private ImageListViewItem? mousedownCard=null;
+        private ImageListViewItem? currentMenuCard=null;
         private Rectangle? thumbnailclip;
 
         private void listModels_MouseDown(object sender, MouseEventArgs e)
@@ -1745,12 +1692,12 @@ namespace IStripperQuickPlayer
             if ( e.Button == MouseButtons.Right )
             {
                 //select the item under the mouse pointer
-                Point localPoint = listModels.PointToClient(e.Location);
-                mousedownCard = listModels.GetItemAt(e.Location.X,e.Location.Y);
-                if ( mousedownCard != null)
-                {
-                    menuCardList.Show();   
-                }        
+                Point localPoint = listModelsNew.PointToClient(e.Location);
+                //mousedownCard = listModelsNew.GetItemAt(e.Location.X,e.Location.Y);
+                //if ( mousedownCard != null)
+                //{
+                //    menuCardList.Show();   
+                //}        
             }
         }
 
@@ -1760,7 +1707,7 @@ namespace IStripperQuickPlayer
             if (myData.GetCardFavourite(currentMenuCard.Tag.ToString()) != menuCardFavourite.Checked)
             { 
                 myData.AddCardFavourite(currentMenuCard.Tag.ToString(), menuCardFavourite.Checked);
-                listModels.Invalidate(currentMenuCard.Bounds);
+                currentMenuCard.Update();
             }
         }
 
@@ -1784,7 +1731,7 @@ namespace IStripperQuickPlayer
             myData.AddCardRating(currentMenuCard.Tag.ToString(), ratingSlider.Value);
             if ( menuShowRatingsStars.Checked)
             {
-                listModels.Invalidate(currentMenuCard.Bounds);
+                currentMenuCard.Update();
                 //listModels.Refresh();
             }
         }
@@ -1795,7 +1742,7 @@ namespace IStripperQuickPlayer
             if (r != menuShowRatingsStars.Checked)
             {
                 Properties.Settings.Default.ShowRatingStars = menuShowRatingsStars.Checked;
-                listModels.Refresh();
+                listModelsNew.Refresh();
             }
         }
 
@@ -1841,12 +1788,6 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private void listModels_DoubleClick(object sender, EventArgs e)
-        {
-            FilterClips();
-            GetNextClip(Datastore.findCardByText(listModels.Items[listModels.SelectedIndices[0]].Text));            
-        }
-
         private void includeDescriptionInSearchToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.ShowDescInSearch = includeDescriptionInSearchToolStripMenuItem.Checked;
@@ -1875,7 +1816,7 @@ namespace IStripperQuickPlayer
         private void Form1_Shown(object sender, EventArgs e)
         {
             spaceBelowClipList = this.Height - listClips.Bottom;
-            spaceRightOfListModel = this.Width - listModels.Right;
+            spaceRightOfListModel = this.Width - listModelsNew.Right;
             try
             {
                 TaskbarThumbnail();
@@ -1903,18 +1844,18 @@ namespace IStripperQuickPlayer
         private void TaskbarThumbnail()
         {
             return;
-            TabbedThumbnailManager th = TaskbarManager.Instance.TabbedThumbnail;
-            var r = items.Where(c => c.Text == nowPlayingTag).FirstOrDefault();
-            if (r != null && r.Index >= 0)
-            {
-                var res = DwmInvalidateIconicBitmaps(this.Handle);
-                thumbnailclip = new Rectangle(listModels.Location.X + listModels.Items[r.Index].Bounds.X,
-                    listModels.Location.Y + listModels.Items[r.Index].Bounds.Y,
-                    listModels.Items[r.Index].Bounds.Width,
-                    listModels.Items[r.Index].Bounds.Height);
-            }
-            if (thumbnailclip != null)
-                th.SetThumbnailClip(this.Handle, thumbnailclip);
+            //TabbedThumbnailManager th = TaskbarManager.Instance.TabbedThumbnail;
+            //var r = items.Where(c => c.Text == nowPlayingTag).FirstOrDefault();
+            //if (r != null && r.Index >= 0)
+            //{
+            //    var res = DwmInvalidateIconicBitmaps(this.Handle);
+            //    thumbnailclip = new Rectangle(listModelsNew.Location.X + listModelsNew.Items[r.Index].Bounds.X,
+            //        listModelsNew.Location.Y + listModelsNew.Items[r.Index].Bounds.Y,
+            //        listModelsNew.Items[r.Index].Bounds.Width,
+            //        listModelsNew.Items[r.Index].Bounds.Height);
+            //}
+            //if (thumbnailclip != null)
+            //    th.SetThumbnailClip(this.Handle, thumbnailclip);
             
         }
 
@@ -1948,18 +1889,18 @@ namespace IStripperQuickPlayer
         private void Form1_Resize(object sender, EventArgs e)
         {
             if (spaceRightOfListModel == 0) return;
-            listModels.Width = this.Width - listModels.Left - this.spaceRightOfListModel;
-            txtSearch.Width = listModels.Right - txtSearch.Left;
-            listClips.Left = listModels.Right + 66;
+            listModelsNew.Width = this.Width - listModelsNew.Left - this.spaceRightOfListModel;
+            txtSearch.Width = listModelsNew.Right - txtSearch.Left;
+            listClips.Left = listModelsNew.Right + 66;
             listClips.Height = this.Height - this.spaceBelowClipList - listClips.Top;
-            listModels.Height = this.Height - listModels.Top - 60;
+            listModelsNew.Height = this.Height - listModelsNew.Top - 60;
             //lblNowPlaying.Left = listModels.Right + 66;
             //lblCipListDetails.Left = listModels.Right + 66;
-            cmdClearSearch.Left = listModels.Right;
+            cmdClearSearch.Left = listModelsNew.Right;
             cmdPhotos.Left = listClips.Right - cmdPhotos.Width;
-            panelModelDetails.Left = listModels.Right + 45;
+            panelModelDetails.Left = listModelsNew.Right + 45;
             panelModelDetails.Top = listClips.Bottom + 8;
-            panelClip.Left = listModels.Right + 58;
+            panelClip.Left = listModelsNew.Right + 58;
         }
 
         private async void button2_Click(object sender, EventArgs e)
@@ -2048,17 +1989,41 @@ namespace IStripperQuickPlayer
         private void trackBarCardScale_ValueChanged(object sender, EventArgs e)
         {
             cardScale = (float)(trackBarCardScale.Value);
-            if (listModels.Items.Count > 0)
+            if (listModelsNew.Items.Count > 0)
             {
                 if (cardRenderer != null)
                     cardRenderer.cardScale = cardScale;
                 listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
-                //listModels.BeginUpdate();
-                //SetModelImageList();
-                //listModels.EndUpdate();
+                listModelsNew.Refresh();
             }
             Properties.Settings.Default.CardScale = (float)(trackBarCardScale.Value);
         }
 
+        private void listModelsNew_ItemDoubleClick(object sender, ItemClickEventArgs e)
+        {
+            FilterClips();
+            if (listModelsNew.SelectedItems.Count > 0)
+                GetNextClip(Datastore.findCardByText(listModelsNew.SelectedItems[0].Text));      
+        }
+
+        private void listModelsNew_ItemClick(object sender, ItemClickEventArgs e)
+        {
+            
+        }
+
+        private void listModelsNew_MouseDown(object sender, MouseEventArgs e)
+        {
+            if ( e.Button == MouseButtons.Right )
+            {
+                ImageListView.HitInfo hit;
+                listModelsNew.HitTest(e.Location,out hit);
+                if (hit.ItemHit) mousedownCard = listModelsNew.Items[hit.ItemIndex];
+                else mousedownCard = null;
+                if (mousedownCard != null)
+                {
+                    menuCardList.Show();
+                }
+            }
+        }
     }
 }

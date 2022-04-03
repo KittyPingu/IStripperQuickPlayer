@@ -232,7 +232,6 @@ namespace IStripperQuickPlayer.BLL
                         }
                     }
                 }
-                if (frm != null) frm.listModels.EndUpdate();
             }
             
             return modelsLoaded;

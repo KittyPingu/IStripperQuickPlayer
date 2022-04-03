@@ -21,6 +21,7 @@ namespace IStripperQuickPlayer.BLL
         internal bool fontInstalled = true;
         internal string nowPlayingTag = "";
         internal NumberStyles style = NumberStyles.AllowDecimalPoint;
+        internal bool updating = false;
 
         internal CardRenderer(MyData? myData, string sortBy, float cardScale, CultureInfo culture, bool fontInstalled, NumberStyles style)
         {
@@ -42,7 +43,8 @@ namespace IStripperQuickPlayer.BLL
         }
         public override void DrawItem(Graphics g, ImageListViewItem item, ItemState state, Rectangle bounds)
         {
-                        g.InterpolationMode = InterpolationMode.Default;
+            if (updating) return;
+            g.InterpolationMode = InterpolationMode.Default;
             g.SmoothingMode = SmoothingMode.None;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             g.CompositingQuality = CompositingQuality.HighQuality;

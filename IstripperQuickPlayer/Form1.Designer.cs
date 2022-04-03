@@ -31,7 +31,6 @@
             this.components = new System.ComponentModel.Container();
             System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(Form1));
             this.lblModelsLoaded = new System.Windows.Forms.Label();
-            this.listModels = new System.Windows.Forms.ListView();
             this.menuCardList = new System.Windows.Forms.ContextMenuStrip(this.components);
             this.menuCardFavourite = new System.Windows.Forms.ToolStripMenuItem();
             this.ratingSlider = new IStripperQuickPlayer.TrackBarMenuItem();
@@ -125,23 +124,6 @@
             this.lblModelsLoaded.TabIndex = 1;
             this.lblModelsLoaded.Text = "Cards Loaded:";
             this.lblModelsLoaded.Click += new System.EventHandler(this.lblModelsLoaded_Click);
-            // 
-            // listModels
-            // 
-            this.listModels.ContextMenuStrip = this.menuCardList;
-            this.listModels.Location = new System.Drawing.Point(30, 116);
-            this.listModels.Margin = new System.Windows.Forms.Padding(5, 4, 5, 5);
-            this.listModels.Name = "listModels";
-            this.listModels.OwnerDraw = true;
-            this.listModels.Size = new System.Drawing.Size(1028, 1175);
-            this.listModels.TabIndex = 5;
-            this.listModels.UseCompatibleStateImageBehavior = false;
-            this.listModels.DrawItem += new System.Windows.Forms.DrawListViewItemEventHandler(this.listModels_DrawItem);
-            this.listModels.RetrieveVirtualItem += new System.Windows.Forms.RetrieveVirtualItemEventHandler(this.listModels_RetrieveVirtualItem);
-            this.listModels.SearchForVirtualItem += new System.Windows.Forms.SearchForVirtualItemEventHandler(this.listModels_SearchForVirtualItem);
-            this.listModels.SelectedIndexChanged += new System.EventHandler(this.listModels_SelectedIndexChanged);
-            this.listModels.DoubleClick += new System.EventHandler(this.listModels_DoubleClick);
-            this.listModels.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModels_MouseDown);
             // 
             // menuCardList
             // 
@@ -1039,13 +1021,21 @@
             // 
             // listModelsNew
             // 
-            this.listModelsNew.Location = new System.Drawing.Point(464, 153);
+            this.listModelsNew.AllowDuplicateFileNames = true;
+            this.listModelsNew.CacheLimit = "0";
+            this.listModelsNew.CacheMode = Manina.Windows.Forms.CacheMode.Continuous;
+            this.listModelsNew.ContextMenuStrip = this.menuCardList;
+            this.listModelsNew.Location = new System.Drawing.Point(30, 116);
             this.listModelsNew.Name = "listModelsNew";
             this.listModelsNew.PersistentCacheDirectory = "";
-            this.listModelsNew.PersistentCacheSize = ((long)(100));
-            this.listModelsNew.Size = new System.Drawing.Size(539, 537);
+            this.listModelsNew.PersistentCacheSize = ((long)(0));
+            this.listModelsNew.Size = new System.Drawing.Size(1028, 1173);
             this.listModelsNew.TabIndex = 41;
             this.listModelsNew.UseWIC = true;
+            this.listModelsNew.ItemClick += new Manina.Windows.Forms.ItemClickEventHandler(this.listModelsNew_ItemClick);
+            this.listModelsNew.ItemDoubleClick += new Manina.Windows.Forms.ItemDoubleClickEventHandler(this.listModelsNew_ItemDoubleClick);
+            this.listModelsNew.SelectionChanged += new System.EventHandler(this.listModels_SelectedIndexChanged);
+            this.listModelsNew.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModelsNew_MouseDown);
             // 
             // Form1
             // 
@@ -1065,7 +1055,6 @@
             this.Controls.Add(this.label1);
             this.Controls.Add(this.cmbSortBy);
             this.Controls.Add(this.listClips);
-            this.Controls.Add(this.listModels);
             this.Controls.Add(this.lblModelsLoaded);
             this.Controls.Add(this.menuStrip1);
             this.DoubleBuffered = true;
@@ -1096,7 +1085,6 @@
 
         #endregion
         internal Label lblModelsLoaded;
-        internal ListView listModels;
         internal ListView listClips;
         private ColumnHeader ClipName;
         private ColumnHeader Hotness;
