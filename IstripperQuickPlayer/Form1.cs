@@ -33,7 +33,6 @@ namespace IStripperQuickPlayer
         private string wallpaperTag = "";
         private int nowPlayingClipNumber;
         private string clipListTag = "";
-        private bool changesort = false;
         private MyData? myData = null;
         private bool fontInstalled = false;
         public CardRenderer cardRenderer = null;
@@ -248,7 +247,6 @@ namespace IStripperQuickPlayer
                 if (index != null && index > 0)
                 {
                     listModelsNew.SelectWhere(x => x.Text == currentText);
-                    //listModels.Items[i.Index].Selected = true;
                     listModelsNew.EnsureVisible((int)index);
                 }
                 listModelsNew.Refresh();
@@ -444,7 +442,7 @@ namespace IStripperQuickPlayer
 
         }
 
-        private void listModels_SelectedIndexChanged(object sender, EventArgs e)
+        private void listModelsNew_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (listModelsNew.SelectedItems.Count > 0) listModelsNew.SelectedItems[0].Update();
             FilterClips();
@@ -1036,7 +1034,6 @@ namespace IStripperQuickPlayer
 
         private void chk_CheckedChanged(object sender, EventArgs e)
         {
-            changesort = true;
             FilterClips();
         }
 
@@ -1090,310 +1087,9 @@ namespace IStripperQuickPlayer
                         listClips.EnsureVisible(k.Index);
                     }
                 }
-              
-                //loadListClips(nowPlayingTag);
             }
         }
-
-        private void listModels_DrawItem(object sender, DrawListViewItemEventArgs e)
-        {
-            if (changesort)
-            {
-                changesort = false;
-                e.Graphics.Clear(Color.White);
-            }
-            Rectangle imgrect = new Rectangle(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*42), e.Bounds.Top, e.Bounds.Width - (int)((e.Graphics.DpiY/192)*69), e.Bounds.Height - (int)((e.Graphics.DpiY/192)*54));
-                
-            if (e.Item.Selected)
-            {
-                   
-                //e.DrawFocusRectangle();
-                e.Graphics.FillRectangle(Brushes.PaleGreen, e.Bounds);
-            }
-            
-            string text = "";
-            ModelCard? card = Datastore.findCardByTag(e.Item.Tag.ToString());
-            if (card == null) return;
-            if (card.image != null) e.Graphics.DrawImage(card.image, imgrect);
-            decimal myrating=0M;
-            if (myData != null) myrating = myData.GetCardRating(card.name);
-            switch (cmbSortBy.Text)
-            {
-                case "My Rating":
-                    if (!Properties.Settings.Default.ShowRatingStars)
-                    {
-                        if (myrating > 0) text = myrating.ToString();
-                    }
-                    break;
-                case "Height":
-                    decimal decheight = 0;
-                    decimal.TryParse(card.height, style, culture, out decheight);
-                    if (RegionInfo.CurrentRegion.IsMetric && CultureInfo.CurrentCulture.Name != "en-GB")
-                       text = (((Math.Floor(decheight)*12) + (decheight-Math.Floor(decheight))*10) * 2.54M).ToString("N1") + "cm";
-                    else
-                       text = Math.Floor(decheight) + "'" + (int)(24*(decheight-Math.Floor(decheight)))/2.0M + "''";
-                    break;
-                case "":
-                case "Model Name":
-                    text = "";
-                    break;
-                case "Rating":
-                    text = (Convert.ToDecimal(card.rating)-5m).ToString();
-                    break;
-                case "Age":
-                    text = (card.modelAge.ToString() ?? "");    
-                    break;
-                case "Ethnicity":
-                    text = (card.ethnicity ?? "");        
-                    break;
-                case "Breast Size":
-                case "Breast Size (Descending)":
-                    text = (card.bust ?? 0).ToString();
-                    break;
-                case "Date Purchased":
-                case "Date Purchased (Descending)":
-                    if (card.datePurchased != null)
-                        text = ((DateTime)card.datePurchased).ToShortDateString();
-                    break;
-                case "Release Date":
-                case "Release Date (Descending)":
-                    if (card.dateReleased != null)
-                        text = ((DateTime)card.dateReleased).ToShortDateString();
-                    break;
-                default:
-                    break;
-            }
-
-            StringFormat stringFormat = new StringFormat();
-            stringFormat.Alignment = StringAlignment.Center;
-            stringFormat.LineAlignment = StringAlignment.Far;
-
-            Rectangle rectName = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*52), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
-            int sztitle=10;
-            Font fontName = new Font("Segoe UI", sztitle);
-            string[] nameoutfit = e.Item.Text.Split("\r\n");
-            var textSizeName = e.Graphics.MeasureString(nameoutfit[0], fontName);
-            while (textSizeName.Width > rectName.Width)
-            { 
-                fontName = new Font("Segoe UI", sztitle--);
-                textSizeName = e.Graphics.MeasureString(nameoutfit[0], fontName);
-            }
-            e.Graphics.DrawString(nameoutfit[0], fontName, new SolidBrush(Color.Black), rectName, stringFormat);
-
-
-            Rectangle rectOutfit = new Rectangle(e.Bounds.Left, e.Bounds.Bottom-(int)((e.Graphics.DpiY/192)*27), e.Bounds.Width, (int)((e.Graphics.DpiY/192)*30));
-            int szoutfit=9;
-            Font fontOutfit = new Font("Segoe UI", szoutfit);
-            var textSizeOutfit = e.Graphics.MeasureString(nameoutfit[1], fontOutfit);
-            while (textSizeOutfit.Width > rectOutfit.Width)
-            { 
-                fontOutfit = new Font("Segoe UI", szoutfit--);
-                textSizeOutfit = e.Graphics.MeasureString(nameoutfit[1], fontOutfit);
-            }
-            e.Graphics.DrawString(nameoutfit[1], fontOutfit, new SolidBrush(Color.Black), rectOutfit, stringFormat);
-
-
-            if (card.exclusive != null && (bool)card.exclusive)
-            {
-                e.Graphics.InterpolationMode = InterpolationMode.High;
-                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-                               
-                GraphicsPath p = new GraphicsPath(); 
-                p.AddString(
-                    "\uEC19",            
-                    new FontFamily("Segoe Fluent Icons"), 
-                    (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * cardScale *10 / 72,      
-                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*38), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
-                    new StringFormat());         
-                e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
-                e.Graphics.FillPath(Brushes.Yellow, p);     
-                if (card.hotnessLevel == "5")
-                {
-                    p = new GraphicsPath(); 
-                    p.AddString(
-                        "\uEC8A",            
-                        new FontFamily("Segoe Fluent Icons"), 
-                        (int) FontStyle.Bold,     
-                        e.Graphics.DpiY * cardScale * 10 / 72,      
-                        new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*38) + (int)((e.Graphics.DpiY/192)*30*cardScale), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
-                        new StringFormat());         
-                    e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
-                    e.Graphics.FillPath(Brushes.Yellow, p);     
-                }
-            }
-
-            else if (card.hotnessLevel == "5")
-            {
-                 e.Graphics.InterpolationMode = InterpolationMode.High;
-                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-                               
-                GraphicsPath p = new GraphicsPath(); 
-                p.AddString(
-                    "\uEC8A",            
-                    new FontFamily("Segoe Fluent Icons"), 
-                    (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * cardScale * 10 / 72,      
-                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*38), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4)),            
-                    new StringFormat());         
-                e.Graphics.DrawPath(new Pen(Color.Black, 1), p);
-                e.Graphics.FillPath(Brushes.Yellow, p);     
-            }
-
-            if (myData != null && myData.GetCardFavourite(card.name))
-            {
-                e.Graphics.InterpolationMode = InterpolationMode.High;
-                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-
-                GraphicsPath p = new GraphicsPath(); 
-                if (fontInstalled)
-                     p.AddString(
-                        "\uE00B",            
-                        new FontFamily("Segoe Fluent Icons"), 
-                        (int) FontStyle.Bold,     
-                        e.Graphics.DpiY * cardScale * 14 / 72,      
-                        new Point(e.Bounds.Right - (int)((e.Graphics.DpiY/192)*34) - (int)((e.Graphics.DpiY/192)*46*cardScale), e.Bounds.Top +(int)((e.Graphics.DpiY/192)*4) ),            
-                        new StringFormat());  
-                else
-                    p.AddString(
-                        "+",            
-                        new FontFamily("Verdana"), 
-                        (int) FontStyle.Bold,     
-                        e.Graphics.DpiY * cardScale * 16 / 72,      
-                        new Point(e.Bounds.Left - (int)((e.Graphics.DpiY/192)*80), e.Bounds.Top -(int)((e.Graphics.DpiY/192)*2)),            
-                        new StringFormat());         
-                e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
-                e.Graphics.FillPath(Brushes.LightGreen, p);     
-            }
-            int szstar=(int)(14* cardScale);
-            if (fontInstalled && Properties.Settings.Default.ShowRatingStars)
-            {
-                e.Graphics.InterpolationMode = InterpolationMode.High;
-                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-
-                string ratingstr = "".PadLeft(5,'\uE0B4');
-                Rectangle rect = new Rectangle(e.Bounds.Left+52, e.Bounds.Top + 10, e.Bounds.Width - (int)(52*cardScale), 40);
-
-                Font font = new Font("Segoe Fluent Icons", 14 * cardScale);
-                var textSize = e.Graphics.MeasureString(ratingstr, font);
-                while (textSize.Width > rect.Width)
-                { 
-                   font = new Font("Verdana", szstar--);
-                   textSize = e.Graphics.MeasureString(ratingstr, font);
-                }
-                          
-                GraphicsPath p = new GraphicsPath(); 
-                p.AddString(
-                    ratingstr,            
-                    new FontFamily("Segoe Fluent Icons"), 
-                    (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * szstar / 72,      
-                    new Point(e.Bounds.Left + 52, e.Bounds.Top + (int)(114*cardScale)),            
-                    new StringFormat());         
-                //e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
-                e.Graphics.FillPath(new SolidBrush(Color.FromArgb(180, Color.Black)), p);     
-            }
-            if (myrating > 0 && fontInstalled && Properties.Settings.Default.ShowRatingStars)
-            {
-                e.Graphics.InterpolationMode = InterpolationMode.High;
-                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-
-                string ratingstr = "".PadLeft((int)myrating/2,'\uE0B4');
-                if (myrating%2 > 0)
-                    ratingstr += '\uE7C6';
-                Rectangle rect = new Rectangle(e.Bounds.Left+52, e.Bounds.Top + (int)(10*cardScale), e.Bounds.Width - (int)(52*cardScale), 40);          
-                GraphicsPath p = new GraphicsPath(); 
-                p.AddString(
-                    ratingstr,            
-                    new FontFamily("Segoe Fluent Icons"), 
-                    (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * szstar / 72,      
-                    new Point(e.Bounds.Left + 52, e.Bounds.Top + (int)(114*cardScale)),            
-                    new StringFormat());         
-                e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
-                e.Graphics.FillPath(Brushes.Yellow, p);     
-            }
-
-            if (text != "" )
-            {                         
-                e.Graphics.InterpolationMode = InterpolationMode.High;
-                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-
-                Rectangle rect = new Rectangle(e.Bounds.Left+(int)((e.Graphics.DpiY/192)*48), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6), e.Bounds.Width - (int)((e.Graphics.DpiY/192)*58), (int)((e.Graphics.DpiY/192)*40));
-                int sz =(int)(13* cardScale);
-                Font font = new Font("Verdana", sz);
-                var textSize = e.Graphics.MeasureString(text, font);
-                while (textSize.Width > rect.Width)
-                { 
-                   font = new Font("Verdana", sz--);
-                   textSize = e.Graphics.MeasureString(text, font);
-                }
-                GraphicsPath p = new GraphicsPath(); 
-                p.AddString(
-                    text,            
-                    new FontFamily("Verdana"), 
-                    (int) FontStyle.Regular,     
-                    e.Graphics.DpiY * sz / 72,      
-                    new Point(e.Bounds.Left + (int)((e.Graphics.DpiY/192)*48), e.Bounds.Top + (int)((e.Graphics.DpiY/192)*6)),            
-                    new StringFormat());         
-                e.Graphics.DrawPath(new Pen(Color.Black, 3), p);
-                e.Graphics.FillPath(Brushes.White, p);            
-
-             
-            }
-
-            bool isPlaying = false;
-            if (nowPlayingTag == card.modelName + "\r\n" + card.outfit)
-            {
-                isPlaying = true;
-                e.Graphics.InterpolationMode = InterpolationMode.High;
-                e.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                e.Graphics.CompositingQuality = CompositingQuality.HighQuality;
-
-                Rectangle rect = new Rectangle(imgrect.Left+18, e.Bounds.Top + 10, imgrect.Width-34, 40);  
-                int szname =(int)(14 * cardScale);
-                Font font = new Font("Verdana", szname);
-                var textSize = e.Graphics.MeasureString("Playing", font);                
-                while (textSize.Width > rect.Width)
-                { 
-                   font = new Font("Verdana", szname--);
-                   textSize = e.Graphics.MeasureString("Playing", font);
-                }
-                GraphicsPath p = new GraphicsPath(); 
-                p.AddString(
-                    "Playing",            
-                    new FontFamily("Verdana"), 
-                    (int) FontStyle.Bold,     
-                    e.Graphics.DpiY * szname / 72,      
-                    new Point(imgrect.Left+18, e.Bounds.Top + (int)(60*cardScale)),            
-                    new StringFormat());         
-                e.Graphics.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left-6, e.Bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));
-                e.Graphics.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left-6, e.Bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));
-                e.Graphics.FillPath(Brushes.White, p);       
-            }
-
-                  
-            //if (isPlaying)
-            //{
-            //      thumbnailclip = new Rectangle(listModels.Location.X + e.Bounds.X, listModels.Location.Y + e.Bounds.Y, e.Bounds.Width, e.Bounds.Height);
-            //      this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-            //}
-
-        }
-
+               
         private void txtSearch_TextChanged(object sender, EventArgs e)
         {
             
@@ -1624,7 +1320,6 @@ namespace IStripperQuickPlayer
             if (c == null) return;
             if (myData != null && myData.GetCardRating(c.name.ToString()) > 0)
                 ratingSlider.Value = myData.GetCardRating(c.name.ToString());
-                //cmbMenuCardRating.Text = "My Rating: " + myData.GetCardRating(c.name.ToString());
             else
                 ratingSlider.Value = 0;
             if (myData != null) menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
@@ -1642,21 +1337,7 @@ namespace IStripperQuickPlayer
 
         private ImageListViewItem? mousedownCard=null;
         private ImageListViewItem? currentMenuCard=null;
-        private Rectangle? thumbnailclip;
-        private void listModels_MouseDown(object sender, MouseEventArgs e)
-        {
-            if ( e.Button == MouseButtons.Right )
-            {
-                //select the item under the mouse pointer
-                Point localPoint = listModelsNew.PointToClient(e.Location);
-                //mousedownCard = listModelsNew.GetItemAt(e.Location.X,e.Location.Y);
-                //if ( mousedownCard != null)
-                //{
-                //    menuCardList.Show();   
-                //}        
-            }
-        }
-
+        private Rectangle? thumbnailclip;     
         private void menuCardFavourite_CheckedChanged(object sender, EventArgs e)
         {
             if (myData==null||currentMenuCard==null)return;
@@ -1688,7 +1369,6 @@ namespace IStripperQuickPlayer
             if ( menuShowRatingsStars.Checked)
             {
                 currentMenuCard.Update();
-                //listModels.Refresh();
             }
         }
 
@@ -1715,18 +1395,6 @@ namespace IStripperQuickPlayer
                 List<string> tags = txtUserTags.Text.Split(',').ToList();
                 if (clipListTag != "") myData.AddCardTags(clipListTag, tags);
             }
-        }
-
-        private void listModels_SearchForVirtualItem(object sender, SearchForVirtualItemEventArgs e)
-        {
-            e.Index = 0;
-            if (items != null)
-            {       
-                ListViewItem? item = items.Where(x => x.Text == e.Text).FirstOrDefault();
-                if (item != null) e.Index = item.ImageIndex;
-            }     
-            return;
-          
         }
 
         private async void cmdPhotos_Click(object sender, EventArgs e)
@@ -1764,7 +1432,6 @@ namespace IStripperQuickPlayer
         {
             if (e.KeyCode == Keys.Enter)
             {
-                changesort = true;
                 FilterClips();
             }
         }
@@ -1850,8 +1517,6 @@ namespace IStripperQuickPlayer
             listClips.Left = listModelsNew.Right + 66;
             listClips.Height = this.Height - this.spaceBelowClipList - listClips.Top;
             listModelsNew.Height = this.Height - listModelsNew.Top - 60;
-            //lblNowPlaying.Left = listModels.Right + 66;
-            //lblCipListDetails.Left = listModels.Right + 66;
             cmdClearSearch.Left = listModelsNew.Right;
             cmdPhotos.Left = listClips.Right - cmdPhotos.Width;
             panelModelDetails.Left = listModelsNew.Right + 45;

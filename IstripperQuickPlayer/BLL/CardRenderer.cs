@@ -121,7 +121,7 @@ namespace IStripperQuickPlayer.BLL
 
             StringFormat stringFormat = new StringFormat();
             stringFormat.Alignment = StringAlignment.Center;
-            stringFormat.LineAlignment = StringAlignment.Far;
+            stringFormat.LineAlignment = StringAlignment.Center;
 
             StringFormat stringFormatStars = new StringFormat();
             stringFormatStars.Alignment = StringAlignment.Near;

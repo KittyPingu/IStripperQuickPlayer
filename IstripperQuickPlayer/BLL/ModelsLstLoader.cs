@@ -31,7 +31,6 @@ namespace IStripperQuickPlayer.BLL
             {
                 
                 Form1? frm = Utils.GetMainForm();
-                //frm.listModels.BeginUpdate();
                 using (var stream = File.Open(file.FullName, FileMode.Open))
                 {
                     using (var reader = new BinaryReader(stream, Encoding.UTF8, false))

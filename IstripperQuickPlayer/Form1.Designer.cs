@@ -1039,7 +1039,7 @@
             this.listModelsNew.UseWIC = true;
             this.listModelsNew.ItemClick += new Manina.Windows.Forms.ItemClickEventHandler(this.listModelsNew_ItemClick);
             this.listModelsNew.ItemDoubleClick += new Manina.Windows.Forms.ItemDoubleClickEventHandler(this.listModelsNew_ItemDoubleClick);
-            this.listModelsNew.SelectionChanged += new System.EventHandler(this.listModels_SelectedIndexChanged);
+            this.listModelsNew.SelectionChanged += new System.EventHandler(this.listModelsNew_SelectedIndexChanged);
             this.listModelsNew.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModelsNew_MouseDown);
             // 
             // Form1
