@@ -44,7 +44,7 @@ namespace IStripperQuickPlayer.BLL
         public override void DrawItem(Graphics g, ImageListViewItem item, ItemState state, Rectangle bounds)
         {
             if (updating) return;
-            g.InterpolationMode = InterpolationMode.Default;
+            g.InterpolationMode = InterpolationMode.Bilinear;
             g.SmoothingMode = SmoothingMode.None;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             g.CompositingQuality = CompositingQuality.HighQuality;
@@ -62,9 +62,13 @@ namespace IStripperQuickPlayer.BLL
             {
                 double ratio = (1.0*card.image.Width)/card.image.Height;
                 int dy = 34;
-                int dx = (int)(dy*ratio/2.0);
+                int dx = (int)(bounds.Width-((bounds.Height-34)*ratio))/2;
+                g.CompositingMode = CompositingMode.SourceCopy;
+                if (cardScale == 1) g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                if (cardScale > 1) g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 imgrect2 = new Rectangle(bounds.Left+dx,bounds.Top,bounds.Width-(dx*2),bounds.Height-dy);                   
                 g.DrawImage(card.image, imgrect2);
+                g.CompositingMode = CompositingMode.SourceOver;
             }
             decimal myrating=0M;
             if (myData != null) myrating = myData.GetCardRating(card.name);
@@ -215,7 +219,7 @@ namespace IStripperQuickPlayer.BLL
                         new FontFamily("Segoe Fluent Icons"), 
                         (int) FontStyle.Bold,     
                         g.DpiY * cardScale * 14 / 72,      
-                        new Point(imgrect2.Right - (int)((g.DpiY/192)*56*cardScale), bounds.Top +(int)((g.DpiY/192)*4) ),            
+                        new Point(imgrect2.Right - (int)((g.DpiY/192)*52*cardScale), bounds.Top +(int)((g.DpiY/192)*4) ),            
                         new StringFormat());  
                 else
                     p.AddString(
@@ -305,7 +309,7 @@ namespace IStripperQuickPlayer.BLL
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Regular,     
                     g.DpiY * sz / 72,      
-                    new Point(bounds.Left + (int)((g.DpiY/192)*48), bounds.Top + (int)((g.DpiY/192)*6)),            
+                    new Point(imgrect2.Left + (int)((g.DpiY/192)*18*cardScale), imgrect2.Top + (int)((g.DpiY/192)*6)),            
                     new StringFormat());         
                 g.DrawPath(new Pen(Color.Black, 3), p);
                 g.FillPath(Brushes.White, p);            
@@ -322,7 +326,7 @@ namespace IStripperQuickPlayer.BLL
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 g.CompositingQuality = CompositingQuality.HighQuality;
 
-                Rectangle rect = new Rectangle(imgrect.Left+18, bounds.Top + 10, imgrect.Width-34, 40);  
+                Rectangle rect = new Rectangle(imgrect.Left+18, bounds.Top + 10, (int)(imgrect.Width*0.6), 40);  
                 int szname =(int)(14 * cardScale);
                 Font font = new Font("Verdana", szname);
                 var textSize = g.MeasureString("Playing", font);                
@@ -337,10 +341,10 @@ namespace IStripperQuickPlayer.BLL
                     new FontFamily("Verdana"), 
                     (int) FontStyle.Bold,     
                     g.DpiY * szname / 72,      
-                    new Point(imgrect.Left+18, bounds.Top + (int)(60*cardScale)),            
-                    new StringFormat());         
-                g.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left-6, bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));
-                g.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left-6, bounds.Top+(int)(60*cardScale),imgrect.Width-20, (int)textSize.Height));
+                    new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height),            
+                    stringFormat);         
+                g.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height));
+                g.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height));
                 g.FillPath(Brushes.White, p);       
             }
         }

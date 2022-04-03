@@ -1021,7 +1021,12 @@
             // 
             // listModelsNew
             // 
+            this.listModelsNew.AllowCheckBoxClick = false;
+            this.listModelsNew.AllowColumnClick = false;
+            this.listModelsNew.AllowColumnResize = false;
             this.listModelsNew.AllowDuplicateFileNames = true;
+            this.listModelsNew.AllowItemReorder = false;
+            this.listModelsNew.AllowPaneResize = false;
             this.listModelsNew.CacheLimit = "0";
             this.listModelsNew.CacheMode = Manina.Windows.Forms.CacheMode.Continuous;
             this.listModelsNew.ContextMenuStrip = this.menuCardList;

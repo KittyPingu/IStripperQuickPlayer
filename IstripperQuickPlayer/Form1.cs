@@ -84,8 +84,7 @@ namespace IStripperQuickPlayer
             listModelsNew.Items.Clear();
             if (Datastore.modelcards != null)
                 Datastore.modelcards.Clear();
-            for (int i = 0; i < 44; i++)
-                lstLoader.LoadModels();
+            lstLoader.LoadModels();
             this.BeginInvoke((Action)(() => { PopulateModelListview();}));
             PersistModels();
         }
@@ -298,6 +297,8 @@ namespace IStripperQuickPlayer
             int idx = 0;
 
             cardRenderer.updating = true;
+            listModelsNew.SuspendLayout();
+            listModelsNew.Items.Clear();
             listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
             foreach(var i in items)
             {
@@ -311,6 +312,7 @@ namespace IStripperQuickPlayer
             }
               
             listModelsNew.Items.AddRange(itemsNew);
+            listModelsNew.ResumeLayout();
             cardRenderer.updating = false;
             listModelsNew.Refresh();
         }
@@ -692,7 +694,7 @@ namespace IStripperQuickPlayer
             PopulateFilterList();
             if (cardRenderer == null)
             {
-                cardRenderer = new CardRenderer(myData, Text, cardScale, culture, fontInstalled, style);  
+                cardRenderer = new CardRenderer(myData, cmbSortBy.Text, cardScale, culture, fontInstalled, style);  
                 listModelsNew.SetRenderer(cardRenderer);
             }            
             
@@ -701,6 +703,8 @@ namespace IStripperQuickPlayer
             //string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             //watcher.RegistryChange += RegistryChanged;
+             _processListViewScrollListener = new ControlScrollListener(listModelsNew);  
+            _processListViewScrollListener.ControlScrolled += ProcessListViewScrollListener_ControlScrolled;
             clickingNowPlaying = true;            
             RetrieveModels();
             GetNowPlaying();
@@ -709,6 +713,11 @@ namespace IStripperQuickPlayer
             Task.Run(() => SetupRegHooks());       
         }
 
+        private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)
+        {
+            listModelsNew.Refresh();
+            //this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+        }
 
         private void PopulateFilterList()
         {
@@ -1088,9 +1097,13 @@ namespace IStripperQuickPlayer
         }
 
         private void comboBox1_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            PopulateModelListview();
+        {            
             Properties.Settings.Default.SortBy = cmbSortBy.Text;
+            if (cardRenderer != null)
+            {
+                cardRenderer.sortBy = cmbSortBy.Text;
+                PopulateModelListview();
+            }
         }
 
         private bool clickingNowPlaying = false;
@@ -1901,6 +1914,7 @@ namespace IStripperQuickPlayer
             panelModelDetails.Left = listModelsNew.Right + 45;
             panelModelDetails.Top = listClips.Bottom + 8;
             panelClip.Left = listModelsNew.Right + 58;
+            this.BeginInvoke(new Action(() => listModelsNew.Refresh()));
         }
 
         private async void button2_Click(object sender, EventArgs e)
@@ -1994,7 +2008,7 @@ namespace IStripperQuickPlayer
                 if (cardRenderer != null)
                     cardRenderer.cardScale = cardScale;
                 listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
-                listModelsNew.Refresh();
+                listModelsNew.Invalidate();
             }
             Properties.Settings.Default.CardScale = (float)(trackBarCardScale.Value);
         }
