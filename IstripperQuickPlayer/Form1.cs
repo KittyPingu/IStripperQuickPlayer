@@ -1693,11 +1693,16 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private void trackBarZoomOnHover_Click(object sender, EventArgs e)
+        private void trackBarZoomOnHover_ValueChanged(object sender, EventArgs e)
         {
             Properties.Settings.Default.ZoomOnHover = trackBarZoomOnHover.Value;
             if (cardRenderer != null)
                 cardRenderer.mZoomRatio = (float)trackBarZoomOnHover.Value;
+        }
+
+        private void listModelsNew_ItemHover(object sender, ItemHoverEventArgs e)
+        {
+            if (e.Item != null && cardRenderer.mZoomRatio > 0.0f) e.Item.Update();
         }
     }
 }
