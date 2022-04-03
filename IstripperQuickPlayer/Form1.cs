@@ -130,7 +130,6 @@ namespace IStripperQuickPlayer
             List<ModelCard>? currentCards = Datastore.modelcards;
             if (txtSearch.Text != "")
             {
-
                 string[] parts = txtSearch.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
                 foreach (string p in parts)
                 {
@@ -235,13 +234,9 @@ namespace IStripperQuickPlayer
                     items[idx].Tag = card.name;
                     items[idx].ImageIndex = idx;
                     idx++;
-                    //listModels.Items.Add(card.name, card.modelName + Environment.NewLine + card.outfit, largeimagelist.Images.Count - 1);
                 }
-
-                //AddCardToWebView(card);
             }
             SetModelNewImageList();
-            //FinaliseWebView();
         
             lblModelsLoaded.Text = "Cards Shown: " + listModelsNew.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
 
@@ -260,36 +255,6 @@ namespace IStripperQuickPlayer
             }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
-
-        private async void AddCardToWebView(ModelCard card)
-        {
-            //var r = await devtoolsContext.EvaluateExpressionAsync("document.body.appendChild(document.createElement('img'))");
-        }
-
-        private async void FinaliseWebView()
-        {
-            //var imgs = await devtoolsContext.QuerySelectorAllAsync("img");
-            //int i = 0;
-            //foreach(var im in imgs)
-            //{
-            //    ModelCard? card = Datastore.findCardByTag(items[i].Tag.ToString());
-            //    ImageConverter _imageConverter = new ImageConverter();
-            //    Bitmap m = new Bitmap(card.image.Width, card.image.Height+20);                
-            //    Graphics g = Graphics.FromImage(m);
-            //    g.DrawImage(card.image, 0, 0);
-            //    g.DrawString(card.modelName.ToString(), new Font("Segoe UI", 12), Brushes.Black, 10,card.image.Height-5);
-            //    g.Dispose();
-            //    byte[] imageArray = (byte[])_imageConverter.ConvertTo(m, typeof(byte[]));
-            //    string base64ImageRepresentation = Convert.ToBase64String(imageArray);
-            //    var val = $"data: image/png; base64,{base64ImageRepresentation}";
-            //    im.SetAttributeAsync("src" , val);
-            //    im.SetAttributeAsync("width", card.image.Width);
-            //    im.SetAttributeAsync("height", card.image.Height+20);
-            //    i++;
-            //}
-
-        }
-
 
          private void SetModelNewImageList()
          {           
@@ -316,18 +281,6 @@ namespace IStripperQuickPlayer
             cardRenderer.updating = false;
             listModelsNew.Refresh();
         }
-        void listModels_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
-        { 
-            if (items == null)
-            {       
-                e.Item = new ListViewItem();
-                return;
-            }
-            //A cache miss, so create a new ListViewItem and pass it back.
-            e.Item = items[e.ItemIndex];
-            e.Item.ImageIndex = 0;
-        }
-
 
         private List<ModelCard>? Filter(List<ModelCard>? currentCards)
         {   
@@ -634,15 +587,6 @@ namespace IStripperQuickPlayer
             lastchosen = listClips.SelectedItems[0].SubItems[1].Text;
         }
 
-        void SetUserFonts(float scaleFactorX, float scaleFactorY) {
-            var OldFont = Font;
-            Font = new Font(OldFont.FontFamily, 11f * scaleFactorX, OldFont.Style, GraphicsUnit.Pixel); 
-            OldFont.Dispose();
-         }
-         protected override void DefWndProc(ref Message m) {
-             //DPI_Per_Monitor.Check_WM_DPICHANGED(SetUserFonts,m, this.Handle);
-             base.DefWndProc(ref m);
-         }
 
         private async void Form1_Load(object sender, EventArgs e)
         {
@@ -1699,7 +1643,6 @@ namespace IStripperQuickPlayer
         private ImageListViewItem? mousedownCard=null;
         private ImageListViewItem? currentMenuCard=null;
         private Rectangle? thumbnailclip;
-
         private void listModels_MouseDown(object sender, MouseEventArgs e)
         {
             if ( e.Button == MouseButtons.Right )
