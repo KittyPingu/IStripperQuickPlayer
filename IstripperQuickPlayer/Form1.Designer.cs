@@ -105,6 +105,8 @@
             this.chkNoNudity = new System.Windows.Forms.CheckBox();
             this.chkPublic = new System.Windows.Forms.CheckBox();
             this.listModelsNew = new Manina.Windows.Forms.ImageListView();
+            this.zoomOnHoverToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.trackBarZoomOnHover = new IStripperQuickPlayer.TrackBarMenuItem();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -440,6 +442,7 @@
             this.hotkeysToolStripMenuItem,
             this.enforceCardFilterToolStripMenuItem,
             this.cardScaleToolStripMenuItem,
+            this.zoomOnHoverToolStripMenuItem,
             this.menuShowRatingsStars,
             this.includeDescriptionInSearchToolStripMenuItem,
             this.includeShowTitleInSearchToolStripMenuItem,
@@ -1042,6 +1045,64 @@
             this.listModelsNew.SelectionChanged += new System.EventHandler(this.listModelsNew_SelectedIndexChanged);
             this.listModelsNew.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModelsNew_MouseDown);
             // 
+            // zoomOnHoverToolStripMenuItem
+            // 
+            this.zoomOnHoverToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
+            this.trackBarZoomOnHover});
+            this.zoomOnHoverToolStripMenuItem.Name = "zoomOnHoverToolStripMenuItem";
+            this.zoomOnHoverToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
+            this.zoomOnHoverToolStripMenuItem.Text = "Zoom on Hover";
+            // 
+            // trackBarZoomOnHover
+            // 
+            this.trackBarZoomOnHover.BackColor = System.Drawing.Color.Transparent;
+            this.trackBarZoomOnHover.ClientSize = new System.Drawing.Size(200, 48);
+            this.trackBarZoomOnHover.Font = new System.Drawing.Font("Microsoft Sans Serif", 6F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.trackBarZoomOnHover.ForeColor = System.Drawing.Color.White;
+            this.trackBarZoomOnHover.Has2Values = false;
+            this.trackBarZoomOnHover.LargeChange = new decimal(new int[] {
+            2,
+            0,
+            0,
+            65536});
+            this.trackBarZoomOnHover.Maximum = new decimal(new int[] {
+            1,
+            0,
+            0,
+            0});
+            this.trackBarZoomOnHover.Minimum = new decimal(new int[] {
+            0,
+            0,
+            0,
+            65536});
+            this.trackBarZoomOnHover.Name = "trackBarZoomOnHover";
+            this.trackBarZoomOnHover.ScaleDivisions = new decimal(new int[] {
+            10,
+            0,
+            0,
+            0});
+            this.trackBarZoomOnHover.Size = new System.Drawing.Size(200, 48);
+            this.trackBarZoomOnHover.SmallChange = new decimal(new int[] {
+            5,
+            0,
+            0,
+            131072});
+            this.trackBarZoomOnHover.Text = "trackBarMenuItem1";
+            this.trackBarZoomOnHover.TickColor = System.Drawing.Color.White;
+            this.trackBarZoomOnHover.TickStyle = System.Windows.Forms.TickStyle.TopLeft;
+            this.trackBarZoomOnHover.TrackbarColor = System.Drawing.Color.Transparent;
+            this.trackBarZoomOnHover.Value = new decimal(new int[] {
+            1,
+            0,
+            0,
+            0});
+            this.trackBarZoomOnHover.Value2 = new decimal(new int[] {
+            1,
+            0,
+            0,
+            0});
+            this.trackBarZoomOnHover.Click += new System.EventHandler(this.trackBarZoomOnHover_Click);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
@@ -1164,6 +1225,8 @@
         private ToolStripMenuItem cardScaleToolStripMenuItem;
         private TrackBarMenuItem trackBarCardScale;
         private Manina.Windows.Forms.ImageListView listModelsNew;
+        private ToolStripMenuItem zoomOnHoverToolStripMenuItem;
+        private TrackBarMenuItem trackBarZoomOnHover;
         //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }

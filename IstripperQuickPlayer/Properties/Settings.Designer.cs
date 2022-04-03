@@ -274,5 +274,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["Maximised"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0.1")]
+        public decimal ZoomOnHover {
+            get {
+                return ((decimal)(this["ZoomOnHover"]));
+            }
+            set {
+                this["ZoomOnHover"] = value;
+            }
+        }
     }
 }

@@ -588,7 +588,7 @@ namespace IStripperQuickPlayer
 
         private async void Form1_Load(object sender, EventArgs e)
         {
-                        spaceBelowClipList = this.Height - listClips.Bottom;
+            spaceBelowClipList = this.Height - listClips.Bottom;
             spaceRightOfListModel = this.Width - listModelsNew.Right;
             if (Properties.Settings.Default.Maximised)
             {
@@ -628,6 +628,7 @@ namespace IStripperQuickPlayer
             includeDescriptionInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowDescInSearch;
             includeShowTitleInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowOutfitInSearch;
             trackBarCardScale.Value = (decimal)(Properties.Settings.Default.CardScale);
+            trackBarZoomOnHover.Value = (decimal)(Properties.Settings.Default.ZoomOnHover);
             if (Properties.Settings.Default.MinSizeMB != 0)
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
@@ -658,7 +659,8 @@ namespace IStripperQuickPlayer
             PopulateFilterList();
             if (cardRenderer == null)
             {
-                cardRenderer = new CardRenderer(myData, cmbSortBy.Text, cardScale, culture, fontInstalled, style);  
+                cardRenderer = new CardRenderer(myData, cmbSortBy.Text, cardScale, culture, fontInstalled, style); 
+                cardRenderer.mZoomRatio = (float)Properties.Settings.Default.ZoomOnHover;
                 listModelsNew.SetRenderer(cardRenderer);
             }            
             
@@ -1689,6 +1691,13 @@ namespace IStripperQuickPlayer
                     menuCardList.Show();
                 }
             }
+        }
+
+        private void trackBarZoomOnHover_Click(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.ZoomOnHover = trackBarZoomOnHover.Value;
+            if (cardRenderer != null)
+                cardRenderer.mZoomRatio = (float)trackBarZoomOnHover.Value;
         }
     }
 }
