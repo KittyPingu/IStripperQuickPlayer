@@ -588,6 +588,28 @@ namespace IStripperQuickPlayer
 
         private async void Form1_Load(object sender, EventArgs e)
         {
+                        spaceBelowClipList = this.Height - listClips.Bottom;
+            spaceRightOfListModel = this.Width - listModelsNew.Right;
+            if (Properties.Settings.Default.Maximised)
+            {
+                Location = Properties.Settings.Default.Location;
+                WindowState = FormWindowState.Maximized;
+                Size = Properties.Settings.Default.Size;
+            }
+            else if (Properties.Settings.Default.Minimised)
+            {
+                Location = Properties.Settings.Default.Location;
+                WindowState = FormWindowState.Minimized;
+                Size = Properties.Settings.Default.Size;
+            }
+            else
+            {                
+                Location = Properties.Settings.Default.Location;
+                if (Properties.Settings.Default.Size.Width > 0 && Properties.Settings.Default.Size.Height > 0)
+                {
+                    Size = Properties.Settings.Default.Size;
+                }
+            }
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             culture.NumberFormat.NumberDecimalSeparator = ".";           
@@ -1137,6 +1159,28 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.Save();
             SaveMyData();
             Wallpaper.RestoreWallpaper();
+            if (WindowState == FormWindowState.Maximized)
+            {
+                Properties.Settings.Default.Location = RestoreBounds.Location;
+                Properties.Settings.Default.Size = RestoreBounds.Size;
+                Properties.Settings.Default.Maximised = true;
+                Properties.Settings.Default.Minimised = false;
+            }
+            else if (WindowState == FormWindowState.Normal)
+            {
+                Properties.Settings.Default.Location = Location;
+                Properties.Settings.Default.Size = Size;
+                Properties.Settings.Default.Maximised = false;
+                Properties.Settings.Default.Minimised = false;
+            }
+            else
+            {
+                Properties.Settings.Default.Location = RestoreBounds.Location;
+                Properties.Settings.Default.Size = RestoreBounds.Size;
+                Properties.Settings.Default.Maximised = false;
+                Properties.Settings.Default.Minimised = true;
+            }
+            Properties.Settings.Default.Save();
         }
 
         private void cmdNextClip_Click(object sender, EventArgs e)
@@ -1438,8 +1482,7 @@ namespace IStripperQuickPlayer
 
         private void Form1_Shown(object sender, EventArgs e)
         {
-            spaceBelowClipList = this.Height - listClips.Bottom;
-            spaceRightOfListModel = this.Width - listModelsNew.Right;
+
             try
             {
                 TaskbarThumbnail();
