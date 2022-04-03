@@ -105,14 +105,13 @@
             this.chkTopless = new System.Windows.Forms.CheckBox();
             this.chkNoNudity = new System.Windows.Forms.CheckBox();
             this.chkPublic = new System.Windows.Forms.CheckBox();
-            this.webModels = new Microsoft.Web.WebView2.WinForms.WebView2();
+            this.listModelsNew = new Manina.Windows.Forms.ImageListView();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
             this.panelModelDetails.SuspendLayout();
             this.panelClip.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.numMinSizeMB)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.webModels)).BeginInit();
             this.SuspendLayout();
             // 
             // lblModelsLoaded
@@ -1038,23 +1037,22 @@
             this.chkPublic.UseVisualStyleBackColor = true;
             this.chkPublic.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
             // 
-            // webModels
+            // listModelsNew
             // 
-            this.webModels.CreationProperties = null;
-            this.webModels.DefaultBackgroundColor = System.Drawing.Color.White;
-            this.webModels.Location = new System.Drawing.Point(246, 34);
-            this.webModels.Name = "webModels";
-            this.webModels.Size = new System.Drawing.Size(763, 509);
-            this.webModels.TabIndex = 41;
-            this.webModels.Visible = false;
-            this.webModels.ZoomFactor = 1D;
+            this.listModelsNew.Location = new System.Drawing.Point(464, 153);
+            this.listModelsNew.Name = "listModelsNew";
+            this.listModelsNew.PersistentCacheDirectory = "";
+            this.listModelsNew.PersistentCacheSize = ((long)(100));
+            this.listModelsNew.Size = new System.Drawing.Size(539, 537);
+            this.listModelsNew.TabIndex = 41;
+            this.listModelsNew.UseWIC = true;
             // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(2165, 1308);
-            this.Controls.Add(this.webModels);
+            this.Controls.Add(this.listModelsNew);
             this.Controls.Add(this.panelClip);
             this.Controls.Add(this.panelModelDetails);
             this.Controls.Add(this.cmbFilter);
@@ -1090,7 +1088,6 @@
             this.panelClip.ResumeLayout(false);
             this.panelClip.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.numMinSizeMB)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.webModels)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -1173,6 +1170,7 @@
         private ToolStripMenuItem showKittyToolStripMenuItem;
         private ToolStripMenuItem cardScaleToolStripMenuItem;
         private TrackBarMenuItem trackBarCardScale;
-        private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
+        private Manina.Windows.Forms.ImageListView listModelsNew;
+        //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }

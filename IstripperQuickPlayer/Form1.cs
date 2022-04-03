@@ -3,6 +3,7 @@ using EnumDescription;
 using Gma.System.MouseKeyHook;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
+using Manina.Windows.Forms;
 using Microsoft.Win32;
 using Microsoft.WindowsAPICodePack.Taskbar;
 using Nektra.Deviare2;
@@ -14,7 +15,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using Size = System.Drawing.Size;
-using WebView2.DevTools.Dom;
+//using WebView2.DevTools.Dom;
 
 namespace IStripperQuickPlayer
 {
@@ -35,6 +36,7 @@ namespace IStripperQuickPlayer
         private bool changesort = false;
         private MyData? myData = null;
         private bool fontInstalled = false;
+        public CardRenderer cardRenderer = null;
         internal FilterSettings filterSettings = new FilterSettings();
         static readonly HttpClient client = new HttpClient();
         private NumberStyles style = NumberStyles.AllowDecimalPoint;
@@ -51,7 +53,7 @@ namespace IStripperQuickPlayer
         private ControlScrollListener _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
-        private WebView2DevToolsContext devtoolsContext = null;
+        //private WebView2DevToolsContext devtoolsContext = null;
 
         private void actNextClip()
         {
@@ -241,6 +243,7 @@ namespace IStripperQuickPlayer
                 //AddCardToWebView(card);
             }
             SetModelImageList();
+            SetModelNewImageList();
             listModels.EndUpdate();
             //FinaliseWebView();
             listModels.VirtualListSize = items.Length;
@@ -266,30 +269,30 @@ namespace IStripperQuickPlayer
 
         private async void AddCardToWebView(ModelCard card)
         {
-            var r = await devtoolsContext.EvaluateExpressionAsync("document.body.appendChild(document.createElement('img'))");
+            //var r = await devtoolsContext.EvaluateExpressionAsync("document.body.appendChild(document.createElement('img'))");
         }
 
         private async void FinaliseWebView()
         {
-            var imgs = await devtoolsContext.QuerySelectorAllAsync("img");
-            int i = 0;
-            foreach(var im in imgs)
-            {
-                ModelCard? card = Datastore.findCardByTag(items[i].Tag.ToString());
-                ImageConverter _imageConverter = new ImageConverter();
-                Bitmap m = new Bitmap(card.image.Width, card.image.Height+20);                
-                Graphics g = Graphics.FromImage(m);
-                g.DrawImage(card.image, 0, 0);
-                g.DrawString(card.modelName.ToString(), new Font("Segoe UI", 12), Brushes.Black, 10,card.image.Height-5);
-                g.Dispose();
-                byte[] imageArray = (byte[])_imageConverter.ConvertTo(m, typeof(byte[]));
-                string base64ImageRepresentation = Convert.ToBase64String(imageArray);
-                var val = $"data: image/png; base64,{base64ImageRepresentation}";
-                im.SetAttributeAsync("src" , val);
-                im.SetAttributeAsync("width", card.image.Width);
-                im.SetAttributeAsync("height", card.image.Height+20);
-                i++;
-            }
+            //var imgs = await devtoolsContext.QuerySelectorAllAsync("img");
+            //int i = 0;
+            //foreach(var im in imgs)
+            //{
+            //    ModelCard? card = Datastore.findCardByTag(items[i].Tag.ToString());
+            //    ImageConverter _imageConverter = new ImageConverter();
+            //    Bitmap m = new Bitmap(card.image.Width, card.image.Height+20);                
+            //    Graphics g = Graphics.FromImage(m);
+            //    g.DrawImage(card.image, 0, 0);
+            //    g.DrawString(card.modelName.ToString(), new Font("Segoe UI", 12), Brushes.Black, 10,card.image.Height-5);
+            //    g.Dispose();
+            //    byte[] imageArray = (byte[])_imageConverter.ConvertTo(m, typeof(byte[]));
+            //    string base64ImageRepresentation = Convert.ToBase64String(imageArray);
+            //    var val = $"data: image/png; base64,{base64ImageRepresentation}";
+            //    im.SetAttributeAsync("src" , val);
+            //    im.SetAttributeAsync("width", card.image.Width);
+            //    im.SetAttributeAsync("height", card.image.Height+20);
+            //    i++;
+            //}
 
         }
 
@@ -323,6 +326,49 @@ namespace IStripperQuickPlayer
             listModels.LargeImageList = blankimagelist;
         }
 
+         private void SetModelNewImageList()
+        {
+            float dx, dy;
+
+            Graphics g = this.CreateGraphics();
+            try
+            {
+                dx = g.DpiX;
+                dy = g.DpiY;
+            }
+            finally
+            {
+                g.Dispose();
+            }
+
+            if (cardScale * 242 > 256 * dy / 96)
+                cardScale = 256 * dy / 96 / 242;
+
+            ImageList blankimagelist = new ImageList();
+            blankimagelist.ImageSize = new Size(Math.Min((int)(256 * dx / 96), (int)(162 * cardScale)), Math.Min((int)(256 * dy / 96), (int)(242 * cardScale)));
+            blankimagelist.ColorDepth = ColorDepth.Depth32Bit;
+            Image newblankimage = new Bitmap((int)(162 * cardScale), (int)(242 * cardScale), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            blankimagelist.Images.Add(newblankimage);
+
+
+            var itemsNew = new ImageListViewItem[items.Count()];
+            int idx = 0;
+            foreach(var i in items)
+            {
+                ModelCard? card = Datastore.findCardByTag(i.Tag.ToString());
+                var im = new ImageListViewItem();
+                im.FileName = card.imagefile;
+                im.Text = i.Text;
+                im.Tag = i.Tag;
+                itemsNew[idx] = im;
+                idx++;
+            }
+            cardRenderer = new CardRenderer(myData, Text, cardScale, culture, fontInstalled, style);
+            listModelsNew.SetRenderer(cardRenderer);
+            listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
+            //listModels.Items.AddRange(items);
+            listModelsNew.Items.AddRange(itemsNew);
+        }
         void listModels_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         { 
             if (items == null)
@@ -655,8 +701,8 @@ namespace IStripperQuickPlayer
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             culture.NumberFormat.NumberDecimalSeparator = ".";           
-            await webModels.EnsureCoreWebView2Async();
-            devtoolsContext = await webModels.CoreWebView2.CreateDevToolsContextAsync();
+            //await webModels.EnsureCoreWebView2Async();
+            //devtoolsContext = await webModels.CoreWebView2.CreateDevToolsContextAsync();
             //check if we Segoe Fluent Icons font - this comes with windows 11
             var fontsCollection = new InstalledFontCollection();
             foreach (var fontFamily in fontsCollection.Families)
@@ -2004,11 +2050,15 @@ namespace IStripperQuickPlayer
             cardScale = (float)(trackBarCardScale.Value);
             if (listModels.Items.Count > 0)
             {
-                listModels.BeginUpdate();
-                SetModelImageList();
-                listModels.EndUpdate();
+                if (cardRenderer != null)
+                    cardRenderer.cardScale = cardScale;
+                listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
+                //listModels.BeginUpdate();
+                //SetModelImageList();
+                //listModels.EndUpdate();
             }
             Properties.Settings.Default.CardScale = (float)(trackBarCardScale.Value);
         }
+
     }
 }
