@@ -106,7 +106,7 @@
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v17.0\TextTemplating\Microsoft.TextTemplating.targets" />
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Exec Command="xcopy /d /q /y &quot;$(ProjectDir)dependencies\*.*&quot; &quot;$(TargetDir)&quot;&#xD;&#xA;" />
+    <Exec Command="xcopy /q /y &quot;$(ProjectDir)dependencies\*.*&quot; &quot;$(TargetDir)&quot;&#xD;&#xA;" />
   </Target>
 	
 </Project>

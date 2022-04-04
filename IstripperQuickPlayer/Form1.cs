@@ -1130,7 +1130,7 @@ namespace IStripperQuickPlayer
                 cmdClearSearch.Visible = false;
         }
 
-        private void button1_Click(object sender, EventArgs e)
+        private void cmdShowModel_click(object sender, EventArgs e)
         {
             txtSearch.Text = nowPlayingTag.Split("\r\n")[0];
             PopulateModelListview();
@@ -1556,21 +1556,10 @@ namespace IStripperQuickPlayer
 
         private void Form1_Resize(object sender, EventArgs e)
         {
-            if (spaceRightOfListModel == 0) return;
-            listModelsNew.Width = this.Width - listModelsNew.Left - this.spaceRightOfListModel;
-            txtSearch.Width = listModelsNew.Right - txtSearch.Left;
-            listClips.Left = listModelsNew.Right + 66;
-            listClips.Height = this.Height - this.spaceBelowClipList - listClips.Top;
-            listModelsNew.Height = this.Height - listModelsNew.Top - 60;
-            cmdClearSearch.Left = listModelsNew.Right;
-            cmdPhotos.Left = listClips.Right - cmdPhotos.Width;
-            panelModelDetails.Left = listModelsNew.Right + 45;
-            panelModelDetails.Top = listClips.Bottom + 8;
-            panelClip.Left = listModelsNew.Right + 58;
-            this.BeginInvoke(new Action(() => listModelsNew.Refresh()));
+            AdjustControls();
         }
 
-        private async void button2_Click(object sender, EventArgs e)
+        private async void cmdWallpaper_click(object sender, EventArgs e)
         {
             ChangeWallpaper();
         }
@@ -1703,6 +1692,31 @@ namespace IStripperQuickPlayer
         private void listModelsNew_ItemHover(object sender, ItemHoverEventArgs e)
         {
             if (e.Item != null && cardRenderer.mZoomRatio > 0.0f) e.Item.Update();
+        }
+
+        private void splitContainer1_SplitterMoved(object sender, SplitterEventArgs e)
+        {
+            AdjustControls();
+        }
+
+        private void AdjustControls()
+        {
+            if (spaceRightOfListModel == 0) return;
+          
+            listClips.Height = this.Height - this.spaceBelowClipList - listClips.Top;
+            listModelsNew.Height = this.Height - listModelsNew.Top - 92;          
+            panelModelDetails.Top = listClips.Bottom + 8;            
+            listModelsNew.Width = splitContainer1.Panel1.Width - 24;
+            panelClip.Width = splitContainer1.Panel2.Width;
+            cmdWallpaper.Left = panelClip.Width - 370;
+            cmdNextClip.Left = cmdWallpaper.Right + 5;
+            cmdShowModel.Left = cmdNextClip.Right + 5;
+            listClips.Width = panelClip.Width - 28;
+            cmdPhotos.Left = listClips.Right - cmdPhotos.Width;// - System.Windows.Forms.SystemInformation.VerticalScrollBarWidth;
+            panelModelDetails.Width = listClips.Width;
+            txtDescription.Width = listClips.Right - txtDescription.Left - 11;
+            txtUserTags.Width = listClips.Right - txtUserTags.Left;
+            this.BeginInvoke(new Action(() => listModelsNew.Refresh()));
         }
     }
 }

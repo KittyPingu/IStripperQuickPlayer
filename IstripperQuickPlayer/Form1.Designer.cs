@@ -90,14 +90,14 @@
             this.lblCollection = new System.Windows.Forms.Label();
             this.lblAge = new System.Windows.Forms.Label();
             this.panelClip = new System.Windows.Forms.Panel();
-            this.label4 = new System.Windows.Forms.Label();
-            this.button2 = new System.Windows.Forms.Button();
+            this.lblFilterClip = new System.Windows.Forms.Label();
+            this.cmdWallpaper = new System.Windows.Forms.Button();
             this.txtClipType = new System.Windows.Forms.TextBox();
             this.numMinSizeMB = new System.Windows.Forms.NumericUpDown();
-            this.label3 = new System.Windows.Forms.Label();
+            this.lblMinSize = new System.Windows.Forms.Label();
             this.lblCipListDetails = new System.Windows.Forms.Label();
             this.cmdNextClip = new System.Windows.Forms.Button();
-            this.button1 = new System.Windows.Forms.Button();
+            this.cmdShowModel = new System.Windows.Forms.Button();
             this.lblNowPlaying = new System.Windows.Forms.Label();
             this.chkDemo = new System.Windows.Forms.CheckBox();
             this.chkXXX = new System.Windows.Forms.CheckBox();
@@ -107,19 +107,24 @@
             this.chkNoNudity = new System.Windows.Forms.CheckBox();
             this.chkPublic = new System.Windows.Forms.CheckBox();
             this.listModelsNew = new Manina.Windows.Forms.ImageListView();
+            this.splitContainer1 = new System.Windows.Forms.SplitContainer();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
             this.panelModelDetails.SuspendLayout();
             this.panelClip.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.numMinSizeMB)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.splitContainer1)).BeginInit();
+            this.splitContainer1.Panel1.SuspendLayout();
+            this.splitContainer1.Panel2.SuspendLayout();
+            this.splitContainer1.SuspendLayout();
             this.SuspendLayout();
             // 
             // lblModelsLoaded
             // 
             this.lblModelsLoaded.AutoSize = true;
             this.lblModelsLoaded.Font = new System.Drawing.Font("Segoe UI", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblModelsLoaded.Location = new System.Drawing.Point(30, 35);
+            this.lblModelsLoaded.Location = new System.Drawing.Point(9, 35);
             this.lblModelsLoaded.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblModelsLoaded.Name = "lblModelsLoaded";
             this.lblModelsLoaded.Size = new System.Drawing.Size(135, 28);
@@ -294,11 +299,11 @@
             this.ClipType,
             this.ClipSize});
             this.listClips.FullRowSelect = true;
-            this.listClips.Location = new System.Drawing.Point(1134, 189);
+            this.listClips.Location = new System.Drawing.Point(11, 144);
             this.listClips.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.listClips.MultiSelect = false;
             this.listClips.Name = "listClips";
-            this.listClips.Size = new System.Drawing.Size(1018, 724);
+            this.listClips.Size = new System.Drawing.Size(1019, 760);
             this.listClips.TabIndex = 13;
             this.listClips.UseCompatibleStateImageBehavior = false;
             this.listClips.View = System.Windows.Forms.View.Details;
@@ -344,7 +349,7 @@
             "Release Date (Descending)",
             "Date Purchased",
             "Date Purchased (Descending)"});
-            this.cmbSortBy.Location = new System.Drawing.Point(91, 84);
+            this.cmbSortBy.Location = new System.Drawing.Point(71, 84);
             this.cmbSortBy.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmbSortBy.Name = "cmbSortBy";
             this.cmbSortBy.Size = new System.Drawing.Size(204, 28);
@@ -354,7 +359,7 @@
             // label1
             // 
             this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(30, 89);
+            this.label1.Location = new System.Drawing.Point(10, 88);
             this.label1.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.label1.Name = "label1";
             this.label1.Size = new System.Drawing.Size(56, 20);
@@ -363,11 +368,12 @@
             // 
             // txtSearch
             // 
-            this.txtSearch.Location = new System.Drawing.Point(751, 84);
+            this.txtSearch.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.txtSearch.Location = new System.Drawing.Point(339, 35);
             this.txtSearch.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.txtSearch.Name = "txtSearch";
             this.txtSearch.PlaceholderText = "model name or tag";
-            this.txtSearch.Size = new System.Drawing.Size(306, 27);
+            this.txtSearch.Size = new System.Drawing.Size(324, 31);
             this.txtSearch.TabIndex = 20;
             this.txtSearch.TextChanged += new System.EventHandler(this.txtSearch_TextChanged);
             this.txtSearch.Enter += new System.EventHandler(this.txtSearch_Enter);
@@ -376,10 +382,11 @@
             // label2
             // 
             this.label2.AutoSize = true;
-            this.label2.Location = new System.Drawing.Point(691, 89);
+            this.label2.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.label2.Location = new System.Drawing.Point(274, 38);
             this.label2.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(53, 20);
+            this.label2.Size = new System.Drawing.Size(64, 25);
             this.label2.TabIndex = 21;
             this.label2.Text = "Search";
             // 
@@ -390,7 +397,7 @@
             this.cmdClearSearch.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.cmdClearSearch.Image = global::IStripperQuickPlayer.Properties.Resources.kindpng_4040161;
             this.cmdClearSearch.ImageAlign = System.Drawing.ContentAlignment.MiddleLeft;
-            this.cmdClearSearch.Location = new System.Drawing.Point(1054, 83);
+            this.cmdClearSearch.Location = new System.Drawing.Point(659, 35);
             this.cmdClearSearch.Margin = new System.Windows.Forms.Padding(0);
             this.cmdClearSearch.Name = "cmdClearSearch";
             this.cmdClearSearch.Size = new System.Drawing.Size(56, 31);
@@ -695,7 +702,7 @@
             // 
             // cmdFilter
             // 
-            this.cmdFilter.Location = new System.Drawing.Point(464, 84);
+            this.cmdFilter.Location = new System.Drawing.Point(444, 84);
             this.cmdFilter.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmdFilter.Name = "cmdFilter";
             this.cmdFilter.Size = new System.Drawing.Size(62, 29);
@@ -711,7 +718,7 @@
             // chkFavourite
             // 
             this.chkFavourite.AutoSize = true;
-            this.chkFavourite.Location = new System.Drawing.Point(314, 89);
+            this.chkFavourite.Location = new System.Drawing.Point(300, 87);
             this.chkFavourite.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.chkFavourite.Name = "chkFavourite";
             this.chkFavourite.Size = new System.Drawing.Size(131, 24);
@@ -722,7 +729,7 @@
             // 
             // cmdPhotos
             // 
-            this.cmdPhotos.Location = new System.Drawing.Point(2043, 189);
+            this.cmdPhotos.Location = new System.Drawing.Point(921, 143);
             this.cmdPhotos.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmdPhotos.Name = "cmdPhotos";
             this.cmdPhotos.Size = new System.Drawing.Size(109, 35);
@@ -734,7 +741,7 @@
             // cmbFilter
             // 
             this.cmbFilter.FormattingEnabled = true;
-            this.cmbFilter.Location = new System.Drawing.Point(534, 84);
+            this.cmbFilter.Location = new System.Drawing.Point(514, 84);
             this.cmbFilter.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.cmbFilter.Name = "cmbFilter";
             this.cmbFilter.Size = new System.Drawing.Size(149, 28);
@@ -753,10 +760,10 @@
             this.panelModelDetails.Controls.Add(this.lblRatingScore);
             this.panelModelDetails.Controls.Add(this.lblCollection);
             this.panelModelDetails.Controls.Add(this.lblAge);
-            this.panelModelDetails.Location = new System.Drawing.Point(1110, 925);
+            this.panelModelDetails.Location = new System.Drawing.Point(11, 912);
             this.panelModelDetails.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
             this.panelModelDetails.Name = "panelModelDetails";
-            this.panelModelDetails.Size = new System.Drawing.Size(1047, 364);
+            this.panelModelDetails.Size = new System.Drawing.Size(1019, 364);
             this.panelModelDetails.TabIndex = 39;
             // 
             // txtUserTags
@@ -766,7 +773,7 @@
             this.txtUserTags.Location = new System.Drawing.Point(153, 93);
             this.txtUserTags.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.txtUserTags.Name = "txtUserTags";
-            this.txtUserTags.Size = new System.Drawing.Size(878, 31);
+            this.txtUserTags.Size = new System.Drawing.Size(866, 31);
             this.txtUserTags.TabIndex = 43;
             this.txtUserTags.TextChanged += new System.EventHandler(this.txtUserTags_TextChanged);
             // 
@@ -808,12 +815,12 @@
             // 
             this.lblResolution.AutoSize = true;
             this.lblResolution.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblResolution.Location = new System.Drawing.Point(661, 9);
+            this.lblResolution.Location = new System.Drawing.Point(774, 9);
             this.lblResolution.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblResolution.Name = "lblResolution";
-            this.lblResolution.Size = new System.Drawing.Size(99, 25);
+            this.lblResolution.Size = new System.Drawing.Size(43, 25);
             this.lblResolution.TabIndex = 39;
-            this.lblResolution.Text = "Resolution:";
+            this.lblResolution.Text = "Res:";
             // 
             // txtDescription
             // 
@@ -823,19 +830,19 @@
             this.txtDescription.Name = "txtDescription";
             this.txtDescription.ReadOnly = true;
             this.txtDescription.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
-            this.txtDescription.Size = new System.Drawing.Size(1018, 209);
+            this.txtDescription.Size = new System.Drawing.Size(1004, 209);
             this.txtDescription.TabIndex = 38;
             // 
             // lblRatingScore
             // 
             this.lblRatingScore.AutoSize = true;
             this.lblRatingScore.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblRatingScore.Location = new System.Drawing.Point(863, 9);
+            this.lblRatingScore.Location = new System.Drawing.Point(625, 9);
             this.lblRatingScore.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.lblRatingScore.Name = "lblRatingScore";
-            this.lblRatingScore.Size = new System.Drawing.Size(81, 25);
+            this.lblRatingScore.Size = new System.Drawing.Size(67, 25);
             this.lblRatingScore.TabIndex = 37;
-            this.lblRatingScore.Text = "Hotness:";
+            this.lblRatingScore.Text = "Rating:";
             // 
             // lblCollection
             // 
@@ -861,14 +868,14 @@
             // 
             // panelClip
             // 
-            this.panelClip.Controls.Add(this.label4);
-            this.panelClip.Controls.Add(this.button2);
+            this.panelClip.Controls.Add(this.lblFilterClip);
+            this.panelClip.Controls.Add(this.cmdWallpaper);
             this.panelClip.Controls.Add(this.txtClipType);
             this.panelClip.Controls.Add(this.numMinSizeMB);
-            this.panelClip.Controls.Add(this.label3);
+            this.panelClip.Controls.Add(this.lblMinSize);
             this.panelClip.Controls.Add(this.lblCipListDetails);
             this.panelClip.Controls.Add(this.cmdNextClip);
-            this.panelClip.Controls.Add(this.button1);
+            this.panelClip.Controls.Add(this.cmdShowModel);
             this.panelClip.Controls.Add(this.lblNowPlaying);
             this.panelClip.Controls.Add(this.chkDemo);
             this.panelClip.Controls.Add(this.chkXXX);
@@ -877,34 +884,34 @@
             this.panelClip.Controls.Add(this.chkTopless);
             this.panelClip.Controls.Add(this.chkNoNudity);
             this.panelClip.Controls.Add(this.chkPublic);
-            this.panelClip.Location = new System.Drawing.Point(1125, 44);
+            this.panelClip.Location = new System.Drawing.Point(0, 0);
             this.panelClip.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
             this.panelClip.Name = "panelClip";
-            this.panelClip.Size = new System.Drawing.Size(1037, 145);
+            this.panelClip.Size = new System.Drawing.Size(1030, 145);
             this.panelClip.TabIndex = 40;
             // 
-            // label4
+            // lblFilterClip
             // 
-            this.label4.AutoSize = true;
-            this.label4.Location = new System.Drawing.Point(626, 115);
-            this.label4.Name = "label4";
-            this.label4.Size = new System.Drawing.Size(103, 20);
-            this.label4.TabIndex = 53;
-            this.label4.Text = "Filter ClipType";
+            this.lblFilterClip.AutoSize = true;
+            this.lblFilterClip.Location = new System.Drawing.Point(582, 115);
+            this.lblFilterClip.Name = "lblFilterClip";
+            this.lblFilterClip.Size = new System.Drawing.Size(103, 20);
+            this.lblFilterClip.TabIndex = 53;
+            this.lblFilterClip.Text = "Filter ClipType";
             // 
-            // button2
+            // cmdWallpaper
             // 
-            this.button2.Location = new System.Drawing.Point(670, 4);
-            this.button2.Name = "button2";
-            this.button2.Size = new System.Drawing.Size(109, 44);
-            this.button2.TabIndex = 41;
-            this.button2.Text = "Wallpaper";
-            this.button2.UseVisualStyleBackColor = true;
-            this.button2.Click += new System.EventHandler(this.button2_Click);
+            this.cmdWallpaper.Location = new System.Drawing.Point(670, 4);
+            this.cmdWallpaper.Name = "cmdWallpaper";
+            this.cmdWallpaper.Size = new System.Drawing.Size(109, 44);
+            this.cmdWallpaper.TabIndex = 41;
+            this.cmdWallpaper.Text = "Wallpaper";
+            this.cmdWallpaper.UseVisualStyleBackColor = true;
+            this.cmdWallpaper.Click += new System.EventHandler(this.cmdWallpaper_click);
             // 
             // txtClipType
             // 
-            this.txtClipType.Location = new System.Drawing.Point(735, 109);
+            this.txtClipType.Location = new System.Drawing.Point(691, 109);
             this.txtClipType.Name = "txtClipType";
             this.txtClipType.Size = new System.Drawing.Size(186, 27);
             this.txtClipType.TabIndex = 52;
@@ -917,7 +924,7 @@
             0,
             0,
             0});
-            this.numMinSizeMB.Location = new System.Drawing.Point(934, 75);
+            this.numMinSizeMB.Location = new System.Drawing.Point(781, 75);
             this.numMinSizeMB.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
             this.numMinSizeMB.Maximum = new decimal(new int[] {
             9999,
@@ -929,15 +936,15 @@
             this.numMinSizeMB.TabIndex = 51;
             this.numMinSizeMB.ValueChanged += new System.EventHandler(this.numMinSizeMB_ValueChanged);
             // 
-            // label3
+            // lblMinSize
             // 
-            this.label3.AutoSize = true;
-            this.label3.Location = new System.Drawing.Point(800, 76);
-            this.label3.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
-            this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(101, 20);
-            this.label3.TabIndex = 50;
-            this.label3.Text = "Min Size (MB)";
+            this.lblMinSize.AutoSize = true;
+            this.lblMinSize.Location = new System.Drawing.Point(670, 77);
+            this.lblMinSize.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
+            this.lblMinSize.Name = "lblMinSize";
+            this.lblMinSize.Size = new System.Drawing.Size(101, 20);
+            this.lblMinSize.TabIndex = 50;
+            this.lblMinSize.Text = "Min Size (MB)";
             // 
             // lblCipListDetails
             // 
@@ -960,22 +967,22 @@
             this.cmdNextClip.UseVisualStyleBackColor = true;
             this.cmdNextClip.Click += new System.EventHandler(this.cmdNextClip_Click);
             // 
-            // button1
+            // cmdShowModel
             // 
-            this.button1.Location = new System.Drawing.Point(904, 4);
-            this.button1.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
-            this.button1.Name = "button1";
-            this.button1.Size = new System.Drawing.Size(126, 44);
-            this.button1.TabIndex = 47;
-            this.button1.Text = "Show Model";
-            this.button1.UseVisualStyleBackColor = true;
-            this.button1.Click += new System.EventHandler(this.button1_Click);
+            this.cmdShowModel.Location = new System.Drawing.Point(904, 4);
+            this.cmdShowModel.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
+            this.cmdShowModel.Name = "cmdShowModel";
+            this.cmdShowModel.Size = new System.Drawing.Size(126, 44);
+            this.cmdShowModel.TabIndex = 47;
+            this.cmdShowModel.Text = "Show Model";
+            this.cmdShowModel.UseVisualStyleBackColor = true;
+            this.cmdShowModel.Click += new System.EventHandler(this.cmdShowModel_click);
             // 
             // lblNowPlaying
             // 
             this.lblNowPlaying.AutoSize = true;
             this.lblNowPlaying.Font = new System.Drawing.Font("Nirmala UI", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblNowPlaying.Location = new System.Drawing.Point(6, 9);
+            this.lblNowPlaying.Location = new System.Drawing.Point(11, 9);
             this.lblNowPlaying.Margin = new System.Windows.Forms.Padding(0);
             this.lblNowPlaying.Name = "lblNowPlaying";
             this.lblNowPlaying.Size = new System.Drawing.Size(126, 28);
@@ -989,7 +996,7 @@
             // chkDemo
             // 
             this.chkDemo.AutoSize = true;
-            this.chkDemo.Location = new System.Drawing.Point(945, 115);
+            this.chkDemo.Location = new System.Drawing.Point(893, 115);
             this.chkDemo.Margin = new System.Windows.Forms.Padding(5, 0, 5, 0);
             this.chkDemo.Name = "chkDemo";
             this.chkDemo.Size = new System.Drawing.Size(72, 24);
@@ -1091,11 +1098,11 @@
             this.listModelsNew.CacheLimit = "0";
             this.listModelsNew.CacheMode = Manina.Windows.Forms.CacheMode.Continuous;
             this.listModelsNew.ContextMenuStrip = this.menuCardList;
-            this.listModelsNew.Location = new System.Drawing.Point(30, 116);
+            this.listModelsNew.Location = new System.Drawing.Point(10, 116);
             this.listModelsNew.Name = "listModelsNew";
             this.listModelsNew.PersistentCacheDirectory = "";
             this.listModelsNew.PersistentCacheSize = ((long)(0));
-            this.listModelsNew.Size = new System.Drawing.Size(1028, 1173);
+            this.listModelsNew.Size = new System.Drawing.Size(1091, 1148);
             this.listModelsNew.TabIndex = 41;
             this.listModelsNew.UseWIC = true;
             this.listModelsNew.ItemClick += new Manina.Windows.Forms.ItemClickEventHandler(this.listModelsNew_ItemClick);
@@ -1104,31 +1111,50 @@
             this.listModelsNew.SelectionChanged += new System.EventHandler(this.listModelsNew_SelectedIndexChanged);
             this.listModelsNew.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModelsNew_MouseDown);
             // 
+            // splitContainer1
+            // 
+            this.splitContainer1.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.splitContainer1.Location = new System.Drawing.Point(0, 32);
+            this.splitContainer1.Name = "splitContainer1";
+            // 
+            // splitContainer1.Panel1
+            // 
+            this.splitContainer1.Panel1.Controls.Add(this.cmdClearSearch);
+            this.splitContainer1.Panel1.Controls.Add(this.txtSearch);
+            this.splitContainer1.Panel1.Controls.Add(this.label2);
+            this.splitContainer1.Panel1.Controls.Add(this.label1);
+            this.splitContainer1.Panel1.Controls.Add(this.lblModelsLoaded);
+            this.splitContainer1.Panel1.Controls.Add(this.cmbSortBy);
+            this.splitContainer1.Panel1.Controls.Add(this.cmdFilter);
+            this.splitContainer1.Panel1.Controls.Add(this.chkFavourite);
+            this.splitContainer1.Panel1.Controls.Add(this.cmbFilter);
+            this.splitContainer1.Panel1.Controls.Add(this.listModelsNew);
+            this.splitContainer1.Panel1MinSize = 720;
+            // 
+            // splitContainer1.Panel2
+            // 
+            this.splitContainer1.Panel2.Controls.Add(this.cmdPhotos);
+            this.splitContainer1.Panel2.Controls.Add(this.panelClip);
+            this.splitContainer1.Panel2.Controls.Add(this.listClips);
+            this.splitContainer1.Panel2.Controls.Add(this.panelModelDetails);
+            this.splitContainer1.Panel2MinSize = 880;
+            this.splitContainer1.Size = new System.Drawing.Size(2165, 1276);
+            this.splitContainer1.SplitterDistance = 1120;
+            this.splitContainer1.TabIndex = 42;
+            this.splitContainer1.SplitterMoved += new System.Windows.Forms.SplitterEventHandler(this.splitContainer1_SplitterMoved);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(2165, 1308);
-            this.Controls.Add(this.listModelsNew);
-            this.Controls.Add(this.panelClip);
-            this.Controls.Add(this.panelModelDetails);
-            this.Controls.Add(this.cmbFilter);
-            this.Controls.Add(this.txtSearch);
-            this.Controls.Add(this.cmdPhotos);
-            this.Controls.Add(this.chkFavourite);
-            this.Controls.Add(this.cmdFilter);
-            this.Controls.Add(this.cmdClearSearch);
-            this.Controls.Add(this.label2);
-            this.Controls.Add(this.label1);
-            this.Controls.Add(this.cmbSortBy);
-            this.Controls.Add(this.listClips);
-            this.Controls.Add(this.lblModelsLoaded);
+            this.Controls.Add(this.splitContainer1);
             this.Controls.Add(this.menuStrip1);
             this.DoubleBuffered = true;
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.MainMenuStrip = this.menuStrip1;
             this.Margin = new System.Windows.Forms.Padding(5, 4, 5, 4);
-            this.MinimumSize = new System.Drawing.Size(1972, 795);
+            this.MinimumSize = new System.Drawing.Size(1690, 795);
             this.Name = "Form1";
             this.Text = "iStripper QuickPlayer";
             this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Form1_FormClosing);
@@ -1144,6 +1170,11 @@
             this.panelClip.ResumeLayout(false);
             this.panelClip.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.numMinSizeMB)).EndInit();
+            this.splitContainer1.Panel1.ResumeLayout(false);
+            this.splitContainer1.Panel1.PerformLayout();
+            this.splitContainer1.Panel2.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.splitContainer1)).EndInit();
+            this.splitContainer1.ResumeLayout(false);
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -1202,13 +1233,13 @@
         private Label lblCollection;
         private Label lblAge;
         private Panel panelClip;
-        private Label label4;
+        private Label lblFilterClip;
         private TextBox txtClipType;
         private NumericUpDown numMinSizeMB;
-        private Label label3;
+        private Label lblMinSize;
         internal Label lblCipListDetails;
         private Button cmdNextClip;
-        private Button button1;
+        private Button cmdShowModel;
         internal Label lblNowPlaying;
         private CheckBox chkDemo;
         private CheckBox chkXXX;
@@ -1217,7 +1248,7 @@
         private CheckBox chkTopless;
         private CheckBox chkNoNudity;
         private CheckBox chkPublic;
-        private Button button2;
+        private Button cmdWallpaper;
         private ToolStripMenuItem wallpaperToolStripMenuItem;
         private ToolStripMenuItem automaticWallpaperToolStripMenuItem;
         private TrackBarMenuItem trackbarWallpaperBrightness;
@@ -1228,6 +1259,7 @@
         private Manina.Windows.Forms.ImageListView listModelsNew;
         private ToolStripMenuItem zoomOnHoverToolStripMenuItem;
         private TrackBarMenuItem trackBarZoomOnHover;
+        private SplitContainer splitContainer1;
         //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }
