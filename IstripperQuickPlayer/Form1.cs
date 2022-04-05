@@ -642,11 +642,11 @@ namespace IStripperQuickPlayer
                 for (uint i = 0; i < wallpaper.GetMonitorDevicePathCount(); i++)
                 {
                     ToolStripMenuItem newitem = new ToolStripMenuItem("Monitor " + (i+1).ToString());
-                    newitem.CheckOnClick = true;
-                    newitem.CheckedChanged += WallpaperMonitor_CheckedChanged;
+                    newitem.CheckOnClick = true;                    
                     newitem.Tag = i;
                     if (monitorsChecked.Contains((i+1).ToString())) newitem.Checked = true;
                     this.wallpaperToolStripMenuItem.DropDownItems.Add(newitem);
+                    newitem.CheckedChanged += WallpaperMonitor_CheckedChanged;
                 }
             }
             catch { }
@@ -823,14 +823,14 @@ namespace IStripperQuickPlayer
                         res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
                     }
                     if (res == null || res2 == null) found = false;
-                    while ((res == null || res2 == null) && !found)
+                    while (!found)
                     {
                         //play a clip from a filtered card instead
                         //find a new model from the filtered cards
                         if (items == null || items.Length < 1) return;
                         string newtag = nowPlayingTag;
                         Random r = new Random();  
-                        if (res == null) //choose a different card
+                        if (res == null  || res2 == null) //choose a different card
                         {                                      
                             while (newtag == nowPlayingTag)
                             {
@@ -851,6 +851,7 @@ namespace IStripperQuickPlayer
                         if (clips.Count > 0)
                         {
                             var itemnum = r.Next(clips.Count-1);
+                            res2 = clips[itemnum];
                             newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
                             found = true;
                         }
@@ -881,7 +882,7 @@ namespace IStripperQuickPlayer
                 hookCallInfo.Result().Value = -1;
                 hookCallInfo.LastError = 5;
             }
-            if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+            //if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
             isAutoSelecting = true;
             return;
         }
