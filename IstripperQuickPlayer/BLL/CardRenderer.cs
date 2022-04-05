@@ -88,7 +88,7 @@ namespace IStripperQuickPlayer.BLL
                 if (card.image != null)
                 {
                     double ratio = (1.0*card.image.Width)/card.image.Height;
-                    int dy = 34;
+                    int dy = (int)(34*g.DpiX/120.0);
                     int dx = (int)(bounds.Width-((bounds.Height-34)*ratio))/2;
                     g.CompositingMode = CompositingMode.SourceCopy;
                     if (cardScale == 1) g.InterpolationMode = InterpolationMode.NearestNeighbor;

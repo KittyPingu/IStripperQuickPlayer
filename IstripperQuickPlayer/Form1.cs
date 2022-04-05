@@ -1736,5 +1736,27 @@ namespace IStripperQuickPlayer
         {
             cardRenderer.MouseIsOnList = true;
         }
+
+        private void showInBrowserToolStripMenuItem_Click(object sender, EventArgs e)
+        {            
+            if (mousedownCard == null)
+            { 
+                return;
+            }
+            ModelCard? c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
+            if (c!= null)
+            {
+                try
+                {
+                    string url = @"https://www.istripper.com/models/" + (c.modelName + "/" + c.outfit + " " + c.name).Replace(" ", "-");
+
+                    var psi = new System.Diagnostics.ProcessStartInfo();
+                    psi.UseShellExecute = true;
+                    psi.FileName = url;
+                    System.Diagnostics.Process.Start(psi);
+                }
+                catch (Exception ex){ };
+            }
+        }
     }
 }
