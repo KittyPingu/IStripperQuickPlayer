@@ -1708,13 +1708,23 @@ namespace IStripperQuickPlayer
         private void AdjustControls()
         {
             if (spaceRightOfListModel == 0) return;
-          
+            Graphics g = this.CreateGraphics();
+            float dy,dx=120f;
+            try
+            {
+                dx = g.DpiX;
+                dy = g.DpiY;
+            }
+            finally
+            {
+                g.Dispose();
+            }
             listClips.Height = this.Height - this.spaceBelowClipList - listClips.Top;
-            listModelsNew.Height = this.Height - listModelsNew.Top - 92;          
+            listModelsNew.Height = this.Height - listModelsNew.Top - (int)(92*dx/120);          
             panelModelDetails.Top = listClips.Bottom + 8;            
             listModelsNew.Width = splitContainer1.Panel1.Width - 24;
             panelClip.Width = splitContainer1.Panel2.Width;
-            cmdWallpaper.Left = panelClip.Width - 370;
+            cmdWallpaper.Left = panelClip.Width -  (int)(370*dx/120);
             cmdNextClip.Left = cmdWallpaper.Right + 5;
             cmdShowModel.Left = cmdNextClip.Right + 5;
             listClips.Width = panelClip.Width - 28;
