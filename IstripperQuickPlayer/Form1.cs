@@ -838,12 +838,7 @@ namespace IStripperQuickPlayer
                                 newtag = items[(int)newr].Text;
                                 if (items.Length == 1) break;
                             }
-                            listModelsNew.Invoke((Action)(() => listModelsNew.ClearSelection()));
-                            int? index = items.ToList().FindIndex(x => x.Text == newtag);
-                            if (index != null)
-                            {
-                                listModelsNew.Invoke((Action)(() => listModelsNew.SelectWhere(x => x.Tag == newtag)));
-                            }
+                           
                         }
                         //choose a random clip from those shown
                         var mod = Datastore.findCardByText(newtag);
@@ -854,6 +849,13 @@ namespace IStripperQuickPlayer
                             res2 = clips[itemnum];
                             newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
                             found = true;
+
+                            listModelsNew.Invoke((Action)(() => listModelsNew.ClearSelection()));
+                            int? index = items.ToList().FindIndex(x => x.Text == newtag);
+                            if (index != null)
+                            {
+                                listModelsNew.Invoke((Action)(() => listModelsNew.SelectWhere(x => x.Tag == newtag)));
+                            }
                         }
                     
                     }
@@ -861,7 +863,7 @@ namespace IStripperQuickPlayer
                 }
             }
             
-            
+            isAutoSelecting = false;
             ShowNowPlaying(newcardstring, found);
             if (str != newcardstring && newcardstring != wallpaperTag)
             {
@@ -1054,7 +1056,7 @@ namespace IStripperQuickPlayer
             catch { }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
             if (doWallpaper) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
-            if (Properties.Settings.Default.AutoWallpaper && doWallpaper) this.BeginInvoke((Action)(() => ChangeWallpaper()));
+            if (Properties.Settings.Default.AutoWallpaper && doWallpaper && nowPlaying != "") this.BeginInvoke((Action)(() => ChangeWallpaper()));
         }
 
         private void chk_CheckedChanged(object sender, EventArgs e)
@@ -1571,9 +1573,25 @@ namespace IStripperQuickPlayer
             ChangeWallpaper();
         }
 
+        private string lastWallpaperShortTag="";
+        private int lastWallpaperClipNumber=0;
         private async Task ChangeWallpaper(bool NotFromCheck = true)
         {
             System.Diagnostics.Debug.WriteLine("ChangeWallpaper called with nowPlayingTagShort=" + nowPlayingTagShort  +", lbl=" + lblNowPlaying.Text);
+            //check that this wallpaper really matches filters
+            ModelCard? model = Datastore.findCardByTag(nowPlayingTagShort.Split("\\")[0]);   
+            ListViewItem? res = null;
+            if (model == null) return;
+            this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
+                    
+            //does the new clip match the clip filter?
+            ModelClip? res2 = null;
+            if (res != null)
+            {
+                var clipstest = FilterClipList(model.clips);                 
+                res2 = clipstest.Where(c => c.clipNumber == nowPlayingClipNumber).FirstOrDefault();
+            }
+            
             if (nowPlayingTagShort == null || nowPlayingTagShort.Length == 0) return;
             if (string.IsNullOrEmpty(lblNowPlaying.Text)) return;
             foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
@@ -1586,7 +1604,13 @@ namespace IStripperQuickPlayer
                         CardPhotos photos = new CardPhotos();
                         await photos.LoadCardPhotos(client, nowPlayingTagShort);
                         Random r = new Random();
-                        Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL());
+                        if (res2 != null &&
+                                ((lastWallpaperClipNumber != nowPlayingClipNumber || lastWallpaperClipNumber == 0) 
+                                || (lastWallpaperShortTag == "" || lastWallpaperShortTag != nowPlayingTagShort)))
+                        {
+                          
+                            Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL());
+                        }
                     }
                 }
                 else if (((ToolStripMenuItem)item).Tag != null)
@@ -1595,6 +1619,8 @@ namespace IStripperQuickPlayer
                 }
 
             }
+            lastWallpaperShortTag = nowPlayingTagShort;
+            lastWallpaperClipNumber = nowPlayingClipNumber;
         }
 
         private void WallpaperMonitor_CheckedChanged(object? sender, EventArgs e)
@@ -1640,6 +1666,8 @@ namespace IStripperQuickPlayer
         private void showTextToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;     
+            lastWallpaperClipNumber = 0;
+            lastWallpaperShortTag  = "";
             this.BeginInvoke((Action)(() => ChangeWallpaper()));
         }
 
