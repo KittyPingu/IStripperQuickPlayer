@@ -23,6 +23,9 @@ namespace IStripperQuickPlayer.BLL
         internal NumberStyles style = NumberStyles.AllowDecimalPoint;
         internal bool updating = false;
         internal float mZoomRatio = 0.2f;
+        internal bool MouseIsOnList;
+        internal string? CardMenuText;
+
         internal CardRenderer(MyData? myData, string sortBy, float cardScale, CultureInfo culture, bool fontInstalled, NumberStyles style)
         {
             this.cardScale = cardScale;
@@ -55,7 +58,7 @@ namespace IStripperQuickPlayer.BLL
                 Rectangle controlBounds = ClientBounds;
                 bool drawText = true;
                 // Zoom on mouse over
-                if ((state & ItemState.Hovered) != ItemState.None && mZoomRatio != 0.0f)
+                if (((MouseIsOnList && (state & ItemState.Hovered) != ItemState.None) || CardMenuText == item.Tag.ToString()) && mZoomRatio != 0.0f)
                 {
                     bounds.Inflate((int)(bounds.Width * mZoomRatio), (int)(bounds.Height * mZoomRatio));
                     if (bounds.Bottom > controlBounds.Bottom)

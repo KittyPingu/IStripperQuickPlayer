@@ -1110,6 +1110,8 @@
             this.listModelsNew.ItemDoubleClick += new Manina.Windows.Forms.ItemDoubleClickEventHandler(this.listModelsNew_ItemDoubleClick);
             this.listModelsNew.SelectionChanged += new System.EventHandler(this.listModelsNew_SelectedIndexChanged);
             this.listModelsNew.MouseDown += new System.Windows.Forms.MouseEventHandler(this.listModelsNew_MouseDown);
+            this.listModelsNew.MouseEnter += new System.EventHandler(this.listModelsNew_MouseEnter);
+            this.listModelsNew.MouseLeave += new System.EventHandler(this.listModelsNew_MouseLeave);
             // 
             // splitContainer1
             // 

@@ -1363,6 +1363,7 @@ namespace IStripperQuickPlayer
             }
             currentMenuCard=mousedownCard;
             ModelCard? c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
+            cardRenderer.CardMenuText = mousedownCard.Tag.ToString();
             if (c == null) return;
             if (myData != null && myData.GetCardRating(c.name.ToString()) > 0)
                 ratingSlider.Value = myData.GetCardRating(c.name.ToString());
@@ -1431,6 +1432,11 @@ namespace IStripperQuickPlayer
         private void menuCardList_Closing(object sender, ToolStripDropDownClosingEventArgs e)
         {
             //currentMenuCard = null;
+            cardRenderer.CardMenuText = "";
+            if (!listModelsNew.ClientRectangle.Contains(PointToClient(Control.MousePosition))) {
+                  cardRenderer.MouseIsOnList = false;
+                listModelsNew.Refresh();
+            }          
         }
 
         private void txtUserTags_TextChanged(object sender, EventArgs e)
@@ -1717,6 +1723,18 @@ namespace IStripperQuickPlayer
             txtDescription.Width = listClips.Right - txtDescription.Left - 11;
             txtUserTags.Width = listClips.Right - txtUserTags.Left;
             this.BeginInvoke(new Action(() => listModelsNew.Refresh()));
+        }
+
+        private void listModelsNew_MouseLeave(object sender, EventArgs e)
+        {
+            if (menuCardList.Visible) return;
+            cardRenderer.MouseIsOnList = false;
+            listModelsNew.Refresh();
+        }
+
+        private void listModelsNew_MouseEnter(object sender, EventArgs e)
+        {
+            cardRenderer.MouseIsOnList = true;
         }
     }
 }
