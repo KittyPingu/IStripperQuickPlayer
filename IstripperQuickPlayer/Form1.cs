@@ -1570,6 +1570,8 @@ namespace IStripperQuickPlayer
 
         private async void cmdWallpaper_click(object sender, EventArgs e)
         {
+            lastWallpaperClipNumber = 0;
+            lastWallpaperShortTag  = "";
             ChangeWallpaper();
         }
 
