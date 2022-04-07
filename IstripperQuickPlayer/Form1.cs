@@ -796,7 +796,7 @@ namespace IStripperQuickPlayer
                 {
                     hookCallInfo.Result().LongVal = -1;
                     hookCallInfo.Result().LongLongVal = -1;
-                    hookCallInfo.LastError = 5;
+                    //hookCallInfo.LastError = 5;
                 }
             }
             else
@@ -1594,7 +1594,16 @@ namespace IStripperQuickPlayer
 
         private void Form1_Resize(object sender, EventArgs e)
         {
-            AdjustControls();
+            if (this.WindowState == FormWindowState.Minimized)
+            {
+                if (Properties.Settings.Default.MinimizeToTray)
+                {
+                    Hide();
+                    notifyIcon1.Visible = true;
+                }
+            }
+            else
+                AdjustControls();
         }
 
         private async void cmdWallpaper_click(object sender, EventArgs e)
@@ -1854,6 +1863,18 @@ namespace IStripperQuickPlayer
         {
             Properties.Settings.Default.LockPlayer = lockPlayerToolStripMenuItem.Checked;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
+        }
+
+        private void notifyIcon1_DoubleClick(object sender, EventArgs e)
+        {
+            Show();  
+            this.WindowState = FormWindowState.Normal;  
+            notifyIcon1.Visible = false;  
+        }
+
+        private void minimizeToTrayToolStripMenuItem_CheckStateChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.MinimizeToTray = minimizeToTrayToolStripMenuItem.Checked;
         }
     }
 }
