@@ -622,6 +622,8 @@ namespace IStripperQuickPlayer
                 if (fontFamily.Name == "Segoe Fluent Icons")
                     fontInstalled = true;
             }
+            
+            lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
@@ -731,6 +733,7 @@ namespace IStripperQuickPlayer
 
         System.Threading.Timer timerhook;
         NktHook hook;
+        NktHook hook2;
         private void SetupRegHooks()
         {
             _spyMgr = new NktSpyMgr();
@@ -748,9 +751,12 @@ namespace IStripperQuickPlayer
             {
                 hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
                 hook.Hook(true);
+                hook2 = _spyMgr.CreateHook("user32.dll!CallWindowProcW", (int)(eNktHookFlags.flgAutoHookChildProcess));
+                hook2.Hook(true);
                 if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 32)
                 {
                     hook.Attach(tempProcess, true);
+                    hook2.Attach(tempProcess, true);
                     vghd_procID = tempProcess.Id;
                     //check that we havent played a new clip while we weren't hooked
                     clickingNowPlaying = true;
@@ -773,120 +779,132 @@ namespace IStripperQuickPlayer
 
         private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
         {
-            string newclip = @"f0954\f0954_6176201.vghd";
+            if (hook.FunctionName == "user32.dll!CallWindowProcW")
+            {
+                if (Properties.Settings.Default.LockPlayer)
+                {
+                    hookCallInfo.Result().LongVal = -1;
+                    hookCallInfo.Result().LongLongVal = -1;
+                    hookCallInfo.LastError = 5;
+                }
+            }
+            else
+            {
+                string newclip = @"f0954\f0954_6176201.vghd";
                      
-            var p = hookCallInfo.Params();
-            IntPtr pointer = IntPtr.Zero;
-            string keyname = "";
-            int length = 0;
-            foreach (INktParam param in p)
-            {                
-                if (param.Name == "lpData") pointer = param.PointerVal;
-                if (param.Name == "cbData") 
-                {
-                    length = Convert.ToInt16(param.Value);                     
-                }
-                if (param.Name == "lpValueName") keyname = param.Value.ToString();
-            }
-            if (keyname != "CurrentAnim" || length < 1) return;
-            string str = GetStringFromPointer(pointer, length);
-            System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
-
-            //check if this propsed card is in the filterd list
-            string newcardstring = str ?? "";
-            bool found = true;
-            if (Properties.Settings.Default.EnforceCardFilter)
-            {
-                if (string.IsNullOrEmpty(newcardstring) && !isAutoSelecting)
-                {
-                    if (lblNowPlaying != null) this.Invoke((Action)(() => lblNowPlaying.Text = ""));
-                    return;
-                }
-                else if (string.IsNullOrEmpty(newcardstring) && isAutoSelecting)
-                {
-                    isAutoSelecting = false;
-                }
-                else
-                {
-                    isAutoSelecting = true;
-                    ModelCard? model = Datastore.findCardByTag(newcardstring.Split("\\")[0]);   
-                    ListViewItem? res = null;
-                    if (model == null) return;
-                    this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
-                    
-                    //does the new clip match the clip filter?
-                    ModelClip? res2 = null;
-                    if (res != null)
+                var p = hookCallInfo.Params();
+                IntPtr pointer = IntPtr.Zero;
+                string keyname = "";
+                int length = 0;
+                foreach (INktParam param in p)
+                {                
+                    if (param.Name == "lpData") pointer = param.PointerVal;
+                    if (param.Name == "cbData") 
                     {
-                        var clipstest = FilterClipList(model.clips);
-                        string clipstring = newcardstring.Split("\\")[1];                    
-                        res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
+                        length = Convert.ToInt16(param.Value);                     
                     }
-                    if (res == null || res2 == null) found = false;
-                    while (!found)
+                    if (param.Name == "lpValueName") keyname = param.Value.ToString();
+                }
+                if (keyname != "CurrentAnim" || length < 1) return;
+                string str = GetStringFromPointer(pointer, length);
+                System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
+
+                //check if this propsed card is in the filterd list
+                string newcardstring = str ?? "";
+                bool found = true;
+                if (Properties.Settings.Default.EnforceCardFilter)
+                {
+                    if (string.IsNullOrEmpty(newcardstring) && !isAutoSelecting)
                     {
-                        //play a clip from a filtered card instead
-                        //find a new model from the filtered cards
-                        if (items == null || items.Length < 1) return;
-                        string newtag = nowPlayingTag;
-                        Random r = new Random();  
-                        if (res == null  || res2 == null) //choose a different card
-                        {                                      
-                            while (newtag == nowPlayingTag)
-                            {
-                                Int64 newr = r.Next(items.Length);
-                                newtag = items[(int)newr].Text;
-                                if (items.Length == 1) break;
-                            }
-                           
-                        }
-                        //choose a random clip from those shown
-                        var mod = Datastore.findCardByText(newtag);
-                        List<ModelClip>? clips = FilterClipList(mod.clips);
-                        if (clips.Count > 0)
+                        if (lblNowPlaying != null) this.Invoke((Action)(() => lblNowPlaying.Text = ""));
+                        return;
+                    }
+                    else if (string.IsNullOrEmpty(newcardstring) && isAutoSelecting)
+                    {
+                        isAutoSelecting = false;
+                    }
+                    else
+                    {
+                        isAutoSelecting = true;
+                        ModelCard? model = Datastore.findCardByTag(newcardstring.Split("\\")[0]);   
+                        ListViewItem? res = null;
+                        if (model == null) return;
+                        this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
+                    
+                        //does the new clip match the clip filter?
+                        ModelClip? res2 = null;
+                        if (res != null)
                         {
-                            var itemnum = r.Next(clips.Count-1);
-                            res2 = clips[itemnum];
-                            newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
-                            found = true;
-
-                            listModelsNew.Invoke((Action)(() => listModelsNew.ClearSelection()));
-                            int? index = items.ToList().FindIndex(x => x.Text == newtag);
-                            if (index != null)
-                            {
-                                listModelsNew.Invoke((Action)(() => listModelsNew.SelectWhere(x => x.Tag == newtag)));
-                            }
+                            var clipstest = FilterClipList(model.clips);
+                            string clipstring = newcardstring.Split("\\")[1];                    
+                            res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
                         }
+                        if (res == null || res2 == null) found = false;
+                        while (!found)
+                        {
+                            //play a clip from a filtered card instead
+                            //find a new model from the filtered cards
+                            if (items == null || items.Length < 1) return;
+                            string newtag = nowPlayingTag;
+                            Random r = new Random();  
+                            if (res == null  || res2 == null) //choose a different card
+                            {                                      
+                                while (newtag == nowPlayingTag)
+                                {
+                                    Int64 newr = r.Next(items.Length);
+                                    newtag = items[(int)newr].Text;
+                                    if (items.Length == 1) break;
+                                }
+                           
+                            }
+                            //choose a random clip from those shown
+                            var mod = Datastore.findCardByText(newtag);
+                            List<ModelClip>? clips = FilterClipList(mod.clips);
+                            if (clips.Count > 0)
+                            {
+                                var itemnum = r.Next(clips.Count-1);
+                                res2 = clips[itemnum];
+                                newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
+                                found = true;
+
+                                listModelsNew.Invoke((Action)(() => listModelsNew.ClearSelection()));
+                                int? index = items.ToList().FindIndex(x => x.Text == newtag);
+                                if (index != null)
+                                {
+                                    listModelsNew.Invoke((Action)(() => listModelsNew.SelectWhere(x => x.Tag == newtag)));
+                                }
+                            }
                     
-                    }
+                        }
                         
+                    }
                 }
-            }
             
-            isAutoSelecting = false;
-            ShowNowPlaying(newcardstring, found);
-            if (str != newcardstring && newcardstring != wallpaperTag)
-            {
-                RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
-
-                string r = nowPlayingTag;
-                string pp = r.Split("_")[0];
-                string full = pp + "\\" + r;
-                if (keynew != null)
+                isAutoSelecting = false;
+                ShowNowPlaying(newcardstring, found);
+                if (str != newcardstring && newcardstring != wallpaperTag)
                 {
-                    keynew.SetValue("ForceAnim", newcardstring);
-                    keynew.Close();
-                    wallpaperTag = newcardstring;
-                }
+                    RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
 
-                hookCallInfo.Result().LongLongVal = -1;
-                hookCallInfo.Result().LongVal = -1;
-                hookCallInfo.Result().Value = -1;
-                hookCallInfo.LastError = 5;
+                    string r = nowPlayingTag;
+                    string pp = r.Split("_")[0];
+                    string full = pp + "\\" + r;
+                    if (keynew != null)
+                    {
+                        keynew.SetValue("ForceAnim", newcardstring);
+                        keynew.Close();
+                        wallpaperTag = newcardstring;
+                    }
+
+                    hookCallInfo.Result().LongLongVal = -1;
+                    hookCallInfo.Result().LongVal = -1;
+                    hookCallInfo.Result().Value = -1;
+                    hookCallInfo.LastError = 5;
+                }
+                //if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+                isAutoSelecting = true;
+                return;
             }
-            //if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-            isAutoSelecting = true;
-            return;
         }
 
         private List<ModelClip>? FilterClipList(List<ModelClip> clips)
@@ -1814,6 +1832,11 @@ namespace IStripperQuickPlayer
                 }
                 catch (Exception ex){ };
             }
+        }
+
+        private void lockPlayerToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.LockPlayer = lockPlayerToolStripMenuItem.Checked;
         }
     }
 }

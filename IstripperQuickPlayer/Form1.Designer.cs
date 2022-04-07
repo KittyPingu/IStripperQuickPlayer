@@ -110,6 +110,7 @@
             this.chkPublic = new System.Windows.Forms.CheckBox();
             this.listModelsNew = new Manina.Windows.Forms.ImageListView();
             this.splitContainer1 = new System.Windows.Forms.SplitContainer();
+            this.lockPlayerToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -470,7 +471,8 @@
             this.includeDescriptionInSearchToolStripMenuItem,
             this.includeShowTitleInSearchToolStripMenuItem,
             this.wallpaperToolStripMenuItem,
-            this.showKittyToolStripMenuItem});
+            this.showKittyToolStripMenuItem,
+            this.lockPlayerToolStripMenuItem});
             this.settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
             this.settingsToolStripMenuItem.Size = new System.Drawing.Size(76, 24);
             this.settingsToolStripMenuItem.Text = "Settings";
@@ -1163,6 +1165,14 @@
             this.splitContainer1.TabIndex = 42;
             this.splitContainer1.SplitterMoved += new System.Windows.Forms.SplitterEventHandler(this.splitContainer1_SplitterMoved);
             // 
+            // lockPlayerToolStripMenuItem
+            // 
+            this.lockPlayerToolStripMenuItem.CheckOnClick = true;
+            this.lockPlayerToolStripMenuItem.Name = "lockPlayerToolStripMenuItem";
+            this.lockPlayerToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
+            this.lockPlayerToolStripMenuItem.Text = "Lock Player";
+            this.lockPlayerToolStripMenuItem.Click += new System.EventHandler(this.lockPlayerToolStripMenuItem_Click);
+            // 
             // Form1
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
@@ -1282,6 +1292,7 @@
         private SplitContainer splitContainer1;
         private ToolStripSeparator toolStripSeparator2;
         private ToolStripMenuItem showInBrowserToolStripMenuItem;
+        private ToolStripMenuItem lockPlayerToolStripMenuItem;
         //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }

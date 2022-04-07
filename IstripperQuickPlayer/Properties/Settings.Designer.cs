@@ -286,5 +286,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["ZoomOnHover"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool LockPlayer {
+            get {
+                return ((bool)(this["LockPlayer"]));
+            }
+            set {
+                this["LockPlayer"] = value;
+            }
+        }
     }
 }
