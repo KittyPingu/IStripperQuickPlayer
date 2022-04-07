@@ -69,7 +69,13 @@
       <Value Profile="(Default)">0.1</Value>
     </Setting>
     <Setting Name="LockPlayer" Type="System.Boolean" Scope="User">
-      <Value Profile="(Default)">False</Value>
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="ToggleLockString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+L</Value>
+    </Setting>
+    <Setting Name="ToggleLockEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
     </Setting>
   </Settings>
 </SettingsFile>

@@ -289,13 +289,37 @@ namespace IStripperQuickPlayer.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
         public bool LockPlayer {
             get {
                 return ((bool)(this["LockPlayer"]));
             }
             set {
                 this["LockPlayer"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+L")]
+        public string ToggleLockString {
+            get {
+                return ((string)(this["ToggleLockString"]));
+            }
+            set {
+                this["ToggleLockString"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ToggleLockEnabled {
+            get {
+                return ((bool)(this["ToggleLockEnabled"]));
+            }
+            set {
+                this["ToggleLockEnabled"] = value;
             }
         }
     }

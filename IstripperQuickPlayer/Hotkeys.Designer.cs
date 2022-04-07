@@ -33,6 +33,8 @@
             this.txtNextClip = new System.Windows.Forms.TextBox();
             this.txtNextCard = new System.Windows.Forms.TextBox();
             this.cmdOK = new System.Windows.Forms.Button();
+            this.txtToggleLock = new System.Windows.Forms.TextBox();
+            this.chkToggleLock = new System.Windows.Forms.CheckBox();
             this.SuspendLayout();
             // 
             // chkNextClip
@@ -71,7 +73,7 @@
             // 
             // cmdOK
             // 
-            this.cmdOK.Location = new System.Drawing.Point(168, 113);
+            this.cmdOK.Location = new System.Drawing.Point(168, 171);
             this.cmdOK.Name = "cmdOK";
             this.cmdOK.Size = new System.Drawing.Size(87, 44);
             this.cmdOK.TabIndex = 4;
@@ -79,11 +81,30 @@
             this.cmdOK.UseVisualStyleBackColor = true;
             this.cmdOK.Click += new System.EventHandler(this.cmdOK_Click);
             // 
+            // txtToggleLock
+            // 
+            this.txtToggleLock.Location = new System.Drawing.Point(168, 106);
+            this.txtToggleLock.Name = "txtToggleLock";
+            this.txtToggleLock.Size = new System.Drawing.Size(211, 27);
+            this.txtToggleLock.TabIndex = 6;
+            // 
+            // chkToggleLock
+            // 
+            this.chkToggleLock.AutoSize = true;
+            this.chkToggleLock.Location = new System.Drawing.Point(41, 109);
+            this.chkToggleLock.Name = "chkToggleLock";
+            this.chkToggleLock.Size = new System.Drawing.Size(111, 24);
+            this.chkToggleLock.TabIndex = 5;
+            this.chkToggleLock.Text = "Toggle Lock";
+            this.chkToggleLock.UseVisualStyleBackColor = true;
+            // 
             // Hotkeys
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(449, 169);
+            this.ClientSize = new System.Drawing.Size(449, 242);
+            this.Controls.Add(this.txtToggleLock);
+            this.Controls.Add(this.chkToggleLock);
             this.Controls.Add(this.cmdOK);
             this.Controls.Add(this.txtNextCard);
             this.Controls.Add(this.txtNextClip);
@@ -108,5 +129,7 @@
         private TextBox txtNextClip;
         private TextBox txtNextCard;
         private Button cmdOK;
+        private TextBox txtToggleLock;
+        private CheckBox chkToggleLock;
     }
 }

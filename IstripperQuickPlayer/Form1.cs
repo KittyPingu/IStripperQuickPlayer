@@ -46,12 +46,15 @@ namespace IStripperQuickPlayer
         Action? actionNextClip = null;
         Combination? nextCard;// = Combination.FromString("Control+Alt+C");
         Action? actionNextCard = null;
+        Combination? toggleLock;// = Combination.FromString("Control+Alt+C");
+        Action? actionToggleLock = null;
         //deviare2 hooking
         private NktSpyMgr _spyMgr;
         private Int32 vghd_procID=0;
         private ControlScrollListener _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
+        bool playerlocked = Properties.Settings.Default.LockPlayer;
         //private WebView2DevToolsContext devtoolsContext = null;
 
         private void actNextClip()
@@ -62,6 +65,11 @@ namespace IStripperQuickPlayer
         private  void actNextCard()
         {
            if (Properties.Settings.Default.NextCardEnabled) this.BeginInvoke((Action)(() => GetNextCard()));
+        }
+
+        private void actToggleLock()
+        {
+            if (Properties.Settings.Default.ToggleLockEnabled) this.BeginInvoke((Action)(() => {lockPlayerToolStripMenuItem.Checked = !lockPlayerToolStripMenuItem.Checked; setPlayerLocked(); }));
         }
 
         public Form1()
@@ -721,12 +729,15 @@ namespace IStripperQuickPlayer
         {
             nextClip = Combination.FromString(Properties.Settings.Default.NextClipString);
             nextCard = Combination.FromString(Properties.Settings.Default.NextCardString);
+            toggleLock = Combination.FromString(Properties.Settings.Default.ToggleLockString);
             actionNextClip = actNextClip;
             actionNextCard = actNextCard;
+            actionToggleLock = actToggleLock;
             var assignment = new Dictionary<Combination, Action>
             {
                 {nextClip, actionNextClip},
-                {nextCard, actionNextCard}
+                {nextCard, actionNextCard},
+                {toggleLock, actToggleLock}
             };
             Hook.GlobalEvents().OnCombination(assignment);
         }
@@ -781,7 +792,7 @@ namespace IStripperQuickPlayer
         {
             if (hook.FunctionName == "user32.dll!CallWindowProcW")
             {
-                if (Properties.Settings.Default.LockPlayer)
+                if (playerlocked)
                 {
                     hookCallInfo.Result().LongVal = -1;
                     hookCallInfo.Result().LongLongVal = -1;
@@ -1836,7 +1847,13 @@ namespace IStripperQuickPlayer
 
         private void lockPlayerToolStripMenuItem_Click(object sender, EventArgs e)
         {
+            setPlayerLocked();
+        }
+
+        private void setPlayerLocked()
+        {
             Properties.Settings.Default.LockPlayer = lockPlayerToolStripMenuItem.Checked;
+            playerlocked = lockPlayerToolStripMenuItem.Checked;
         }
     }
 }
