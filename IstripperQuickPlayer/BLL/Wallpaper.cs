@@ -17,9 +17,13 @@ namespace IStripperQuickPlayer.BLL
     {
         public static Dictionary<uint, string> originalWallpaper = new Dictionary<uint, string>();
         public static Dictionary<uint, Bitmap> initialImages = new Dictionary<uint, Bitmap>();
-        public static async void ChangeWallpaper(uint monitorNumber, string url)
+        public static string _modelname = "";
+        public static string _outfit = "";
+        public static async void ChangeWallpaper(uint monitorNumber, string url, string modelname, string outfit)
         {
             if (url == null)return;       
+            _modelname = modelname;
+            _outfit = outfit;
             var str = Utils.GetMainForm().lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
             if (string.IsNullOrEmpty(str)) return;
             try
@@ -77,7 +81,7 @@ namespace IStripperQuickPlayer.BLL
 
         private static Bitmap AddDetails(Bitmap b, Rect l, int sz = 36)
         {
-            var str = Utils.GetMainForm().lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
+            var str = _modelname + ", " + _outfit;
             StringFormat stringFormat = new StringFormat();
             stringFormat.Alignment = StringAlignment.Near;
             stringFormat.LineAlignment = StringAlignment.Near;

@@ -82,6 +82,7 @@ namespace IStripperQuickPlayer
         internal int? numgirls;
         internal DateTime dateShow;
         internal DateTime dateReleased;
+        internal string? modelId;
 
         public ModelCard()
         {

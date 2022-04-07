@@ -125,6 +125,8 @@ namespace IStripperQuickPlayer.BLL
                                 card.ethnicity = cardProp.ethnicity;
                                 card.exclusive = cardProp.exclusive;
                                 card.numgirls = cardProp.numgirls;
+                                card.modelId = cardProp.modelID;
+                                card.modelName = GetModelsString(card.modelId);
                                 DateTime tempdate = new DateTime(2000,1,1);
                                 DateTime.TryParse(cardProp.datesh, out tempdate);
                                 card.dateShow = tempdate;
@@ -153,6 +155,7 @@ namespace IStripperQuickPlayer.BLL
                                     if (card.dateShow != null)
                                         card.dateReleased = card.dateShow.AddMonths(2);
                             }
+                            
                             //if model age is 0, calculate it from release date and birthdate
                             if (card.modelAge == 0 && card.birthdate != null && card.dateReleased != null)
                             {
@@ -234,6 +237,31 @@ namespace IStripperQuickPlayer.BLL
             }
             
             return modelsLoaded;
+        }
+
+        private string GetModelsString(string card_modelId)
+        {
+            string model = "";
+            if (card_modelId == null) return "";        
+            var modelIDs = card_modelId.Split(",");
+            string modelName = "";
+            foreach(var cm in modelIDs)
+            { 
+                //var m = StaticPropertiesLoader.getModelByID(cm);
+                var d = StaticPropertiesLoader.getBioByID(cm);
+                if (modelName != "")
+                    modelName += " &_" + d.Name;
+                else
+                    modelName = d.Name;
+            }
+            return PascalCase(modelName);    
+        }
+        public string PascalCase(string word)
+        {
+            return string.Join(" " , word.Split('_')
+                         .Select(w => w.Trim())
+                         .Where(w => w.Length > 0)
+                         .Select(w => w.Substring(0,1).ToUpper() + w.Substring(1).ToLower()));
         }
 
         private Image? loadCardImage(ModelCard card) {   

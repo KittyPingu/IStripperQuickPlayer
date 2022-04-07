@@ -1596,6 +1596,9 @@ namespace IStripperQuickPlayer
             
             if (nowPlayingTagShort == null || nowPlayingTagShort.Length == 0) return;
             if (string.IsNullOrEmpty(lblNowPlaying.Text)) return;
+
+            string modelname = GetModelsString(model);
+
             foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
             {
                 if (item is ToolStripMenuItem)
@@ -1611,7 +1614,7 @@ namespace IStripperQuickPlayer
                                 || (lastWallpaperShortTag == "" || lastWallpaperShortTag != nowPlayingTagShort)))
                         {
                           
-                            Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL());
+                            Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL(), modelname, model.outfit);
                         }
                     }
                 }
@@ -1623,6 +1626,19 @@ namespace IStripperQuickPlayer
             }
             lastWallpaperShortTag = nowPlayingTagShort;
             lastWallpaperClipNumber = nowPlayingClipNumber;
+        }
+        
+        private string GetModelsString(ModelCard card)
+        {
+            if (card.modelName == null) return "";
+            return card.modelName;    
+        }
+        public static string PascalCase(string word)
+        {
+            return string.Join(" " , word.Split('_')
+                         .Select(w => w.Trim())
+                         .Where(w => w.Length > 0)
+                         .Select(w => w.Substring(0,1).ToUpper() + w.Substring(1).ToLower()));
         }
 
         private void WallpaperMonitor_CheckedChanged(object? sender, EventArgs e)

@@ -17,7 +17,7 @@ namespace IStripperQuickPlayer.BLL
         internal static XmlDocument PropertiesXML = new XmlDocument();
         internal static XmlNodeList? cnode;
         internal static XmlNodeList? mnode;
-
+        internal static XmlNodeList? dnode;
         internal static void loadXML()
         {
             var path = findXMLFile();
@@ -38,6 +38,9 @@ namespace IStripperQuickPlayer.BLL
 #pragma warning restore CS8601 // Possible null reference assignment.
 #pragma warning disable CS8601 // Possible null reference assignment.
                 cnode = PropertiesXML.SelectNodes("/root/c");
+#pragma warning restore CS8601 // Possible null reference assignment.
+#pragma warning disable CS8601 // Possible null reference assignment.
+                dnode = PropertiesXML.SelectNodes("/root/d");
 #pragma warning restore CS8601 // Possible null reference assignment.
             }         
         }
@@ -73,6 +76,24 @@ namespace IStripperQuickPlayer.BLL
                     {
                          CardProperties card = new CardProperties(n);         
                         return card;
+                    }
+                }
+            }
+            return null;
+        }
+
+        internal static BioProperties? getBioByID(string ID)
+        {
+            if (dnode == null) return null;
+            foreach(XmlNode n in dnode)
+            {
+                if (n.Attributes != null)
+                {
+                    var attribute = n.Attributes["id"];
+                    if (attribute != null && attribute.Value == ID)
+                    {
+                        BioProperties bio = new BioProperties(n);         
+                        return bio;
                     }
                 }
             }
