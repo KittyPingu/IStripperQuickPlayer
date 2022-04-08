@@ -745,6 +745,7 @@ namespace IStripperQuickPlayer
         System.Threading.Timer timerhook;
         NktHook hook;
         NktHook hook2;
+        NktProcess tempProcess;
         private void SetupRegHooks()
         {
             _spyMgr = new NktSpyMgr();
@@ -757,7 +758,7 @@ namespace IStripperQuickPlayer
         private bool InjectVGHDProcess()
         {
             NktProcessesEnum enumProcess = _spyMgr.Processes();
-            NktProcess tempProcess = enumProcess.First();
+            tempProcess = enumProcess.First();
             while (tempProcess != null)
             {
                 hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
@@ -794,8 +795,9 @@ namespace IStripperQuickPlayer
             {
                 if (playerlocked)
                 {
+                    var u = hookCallInfo.ThreadId;
                     hookCallInfo.Result().LongVal = -1;
-                    hookCallInfo.Result().LongLongVal = -1;
+                    //hookCallInfo.Result().LongLongVal = -1;
                     //hookCallInfo.LastError = 5;
                 }
             }
@@ -1260,16 +1262,24 @@ namespace IStripperQuickPlayer
                 }
                 else
                 {
-                    ModelClip modelClip = clips.Where(x => x.clipName == path.Split("\\")[1]).First();
-                    if (modelClip.clipNumber < clips.Last().clipNumber)
-                    {
-                        //play next
-                        mnew = clips.Where((x) => x.clipNumber > modelClip.clipNumber).FirstOrDefault();
+                    var cliplst = clips.Where(x => x.clipName == path.Split("\\")[1]);
+                    if (cliplst.Count() >0)
+                    { 
+                        ModelClip modelClip = cliplst.First();
+                        if (modelClip.clipNumber < clips.Last().clipNumber)
+                        {
+                            //play next
+                            mnew = clips.Where((x) => x.clipNumber > modelClip.clipNumber).FirstOrDefault();
+                        }
+                        else
+                        {
+                            //play first
+                            mnew = clips.FirstOrDefault();
+                        }
                     }
                     else
                     {
-                        //play first
-                        mnew = clips.FirstOrDefault();
+                         mnew = clips.FirstOrDefault();
                     }
                 }
 
@@ -1863,6 +1873,14 @@ namespace IStripperQuickPlayer
         {
             Properties.Settings.Default.LockPlayer = lockPlayerToolStripMenuItem.Checked;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
+            if (!playerlocked)
+            {
+                if (hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, false);
+            }
+            else
+            {
+                if (hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, true);
+            }
         }
 
         private void notifyIcon1_DoubleClick(object sender, EventArgs e)
