@@ -631,8 +631,7 @@ namespace IStripperQuickPlayer
                     fontInstalled = true;
             }
             
-            lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
-            ChangePlayerLocked();
+            lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;           
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
@@ -665,6 +664,7 @@ namespace IStripperQuickPlayer
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
             showKittyToolStripMenuItem.Checked = Properties.Settings.Default.ShowKitty;
+            minimizeToTrayToolStripMenuItem.Checked = Properties.Settings.Default.MinimizeToTray;
             myData = RetrieveMyData();
             FilterSettingsList.Load();
             PopulateFilterList();
@@ -1555,6 +1555,7 @@ namespace IStripperQuickPlayer
 
             try
             {
+                ChangePlayerLocked();
                 TaskbarThumbnail();
 
                 string cmdPath = Assembly.GetEntryAssembly().Location;
@@ -1902,13 +1903,17 @@ namespace IStripperQuickPlayer
             {
                 if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, false);
                 notifyIcon1.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-                this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
+                //this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
+                if (TaskbarManager.IsPlatformSupported) 
+                    TaskbarManager.Instance.SetOverlayIcon(null, "");
             }
             else
             {
                 if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, true);
                 notifyIcon1.Icon = Properties.Resources.locked;
-                this.Icon = Properties.Resources.locked;
+                //this.Icon = Properties.Resources.locked;
+                if (TaskbarManager.IsPlatformSupported) 
+                    TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
             }
         }
 
