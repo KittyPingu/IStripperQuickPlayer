@@ -77,6 +77,7 @@
             this.showTextToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.showKittyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.lockPlayerToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.minimizeToTrayToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.cmdFilter = new System.Windows.Forms.Button();
             this.errorProvider1 = new System.Windows.Forms.ErrorProvider(this.components);
             this.chkFavourite = new System.Windows.Forms.CheckBox();
@@ -112,7 +113,6 @@
             this.listModelsNew = new Manina.Windows.Forms.ImageListView();
             this.splitContainer1 = new System.Windows.Forms.SplitContainer();
             this.notifyIcon1 = new System.Windows.Forms.NotifyIcon(this.components);
-            this.minimizeToTrayToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.menuCardList.SuspendLayout();
             this.menuStrip1.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.errorProvider1)).BeginInit();
@@ -729,6 +729,14 @@
             this.lockPlayerToolStripMenuItem.Text = "Lock Player";
             this.lockPlayerToolStripMenuItem.Click += new System.EventHandler(this.lockPlayerToolStripMenuItem_Click);
             // 
+            // minimizeToTrayToolStripMenuItem
+            // 
+            this.minimizeToTrayToolStripMenuItem.CheckOnClick = true;
+            this.minimizeToTrayToolStripMenuItem.Name = "minimizeToTrayToolStripMenuItem";
+            this.minimizeToTrayToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
+            this.minimizeToTrayToolStripMenuItem.Text = "Minimize to Tray";
+            this.minimizeToTrayToolStripMenuItem.CheckStateChanged += new System.EventHandler(this.minimizeToTrayToolStripMenuItem_CheckStateChanged);
+            // 
             // cmdFilter
             // 
             this.cmdFilter.Location = new System.Drawing.Point(444, 84);
@@ -1180,16 +1188,8 @@
             // 
             this.notifyIcon1.BalloonTipText = "iStripper QuickPlayer";
             this.notifyIcon1.Icon = ((System.Drawing.Icon)(resources.GetObject("notifyIcon1.Icon")));
-            this.notifyIcon1.Text = "iStripperQuickPlayer";
+            this.notifyIcon1.Text = "QuickPlayer";
             this.notifyIcon1.DoubleClick += new System.EventHandler(this.notifyIcon1_DoubleClick);
-            // 
-            // minimizeToTrayToolStripMenuItem
-            // 
-            this.minimizeToTrayToolStripMenuItem.CheckOnClick = true;
-            this.minimizeToTrayToolStripMenuItem.Name = "minimizeToTrayToolStripMenuItem";
-            this.minimizeToTrayToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
-            this.minimizeToTrayToolStripMenuItem.Text = "Minimize to Tray";
-            this.minimizeToTrayToolStripMenuItem.CheckStateChanged += new System.EventHandler(this.minimizeToTrayToolStripMenuItem_CheckStateChanged);
             // 
             // Form1
             // 

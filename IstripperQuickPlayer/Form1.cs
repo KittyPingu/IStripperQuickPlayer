@@ -643,6 +643,7 @@ namespace IStripperQuickPlayer
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
             }
+            Task.Run(() => SetupRegHooks());
 
             //get number of monitors for wallpaper
             try
@@ -682,12 +683,12 @@ namespace IStripperQuickPlayer
             //watcher.RegistryChange += RegistryChanged;
              _processListViewScrollListener = new ControlScrollListener(listModelsNew);  
             _processListViewScrollListener.ControlScrolled += ProcessListViewScrollListener_ControlScrolled;
-            clickingNowPlaying = true;            
+            clickingNowPlaying = true;                
+             
             RetrieveModels();
             GetNowPlaying();
             clickingNowPlaying = false;
-            SetupKeyHooks();
-            Task.Run(() => SetupRegHooks());       
+            SetupKeyHooks();      
         }
 
         private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)
@@ -752,22 +753,24 @@ namespace IStripperQuickPlayer
             _spyMgr = new NktSpyMgr();
             _spyMgr.Initialize();
             _spyMgr.OnFunctionCalled += new DNktSpyMgrEvents_OnFunctionCalledEventHandler(OnFunctionCalled);
-            timerhook = new System.Threading.Timer(new TimerCallback(waitForIStripper), null, 1000, 1000);
+            timerhook = new System.Threading.Timer(new TimerCallback(waitForIStripper), null, 100, 100);
             return ;
         }
 
         private bool InjectVGHDProcess()
         {
+            
             NktProcessesEnum enumProcess = _spyMgr.Processes();
             tempProcess = enumProcess.First();
             while (tempProcess != null)
             {
-                hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
-                hook.Hook(true);
-                hook2 = _spyMgr.CreateHook("user32.dll!CallWindowProcW", (int)(eNktHookFlags.flgAutoHookChildProcess));
-                hook2.Hook(true);
                 if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 32)
                 {
+                    timerhook.Dispose();
+                    hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
+                    hook.Hook(true);
+                    hook2 = _spyMgr.CreateHook("user32.dll!CallWindowProcW", (int)(eNktHookFlags.flgAutoHookChildProcess));
+                    hook2.Hook(true);
                     hook.Attach(tempProcess, true);
                     if (playerlocked) hook2.Attach(tempProcess, true);
                     vghd_procID = tempProcess.Id;
@@ -781,7 +784,6 @@ namespace IStripperQuickPlayer
                 }
                 tempProcess = enumProcess.Next();
             }
-                      
             return false;
         }
 
@@ -1331,6 +1333,7 @@ namespace IStripperQuickPlayer
             {
                 Int64 newr = r.Next(items.Length);
                 newtag = items[(int)newr].Text;
+                if (FilterClipList(Datastore.findCardByTag(items[(int)newr].Tag.ToString()).clips).Count < 1) newtag = nowPlayingTag;
                 if (items.Length == 1) break;
             }
             listModelsNew.ClearSelection();
@@ -1897,13 +1900,26 @@ namespace IStripperQuickPlayer
             ChangePlayerLocked();
         }
 
-        private void doTaskbarPadlock()
+        private bool isPinnedToTaskbar()
+        {
+            var pinnedTaskBarItemsPath = Environment.ExpandEnvironmentVariables(@"%AppData%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar");
+            var pinnedTaskBarFiles = Directory.GetFiles(pinnedTaskBarItemsPath);
+    
+            foreach (var file in pinnedTaskBarFiles)
+            {
+                FileInfo fileInfo = new FileInfo(file);
+                if (fileInfo.FullName.ToLower().IndexOf("istripperquickplayer") >0) return true;
+            }
+            return false;
+        }
+
+        private async void doTaskbarPadlock()
         {
             if (!TaskbarManager.IsPlatformSupported) return;
-            if (!playerlocked)             
-                    TaskbarManager.Instance.SetOverlayIcon(null, "");
-            else
-                    TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
+            if (isPinnedToTaskbar() && playerlocked)
+                TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
+            else             
+                TaskbarManager.Instance.SetOverlayIcon(null, "");            
         }
 
         private void ChangePlayerLocked()
@@ -1912,14 +1928,14 @@ namespace IStripperQuickPlayer
             {
                 if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, false);
                 notifyIcon1.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-                //this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
+                this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             }
             else
             {
-                if (hook2 != null && hook2.State(tempProcess) != eNktHookState.stActive) hook2.Attach(tempProcess, true);
-                if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, true);
+                if (hook2 != null && (hook2.State(tempProcess) != eNktHookState.stActive && hook2.State(tempProcess) != eNktHookState.stDisabled)) hook2.Attach(tempProcess, true);
+                if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stDisabled) hook2.Enable(tempProcess, true);
                 notifyIcon1.Icon = Properties.Resources.locked;
-                //this.Icon = Properties.Resources.locked;
+                this.Icon = Properties.Resources.locked;
             }
             doTaskbarPadlock();
         }
@@ -1936,5 +1952,7 @@ namespace IStripperQuickPlayer
         {
             Properties.Settings.Default.MinimizeToTray = minimizeToTrayToolStripMenuItem.Checked;
         }
+
+       
     }
 }
