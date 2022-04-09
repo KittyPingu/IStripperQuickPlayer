@@ -769,7 +769,7 @@ namespace IStripperQuickPlayer
                 if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 32)
                 {
                     hook.Attach(tempProcess, true);
-                    hook2.Attach(tempProcess, true);
+                    if (playerlocked) hook2.Attach(tempProcess, true);
                     vghd_procID = tempProcess.Id;
                     //check that we havent played a new clip while we weren't hooked
                     clickingNowPlaying = true;
@@ -1899,11 +1899,10 @@ namespace IStripperQuickPlayer
 
         private void doTaskbarPadlock()
         {
-            if (!playerlocked)
-             if (TaskbarManager.IsPlatformSupported) 
+            if (!TaskbarManager.IsPlatformSupported) return;
+            if (!playerlocked)             
                     TaskbarManager.Instance.SetOverlayIcon(null, "");
             else
-                if (TaskbarManager.IsPlatformSupported) 
                     TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
         }
 
@@ -1917,6 +1916,7 @@ namespace IStripperQuickPlayer
             }
             else
             {
+                if (hook2 != null && hook2.State(tempProcess) != eNktHookState.stActive) hook2.Attach(tempProcess, true);
                 if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, true);
                 notifyIcon1.Icon = Properties.Resources.locked;
                 //this.Icon = Properties.Resources.locked;
