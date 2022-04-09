@@ -632,6 +632,7 @@ namespace IStripperQuickPlayer
             }
             
             lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
+            ChangePlayerLocked();
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
@@ -789,6 +790,7 @@ namespace IStripperQuickPlayer
             if (InjectVGHDProcess()) timerhook.Dispose();
         }
 
+        private uint lastv = 0;
         private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
         {
             if (hook.FunctionName == "user32.dll!CallWindowProcW")
@@ -796,7 +798,25 @@ namespace IStripperQuickPlayer
                 if (playerlocked)
                 {
                     var u = hookCallInfo.ThreadId;
-                    hookCallInfo.Result().LongVal = -1;
+                    var p = hookCallInfo.Params();
+                    foreach (INktParam param in p)
+                    {    
+
+                        if (param.Name == "Msg")
+                        {
+                            uint v = (uint)(param.Value);
+                            if (v == 132)
+                                hookCallInfo.Result().LongVal = -1;
+                            return;
+                            //else
+                            //{
+                            //    if (v != lastv)
+                            //        System.Diagnostics.Debug.WriteLine("Msg = " + v.ToString());
+                            //    lastv = v;
+                            //}
+                        }
+                    }
+                    
                     //hookCallInfo.Result().LongLongVal = -1;
                     //hookCallInfo.LastError = 5;
                 }
@@ -1873,13 +1893,22 @@ namespace IStripperQuickPlayer
         {
             Properties.Settings.Default.LockPlayer = lockPlayerToolStripMenuItem.Checked;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
+            ChangePlayerLocked();
+        }
+
+        private void ChangePlayerLocked()
+        {
             if (!playerlocked)
             {
-                if (hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, false);
+                if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, false);
+                notifyIcon1.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
+                this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             }
             else
             {
-                if (hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, true);
+                if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, true);
+                notifyIcon1.Icon = Properties.Resources.locked;
+                this.Icon = Properties.Resources.locked;
             }
         }
 
