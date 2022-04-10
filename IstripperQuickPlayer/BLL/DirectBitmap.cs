@@ -43,6 +43,11 @@ public class DirectBitmap : IDisposable
 
         return result;
     }
+    
+    ~DirectBitmap()
+    {
+        Dispose();
+    }
 
     public void Dispose()
     {
@@ -50,6 +55,7 @@ public class DirectBitmap : IDisposable
         Disposed = true;
         Bitmap.Dispose();
         BitsHandle.Free();
+        Bits = null;
     }
 }
 }

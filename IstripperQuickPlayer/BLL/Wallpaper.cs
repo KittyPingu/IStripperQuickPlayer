@@ -49,6 +49,7 @@ namespace IStripperQuickPlayer.BLL
                 if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(m, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
                 if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
                 direct.Bitmap.Save(wpfilepath);
+                direct.Dispose();
                 wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
                 m.Dispose();               
             }
@@ -221,6 +222,8 @@ namespace IStripperQuickPlayer.BLL
           DirectBitmap img = FastBoxBlur(src, bxs[0]);
           DirectBitmap img_2 = FastBoxBlur(img, bxs[1]);
           DirectBitmap img_3 = FastBoxBlur(img_2, bxs[2]);
+          img.Dispose();
+          img_2.Dispose();
           return img_3;
          }
 
@@ -274,7 +277,8 @@ namespace IStripperQuickPlayer.BLL
                          g.SmoothingMode = SmoothingMode.None;
                          g.DrawImageUnscaled(o, 0,0);
                          g.Dispose();
-                        o = AddBlur(b).Bitmap;
+                         o = AddBlur(b).Bitmap;
+                         b.Dispose();
                     }
                     if (Properties.Settings.Default.WallpaperDetails) o = AddDetails(o, wallpaper.GetMonitorRECT(monitorId));
                     o.Save(wpfilepath);
