@@ -75,6 +75,8 @@
             this.automaticWallpaperToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.trackbarWallpaperBrightness = new IStripperQuickPlayer.TrackBarMenuItem();
             this.showTextToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.blurImageToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.trackBarBlur = new IStripperQuickPlayer.TrackBarMenuItem();
             this.showKittyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.lockPlayerToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.minimizeToTrayToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -642,7 +644,8 @@
             this.wallpaperToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.automaticWallpaperToolStripMenuItem,
             this.trackbarWallpaperBrightness,
-            this.showTextToolStripMenuItem});
+            this.showTextToolStripMenuItem,
+            this.blurImageToolStripMenuItem});
             this.wallpaperToolStripMenuItem.Name = "wallpaperToolStripMenuItem";
             this.wallpaperToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.wallpaperToolStripMenuItem.Text = "Wallpaper";
@@ -712,6 +715,66 @@
             this.showTextToolStripMenuItem.Size = new System.Drawing.Size(274, 26);
             this.showTextToolStripMenuItem.Text = "Show Text";
             this.showTextToolStripMenuItem.Click += new System.EventHandler(this.showTextToolStripMenuItem_Click);
+            // 
+            // blurImageToolStripMenuItem
+            // 
+            this.blurImageToolStripMenuItem.CheckOnClick = true;
+            this.blurImageToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
+            this.trackBarBlur});
+            this.blurImageToolStripMenuItem.Name = "blurImageToolStripMenuItem";
+            this.blurImageToolStripMenuItem.Size = new System.Drawing.Size(274, 26);
+            this.blurImageToolStripMenuItem.Text = "Blur Image";
+            this.blurImageToolStripMenuItem.CheckStateChanged += new System.EventHandler(this.blurImageToolStripMenuItem_CheckStateChanged);
+            // 
+            // trackBarBlur
+            // 
+            this.trackBarBlur.BackColor = System.Drawing.Color.Transparent;
+            this.trackBarBlur.ClientSize = new System.Drawing.Size(200, 48);
+            this.trackBarBlur.Font = new System.Drawing.Font("Microsoft Sans Serif", 6F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
+            this.trackBarBlur.ForeColor = System.Drawing.Color.White;
+            this.trackBarBlur.Has2Values = false;
+            this.trackBarBlur.LargeChange = new decimal(new int[] {
+            5,
+            0,
+            0,
+            0});
+            this.trackBarBlur.Maximum = new decimal(new int[] {
+            50,
+            0,
+            0,
+            0});
+            this.trackBarBlur.Minimum = new decimal(new int[] {
+            0,
+            0,
+            0,
+            0});
+            this.trackBarBlur.Name = "trackBarBlur";
+            this.trackBarBlur.ScaleDivisions = new decimal(new int[] {
+            10,
+            0,
+            0,
+            0});
+            this.trackBarBlur.Size = new System.Drawing.Size(200, 48);
+            this.trackBarBlur.SmallChange = new decimal(new int[] {
+            1,
+            0,
+            0,
+            0});
+            this.trackBarBlur.Text = "trackBarMenuItem1";
+            this.trackBarBlur.TickColor = System.Drawing.Color.White;
+            this.trackBarBlur.TickStyle = System.Windows.Forms.TickStyle.TopLeft;
+            this.trackBarBlur.TrackbarColor = System.Drawing.Color.Transparent;
+            this.trackBarBlur.Value = new decimal(new int[] {
+            50,
+            0,
+            0,
+            0});
+            this.trackBarBlur.Value2 = new decimal(new int[] {
+            50,
+            0,
+            0,
+            0});
+            this.trackBarBlur.ValueChanged += new System.EventHandler(this.trackBarBlur_ValueChanged);
             // 
             // showKittyToolStripMenuItem
             // 
@@ -1313,6 +1376,8 @@
         private ToolStripMenuItem lockPlayerToolStripMenuItem;
         private NotifyIcon notifyIcon1;
         private ToolStripMenuItem minimizeToTrayToolStripMenuItem;
+        private ToolStripMenuItem blurImageToolStripMenuItem;
+        private TrackBarMenuItem trackBarBlur;
         //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }

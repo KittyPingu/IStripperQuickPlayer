@@ -37,13 +37,18 @@ namespace IStripperQuickPlayer.BLL
                 string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".jpg");
                 Bitmap m = await GetImageBitmapFromUrl(url);
                 m = ResizeBitmap(m, wallpaper.GetMonitorRECT(monitorId));
+                DirectBitmap direct = new DirectBitmap(m.Width, m.Height);
+                Graphics g = Graphics.FromImage(direct.Bitmap);
+                g.DrawImageUnscaled(m, 0,0);
+                g.Dispose();
                 if (initialImages.ContainsKey(monitorNumber))
                     initialImages[monitorNumber] = m;
                 else
                     initialImages.Add(monitorNumber, m);
+                if (Properties.Settings.Default.BlurWallpaper) direct = AddBlur(direct);
                 if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(m, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
                 if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
-                m.Save(wpfilepath);
+                direct.Bitmap.Save(wpfilepath);
                 wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
                 m.Dispose();               
             }
@@ -79,6 +84,150 @@ namespace IStripperQuickPlayer.BLL
             return b;
         }
 
+        private static DirectBitmap FastBoxBlur(DirectBitmap img, int radius) {
+
+             int kSize = radius; 
+
+             if (kSize % 2 == 0) kSize++;
+             DirectBitmap Hblur = new DirectBitmap(img.Width, img.Height);
+             Graphics g = Graphics.FromImage(Hblur.Bitmap);
+             g.InterpolationMode = InterpolationMode.NearestNeighbor;
+             g.CompositingMode = CompositingMode.SourceCopy; 
+             g.SmoothingMode = SmoothingMode.None;
+             g.DrawImageUnscaled(img.Bitmap, 0,0);
+             g.Dispose();
+
+             float Avg = (float) 1 / kSize;
+
+             Parallel.For (0, img.Height, j => {
+
+              float[] hSum = new float[] {
+               0f, 0f, 0f, 0f
+              };
+
+              float[] iAvg = new float[] {
+               0f, 0f, 0f, 0f
+              };
+    
+              for (int x = 0; x < kSize; x++) {
+                    Color tmpColor = img.GetPixel(x, j);
+                    hSum[0] += tmpColor.A;
+                    hSum[1] += tmpColor.R;
+                    hSum[2] += tmpColor.G;
+                    hSum[3] += tmpColor.B;
+              }
+              iAvg[0] = hSum[0] * Avg;
+              iAvg[1] = hSum[1] * Avg;
+              iAvg[2] = hSum[2] * Avg;
+              iAvg[3] = hSum[3] * Avg;
+              for (int i = 0; i < img.Width; i++) 
+              { 
+                if (i - kSize / 2  >= 0 && (i + 1 + kSize / 2) < img.Width)
+                {
+                    Color tmp_pColor = img.GetPixel((i - kSize / 2), j);
+                    hSum[0] -= tmp_pColor.A;
+                    hSum[1] -= tmp_pColor.R;
+                    hSum[2] -= tmp_pColor.G;
+                    hSum[3] -= tmp_pColor.B;
+                    Color tmp_nColor = img.GetPixel(i + 1 + kSize / 2, j);
+                    hSum[0] += tmp_nColor.A;
+                    hSum[1] += tmp_nColor.R;
+                    hSum[2] += tmp_nColor.G;
+                    hSum[3] += tmp_nColor.B;
+                    //
+                    iAvg[0] = hSum[0] * Avg;
+                    iAvg[1] = hSum[1] * Avg;
+                    iAvg[2] = hSum[2] * Avg;
+                    iAvg[3] = hSum[3] * Avg;
+                }
+                Hblur.SetPixel(i, j, Color.FromArgb((int) iAvg[0], (int) iAvg[1], (int) iAvg[2], (int) iAvg[3]));
+              }
+             });
+             DirectBitmap total = new DirectBitmap(Hblur.Width, Hblur.Height);
+             g = Graphics.FromImage(total.Bitmap);
+             g.InterpolationMode = InterpolationMode.NearestNeighbor;
+             g.CompositingMode = CompositingMode.SourceCopy; 
+             g.SmoothingMode = SmoothingMode.None;
+             g.DrawImageUnscaled(Hblur.Bitmap, 0,0);
+             g.Dispose();
+             Parallel.For (0, Hblur.Width, i => {
+              float[] tSum = new float[] {
+               0f, 0f, 0f, 0f
+              };
+              float[] iAvg = new float[] {
+               0f, 0f, 0f, 0f
+              };
+              for (int y = 0; y < kSize; y++) {
+               Color tmpColor = Hblur.GetPixel(i, y);
+               tSum[0] += tmpColor.A;
+               tSum[1] += tmpColor.R;
+               tSum[2] += tmpColor.G;
+               tSum[3] += tmpColor.B;
+              }
+              iAvg[0] = tSum[0] * Avg;
+              iAvg[1] = tSum[1] * Avg;
+              iAvg[2] = tSum[2] * Avg;
+              iAvg[3] = tSum[3] * Avg;
+
+              for (int j = 0; j < Hblur.Height; j++) {
+               if (j - kSize / 2 >= 0 && j + 1 + kSize / 2 < Hblur.Height) {
+                Color tmp_pColor = Hblur.GetPixel(i, j - kSize / 2);
+                tSum[0] -= tmp_pColor.A;
+                tSum[1] -= tmp_pColor.R;
+                tSum[2] -= tmp_pColor.G;
+                tSum[3] -= tmp_pColor.B;
+                Color tmp_nColor = Hblur.GetPixel(i, j + 1 + kSize / 2);
+                tSum[0] += tmp_nColor.A;
+                tSum[1] += tmp_nColor.R;
+                tSum[2] += tmp_nColor.G;
+                tSum[3] += tmp_nColor.B;
+                //
+                iAvg[0] = tSum[0] * Avg;
+                iAvg[1] = tSum[1] * Avg;
+                iAvg[2] = tSum[2] * Avg;
+                iAvg[3] = tSum[3] * Avg;
+               }
+               total.SetPixel(i, j, Color.FromArgb((int) iAvg[0], (int) iAvg[1], (int) iAvg[2], (int) iAvg[3]));
+              }
+             });
+             return total;
+        }
+       
+
+        private static int[] boxesForGaussian(double sigma, int n) {
+
+         double wIdeal = Math.Sqrt((12 * sigma * sigma / n) + 1);
+         double wl = Math.Floor(wIdeal);
+ 
+         if (wl % 2 == 0) wl--;
+         double wu = wl + 2;
+
+         double mIdeal = (12 * sigma * sigma -n *wl  * wl - 4 * n * wl -3 * n) / (-4 * wl -4);
+         double m = Math.Round(mIdeal);
+
+         int[] sizes = new int[n];
+         for (int i = 0; i < n; i++) {
+          if (i < m) {
+           sizes[i] = (int) wl;
+          } else {
+           sizes[i] = (int) wu;
+          }
+         }
+         return sizes;
+        }
+
+         private static DirectBitmap FastGaussianBlur(DirectBitmap src, int Radius) {
+          var bxs = boxesForGaussian(Radius, 3);
+          DirectBitmap img = FastBoxBlur(src, bxs[0]);
+          DirectBitmap img_2 = FastBoxBlur(img, bxs[1]);
+          DirectBitmap img_3 = FastBoxBlur(img_2, bxs[2]);
+          return img_3;
+         }
+
+        private static DirectBitmap AddBlur(DirectBitmap b)
+        {
+            return FastGaussianBlur(b, Convert.ToInt32(Properties.Settings.Default.BlurRadius));
+        }
         private static Bitmap AddDetails(Bitmap b, Rect l, int sz = 36)
         {
             var str = _modelname + ", " + _outfit;
@@ -104,7 +253,7 @@ namespace IStripperQuickPlayer.BLL
             return b;
         }
 
-        public static async void ChangeBrightness()
+        public static async void RedrawImage()
         {
             try
             {
@@ -116,8 +265,18 @@ namespace IStripperQuickPlayer.BLL
                    
                     Bitmap o = AdjustBrightness(initialImages[kvp.Key], (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));    
                     string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + kvp.Key.ToString() + ".jpg");
+                    if (Properties.Settings.Default.BlurWallpaper)
+                    {
+                         DirectBitmap b = new DirectBitmap(o.Width, o.Height);
+                         Graphics g = Graphics.FromImage(b.Bitmap);
+                         g.InterpolationMode = InterpolationMode.NearestNeighbor;
+                         g.CompositingMode = CompositingMode.SourceCopy; 
+                         g.SmoothingMode = SmoothingMode.None;
+                         g.DrawImageUnscaled(o, 0,0);
+                         g.Dispose();
+                        o = AddBlur(b).Bitmap;
+                    }
                     if (Properties.Settings.Default.WallpaperDetails) o = AddDetails(o, wallpaper.GetMonitorRECT(monitorId));
-
                     o.Save(wpfilepath);
                     o.Dispose();
 
@@ -148,6 +307,7 @@ namespace IStripperQuickPlayer.BLL
                 }
             }
             catch (Exception ex) {}
+
             return imageBitmap;
         }
 

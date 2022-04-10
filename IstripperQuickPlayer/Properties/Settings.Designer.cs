@@ -334,5 +334,29 @@ namespace IStripperQuickPlayer.Properties {
                 this["MinimizeToTray"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool BlurWallpaper {
+            get {
+                return ((bool)(this["BlurWallpaper"]));
+            }
+            set {
+                this["BlurWallpaper"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("15")]
+        public decimal BlurRadius {
+            get {
+                return ((decimal)(this["BlurRadius"]));
+            }
+            set {
+                this["BlurRadius"] = value;
+            }
+        }
     }
 }

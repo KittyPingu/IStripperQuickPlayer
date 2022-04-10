@@ -639,6 +639,7 @@ namespace IStripperQuickPlayer
             includeShowTitleInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowOutfitInSearch;
             trackBarCardScale.Value = (decimal)(Properties.Settings.Default.CardScale);
             trackBarZoomOnHover.Value = (decimal)(Properties.Settings.Default.ZoomOnHover);
+            blurImageToolStripMenuItem.Checked = Properties.Settings.Default.BlurWallpaper;
             if (Properties.Settings.Default.MinSizeMB != 0)
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
@@ -662,6 +663,7 @@ namespace IStripperQuickPlayer
             }
             catch { }
             trackbarWallpaperBrightness.Value = Properties.Settings.Default.WallpaperBrightness;
+            trackBarBlur.Value = Properties.Settings.Default.BlurRadius;
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
             showKittyToolStripMenuItem.Checked = Properties.Settings.Default.ShowKitty;
@@ -1750,7 +1752,7 @@ namespace IStripperQuickPlayer
             trackbarWallpaperBrightness.ValueChanged += trackbarWallpaperBrightness_ValueChanged;
 
             Properties.Settings.Default.WallpaperBrightness = trackbarWallpaperBrightness.Value;
-            this.BeginInvoke((Action)(() => Wallpaper.ChangeBrightness()));
+            this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
         }
 
         private void showTextToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1953,6 +1955,27 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.MinimizeToTray = minimizeToTrayToolStripMenuItem.Checked;
         }
 
-       
+        private void blurImageToolStripMenuItem_CheckStateChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.BlurWallpaper = blurImageToolStripMenuItem.Checked;
+            this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
+        }
+
+        private void trackBarBlur_ValueChanged(object sender, EventArgs e)
+        {
+            trackBarBlur.MouseUp += trackBarBlur_MouseUp;
+            trackBarBlur.KeyUp += trackBarBlur_MouseUp;
+            trackBarBlur.ValueChanged -= trackBarBlur_ValueChanged;
+        }
+
+        private async void trackBarBlur_MouseUp(object sender, EventArgs e)
+        {
+            trackBarBlur.MouseUp -= trackBarBlur_MouseUp;
+            trackBarBlur.KeyUp -= trackBarBlur_MouseUp;
+            trackBarBlur.ValueChanged += trackBarBlur_ValueChanged;
+
+            Properties.Settings.Default.BlurRadius = trackBarBlur.Value;
+            this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
+        }
     }
 }
