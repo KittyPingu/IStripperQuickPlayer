@@ -46,9 +46,9 @@ namespace IStripperQuickPlayer.BLL
                 else
                     initialImages.Add(monitorNumber, m);
                 if (Properties.Settings.Default.BlurWallpaper) direct = AddBlur(direct);
-                if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(m, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
+                if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(direct.Bitmap, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
                 if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
-                direct.Bitmap.Save(wpfilepath);
+                m.Save(wpfilepath);
                 direct.Dispose();
                 wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
                 m.Dispose();               
