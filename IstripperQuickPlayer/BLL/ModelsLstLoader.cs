@@ -404,10 +404,10 @@ namespace IStripperQuickPlayer.BLL
             //string_position = string_position + 1
             //date_offset = 256 * date_offset + Asc(Mid(source_string, string_position, 1))  'Get #1, string_position, my_byte
             //string_position = string_position + 1
-            //date_from_binary = #11/13/1926# + date_offset
+            //date_from_binary = #11/12/1926# + date_offset
             byte[] b = reader.ReadBytes(4);
 
-            DateTime dt = new DateTime(1926,11,13);
+            DateTime dt = new DateTime(1926,11,12);
             return dt.AddDays(b[2] << 8 | b[3]);
         }
 
