@@ -358,5 +358,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["BlurRadius"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool HideDesktopIcons {
+            get {
+                return ((bool)(this["HideDesktopIcons"]));
+            }
+            set {
+                this["HideDesktopIcons"] = value;
+            }
+        }
     }
 }

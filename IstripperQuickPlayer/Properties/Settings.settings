@@ -86,5 +86,8 @@
     <Setting Name="BlurRadius" Type="System.Decimal" Scope="User">
       <Value Profile="(Default)">15</Value>
     </Setting>
+    <Setting Name="HideDesktopIcons" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
   </Settings>
 </SettingsFile>

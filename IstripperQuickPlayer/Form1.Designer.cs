@@ -77,6 +77,7 @@
             this.showTextToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.blurImageToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.trackBarBlur = new IStripperQuickPlayer.TrackBarMenuItem();
+            this.hideDesktopIconsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.showKittyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.lockPlayerToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.minimizeToTrayToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -645,7 +646,8 @@
             this.automaticWallpaperToolStripMenuItem,
             this.trackbarWallpaperBrightness,
             this.showTextToolStripMenuItem,
-            this.blurImageToolStripMenuItem});
+            this.blurImageToolStripMenuItem,
+            this.hideDesktopIconsToolStripMenuItem});
             this.wallpaperToolStripMenuItem.Name = "wallpaperToolStripMenuItem";
             this.wallpaperToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.wallpaperToolStripMenuItem.Text = "Wallpaper";
@@ -775,6 +777,14 @@
             0,
             0});
             this.trackBarBlur.ValueChanged += new System.EventHandler(this.trackBarBlur_ValueChanged);
+            // 
+            // hideDesktopIconsToolStripMenuItem
+            // 
+            this.hideDesktopIconsToolStripMenuItem.CheckOnClick = true;
+            this.hideDesktopIconsToolStripMenuItem.Name = "hideDesktopIconsToolStripMenuItem";
+            this.hideDesktopIconsToolStripMenuItem.Size = new System.Drawing.Size(274, 26);
+            this.hideDesktopIconsToolStripMenuItem.Text = "Hide Desktop Icons";
+            this.hideDesktopIconsToolStripMenuItem.CheckedChanged += new System.EventHandler(this.hideDesktopIconsToolStripMenuItem_CheckedChanged);
             // 
             // showKittyToolStripMenuItem
             // 
@@ -1378,6 +1388,7 @@
         private ToolStripMenuItem minimizeToTrayToolStripMenuItem;
         private ToolStripMenuItem blurImageToolStripMenuItem;
         private TrackBarMenuItem trackBarBlur;
+        private ToolStripMenuItem hideDesktopIconsToolStripMenuItem;
         //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }

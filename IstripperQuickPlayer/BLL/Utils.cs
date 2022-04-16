@@ -1,6 +1,8 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
@@ -9,6 +11,110 @@ namespace IStripperQuickPlayer.BLL
 {
     internal static class Utils
     {
+        [return: MarshalAs(UnmanagedType.Bool)]
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowInfo(IntPtr hwnd, ref WINDOWINFO pwi);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT
+        {
+            private int _Left;
+            private int _Top;
+            private int _Right;
+            private int _Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct WINDOWINFO
+        {
+            public uint cbSize;
+            public RECT rcWindow;
+            public RECT rcClient;
+            public uint dwStyle;
+            public uint dwExStyle;
+            public uint dwWindowStatus;
+            public uint cxWindowBorders;
+            public uint cyWindowBorders;
+            public ushort atomWindowType;
+            public ushort wCreatorVersion;
+
+            public WINDOWINFO(Boolean? filler)
+                : this()   // Allows automatic initialization of "cbSize" with "new WINDOWINFO(null/true/false)".
+            {
+                cbSize = (UInt32)(Marshal.SizeOf(typeof(WINDOWINFO)));
+            }
+
+        }
+
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetWindow(IntPtr hWnd, GetWindow_Cmd uCmd);
+        enum GetWindow_Cmd : uint
+        {
+            GW_HWNDFIRST = 0,
+            GW_HWNDLAST = 1,
+            GW_HWNDNEXT = 2,
+            GW_HWNDPREV = 3,
+            GW_OWNER = 4,
+            GW_CHILD = 5,
+            GW_ENABLEDPOPUP = 6
+        }
+        [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern IntPtr SendMessage(IntPtr hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")]
+        static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        private const int WM_COMMAND = 0x111;
+
+        internal static void ToggleDesktopIcons()
+        {
+              var toggleDesktopCommand = new IntPtr(0x7402);            
+              SendMessage(GetDesktopSHELLDLL_DefView(), WM_COMMAND, toggleDesktopCommand, IntPtr.Zero);             
+        }   
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string className, string windowTitle);
+        [DllImport("user32.dll", SetLastError = false)]
+        static extern IntPtr GetDesktopWindow();
+
+        static IntPtr GetDesktopSHELLDLL_DefView()
+        {
+            var hShellViewWin = IntPtr.Zero;
+            var hWorkerW = IntPtr.Zero;
+
+            var hProgman = FindWindow("Progman", null);
+            var hDesktopWnd = GetDesktopWindow();
+
+            // If the main Program Manager window is found
+            if (hProgman != IntPtr.Zero)
+            {
+                // Get and load the main List view window containing the icons.
+                hShellViewWin = FindWindowEx(hProgman, IntPtr.Zero, "SHELLDLL_DefView", null);
+                if (hShellViewWin == IntPtr.Zero)
+                {
+                    // When this fails (picture rotation is turned ON, toggledesktop shell cmd used ), then look for the WorkerW windows list to get the
+                    // correct desktop list handle.
+                    // As there can be multiple WorkerW windows, iterate through all to get the correct one
+                    do
+                    {
+                        hWorkerW = FindWindowEx(hDesktopWnd, hWorkerW, "WorkerW", null);
+                        hShellViewWin = FindWindowEx(hWorkerW, IntPtr.Zero, "SHELLDLL_DefView", null);
+                    } while (hShellViewWin == IntPtr.Zero && hWorkerW != IntPtr.Zero);
+                }
+            }
+            return hShellViewWin;
+        }
+         
+        public const uint WS_VISIBLE  = 0x10000000;
+        internal static bool DefaultIconsVisible;
+
+        internal static bool DesktopIconsVisible()
+        {
+            var hWnd = GetWindow(GetDesktopSHELLDLL_DefView(), GetWindow_Cmd.GW_CHILD);
+    
+            var info = new WINDOWINFO(null);
+            //info.cbSize = (uint)Marshal.SizeOf(info);
+            GetWindowInfo(hWnd, ref info);
+            return (info.dwStyle & WS_VISIBLE) == WS_VISIBLE;
+        }
+
         internal static void SizeLabelFont(Label lbl, int DefaultSize, bool IncludeHeight = false)
         {
             // Only bother if there's text.

@@ -21,6 +21,10 @@ namespace IStripperQuickPlayer.BLL
         public static string _outfit = "";
         public static async void ChangeWallpaper(uint monitorNumber, string url, string modelname, string outfit)
         {
+            if (Properties.Settings.Default.HideDesktopIcons)
+                hideIcons();
+            else
+                showIcons();
             if (url == null)return;       
             _modelname = modelname;
             _outfit = outfit;
@@ -54,6 +58,19 @@ namespace IStripperQuickPlayer.BLL
                 m.Dispose();               
             }
             catch (Exception ex){}
+        }
+
+        private static void showIcons()
+        {
+
+            if (!Utils.DesktopIconsVisible())
+                Utils.ToggleDesktopIcons();
+        }
+
+        private static void hideIcons()
+        {
+            if (Utils.DesktopIconsVisible())
+                Utils.ToggleDesktopIcons();
         }
 
         private static Bitmap ResizeBitmap(Bitmap m, Rect rect)

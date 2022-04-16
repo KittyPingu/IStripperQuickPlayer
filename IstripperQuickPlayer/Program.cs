@@ -1,3 +1,4 @@
+using IStripperQuickPlayer.BLL;
 using System.Globalization;
 
 namespace IStripperQuickPlayer
@@ -15,6 +16,7 @@ namespace IStripperQuickPlayer
             //CultureInfo.CurrentCulture = new CultureInfo("en-GB", false);
             ApplicationConfiguration.Initialize();
             Application.Run(new Form1());
+            System.Diagnostics.Process.GetCurrentProcess().Kill();
         }
     }
 }

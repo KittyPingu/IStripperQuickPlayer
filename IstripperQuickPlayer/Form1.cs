@@ -56,7 +56,7 @@ namespace IStripperQuickPlayer
         private int spaceBelowClipList = 0;
         bool playerlocked = Properties.Settings.Default.LockPlayer;
         //private WebView2DevToolsContext devtoolsContext = null;
-
+  
         private void actNextClip()
         {
             if (Properties.Settings.Default.NextClipEnabled) GetNextClip();
@@ -630,7 +630,7 @@ namespace IStripperQuickPlayer
                 if (fontFamily.Name == "Segoe Fluent Icons")
                     fontInstalled = true;
             }
-            
+            Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
             lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;           
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
@@ -668,6 +668,7 @@ namespace IStripperQuickPlayer
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
             showKittyToolStripMenuItem.Checked = Properties.Settings.Default.ShowKitty;
             minimizeToTrayToolStripMenuItem.Checked = Properties.Settings.Default.MinimizeToTray;
+            hideDesktopIconsToolStripMenuItem.Checked = Properties.Settings.Default.HideDesktopIcons;
             myData = RetrieveMyData();
             FilterSettingsList.Load();
             PopulateFilterList();
@@ -1215,10 +1216,14 @@ namespace IStripperQuickPlayer
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            Properties.Settings.Default.Save();
+        {            
             SaveMyData();
             Wallpaper.RestoreWallpaper();
+           
+            if (Utils.DefaultIconsVisible  != Utils.DesktopIconsVisible()) 
+            {
+                Utils.ToggleDesktopIcons();
+            }
             if (WindowState == FormWindowState.Maximized)
             {
                 Properties.Settings.Default.Location = RestoreBounds.Location;
@@ -1976,6 +1981,13 @@ namespace IStripperQuickPlayer
 
             Properties.Settings.Default.BlurRadius = trackBarBlur.Value;
             this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
+        }
+
+        private void hideDesktopIconsToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.HideDesktopIcons = hideDesktopIconsToolStripMenuItem.Checked;
+            if (Utils.DesktopIconsVisible() == Properties.Settings.Default.HideDesktopIcons)
+                Utils.ToggleDesktopIcons();
         }
     }
 }
