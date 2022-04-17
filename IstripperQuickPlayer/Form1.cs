@@ -1872,15 +1872,19 @@ namespace IStripperQuickPlayer
             }
             
             listModelsNew.Height = this.Height - listModelsNew.Top - (int)(92*dx/120);   
-            listClips.Top = txtClipType.Bottom + 4;
+            listClips.Top = txtClipType.Bottom + 10;
             listClips.Height = this.Height - panelModelDetails.Height - (int)(72.0*dx/96.0) - listClips.Top;
             panelModelDetails.Top = listClips.Bottom + 8;            
             listModelsNew.Width = splitContainer1.Panel1.Width - 24;
             panelClip.Width = splitContainer1.Panel2.Width;
-            cmdWallpaper.Left = panelClip.Width -  370; //(int)(370*dx/120);
-            cmdNextClip.Left = cmdWallpaper.Right + 5;
-            cmdShowModel.Left = cmdNextClip.Right + 5;
+            //cmdWallpaper.Left = panelClip.Width -  370; //(int)(370*dx/120);
+            //cmdNextClip.Left = cmdWallpaper.Right + 5;
+            //cmdShowModel.Left = cmdNextClip.Right + 5;            
             listClips.Width = panelClip.Width - 28;
+            cmdShowModel.Left = listClips.Right - cmdShowModel.Width;
+            cmdNextClip.Left = cmdShowModel.Left - cmdNextClip.Width - 5;
+            cmdWallpaper.Left = cmdNextClip.Left - cmdWallpaper.Width - 5;
+            cmdPhotos.Top = listClips.Top;
             cmdPhotos.Left = listClips.Right - cmdPhotos.Width;// - System.Windows.Forms.SystemInformation.VerticalScrollBarWidth;
             panelModelDetails.Width = listClips.Width;
             txtDescription.Width = listClips.Right - txtDescription.Left - 11;
