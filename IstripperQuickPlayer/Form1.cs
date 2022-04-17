@@ -187,20 +187,37 @@ namespace IStripperQuickPlayer
             if (currentCards == null || currentCards.Count == 0) return;
             currentCards = Filter(currentCards);
 
-            switch (cmbSortBy.Text)
+            string sortText = cmbSortBy.Text;
+            if (cmbSortDirection.Text.StartsWith("Desc"))
+                sortText += " (Descending)";
+
+            switch (sortText)
             {
                 case "My Rating":
+                    if (myData != null) currentCards = currentCards.OrderBy(i => myData.GetCardRating(i.name)).ToList();
+                    break;
+                case "My Rating (Descending)":
                     if (myData != null) currentCards = currentCards.OrderByDescending(i => myData.GetCardRating(i.name)).ToList();
                     break;
                 case "":
                 case "Model Name":
                     currentCards = currentCards.OrderBy(i => i.modelName).ToList();
                     break;
+                case " (Descending)":
+                case "Model Name (Descending)":
+                    currentCards = currentCards.OrderByDescending(i => i.modelName).ToList();
+                    break;
                 case "Rating":
+                    currentCards = currentCards.OrderBy(i => i.rating).ToList();
+                    break;
+                case "Rating (Descending)":
                     currentCards = currentCards.OrderByDescending(i => i.rating).ToList();
                     break;
                 case "Age":
                     currentCards = currentCards.OrderBy(i => i.modelAge).ToList();
+                    break;
+                case "Age (Descending)":
+                    currentCards = currentCards.OrderByDescending(i => i.modelAge).ToList();
                     break;
                 case "Breast Size":
                     currentCards = currentCards.OrderBy(i => i.bust).ToList();
@@ -211,8 +228,14 @@ namespace IStripperQuickPlayer
                 case "Ethnicity":
                     currentCards = currentCards.OrderBy(i => i.ethnicity).ToList();
                     break;
+                case "Ethnicity (Descending)":
+                    currentCards = currentCards.OrderByDescending(i => i.ethnicity).ToList();
+                    break;
                 case "Height":
                     currentCards = currentCards.OrderBy(i => i.height).ToList();
+                    break;
+                case "Height (Descending)":
+                    currentCards = currentCards.OrderByDescending(i => i.height).ToList();
                     break;
                 case "Date Purchased (Descending)":
                     currentCards = currentCards.OrderByDescending(i => i.datePurchased).ToList();
@@ -618,6 +641,7 @@ namespace IStripperQuickPlayer
                     Size = Properties.Settings.Default.Size;
                 }
             }
+            //AdjustControls();
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             culture.NumberFormat.NumberDecimalSeparator = ".";           
@@ -633,6 +657,7 @@ namespace IStripperQuickPlayer
             Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
             lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;           
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
+            cmbSortDirection.Text = Properties.Settings.Default.SortDirection;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
             includeDescriptionInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowDescInSearch;
@@ -1562,7 +1587,7 @@ namespace IStripperQuickPlayer
 
         private void Form1_Shown(object sender, EventArgs e)
         {
-
+            AdjustControls();
             try
             {
                 ChangePlayerLocked();
@@ -1845,12 +1870,14 @@ namespace IStripperQuickPlayer
             {
                 g.Dispose();
             }
-            listClips.Height = this.Height - this.spaceBelowClipList - listClips.Top;
-            listModelsNew.Height = this.Height - listModelsNew.Top - (int)(92*dx/120);          
+            
+            listModelsNew.Height = this.Height - listModelsNew.Top - (int)(92*dx/120);   
+            listClips.Top = txtClipType.Bottom + 4;
+            listClips.Height = this.Height - panelModelDetails.Height - (int)(72.0*dx/96.0) - listClips.Top;
             panelModelDetails.Top = listClips.Bottom + 8;            
             listModelsNew.Width = splitContainer1.Panel1.Width - 24;
             panelClip.Width = splitContainer1.Panel2.Width;
-            cmdWallpaper.Left = panelClip.Width -  (int)(370*dx/120);
+            cmdWallpaper.Left = panelClip.Width -  370; //(int)(370*dx/120);
             cmdNextClip.Left = cmdWallpaper.Right + 5;
             cmdShowModel.Left = cmdNextClip.Right + 5;
             listClips.Width = panelClip.Width - 28;
@@ -1988,6 +2015,16 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.HideDesktopIcons = hideDesktopIconsToolStripMenuItem.Checked;
             if (Utils.DesktopIconsVisible() == Properties.Settings.Default.HideDesktopIcons)
                 Utils.ToggleDesktopIcons();
+        }
+
+        private void cmbSortDirection_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.SortDirection = cmbSortDirection.Text;
+            if (cardRenderer != null)
+            {
+                cardRenderer.sortBy = cmbSortBy.Text;
+                PopulateModelListview();
+            }
         }
     }
 }

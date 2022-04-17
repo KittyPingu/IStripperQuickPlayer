@@ -370,5 +370,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["HideDesktopIcons"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Ascending")]
+        public string SortDirection {
+            get {
+                return ((string)(this["SortDirection"]));
+            }
+            set {
+                this["SortDirection"] = value;
+            }
+        }
     }
 }
