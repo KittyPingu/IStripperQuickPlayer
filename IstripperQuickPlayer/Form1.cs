@@ -1951,10 +1951,40 @@ namespace IStripperQuickPlayer
             return false;
         }
 
+
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetStartupInfoA")]
+        public static extern void GetStartupInfo(out STARTUPINFO lpStartupInfo);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        public struct STARTUPINFO
+        {
+            public uint cb;
+            public string lpReserved;
+            public string lpDesktop;
+            public string lpTitle;
+            public uint dwX;
+            public uint dwY;
+            public uint dwXSize;
+            public uint dwYSize;
+            public uint dwXCountChars;
+            public uint dwYCountChars;
+            public uint dwFillAttribute;
+            public uint dwFlags;
+            public ushort wShowWindow;
+            public ushort cbReserved2;
+            public IntPtr lpReserved2;
+            public IntPtr hStdInput;
+            public IntPtr hStdOutput;
+            public IntPtr hStdError;
+        }
         private async void doTaskbarPadlock()
         {
+            STARTUPINFO startInfo;
+            GetStartupInfo(out startInfo);
+            var startupPath = startInfo.lpTitle;
+           
             if (!TaskbarManager.IsPlatformSupported) return;
-            if (isPinnedToTaskbar() && playerlocked)
+            if ((startupPath.EndsWith(".lnk") || isPinnedToTaskbar()) && playerlocked)
                 TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
             else             
                 TaskbarManager.Instance.SetOverlayIcon(null, "");            
