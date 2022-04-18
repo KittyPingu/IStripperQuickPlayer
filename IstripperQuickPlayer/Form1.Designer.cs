@@ -60,6 +60,8 @@
             this.menuStrip1 = new System.Windows.Forms.MenuStrip();
             this.fileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.reloadModelslstToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.exportFiltersToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.importFiltersToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.exitToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.settingsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.hotkeysToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -443,6 +445,8 @@
             // 
             this.fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.reloadModelslstToolStripMenuItem,
+            this.exportFiltersToolStripMenuItem,
+            this.importFiltersToolStripMenuItem,
             this.exitToolStripMenuItem});
             this.fileToolStripMenuItem.Name = "fileToolStripMenuItem";
             this.fileToolStripMenuItem.Size = new System.Drawing.Size(46, 24);
@@ -452,14 +456,28 @@
             // 
             this.reloadModelslstToolStripMenuItem.Name = "reloadModelslstToolStripMenuItem";
             this.reloadModelslstToolStripMenuItem.ShortcutKeys = System.Windows.Forms.Keys.F5;
-            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
+            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
             this.reloadModelslstToolStripMenuItem.Text = "Reload Models";
             this.reloadModelslstToolStripMenuItem.Click += new System.EventHandler(this.cmdLoadModels_Click);
+            // 
+            // exportFiltersToolStripMenuItem
+            // 
+            this.exportFiltersToolStripMenuItem.Name = "exportFiltersToolStripMenuItem";
+            this.exportFiltersToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.exportFiltersToolStripMenuItem.Text = "Export Filters..";
+            this.exportFiltersToolStripMenuItem.Click += new System.EventHandler(this.exportFiltersToolStripMenuItem_Click);
+            // 
+            // importFiltersToolStripMenuItem
+            // 
+            this.importFiltersToolStripMenuItem.Name = "importFiltersToolStripMenuItem";
+            this.importFiltersToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.importFiltersToolStripMenuItem.Text = "Import Filter..";
+            this.importFiltersToolStripMenuItem.Click += new System.EventHandler(this.importFiltersToolStripMenuItem_Click);
             // 
             // exitToolStripMenuItem
             // 
             this.exitToolStripMenuItem.Name = "exitToolStripMenuItem";
-            this.exitToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
+            this.exitToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
             this.exitToolStripMenuItem.Text = "Exit";
             this.exitToolStripMenuItem.Click += new System.EventHandler(this.exitToolStripMenuItem_Click);
             // 
@@ -1403,6 +1421,8 @@
         private TrackBarMenuItem trackBarBlur;
         private ToolStripMenuItem hideDesktopIconsToolStripMenuItem;
         private ComboBox cmbSortDirection;
+        private ToolStripMenuItem exportFiltersToolStripMenuItem;
+        private ToolStripMenuItem importFiltersToolStripMenuItem;
         //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }

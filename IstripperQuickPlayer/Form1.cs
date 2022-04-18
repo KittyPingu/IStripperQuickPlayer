@@ -151,6 +151,7 @@ namespace IStripperQuickPlayer
                         {
                             //do all the positives first
                             poslist = currentCards.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
+                             || (taglist.Any(d => c.name.ContainsWithNot(d)))
                              || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                              || (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
                              || (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",", c.tags).ContainsWithNot(tag)).ToList();
@@ -159,6 +160,7 @@ namespace IStripperQuickPlayer
                         foreach (string tag in taglist.Where(x => x.Contains("!")))
                         {
                             neglist = neglist.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
+                            && (taglist.Any(d => c.name.ContainsWithNot(d)))
                             && (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                             && (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
                             && (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",", c.tags).ContainsWithNot(tag)).ToList();
@@ -171,6 +173,7 @@ namespace IStripperQuickPlayer
                     else
                     {
                         currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
+                            || (taglist.Any(d => c.name.ContainsWithNot(d)))
                             || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
                             || (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
                             || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",", c.tags).ContainsWithNot(y))).ToList();
@@ -341,12 +344,12 @@ namespace IStripperQuickPlayer
                         foreach (string tag in taglist.Where(x => !x.Contains("!")))
                         {
                            //do all the positives first
-                           poslist = currentCards.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",",c.tags).ContainsWithNot(tag)).ToList();                        
+                           poslist = currentCards.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",",c.tags).ContainsWithNot(tag) || c.name.ContainsWithNot(tag)).ToList();                        
                         }
                         if (poslist == null) poslist = new List<ModelCard>{ };
                         foreach (string tag in taglist.Where(x => x.Contains("!")))
                         {
-                            neglist = neglist.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",",c.tags).ContainsWithNot(tag)).ToList();         
+                            neglist = neglist.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",",c.tags).ContainsWithNot(tag) && c.name.ContainsWithNot(tag)).ToList();         
                         }
                         if (poslist == null) currentCards = new List<ModelCard>{ };
                         else
@@ -356,6 +359,7 @@ namespace IStripperQuickPlayer
                     else
                     {
                         currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
+                            || taglist.Any(d => c.name.ContainsWithNot(d))
                             || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",",c.tags).ContainsWithNot(y))).ToList();
                     }
 
@@ -428,6 +432,43 @@ namespace IStripperQuickPlayer
             ms.Close();  
             ms.Dispose();  
         } 
+
+        internal void SerializeFilter(FilterSettings filter, String filename)
+        {
+            //Create the stream to add object into it.  
+            System.IO.Stream ms = System.IO.File.OpenWrite(filename);   
+            //Format the object as Binary  
+  
+            BinaryFormatter formatter = new BinaryFormatter();  
+            //It serialize the employee object  
+            formatter.Serialize(ms, filter);  
+            ms.Flush();  
+            ms.Close();  
+            ms.Dispose(); 
+        }
+
+        internal FilterSettings DeserializeFilter(string filename)
+        {
+             //Format the object as Binary  
+            try
+            {
+                BinaryFormatter formatter = new BinaryFormatter();  
+   
+                //Reading the file from the server  
+                FileStream fs = System.IO.File.Open(filename, FileMode.Open);   
+                object obj = formatter.Deserialize(fs);  
+                FilterSettings f = (FilterSettings)obj;  
+                fs.Flush();  
+                fs.Close();  
+                fs.Dispose(); 
+
+                return f;
+            }
+            catch (Exception ex)
+            {
+                return null;
+            }
+        }
 
         internal void SaveMyData()
         {
@@ -1216,7 +1257,7 @@ namespace IStripperQuickPlayer
                 cmdClearSearch.Visible = (txtSearch.Text.Length > 0);
                 PopulateModelListview();
             }
-            else
+            else if (txtSearch.Text.Length > 0) 
                 cmdClearSearch.Visible = false;
         }
 
@@ -2083,6 +2124,54 @@ namespace IStripperQuickPlayer
             {
                 cardRenderer.sortBy = cmbSortBy.Text;
                 PopulateModelListview();
+            }
+        }
+
+        private void exportFiltersToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            FolderBrowserDialog dlg = new FolderBrowserDialog();
+            var r = dlg.ShowDialog();
+            if (r == DialogResult.OK)
+            {
+                foreach(var f in FilterSettingsList.filters)
+                {
+                    SerializeFilter(f.Value, Path.Join(dlg.SelectedPath, f.Key + ".flt"));
+                }
+            }
+        }
+
+        private void importFiltersToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            System.Windows.Forms.OpenFileDialog dlg = new System.Windows.Forms.OpenFileDialog();
+            dlg.Filter = "*.flt|*.flt";
+            dlg.Title = "Select filter file";
+            var r = dlg.ShowDialog();
+            if (r == DialogResult.OK)
+            {
+                var f = DeserializeFilter(dlg.FileName);
+                var fname = Path.GetFileNameWithoutExtension(dlg.FileName);
+                if (!FilterSettingsList.filters.ContainsKey(fname))
+                {
+                    FilterSettingsList.filters.Add(fname, f);
+                    FilterSettingsList.Persist();
+                    this.BeginInvoke((Action)(() => { PopulateFilterList();}));
+                }
+                else
+                {
+                    var d = MessageBox.Show("A filter with this name already exists - do you want to overwrite it?", "Overwrite Filter?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    if (d == DialogResult.Yes)
+                    {
+                        FilterSettingsList.Delete(fname);
+                        FilterSettingsList.filters.Add(fname, f);
+                        FilterSettingsList.Persist();
+                        this.BeginInvoke((Action)(() => { PopulateFilterList();}));
+                        if (cmbFilter.Text == fname)
+                        {                            
+                            filterSettings = FilterSettingsList.GetFilter(cmbFilter.SelectedItem.ToString());
+                            this.BeginInvoke((Action)(() => { PopulateModelListview();}));
+                        }
+                    }
+                }
             }
         }
     }
