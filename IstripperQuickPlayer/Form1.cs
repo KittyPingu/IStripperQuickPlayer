@@ -1992,7 +1992,23 @@ namespace IStripperQuickPlayer
                 GetStartupInfo(out startInfo);
                 startupPath = startInfo.lpTitle;
             }
-            if (!TaskbarManager.IsPlatformSupported) return;
+            if (!TaskbarManager.IsPlatformSupported)
+            {
+                uint WM_SETICON = 0x80u;
+                IntPtr ICON_SMALL = new IntPtr(0);
+                IntPtr ICON_BIG = new IntPtr(1);
+                if (playerlocked)
+                {
+                    Utils.SendMessage(this.Handle, WM_SETICON, ICON_SMALL, Properties.Resources.locked.Handle);
+                    Utils.SendMessage(this.Handle, WM_SETICON, ICON_BIG, Properties.Resources.locked.Handle);
+                }
+                else
+                {
+                    Utils.SendMessage(this.Handle, WM_SETICON, ICON_SMALL, Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265.Handle);
+                    Utils.SendMessage(this.Handle, WM_SETICON, ICON_BIG, Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265.Handle);
+                }
+                return;
+            }
             if ((startupPath.EndsWith(".lnk") || isPinnedToTaskbar()) && playerlocked)
                 TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
             else             
