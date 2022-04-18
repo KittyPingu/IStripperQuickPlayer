@@ -65,7 +65,7 @@ namespace IStripperQuickPlayer.BLL
 
         internal static void ToggleDesktopIcons()
         {
-              var toggleDesktopCommand = new IntPtr(0x7402);            
+              IntPtr toggleDesktopCommand = new IntPtr(0x7402); 
               SendMessage(GetDesktopSHELLDLL_DefView(), WM_COMMAND, toggleDesktopCommand, IntPtr.Zero);             
         }   
 

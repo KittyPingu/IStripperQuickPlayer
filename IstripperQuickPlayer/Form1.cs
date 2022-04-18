@@ -619,6 +619,12 @@ namespace IStripperQuickPlayer
 
         private async void Form1_Load(object sender, EventArgs e)
         {
+            if (Properties.Settings.Default.UpdateSettings)
+            {
+                Properties.Settings.Default.Upgrade();
+                Properties.Settings.Default.UpdateSettings = false;
+                Properties.Settings.Default.Save();
+            }
             spaceBelowClipList = this.Height - listClips.Bottom;
             spaceRightOfListModel = this.Width - listModelsNew.Right;
             if (Properties.Settings.Default.Maximised)
@@ -1244,7 +1250,6 @@ namespace IStripperQuickPlayer
         {            
             SaveMyData();
             Wallpaper.RestoreWallpaper();
-           
             if (Utils.DefaultIconsVisible  != Utils.DesktopIconsVisible()) 
             {
                 Utils.ToggleDesktopIcons();
@@ -1952,7 +1957,7 @@ namespace IStripperQuickPlayer
         }
 
 
-        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetStartupInfoA")]
+        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetStartupInfoA", CharSet = CharSet.Auto)]
         public static extern void GetStartupInfo(out STARTUPINFO lpStartupInfo);
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
@@ -1977,12 +1982,16 @@ namespace IStripperQuickPlayer
             public IntPtr hStdOutput;
             public IntPtr hStdError;
         }
+
+        string startupPath = "";
         private async void doTaskbarPadlock()
-        {
-            STARTUPINFO startInfo;
-            GetStartupInfo(out startInfo);
-            var startupPath = startInfo.lpTitle;
-           
+        {            
+            if (startupPath == "") 
+            {
+                STARTUPINFO startInfo;
+                GetStartupInfo(out startInfo);
+                startupPath = startInfo.lpTitle;
+            }
             if (!TaskbarManager.IsPlatformSupported) return;
             if ((startupPath.EndsWith(".lnk") || isPinnedToTaskbar()) && playerlocked)
                 TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
