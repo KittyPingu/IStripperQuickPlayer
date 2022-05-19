@@ -29,6 +29,7 @@ namespace IStripperQuickPlayer
         private bool isAutoSelecting = false;
         private string nowPlayingPath = "";
         private string nowPlayingTag = "";
+        private string nowPlayingFilterMatch = "";
         private string nowPlayingTagShort = "";
         private string nowPlaying = "";
         private string wallpaperTag = "";
@@ -957,23 +958,40 @@ namespace IStripperQuickPlayer
                             //play a clip from a filtered card instead
                             //find a new model from the filtered cards
                             if (items == null || items.Length < 1) return;
-                            string newtag = nowPlayingTag;
-                            Random r = new Random();  
-                            if (res == null  || res2 == null) //choose a different card
-                            {                                      
-                                while (newtag == nowPlayingTag)
-                                {
-                                    Int64 newr = r.Next(items.Length);
-                                    newtag = items[(int)newr].Text;
-                                    if (items.Length == 1) break;
-                                }
+                            string newtag = nowPlayingFilterMatch;
+                            if (Properties.Settings.Default.Randomize)
+                            {
+                                Random r = new Random();  
+                                if (res == null  || res2 == null) //choose a different card
+                                {                                      
+                                    while (newtag == nowPlayingFilterMatch)
+                                    {
+                                        Int64 newr = r.Next(items.Length);
+                                        newtag = items[(int)newr].Text;
+                                        if (items.Length == 1) break;
+                                    }
                            
+                                }
+                            }
+                            else                                
+                            {
+                                //find the current card
+                                int i = 0;
+                                for (i = 0; i < items.Length; i++)
+                                {
+                                    if (items[i].Text.ToString() == newtag)
+                                        break;
+                                }
+                                i++;
+                                if (i > items.Length-1) i = 0;
+                                newtag = items[i].Text;
                             }
                             //choose a random clip from those shown
                             var mod = Datastore.findCardByText(newtag);
                             List<ModelClip>? clips = FilterClipList(mod.clips);
                             if (clips.Count > 0)
                             {
+                                Random r = new Random();  
                                 var itemnum = r.Next(clips.Count-1);
                                 res2 = clips[itemnum];
                                 newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
@@ -1175,6 +1193,10 @@ namespace IStripperQuickPlayer
                     nowPlaying = model.modelName + ", " + model.outfit + " (Clip " + modelClip.clipNumber + ")";
                     nowPlayingTagShort = path.Split("\\")[0];
                     nowPlayingTag = model.modelName + "\r\n" + model.outfit;
+                    if (listModelsNew.Items.Where(x => x.Text == nowPlayingTag).Any())
+                    {
+                        nowPlayingFilterMatch = nowPlayingTag;
+                    }
                     nowPlayingClipNumber = Convert.ToInt32(modelClip.clipNumber);
                 }
                 if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
@@ -1408,10 +1430,10 @@ namespace IStripperQuickPlayer
             if (items == null || items.Length < 1) return;
             Random r = new Random();
             
-            string newtag = nowPlayingTag;
+            string newtag = nowPlayingFilterMatch;
             if (Properties.Settings.Default.Randomize)
             {
-                while (newtag == nowPlayingTag)
+                while (newtag == nowPlayingFilterMatch)
                 {
                     Int64 newr = r.Next(items.Length);
                     newtag = items[(int)newr].Text;
