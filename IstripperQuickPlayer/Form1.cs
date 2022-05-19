@@ -14,6 +14,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
+using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
 using Size = System.Drawing.Size;
 //using WebView2.DevTools.Dom;
 
@@ -383,7 +384,7 @@ namespace IStripperQuickPlayer
 
             try
             {
-            if (Properties.Settings.Default.ShowKitty)
+            if (Properties.Settings.Default.ShowKitty && (txtSearch.Text == "" || txtSearch.Text.ToLower().Contains("kitty")))
                 currentCards.Add(Datastore.modelcards.Where(c=>c.name=="f9998").First());
             }
             catch (Exception ex){ }
@@ -712,6 +713,7 @@ namespace IStripperQuickPlayer
             trackBarCardScale.Value = (decimal)(Properties.Settings.Default.CardScale);
             trackBarZoomOnHover.Value = (decimal)(Properties.Settings.Default.ZoomOnHover);
             blurImageToolStripMenuItem.Checked = Properties.Settings.Default.BlurWallpaper;
+            randomPlayOrderToolStripMenuItem.Checked = Properties.Settings.Default.Randomize;
             if (Properties.Settings.Default.MinSizeMB != 0)
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
@@ -1407,12 +1409,28 @@ namespace IStripperQuickPlayer
             Random r = new Random();
             
             string newtag = nowPlayingTag;
-            while (newtag == nowPlayingTag)
+            if (Properties.Settings.Default.Randomize)
             {
-                Int64 newr = r.Next(items.Length);
-                newtag = items[(int)newr].Text;
-                if (FilterClipList(Datastore.findCardByTag(items[(int)newr].Tag.ToString()).clips).Count < 1) newtag = nowPlayingTag;
-                if (items.Length == 1) break;
+                while (newtag == nowPlayingTag)
+                {
+                    Int64 newr = r.Next(items.Length);
+                    newtag = items[(int)newr].Text;
+                    if (FilterClipList(Datastore.findCardByTag(items[(int)newr].Tag.ToString()).clips).Count < 1) newtag = nowPlayingTag;
+                    if (items.Length == 1) break;
+                }
+            }
+            else
+            {
+                //find the current card
+                int i = 0;
+                for (i = 0; i < items.Length; i++)
+                {
+                    if (items[i].Text.ToString() == newtag)
+                        break;
+                }
+                i++;
+                if (i > items.Length-1) i = 0;
+                newtag = items[i].Text;
             }
             listModelsNew.ClearSelection();
             int? index = items.ToList().FindIndex(x => x.Text == newtag);
@@ -2173,6 +2191,47 @@ namespace IStripperQuickPlayer
                     }
                 }
             }
+        }
+
+        private void deleteFromDiskToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+           var r = MessageBox.Show("Really delete this card from local disk?\r\nIt is best if you Exit iStripper before deleting cards here\r\nUser rating/tags will be retained", "Delete card?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+           if (r == DialogResult.No) return;
+           var t =  mousedownCard.Tag.ToString();
+           string cardfolder = CardFolders.findCardFolder(t);
+           if (!string.IsNullOrEmpty(cardfolder)) Directory.Delete(cardfolder, true);
+           var c = Datastore.modelcards.Where(x => x.name == t).FirstOrDefault();
+           if (c != null)
+           {
+                Datastore.modelcards.Remove(c);
+           }
+           c = null;
+            
+           var cardMetaFolder = CardFolders.findCardMetaFolder(t);
+           if (!string.IsNullOrEmpty(cardMetaFolder)) Directory.Delete(cardMetaFolder, true);
+           ReloadModels();
+           MessageBox.Show("You may need to restart iStripper and/or use the Synchronize With Server function in the app\r\nIf you want to download it again, you may need to delete it in iStripper too first.", "Local folders have been deleted", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void loadPlaylistToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog();   
+            openFileDialog.Filter = "*.vpl|*.vpl";
+            var r = openFileDialog.ShowDialog();
+            if (r.Equals(DialogResult.OK))
+            {
+                if (!string.IsNullOrEmpty(openFileDialog.FileName))
+                {
+                    var cards = PlaylistLoader.LoadPlaylist(openFileDialog.FileName);
+                    txtSearch.Text = String.Join(" or ", cards);
+                    PopulateModelListview();
+                }
+            }
+        }
+
+        private void randomPlayOrderToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.Randomize = randomPlayOrderToolStripMenuItem.Checked;
         }
     }
 }

@@ -45,6 +45,7 @@
             this.purchasedToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.toolStripSeparator2 = new System.Windows.Forms.ToolStripSeparator();
             this.showInBrowserToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.deleteFromDiskToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.cmbMenuCardRating = new System.Windows.Forms.ToolStripComboBox();
             this.listClips = new System.Windows.Forms.ListView();
             this.ClipNumber = new System.Windows.Forms.ColumnHeader();
@@ -61,11 +62,13 @@
             this.fileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.reloadModelslstToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.exportFiltersToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.loadPlaylistToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.importFiltersToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.exitToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.settingsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.hotkeysToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.enforceCardFilterToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
+            this.randomPlayOrderToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.cardScaleToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.trackBarCardScale = new IStripperQuickPlayer.TrackBarMenuItem();
             this.zoomOnHoverToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -159,9 +162,10 @@
             this.hairToolStripMenuItem,
             this.purchasedToolStripMenuItem,
             this.toolStripSeparator2,
-            this.showInBrowserToolStripMenuItem});
+            this.showInBrowserToolStripMenuItem,
+            this.deleteFromDiskToolStripMenuItem});
             this.menuCardList.Name = "menuCardList";
-            this.menuCardList.Size = new System.Drawing.Size(188, 355);
+            this.menuCardList.Size = new System.Drawing.Size(191, 383);
             this.menuCardList.Closing += new System.Windows.Forms.ToolStripDropDownClosingEventHandler(this.menuCardList_Closing);
             this.menuCardList.Opening += new System.ComponentModel.CancelEventHandler(this.menuCardList_Opening);
             // 
@@ -169,7 +173,7 @@
             // 
             this.menuCardFavourite.CheckOnClick = true;
             this.menuCardFavourite.Name = "menuCardFavourite";
-            this.menuCardFavourite.Size = new System.Drawing.Size(187, 28);
+            this.menuCardFavourite.Size = new System.Drawing.Size(190, 28);
             this.menuCardFavourite.Text = "Favourite";
             this.menuCardFavourite.CheckedChanged += new System.EventHandler(this.menuCardFavourite_CheckedChanged);
             // 
@@ -225,27 +229,27 @@
             // toolStripSeparator1
             // 
             this.toolStripSeparator1.Name = "toolStripSeparator1";
-            this.toolStripSeparator1.Size = new System.Drawing.Size(184, 6);
+            this.toolStripSeparator1.Size = new System.Drawing.Size(187, 6);
             // 
             // nameToolStripMenuItem
             // 
             this.nameToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 10F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
             this.nameToolStripMenuItem.Name = "nameToolStripMenuItem";
-            this.nameToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.nameToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.nameToolStripMenuItem.Text = "Name:";
             // 
             // outfitToolStripMenuItem
             // 
             this.outfitToolStripMenuItem.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point);
             this.outfitToolStripMenuItem.Name = "outfitToolStripMenuItem";
-            this.outfitToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.outfitToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.outfitToolStripMenuItem.Text = "Outfit:";
             // 
             // ratingToolStripMenuItem
             // 
             this.ratingToolStripMenuItem.AutoToolTip = true;
             this.ratingToolStripMenuItem.Name = "ratingToolStripMenuItem";
-            this.ratingToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.ratingToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.ratingToolStripMenuItem.Tag = "Rating";
             this.ratingToolStripMenuItem.Text = "Rating:";
             this.ratingToolStripMenuItem.ToolTipText = "Official Rating";
@@ -253,14 +257,14 @@
             // hotnessToolStripMenuItem
             // 
             this.hotnessToolStripMenuItem.Name = "hotnessToolStripMenuItem";
-            this.hotnessToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.hotnessToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.hotnessToolStripMenuItem.Text = "Hotness:";
             // 
             // statsToolStripMenuItem
             // 
             this.statsToolStripMenuItem.AutoToolTip = true;
             this.statsToolStripMenuItem.Name = "statsToolStripMenuItem";
-            this.statsToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.statsToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.statsToolStripMenuItem.Tag = "Stats";
             this.statsToolStripMenuItem.Text = "Stats:";
             this.statsToolStripMenuItem.ToolTipText = "Model\'s Stats";
@@ -268,32 +272,39 @@
             // ageToolStripMenuItem
             // 
             this.ageToolStripMenuItem.Name = "ageToolStripMenuItem";
-            this.ageToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.ageToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.ageToolStripMenuItem.Text = "Age:";
             // 
             // hairToolStripMenuItem
             // 
             this.hairToolStripMenuItem.Name = "hairToolStripMenuItem";
-            this.hairToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.hairToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.hairToolStripMenuItem.Text = "Hair:";
             // 
             // purchasedToolStripMenuItem
             // 
             this.purchasedToolStripMenuItem.Name = "purchasedToolStripMenuItem";
-            this.purchasedToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.purchasedToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.purchasedToolStripMenuItem.Text = "Purchased:";
             // 
             // toolStripSeparator2
             // 
             this.toolStripSeparator2.Name = "toolStripSeparator2";
-            this.toolStripSeparator2.Size = new System.Drawing.Size(184, 6);
+            this.toolStripSeparator2.Size = new System.Drawing.Size(187, 6);
             // 
             // showInBrowserToolStripMenuItem
             // 
             this.showInBrowserToolStripMenuItem.Name = "showInBrowserToolStripMenuItem";
-            this.showInBrowserToolStripMenuItem.Size = new System.Drawing.Size(187, 28);
+            this.showInBrowserToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
             this.showInBrowserToolStripMenuItem.Text = "Show in Browser";
             this.showInBrowserToolStripMenuItem.Click += new System.EventHandler(this.showInBrowserToolStripMenuItem_Click);
+            // 
+            // deleteFromDiskToolStripMenuItem
+            // 
+            this.deleteFromDiskToolStripMenuItem.Name = "deleteFromDiskToolStripMenuItem";
+            this.deleteFromDiskToolStripMenuItem.Size = new System.Drawing.Size(190, 28);
+            this.deleteFromDiskToolStripMenuItem.Text = "Delete from Disk";
+            this.deleteFromDiskToolStripMenuItem.Click += new System.EventHandler(this.deleteFromDiskToolStripMenuItem_Click);
             // 
             // cmbMenuCardRating
             // 
@@ -446,6 +457,7 @@
             this.fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.reloadModelslstToolStripMenuItem,
             this.exportFiltersToolStripMenuItem,
+            this.loadPlaylistToolStripMenuItem,
             this.importFiltersToolStripMenuItem,
             this.exitToolStripMenuItem});
             this.fileToolStripMenuItem.Name = "fileToolStripMenuItem";
@@ -456,28 +468,35 @@
             // 
             this.reloadModelslstToolStripMenuItem.Name = "reloadModelslstToolStripMenuItem";
             this.reloadModelslstToolStripMenuItem.ShortcutKeys = System.Windows.Forms.Keys.F5;
-            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.reloadModelslstToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.reloadModelslstToolStripMenuItem.Text = "Reload Models";
             this.reloadModelslstToolStripMenuItem.Click += new System.EventHandler(this.cmdLoadModels_Click);
             // 
             // exportFiltersToolStripMenuItem
             // 
             this.exportFiltersToolStripMenuItem.Name = "exportFiltersToolStripMenuItem";
-            this.exportFiltersToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.exportFiltersToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.exportFiltersToolStripMenuItem.Text = "Export Filters..";
             this.exportFiltersToolStripMenuItem.Click += new System.EventHandler(this.exportFiltersToolStripMenuItem_Click);
+            // 
+            // loadPlaylistToolStripMenuItem
+            // 
+            this.loadPlaylistToolStripMenuItem.Name = "loadPlaylistToolStripMenuItem";
+            this.loadPlaylistToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
+            this.loadPlaylistToolStripMenuItem.Text = "Load Playlist..";
+            this.loadPlaylistToolStripMenuItem.Click += new System.EventHandler(this.loadPlaylistToolStripMenuItem_Click);
             // 
             // importFiltersToolStripMenuItem
             // 
             this.importFiltersToolStripMenuItem.Name = "importFiltersToolStripMenuItem";
-            this.importFiltersToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.importFiltersToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.importFiltersToolStripMenuItem.Text = "Import Filter..";
             this.importFiltersToolStripMenuItem.Click += new System.EventHandler(this.importFiltersToolStripMenuItem_Click);
             // 
             // exitToolStripMenuItem
             // 
             this.exitToolStripMenuItem.Name = "exitToolStripMenuItem";
-            this.exitToolStripMenuItem.Size = new System.Drawing.Size(224, 26);
+            this.exitToolStripMenuItem.Size = new System.Drawing.Size(216, 26);
             this.exitToolStripMenuItem.Text = "Exit";
             this.exitToolStripMenuItem.Click += new System.EventHandler(this.exitToolStripMenuItem_Click);
             // 
@@ -486,6 +505,7 @@
             this.settingsToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.hotkeysToolStripMenuItem,
             this.enforceCardFilterToolStripMenuItem,
+            this.randomPlayOrderToolStripMenuItem,
             this.cardScaleToolStripMenuItem,
             this.zoomOnHoverToolStripMenuItem,
             this.menuShowRatingsStars,
@@ -515,6 +535,16 @@
             this.enforceCardFilterToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
             this.enforceCardFilterToolStripMenuItem.Text = "Enforce Card Filter";
             this.enforceCardFilterToolStripMenuItem.Click += new System.EventHandler(this.enforceCardFilterToolStripMenuItem_Click);
+            // 
+            // randomPlayOrderToolStripMenuItem
+            // 
+            this.randomPlayOrderToolStripMenuItem.Checked = true;
+            this.randomPlayOrderToolStripMenuItem.CheckOnClick = true;
+            this.randomPlayOrderToolStripMenuItem.CheckState = System.Windows.Forms.CheckState.Checked;
+            this.randomPlayOrderToolStripMenuItem.Name = "randomPlayOrderToolStripMenuItem";
+            this.randomPlayOrderToolStripMenuItem.Size = new System.Drawing.Size(284, 26);
+            this.randomPlayOrderToolStripMenuItem.Text = "Random Play Order";
+            this.randomPlayOrderToolStripMenuItem.Click += new System.EventHandler(this.randomPlayOrderToolStripMenuItem_Click);
             // 
             // cardScaleToolStripMenuItem
             // 
@@ -1423,6 +1453,9 @@
         private ComboBox cmbSortDirection;
         private ToolStripMenuItem exportFiltersToolStripMenuItem;
         private ToolStripMenuItem importFiltersToolStripMenuItem;
+        private ToolStripMenuItem deleteFromDiskToolStripMenuItem;
+        private ToolStripMenuItem loadPlaylistToolStripMenuItem;
+        private ToolStripMenuItem randomPlayOrderToolStripMenuItem;
         //private Microsoft.Web.WebView2.WinForms.WebView2 webModels;
     }
 }
