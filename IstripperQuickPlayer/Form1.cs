@@ -326,7 +326,7 @@ namespace IStripperQuickPlayer
                 && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();  
             currentCards = currentCards.Where(c => ((c.modelAge >= filterSettings.minAge && c.modelAge <= filterSettings.maxAge) || c.modelAge == 0 || c.modelAge > 99)
                 && ((c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust) || c.bust == 0 || c.bust > 99)     
-                && c.rating-5M >= filterSettings.minRating && c.rating-5M <= filterSettings.maxRating           
+                && (c.rating-5M >= filterSettings.minRating && c.rating-5M <= filterSettings.maxRating) || c.rating == 0          
                 ).ToList();
 
             if (!String.IsNullOrEmpty(filterSettings.tags))
