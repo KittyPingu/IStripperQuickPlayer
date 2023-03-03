@@ -1553,7 +1553,8 @@ namespace IStripperQuickPlayer
             else
                 ratingSlider.Value = 0;
             if (myData != null) menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
-            ratingToolStripMenuItem.Text = "Rating: " + (c.rating-5M).ToString();
+            if (c.rating > 0) ratingToolStripMenuItem.Text = "Rating: " + (c.rating - 5M).ToString();
+            else ratingToolStripMenuItem.Text = "Rating: NA";
             statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
             nameToolStripMenuItem.Text = c.modelName;
             outfitToolStripMenuItem.Text = c.outfit;
@@ -1561,7 +1562,8 @@ namespace IStripperQuickPlayer
             TextInfo textInfo = cultureInfo.TextInfo;  
             if (c.hair != null) hairToolStripMenuItem.Text =  "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
             if (c.datePurchased != null) purchasedToolStripMenuItem.Text = "Purchased: " + ((DateTime)c.datePurchased).ToShortDateString();
-            hotnessToolStripMenuItem.Text = "Hotness: " + ((Enums.HotnessCode)Convert.ToInt32(c.hotnessLevel)).GetDescription();
+            if (c.hotnessLevel != "") hotnessToolStripMenuItem.Text = "Hotness: " + ((Enums.HotnessCode)Convert.ToInt32(c.hotnessLevel)).GetDescription();
+            else hotnessToolStripMenuItem.Text = "Hotness: NA";
             ageToolStripMenuItem.Text = "Age: " + c.modelAge;
         }
 
