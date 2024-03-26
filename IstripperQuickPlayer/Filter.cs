@@ -13,10 +13,12 @@ using System.Windows.Forms;
 using IStripperQuickPlayer.BLL;
 using Essy.Tools.InputBox;
 using DG.UI.Helpers;
+using MaterialSkin;
+using MaterialSkin.Controls;
 
 namespace IStripperQuickPlayer
 {
-    public partial class Filter : Form
+    public partial class Filter : MaterialForm
     {
         private string _filterName = "";
         ColorSlider.ColorSlider? rangeRating;
@@ -28,11 +30,22 @@ namespace IStripperQuickPlayer
         public FilterSettings? filterSettings;
         byte[]? savedSettings;
         bool deleting = false;
+        private void SetSkin()
+        {
+            var materialSkinManager = MaterialSkinManager.Instance;
+            materialSkinManager.RemoveFormToManage(this);
+            materialSkinManager.AddFormToManage(this);
+            materialSkinManager.Theme = MaterialSkinManager.Themes.LIGHT;
+            if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
+            materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
+        }
+
         internal Filter(FilterSettings filter, string filterName)
         {
-            filterSettings = (FilterSettings)filter.Clone();            
+            SetSkin();
+            filterSettings = (FilterSettings)filter.Clone();
             _filterName = filterName;
-           
+
             Save();
             InitializeComponent();
             this.dateTimePickerMin.CustomFormat = Application.CurrentCulture.DateTimeFormat.ShortDatePattern;
@@ -63,9 +76,9 @@ namespace IStripperQuickPlayer
             }
             if (filterSettings == null) return;
             rangeRating = new ColorSlider.ColorSlider();
-            rangeRating.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(100*dx/120));
-            rangeRating.Height = Convert.ToInt32(70*dx/120);
-            rangeRating.Width = Convert.ToInt32(650*dx/120);
+            rangeRating.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(140 * dx / 120));
+            rangeRating.Height = Convert.ToInt32(70 * dx / 120);
+            rangeRating.Width = Convert.ToInt32(650 * dx / 120);
             rangeRating.ForeColor = Color.Black;
             rangeRating.Minimum = 0;
             rangeRating.Maximum = 5;
@@ -78,21 +91,21 @@ namespace IStripperQuickPlayer
             rangeRating.TickColor = Color.Black;
             rangeRating.ElapsedInnerColor = Color.Green;
             rangeRating.ValueChanged += Range_ValueChanged;
-            
+
 
             rangeBreastSize = new ColorSlider.ColorSlider();
-            rangeBreastSize.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(186*dx/120));
-            rangeBreastSize.Height = Convert.ToInt32(60*dx/120);
-            rangeBreastSize.Width = Convert.ToInt32(650*dx/120);
+            rangeBreastSize.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(226 * dx / 120));
+            rangeBreastSize.Height = Convert.ToInt32(70 * dx / 120);
+            rangeBreastSize.Width = Convert.ToInt32(650 * dx / 120);
             rangeBreastSize.ForeColor = Color.Black;
             rangeBreastSize.Minimum = 0;
             var dmin = Datastore.modelcards.Min(x => x.bust);
             if (dmin != null)
                 rangeBreastSize.Minimum = Math.Floor((decimal)dmin);
             rangeBreastSize.Maximum = 99;
-               var dmax = Datastore.modelcards.Max(x => x.bust);
+            var dmax = Datastore.modelcards.Max(x => x.bust);
             if (dmax != null)
-                rangeBreastSize.Maximum = Math.Min(125, Math.Ceiling((decimal)dmax));            
+                rangeBreastSize.Maximum = Math.Min(125, Math.Ceiling((decimal)dmax));
             rangeBreastSize.SmallChange = 1M;
             rangeBreastSize.LargeChange = 2M;
             rangeBreastSize.Value = Math.Min(Math.Max(filterSettings.minBust, rangeBreastSize.Minimum), rangeBreastSize.Maximum);
@@ -102,18 +115,18 @@ namespace IStripperQuickPlayer
             rangeBreastSize.TickColor = Color.Black;
             rangeBreastSize.ElapsedInnerColor = Color.Green;
             rangeBreastSize.ValueChanged += Range_ValueChanged;
-            
+
 
             rangeAge = new ColorSlider.ColorSlider();
-            rangeAge.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(262*dx/120));
-            rangeAge.Height = Convert.ToInt32(60*dx/120);
-            rangeAge.Width = Convert.ToInt32(650*dx/120);
+            rangeAge.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(302 * dx / 120));
+            rangeAge.Height = Convert.ToInt32(70 * dx / 120);
+            rangeAge.Width = Convert.ToInt32(650 * dx / 120);
             rangeAge.ForeColor = Color.Black;
             var amin = Datastore.modelcards.Where(a => a.modelAge >= 18).Min(x => x.modelAge);
             rangeAge.Minimum = Math.Floor((decimal)amin);
             rangeAge.Maximum = 99;
-            var amax = Datastore.modelcards.Where(a => a.modelAge <= 99).Max(x => x.modelAge);            
-            rangeAge.Maximum = Math.Ceiling((decimal)amax);            
+            var amax = Datastore.modelcards.Where(a => a.modelAge <= 99).Max(x => x.modelAge);
+            rangeAge.Maximum = Math.Ceiling((decimal)amax);
             rangeAge.ScaleDivisions = rangeAge.Maximum - rangeAge.Minimum;
             rangeAge.SmallChange = 1M;
             rangeAge.LargeChange = 2M;
@@ -124,12 +137,12 @@ namespace IStripperQuickPlayer
             rangeAge.TickColor = Color.Black;
             rangeAge.ElapsedInnerColor = Color.Green;
             rangeAge.ValueChanged += Range_ValueChanged;
-            
+
 
             rangeMyRating = new ColorSlider.ColorSlider();
-            rangeMyRating.Location = new Point(Convert.ToInt32(110*dx/120), Convert.ToInt32(346*dx/120));
-            rangeMyRating.Height = Convert.ToInt32(60*dx/120);
-            rangeMyRating.Width = Convert.ToInt32(650*dx/120);
+            rangeMyRating.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(386 * dx / 120));
+            rangeMyRating.Height = Convert.ToInt32(70 * dx / 120);
+            rangeMyRating.Width = Convert.ToInt32(650 * dx / 120);
             rangeMyRating.ForeColor = Color.Black;
             rangeMyRating.Minimum = 0;
             rangeMyRating.Maximum = 10;
@@ -151,6 +164,7 @@ namespace IStripperQuickPlayer
             chkVGClassic.Checked = filterSettings.VGClassic;
             chkSpecial.Checked = filterSettings.Special;
             chkNormal.Checked = filterSettings.Normal;
+            chkVirtuaGuy.Checked = filterSettings.VirtuaGuy;
             dateTimePickerMin.Value = filterSettings.minDate;
             dateTimePickerMax.Value = filterSettings.maxDate;
             dateTimePickerMin.ValueChanged += Range_ValueChanged;
@@ -170,29 +184,29 @@ namespace IStripperQuickPlayer
         }
 
         private void Filter_Load(object sender, EventArgs e)
-        {   
+        {
             this.Text = "Filter: " + _filterName;
             EnhancedDateTimePickerHelper.AttachDateTimePicker(dateTimePickerMin);
             EnhancedDateTimePickerHelper.AttachDateTimePicker(dateTimePickerMax);
-            Form1? frm = Utils.GetMainForm();           
+            Form1? frm = Utils.GetMainForm();
             if (frm != null)
                 Location = new Point(frm.Location.X + frm.Width / 2 - Width / 2,
                     frm.Location.Y + frm.Height / 2 - Height / 2);
         }
 
         private void cmdOK_Click(object sender, EventArgs e)
-        {           
+        {
             ok = true;
             ApplySettings();
             this.Close();
         }
 
-        private  void ApplySettings()
+        private void ApplySettings()
         {
-            if (!isLoaded)return;
-            if (filterSettings == null)return;
+            if (!isLoaded) return;
+            if (filterSettings == null) return;
             if (rangeAge != null)
-            { 
+            {
                 filterSettings.minAge = rangeAge.Value;
                 filterSettings.maxAge = rangeAge.Value2;
             }
@@ -211,13 +225,13 @@ namespace IStripperQuickPlayer
                 filterSettings.minMyRating = rangeMyRating.Value;
                 filterSettings.maxMyRating = rangeMyRating.Value2;
             }
-           
+
             filterSettings.minDate = dateTimePickerMin.Value;
             filterSettings.maxDate = dateTimePickerMax.Value;
-            
+
             filterSettings.tags = txtTags.Text;
 
-            
+
             filterSettings.DeskBabes = chkDeskBabes.Checked;
             filterSettings.IStripper = chkIStripper.Checked;
             filterSettings.IStripperClassic = chkIStripperClassic.Checked;
@@ -226,7 +240,8 @@ namespace IStripperQuickPlayer
 
             filterSettings.Special = chkSpecial.Checked;
             filterSettings.Normal = chkNormal.Checked;
-            
+            filterSettings.VirtuaGuy = chkVirtuaGuy.Checked;
+
             Form1? frm = Utils.GetMainForm();
             if (frm != null)
             {
@@ -262,7 +277,7 @@ namespace IStripperQuickPlayer
         }
 
         internal void Save()
-        { 
+        {
             if (filterSettings == null) return;
             using (MemoryStream memStream = new MemoryStream())
             {
@@ -272,9 +287,9 @@ namespace IStripperQuickPlayer
             }
         }
 
-        
+
         internal void Restore()
-        { 
+        {
             BinaryFormatter binSerializer = new BinaryFormatter();
             filterSettings = (FilterSettings)binSerializer.Deserialize(new MemoryStream(savedSettings));
             Form1? frm = Utils.GetMainForm();
@@ -283,18 +298,18 @@ namespace IStripperQuickPlayer
                 frm.filterSettings = filterSettings;
                 frm.PopulateModelListview();
             }
-         }
+        }
 
         private void cmdRevert_Click(object sender, EventArgs e)
         {
             BinaryFormatter binSerializer = new BinaryFormatter();
             filterSettings = (FilterSettings)binSerializer.Deserialize(new MemoryStream(savedSettings));
-            isLoaded = false;            
+            isLoaded = false;
             ReadValues();
-            this.Controls.RemoveAt(this.Controls.Count-1);
-            this.Controls.RemoveAt(this.Controls.Count-1);
-            this.Controls.RemoveAt(this.Controls.Count-1);
-            this.Controls.RemoveAt(this.Controls.Count-1);
+            this.Controls.RemoveAt(this.Controls.Count - 1);
+            this.Controls.RemoveAt(this.Controls.Count - 1);
+            this.Controls.RemoveAt(this.Controls.Count - 1);
+            this.Controls.RemoveAt(this.Controls.Count - 1);
 
             this.Controls.Add(rangeRating);
             this.Controls.Add(rangeMyRating);
@@ -309,9 +324,9 @@ namespace IStripperQuickPlayer
             FilterSettingsList.Save("Default", filterSettings);
 
             _filterName = "Default";
-            Form1? frm = Utils.GetMainForm();      
+            Form1? frm = Utils.GetMainForm();
             frm.setFilter(_filterName);
-            
+
         }
 
         private void cmdSaveAs_Click(object sender, EventArgs e)
@@ -320,11 +335,11 @@ namespace IStripperQuickPlayer
             string name = InputBox.ShowInputBox("Enter a name for this filter");
             if (!string.IsNullOrEmpty(name) && name != "Default")
             {
-                FilterSettingsList.Save(name,  filterSettings);
+                FilterSettingsList.Save(name, filterSettings);
                 _filterName = name;
                 if (_filterName == "Default") button1.Enabled = false;
                 else button1.Enabled = true;
-                Form1? frm = Utils.GetMainForm();      
+                Form1? frm = Utils.GetMainForm();
                 frm.setFilter(name);
             }
             else if (name == "Default")
@@ -340,8 +355,8 @@ namespace IStripperQuickPlayer
             if (r == DialogResult.Yes)
             {
                 deleting = true;
-                Form1? frm = Utils.GetMainForm();      
-                FilterSettingsList.Delete(_filterName);                   
+                Form1? frm = Utils.GetMainForm();
+                FilterSettingsList.Delete(_filterName);
                 frm.setFilter("Default");
                 this.Close();
             }

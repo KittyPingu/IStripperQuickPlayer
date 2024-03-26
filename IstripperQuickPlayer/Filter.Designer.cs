@@ -28,311 +28,322 @@
         /// </summary>
         private void InitializeComponent()
         {
-            this.components = new System.ComponentModel.Container();
-            this.cmdOK = new System.Windows.Forms.Button();
-            this.txtTags = new System.Windows.Forms.TextBox();
-            this.lblTags = new System.Windows.Forms.Label();
-            this.lblMinRating = new System.Windows.Forms.Label();
-            this.bindingSource1 = new System.Windows.Forms.BindingSource(this.components);
-            this.label2 = new System.Windows.Forms.Label();
-            this.label3 = new System.Windows.Forms.Label();
-            this.cmdApply = new System.Windows.Forms.Button();
-            this.chkIStripperXXX = new System.Windows.Forms.CheckBox();
-            this.chkIStripper = new System.Windows.Forms.CheckBox();
-            this.chkVGClassic = new System.Windows.Forms.CheckBox();
-            this.chkDeskBabes = new System.Windows.Forms.CheckBox();
-            this.chkIStripperClassic = new System.Windows.Forms.CheckBox();
-            this.chkNormal = new System.Windows.Forms.CheckBox();
-            this.chkSpecial = new System.Windows.Forms.CheckBox();
-            this.label4 = new System.Windows.Forms.Label();
-            this.cmdRevert = new System.Windows.Forms.Button();
-            this.cmdSaveDefault = new System.Windows.Forms.Button();
-            this.lblShowDate = new System.Windows.Forms.Label();
-            this.cmdSaveAs = new System.Windows.Forms.Button();
-            this.dateTimePickerMin = new System.Windows.Forms.DateTimePicker();
-            this.dateTimePickerMax = new System.Windows.Forms.DateTimePicker();
-            this.label1 = new System.Windows.Forms.Label();
-            this.button1 = new System.Windows.Forms.Button();
-            ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).BeginInit();
-            this.SuspendLayout();
+            components = new System.ComponentModel.Container();
+            cmdOK = new Button();
+            txtTags = new TextBox();
+            lblTags = new Label();
+            lblMinRating = new Label();
+            bindingSource1 = new BindingSource(components);
+            label2 = new Label();
+            label3 = new Label();
+            cmdApply = new Button();
+            chkIStripperXXX = new CheckBox();
+            chkIStripper = new CheckBox();
+            chkVGClassic = new CheckBox();
+            chkDeskBabes = new CheckBox();
+            chkIStripperClassic = new CheckBox();
+            chkNormal = new CheckBox();
+            chkSpecial = new CheckBox();
+            label4 = new Label();
+            cmdRevert = new Button();
+            cmdSaveDefault = new Button();
+            lblShowDate = new Label();
+            cmdSaveAs = new Button();
+            dateTimePickerMin = new DateTimePicker();
+            dateTimePickerMax = new DateTimePicker();
+            label1 = new Label();
+            button1 = new Button();
+            chkVirtuaGuy = new CheckBox();
+            ((System.ComponentModel.ISupportInitialize)bindingSource1).BeginInit();
+            SuspendLayout();
             // 
             // cmdOK
             // 
-            this.cmdOK.Location = new System.Drawing.Point(672, 609);
-            this.cmdOK.Name = "cmdOK";
-            this.cmdOK.Size = new System.Drawing.Size(106, 45);
-            this.cmdOK.TabIndex = 0;
-            this.cmdOK.Text = "OK";
-            this.cmdOK.UseVisualStyleBackColor = true;
-            this.cmdOK.Click += new System.EventHandler(this.cmdOK_Click);
+            cmdOK.Location = new Point(672, 653);
+            cmdOK.Name = "cmdOK";
+            cmdOK.Size = new Size(106, 45);
+            cmdOK.TabIndex = 0;
+            cmdOK.Text = "OK";
+            cmdOK.UseVisualStyleBackColor = true;
+            cmdOK.Click += cmdOK_Click;
             // 
             // txtTags
             // 
-            this.txtTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.txtTags.Location = new System.Drawing.Point(100, 31);
-            this.txtTags.Name = "txtTags";
-            this.txtTags.PlaceholderText = "separate multiple tags with \"or\" / \"and\" / \"!\"";
-            this.txtTags.Size = new System.Drawing.Size(566, 31);
-            this.txtTags.TabIndex = 1;
-            this.txtTags.KeyDown += new System.Windows.Forms.KeyEventHandler(this.txtTags_KeyDown);
+            txtTags.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            txtTags.Location = new Point(100, 75);
+            txtTags.Name = "txtTags";
+            txtTags.PlaceholderText = "separate multiple tags with \"or\" / \"and\" / \"!\"";
+            txtTags.Size = new Size(566, 36);
+            txtTags.TabIndex = 1;
+            txtTags.KeyDown += txtTags_KeyDown;
             // 
             // lblTags
             // 
-            this.lblTags.AutoSize = true;
-            this.lblTags.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblTags.Location = new System.Drawing.Point(12, 34);
-            this.lblTags.Name = "lblTags";
-            this.lblTags.Size = new System.Drawing.Size(47, 25);
-            this.lblTags.TabIndex = 2;
-            this.lblTags.Text = "Tags";
-            this.lblTags.Click += new System.EventHandler(this.label1_Click);
+            lblTags.AutoSize = true;
+            lblTags.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            lblTags.Location = new Point(12, 78);
+            lblTags.Name = "lblTags";
+            lblTags.Size = new Size(56, 30);
+            lblTags.TabIndex = 2;
+            lblTags.Text = "Tags";
+            lblTags.Click += label1_Click;
             // 
             // lblMinRating
             // 
-            this.lblMinRating.AutoSize = true;
-            this.lblMinRating.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblMinRating.Location = new System.Drawing.Point(12, 113);
-            this.lblMinRating.Name = "lblMinRating";
-            this.lblMinRating.Size = new System.Drawing.Size(63, 25);
-            this.lblMinRating.TabIndex = 3;
-            this.lblMinRating.Text = "Rating";
+            lblMinRating.AutoSize = true;
+            lblMinRating.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            lblMinRating.Location = new Point(12, 157);
+            lblMinRating.Name = "lblMinRating";
+            lblMinRating.Size = new Size(74, 30);
+            lblMinRating.TabIndex = 3;
+            lblMinRating.Text = "Rating";
             // 
             // label2
             // 
-            this.label2.AutoSize = true;
-            this.label2.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.label2.Location = new System.Drawing.Point(12, 190);
-            this.label2.Name = "label2";
-            this.label2.Size = new System.Drawing.Size(46, 25);
-            this.label2.TabIndex = 4;
-            this.label2.Text = "Bust";
+            label2.AutoSize = true;
+            label2.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            label2.Location = new Point(12, 234);
+            label2.Name = "label2";
+            label2.Size = new Size(54, 30);
+            label2.TabIndex = 4;
+            label2.Text = "Bust";
             // 
             // label3
             // 
-            this.label3.AutoSize = true;
-            this.label3.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.label3.Location = new System.Drawing.Point(12, 273);
-            this.label3.Name = "label3";
-            this.label3.Size = new System.Drawing.Size(44, 25);
-            this.label3.TabIndex = 5;
-            this.label3.Text = "Age";
+            label3.AutoSize = true;
+            label3.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            label3.Location = new Point(12, 317);
+            label3.Name = "label3";
+            label3.Size = new Size(52, 30);
+            label3.TabIndex = 5;
+            label3.Text = "Age";
             // 
             // cmdApply
             // 
-            this.cmdApply.Location = new System.Drawing.Point(672, 32);
-            this.cmdApply.Name = "cmdApply";
-            this.cmdApply.Size = new System.Drawing.Size(106, 31);
-            this.cmdApply.TabIndex = 6;
-            this.cmdApply.Text = "Apply";
-            this.cmdApply.UseVisualStyleBackColor = true;
-            this.cmdApply.Click += new System.EventHandler(this.cmdApply_Click);
+            cmdApply.Location = new Point(672, 76);
+            cmdApply.Name = "cmdApply";
+            cmdApply.Size = new Size(106, 31);
+            cmdApply.TabIndex = 6;
+            cmdApply.Text = "Apply";
+            cmdApply.UseVisualStyleBackColor = true;
+            cmdApply.Click += cmdApply_Click;
             // 
             // chkIStripperXXX
             // 
-            this.chkIStripperXXX.AutoSize = true;
-            this.chkIStripperXXX.Location = new System.Drawing.Point(602, 511);
-            this.chkIStripperXXX.Name = "chkIStripperXXX";
-            this.chkIStripperXXX.Size = new System.Drawing.Size(119, 24);
-            this.chkIStripperXXX.TabIndex = 7;
-            this.chkIStripperXXX.Text = "iStripper XXX";
-            this.chkIStripperXXX.UseVisualStyleBackColor = true;
-            this.chkIStripperXXX.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            chkIStripperXXX.AutoSize = true;
+            chkIStripperXXX.Location = new Point(602, 555);
+            chkIStripperXXX.Name = "chkIStripperXXX";
+            chkIStripperXXX.Size = new Size(142, 29);
+            chkIStripperXXX.TabIndex = 7;
+            chkIStripperXXX.Text = "iStripper XXX";
+            chkIStripperXXX.UseVisualStyleBackColor = true;
+            chkIStripperXXX.CheckedChanged += chk_CheckedChanged;
             // 
             // chkIStripper
             // 
-            this.chkIStripper.AutoSize = true;
-            this.chkIStripper.Location = new System.Drawing.Point(477, 511);
-            this.chkIStripper.Name = "chkIStripper";
-            this.chkIStripper.Size = new System.Drawing.Size(88, 24);
-            this.chkIStripper.TabIndex = 8;
-            this.chkIStripper.Text = "iStripper";
-            this.chkIStripper.UseVisualStyleBackColor = true;
-            this.chkIStripper.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            chkIStripper.AutoSize = true;
+            chkIStripper.Location = new Point(477, 555);
+            chkIStripper.Name = "chkIStripper";
+            chkIStripper.Size = new Size(104, 29);
+            chkIStripper.TabIndex = 8;
+            chkIStripper.Text = "iStripper";
+            chkIStripper.UseVisualStyleBackColor = true;
+            chkIStripper.CheckedChanged += chk_CheckedChanged;
             // 
             // chkVGClassic
             // 
-            this.chkVGClassic.AutoSize = true;
-            this.chkVGClassic.Location = new System.Drawing.Point(336, 511);
-            this.chkVGClassic.Name = "chkVGClassic";
-            this.chkVGClassic.Size = new System.Drawing.Size(98, 24);
-            this.chkVGClassic.TabIndex = 9;
-            this.chkVGClassic.Text = "VG Classic";
-            this.chkVGClassic.UseVisualStyleBackColor = true;
-            this.chkVGClassic.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            chkVGClassic.AutoSize = true;
+            chkVGClassic.Location = new Point(336, 555);
+            chkVGClassic.Name = "chkVGClassic";
+            chkVGClassic.Size = new Size(118, 29);
+            chkVGClassic.TabIndex = 9;
+            chkVGClassic.Text = "VG Classic";
+            chkVGClassic.UseVisualStyleBackColor = true;
+            chkVGClassic.CheckedChanged += chk_CheckedChanged;
             // 
             // chkDeskBabes
             // 
-            this.chkDeskBabes.AutoSize = true;
-            this.chkDeskBabes.Location = new System.Drawing.Point(195, 511);
-            this.chkDeskBabes.Name = "chkDeskBabes";
-            this.chkDeskBabes.Size = new System.Drawing.Size(107, 24);
-            this.chkDeskBabes.TabIndex = 10;
-            this.chkDeskBabes.Text = "Desk Babes";
-            this.chkDeskBabes.UseVisualStyleBackColor = true;
-            this.chkDeskBabes.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            chkDeskBabes.AutoSize = true;
+            chkDeskBabes.Location = new Point(195, 555);
+            chkDeskBabes.Name = "chkDeskBabes";
+            chkDeskBabes.Size = new Size(129, 29);
+            chkDeskBabes.TabIndex = 10;
+            chkDeskBabes.Text = "Desk Babes";
+            chkDeskBabes.UseVisualStyleBackColor = true;
+            chkDeskBabes.CheckedChanged += chk_CheckedChanged;
             // 
             // chkIStripperClassic
             // 
-            this.chkIStripperClassic.AutoSize = true;
-            this.chkIStripperClassic.Location = new System.Drawing.Point(21, 511);
-            this.chkIStripperClassic.Name = "chkIStripperClassic";
-            this.chkIStripperClassic.Size = new System.Drawing.Size(136, 24);
-            this.chkIStripperClassic.TabIndex = 11;
-            this.chkIStripperClassic.Text = "iStripper Classic";
-            this.chkIStripperClassic.UseVisualStyleBackColor = true;
-            this.chkIStripperClassic.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            chkIStripperClassic.AutoSize = true;
+            chkIStripperClassic.Location = new Point(21, 555);
+            chkIStripperClassic.Name = "chkIStripperClassic";
+            chkIStripperClassic.Size = new Size(161, 29);
+            chkIStripperClassic.TabIndex = 11;
+            chkIStripperClassic.Text = "iStripper Classic";
+            chkIStripperClassic.UseVisualStyleBackColor = true;
+            chkIStripperClassic.CheckedChanged += chk_CheckedChanged;
             // 
             // chkNormal
             // 
-            this.chkNormal.AutoSize = true;
-            this.chkNormal.Location = new System.Drawing.Point(21, 552);
-            this.chkNormal.Name = "chkNormal";
-            this.chkNormal.Size = new System.Drawing.Size(81, 24);
-            this.chkNormal.TabIndex = 12;
-            this.chkNormal.Text = "Normal";
-            this.chkNormal.UseVisualStyleBackColor = true;
-            this.chkNormal.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            chkNormal.AutoSize = true;
+            chkNormal.Location = new Point(21, 596);
+            chkNormal.Name = "chkNormal";
+            chkNormal.Size = new Size(97, 29);
+            chkNormal.TabIndex = 12;
+            chkNormal.Text = "Normal";
+            chkNormal.UseVisualStyleBackColor = true;
+            chkNormal.CheckedChanged += chk_CheckedChanged;
             // 
             // chkSpecial
             // 
-            this.chkSpecial.AutoSize = true;
-            this.chkSpecial.Location = new System.Drawing.Point(195, 552);
-            this.chkSpecial.Name = "chkSpecial";
-            this.chkSpecial.Size = new System.Drawing.Size(79, 24);
-            this.chkSpecial.TabIndex = 13;
-            this.chkSpecial.Text = "Special";
-            this.chkSpecial.UseVisualStyleBackColor = true;
-            this.chkSpecial.CheckedChanged += new System.EventHandler(this.chk_CheckedChanged);
+            chkSpecial.AutoSize = true;
+            chkSpecial.Location = new Point(195, 596);
+            chkSpecial.Name = "chkSpecial";
+            chkSpecial.Size = new Size(93, 29);
+            chkSpecial.TabIndex = 13;
+            chkSpecial.Text = "Special";
+            chkSpecial.UseVisualStyleBackColor = true;
+            chkSpecial.CheckedChanged += chk_CheckedChanged;
             // 
             // label4
             // 
-            this.label4.AutoSize = true;
-            this.label4.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.label4.Location = new System.Drawing.Point(12, 358);
-            this.label4.Name = "label4";
-            this.label4.Size = new System.Drawing.Size(93, 25);
-            this.label4.TabIndex = 14;
-            this.label4.Text = "My Rating";
+            label4.AutoSize = true;
+            label4.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            label4.Location = new Point(12, 402);
+            label4.Name = "label4";
+            label4.Size = new Size(105, 30);
+            label4.TabIndex = 14;
+            label4.Text = "MyRating";
             // 
             // cmdRevert
             // 
-            this.cmdRevert.Location = new System.Drawing.Point(532, 609);
-            this.cmdRevert.Name = "cmdRevert";
-            this.cmdRevert.Size = new System.Drawing.Size(106, 45);
-            this.cmdRevert.TabIndex = 15;
-            this.cmdRevert.Text = "Revert";
-            this.cmdRevert.UseVisualStyleBackColor = true;
-            this.cmdRevert.Click += new System.EventHandler(this.cmdRevert_Click);
+            cmdRevert.Location = new Point(532, 653);
+            cmdRevert.Name = "cmdRevert";
+            cmdRevert.Size = new Size(106, 45);
+            cmdRevert.TabIndex = 15;
+            cmdRevert.Text = "Revert";
+            cmdRevert.UseVisualStyleBackColor = true;
+            cmdRevert.Click += cmdRevert_Click;
             // 
             // cmdSaveDefault
             // 
-            this.cmdSaveDefault.Location = new System.Drawing.Point(21, 609);
-            this.cmdSaveDefault.Name = "cmdSaveDefault";
-            this.cmdSaveDefault.Size = new System.Drawing.Size(106, 45);
-            this.cmdSaveDefault.TabIndex = 16;
-            this.cmdSaveDefault.Text = "Save Default";
-            this.cmdSaveDefault.UseVisualStyleBackColor = true;
-            this.cmdSaveDefault.Click += new System.EventHandler(this.cmdSaveDefault_Click);
+            cmdSaveDefault.Location = new Point(21, 653);
+            cmdSaveDefault.Name = "cmdSaveDefault";
+            cmdSaveDefault.Size = new Size(106, 45);
+            cmdSaveDefault.TabIndex = 16;
+            cmdSaveDefault.Text = "Save Default";
+            cmdSaveDefault.UseVisualStyleBackColor = true;
+            cmdSaveDefault.Click += cmdSaveDefault_Click;
             // 
             // lblShowDate
             // 
-            this.lblShowDate.AutoSize = true;
-            this.lblShowDate.Font = new System.Drawing.Font("Segoe UI", 10.8F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point);
-            this.lblShowDate.Location = new System.Drawing.Point(12, 439);
-            this.lblShowDate.Name = "lblShowDate";
-            this.lblShowDate.Size = new System.Drawing.Size(98, 25);
-            this.lblShowDate.TabIndex = 17;
-            this.lblShowDate.Text = "Show Date";
+            lblShowDate.AutoSize = true;
+            lblShowDate.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            lblShowDate.Location = new Point(12, 483);
+            lblShowDate.Name = "lblShowDate";
+            lblShowDate.Size = new Size(117, 30);
+            lblShowDate.TabIndex = 17;
+            lblShowDate.Text = "Show Date";
             // 
             // cmdSaveAs
             // 
-            this.cmdSaveAs.Location = new System.Drawing.Point(390, 609);
-            this.cmdSaveAs.Name = "cmdSaveAs";
-            this.cmdSaveAs.Size = new System.Drawing.Size(106, 45);
-            this.cmdSaveAs.TabIndex = 18;
-            this.cmdSaveAs.Text = "Save As...";
-            this.cmdSaveAs.UseVisualStyleBackColor = true;
-            this.cmdSaveAs.Click += new System.EventHandler(this.cmdSaveAs_Click);
+            cmdSaveAs.Location = new Point(390, 653);
+            cmdSaveAs.Name = "cmdSaveAs";
+            cmdSaveAs.Size = new Size(106, 45);
+            cmdSaveAs.TabIndex = 18;
+            cmdSaveAs.Text = "Save As...";
+            cmdSaveAs.UseVisualStyleBackColor = true;
+            cmdSaveAs.Click += cmdSaveAs_Click;
             // 
             // dateTimePickerMin
             // 
-            this.dateTimePickerMin.Format = System.Windows.Forms.DateTimePickerFormat.Custom;
-            this.dateTimePickerMin.Location = new System.Drawing.Point(120, 436);
-            this.dateTimePickerMin.MinDate = new System.DateTime(2000, 1, 1, 0, 0, 0, 0);
-            this.dateTimePickerMin.Name = "dateTimePickerMin";
-            this.dateTimePickerMin.Size = new System.Drawing.Size(104, 27);
-            this.dateTimePickerMin.TabIndex = 19;
+            dateTimePickerMin.Format = DateTimePickerFormat.Custom;
+            dateTimePickerMin.Location = new Point(120, 480);
+            dateTimePickerMin.MinDate = new DateTime(2000, 1, 1, 0, 0, 0, 0);
+            dateTimePickerMin.Name = "dateTimePickerMin";
+            dateTimePickerMin.Size = new Size(104, 31);
+            dateTimePickerMin.TabIndex = 19;
             // 
             // dateTimePickerMax
             // 
-            this.dateTimePickerMax.Format = System.Windows.Forms.DateTimePickerFormat.Custom;
-            this.dateTimePickerMax.Location = new System.Drawing.Point(270, 436);
-            this.dateTimePickerMax.MinDate = new System.DateTime(2000, 1, 1, 0, 0, 0, 0);
-            this.dateTimePickerMax.Name = "dateTimePickerMax";
-            this.dateTimePickerMax.Size = new System.Drawing.Size(104, 27);
-            this.dateTimePickerMax.TabIndex = 20;
+            dateTimePickerMax.Format = DateTimePickerFormat.Custom;
+            dateTimePickerMax.Location = new Point(270, 480);
+            dateTimePickerMax.MinDate = new DateTime(2000, 1, 1, 0, 0, 0, 0);
+            dateTimePickerMax.Name = "dateTimePickerMax";
+            dateTimePickerMax.Size = new Size(104, 31);
+            dateTimePickerMax.TabIndex = 20;
             // 
             // label1
             // 
-            this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(238, 439);
-            this.label1.Name = "label1";
-            this.label1.Size = new System.Drawing.Size(23, 20);
-            this.label1.TabIndex = 21;
-            this.label1.Text = "to";
+            label1.AutoSize = true;
+            label1.Location = new Point(238, 483);
+            label1.Name = "label1";
+            label1.Size = new Size(29, 25);
+            label1.TabIndex = 21;
+            label1.Text = "to";
             // 
             // button1
             // 
-            this.button1.Location = new System.Drawing.Point(205, 617);
-            this.button1.Name = "button1";
-            this.button1.Size = new System.Drawing.Size(106, 28);
-            this.button1.TabIndex = 22;
-            this.button1.Text = "Delete Filter";
-            this.button1.UseVisualStyleBackColor = true;
-            this.button1.Click += new System.EventHandler(this.button1_Click);
+            button1.Location = new Point(205, 661);
+            button1.Name = "button1";
+            button1.Size = new Size(106, 28);
+            button1.TabIndex = 22;
+            button1.Text = "Delete Filter";
+            button1.UseVisualStyleBackColor = true;
+            button1.Click += button1_Click;
+            // 
+            // chkVirtuaGuy
+            // 
+            chkVirtuaGuy.AutoSize = true;
+            chkVirtuaGuy.Location = new Point(336, 596);
+            chkVirtuaGuy.Name = "chkVirtuaGuy";
+            chkVirtuaGuy.Size = new Size(115, 29);
+            chkVirtuaGuy.TabIndex = 23;
+            chkVirtuaGuy.Text = "VirtuaGuy";
+            chkVirtuaGuy.UseVisualStyleBackColor = true;
             // 
             // Filter
             // 
-            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Inherit;
-            this.ClientSize = new System.Drawing.Size(800, 662);
-            this.Controls.Add(this.button1);
-            this.Controls.Add(this.label1);
-            this.Controls.Add(this.dateTimePickerMax);
-            this.Controls.Add(this.dateTimePickerMin);
-            this.Controls.Add(this.cmdSaveAs);
-            this.Controls.Add(this.lblShowDate);
-            this.Controls.Add(this.cmdSaveDefault);
-            this.Controls.Add(this.cmdRevert);
-            this.Controls.Add(this.label4);
-            this.Controls.Add(this.chkSpecial);
-            this.Controls.Add(this.chkNormal);
-            this.Controls.Add(this.chkIStripperClassic);
-            this.Controls.Add(this.chkDeskBabes);
-            this.Controls.Add(this.chkVGClassic);
-            this.Controls.Add(this.chkIStripper);
-            this.Controls.Add(this.chkIStripperXXX);
-            this.Controls.Add(this.cmdApply);
-            this.Controls.Add(this.label3);
-            this.Controls.Add(this.label2);
-            this.Controls.Add(this.lblMinRating);
-            this.Controls.Add(this.lblTags);
-            this.Controls.Add(this.txtTags);
-            this.Controls.Add(this.cmdOK);
-            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
-            this.MaximizeBox = false;
-            this.MinimizeBox = false;
-            this.Name = "Filter";
-            this.ShowIcon = false;
-            this.ShowInTaskbar = false;
-            this.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
-            this.Text = "Filter";
-            this.Activated += new System.EventHandler(this.Filter_Activated);
-            this.FormClosing += new System.Windows.Forms.FormClosingEventHandler(this.Filter_FormClosing);
-            this.Load += new System.EventHandler(this.Filter_Load);
-            ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).EndInit();
-            this.ResumeLayout(false);
-            this.PerformLayout();
-
+            AutoScaleMode = AutoScaleMode.Inherit;
+            ClientSize = new Size(822, 718);
+            Controls.Add(chkVirtuaGuy);
+            Controls.Add(button1);
+            Controls.Add(label1);
+            Controls.Add(dateTimePickerMax);
+            Controls.Add(dateTimePickerMin);
+            Controls.Add(cmdSaveAs);
+            Controls.Add(lblShowDate);
+            Controls.Add(cmdSaveDefault);
+            Controls.Add(cmdRevert);
+            Controls.Add(label4);
+            Controls.Add(chkSpecial);
+            Controls.Add(chkNormal);
+            Controls.Add(chkIStripperClassic);
+            Controls.Add(chkDeskBabes);
+            Controls.Add(chkVGClassic);
+            Controls.Add(chkIStripper);
+            Controls.Add(chkIStripperXXX);
+            Controls.Add(cmdApply);
+            Controls.Add(label3);
+            Controls.Add(label2);
+            Controls.Add(lblMinRating);
+            Controls.Add(lblTags);
+            Controls.Add(txtTags);
+            Controls.Add(cmdOK);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            Name = "Filter";
+            ShowIcon = false;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.CenterParent;
+            Text = "Filter";
+            Activated += Filter_Activated;
+            FormClosing += Filter_FormClosing;
+            Load += Filter_Load;
+            ((System.ComponentModel.ISupportInitialize)bindingSource1).EndInit();
+            ResumeLayout(false);
+            PerformLayout();
         }
 
         #endregion
@@ -361,5 +372,6 @@
         private DateTimePicker dateTimePickerMax;
         private Label label1;
         private Button button1;
+        private CheckBox chkVirtuaGuy;
     }
 }

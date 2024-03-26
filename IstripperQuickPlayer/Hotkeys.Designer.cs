@@ -28,98 +28,106 @@
         /// </summary>
         private void InitializeComponent()
         {
-            this.chkNextClip = new System.Windows.Forms.CheckBox();
-            this.chkNextCard = new System.Windows.Forms.CheckBox();
-            this.txtNextClip = new System.Windows.Forms.TextBox();
-            this.txtNextCard = new System.Windows.Forms.TextBox();
-            this.cmdOK = new System.Windows.Forms.Button();
-            this.txtToggleLock = new System.Windows.Forms.TextBox();
-            this.chkToggleLock = new System.Windows.Forms.CheckBox();
-            this.SuspendLayout();
+            chkNextClip = new CheckBox();
+            chkNextCard = new CheckBox();
+            txtNextClip = new TextBox();
+            txtNextCard = new TextBox();
+            cmdOK = new Button();
+            txtToggleLock = new TextBox();
+            chkToggleLock = new CheckBox();
+            SuspendLayout();
             // 
             // chkNextClip
             // 
-            this.chkNextClip.AutoSize = true;
-            this.chkNextClip.Location = new System.Drawing.Point(41, 24);
-            this.chkNextClip.Name = "chkNextClip";
-            this.chkNextClip.Size = new System.Drawing.Size(92, 24);
-            this.chkNextClip.TabIndex = 0;
-            this.chkNextClip.Text = "Next Clip";
-            this.chkNextClip.UseVisualStyleBackColor = true;
+            chkNextClip.AutoSize = true;
+            chkNextClip.Location = new Point(70, 84);
+            chkNextClip.Margin = new Padding(4, 4, 4, 4);
+            chkNextClip.Name = "chkNextClip";
+            chkNextClip.Size = new Size(109, 29);
+            chkNextClip.TabIndex = 0;
+            chkNextClip.Text = "Next Clip";
+            chkNextClip.UseVisualStyleBackColor = true;
             // 
             // chkNextCard
             // 
-            this.chkNextCard.AutoSize = true;
-            this.chkNextCard.Location = new System.Drawing.Point(41, 66);
-            this.chkNextCard.Name = "chkNextCard";
-            this.chkNextCard.Size = new System.Drawing.Size(97, 24);
-            this.chkNextCard.TabIndex = 1;
-            this.chkNextCard.Text = "Next Card";
-            this.chkNextCard.UseVisualStyleBackColor = true;
+            chkNextCard.AutoSize = true;
+            chkNextCard.Location = new Point(70, 136);
+            chkNextCard.Margin = new Padding(4, 4, 4, 4);
+            chkNextCard.Name = "chkNextCard";
+            chkNextCard.Size = new Size(116, 29);
+            chkNextCard.TabIndex = 1;
+            chkNextCard.Text = "Next Card";
+            chkNextCard.UseVisualStyleBackColor = true;
             // 
             // txtNextClip
             // 
-            this.txtNextClip.Location = new System.Drawing.Point(168, 21);
-            this.txtNextClip.Name = "txtNextClip";
-            this.txtNextClip.Size = new System.Drawing.Size(211, 27);
-            this.txtNextClip.TabIndex = 2;
+            txtNextClip.Location = new Point(229, 80);
+            txtNextClip.Margin = new Padding(4, 4, 4, 4);
+            txtNextClip.Name = "txtNextClip";
+            txtNextClip.Size = new Size(263, 31);
+            txtNextClip.TabIndex = 2;
             // 
             // txtNextCard
             // 
-            this.txtNextCard.Location = new System.Drawing.Point(168, 63);
-            this.txtNextCard.Name = "txtNextCard";
-            this.txtNextCard.Size = new System.Drawing.Size(211, 27);
-            this.txtNextCard.TabIndex = 3;
+            txtNextCard.Location = new Point(229, 133);
+            txtNextCard.Margin = new Padding(4, 4, 4, 4);
+            txtNextCard.Name = "txtNextCard";
+            txtNextCard.Size = new Size(263, 31);
+            txtNextCard.TabIndex = 3;
             // 
             // cmdOK
             // 
-            this.cmdOK.Location = new System.Drawing.Point(168, 171);
-            this.cmdOK.Name = "cmdOK";
-            this.cmdOK.Size = new System.Drawing.Size(87, 44);
-            this.cmdOK.TabIndex = 4;
-            this.cmdOK.Text = "OK";
-            this.cmdOK.UseVisualStyleBackColor = true;
-            this.cmdOK.Click += new System.EventHandler(this.cmdOK_Click);
+            cmdOK.Location = new Point(229, 268);
+            cmdOK.Margin = new Padding(4, 4, 4, 4);
+            cmdOK.Name = "cmdOK";
+            cmdOK.Size = new Size(109, 55);
+            cmdOK.TabIndex = 4;
+            cmdOK.Text = "OK";
+            cmdOK.UseVisualStyleBackColor = true;
+            cmdOK.Click += cmdOK_Click;
             // 
             // txtToggleLock
             // 
-            this.txtToggleLock.Location = new System.Drawing.Point(168, 106);
-            this.txtToggleLock.Name = "txtToggleLock";
-            this.txtToggleLock.Size = new System.Drawing.Size(211, 27);
-            this.txtToggleLock.TabIndex = 6;
+            txtToggleLock.Location = new Point(229, 186);
+            txtToggleLock.Margin = new Padding(4, 4, 4, 4);
+            txtToggleLock.Name = "txtToggleLock";
+            txtToggleLock.Size = new Size(263, 31);
+            txtToggleLock.TabIndex = 6;
             // 
             // chkToggleLock
             // 
-            this.chkToggleLock.AutoSize = true;
-            this.chkToggleLock.Location = new System.Drawing.Point(41, 109);
-            this.chkToggleLock.Name = "chkToggleLock";
-            this.chkToggleLock.Size = new System.Drawing.Size(111, 24);
-            this.chkToggleLock.TabIndex = 5;
-            this.chkToggleLock.Text = "Toggle Lock";
-            this.chkToggleLock.UseVisualStyleBackColor = true;
+            chkToggleLock.AutoSize = true;
+            chkToggleLock.Location = new Point(70, 190);
+            chkToggleLock.Margin = new Padding(4, 4, 4, 4);
+            chkToggleLock.Name = "chkToggleLock";
+            chkToggleLock.Size = new Size(132, 29);
+            chkToggleLock.TabIndex = 5;
+            chkToggleLock.Text = "Toggle Lock";
+            chkToggleLock.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
-            this.AutoScaleDimensions = new System.Drawing.SizeF(8F, 20F);
-            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(449, 242);
-            this.Controls.Add(this.txtToggleLock);
-            this.Controls.Add(this.chkToggleLock);
-            this.Controls.Add(this.cmdOK);
-            this.Controls.Add(this.txtNextCard);
-            this.Controls.Add(this.txtNextClip);
-            this.Controls.Add(this.chkNextCard);
-            this.Controls.Add(this.chkNextClip);
-            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
-            this.MaximizeBox = false;
-            this.MinimizeBox = false;
-            this.Name = "Hotkeys";
-            this.StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
-            this.Text = "Hotkeys";
-            this.Load += new System.EventHandler(this.Hotkeys_Load);
-            this.ResumeLayout(false);
-            this.PerformLayout();
-
+            AutoScaleDimensions = new SizeF(10F, 25F);
+            AutoScaleMode = AutoScaleMode.Font;
+            ClientSize = new Size(578, 344);
+            Controls.Add(txtToggleLock);
+            Controls.Add(chkToggleLock);
+            Controls.Add(cmdOK);
+            Controls.Add(txtNextCard);
+            Controls.Add(txtNextClip);
+            Controls.Add(chkNextCard);
+            Controls.Add(chkNextClip);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            Margin = new Padding(4, 4, 4, 4);
+            MaximizeBox = false;
+            MinimizeBox = false;
+            Name = "Hotkeys";
+            Padding = new Padding(4, 80, 4, 4);
+            StartPosition = FormStartPosition.CenterParent;
+            Text = "Hotkeys";
+            Load += Hotkeys_Load;
+            ResumeLayout(false);
+            PerformLayout();
         }
 
         #endregion

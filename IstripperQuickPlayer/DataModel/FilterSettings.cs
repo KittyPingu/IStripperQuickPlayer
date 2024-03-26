@@ -25,6 +25,7 @@ namespace IStripperQuickPlayer.DataModel
         internal bool DeskBabes =true;
         internal bool Special=true;
         internal bool Normal=true;
+        internal bool VirtuaGuy = true;
         internal decimal minMyRating=0;
         internal decimal maxMyRating=10;
         internal DateTime minDate=new DateTime(2007,1,1);

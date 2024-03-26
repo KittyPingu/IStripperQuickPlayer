@@ -4,6 +4,8 @@ using Gma.System.MouseKeyHook;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
 using Manina.Windows.Forms;
+using MaterialSkin;
+using MaterialSkin.Controls;
 using Microsoft.Win32;
 using Microsoft.WindowsAPICodePack.Taskbar;
 using Nektra.Deviare2;
@@ -14,13 +16,14 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
+using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
 using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
 using Size = System.Drawing.Size;
 //using WebView2.DevTools.Dom;
 
 namespace IStripperQuickPlayer
 {
-    public partial class Form1 : Form
+    public partial class Form1 : MaterialForm
     {
 
         [DllImport("dwmapi.dll")]
@@ -52,31 +55,43 @@ namespace IStripperQuickPlayer
         Action? actionToggleLock = null;
         //deviare2 hooking
         private NktSpyMgr _spyMgr;
-        private Int32 vghd_procID=0;
+        private Int32 vghd_procID = 0;
         private ControlScrollListener _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
         bool playerlocked = Properties.Settings.Default.LockPlayer;
         //private WebView2DevToolsContext devtoolsContext = null;
-  
+
         private void actNextClip()
         {
             if (Properties.Settings.Default.NextClipEnabled) GetNextClip();
         }
 
-        private  void actNextCard()
+        private void actNextCard()
         {
-           if (Properties.Settings.Default.NextCardEnabled) this.BeginInvoke((Action)(() => GetNextCard()));
+            if (Properties.Settings.Default.NextCardEnabled) this.BeginInvoke((Action)(() => GetNextCard()));
         }
 
         private void actToggleLock()
         {
-            if (Properties.Settings.Default.ToggleLockEnabled) this.BeginInvoke((Action)(() => {lockPlayerToolStripMenuItem.Checked = !lockPlayerToolStripMenuItem.Checked; setPlayerLocked(); }));
+            if (Properties.Settings.Default.ToggleLockEnabled) this.BeginInvoke((Action)(() => { lockPlayerToolStripMenuItem.Checked = !lockPlayerToolStripMenuItem.Checked; setPlayerLocked(); }));
         }
 
         public Form1()
         {
             InitializeComponent();
+            SetSkin();
+        }
+
+        private void SetSkin()
+        {
+            var materialSkinManager = MaterialSkinManager.Instance;
+            materialSkinManager.RemoveFormToManage(this);
+            materialSkinManager.AddFormToManage(this);
+            materialSkinManager.Theme = MaterialSkinManager.Themes.LIGHT;
+            if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
+            materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
+            if (cardRenderer != null) cardRenderer.SetColours();
         }
 
         private void cmdLoadModels_Click(object sender, EventArgs e)
@@ -94,7 +109,7 @@ namespace IStripperQuickPlayer
             if (Datastore.modelcards != null)
                 Datastore.modelcards.Clear();
             lstLoader.LoadModels();
-            this.BeginInvoke((Action)(() => { PopulateModelListview();}));
+            this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
             PersistModels();
         }
 
@@ -104,7 +119,7 @@ namespace IStripperQuickPlayer
             string modelfolder = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer");
             if (!Directory.Exists(modelfolder))
                 Directory.CreateDirectory(modelfolder);
-            Serialize(Datastore.modelcards, modelfilepath);  
+            Serialize(Datastore.modelcards, modelfilepath);
         }
 
         private void RetrieveModels()
@@ -113,11 +128,11 @@ namespace IStripperQuickPlayer
             if (System.IO.File.Exists(modelfilepath))
             {
                 Datastore.modelcards = Deserialize(modelfilepath);
-                this.BeginInvoke((Action)(() => { PopulateModelListview();}));
+                this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
             }
             else
             {
-                this.BeginInvoke((Action)(() => { ReloadModels();}));
+                this.BeginInvoke((Action)(() => { ReloadModels(); }));
             }
         }
 
@@ -132,7 +147,7 @@ namespace IStripperQuickPlayer
             }
             listModelsNew.Items.Clear();
             if (Datastore.modelcards == null)
-            {                
+            {
                 return;
             }
 
@@ -272,7 +287,7 @@ namespace IStripperQuickPlayer
                 }
             }
             SetModelNewImageList();
-        
+
             lblModelsLoaded.Text = "Cards Shown: " + listModelsNew.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
 
             //set the selected card back to what we had selected at start of the function
@@ -290,16 +305,16 @@ namespace IStripperQuickPlayer
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
-         private void SetModelNewImageList()
-         {           
+        private void SetModelNewImageList()
+        {
             var itemsNew = new ImageListViewItem[items.Count()];
             int idx = 0;
 
             cardRenderer.updating = true;
             listModelsNew.SuspendLayout();
             listModelsNew.Items.Clear();
-            listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
-            foreach(var i in items)
+            listModelsNew.ThumbnailSize = new Size((int)(cardScale * 162), (int)(242 * cardScale));
+            foreach (var i in items)
             {
                 ModelCard? card = Datastore.findCardByTag(i.Tag.ToString());
                 var im = new ImageListViewItem();
@@ -309,7 +324,7 @@ namespace IStripperQuickPlayer
                 itemsNew[idx] = im;
                 idx++;
             }
-              
+
             listModelsNew.Items.AddRange(itemsNew);
             listModelsNew.ResumeLayout();
             cardRenderer.updating = false;
@@ -317,16 +332,16 @@ namespace IStripperQuickPlayer
         }
 
         private List<ModelCard>? Filter(List<ModelCard>? currentCards)
-        {   
+        {
             if (chkFavourite.Checked && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardFavourite(c.name)).ToList();
             currentCards = currentCards.Where(c => c.dateReleased >= filterSettings.minDate && c.dateReleased <= filterSettings.maxDate).ToList();
             if ((filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10) && myData != null)
-                currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating 
-                && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();  
+                currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating
+                && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();
             currentCards = currentCards.Where(c => ((c.modelAge >= filterSettings.minAge && c.modelAge <= filterSettings.maxAge) || c.modelAge == 0 || c.modelAge > 99)
-                && ((c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust) || c.bust == 0 || c.bust > 99)     
-                && (c.rating-5M >= filterSettings.minRating && c.rating-5M <= filterSettings.maxRating) || c.rating == 0          
+                && ((c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust) || c.bust == 0 || c.bust > 99)
+                && (c.rating - 5M >= filterSettings.minRating && c.rating - 5M <= filterSettings.maxRating) || c.rating == 0
                 ).ToList();
 
             if (!String.IsNullOrEmpty(filterSettings.tags))
@@ -334,135 +349,136 @@ namespace IStripperQuickPlayer
                 string[] parts = filterSettings.tags.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
 
 
-                foreach(string p in parts)
-                { 
-                    
+                foreach (string p in parts)
+                {
+
                     List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
                     if (p.Contains("!"))
                     {
-                        
-                        List<ModelCard>? poslist=null;
-                        List<ModelCard>? neglist=currentCards;
+
+                        List<ModelCard>? poslist = null;
+                        List<ModelCard>? neglist = currentCards;
                         foreach (string tag in taglist.Where(x => !x.Contains("!")))
                         {
-                           //do all the positives first
-                           poslist = currentCards.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",",c.tags).ContainsWithNot(tag) || c.name.ContainsWithNot(tag)).ToList();                        
+                            //do all the positives first
+                            poslist = currentCards.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",", c.tags).ContainsWithNot(tag) || c.name.ContainsWithNot(tag)).ToList();
                         }
-                        if (poslist == null) poslist = new List<ModelCard>{ };
+                        if (poslist == null) poslist = new List<ModelCard> { };
                         foreach (string tag in taglist.Where(x => x.Contains("!")))
                         {
-                            neglist = neglist.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",",c.tags).ContainsWithNot(tag) && c.name.ContainsWithNot(tag)).ToList();         
+                            neglist = neglist.Where(c => (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",", c.tags).ContainsWithNot(tag) && c.name.ContainsWithNot(tag)).ToList();
                         }
-                        if (poslist == null) currentCards = new List<ModelCard>{ };
+                        if (poslist == null) currentCards = new List<ModelCard> { };
                         else
-                            if (neglist == null) neglist = new List<ModelCard>{ };
-                            currentCards = poslist.Union(neglist).ToList();
+                            if (neglist == null) neglist = new List<ModelCard> { };
+                        currentCards = poslist.Union(neglist).ToList();
                     }
                     else
                     {
                         currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
                             || taglist.Any(d => c.name.ContainsWithNot(d))
-                            || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",",c.tags).ContainsWithNot(y))).ToList();
+                            || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",", c.tags).ContainsWithNot(y))).ToList();
                     }
 
-                    
+
                 }
-                
+
             }
-            List<Enum> enabledcollections = new List<Enum>{ };
+            List<Enum> enabledcollections = new List<Enum> { };
             if (filterSettings.IStripperXXX) enabledcollections.Add(Enums.CollectionType.IStripperXXX);
             if (filterSettings.DeskBabes) enabledcollections.Add(Enums.CollectionType.DeskBabes);
             if (filterSettings.IStripperClassic) enabledcollections.Add(Enums.CollectionType.IStripperClassic);
             if (filterSettings.VGClassic) enabledcollections.Add(Enums.CollectionType.VGClassic);
             if (filterSettings.IStripper) enabledcollections.Add(Enums.CollectionType.IStripper);
+            if (filterSettings.VirtuaGuy) enabledcollections.Add(Enums.CollectionType.VirtuaGuy);
 
             if (filterSettings.Normal && !filterSettings.Special)
                 currentCards = currentCards.Where(c => c.exclusive != null && !(bool)c.exclusive).ToList();
             else if (filterSettings.Special && !filterSettings.Normal)
                 currentCards = currentCards.Where(c => c.exclusive != null && (bool)c.exclusive).ToList();
 
-            currentCards = currentCards.Where(c=> enabledcollections.Contains(c.collection)).ToList();
+            currentCards = currentCards.Where(c => enabledcollections.Contains(c.collection)).ToList();
 
             try
             {
-            if (Properties.Settings.Default.ShowKitty && (txtSearch.Text == "" || txtSearch.Text.ToLower().Contains("kitty")))
-                currentCards.Add(Datastore.modelcards.Where(c=>c.name=="f9998").First());
+                if (Properties.Settings.Default.ShowKitty && (txtSearch.Text == "" || txtSearch.Text.ToLower().Contains("kitty")))
+                    currentCards.Add(Datastore.modelcards.Where(c => c.name == "f9998").First());
             }
-            catch (Exception ex){ }
+            catch (Exception ex) { }
 
             return currentCards;
         }
 
         internal void setFilter(string v)
         {
-            this.BeginInvoke((Action)(() => { PopulateFilterList(); cmbFilter.SelectedItem = v;}));
+            this.BeginInvoke((Action)(() => { PopulateFilterList(); cmbFilter.SelectedItem = v; }));
         }
 
-        internal List<ModelCard>? Deserialize(String filename)  
-        {  
+        internal List<ModelCard>? Deserialize(String filename)
+        {
             //Format the object as Binary  
             try
             {
-            BinaryFormatter formatter = new BinaryFormatter();  
-   
-            //Reading the file from the server  
-            FileStream fs = System.IO.File.Open(filename, FileMode.Open);   
-            object obj = formatter.Deserialize(fs);  
-            List<ModelCard>? emps = (List<ModelCard>?)obj;  
-            fs.Flush();  
-            fs.Close();  
-            fs.Dispose(); 
+                BinaryFormatter formatter = new BinaryFormatter();
 
-            return emps;
+                //Reading the file from the server  
+                FileStream fs = System.IO.File.Open(filename, FileMode.Open);
+                object obj = formatter.Deserialize(fs);
+                List<ModelCard>? emps = (List<ModelCard>?)obj;
+                fs.Flush();
+                fs.Close();
+                fs.Dispose();
+
+                return emps;
             }
             catch (Exception ex)
             {
-                return new List<ModelCard>{ };
+                return new List<ModelCard> { };
             }
-        }  
+        }
 
-        internal void Serialize(List<ModelCard>? emps, String filename)  
-        {  
+        internal void Serialize(List<ModelCard>? emps, String filename)
+        {
             //Create the stream to add object into it.  
-            System.IO.Stream ms = System.IO.File.OpenWrite(filename);   
+            System.IO.Stream ms = System.IO.File.OpenWrite(filename);
             //Format the object as Binary  
-  
-            BinaryFormatter formatter = new BinaryFormatter();  
+
+            BinaryFormatter formatter = new BinaryFormatter();
             //It serialize the employee object  
-            formatter.Serialize(ms, emps);  
-            ms.Flush();  
-            ms.Close();  
-            ms.Dispose();  
-        } 
+            formatter.Serialize(ms, emps);
+            ms.Flush();
+            ms.Close();
+            ms.Dispose();
+        }
 
         internal void SerializeFilter(FilterSettings filter, String filename)
         {
             //Create the stream to add object into it.  
-            System.IO.Stream ms = System.IO.File.OpenWrite(filename);   
+            System.IO.Stream ms = System.IO.File.OpenWrite(filename);
             //Format the object as Binary  
-  
-            BinaryFormatter formatter = new BinaryFormatter();  
+
+            BinaryFormatter formatter = new BinaryFormatter();
             //It serialize the employee object  
-            formatter.Serialize(ms, filter);  
-            ms.Flush();  
-            ms.Close();  
-            ms.Dispose(); 
+            formatter.Serialize(ms, filter);
+            ms.Flush();
+            ms.Close();
+            ms.Dispose();
         }
 
         internal FilterSettings DeserializeFilter(string filename)
         {
-             //Format the object as Binary  
+            //Format the object as Binary  
             try
             {
-                BinaryFormatter formatter = new BinaryFormatter();  
-   
+                BinaryFormatter formatter = new BinaryFormatter();
+
                 //Reading the file from the server  
-                FileStream fs = System.IO.File.Open(filename, FileMode.Open);   
-                object obj = formatter.Deserialize(fs);  
-                FilterSettings f = (FilterSettings)obj;  
-                fs.Flush();  
-                fs.Close();  
-                fs.Dispose(); 
+                FileStream fs = System.IO.File.Open(filename, FileMode.Open);
+                object obj = formatter.Deserialize(fs);
+                FilterSettings f = (FilterSettings)obj;
+                fs.Flush();
+                fs.Close();
+                fs.Dispose();
 
                 return f;
             }
@@ -478,37 +494,38 @@ namespace IStripperQuickPlayer
             string mdatafolder = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer");
             if (!Directory.Exists(mdatafolder))
                 Directory.CreateDirectory(mdatafolder);
-            
-            System.IO.Stream ms = System.IO.File.OpenWrite(mdatafilepath);     
-            BinaryFormatter formatter = new BinaryFormatter();              
-            formatter.Serialize(ms, myData);  
-            ms.Flush();  
-            ms.Close();  
-            ms.Dispose();  
+
+            System.IO.Stream ms = System.IO.File.OpenWrite(mdatafilepath);
+            BinaryFormatter formatter = new BinaryFormatter();
+            formatter.Serialize(ms, myData);
+            ms.Flush();
+            ms.Close();
+            ms.Dispose();
         }
 
         internal MyData RetrieveMyData()
         {
-            
+
             try
             {
                 string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
                 if (!System.IO.File.Exists(mdatafilepath)) return new MyData();
-                BinaryFormatter formatter = new BinaryFormatter();  
-   
+                BinaryFormatter formatter = new BinaryFormatter();
+
                 //Reading the file from the server  
-                FileStream fs = System.IO.File.Open(mdatafilepath, FileMode.Open);   
-                object obj = formatter.Deserialize(fs);  
-                MyData m = (MyData)obj;  
-                fs.Flush();  
-                fs.Close();  
-                fs.Dispose(); 
+                FileStream fs = System.IO.File.Open(mdatafilepath, FileMode.Open);
+                object obj = formatter.Deserialize(fs);
+                MyData m = (MyData)obj;
+                fs.Flush();
+                fs.Close();
+                fs.Dispose();
                 return m;
             }
-            catch (Exception ex){
+            catch (Exception ex)
+            {
                 MessageBox.Show("Error reading MyData file\r\n" + ex.Message);
                 return new MyData();
-            }            
+            }
         }
 
         private void lblModelsLoaded_Click(object sender, EventArgs e)
@@ -524,20 +541,20 @@ namespace IStripperQuickPlayer
 
         private void FilterClips()
         {
-             var col = listModelsNew.SelectedItems;
-             if (col.Count > 0)
+            var col = listModelsNew.SelectedItems;
+            if (col.Count > 0)
                 loadListClips(listModelsNew.SelectedItems[0].Tag);
-             else
+            else
                 loadListClips(clipListTag);
         }
 
         private void loadListClips(object tag)
         {
-            ModelCard? card = Datastore.findCardByTag(tag.ToString());           
-            if (card == null) return; 
+            ModelCard? card = Datastore.findCardByTag(tag.ToString());
+            if (card == null) return;
             clipListTag = tag.ToString();
-            lblCipListDetails.Text = card.modelName + ": " +card.outfit;
-            if (myData != null) 
+            lblCipListDetails.Text = card.modelName + ": " + card.outfit;
+            if (myData != null)
                 txtUserTags.Text = string.Join(",", myData.GetCardTags(tag.ToString()));
             listClips.BeginUpdate();
             listClips.Items.Clear();
@@ -546,40 +563,40 @@ namespace IStripperQuickPlayer
             var currentClips = card.clips;
 
             string[] parts = txtClipType.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
-            foreach(string p in parts)
-            { 
-                    
+            foreach (string p in parts)
+            {
+
                 List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
                 if (p.Contains("!"))
                 {
-                        
-                    List<ModelClip>? poslist=null;
-                    List<ModelClip>? neglist=currentClips;
+
+                    List<ModelClip>? poslist = null;
+                    List<ModelClip>? neglist = currentClips;
                     foreach (string t in taglist.Where(x => !x.Contains("!")))
                     {
                         //do all the positives first
                         poslist = currentClips.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
                     }
-                    if (poslist == null) poslist = new List<ModelClip>{ };
+                    if (poslist == null) poslist = new List<ModelClip> { };
                     foreach (string t in taglist.Where(x => x.Contains("!")))
                     {
                         neglist = neglist.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
-                                         }
-                    if (poslist == null) currentClips = new List<ModelClip>{ };
+                    }
+                    if (poslist == null) currentClips = new List<ModelClip> { };
                     else
-                        if (neglist == null) neglist = new List<ModelClip>{ };
-                        currentClips = poslist.Union(neglist).ToList();
+                        if (neglist == null) neglist = new List<ModelClip> { };
+                    currentClips = poslist.Union(neglist).ToList();
                 }
                 else
                 {
                     currentClips = currentClips.Where(c => (c.clipType != null && taglist.Any(y => c.clipType.ContainsWithNot(y)))).ToList();
                 }
 
-                    
-            }
-                
 
-            foreach(ModelClip clip in currentClips)
+            }
+
+
+            foreach (ModelClip clip in currentClips)
             {
                 bool addThis = false;
                 switch (clip.hotnessCode)
@@ -589,8 +606,8 @@ namespace IStripperQuickPlayer
                             addThis = true;
                         break;
                     case Enums.HotnessCode.nonudity:
-                        if (chkNoNudity.Checked)    
-                            addThis = true;  
+                        if (chkNoNudity.Checked)
+                            addThis = true;
                         break;
                     case Enums.HotnessCode.topless:
                         if (chkTopless.Checked)
@@ -611,21 +628,21 @@ namespace IStripperQuickPlayer
                     default:
                         break;
                 }
-                if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
+                if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB > clip.size / 1024 / 1024) addThis = false;
                 if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
                 //if (!string.IsNullOrEmpty(txtClipType.Text) && !clip.clipType.ToLower().Contains(txtClipType.Text.ToLower())) addThis = false;
                 if (addThis)
                 {
-                    ListViewItem item = new ListViewItem(new [] {clip.clipNumber.ToString(), clip.clipName, clip.hotnessCode.ToString(), clip.clipType, (clip.size/1024/1024).ToString() +"MB"});
+                    ListViewItem item = new ListViewItem(new[] { clip.clipNumber.ToString(), clip.clipName, clip.hotnessCode.ToString(), clip.clipType, (clip.size / 1024 / 1024).ToString() + "MB" });
                     listClips.Items.Add(item);
                 }
             }
             listClips.EndUpdate();
             txtDescription.Text = card.description;
-            lblAge.Text = "Age: "+card.modelAge;
-            lblStats.Text = "Stats: "+card.bust+"/"+card.waist+"/"+card.hips;
-            lblRatingScore.Text = "Rating: "+(Convert.ToDecimal(card.rating)-5m).ToString();
-            lblCollection.Text = "CardType: "+card.collection.GetDescription();
+            lblAge.Text = "Age: " + card.modelAge;
+            lblStats.Text = "Stats: " + card.bust + "/" + card.waist + "/" + card.hips;
+            lblRatingScore.Text = "Rating: " + (Convert.ToDecimal(card.rating) - 5m).ToString();
+            lblCollection.Text = "CardType: " + card.collection.GetDescription();
             lblResolution.Text = "Res: " + card.resolution.GetDescription();
             lblTags.Text = "Tags: " + String.Join(",", card.tags);
 
@@ -640,20 +657,20 @@ namespace IStripperQuickPlayer
                 clickingNowPlaying = false;
                 return;
             }
-            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true); 
-            
+            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
+
             string r = listClips.SelectedItems[0].SubItems[1].Text;
             string p = r.Split("_")[0];
             string full = p + "\\" + r;
             if (key != null)
-            { 
+            {
                 var currentkey = key.GetValue("CurrentAnim");
                 string? currentkeystring = "";
                 if (currentkey != null) currentkeystring = currentkey.ToString();
                 if (currentkey != null && currentkeystring != full)
-                {            
-                    key.SetValue("ForceAnim", full);  
-                    key.Close(); 
+                {
+                    key.SetValue("ForceAnim", full);
+                    key.Close();
                 }
             }
             lastchosen = listClips.SelectedItems[0].SubItems[1].Text;
@@ -683,7 +700,7 @@ namespace IStripperQuickPlayer
                 Size = Properties.Settings.Default.Size;
             }
             else
-            {                
+            {
                 Location = Properties.Settings.Default.Location;
                 if (Properties.Settings.Default.Size.Width > 0 && Properties.Settings.Default.Size.Height > 0)
                 {
@@ -693,7 +710,7 @@ namespace IStripperQuickPlayer
             //AdjustControls();
             //DPI_Per_Monitor.TryEnableDPIAware(this, SetUserFonts);
             this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-            culture.NumberFormat.NumberDecimalSeparator = ".";           
+            culture.NumberFormat.NumberDecimalSeparator = ".";
             //await webModels.EnsureCoreWebView2Async();
             //devtoolsContext = await webModels.CoreWebView2.CreateDevToolsContextAsync();
             //check if we Segoe Fluent Icons font - this comes with windows 11
@@ -704,7 +721,7 @@ namespace IStripperQuickPlayer
                     fontInstalled = true;
             }
             Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
-            lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;           
+            lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             cmbSortDirection.Text = Properties.Settings.Default.SortDirection;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
@@ -719,7 +736,7 @@ namespace IStripperQuickPlayer
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
             }
-            Task.Run(() => SetupRegHooks());
+            System.Threading.Tasks.Task.Run(() => SetupRegHooks());
 
             //get number of monitors for wallpaper
             try
@@ -728,10 +745,10 @@ namespace IStripperQuickPlayer
                 string[] monitorsChecked = Properties.Settings.Default.WallpaperMonitors.Split(",", StringSplitOptions.TrimEntries);
                 for (uint i = 0; i < wallpaper.GetMonitorDevicePathCount(); i++)
                 {
-                    ToolStripMenuItem newitem = new ToolStripMenuItem("Monitor " + (i+1).ToString());
-                    newitem.CheckOnClick = true;                    
+                    ToolStripMenuItem newitem = new ToolStripMenuItem("Monitor " + (i + 1).ToString());
+                    newitem.CheckOnClick = true;
                     newitem.Tag = i;
-                    if (monitorsChecked.Contains((i+1).ToString())) newitem.Checked = true;
+                    if (monitorsChecked.Contains((i + 1).ToString())) newitem.Checked = true;
                     this.wallpaperToolStripMenuItem.DropDownItems.Add(newitem);
                     newitem.CheckedChanged += WallpaperMonitor_CheckedChanged;
                 }
@@ -744,29 +761,32 @@ namespace IStripperQuickPlayer
             showKittyToolStripMenuItem.Checked = Properties.Settings.Default.ShowKitty;
             minimizeToTrayToolStripMenuItem.Checked = Properties.Settings.Default.MinimizeToTray;
             hideDesktopIconsToolStripMenuItem.Checked = Properties.Settings.Default.HideDesktopIcons;
+            darkModeToolStripMenuItem.Checked = Properties.Settings.Default.DarkMode;
+            SetSkin();
             myData = RetrieveMyData();
             FilterSettingsList.Load();
             PopulateFilterList();
             if (cardRenderer == null)
             {
-                cardRenderer = new CardRenderer(myData, cmbSortBy.Text, cardScale, culture, fontInstalled, style); 
+                cardRenderer = new CardRenderer(myData, cmbSortBy.Text, cardScale, culture, fontInstalled, style);
                 cardRenderer.mZoomRatio = (float)Properties.Settings.Default.ZoomOnHover;
                 listModelsNew.SetRenderer(cardRenderer);
-            }            
-            
+                cardRenderer.SetColours();
+            }
+
             if (FilterSettingsList.filters.ContainsKey("Default"))
                 cmbFilter.SelectedItem = "Default";
             //string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             //watcher.RegistryChange += RegistryChanged;
-             _processListViewScrollListener = new ControlScrollListener(listModelsNew);  
+            _processListViewScrollListener = new ControlScrollListener(listModelsNew);
             _processListViewScrollListener.ControlScrolled += ProcessListViewScrollListener_ControlScrolled;
-            clickingNowPlaying = true;                
-             
+            clickingNowPlaying = true;
+
             RetrieveModels();
             GetNowPlaying();
             clickingNowPlaying = false;
-            SetupKeyHooks();      
+            SetupKeyHooks();
         }
 
         private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)
@@ -788,16 +808,16 @@ namespace IStripperQuickPlayer
             int width = senderComboBox.DropDownWidth;
             Graphics g = senderComboBox.CreateGraphics();
             Font font = senderComboBox.Font;
-            int vertScrollBarWidth = 
-                (senderComboBox.Items.Count>senderComboBox.MaxDropDownItems)
-                ?SystemInformation.VerticalScrollBarWidth:0;
+            int vertScrollBarWidth =
+                (senderComboBox.Items.Count > senderComboBox.MaxDropDownItems)
+                ? SystemInformation.VerticalScrollBarWidth : 0;
 
             int newWidth;
             foreach (string s in senderComboBox.Items)
             {
-                newWidth = (int) g.MeasureString(s, font).Width 
+                newWidth = (int)g.MeasureString(s, font).Width
                     + vertScrollBarWidth;
-                if (width < newWidth )
+                if (width < newWidth)
                 {
                     width = newWidth;
                 }
@@ -832,17 +852,17 @@ namespace IStripperQuickPlayer
             _spyMgr.Initialize();
             _spyMgr.OnFunctionCalled += new DNktSpyMgrEvents_OnFunctionCalledEventHandler(OnFunctionCalled);
             timerhook = new System.Threading.Timer(new TimerCallback(waitForIStripper), null, 100, 100);
-            return ;
+            return;
         }
 
         private bool InjectVGHDProcess()
         {
-            
+
             NktProcessesEnum enumProcess = _spyMgr.Processes();
             tempProcess = enumProcess.First();
             while (tempProcess != null)
             {
-                if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 32)
+                if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 64)
                 {
                     timerhook.Dispose();
                     hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
@@ -880,7 +900,7 @@ namespace IStripperQuickPlayer
                     var u = hookCallInfo.ThreadId;
                     var p = hookCallInfo.Params();
                     foreach (INktParam param in p)
-                    {    
+                    {
 
                         if (param.Name == "Msg")
                         {
@@ -896,7 +916,7 @@ namespace IStripperQuickPlayer
                             //}
                         }
                     }
-                    
+
                     //hookCallInfo.Result().LongLongVal = -1;
                     //hookCallInfo.LastError = 5;
                 }
@@ -904,17 +924,17 @@ namespace IStripperQuickPlayer
             else
             {
                 string newclip = @"f0954\f0954_6176201.vghd";
-                     
+
                 var p = hookCallInfo.Params();
                 IntPtr pointer = IntPtr.Zero;
                 string keyname = "";
                 int length = 0;
                 foreach (INktParam param in p)
-                {                
+                {
                     if (param.Name == "lpData") pointer = param.PointerVal;
-                    if (param.Name == "cbData") 
+                    if (param.Name == "cbData")
                     {
-                        length = Convert.ToInt16(param.Value);                     
+                        length = Convert.ToInt16(param.Value);
                     }
                     if (param.Name == "lpValueName") keyname = param.Value.ToString();
                 }
@@ -939,17 +959,17 @@ namespace IStripperQuickPlayer
                     else
                     {
                         isAutoSelecting = true;
-                        ModelCard? model = Datastore.findCardByTag(newcardstring.Split("\\")[0]);   
+                        ModelCard? model = Datastore.findCardByTag(newcardstring.Split("\\")[0]);
                         ListViewItem? res = null;
                         if (model == null) return;
                         this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
-                    
+
                         //does the new clip match the clip filter?
                         ModelClip? res2 = null;
                         if (res != null)
                         {
                             var clipstest = FilterClipList(model.clips);
-                            string clipstring = newcardstring.Split("\\")[1];                    
+                            string clipstring = newcardstring.Split("\\")[1];
                             res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
                         }
                         if (res == null || res2 == null) found = false;
@@ -961,19 +981,19 @@ namespace IStripperQuickPlayer
                             string newtag = nowPlayingFilterMatch;
                             if (Properties.Settings.Default.Randomize)
                             {
-                                Random r = new Random();  
-                                if (res == null  || res2 == null) //choose a different card
-                                {                                      
+                                Random r = new Random();
+                                if (res == null || res2 == null) //choose a different card
+                                {
                                     while (newtag == nowPlayingFilterMatch)
                                     {
                                         Int64 newr = r.Next(items.Length);
                                         newtag = items[(int)newr].Text;
                                         if (items.Length == 1) break;
                                     }
-                           
+
                                 }
                             }
-                            else                                
+                            else
                             {
                                 //find the current card
                                 int i = 0;
@@ -983,7 +1003,7 @@ namespace IStripperQuickPlayer
                                         break;
                                 }
                                 i++;
-                                if (i > items.Length-1) i = 0;
+                                if (i > items.Length - 1) i = 0;
                                 newtag = items[i].Text;
                             }
                             //choose a random clip from those shown
@@ -991,8 +1011,8 @@ namespace IStripperQuickPlayer
                             List<ModelClip>? clips = FilterClipList(mod.clips);
                             if (clips.Count > 0)
                             {
-                                Random r = new Random();  
-                                var itemnum = r.Next(clips.Count-1);
+                                Random r = new Random();
+                                var itemnum = r.Next(clips.Count - 1);
                                 res2 = clips[itemnum];
                                 newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
                                 found = true;
@@ -1004,12 +1024,12 @@ namespace IStripperQuickPlayer
                                     listModelsNew.Invoke((Action)(() => listModelsNew.SelectWhere(x => x.Tag == newtag)));
                                 }
                             }
-                    
+
                         }
-                        
+
                     }
                 }
-            
+
                 isAutoSelecting = false;
                 ShowNowPlaying(newcardstring, found);
                 if (str != newcardstring && newcardstring != wallpaperTag)
@@ -1042,36 +1062,36 @@ namespace IStripperQuickPlayer
             var currentClips = clips;
 
             string[] parts = txtClipType.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
-            foreach(string p in parts)
-            { 
-                    
+            foreach (string p in parts)
+            {
+
                 List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
                 if (p.Contains("!"))
                 {
-                        
-                    List<ModelClip>? poslist=null;
-                    List<ModelClip>? neglist=currentClips;
+
+                    List<ModelClip>? poslist = null;
+                    List<ModelClip>? neglist = currentClips;
                     foreach (string t in taglist.Where(x => !x.Contains("!")))
                     {
                         //do all the positives first
                         poslist = currentClips.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
                     }
-                    if (poslist == null) poslist = new List<ModelClip>{ };
+                    if (poslist == null) poslist = new List<ModelClip> { };
                     foreach (string t in taglist.Where(x => x.Contains("!")))
                     {
                         neglist = neglist.Where(c => (c.clipType != null && c.clipType.ContainsWithNot(t))).ToList();
-                                         }
-                    if (poslist == null) currentClips = new List<ModelClip>{ };
+                    }
+                    if (poslist == null) currentClips = new List<ModelClip> { };
                     else
-                        if (neglist == null) neglist = new List<ModelClip>{ };
-                        currentClips = poslist.Union(neglist).ToList();
+                        if (neglist == null) neglist = new List<ModelClip> { };
+                    currentClips = poslist.Union(neglist).ToList();
                 }
                 else
                 {
                     currentClips = currentClips.Where(c => (c.clipType != null && taglist.Any(y => c.clipType.ContainsWithNot(y)))).ToList();
                 }
 
-                    
+
             }
 
             List<ModelClip> clipsnew = new List<ModelClip>();
@@ -1107,7 +1127,7 @@ namespace IStripperQuickPlayer
                     default:
                         break;
                 }
-                if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB >clip.size/1024/1024) addThis = false;
+                if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB > clip.size / 1024 / 1024) addThis = false;
                 if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
                 if (addThis)
                 {
@@ -1117,13 +1137,16 @@ namespace IStripperQuickPlayer
             return clipsnew;
         }
 
-        public static string readItemText(ListView varControl, int itemnum) {
-            if (varControl.InvokeRequired) {
+        public static string readItemText(ListView varControl, int itemnum)
+        {
+            if (varControl.InvokeRequired)
+            {
                 return (string)varControl.Invoke(
                     new Func<String>(() => readItemText(varControl, itemnum))
                 );
             }
-            else {
+            else
+            {
                 string varText = varControl.Items[itemnum].SubItems[1].Text;
                 return varText.Split("_")[0] + "\\" + varText;
             }
@@ -1138,12 +1161,12 @@ namespace IStripperQuickPlayer
             IntPtr pDest = pinnedBuffer.AddrOfPinnedObject();
             Int64 bytesReaded = procMem.ReadMem(pDest, address, lenptr).ToInt64();
             procMem.WriteMem(pDest, address, new IntPtr(0));
-            pinnedBuffer.Free();           
+            pinnedBuffer.Free();
 
             var res = System.Text.Encoding.Unicode.GetString(buffer);
-            return res.Replace("\0", string.Empty);        
+            return res.Replace("\0", string.Empty);
         }
-         
+
 
         private void GetNowPlaying()
         {
@@ -1152,7 +1175,7 @@ namespace IStripperQuickPlayer
             {
                 var a = key.GetValue("CurrentAnim", "");
                 if (a != null)
-                { 
+                {
                     string nowp = a.ToString() ?? "";
                     ShowNowPlaying(nowp, !string.IsNullOrEmpty(nowp));
                     key.Close();
@@ -1162,7 +1185,7 @@ namespace IStripperQuickPlayer
 
         private bool EnforceNowPlaying(string nowplaying)
         {
-            ModelCard? model = Datastore.findCardByTag(nowplaying.Split("\\")[0]);   
+            ModelCard? model = Datastore.findCardByTag(nowplaying.Split("\\")[0]);
             ListViewItem? res = null;
             if (model == null) return false;
             this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
@@ -1199,7 +1222,7 @@ namespace IStripperQuickPlayer
                     }
                     nowPlayingClipNumber = Convert.ToInt32(modelClip.clipNumber);
                 }
-                if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
+                if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying; }));
                 if (listClips.Items.Count == 0)
                     this.BeginInvoke((Action)(() => NowPlayingClick(true)));
                 cardRenderer.nowPlayingTag = nowPlayingTag;
@@ -1207,7 +1230,7 @@ namespace IStripperQuickPlayer
             }
             catch { }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-            if (doWallpaper) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying;}));
+            if (doWallpaper) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying; }));
             if (Properties.Settings.Default.AutoWallpaper && doWallpaper && nowPlaying != "") this.BeginInvoke((Action)(() => ChangeWallpaper()));
         }
 
@@ -1217,7 +1240,7 @@ namespace IStripperQuickPlayer
         }
 
         private void comboBox1_SelectedIndexChanged(object sender, EventArgs e)
-        {            
+        {
             Properties.Settings.Default.SortBy = cmbSortBy.Text;
             if (cardRenderer != null)
             {
@@ -1241,17 +1264,17 @@ namespace IStripperQuickPlayer
                 ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
                 listModelsNew.ClearSelection();
                 var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
-                int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);            
+                int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);
                 if (i != null)
                 {
                     listModelsNew.SelectWhere(x => x.Text == nowPlayingTag);
                     cardRenderer.nowPlayingTag = nowPlayingTag;
-                    listModelsNew.EnsureVisible((int)index);    
+                    listModelsNew.EnsureVisible((int)index);
                     listModelsNew.Refresh();
                 }
                 else
-                {                    
-                    loadListClips(c.name);                    
+                {
+                    loadListClips(c.name);
                 }
 
                 //select the playing clip in list
@@ -1268,10 +1291,10 @@ namespace IStripperQuickPlayer
                 }
             }
         }
-               
+
         private void txtSearch_TextChanged(object sender, EventArgs e)
         {
-            
+
         }
 
         private void txtSearch_KeyDown(object sender, KeyEventArgs e)
@@ -1281,7 +1304,7 @@ namespace IStripperQuickPlayer
                 cmdClearSearch.Visible = (txtSearch.Text.Length > 0);
                 PopulateModelListview();
             }
-            else if (txtSearch.Text.Length > 0) 
+            else if (txtSearch.Text.Length > 0)
                 cmdClearSearch.Visible = false;
         }
 
@@ -1294,13 +1317,13 @@ namespace IStripperQuickPlayer
             ModelCard c = Datastore.modelcards.Where(t => t.modelName == p[0] && t.outfit == p[1]).First();
             listModelsNew.ClearSelection();
             var i = items.Where(x => x.Text == nowPlayingTag).FirstOrDefault();
-            int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);            
+            int? index = items.ToList().FindIndex(x => x.Text == nowPlayingTag);
             if (i != null)
             {
                 listModelsNew.SelectWhere(x => x.Text == nowPlayingTag);
                 cardRenderer.nowPlayingTag = (nowPlayingTag);
-                listModelsNew.EnsureVisible((int)index);               
-                cmdClearSearch.Visible= true;
+                listModelsNew.EnsureVisible((int)index);
+                cmdClearSearch.Visible = true;
             }
         }
 
@@ -1312,10 +1335,10 @@ namespace IStripperQuickPlayer
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
-        {            
+        {
             SaveMyData();
             Wallpaper.RestoreWallpaper();
-            if (Utils.DefaultIconsVisible  != Utils.DesktopIconsVisible()) 
+            if (Utils.DefaultIconsVisible != Utils.DesktopIconsVisible())
             {
                 Utils.ToggleDesktopIcons();
             }
@@ -1355,7 +1378,7 @@ namespace IStripperQuickPlayer
             bool chooseRandom = false;
             if (model != null)
             {
-               chooseRandom = true;
+                chooseRandom = true;
             }
             else
             {
@@ -1366,7 +1389,7 @@ namespace IStripperQuickPlayer
                 key.Close();
                 if (path == "") return;
             }
-           
+
 
             if (Datastore.modelcards == null) return;
             if (Datastore.modelcards.Count > 0)
@@ -1375,20 +1398,20 @@ namespace IStripperQuickPlayer
                 if (model == null) return;
                 List<ModelClip> clips = new List<ModelClip>();
                 if (model.clips == null) return;
-                clips = FilterClipList(model.clips);                
+                clips = FilterClipList(model.clips);
 
                 ModelClip? mnew = null;
                 if (chooseRandom)
                 {
                     if (clips.Count == 0) return;
                     Random rand = new Random();
-                    mnew =  clips[rand.Next(clips.Count-1)];
+                    mnew = clips[rand.Next(clips.Count - 1)];
                 }
                 else
                 {
                     var cliplst = clips.Where(x => x.clipName == path.Split("\\")[1]);
-                    if (cliplst.Count() >0)
-                    { 
+                    if (cliplst.Count() > 0)
+                    {
                         ModelClip modelClip = cliplst.First();
                         if (modelClip.clipNumber < clips.Last().clipNumber)
                         {
@@ -1403,7 +1426,7 @@ namespace IStripperQuickPlayer
                     }
                     else
                     {
-                         mnew = clips.FirstOrDefault();
+                        mnew = clips.FirstOrDefault();
                     }
                 }
 
@@ -1429,7 +1452,7 @@ namespace IStripperQuickPlayer
             //find a new model from the filtered cards
             if (items == null || items.Length < 1) return;
             Random r = new Random();
-            
+
             string newtag = nowPlayingFilterMatch;
             if (Properties.Settings.Default.Randomize)
             {
@@ -1451,7 +1474,7 @@ namespace IStripperQuickPlayer
                         break;
                 }
                 i++;
-                if (i > items.Length-1) i = 0;
+                if (i > items.Length - 1) i = 0;
                 newtag = items[i].Text;
             }
             listModelsNew.ClearSelection();
@@ -1459,11 +1482,11 @@ namespace IStripperQuickPlayer
             if (index != null)
             {
                 listModelsNew.SelectWhere(x => x.Text == newtag);
-                listModelsNew.EnsureVisible((int)index);     
+                listModelsNew.EnsureVisible((int)index);
             }
             //choose a random clip from those shown
             if (listClips.Items.Count == 0) return;
-            var itemnum = r.Next(listClips.Items.Count-1);
+            var itemnum = r.Next(listClips.Items.Count - 1);
             listClips.SelectedItems.Clear();
             var j = listClips.Items[(int)itemnum];
             if (j != null)
@@ -1498,27 +1521,27 @@ namespace IStripperQuickPlayer
             //var frm = Application.OpenForms.Cast<Form>().Where(x => x.Name == "Filter").FirstOrDefault();
             //if (frm == null)
             //{
-                string f = "Default";
-                if (cmbFilter.SelectedItem != null) f = cmbFilter.SelectedItem.ToString();
-                var frm = new Filter(filterSettings, f);
-                frm.StartPosition = FormStartPosition.CenterParent;
-                frm.ShowDialog(this);                   
-                //string currentFilter = "Default";
-                //if (cmbFilter.Items != null && cmbFilter.Items.Count > 0 && cmbFilter.SelectedItem != null)   
-                //    currentFilter = cmbFilter.SelectedItem.ToString();
-                //PopulateFilterList();
-                //if (cmbFilter.Items.Contains(currentFilter)) cmbFilter.SelectedValue = currentFilter;
-                //frm.TopMost = true;
+            string f = "Default";
+            if (cmbFilter.SelectedItem != null) f = cmbFilter.SelectedItem.ToString();
+            var frm = new Filter(filterSettings, f);
+            frm.StartPosition = FormStartPosition.CenterParent;
+            frm.ShowDialog(this);
+            //string currentFilter = "Default";
+            //if (cmbFilter.Items != null && cmbFilter.Items.Count > 0 && cmbFilter.SelectedItem != null)   
+            //    currentFilter = cmbFilter.SelectedItem.ToString();
+            //PopulateFilterList();
+            //if (cmbFilter.Items.Contains(currentFilter)) cmbFilter.SelectedValue = currentFilter;
+            //frm.TopMost = true;
             //}
             //frm.BringToFront();
 
         }
-             
+
         private void ValidateMinSizeMB()
         {
             Properties.Settings.Default.MinSizeMB = (long)numMinSizeMB.Value;
             if (items != null && items.Length > 0 && listModelsNew.SelectedItems.Count > 0) loadListClips(listModelsNew.SelectedItems[0].Tag);
-         
+
         }
 
         private void txtSearch_Enter(object sender, EventArgs e)
@@ -1540,11 +1563,11 @@ namespace IStripperQuickPlayer
         {
 
             if (mousedownCard == null)
-            { 
+            {
                 e.Cancel = true;
                 return;
             }
-            currentMenuCard=mousedownCard;
+            currentMenuCard = mousedownCard;
             ModelCard? c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
             cardRenderer.CardMenuText = mousedownCard.Tag.ToString();
             if (c == null) return;
@@ -1558,23 +1581,23 @@ namespace IStripperQuickPlayer
             statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
             nameToolStripMenuItem.Text = c.modelName;
             outfitToolStripMenuItem.Text = c.outfit;
-            CultureInfo cultureInfo   = Thread.CurrentThread.CurrentCulture;  
-            TextInfo textInfo = cultureInfo.TextInfo;  
-            if (c.hair != null) hairToolStripMenuItem.Text =  "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
+            CultureInfo cultureInfo = Thread.CurrentThread.CurrentCulture;
+            TextInfo textInfo = cultureInfo.TextInfo;
+            if (c.hair != null) hairToolStripMenuItem.Text = "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
             if (c.datePurchased != null) purchasedToolStripMenuItem.Text = "Purchased: " + ((DateTime)c.datePurchased).ToShortDateString();
             if (c.hotnessLevel != "") hotnessToolStripMenuItem.Text = "Hotness: " + ((Enums.HotnessCode)Convert.ToInt32(c.hotnessLevel)).GetDescription();
             else hotnessToolStripMenuItem.Text = "Hotness: NA";
             ageToolStripMenuItem.Text = "Age: " + c.modelAge;
         }
 
-        private ImageListViewItem? mousedownCard=null;
-        private ImageListViewItem? currentMenuCard=null;
-        private Rectangle? thumbnailclip;     
+        private ImageListViewItem? mousedownCard = null;
+        private ImageListViewItem? currentMenuCard = null;
+        private Rectangle? thumbnailclip;
         private void menuCardFavourite_CheckedChanged(object sender, EventArgs e)
         {
-            if (myData==null||currentMenuCard==null)return;
+            if (myData == null || currentMenuCard == null) return;
             if (myData.GetCardFavourite(currentMenuCard.Tag.ToString()) != menuCardFavourite.Checked)
-            { 
+            {
                 myData.AddCardFavourite(currentMenuCard.Tag.ToString(), menuCardFavourite.Checked);
                 currentMenuCard.Update();
             }
@@ -1588,17 +1611,17 @@ namespace IStripperQuickPlayer
 
         private void cmbMenuCardRating_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (myData==null||currentMenuCard==null)return;
-            myData.AddCardRating(currentMenuCard.Tag.ToString(), cmbMenuCardRating.SelectedIndex+1);
+            if (myData == null || currentMenuCard == null) return;
+            myData.AddCardRating(currentMenuCard.Tag.ToString(), cmbMenuCardRating.SelectedIndex + 1);
         }
 
-        
+
         private void RatingSlider_ValueChanged(object sender, EventArgs e)
         {
-            if (myData==null||currentMenuCard==null)return;
+            if (myData == null || currentMenuCard == null) return;
             if (myData.GetCardRating(currentMenuCard.Tag.ToString()) == ratingSlider.Value) return;
             myData.AddCardRating(currentMenuCard.Tag.ToString(), ratingSlider.Value);
-            if ( menuShowRatingsStars.Checked)
+            if (menuShowRatingsStars.Checked)
             {
                 currentMenuCard.Update();
             }
@@ -1618,15 +1641,16 @@ namespace IStripperQuickPlayer
         {
             //currentMenuCard = null;
             cardRenderer.CardMenuText = "";
-            if (!listModelsNew.ClientRectangle.Contains(PointToClient(Control.MousePosition))) {
-                  cardRenderer.MouseIsOnList = false;
+            if (!listModelsNew.ClientRectangle.Contains(PointToClient(Control.MousePosition)))
+            {
+                cardRenderer.MouseIsOnList = false;
                 listModelsNew.Refresh();
-            }          
+            }
         }
 
         private void txtUserTags_TextChanged(object sender, EventArgs e)
         {
-            if (myData==null)return;
+            if (myData == null) return;
             if (items != null && items.Length > 0)
             {
                 List<string> tags = txtUserTags.Text.Split(',').ToList();
@@ -1656,7 +1680,7 @@ namespace IStripperQuickPlayer
 
         private void includeShowTitleInSearchToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            Properties.Settings.Default.ShowOutfitInSearch = includeShowTitleInSearchToolStripMenuItem.Checked;        
+            Properties.Settings.Default.ShowOutfitInSearch = includeShowTitleInSearchToolStripMenuItem.Checked;
         }
 
         private void cmbFilter_SelectedIndexChanged(object sender, EventArgs e)
@@ -1716,7 +1740,7 @@ namespace IStripperQuickPlayer
             //}
             //if (thumbnailclip != null)
             //    th.SetThumbnailClip(this.Handle, thumbnailclip);
-            
+
         }
 
         private void nextclipButton_click(object sender, ThumbnailButtonClickedEventArgs e)
@@ -1732,7 +1756,7 @@ namespace IStripperQuickPlayer
         private void lblNowPlaying_TextChanged(object sender, EventArgs e)
         {
             string t = "iStripper QuickPlayer";
-            if (lblNowPlaying.Text.Length > 14) t =lblNowPlaying.Text.Substring(13);
+            if (lblNowPlaying.Text.Length > 14) t = lblNowPlaying.Text.Substring(13);
             this.Text = t;
         }
 
@@ -1763,29 +1787,29 @@ namespace IStripperQuickPlayer
         private async void cmdWallpaper_click(object sender, EventArgs e)
         {
             lastWallpaperClipNumber = 0;
-            lastWallpaperShortTag  = "";
+            lastWallpaperShortTag = "";
             ChangeWallpaper();
         }
 
-        private string lastWallpaperShortTag="";
-        private int lastWallpaperClipNumber=0;
-        private async Task ChangeWallpaper(bool NotFromCheck = true)
+        private string lastWallpaperShortTag = "";
+        private int lastWallpaperClipNumber = 0;
+        private async System.Threading.Tasks.Task ChangeWallpaper(bool NotFromCheck = true)
         {
-            System.Diagnostics.Debug.WriteLine("ChangeWallpaper called with nowPlayingTagShort=" + nowPlayingTagShort  +", lbl=" + lblNowPlaying.Text);
+            System.Diagnostics.Debug.WriteLine("ChangeWallpaper called with nowPlayingTagShort=" + nowPlayingTagShort + ", lbl=" + lblNowPlaying.Text);
             //check that this wallpaper really matches filters
-            ModelCard? model = Datastore.findCardByTag(nowPlayingTagShort.Split("\\")[0]);   
+            ModelCard? model = Datastore.findCardByTag(nowPlayingTagShort.Split("\\")[0]);
             ListViewItem? res = null;
             if (model == null) return;
             this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
-                    
+
             //does the new clip match the clip filter?
             ModelClip? res2 = null;
             if (res != null)
             {
-                var clipstest = FilterClipList(model.clips);                 
+                var clipstest = FilterClipList(model.clips);
                 res2 = clipstest.Where(c => c.clipNumber == nowPlayingClipNumber).FirstOrDefault();
             }
-            
+
             if (nowPlayingTagShort == null || nowPlayingTagShort.Length == 0) return;
             if (string.IsNullOrEmpty(lblNowPlaying.Text)) return;
 
@@ -1794,43 +1818,43 @@ namespace IStripperQuickPlayer
             foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
             {
                 if (item is ToolStripMenuItem)
-                if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
-                {
-                    if ((NotFromCheck || Properties.Settings.Default.AutoWallpaper))
+                    if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
                     {
-                        CardPhotos photos = new CardPhotos();
-                        await photos.LoadCardPhotos(client, nowPlayingTagShort);
-                        Random r = new Random();
-                        if (res2 != null &&
-                                ((lastWallpaperClipNumber != nowPlayingClipNumber || lastWallpaperClipNumber == 0) 
-                                || (lastWallpaperShortTag == "" || lastWallpaperShortTag != nowPlayingTagShort)))
+                        if ((NotFromCheck || Properties.Settings.Default.AutoWallpaper))
                         {
-                          
-                            Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL(), modelname, model.outfit);
+                            CardPhotos photos = new CardPhotos();
+                            await photos.LoadCardPhotos(client, nowPlayingTagShort);
+                            Random r = new Random();
+                            if (res2 != null &&
+                                    ((lastWallpaperClipNumber != nowPlayingClipNumber || lastWallpaperClipNumber == 0)
+                                    || (lastWallpaperShortTag == "" || lastWallpaperShortTag != nowPlayingTagShort)))
+                            {
+
+                                Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL(), modelname, model.outfit);
+                            }
                         }
                     }
-                }
-                else if (((ToolStripMenuItem)item).Tag != null)
-                {
-                    Wallpaper.RestoreWallpaperByID((uint)((ToolStripMenuItem)item).Tag);
-                }
+                    else if (((ToolStripMenuItem)item).Tag != null)
+                    {
+                        Wallpaper.RestoreWallpaperByID((uint)((ToolStripMenuItem)item).Tag);
+                    }
 
             }
             lastWallpaperShortTag = nowPlayingTagShort;
             lastWallpaperClipNumber = nowPlayingClipNumber;
         }
-        
+
         private string GetModelsString(ModelCard card)
         {
             if (card.modelName == null) return "";
-            return card.modelName;    
+            return card.modelName;
         }
         public static string PascalCase(string word)
         {
-            return string.Join(" " , word.Split('_')
+            return string.Join(" ", word.Split('_')
                          .Select(w => w.Trim())
                          .Where(w => w.Length > 0)
-                         .Select(w => w.Substring(0,1).ToUpper() + w.Substring(1).ToLower()));
+                         .Select(w => w.Substring(0, 1).ToUpper() + w.Substring(1).ToLower()));
         }
 
         private void WallpaperMonitor_CheckedChanged(object? sender, EventArgs e)
@@ -1843,9 +1867,9 @@ namespace IStripperQuickPlayer
                     if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
                     {
                         if (m == "")
-                            m += ((uint)((ToolStripMenuItem)item).Tag+1).ToString();
+                            m += ((uint)((ToolStripMenuItem)item).Tag + 1).ToString();
                         else
-                            m += "," + ((uint)((ToolStripMenuItem)item).Tag+1).ToString();                    
+                            m += "," + ((uint)((ToolStripMenuItem)item).Tag + 1).ToString();
                     }
                 }
             }
@@ -1875,16 +1899,16 @@ namespace IStripperQuickPlayer
 
         private void showTextToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;     
+            Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;
             lastWallpaperClipNumber = 0;
-            lastWallpaperShortTag  = "";
+            lastWallpaperShortTag = "";
             this.BeginInvoke((Action)(() => ChangeWallpaper()));
         }
 
         private void showKittyToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
         {
             Properties.Settings.Default.ShowKitty = showKittyToolStripMenuItem.Checked;
-            this.BeginInvoke((Action)(() => { PopulateModelListview();}));
+            this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
         }
 
         private void trackBarCardScale_ValueChanged(object sender, EventArgs e)
@@ -1894,7 +1918,7 @@ namespace IStripperQuickPlayer
             {
                 if (cardRenderer != null)
                     cardRenderer.cardScale = cardScale;
-                listModelsNew.ThumbnailSize = new Size((int)(cardScale*162),(int)(242*cardScale));
+                listModelsNew.ThumbnailSize = new Size((int)(cardScale * 162), (int)(242 * cardScale));
                 listModelsNew.Invalidate();
             }
             Properties.Settings.Default.CardScale = (float)(trackBarCardScale.Value);
@@ -1904,20 +1928,20 @@ namespace IStripperQuickPlayer
         {
             FilterClips();
             if (listModelsNew.SelectedItems.Count > 0)
-                GetNextClip(Datastore.findCardByText(listModelsNew.SelectedItems[0].Text));      
+                GetNextClip(Datastore.findCardByText(listModelsNew.SelectedItems[0].Text));
         }
 
         private void listModelsNew_ItemClick(object sender, ItemClickEventArgs e)
         {
-            
+
         }
 
         private void listModelsNew_MouseDown(object sender, MouseEventArgs e)
         {
-            if ( e.Button == MouseButtons.Right )
+            if (e.Button == MouseButtons.Right)
             {
                 ImageListView.HitInfo hit;
-                listModelsNew.HitTest(e.Location,out hit);
+                listModelsNew.HitTest(e.Location, out hit);
                 if (hit.ItemHit) mousedownCard = listModelsNew.Items[hit.ItemIndex];
                 else mousedownCard = null;
                 if (mousedownCard != null)
@@ -1948,7 +1972,7 @@ namespace IStripperQuickPlayer
         {
             if (spaceRightOfListModel == 0) return;
             Graphics g = this.CreateGraphics();
-            float dy,dx=120f;
+            float dy, dx = 120f;
             try
             {
                 dx = g.DpiX;
@@ -1958,11 +1982,11 @@ namespace IStripperQuickPlayer
             {
                 g.Dispose();
             }
-            
-            listModelsNew.Height = this.Height - listModelsNew.Top - (int)(92*dx/120);   
+
+            listModelsNew.Height = this.Height - listModelsNew.Top - (int)(92 * dx / 120);
             listClips.Top = txtClipType.Bottom + 10;
-            listClips.Height = this.Height - panelModelDetails.Height - (int)(72.0*dx/96.0) - listClips.Top;
-            panelModelDetails.Top = listClips.Bottom + 8;            
+            listClips.Height = this.Height - panelModelDetails.Height - (int)(72.0 * dx / 96.0) - listClips.Top;
+            panelModelDetails.Top = listClips.Bottom + 8;
             listModelsNew.Width = splitContainer1.Panel1.Width - 24;
             panelClip.Width = splitContainer1.Panel2.Width;
             //cmdWallpaper.Left = panelClip.Width -  370; //(int)(370*dx/120);
@@ -1993,13 +2017,13 @@ namespace IStripperQuickPlayer
         }
 
         private void showInBrowserToolStripMenuItem_Click(object sender, EventArgs e)
-        {            
+        {
             if (mousedownCard == null)
-            { 
+            {
                 return;
             }
             ModelCard? c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
-            if (c!= null)
+            if (c != null)
             {
                 try
                 {
@@ -2010,7 +2034,7 @@ namespace IStripperQuickPlayer
                     psi.FileName = url;
                     System.Diagnostics.Process.Start(psi);
                 }
-                catch (Exception ex){ };
+                catch (Exception ex) { };
             }
         }
 
@@ -2030,11 +2054,11 @@ namespace IStripperQuickPlayer
         {
             var pinnedTaskBarItemsPath = Environment.ExpandEnvironmentVariables(@"%AppData%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar");
             var pinnedTaskBarFiles = Directory.GetFiles(pinnedTaskBarItemsPath);
-    
+
             foreach (var file in pinnedTaskBarFiles)
             {
                 FileInfo fileInfo = new FileInfo(file);
-                if (fileInfo.FullName.ToLower().IndexOf("istripperquickplayer") >0) return true;
+                if (fileInfo.FullName.ToLower().IndexOf("istripperquickplayer") > 0) return true;
             }
             return false;
         }
@@ -2068,8 +2092,8 @@ namespace IStripperQuickPlayer
 
         string startupPath = "";
         private async void doTaskbarPadlock()
-        {            
-            if (startupPath == "") 
+        {
+            if (startupPath == "")
             {
                 STARTUPINFO startInfo;
                 GetStartupInfo(out startInfo);
@@ -2094,8 +2118,8 @@ namespace IStripperQuickPlayer
             }
             if ((startupPath.EndsWith(".lnk") || isPinnedToTaskbar()) && playerlocked)
                 TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
-            else             
-                TaskbarManager.Instance.SetOverlayIcon(null, "");            
+            else
+                TaskbarManager.Instance.SetOverlayIcon(null, "");
         }
 
         private void ChangePlayerLocked()
@@ -2118,9 +2142,9 @@ namespace IStripperQuickPlayer
 
         private void notifyIcon1_DoubleClick(object sender, EventArgs e)
         {
-            Show();  
-            this.WindowState = FormWindowState.Normal;  
-            notifyIcon1.Visible = false;  
+            Show();
+            this.WindowState = FormWindowState.Normal;
+            notifyIcon1.Visible = false;
             doTaskbarPadlock();
         }
 
@@ -2175,7 +2199,7 @@ namespace IStripperQuickPlayer
             var r = dlg.ShowDialog();
             if (r == DialogResult.OK)
             {
-                foreach(var f in FilterSettingsList.filters)
+                foreach (var f in FilterSettingsList.filters)
                 {
                     SerializeFilter(f.Value, Path.Join(dlg.SelectedPath, f.Key + ".flt"));
                 }
@@ -2196,7 +2220,7 @@ namespace IStripperQuickPlayer
                 {
                     FilterSettingsList.filters.Add(fname, f);
                     FilterSettingsList.Persist();
-                    this.BeginInvoke((Action)(() => { PopulateFilterList();}));
+                    this.BeginInvoke((Action)(() => { PopulateFilterList(); }));
                 }
                 else
                 {
@@ -2206,11 +2230,11 @@ namespace IStripperQuickPlayer
                         FilterSettingsList.Delete(fname);
                         FilterSettingsList.filters.Add(fname, f);
                         FilterSettingsList.Persist();
-                        this.BeginInvoke((Action)(() => { PopulateFilterList();}));
+                        this.BeginInvoke((Action)(() => { PopulateFilterList(); }));
                         if (cmbFilter.Text == fname)
-                        {                            
+                        {
                             filterSettings = FilterSettingsList.GetFilter(cmbFilter.SelectedItem.ToString());
-                            this.BeginInvoke((Action)(() => { PopulateModelListview();}));
+                            this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
                         }
                     }
                 }
@@ -2219,27 +2243,27 @@ namespace IStripperQuickPlayer
 
         private void deleteFromDiskToolStripMenuItem_Click(object sender, EventArgs e)
         {
-           var r = MessageBox.Show("Really delete this card from local disk?\r\nIt is best if you Exit iStripper before deleting cards here\r\nUser rating/tags will be retained", "Delete card?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-           if (r == DialogResult.No) return;
-           var t =  mousedownCard.Tag.ToString();
-           string cardfolder = CardFolders.findCardFolder(t);
-           if (!string.IsNullOrEmpty(cardfolder)) Directory.Delete(cardfolder, true);
-           var c = Datastore.modelcards.Where(x => x.name == t).FirstOrDefault();
-           if (c != null)
-           {
+            var r = MessageBox.Show("Really delete this card from local disk?\r\nIt is best if you Exit iStripper before deleting cards here\r\nUser rating/tags will be retained", "Delete card?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (r == DialogResult.No) return;
+            var t = mousedownCard.Tag.ToString();
+            string cardfolder = CardFolders.findCardFolder(t);
+            if (!string.IsNullOrEmpty(cardfolder)) Directory.Delete(cardfolder, true);
+            var c = Datastore.modelcards.Where(x => x.name == t).FirstOrDefault();
+            if (c != null)
+            {
                 Datastore.modelcards.Remove(c);
-           }
-           c = null;
-            
-           var cardMetaFolder = CardFolders.findCardMetaFolder(t);
-           if (!string.IsNullOrEmpty(cardMetaFolder)) Directory.Delete(cardMetaFolder, true);
-           ReloadModels();
-           MessageBox.Show("You may need to restart iStripper and/or use the Synchronize With Server function in the app\r\nIf you want to download it again, you may need to delete it in iStripper too first.", "Local folders have been deleted", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            c = null;
+
+            var cardMetaFolder = CardFolders.findCardMetaFolder(t);
+            if (!string.IsNullOrEmpty(cardMetaFolder)) Directory.Delete(cardMetaFolder, true);
+            ReloadModels();
+            MessageBox.Show("You may need to restart iStripper and/or use the Synchronize With Server function in the app\r\nIf you want to download it again, you may need to delete it in iStripper too first.", "Local folders have been deleted", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void loadPlaylistToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog();   
+            OpenFileDialog openFileDialog = new OpenFileDialog();
             openFileDialog.Filter = "*.vpl|*.vpl";
             var r = openFileDialog.ShowDialog();
             if (r.Equals(DialogResult.OK))
@@ -2256,6 +2280,12 @@ namespace IStripperQuickPlayer
         private void randomPlayOrderToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.Randomize = randomPlayOrderToolStripMenuItem.Checked;
+        }
+
+        private void darkModeToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
+        {
+            Properties.Settings.Default.DarkMode = darkModeToolStripMenuItem.Checked;
+            this.BeginInvoke((Action)(() => { SetSkin(); }));
         }
     }
 }

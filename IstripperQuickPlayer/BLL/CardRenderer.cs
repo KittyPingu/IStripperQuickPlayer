@@ -25,6 +25,11 @@ namespace IStripperQuickPlayer.BLL
         internal float mZoomRatio = 0.2f;
         internal bool MouseIsOnList;
         internal string? CardMenuText;
+        public Color labelColor = Color.Black;
+        public SolidBrush highlightBrush = new SolidBrush(Color.PaleGreen);
+        public Color backgroundColour = Color.WhiteSmoke;
+
+
 
         internal CardRenderer(MyData? myData, string sortBy, float cardScale, CultureInfo culture, bool fontInstalled, NumberStyles style)
         {
@@ -35,7 +40,30 @@ namespace IStripperQuickPlayer.BLL
             this.fontInstalled = fontInstalled;
             this.style = style;
             this.Clip = false;
+            SetColours();
         }
+
+        public void SetColours()
+        {
+            if (Properties.Settings.Default.DarkMode)
+            {
+                labelColor = Color.AntiqueWhite;
+                highlightBrush = new SolidBrush(Color.FromArgb(40, 80, 100));
+                backgroundColour = Color.FromArgb(40, 40, 40);
+            }
+            else
+            {
+                labelColor = Color.Black;
+                highlightBrush = new SolidBrush(Color.PaleGreen);
+                backgroundColour = Color.WhiteSmoke;
+            }
+        }
+
+        //public override void DrawBackground(Graphics g, Rectangle bounds)
+        //{
+        //    //base.DrawBackground(g, bounds);
+        //    g.FillRectangle(new SolidBrush(backgroundColour), bounds);
+        //}
 
         public override void InitializeGraphics(Graphics g)
         {
@@ -52,10 +80,11 @@ namespace IStripperQuickPlayer.BLL
             g.InterpolationMode = InterpolationMode.Bilinear;
             g.SmoothingMode = SmoothingMode.None;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-            g.CompositingQuality = CompositingQuality.HighQuality;
+            g.CompositingQuality = CompositingQuality.HighQuality;            
             if (ImageListView.View == View.Thumbnails)
             {
                 Rectangle controlBounds = ClientBounds;
+                
                 bool drawText = true;
                 // Zoom on mouse over
                 if (((MouseIsOnList && (state & ItemState.Hovered) != ItemState.None) || CardMenuText == item.Tag.ToString()) && mZoomRatio != 0.0f)
@@ -77,9 +106,9 @@ namespace IStripperQuickPlayer.BLL
                 if((state & ItemState.Selected) != ItemState.None)
                 {
                   if (drawText)
-                    g.FillRectangle(Brushes.PaleGreen, new Rectangle(bounds.Left-3,bounds.Top-3,bounds.Width+6,bounds.Height+6));
+                    g.FillRectangle(highlightBrush, new Rectangle(bounds.Left-3,bounds.Top-3,bounds.Width+6,bounds.Height+6));
                   else
-                    g.FillRectangle(Brushes.PaleGreen, new Rectangle(bounds.Left-3,bounds.Top-3,bounds.Width+6,bounds.Height-34+6));
+                    g.FillRectangle(highlightBrush, new Rectangle(bounds.Left-3,bounds.Top-3,bounds.Width+6,bounds.Height-34+6));
                 }
                 string text = "";
                 if (card == null) return;
@@ -191,7 +220,7 @@ namespace IStripperQuickPlayer.BLL
                         fontName = new Font("Segoe UI", sztitle--);
                         textSizeName = g.MeasureString(nameoutfit[0], fontName);
                     }
-                    g.DrawString(nameoutfit[0], fontName, new SolidBrush(Color.Black), rectName, stringFormat);
+                    g.DrawString(nameoutfit[0], fontName, new SolidBrush(labelColor), rectName, stringFormat);
 
 
                     Rectangle rectOutfit = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*27), bounds.Width, (int)((g.DpiY/192)*30));
@@ -203,7 +232,7 @@ namespace IStripperQuickPlayer.BLL
                         fontOutfit = new Font("Segoe UI", szoutfit--);
                         textSizeOutfit = g.MeasureString(nameoutfit[1], fontOutfit);
                     }
-                    g.DrawString(nameoutfit[1], fontOutfit, new SolidBrush(Color.Black), rectOutfit, stringFormat);
+                    g.DrawString(nameoutfit[1], fontOutfit, new SolidBrush(labelColor), rectOutfit, stringFormat);
                 }
 
                 if (card.exclusive != null && (bool)card.exclusive)

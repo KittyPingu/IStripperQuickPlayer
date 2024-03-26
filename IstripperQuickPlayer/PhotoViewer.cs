@@ -1,4 +1,6 @@
 ﻿using IStripperQuickPlayer.DataModel;
+using MaterialSkin;
+using MaterialSkin.Controls;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -11,14 +13,26 @@ using System.Windows.Forms;
 
 namespace IStripperQuickPlayer
 {
-    public partial class PhotoViewer : Form
+    public partial class PhotoViewer : MaterialForm
     {
         internal CardPhotos photos;
         Bitmap[] thumbs;
 
+        private void SetSkin()
+        {
+            var materialSkinManager = MaterialSkinManager.Instance;
+            materialSkinManager.RemoveFormToManage(this);
+            materialSkinManager.AddFormToManage(this);
+            materialSkinManager.Theme = MaterialSkinManager.Themes.LIGHT;
+            if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
+            materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
+        }
+
+
         public PhotoViewer()
         {
             InitializeComponent();
+            SetSkin();
         }
 
         internal async void Populate()
