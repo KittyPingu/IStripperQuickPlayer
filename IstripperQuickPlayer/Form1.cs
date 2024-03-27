@@ -906,7 +906,10 @@ namespace IStripperQuickPlayer
                         {
                             uint v = (uint)(param.Value);
                             if (v == 132)
+                            {
                                 hookCallInfo.Result().LongVal = -1;
+                                hookCallInfo.Result().LongLongVal = -1;
+                            }
                             return;
                             //else
                             //{
