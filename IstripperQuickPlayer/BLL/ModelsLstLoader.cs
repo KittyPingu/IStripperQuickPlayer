@@ -76,6 +76,7 @@ namespace IStripperQuickPlayer.BLL
                             card.d = reader.ReadByte();
                             card.e = reader.ReadByte();
                             card.f = reader.ReadByte();
+                            if (Datastore.versionnumber > 281) card.ff = reader.ReadInt32();
                             card.folderSize = getInt32(reader);
                             card.g = reader.ReadByte();
                             card.h = reader.ReadByte();
@@ -86,6 +87,7 @@ namespace IStripperQuickPlayer.BLL
                             card.m = reader.ReadByte();
                             card.n = reader.ReadByte();
                             card.o = reader.ReadByte();
+                            if (Datastore.versionnumber > 281) card.oo = reader.ReadByte();
                             card.timesPlayed = getInt32(reader);
                             int cardrescode = getInt32(reader);
                             card.resolution = getResolution(cardrescode); 
