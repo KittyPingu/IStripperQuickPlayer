@@ -139,10 +139,10 @@
             // 
             lblModelsLoaded.AutoSize = true;
             lblModelsLoaded.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point);
-            lblModelsLoaded.Location = new Point(9, 35);
-            lblModelsLoaded.Margin = new Padding(5, 0, 5, 0);
+            lblModelsLoaded.Location = new Point(11, 42);
+            lblModelsLoaded.Margin = new Padding(6, 0, 6, 0);
             lblModelsLoaded.Name = "lblModelsLoaded";
-            lblModelsLoaded.Size = new Size(135, 28);
+            lblModelsLoaded.Size = new Size(163, 32);
             lblModelsLoaded.TabIndex = 1;
             lblModelsLoaded.Text = "Cards Loaded:";
             lblModelsLoaded.Click += lblModelsLoaded_Click;
@@ -152,7 +152,7 @@
             menuCardList.ImageScalingSize = new Size(20, 20);
             menuCardList.Items.AddRange(new ToolStripItem[] { menuCardFavourite, ratingSlider, toolStripSeparator1, nameToolStripMenuItem, outfitToolStripMenuItem, ratingToolStripMenuItem, hotnessToolStripMenuItem, statsToolStripMenuItem, ageToolStripMenuItem, hairToolStripMenuItem, purchasedToolStripMenuItem, toolStripSeparator2, showInBrowserToolStripMenuItem, deleteFromDiskToolStripMenuItem });
             menuCardList.Name = "menuCardList";
-            menuCardList.Size = new Size(191, 383);
+            menuCardList.Size = new Size(218, 451);
             menuCardList.Closing += menuCardList_Closing;
             menuCardList.Opening += menuCardList_Opening;
             // 
@@ -160,7 +160,7 @@
             // 
             menuCardFavourite.CheckOnClick = true;
             menuCardFavourite.Name = "menuCardFavourite";
-            menuCardFavourite.Size = new Size(190, 28);
+            menuCardFavourite.Size = new Size(217, 34);
             menuCardFavourite.Text = "Favourite";
             menuCardFavourite.CheckedChanged += menuCardFavourite_CheckedChanged;
             // 
@@ -188,27 +188,27 @@
             // toolStripSeparator1
             // 
             toolStripSeparator1.Name = "toolStripSeparator1";
-            toolStripSeparator1.Size = new Size(187, 6);
+            toolStripSeparator1.Size = new Size(214, 6);
             // 
             // nameToolStripMenuItem
             // 
             nameToolStripMenuItem.Font = new Font("Segoe UI", 10F, FontStyle.Bold, GraphicsUnit.Point);
             nameToolStripMenuItem.Name = "nameToolStripMenuItem";
-            nameToolStripMenuItem.Size = new Size(190, 28);
+            nameToolStripMenuItem.Size = new Size(217, 34);
             nameToolStripMenuItem.Text = "Name:";
             // 
             // outfitToolStripMenuItem
             // 
             outfitToolStripMenuItem.Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point);
             outfitToolStripMenuItem.Name = "outfitToolStripMenuItem";
-            outfitToolStripMenuItem.Size = new Size(190, 28);
+            outfitToolStripMenuItem.Size = new Size(217, 34);
             outfitToolStripMenuItem.Text = "Outfit:";
             // 
             // ratingToolStripMenuItem
             // 
             ratingToolStripMenuItem.AutoToolTip = true;
             ratingToolStripMenuItem.Name = "ratingToolStripMenuItem";
-            ratingToolStripMenuItem.Size = new Size(190, 28);
+            ratingToolStripMenuItem.Size = new Size(217, 34);
             ratingToolStripMenuItem.Tag = "Rating";
             ratingToolStripMenuItem.Text = "Rating:";
             ratingToolStripMenuItem.ToolTipText = "Official Rating";
@@ -216,14 +216,14 @@
             // hotnessToolStripMenuItem
             // 
             hotnessToolStripMenuItem.Name = "hotnessToolStripMenuItem";
-            hotnessToolStripMenuItem.Size = new Size(190, 28);
+            hotnessToolStripMenuItem.Size = new Size(217, 34);
             hotnessToolStripMenuItem.Text = "Hotness:";
             // 
             // statsToolStripMenuItem
             // 
             statsToolStripMenuItem.AutoToolTip = true;
             statsToolStripMenuItem.Name = "statsToolStripMenuItem";
-            statsToolStripMenuItem.Size = new Size(190, 28);
+            statsToolStripMenuItem.Size = new Size(217, 34);
             statsToolStripMenuItem.Tag = "Stats";
             statsToolStripMenuItem.Text = "Stats:";
             statsToolStripMenuItem.ToolTipText = "Model's Stats";
@@ -231,43 +231,44 @@
             // ageToolStripMenuItem
             // 
             ageToolStripMenuItem.Name = "ageToolStripMenuItem";
-            ageToolStripMenuItem.Size = new Size(190, 28);
+            ageToolStripMenuItem.Size = new Size(217, 34);
             ageToolStripMenuItem.Text = "Age:";
             // 
             // hairToolStripMenuItem
             // 
             hairToolStripMenuItem.Name = "hairToolStripMenuItem";
-            hairToolStripMenuItem.Size = new Size(190, 28);
+            hairToolStripMenuItem.Size = new Size(217, 34);
             hairToolStripMenuItem.Text = "Hair:";
             // 
             // purchasedToolStripMenuItem
             // 
             purchasedToolStripMenuItem.Name = "purchasedToolStripMenuItem";
-            purchasedToolStripMenuItem.Size = new Size(190, 28);
+            purchasedToolStripMenuItem.Size = new Size(217, 34);
             purchasedToolStripMenuItem.Text = "Purchased:";
             // 
             // toolStripSeparator2
             // 
             toolStripSeparator2.Name = "toolStripSeparator2";
-            toolStripSeparator2.Size = new Size(187, 6);
+            toolStripSeparator2.Size = new Size(214, 6);
             // 
             // showInBrowserToolStripMenuItem
             // 
             showInBrowserToolStripMenuItem.Name = "showInBrowserToolStripMenuItem";
-            showInBrowserToolStripMenuItem.Size = new Size(190, 28);
+            showInBrowserToolStripMenuItem.Size = new Size(217, 34);
             showInBrowserToolStripMenuItem.Text = "Show in Browser";
             showInBrowserToolStripMenuItem.Click += showInBrowserToolStripMenuItem_Click;
             // 
             // deleteFromDiskToolStripMenuItem
             // 
             deleteFromDiskToolStripMenuItem.Name = "deleteFromDiskToolStripMenuItem";
-            deleteFromDiskToolStripMenuItem.Size = new Size(190, 28);
+            deleteFromDiskToolStripMenuItem.Size = new Size(217, 34);
             deleteFromDiskToolStripMenuItem.Text = "Delete from Disk";
             deleteFromDiskToolStripMenuItem.Click += deleteFromDiskToolStripMenuItem_Click;
             // 
             // cmbMenuCardRating
             // 
             cmbMenuCardRating.Items.AddRange(new object[] { "1", "2", "3", "4", "5", "6", "7", "8", "9", "10" });
+            cmbMenuCardRating.Margin = new Padding(1, 0, 1, 0);
             cmbMenuCardRating.MaxDropDownItems = 10;
             cmbMenuCardRating.Name = "cmbMenuCardRating";
             cmbMenuCardRating.Size = new Size(121, 28);
@@ -279,11 +280,11 @@
             // 
             listClips.Columns.AddRange(new ColumnHeader[] { ClipNumber, ClipName, Hotness, ClipType, ClipSize });
             listClips.FullRowSelect = true;
-            listClips.Location = new Point(11, 144);
-            listClips.Margin = new Padding(5, 6, 5, 4);
+            listClips.Location = new Point(13, 173);
+            listClips.Margin = new Padding(6, 7, 6, 5);
             listClips.MultiSelect = false;
             listClips.Name = "listClips";
-            listClips.Size = new Size(1019, 760);
+            listClips.Size = new Size(1222, 911);
             listClips.TabIndex = 13;
             listClips.UseCompatibleStateImageBehavior = false;
             listClips.View = View.Details;
@@ -318,31 +319,31 @@
             // 
             cmbSortBy.FormattingEnabled = true;
             cmbSortBy.Items.AddRange(new object[] { "My Rating", "Model Name", "Rating", "Age", "Breast Size", "Height", "Release Date", "Date Purchased" });
-            cmbSortBy.Location = new Point(71, 84);
-            cmbSortBy.Margin = new Padding(5, 4, 5, 4);
+            cmbSortBy.Location = new Point(85, 101);
+            cmbSortBy.Margin = new Padding(6, 5, 6, 5);
             cmbSortBy.Name = "cmbSortBy";
-            cmbSortBy.Size = new Size(124, 28);
+            cmbSortBy.Size = new Size(148, 33);
             cmbSortBy.TabIndex = 4;
             cmbSortBy.SelectedIndexChanged += comboBox1_SelectedIndexChanged;
             // 
             // label1
             // 
             label1.AutoSize = true;
-            label1.Location = new Point(10, 88);
-            label1.Margin = new Padding(5, 0, 5, 0);
+            label1.Location = new Point(12, 106);
+            label1.Margin = new Padding(6, 0, 6, 0);
             label1.Name = "label1";
-            label1.Size = new Size(56, 20);
+            label1.Size = new Size(69, 25);
             label1.TabIndex = 3;
             label1.Text = "Sort By";
             // 
             // txtSearch
             // 
             txtSearch.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            txtSearch.Location = new Point(339, 35);
-            txtSearch.Margin = new Padding(5, 4, 5, 4);
+            txtSearch.Location = new Point(407, 42);
+            txtSearch.Margin = new Padding(6, 5, 6, 5);
             txtSearch.Name = "txtSearch";
             txtSearch.PlaceholderText = "model name or tag";
-            txtSearch.Size = new Size(324, 31);
+            txtSearch.Size = new Size(388, 36);
             txtSearch.TabIndex = 20;
             txtSearch.TextChanged += txtSearch_TextChanged;
             txtSearch.Enter += txtSearch_Enter;
@@ -352,10 +353,10 @@
             // 
             label2.AutoSize = true;
             label2.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            label2.Location = new Point(274, 37);
-            label2.Margin = new Padding(5, 0, 5, 0);
+            label2.Location = new Point(329, 44);
+            label2.Margin = new Padding(6, 0, 6, 0);
             label2.Name = "label2";
-            label2.Size = new Size(64, 25);
+            label2.Size = new Size(78, 30);
             label2.TabIndex = 21;
             label2.Text = "Search";
             // 
@@ -366,10 +367,10 @@
             cmdClearSearch.FlatStyle = FlatStyle.Flat;
             cmdClearSearch.Image = Properties.Resources.kindpng_4040161;
             cmdClearSearch.ImageAlign = ContentAlignment.MiddleLeft;
-            cmdClearSearch.Location = new Point(659, 35);
+            cmdClearSearch.Location = new Point(791, 42);
             cmdClearSearch.Margin = new Padding(0);
             cmdClearSearch.Name = "cmdClearSearch";
-            cmdClearSearch.Size = new Size(56, 31);
+            cmdClearSearch.Size = new Size(67, 37);
             cmdClearSearch.TabIndex = 23;
             cmdClearSearch.UseVisualStyleBackColor = false;
             cmdClearSearch.Visible = false;
@@ -379,10 +380,10 @@
             // 
             menuStrip1.ImageScalingSize = new Size(20, 20);
             menuStrip1.Items.AddRange(new ToolStripItem[] { fileToolStripMenuItem, settingsToolStripMenuItem });
-            menuStrip1.Location = new Point(3, 64);
+            menuStrip1.Location = new Point(4, 77);
             menuStrip1.Name = "menuStrip1";
-            menuStrip1.Padding = new Padding(8, 4, 0, 4);
-            menuStrip1.Size = new Size(2159, 32);
+            menuStrip1.Padding = new Padding(10, 5, 0, 5);
+            menuStrip1.Size = new Size(2590, 39);
             menuStrip1.TabIndex = 25;
             menuStrip1.Text = "menuStrip1";
             // 
@@ -390,42 +391,42 @@
             // 
             fileToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { reloadModelslstToolStripMenuItem, exportFiltersToolStripMenuItem, loadPlaylistToolStripMenuItem, importFiltersToolStripMenuItem, exitToolStripMenuItem });
             fileToolStripMenuItem.Name = "fileToolStripMenuItem";
-            fileToolStripMenuItem.Size = new Size(46, 24);
+            fileToolStripMenuItem.Size = new Size(54, 29);
             fileToolStripMenuItem.Text = "File";
             // 
             // reloadModelslstToolStripMenuItem
             // 
             reloadModelslstToolStripMenuItem.Name = "reloadModelslstToolStripMenuItem";
             reloadModelslstToolStripMenuItem.ShortcutKeys = Keys.F5;
-            reloadModelslstToolStripMenuItem.Size = new Size(216, 26);
+            reloadModelslstToolStripMenuItem.Size = new Size(263, 34);
             reloadModelslstToolStripMenuItem.Text = "Reload Models";
             reloadModelslstToolStripMenuItem.Click += cmdLoadModels_Click;
             // 
             // exportFiltersToolStripMenuItem
             // 
             exportFiltersToolStripMenuItem.Name = "exportFiltersToolStripMenuItem";
-            exportFiltersToolStripMenuItem.Size = new Size(216, 26);
+            exportFiltersToolStripMenuItem.Size = new Size(263, 34);
             exportFiltersToolStripMenuItem.Text = "Export Filters..";
             exportFiltersToolStripMenuItem.Click += exportFiltersToolStripMenuItem_Click;
             // 
             // loadPlaylistToolStripMenuItem
             // 
             loadPlaylistToolStripMenuItem.Name = "loadPlaylistToolStripMenuItem";
-            loadPlaylistToolStripMenuItem.Size = new Size(216, 26);
+            loadPlaylistToolStripMenuItem.Size = new Size(263, 34);
             loadPlaylistToolStripMenuItem.Text = "Load Playlist..";
             loadPlaylistToolStripMenuItem.Click += loadPlaylistToolStripMenuItem_Click;
             // 
             // importFiltersToolStripMenuItem
             // 
             importFiltersToolStripMenuItem.Name = "importFiltersToolStripMenuItem";
-            importFiltersToolStripMenuItem.Size = new Size(216, 26);
+            importFiltersToolStripMenuItem.Size = new Size(263, 34);
             importFiltersToolStripMenuItem.Text = "Import Filter..";
             importFiltersToolStripMenuItem.Click += importFiltersToolStripMenuItem_Click;
             // 
             // exitToolStripMenuItem
             // 
             exitToolStripMenuItem.Name = "exitToolStripMenuItem";
-            exitToolStripMenuItem.Size = new Size(216, 26);
+            exitToolStripMenuItem.Size = new Size(263, 34);
             exitToolStripMenuItem.Text = "Exit";
             exitToolStripMenuItem.Click += exitToolStripMenuItem_Click;
             // 
@@ -433,13 +434,13 @@
             // 
             settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, cardScaleToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
             settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
-            settingsToolStripMenuItem.Size = new Size(76, 24);
+            settingsToolStripMenuItem.Size = new Size(92, 29);
             settingsToolStripMenuItem.Text = "Settings";
             // 
             // hotkeysToolStripMenuItem
             // 
             hotkeysToolStripMenuItem.Name = "hotkeysToolStripMenuItem";
-            hotkeysToolStripMenuItem.Size = new Size(284, 26);
+            hotkeysToolStripMenuItem.Size = new Size(342, 34);
             hotkeysToolStripMenuItem.Text = "Hotkeys..";
             hotkeysToolStripMenuItem.Click += hotkeysToolStripMenuItem_Click;
             // 
@@ -449,7 +450,7 @@
             enforceCardFilterToolStripMenuItem.CheckOnClick = true;
             enforceCardFilterToolStripMenuItem.CheckState = CheckState.Checked;
             enforceCardFilterToolStripMenuItem.Name = "enforceCardFilterToolStripMenuItem";
-            enforceCardFilterToolStripMenuItem.Size = new Size(284, 26);
+            enforceCardFilterToolStripMenuItem.Size = new Size(342, 34);
             enforceCardFilterToolStripMenuItem.Text = "Enforce Card Filter";
             enforceCardFilterToolStripMenuItem.Click += enforceCardFilterToolStripMenuItem_Click;
             // 
@@ -459,7 +460,7 @@
             randomPlayOrderToolStripMenuItem.CheckOnClick = true;
             randomPlayOrderToolStripMenuItem.CheckState = CheckState.Checked;
             randomPlayOrderToolStripMenuItem.Name = "randomPlayOrderToolStripMenuItem";
-            randomPlayOrderToolStripMenuItem.Size = new Size(284, 26);
+            randomPlayOrderToolStripMenuItem.Size = new Size(342, 34);
             randomPlayOrderToolStripMenuItem.Text = "Random Play Order";
             randomPlayOrderToolStripMenuItem.Click += randomPlayOrderToolStripMenuItem_Click;
             // 
@@ -467,7 +468,7 @@
             // 
             cardScaleToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { trackBarCardScale });
             cardScaleToolStripMenuItem.Name = "cardScaleToolStripMenuItem";
-            cardScaleToolStripMenuItem.Size = new Size(284, 26);
+            cardScaleToolStripMenuItem.Size = new Size(342, 34);
             cardScaleToolStripMenuItem.Text = "Card Scale";
             // 
             // trackBarCardScale
@@ -496,7 +497,7 @@
             // 
             zoomOnHoverToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { trackBarZoomOnHover });
             zoomOnHoverToolStripMenuItem.Name = "zoomOnHoverToolStripMenuItem";
-            zoomOnHoverToolStripMenuItem.Size = new Size(284, 26);
+            zoomOnHoverToolStripMenuItem.Size = new Size(342, 34);
             zoomOnHoverToolStripMenuItem.Text = "Zoom on Hover";
             // 
             // trackBarZoomOnHover
@@ -525,7 +526,7 @@
             // 
             menuShowRatingsStars.CheckOnClick = true;
             menuShowRatingsStars.Name = "menuShowRatingsStars";
-            menuShowRatingsStars.Size = new Size(284, 26);
+            menuShowRatingsStars.Size = new Size(342, 34);
             menuShowRatingsStars.Text = "Show MyRating Stars";
             menuShowRatingsStars.CheckedChanged += chkShowRatingStars_CheckedChanged;
             // 
@@ -533,7 +534,7 @@
             // 
             includeDescriptionInSearchToolStripMenuItem.CheckOnClick = true;
             includeDescriptionInSearchToolStripMenuItem.Name = "includeDescriptionInSearchToolStripMenuItem";
-            includeDescriptionInSearchToolStripMenuItem.Size = new Size(284, 26);
+            includeDescriptionInSearchToolStripMenuItem.Size = new Size(342, 34);
             includeDescriptionInSearchToolStripMenuItem.Text = "Include Description in Search";
             includeDescriptionInSearchToolStripMenuItem.Click += includeDescriptionInSearchToolStripMenuItem_Click;
             // 
@@ -541,7 +542,7 @@
             // 
             includeShowTitleInSearchToolStripMenuItem.CheckOnClick = true;
             includeShowTitleInSearchToolStripMenuItem.Name = "includeShowTitleInSearchToolStripMenuItem";
-            includeShowTitleInSearchToolStripMenuItem.Size = new Size(284, 26);
+            includeShowTitleInSearchToolStripMenuItem.Size = new Size(342, 34);
             includeShowTitleInSearchToolStripMenuItem.Text = "Include Show Title in Search";
             includeShowTitleInSearchToolStripMenuItem.Click += includeShowTitleInSearchToolStripMenuItem_Click;
             // 
@@ -549,14 +550,14 @@
             // 
             wallpaperToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { automaticWallpaperToolStripMenuItem, trackbarWallpaperBrightness, showTextToolStripMenuItem, blurImageToolStripMenuItem, hideDesktopIconsToolStripMenuItem });
             wallpaperToolStripMenuItem.Name = "wallpaperToolStripMenuItem";
-            wallpaperToolStripMenuItem.Size = new Size(284, 26);
+            wallpaperToolStripMenuItem.Size = new Size(342, 34);
             wallpaperToolStripMenuItem.Text = "Wallpaper";
             // 
             // automaticWallpaperToolStripMenuItem
             // 
             automaticWallpaperToolStripMenuItem.CheckOnClick = true;
             automaticWallpaperToolStripMenuItem.Name = "automaticWallpaperToolStripMenuItem";
-            automaticWallpaperToolStripMenuItem.Size = new Size(274, 26);
+            automaticWallpaperToolStripMenuItem.Size = new Size(290, 34);
             automaticWallpaperToolStripMenuItem.Text = "Automatic Wallpaper";
             automaticWallpaperToolStripMenuItem.CheckedChanged += automaticWallpaperToolStripMenuItem_CheckedChanged;
             // 
@@ -586,7 +587,7 @@
             // 
             showTextToolStripMenuItem.CheckOnClick = true;
             showTextToolStripMenuItem.Name = "showTextToolStripMenuItem";
-            showTextToolStripMenuItem.Size = new Size(274, 26);
+            showTextToolStripMenuItem.Size = new Size(290, 34);
             showTextToolStripMenuItem.Text = "Show Text";
             showTextToolStripMenuItem.Click += showTextToolStripMenuItem_Click;
             // 
@@ -595,7 +596,7 @@
             blurImageToolStripMenuItem.CheckOnClick = true;
             blurImageToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { trackBarBlur });
             blurImageToolStripMenuItem.Name = "blurImageToolStripMenuItem";
-            blurImageToolStripMenuItem.Size = new Size(274, 26);
+            blurImageToolStripMenuItem.Size = new Size(290, 34);
             blurImageToolStripMenuItem.Text = "Blur Image";
             blurImageToolStripMenuItem.CheckStateChanged += blurImageToolStripMenuItem_CheckStateChanged;
             // 
@@ -625,7 +626,7 @@
             // 
             hideDesktopIconsToolStripMenuItem.CheckOnClick = true;
             hideDesktopIconsToolStripMenuItem.Name = "hideDesktopIconsToolStripMenuItem";
-            hideDesktopIconsToolStripMenuItem.Size = new Size(274, 26);
+            hideDesktopIconsToolStripMenuItem.Size = new Size(290, 34);
             hideDesktopIconsToolStripMenuItem.Text = "Hide Desktop Icons";
             hideDesktopIconsToolStripMenuItem.CheckedChanged += hideDesktopIconsToolStripMenuItem_CheckedChanged;
             // 
@@ -633,7 +634,7 @@
             // 
             showKittyToolStripMenuItem.CheckOnClick = true;
             showKittyToolStripMenuItem.Name = "showKittyToolStripMenuItem";
-            showKittyToolStripMenuItem.Size = new Size(284, 26);
+            showKittyToolStripMenuItem.Size = new Size(342, 34);
             showKittyToolStripMenuItem.Text = "Show Kitty";
             showKittyToolStripMenuItem.CheckedChanged += showKittyToolStripMenuItem_CheckedChanged;
             // 
@@ -641,7 +642,7 @@
             // 
             lockPlayerToolStripMenuItem.CheckOnClick = true;
             lockPlayerToolStripMenuItem.Name = "lockPlayerToolStripMenuItem";
-            lockPlayerToolStripMenuItem.Size = new Size(284, 26);
+            lockPlayerToolStripMenuItem.Size = new Size(342, 34);
             lockPlayerToolStripMenuItem.Text = "Lock Player";
             lockPlayerToolStripMenuItem.Click += lockPlayerToolStripMenuItem_Click;
             // 
@@ -649,7 +650,7 @@
             // 
             minimizeToTrayToolStripMenuItem.CheckOnClick = true;
             minimizeToTrayToolStripMenuItem.Name = "minimizeToTrayToolStripMenuItem";
-            minimizeToTrayToolStripMenuItem.Size = new Size(284, 26);
+            minimizeToTrayToolStripMenuItem.Size = new Size(342, 34);
             minimizeToTrayToolStripMenuItem.Text = "Minimize to Tray";
             minimizeToTrayToolStripMenuItem.CheckStateChanged += minimizeToTrayToolStripMenuItem_CheckStateChanged;
             // 
@@ -657,16 +658,16 @@
             // 
             darkModeToolStripMenuItem.CheckOnClick = true;
             darkModeToolStripMenuItem.Name = "darkModeToolStripMenuItem";
-            darkModeToolStripMenuItem.Size = new Size(284, 26);
+            darkModeToolStripMenuItem.Size = new Size(342, 34);
             darkModeToolStripMenuItem.Text = "Dark Mode";
             darkModeToolStripMenuItem.CheckedChanged += darkModeToolStripMenuItem_CheckedChanged;
             // 
             // cmdFilter
             // 
-            cmdFilter.Location = new Point(446, 84);
-            cmdFilter.Margin = new Padding(5, 4, 5, 4);
+            cmdFilter.Location = new Point(535, 101);
+            cmdFilter.Margin = new Padding(6, 5, 6, 5);
             cmdFilter.Name = "cmdFilter";
-            cmdFilter.Size = new Size(62, 29);
+            cmdFilter.Size = new Size(74, 35);
             cmdFilter.TabIndex = 28;
             cmdFilter.Text = "Filter...";
             cmdFilter.UseVisualStyleBackColor = true;
@@ -679,10 +680,10 @@
             // chkFavourite
             // 
             chkFavourite.AutoSize = true;
-            chkFavourite.Location = new Point(316, 87);
-            chkFavourite.Margin = new Padding(5, 4, 5, 4);
+            chkFavourite.Location = new Point(379, 104);
+            chkFavourite.Margin = new Padding(6, 5, 6, 5);
             chkFavourite.Name = "chkFavourite";
-            chkFavourite.Size = new Size(131, 24);
+            chkFavourite.Size = new Size(160, 29);
             chkFavourite.TabIndex = 32;
             chkFavourite.Text = "Only Favourites";
             chkFavourite.UseVisualStyleBackColor = true;
@@ -690,10 +691,10 @@
             // 
             // cmdPhotos
             // 
-            cmdPhotos.Location = new Point(921, 144);
-            cmdPhotos.Margin = new Padding(5, 4, 5, 4);
+            cmdPhotos.Location = new Point(1105, 173);
+            cmdPhotos.Margin = new Padding(6, 5, 6, 5);
             cmdPhotos.Name = "cmdPhotos";
-            cmdPhotos.Size = new Size(109, 35);
+            cmdPhotos.Size = new Size(131, 42);
             cmdPhotos.TabIndex = 35;
             cmdPhotos.Text = "Photos";
             cmdPhotos.UseVisualStyleBackColor = true;
@@ -702,10 +703,10 @@
             // cmbFilter
             // 
             cmbFilter.FormattingEnabled = true;
-            cmbFilter.Location = new Point(514, 84);
-            cmbFilter.Margin = new Padding(5, 4, 5, 4);
+            cmbFilter.Location = new Point(617, 101);
+            cmbFilter.Margin = new Padding(6, 5, 6, 5);
             cmbFilter.Name = "cmbFilter";
-            cmbFilter.Size = new Size(149, 28);
+            cmbFilter.Size = new Size(178, 33);
             cmbFilter.TabIndex = 36;
             cmbFilter.DropDown += AdjustWidthComboBox_DropDown;
             cmbFilter.SelectedIndexChanged += cmbFilter_SelectedIndexChanged;
@@ -721,20 +722,20 @@
             panelModelDetails.Controls.Add(lblRatingScore);
             panelModelDetails.Controls.Add(lblCollection);
             panelModelDetails.Controls.Add(lblAge);
-            panelModelDetails.Location = new Point(11, 912);
-            panelModelDetails.Margin = new Padding(3, 4, 3, 4);
+            panelModelDetails.Location = new Point(13, 1094);
+            panelModelDetails.Margin = new Padding(4, 5, 4, 5);
             panelModelDetails.Name = "panelModelDetails";
-            panelModelDetails.Size = new Size(1019, 364);
+            panelModelDetails.Size = new Size(1223, 437);
             panelModelDetails.TabIndex = 39;
             // 
             // txtUserTags
             // 
             txtUserTags.BackColor = SystemColors.ControlLightLight;
             txtUserTags.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            txtUserTags.Location = new Point(153, 93);
-            txtUserTags.Margin = new Padding(5, 4, 5, 4);
+            txtUserTags.Location = new Point(184, 112);
+            txtUserTags.Margin = new Padding(6, 5, 6, 5);
             txtUserTags.Name = "txtUserTags";
-            txtUserTags.Size = new Size(866, 31);
+            txtUserTags.Size = new Size(1038, 36);
             txtUserTags.TabIndex = 43;
             txtUserTags.TextChanged += txtUserTags_TextChanged;
             // 
@@ -742,10 +743,10 @@
             // 
             lblUserTags.AutoSize = true;
             lblUserTags.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblUserTags.Location = new Point(15, 100);
-            lblUserTags.Margin = new Padding(5, 0, 5, 0);
+            lblUserTags.Location = new Point(18, 120);
+            lblUserTags.Margin = new Padding(6, 0, 6, 0);
             lblUserTags.Name = "lblUserTags";
-            lblUserTags.Size = new Size(91, 25);
+            lblUserTags.Size = new Size(111, 30);
             lblUserTags.TabIndex = 42;
             lblUserTags.Text = "User Tags:";
             // 
@@ -753,10 +754,10 @@
             // 
             lblStats.AutoSize = true;
             lblStats.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblStats.Location = new Point(155, 9);
-            lblStats.Margin = new Padding(5, 0, 5, 0);
+            lblStats.Location = new Point(186, 11);
+            lblStats.Margin = new Padding(6, 0, 6, 0);
             lblStats.Name = "lblStats";
-            lblStats.Size = new Size(54, 25);
+            lblStats.Size = new Size(63, 30);
             lblStats.TabIndex = 41;
             lblStats.Text = "Stats:";
             // 
@@ -764,11 +765,11 @@
             // 
             lblTags.AutoSize = true;
             lblTags.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblTags.Location = new Point(15, 55);
-            lblTags.Margin = new Padding(5, 0, 5, 0);
-            lblTags.MaximumSize = new Size(1019, 36);
+            lblTags.Location = new Point(18, 66);
+            lblTags.Margin = new Padding(6, 0, 6, 0);
+            lblTags.MaximumSize = new Size(1223, 43);
             lblTags.Name = "lblTags";
-            lblTags.Size = new Size(51, 25);
+            lblTags.Size = new Size(61, 30);
             lblTags.TabIndex = 40;
             lblTags.Text = "Tags:";
             // 
@@ -776,32 +777,32 @@
             // 
             lblResolution.AutoSize = true;
             lblResolution.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblResolution.Location = new Point(774, 9);
-            lblResolution.Margin = new Padding(5, 0, 5, 0);
+            lblResolution.Location = new Point(929, 11);
+            lblResolution.Margin = new Padding(6, 0, 6, 0);
             lblResolution.Name = "lblResolution";
-            lblResolution.Size = new Size(43, 25);
+            lblResolution.Size = new Size(51, 30);
             lblResolution.TabIndex = 39;
             lblResolution.Text = "Res:";
             // 
             // txtDescription
             // 
-            txtDescription.Location = new Point(15, 143);
-            txtDescription.Margin = new Padding(5, 4, 5, 4);
+            txtDescription.Location = new Point(18, 172);
+            txtDescription.Margin = new Padding(6, 5, 6, 5);
             txtDescription.Multiline = true;
             txtDescription.Name = "txtDescription";
             txtDescription.ReadOnly = true;
             txtDescription.ScrollBars = ScrollBars.Vertical;
-            txtDescription.Size = new Size(1004, 209);
+            txtDescription.Size = new Size(1204, 250);
             txtDescription.TabIndex = 38;
             // 
             // lblRatingScore
             // 
             lblRatingScore.AutoSize = true;
             lblRatingScore.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblRatingScore.Location = new Point(625, 9);
-            lblRatingScore.Margin = new Padding(5, 0, 5, 0);
+            lblRatingScore.Location = new Point(750, 11);
+            lblRatingScore.Margin = new Padding(6, 0, 6, 0);
             lblRatingScore.Name = "lblRatingScore";
-            lblRatingScore.Size = new Size(67, 25);
+            lblRatingScore.Size = new Size(79, 30);
             lblRatingScore.TabIndex = 37;
             lblRatingScore.Text = "Rating:";
             // 
@@ -809,10 +810,10 @@
             // 
             lblCollection.AutoSize = true;
             lblCollection.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblCollection.Location = new Point(369, 9);
-            lblCollection.Margin = new Padding(5, 0, 5, 0);
+            lblCollection.Location = new Point(443, 11);
+            lblCollection.Margin = new Padding(6, 0, 6, 0);
             lblCollection.Name = "lblCollection";
-            lblCollection.Size = new Size(94, 25);
+            lblCollection.Size = new Size(114, 30);
             lblCollection.TabIndex = 36;
             lblCollection.Text = "Collection:";
             // 
@@ -820,10 +821,10 @@
             // 
             lblAge.AutoSize = true;
             lblAge.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblAge.Location = new Point(18, 9);
-            lblAge.Margin = new Padding(5, 0, 5, 0);
+            lblAge.Location = new Point(22, 11);
+            lblAge.Margin = new Padding(6, 0, 6, 0);
             lblAge.Name = "lblAge";
-            lblAge.Size = new Size(48, 25);
+            lblAge.Size = new Size(57, 30);
             lblAge.TabIndex = 35;
             lblAge.Text = "Age:";
             // 
@@ -846,25 +847,27 @@
             panelClip.Controls.Add(chkNoNudity);
             panelClip.Controls.Add(chkPublic);
             panelClip.Location = new Point(0, 0);
-            panelClip.Margin = new Padding(3, 4, 3, 4);
+            panelClip.Margin = new Padding(4, 5, 4, 5);
             panelClip.Name = "panelClip";
-            panelClip.Size = new Size(1030, 145);
+            panelClip.Size = new Size(1236, 174);
             panelClip.TabIndex = 40;
             // 
             // lblFilterClip
             // 
             lblFilterClip.AutoSize = true;
-            lblFilterClip.Location = new Point(582, 115);
+            lblFilterClip.Location = new Point(698, 138);
+            lblFilterClip.Margin = new Padding(4, 0, 4, 0);
             lblFilterClip.Name = "lblFilterClip";
-            lblFilterClip.Size = new Size(103, 20);
+            lblFilterClip.Size = new Size(122, 25);
             lblFilterClip.TabIndex = 53;
             lblFilterClip.Text = "Filter ClipType";
             // 
             // cmdWallpaper
             // 
-            cmdWallpaper.Location = new Point(670, 4);
+            cmdWallpaper.Location = new Point(804, 5);
+            cmdWallpaper.Margin = new Padding(4);
             cmdWallpaper.Name = "cmdWallpaper";
-            cmdWallpaper.Size = new Size(109, 44);
+            cmdWallpaper.Size = new Size(131, 53);
             cmdWallpaper.TabIndex = 41;
             cmdWallpaper.Text = "Wallpaper";
             cmdWallpaper.UseVisualStyleBackColor = true;
@@ -872,30 +875,31 @@
             // 
             // txtClipType
             // 
-            txtClipType.Location = new Point(691, 109);
+            txtClipType.Location = new Point(829, 131);
+            txtClipType.Margin = new Padding(4);
             txtClipType.Name = "txtClipType";
-            txtClipType.Size = new Size(186, 27);
+            txtClipType.Size = new Size(222, 31);
             txtClipType.TabIndex = 52;
             txtClipType.KeyDown += txtClipType_KeyDown;
             // 
             // numMinSizeMB
             // 
             numMinSizeMB.Increment = new decimal(new int[] { 10, 0, 0, 0 });
-            numMinSizeMB.Location = new Point(781, 75);
-            numMinSizeMB.Margin = new Padding(5, 4, 5, 4);
+            numMinSizeMB.Location = new Point(935, 90);
+            numMinSizeMB.Margin = new Padding(6, 5, 6, 5);
             numMinSizeMB.Maximum = new decimal(new int[] { 9999, 0, 0, 0 });
             numMinSizeMB.Name = "numMinSizeMB";
-            numMinSizeMB.Size = new Size(96, 27);
+            numMinSizeMB.Size = new Size(115, 31);
             numMinSizeMB.TabIndex = 51;
             numMinSizeMB.ValueChanged += numMinSizeMB_ValueChanged;
             // 
             // lblMinSize
             // 
             lblMinSize.AutoSize = true;
-            lblMinSize.Location = new Point(670, 77);
-            lblMinSize.Margin = new Padding(5, 0, 5, 0);
+            lblMinSize.Location = new Point(804, 92);
+            lblMinSize.Margin = new Padding(6, 0, 6, 0);
             lblMinSize.Name = "lblMinSize";
-            lblMinSize.Size = new Size(101, 20);
+            lblMinSize.Size = new Size(119, 25);
             lblMinSize.TabIndex = 50;
             lblMinSize.Text = "Min Size (MB)";
             // 
@@ -903,19 +907,19 @@
             // 
             lblCipListDetails.AutoSize = true;
             lblCipListDetails.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point);
-            lblCipListDetails.Location = new Point(6, 76);
+            lblCipListDetails.Location = new Point(7, 91);
             lblCipListDetails.Margin = new Padding(0);
             lblCipListDetails.Name = "lblCipListDetails";
-            lblCipListDetails.Size = new Size(0, 28);
+            lblCipListDetails.Size = new Size(0, 32);
             lblCipListDetails.TabIndex = 49;
             lblCipListDetails.UseMnemonic = false;
             // 
             // cmdNextClip
             // 
-            cmdNextClip.Location = new Point(787, 4);
-            cmdNextClip.Margin = new Padding(5, 4, 5, 4);
+            cmdNextClip.Location = new Point(944, 5);
+            cmdNextClip.Margin = new Padding(6, 5, 6, 5);
             cmdNextClip.Name = "cmdNextClip";
-            cmdNextClip.Size = new Size(109, 44);
+            cmdNextClip.Size = new Size(131, 53);
             cmdNextClip.TabIndex = 48;
             cmdNextClip.Text = "Next Clip";
             cmdNextClip.UseVisualStyleBackColor = true;
@@ -923,10 +927,10 @@
             // 
             // cmdShowModel
             // 
-            cmdShowModel.Location = new Point(904, 4);
-            cmdShowModel.Margin = new Padding(5, 4, 5, 4);
+            cmdShowModel.Location = new Point(1085, 5);
+            cmdShowModel.Margin = new Padding(6, 5, 6, 5);
             cmdShowModel.Name = "cmdShowModel";
-            cmdShowModel.Size = new Size(126, 44);
+            cmdShowModel.Size = new Size(151, 53);
             cmdShowModel.TabIndex = 47;
             cmdShowModel.Text = "Show Model";
             cmdShowModel.UseVisualStyleBackColor = true;
@@ -936,10 +940,10 @@
             // 
             lblNowPlaying.AutoSize = true;
             lblNowPlaying.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point);
-            lblNowPlaying.Location = new Point(9, 9);
+            lblNowPlaying.Location = new Point(11, 11);
             lblNowPlaying.Margin = new Padding(0);
             lblNowPlaying.Name = "lblNowPlaying";
-            lblNowPlaying.Size = new Size(126, 28);
+            lblNowPlaying.Size = new Size(152, 32);
             lblNowPlaying.TabIndex = 46;
             lblNowPlaying.Text = "Now Playing:";
             lblNowPlaying.UseMnemonic = false;
@@ -951,10 +955,10 @@
             // chkDemo
             // 
             chkDemo.AutoSize = true;
-            chkDemo.Location = new Point(893, 115);
-            chkDemo.Margin = new Padding(5, 0, 5, 0);
+            chkDemo.Location = new Point(1072, 138);
+            chkDemo.Margin = new Padding(6, 0, 6, 0);
             chkDemo.Name = "chkDemo";
-            chkDemo.Size = new Size(72, 24);
+            chkDemo.Size = new Size(87, 29);
             chkDemo.TabIndex = 45;
             chkDemo.Text = "Demo";
             chkDemo.UseVisualStyleBackColor = true;
@@ -965,10 +969,10 @@
             chkXXX.AutoSize = true;
             chkXXX.Checked = true;
             chkXXX.CheckState = CheckState.Checked;
-            chkXXX.Location = new Point(512, 115);
-            chkXXX.Margin = new Padding(5, 0, 5, 0);
+            chkXXX.Location = new Point(614, 138);
+            chkXXX.Margin = new Padding(6, 0, 6, 0);
             chkXXX.Name = "chkXXX";
-            chkXXX.Size = new Size(58, 24);
+            chkXXX.Size = new Size(71, 29);
             chkXXX.TabIndex = 44;
             chkXXX.Text = "XXX";
             chkXXX.UseVisualStyleBackColor = true;
@@ -979,10 +983,10 @@
             chkFullNudity.AutoSize = true;
             chkFullNudity.Checked = true;
             chkFullNudity.CheckState = CheckState.Checked;
-            chkFullNudity.Location = new Point(393, 115);
-            chkFullNudity.Margin = new Padding(5, 0, 5, 0);
+            chkFullNudity.Location = new Point(472, 138);
+            chkFullNudity.Margin = new Padding(6, 0, 6, 0);
             chkFullNudity.Name = "chkFullNudity";
-            chkFullNudity.Size = new Size(102, 24);
+            chkFullNudity.Size = new Size(123, 29);
             chkFullNudity.TabIndex = 43;
             chkFullNudity.Text = "Full Nudity";
             chkFullNudity.UseVisualStyleBackColor = true;
@@ -993,10 +997,10 @@
             chkNudity.AutoSize = true;
             chkNudity.Checked = true;
             chkNudity.CheckState = CheckState.Checked;
-            chkNudity.Location = new Point(306, 115);
-            chkNudity.Margin = new Padding(5, 0, 5, 0);
+            chkNudity.Location = new Point(367, 138);
+            chkNudity.Margin = new Padding(6, 0, 6, 0);
             chkNudity.Name = "chkNudity";
-            chkNudity.Size = new Size(75, 24);
+            chkNudity.Size = new Size(91, 29);
             chkNudity.TabIndex = 42;
             chkNudity.Text = "Nudity";
             chkNudity.UseVisualStyleBackColor = true;
@@ -1007,10 +1011,10 @@
             chkTopless.AutoSize = true;
             chkTopless.Checked = true;
             chkTopless.CheckState = CheckState.Checked;
-            chkTopless.Location = new Point(213, 115);
-            chkTopless.Margin = new Padding(5, 0, 5, 0);
+            chkTopless.Location = new Point(256, 138);
+            chkTopless.Margin = new Padding(6, 0, 6, 0);
             chkTopless.Name = "chkTopless";
-            chkTopless.Size = new Size(80, 24);
+            chkTopless.Size = new Size(96, 29);
             chkTopless.TabIndex = 41;
             chkTopless.Text = "Topless";
             chkTopless.UseVisualStyleBackColor = true;
@@ -1021,10 +1025,10 @@
             chkNoNudity.AutoSize = true;
             chkNoNudity.Checked = true;
             chkNoNudity.CheckState = CheckState.Checked;
-            chkNoNudity.Location = new Point(98, 115);
-            chkNoNudity.Margin = new Padding(5, 0, 5, 0);
+            chkNoNudity.Location = new Point(118, 138);
+            chkNoNudity.Margin = new Padding(6, 0, 6, 0);
             chkNoNudity.Name = "chkNoNudity";
-            chkNoNudity.Size = new Size(99, 24);
+            chkNoNudity.Size = new Size(120, 29);
             chkNoNudity.TabIndex = 40;
             chkNoNudity.Text = "No Nudity";
             chkNoNudity.UseVisualStyleBackColor = true;
@@ -1033,10 +1037,10 @@
             // chkPublic
             // 
             chkPublic.AutoSize = true;
-            chkPublic.Location = new Point(11, 115);
-            chkPublic.Margin = new Padding(5, 0, 5, 0);
+            chkPublic.Location = new Point(13, 138);
+            chkPublic.Margin = new Padding(6, 0, 6, 0);
             chkPublic.Name = "chkPublic";
-            chkPublic.Size = new Size(71, 24);
+            chkPublic.Size = new Size(85, 29);
             chkPublic.TabIndex = 39;
             chkPublic.Text = "Public";
             chkPublic.UseVisualStyleBackColor = true;
@@ -1053,11 +1057,12 @@
             listModelsNew.CacheLimit = "0";
             listModelsNew.CacheMode = Manina.Windows.Forms.CacheMode.Continuous;
             listModelsNew.ContextMenuStrip = menuCardList;
-            listModelsNew.Location = new Point(10, 116);
+            listModelsNew.Location = new Point(12, 139);
+            listModelsNew.Margin = new Padding(4);
             listModelsNew.Name = "listModelsNew";
             listModelsNew.PersistentCacheDirectory = "";
             listModelsNew.PersistentCacheSize = 0L;
-            listModelsNew.Size = new Size(1091, 1148);
+            listModelsNew.Size = new Size(1309, 1378);
             listModelsNew.TabIndex = 41;
             listModelsNew.UseWIC = true;
             listModelsNew.ItemClick += listModelsNew_ItemClick;
@@ -1071,7 +1076,8 @@
             // splitContainer1
             // 
             splitContainer1.Dock = DockStyle.Fill;
-            splitContainer1.Location = new Point(3, 96);
+            splitContainer1.Location = new Point(4, 116);
+            splitContainer1.Margin = new Padding(4);
             splitContainer1.Name = "splitContainer1";
             // 
             // splitContainer1.Panel1
@@ -1096,9 +1102,9 @@
             splitContainer1.Panel2.Controls.Add(panelClip);
             splitContainer1.Panel2.Controls.Add(panelModelDetails);
             splitContainer1.Panel2MinSize = 880;
-            splitContainer1.Size = new Size(2159, 1071);
-            splitContainer1.SplitterDistance = 1115;
-            splitContainer1.SplitterWidth = 5;
+            splitContainer1.Size = new Size(2590, 1284);
+            splitContainer1.SplitterDistance = 1337;
+            splitContainer1.SplitterWidth = 6;
             splitContainer1.TabIndex = 42;
             splitContainer1.SplitterMoved += splitContainer1_SplitterMoved;
             // 
@@ -1106,10 +1112,10 @@
             // 
             cmbSortDirection.FormattingEnabled = true;
             cmbSortDirection.Items.AddRange(new object[] { "Ascending", "Descending" });
-            cmbSortDirection.Location = new Point(199, 84);
-            cmbSortDirection.Margin = new Padding(5, 4, 5, 4);
+            cmbSortDirection.Location = new Point(239, 101);
+            cmbSortDirection.Margin = new Padding(6, 5, 6, 5);
             cmbSortDirection.Name = "cmbSortDirection";
-            cmbSortDirection.Size = new Size(108, 28);
+            cmbSortDirection.Size = new Size(129, 33);
             cmbSortDirection.TabIndex = 42;
             cmbSortDirection.SelectedIndexChanged += cmbSortDirection_SelectedIndexChanged;
             // 
@@ -1122,16 +1128,17 @@
             // 
             // Form1
             // 
-            AutoScaleDimensions = new SizeF(120F, 120F);
+            AutoScaleDimensions = new SizeF(144F, 144F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(2165, 1170);
+            ClientSize = new Size(2598, 1404);
             Controls.Add(splitContainer1);
             Controls.Add(menuStrip1);
             Icon = (Icon)resources.GetObject("$this.Icon");
             MainMenuStrip = menuStrip1;
-            Margin = new Padding(5, 4, 5, 4);
-            MinimumSize = new Size(1690, 792);
+            Margin = new Padding(6, 5, 6, 5);
+            MinimumSize = new Size(2028, 950);
             Name = "Form1";
+            Padding = new Padding(4, 77, 4, 4);
             Text = "iStripper QuickPlayer";
             FormClosing += Form1_FormClosing;
             Load += Form1_Load;

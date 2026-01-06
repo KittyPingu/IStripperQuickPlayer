@@ -4,11 +4,13 @@ using Gma.System.MouseKeyHook;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
 using Manina.Windows.Forms;
+using Manina.Windows.Forms.ImageListViewRenderers;
 using MaterialSkin;
 using MaterialSkin.Controls;
 using Microsoft.Win32;
 using Microsoft.WindowsAPICodePack.Taskbar;
 using Nektra.Deviare2;
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Globalization;
@@ -1936,7 +1938,44 @@ namespace IStripperQuickPlayer
 
         private void listModelsNew_ItemClick(object sender, ItemClickEventArgs e)
         {
+            ImageListView.HitInfo hit;
+            listModelsNew.HitTest(e.Location, out hit);
 
+            if (!hit.ItemHit)
+                return;          
+            ImageListViewItem clickCard = listModelsNew.Items[hit.ItemIndex];
+            int idx = hit.ItemIndex;
+
+            if (!cardRenderer.TryGetItemBounds(idx, out var cardRect))
+                return;
+
+            if (!cardRenderer.TryGetStarItemBounds(idx, out var starRect))
+                return;
+
+            // Only handle clicks actually on the stars area
+            if (!starRect.Contains(e.Location))
+                return;
+
+            // X position inside the stars rect (0..Width)
+            double x = e.X - starRect.Left;
+
+            // Convert to half-star steps: 5 stars => 10 half-stars
+            double halfStars = Math.Round((x / starRect.Width) * 10.0, MidpointRounding.AwayFromZero);
+
+            // Clamp to [0..10]
+            halfStars = Math.Max(0, Math.Min(10, halfStars));
+
+            decimal rating = (decimal)(halfStars);   // 0.0, 0.5, 1.0, ... 5.0
+
+            // rating is the nearest 0.5-star value
+            Debug.WriteLine("rating: " + rating.ToString());
+            if (myData == null || clickCard == null) return;
+            if (myData.GetCardRating(clickCard.Tag.ToString()) == rating) return;
+            myData.AddCardRating(clickCard.Tag.ToString(), rating);
+            if (menuShowRatingsStars.Checked)
+            {
+                clickCard.Update();
+            }
         }
 
         private void listModelsNew_MouseDown(object sender, MouseEventArgs e)

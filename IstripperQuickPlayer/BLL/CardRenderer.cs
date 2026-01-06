@@ -1,6 +1,7 @@
 ﻿using IStripperQuickPlayer.DataModel;
 using Manina.Windows.Forms;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -28,8 +29,8 @@ namespace IStripperQuickPlayer.BLL
         public Color labelColor = Color.Black;
         public SolidBrush highlightBrush = new SolidBrush(Color.PaleGreen);
         public Color backgroundColour = Color.WhiteSmoke;
-
-
+        private readonly ConcurrentDictionary<int, Rectangle> _boundsByIndex = new();
+        private readonly ConcurrentDictionary<int, Rectangle> _starBoundsByIndex = new();
 
         internal CardRenderer(MyData? myData, string sortBy, float cardScale, CultureInfo culture, bool fontInstalled, NumberStyles style)
         {
@@ -59,6 +60,12 @@ namespace IStripperQuickPlayer.BLL
             }
         }
 
+        public bool TryGetItemBounds(int itemIndex, out Rectangle bounds)
+            => _boundsByIndex.TryGetValue(itemIndex, out bounds);
+
+        public bool TryGetStarItemBounds(int itemIndex, out Rectangle bounds)
+             => _starBoundsByIndex.TryGetValue(itemIndex, out bounds);
+
         //public override void DrawBackground(Graphics g, Rectangle bounds)
         //{
         //    //base.DrawBackground(g, bounds);
@@ -76,6 +83,7 @@ namespace IStripperQuickPlayer.BLL
         }
         public override void DrawItem(Graphics g, ImageListViewItem item, ItemState state, Rectangle bounds)
         {
+            _boundsByIndex[item.Index] = bounds;
             if (updating) return;
             g.InterpolationMode = InterpolationMode.Bilinear;
             g.SmoothingMode = SmoothingMode.None;
@@ -345,8 +353,12 @@ namespace IStripperQuickPlayer.BLL
                         new PointF(imgrect2.Left + (imgrect2.Width - bsize.Width)/2.0f, imgrect2.Top + (imgrect2.Height/2.0f)+(bsize.Height*1.0f)),            
                         stringFormatStars);         
                     //g.DrawPath(new Pen(Color.Black, 3), p);
-                    g.FillPath(new SolidBrush(Color.FromArgb(180, Color.Black)), p);     
-            
+                    g.FillPath(new SolidBrush(Color.FromArgb(180, Color.Black)), p);
+
+                    Rectangle starbounds = new Rectangle((int)(imgrect2.Left + (imgrect2.Width - bsize.Width) / 2.0f), (int)(imgrect2.Top + (imgrect2.Height / 2.0f) + (bsize.Height * 0.5f)), (int)bsize.Width, (int)bsize.Height);
+                    _starBoundsByIndex[item.Index] = starbounds;
+
+                    //g.DrawRectangle(new Pen(Color.Red, 2), starbounds);
                     if (myrating > 0)
                     {
                         g.InterpolationMode = InterpolationMode.High;
@@ -366,7 +378,8 @@ namespace IStripperQuickPlayer.BLL
                             new PointF(imgrect2.Left + (imgrect2.Width - bsize.Width)/2.0f, imgrect2.Top + (imgrect2.Height/2.0f)+(bsize.Height*1.0f)),           
                             stringFormatStars);         
                         g.DrawPath(new Pen(Color.Black, 3), p);
-                        g.FillPath(Brushes.Yellow, p);     
+                        g.FillPath(Brushes.Yellow, p);
+
                     }
                     }
                 if (text != "" )
