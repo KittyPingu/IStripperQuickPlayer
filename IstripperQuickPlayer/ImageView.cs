@@ -1,4 +1,5 @@
-﻿using MaterialSkin;
+﻿using Cyotek.Windows.Forms;
+using MaterialSkin;
 using MaterialSkin.Controls;
 using System;
 using System.Collections.Generic;
@@ -14,12 +15,12 @@ namespace IStripperQuickPlayer
 {
     public partial class ImageView : MaterialForm
     {
-        KaiwaProjects.KpImageViewer viewer;
+        Cyotek.Windows.Forms.ImageBox viewer;
         public ImageView()
         {
             InitializeComponent();
             SetSkin();
-         
+
         }
         private void SetSkin()
         {
@@ -33,14 +34,42 @@ namespace IStripperQuickPlayer
         internal void LoadImage(Image? image)
         {
             if (image == null) return;
-            viewer = new KaiwaProjects.KpImageViewer();
-            viewer.Dock = DockStyle.Fill;            
+            viewer = new Cyotek.Windows.Forms.ImageBox();
+            viewer.Dock = DockStyle.Fill;
             viewer.Image = new Bitmap(image);
-            viewer.ShowPreview = false;
-            viewer.OpenButton = false;
-            viewer.FitToScreen();
+            viewer.ContextMenuStrip = contextMenuStrip1;
             viewer.Refresh();
             this.Controls.Add(viewer);
+        }
+
+        // To Copy to Clipboard
+        private void copyToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (viewer.Image != null)
+            {
+                Clipboard.SetImage(viewer.Image);
+            }
+        }
+
+        // To Save to File
+        private void saveAsToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (viewer.Image != null)
+            {
+                using (SaveFileDialog sfd = new SaveFileDialog())
+                {
+                    sfd.Filter = "PNG Image|*.png|JPEG Image|*.jpg|Bitmap Image|*.bmp";
+                    if (sfd.ShowDialog() == DialogResult.OK)
+                    {
+                        viewer.Image.Save(sfd.FileName);
+                    }
+                }
+            }
+        }
+
+        private void contextMenuStrip1_Opening(object sender, CancelEventArgs e)
+        {
+
         }
     }
 }

@@ -45,6 +45,7 @@
     </None>
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="CyotekImageBox" Version="1.3.1" />
     <PackageReference Include="DG.EnhancedBoxHelpers" Version="1.0.25907.18" />
     <PackageReference Include="Essy.Tools.InputBox" Version="1.0.0" />
     <PackageReference Include="ImageListView" Version="13.8.2" />
@@ -60,9 +61,6 @@
     </Reference>
     <Reference Include="DesktopWallpaper">
       <HintPath>dependencies\DesktopWallpaper.dll</HintPath>
-    </Reference>
-    <Reference Include="KP-ImageViewerV2">
-      <HintPath>KP-ImageViewerV2.dll</HintPath>
     </Reference>
     <Reference Include="Nektra.Deviare2">
       <HintPath>Deviare\Nektra.Deviare2.dll</HintPath>
