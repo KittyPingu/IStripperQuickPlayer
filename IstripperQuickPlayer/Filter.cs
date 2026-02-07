@@ -165,6 +165,7 @@ namespace IStripperQuickPlayer
             chkSpecial.Checked = filterSettings.Special;
             chkNormal.Checked = filterSettings.Normal;
             chkVirtuaGuy.Checked = filterSettings.VirtuaGuy;
+            chkTradingCard.Checked = filterSettings.TradingCard;
             dateTimePickerMin.Value = filterSettings.minDate;
             dateTimePickerMax.Value = filterSettings.maxDate;
             dateTimePickerMin.ValueChanged += Range_ValueChanged;
@@ -241,6 +242,7 @@ namespace IStripperQuickPlayer
             filterSettings.Special = chkSpecial.Checked;
             filterSettings.Normal = chkNormal.Checked;
             filterSettings.VirtuaGuy = chkVirtuaGuy.Checked;
+            filterSettings.TradingCard = chkTradingCard.Checked;
 
             Form1? frm = Utils.GetMainForm();
             if (frm != null)

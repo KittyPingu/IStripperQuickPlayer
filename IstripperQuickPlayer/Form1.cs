@@ -337,12 +337,12 @@ namespace IStripperQuickPlayer
         {
             if (chkFavourite.Checked && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardFavourite(c.name)).ToList();
-            currentCards = currentCards.Where(c => c.dateReleased >= filterSettings.minDate && c.dateReleased <= filterSettings.maxDate).ToList();
+            currentCards = currentCards.Where(c => (c.dateReleased >= filterSettings.minDate && c.dateReleased <= filterSettings.maxDate) || c.dateReleased == new DateTime(1,1,1)).ToList();
             if ((filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10) && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating
                 && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();
             currentCards = currentCards.Where(c => ((c.modelAge >= filterSettings.minAge && c.modelAge <= filterSettings.maxAge) || c.modelAge == 0 || c.modelAge > 99)
-                && ((c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust) || c.bust == 0 || c.bust > 99)
+                && (c.bust == null || (c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust) || c.bust == 0 || c.bust > 99)
                 && (c.rating - 5M >= filterSettings.minRating && c.rating - 5M <= filterSettings.maxRating) || c.rating == 0
                 ).ToList();
 
@@ -393,13 +393,14 @@ namespace IStripperQuickPlayer
             if (filterSettings.VGClassic) enabledcollections.Add(Enums.CollectionType.VGClassic);
             if (filterSettings.IStripper) enabledcollections.Add(Enums.CollectionType.IStripper);
             if (filterSettings.VirtuaGuy) enabledcollections.Add(Enums.CollectionType.VirtuaGuy);
+            if (filterSettings.TradingCard) enabledcollections.Add(Enums.CollectionType.TradingCard);
 
             if (filterSettings.Normal && !filterSettings.Special)
                 currentCards = currentCards.Where(c => c.exclusive != null && !(bool)c.exclusive).ToList();
             else if (filterSettings.Special && !filterSettings.Normal)
                 currentCards = currentCards.Where(c => c.exclusive != null && (bool)c.exclusive).ToList();
 
-            currentCards = currentCards.Where(c => enabledcollections.Contains(c.collection)).ToList();
+            currentCards = currentCards.Where(c => enabledcollections.Contains(c.collection)||c.collection == Enums.CollectionType.Undefined).ToList();
 
             try
             {
@@ -1214,7 +1215,7 @@ namespace IStripperQuickPlayer
                 if (Datastore.modelcards == null) return;
                 if (Datastore.modelcards.Count > 0)
                 {
-                    ModelCard? model = Datastore.findCardByTag(path.Split("\\")[0]);
+                    ModelCard? model = Datastore.findCardByTag(path.Split("\\")[0].Split("-")[0]);
                     if (model == null) return;
                     ModelClip? modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).FirstOrDefault();
                     if (modelClip == null) return;

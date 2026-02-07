@@ -18,7 +18,7 @@ namespace IStripperQuickPlayer.DataModel
         public async Task<object> LoadCardPhotos(HttpClient httpClient, string nowPlayingTag)
         {
             cardTag = nowPlayingTag;
-            string url = @"https://www.istripper.com/free/sets/" + cardTag + @"/photos/photos.json";
+            string url = @"https://www.istripper.com/free/sets/" + cardTag.Split(new char[] {'-'}).First() + @"/photos/photos.json";
             var jsonString = await httpClient.GetStringAsync(url);
             if (jsonString == null) return false;
             data = Newtonsoft.Json.JsonConvert.DeserializeObject<RootPhotos>(jsonString);            

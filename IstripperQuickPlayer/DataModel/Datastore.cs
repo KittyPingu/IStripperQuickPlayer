@@ -17,7 +17,7 @@ namespace IStripperQuickPlayer.DataModel
             if (modelcards == null) return null;
             foreach(ModelCard card in modelcards)
             {
-                if (card.name == tag)
+                if (card.name.Split("-")[0] == tag)
                     return card;
             }
             return null;

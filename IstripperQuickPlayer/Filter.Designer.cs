@@ -54,6 +54,7 @@
             label1 = new Label();
             button1 = new Button();
             chkVirtuaGuy = new CheckBox();
+            chkTradingCard = new CheckBox();
             ((System.ComponentModel.ISupportInitialize)bindingSource1).BeginInit();
             SuspendLayout();
             // 
@@ -302,10 +303,21 @@
             chkVirtuaGuy.Text = "VirtuaGuy";
             chkVirtuaGuy.UseVisualStyleBackColor = true;
             // 
+            // chkTradingCard
+            // 
+            chkTradingCard.AutoSize = true;
+            chkTradingCard.Location = new Point(477, 596);
+            chkTradingCard.Name = "chkTradingCard";
+            chkTradingCard.Size = new Size(138, 29);
+            chkTradingCard.TabIndex = 24;
+            chkTradingCard.Text = "Trading Card";
+            chkTradingCard.UseVisualStyleBackColor = true;
+            // 
             // Filter
             // 
             AutoScaleMode = AutoScaleMode.Inherit;
-            ClientSize = new Size(822, 718);
+            ClientSize = new Size(866, 830);
+            Controls.Add(chkTradingCard);
             Controls.Add(chkVirtuaGuy);
             Controls.Add(button1);
             Controls.Add(label1);
@@ -373,5 +385,6 @@
         private Label label1;
         private Button button1;
         private CheckBox chkVirtuaGuy;
+        private CheckBox chkTradingCard;
     }
 }

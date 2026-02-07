@@ -22,7 +22,9 @@ namespace IStripperQuickPlayer.DataModel
             [Description("iStripper")]
             IStripper,
             [Description("iStripper XXX")]
-            IStripperXXX,
+            IStripperXXX, 
+            [Description("Trading Card")]
+            TradingCard,
             Undefined
         }
 
