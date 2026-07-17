@@ -65,8 +65,8 @@ to `vghd.exe`. The added path reuses that agent:
 2. Load `IStripperPlaybackBridge64.dll` in the x64 vghd process.
 3. Pre-hook `MovieManager::pause`, `resume`, and `setPlayRate` and capture their
    `this` pointer from x64 `RCX` when iStripper invokes one of them. If
-   QuickPlayer attaches after playback has already started, capture the active
-   `Movie*` from the next `Movie::advance` call instead.
+   QuickPlayer attaches after playback has already started, locate the active
+   `Movie*` directly without hooking the per-frame `Movie::advance` method.
 4. Call the corresponding private manager wrappers, or the active Movie's
    direct pause, resume, and rate methods when no manager call was observed.
 5. Read the current frame, total-frame count, and FPS under the movie's Qt
@@ -98,6 +98,12 @@ Relevant locations in the investigated executable (RVAs from the image base):
 
 The controls fail closed unless every signature matches. They do not guess at
 offsets on an unrecognised version.
+
+Direct Movie discovery scans committed private writable regions once for the
+exact vghd 2.4.0.0 Movie vtable, then validates the playing/paused state,
+animation pointer, frame range, FPS, and `VideoFFmpeg` vtable before accepting a
+candidate. It makes no persistent code change and avoids blocking vghd's
+per-frame thread while QuickPlayer is loading.
 
 ## There is no 4x playback limiter
 

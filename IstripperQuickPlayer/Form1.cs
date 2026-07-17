@@ -54,8 +54,7 @@ namespace IStripperQuickPlayer
         }
 
         private const string SupportedVghdVersion = "2.4.0.0";
-        private const int PlaybackBridgeVersion = 11;
-        private const int MovieAdvanceRva = 0x27DA20;
+        private const int PlaybackBridgeVersion = 12;
         private const int MovieManagerPlayRva = 0x280CF0;
         private const int MovieManagerPauseRva = 0x280D10;
         private const int MovieManagerResumeRva = 0x280D30;
@@ -96,14 +95,12 @@ namespace IStripperQuickPlayer
         private NktHook? playbackPauseHook;
         private NktHook? playbackResumeHook;
         private NktHook? playbackSetRateHook;
-        private NktHook? playbackMovieAdvanceHook;
         private readonly ManualResetEventSlim playbackManagerCaptured = new(false);
         private readonly SemaphoreSlim playbackOperationLock = new(1, 1);
         private readonly object playbackApiLock = new();
         private readonly CancellationTokenSource playbackLifetime = new();
         private string playbackBridgePath = "";
         private long playbackMovieManagerAddress;
-        private long playbackMovieAddress;
         private int vghdInjectionInProgress;
         private volatile bool playbackBridgeLoaded;
         private volatile bool playbackManagerRegistered;
@@ -116,6 +113,9 @@ namespace IStripperQuickPlayer
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
         private string playbackTimelineAnimationPath = "";
+        private string playbackCompletedAnimationPath = "";
+        private DateTime playbackNextClipRetryAt = DateTime.MinValue;
+        private DateTime playbackReplacementStableAt = DateTime.MinValue;
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
         private DateTime playbackSpeedLastApplied = DateTime.MinValue;
         private bool formIsClosing;
@@ -986,7 +986,6 @@ namespace IStripperQuickPlayer
             playbackMovieRegistered = false;
             playbackFastDecodeEnabled = false;
             Interlocked.Exchange(ref playbackMovieManagerAddress, 0);
-            Interlocked.Exchange(ref playbackMovieAddress, 0);
             playbackManagerCaptured.Reset();
 
             try
@@ -1057,10 +1056,6 @@ namespace IStripperQuickPlayer
                 playbackSetRateHook = CreatePlaybackCaptureHook(process,
                     IntPtr.Add(module.BaseAddress, MovieManagerSetRateRva),
                     "vghd.exe!MovieManager::setPlayRate", captureFlags);
-                playbackMovieAdvanceHook = CreatePlaybackCaptureHook(process,
-                    IntPtr.Add(module.BaseAddress, MovieAdvanceRva),
-                    "vghd.exe!Movie::advance", captureFlags);
-
                 playbackBridgeLoaded = true;
                 int decoderOpenCount = 0;
                 int decoderOptionResult = 0;
@@ -1118,19 +1113,6 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private bool IsPlaybackMovieCaptureHook(NktHook callbackHook)
-        {
-            try
-            {
-                return playbackMovieAdvanceHook != null &&
-                    playbackMovieAdvanceHook.Id == callbackHook.Id;
-            }
-            catch
-            {
-                return callbackHook.FunctionName == "vghd.exe!Movie::advance";
-            }
-        }
-
         private void SetPlaybackStatus(string status)
         {
             if (formIsClosing || IsDisposed)
@@ -1151,7 +1133,8 @@ namespace IStripperQuickPlayer
                 cmdPlayPause.Enabled = enabled;
                 cmdFastForward.Enabled = enabled;
                 cmbPlaybackSpeed.Enabled = enabled;
-                trkPlaybackPosition.Enabled = enabled && playbackManagerRegistered;
+                trkPlaybackPosition.Enabled = enabled &&
+                    (playbackManagerRegistered || playbackMovieRegistered);
             }
 
             if (InvokeRequired)
@@ -1179,7 +1162,8 @@ namespace IStripperQuickPlayer
             cmdPlayPause.Enabled = enabled;
             cmdFastForward.Enabled = enabled;
             cmbPlaybackSpeed.Enabled = enabled;
-            trkPlaybackPosition.Enabled = enabled && playbackManagerRegistered;
+            trkPlaybackPosition.Enabled = enabled &&
+                (playbackManagerRegistered || playbackMovieRegistered);
         }
 
         private int CallPlaybackApi(string apiName, ulong? parameter = null)
@@ -1228,6 +1212,13 @@ namespace IStripperQuickPlayer
             if ((playbackManagerRegistered &&
                     Interlocked.Read(ref playbackMovieManagerAddress) != 0) ||
                 playbackMovieRegistered)
+            {
+                return true;
+            }
+
+            playbackMovieRegistered =
+                CallPlaybackApi("IStripperDiscoverMovie") >= 0;
+            if (playbackMovieRegistered)
             {
                 return true;
             }
@@ -1479,7 +1470,12 @@ namespace IStripperQuickPlayer
                 if (!string.Equals(animationPath, playbackTimelineAnimationPath,
                         StringComparison.Ordinal))
                 {
+                    string previousAnimationPath = playbackTimelineAnimationPath;
                     playbackTimelineAnimationPath = animationPath;
+                    if (!playbackManagerRegistered)
+                    {
+                        playbackMovieRegistered = false;
+                    }
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
                     playbackSpeedLastApplied = DateTime.MinValue;
                     if (!playbackTimelineDragging)
@@ -1489,6 +1485,40 @@ namespace IStripperQuickPlayer
                         playbackTimelineDurationMilliseconds = 0;
                         UpdatePlaybackTime(0, 0);
                     }
+                    if (string.IsNullOrEmpty(animationPath) &&
+                        !string.IsNullOrEmpty(previousAnimationPath))
+                    {
+                        if (string.IsNullOrEmpty(playbackCompletedAnimationPath))
+                        {
+                            playbackCompletedAnimationPath = previousAnimationPath;
+                            playbackNextClipRetryAt = DateTime.MinValue;
+                        }
+                        playbackReplacementStableAt = DateTime.MinValue;
+                    }
+                    else if (!string.IsNullOrEmpty(animationPath) &&
+                        !string.IsNullOrEmpty(playbackCompletedAnimationPath))
+                    {
+                        playbackReplacementStableAt =
+                            DateTime.UtcNow.AddSeconds(2);
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(animationPath) &&
+                    !string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
+                    playbackReplacementStableAt != DateTime.MinValue &&
+                    DateTime.UtcNow >= playbackReplacementStableAt)
+                {
+                    playbackCompletedAnimationPath = "";
+                    playbackReplacementStableAt = DateTime.MinValue;
+                }
+
+                if (string.IsNullOrEmpty(animationPath) &&
+                    !string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
+                    DateTime.UtcNow >= playbackNextClipRetryAt)
+                {
+                    playbackNextClipRetryAt = DateTime.UtcNow.AddSeconds(1);
+                    GetNextClip(null, playbackCompletedAnimationPath);
+                    return;
                 }
 
                 long managerAddress = Interlocked.Read(ref playbackMovieManagerAddress);
@@ -1498,24 +1528,16 @@ namespace IStripperQuickPlayer
                         unchecked((ulong)managerAddress));
                     playbackManagerRegistered = registered >= 0;
                 }
-                long movieAddress = Interlocked.Read(ref playbackMovieAddress);
-                if (!playbackMovieRegistered && movieAddress != 0)
+                if (!playbackManagerRegistered && !playbackMovieRegistered)
                 {
-                    int registered = CallPlaybackApi("IStripperSetMovie",
-                        unchecked((ulong)movieAddress));
-                    playbackMovieRegistered = registered >= 0;
+                    playbackMovieRegistered =
+                        CallPlaybackApi("IStripperDiscoverMovie") >= 0;
                 }
                 if (!playbackManagerRegistered && !playbackMovieRegistered)
                 {
                     trkPlaybackPosition.Enabled = false;
                     return;
                 }
-                if (playbackMovieAdvanceHook != null)
-                {
-                    try { playbackMovieAdvanceHook.Hook(false); } catch { }
-                    playbackMovieAdvanceHook = null;
-                }
-
                 int state = CallPlaybackApi("IStripperGetState");
                 if (state != 3 && state != 4)
                 {
@@ -1890,17 +1912,6 @@ namespace IStripperQuickPlayer
         private uint lastv = 0;
         private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
         {
-            if (IsPlaybackMovieCaptureHook(hook))
-            {
-                long movieAddress = hookCallInfo.get_Register(
-                    eNktRegister.asmRegRcx).ToInt64();
-                if (movieAddress != 0)
-                {
-                    Interlocked.Exchange(ref playbackMovieAddress, movieAddress);
-                }
-                return;
-            }
-
             if (IsPlaybackCaptureHook(hook))
             {
                 long managerAddress = hookCallInfo.get_Register(eNktRegister.asmRegRcx).ToInt64();
@@ -2408,16 +2419,17 @@ namespace IStripperQuickPlayer
             this.BeginInvoke((Action)(() => GetNextClip()));
         }
 
-        private void GetNextClip(ModelCard? model = null)
+        private void GetNextClip(ModelCard? model = null,
+            string? completedAnimation = null)
         {
             RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
-            string path = "";
+            string path = completedAnimation ?? "";
             bool chooseRandom = false;
             if (model != null)
             {
                 chooseRandom = true;
             }
-            else
+            else if (string.IsNullOrEmpty(path))
             {
                 if (key == null) return;
                 var a = key.GetValue("CurrentAnim", "");

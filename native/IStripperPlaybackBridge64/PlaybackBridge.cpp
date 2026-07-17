@@ -369,6 +369,108 @@ namespace
         return vtable == ImageBase() + VideoFfmpegVtableRva ? video : nullptr;
     }
 
+    bool IsActiveMovieCandidate(void* movie)
+    {
+        if (!IsMovie(movie))
+        {
+            return false;
+        }
+
+        auto bytes = reinterpret_cast<unsigned char*>(movie);
+        const int state = *reinterpret_cast<const int*>(
+            bytes + MovieStateOffset);
+        const int currentFrame = *reinterpret_cast<const int*>(
+            bytes + MovieCurrentFrameOffset);
+        void* animation = *reinterpret_cast<void**>(
+            bytes + MovieAnimationOffset);
+        if ((state != PlayingState && state != PausedState) ||
+            currentFrame < 0 ||
+            !IsReadable(animation, AnimationInfoOffset + sizeof(void*)))
+        {
+            return false;
+        }
+
+        void* info = *reinterpret_cast<void**>(
+            reinterpret_cast<unsigned char*>(animation) + AnimationInfoOffset);
+        if (!IsReadable(info, AnimationFramesPerSecondOffset + sizeof(int)))
+        {
+            return false;
+        }
+
+        const int totalFrames = *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(info) +
+            AnimationTotalFramesOffset);
+        const int framesPerSecond = *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(info) +
+            AnimationFramesPerSecondOffset);
+        return totalFrames > 0 && currentFrame <= totalFrames &&
+            framesPerSecond > 0 && framesPerSecond <= 240 &&
+            VideoDecoder(animation) != nullptr;
+    }
+
+    void* DiscoverActiveMovie()
+    {
+        SYSTEM_INFO systemInfo = {};
+        GetSystemInfo(&systemInfo);
+        const auto minimum = reinterpret_cast<std::uintptr_t>(
+            systemInfo.lpMinimumApplicationAddress);
+        const auto maximum = reinterpret_cast<std::uintptr_t>(
+            systemInfo.lpMaximumApplicationAddress);
+        const void* expectedVtable = ImageBase() + MovieVtableRva;
+
+        for (std::uintptr_t address = minimum; address < maximum;)
+        {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(reinterpret_cast<void*>(address), &memory,
+                    sizeof(memory)) != sizeof(memory))
+            {
+                break;
+            }
+
+            const auto regionStart = reinterpret_cast<std::uintptr_t>(
+                memory.BaseAddress);
+            const auto regionEnd = regionStart + memory.RegionSize;
+            if (regionEnd <= address)
+            {
+                break;
+            }
+
+            const DWORD protection = memory.Protect & 0xFF;
+            if (memory.State == MEM_COMMIT && memory.Type == MEM_PRIVATE &&
+                (protection == PAGE_READWRITE ||
+                    protection == PAGE_WRITECOPY ||
+                    protection == PAGE_EXECUTE_READWRITE ||
+                    protection == PAGE_EXECUTE_WRITECOPY) &&
+                (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0)
+            {
+                const std::uintptr_t first =
+                    (regionStart + sizeof(void*) - 1) &
+                    ~(sizeof(void*) - 1);
+                __try
+                {
+                    for (std::uintptr_t candidate = first;
+                        candidate + sizeof(void*) <= regionEnd;
+                        candidate += sizeof(void*))
+                    {
+                        if (*reinterpret_cast<void**>(candidate) ==
+                                expectedVtable &&
+                            IsActiveMovieCandidate(
+                                reinterpret_cast<void*>(candidate)))
+                        {
+                            return reinterpret_cast<void*>(candidate);
+                        }
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    // A heap region can change while it is being inspected.
+                }
+            }
+            address = regionEnd;
+        }
+        return nullptr;
+    }
+
     void* VideoCodecContext(void* formatContext)
     {
         auto formatBytes = reinterpret_cast<unsigned char*>(formatContext);
@@ -1325,7 +1427,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 11;
+    return 12;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -1378,6 +1480,30 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovie(SIZE_T movieAd
         if (!IsMovie(movie))
         {
             return E_INVALIDARG;
+        }
+
+        InterlockedExchangePointer(&g_activeMovie, movie);
+        return BridgeSuccess;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperDiscoverMovie()
+{
+    __try
+    {
+        if (!HasCompatibleEngine())
+        {
+            return EngineError();
+        }
+
+        void* movie = DiscoverActiveMovie();
+        if (movie == nullptr)
+        {
+            return ManagerError();
         }
 
         InterlockedExchangePointer(&g_activeMovie, movie);
