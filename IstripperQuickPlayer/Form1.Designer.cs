@@ -116,7 +116,6 @@
             txtClipType = new TextBox();
             numMinSizeMB = new NumericUpDown();
             lblMinSize = new Label();
-            lblCipListDetails = new Label();
             cmdNextClip = new Button();
             cmdShowModel = new Button();
             lblNowPlaying = new Label();
@@ -852,7 +851,6 @@
             panelClip.Controls.Add(txtClipType);
             panelClip.Controls.Add(numMinSizeMB);
             panelClip.Controls.Add(lblMinSize);
-            panelClip.Controls.Add(lblCipListDetails);
             panelClip.Controls.Add(cmdNextClip);
             panelClip.Controls.Add(cmdShowModel);
             panelClip.Controls.Add(lblNowPlaying);
@@ -1012,17 +1010,6 @@
             lblMinSize.Size = new Size(119, 25);
             lblMinSize.TabIndex = 50;
             lblMinSize.Text = "Min Size (MB)";
-            // 
-            // lblCipListDetails
-            // 
-            lblCipListDetails.AutoSize = true;
-            lblCipListDetails.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point);
-            lblCipListDetails.Location = new Point(7, 132);
-            lblCipListDetails.Margin = new Padding(0);
-            lblCipListDetails.Name = "lblCipListDetails";
-            lblCipListDetails.Size = new Size(0, 32);
-            lblCipListDetails.TabIndex = 49;
-            lblCipListDetails.UseMnemonic = false;
             // 
             // cmdNextClip
             // 
@@ -1338,7 +1325,6 @@
         private TextBox txtClipType;
         private NumericUpDown numMinSizeMB;
         private Label lblMinSize;
-        internal Label lblCipListDetails;
         private Button cmdNextClip;
         private Button cmdShowModel;
         internal Label lblNowPlaying;

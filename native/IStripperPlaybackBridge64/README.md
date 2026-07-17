@@ -60,11 +60,15 @@ The WinForms app already used
 [`Deviare`](https://www.nektra.com/products/deviare-api-hook-windows/) to attach
 to `vghd.exe`. The added path reuses that agent:
 
-1. Check the file version and all six expected instruction signatures.
+1. Check the file version and the expected manager and fast-seek instruction
+   signatures.
 2. Load `IStripperPlaybackBridge64.dll` in the x64 vghd process.
 3. Pre-hook `MovieManager::pause`, `resume`, and `setPlayRate` and capture their
-   `this` pointer from x64 `RCX` when iStripper invokes one of them.
-4. Call the corresponding private manager wrappers from the bridge.
+   `this` pointer from x64 `RCX` when iStripper invokes one of them. If
+   QuickPlayer attaches after playback has already started, capture the active
+   `Movie*` from the next `Movie::advance` call instead.
+4. Call the corresponding private manager wrappers, or the active Movie's
+   direct pause, resume, and rate methods when no manager call was observed.
 5. Read the current frame, total-frame count, and FPS under the movie's Qt
    mutex to expose a content-time position to WinForms.
 
@@ -76,6 +80,9 @@ Relevant locations in the investigated executable (RVAs from the image base):
 | `MovieManager::pause` wrapper | `0x280D10` |
 | `MovieManager::resume` wrapper | `0x280D30` |
 | `MovieManager::setPlayRate` wrapper | `0x280F90` |
+| `Movie::pause` / `resume` | `0x27C7D0` / `0x27C840` |
+| `Movie::setPlayRate` | `0x27D720` |
+| Movie vtable | `0x55AF50` |
 | Manager to `Movie*` | `+0x08` |
 | Movie state (`3` playing, `4` paused) | `+0x4C` |
 | Movie play-rate `double` | `+0x60` |
@@ -102,7 +109,7 @@ one-millisecond sleep. The theoretical scheduler ceiling is therefore roughly
 The installed decoder is the old dynamic FFmpeg 3-era set:
 
 - `avcodec-57.dll` 57.54.100
-- `avformat-57.dll`
+- `avformat-57.dll` 57.47.101
 - `avutil-55.dll`
 - `swscale-4.dll`
 
@@ -152,34 +159,46 @@ already full of ordinary sequential frames. The worker cannot enqueue more,
 while CAnim waits for a target that the worker can never reach. The apparent
 "slow decode" and timeouts were mostly this pipeline stall.
 
-The direct catch-up path now does the following while the movie is paused:
+The direct seek path now does the following while the movie is paused:
 
 1. Lock the `VideoFFmpeg` queue and mark stale entries empty.
-2. For a backward target, call the only supported decoder seek, `seek(0)`.
-3. Arm a one-shot worker target. The patched load at `0x286D60` makes the
+2. For a backward or sufficiently distant forward target, read FFmpeg's
+   populated `AVStream` index, choose the nearest indexed VP9 keyframe at or
+   before the target, call
+   `av_seek_frame(..., AVSEEK_FLAG_BACKWARD)` directly, and flush the codec.
+   This bypasses vghd's frame-zero-only `VideoFFmpeg::seek` wrapper; no separate
+   SSV packet index is needed. Nearby forward targets continue from the current
+   decoder position.
+3. Reset CAnim's alpha state to frame zero. Alpha checkpoints have not been
+   implemented, so the delta-RLE mask records are still replayed serially up to
+   the target.
+4. Arm a one-shot worker target. The patched load at `0x286D60` makes the
    original worker call `decodeVideo(target)` and label its queue entry with
    that same target.
-4. Feed every intervening compressed packet through `avcodec_decode_video2` so
-   VP9 reference-frame state stays valid. The patch at `0x28651A` skips only
+5. Feed compressed packets from that keyframe through `avcodec_decode_video2`
+   so VP9 reference-frame state stays valid. The patch at `0x28651A` skips only
    `sws_scale` for disposable intermediate frames; the requested frame still
    receives its normal colour conversion.
-5. Let CAnim reconstruct its delta-RLE alpha state and compose the target.
-6. Let vghd's original instruction at `Movie::advance+0xCA` (`0x27DAEA`) write
+6. Let CAnim compose the reconstructed alpha state with the target colour frame.
+7. Let vghd's original instruction at `Movie::advance+0xCA` (`0x27DAEA`) write
    the exact target to `Movie+0x98`.
-7. Report completion only after observing that final `Movie+0x98` value.
+8. Report completion only after observing that final `Movie+0x98` value.
 
 The temporary `target - 1` value is therefore never treated as completion, and
 WinForms does not maintain a separate position clock. Rewind no longer reloads
 the clip through `ForceAnim`; colour decoder, mask state, active animation, and
 vghd's position counter remain owned and updated by the original objects.
+The index reader is also fail-closed: it requires avformat 57.47.101, the
+verified FFmpeg 3.1 `AVStream` layout (`index_entries` at `+0x1C8`, count at
+`+0x1D0`), one entry per animation frame, and a keyframe at frame zero.
 
 Mask encoding 5 is still delta RLE, so CAnim must apply intervening alpha
-records serially. That work proved much cheaper than the blocked colour queue.
-In a live 30 FPS test, a rewind from 1:10 to 1:00 reset the colour decoder and
-rebuilt 1,818 frames in 8.95 seconds, skipping 1,818 intermediate colour
-conversions and dropping 20 stale queue entries. A subsequent ten-second
-forward seek decoded 279 frames in 1.47 seconds. Both operations finished with
-the original `Movie+0x98` counter at the requested position.
+records serially from frame zero. That work proved much cheaper than the
+blocked colour queue. In a representative live 30 FPS test after indexed
+keyframe seeking was added, a ten-second forward seek took 0.54 seconds, a
+ten-second rewind took 0.46 seconds, and an arbitrary seek to 2:00 took 0.67
+seconds. Each operation finished with the original `Movie+0x98` counter at the
+requested position.
 
 ## Why the bridge does not clone vghd's decoder
 
@@ -198,11 +217,12 @@ A genuinely independent, clean-room player would need all of the following:
   arbitrary seeks;
 - synchronized composition and a click-through transparent desktop renderer.
 
-The bridge now implements the safe intermediate-RGB-conversion optimisation.
-The next larger improvement would require building a verified SSV packet index
-and seeking FFmpeg to a usable VP9 keyframe, paired with alpha checkpoints.
-Either feature still has to restore CAnim's alpha state and vghd's counters
-before displaying the target.
+The bridge now implements both the intermediate-RGB-conversion optimisation and
+indexed VP9 keyframe seeking. The remaining larger seek optimisation would be
+alpha checkpoints, which would avoid replaying CAnim's delta mask from frame
+zero. Any such checkpoint must restore the complete CAnim alpha state before
+composition; the final position must still be published by vghd's own
+`Movie::advance` counter update.
 
 ## Build
 

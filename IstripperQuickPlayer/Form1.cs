@@ -54,7 +54,8 @@ namespace IStripperQuickPlayer
         }
 
         private const string SupportedVghdVersion = "2.4.0.0";
-        private const int PlaybackBridgeVersion = 10;
+        private const int PlaybackBridgeVersion = 11;
+        private const int MovieAdvanceRva = 0x27DA20;
         private const int MovieManagerPlayRva = 0x280CF0;
         private const int MovieManagerPauseRva = 0x280D10;
         private const int MovieManagerResumeRva = 0x280D30;
@@ -95,15 +96,18 @@ namespace IStripperQuickPlayer
         private NktHook? playbackPauseHook;
         private NktHook? playbackResumeHook;
         private NktHook? playbackSetRateHook;
+        private NktHook? playbackMovieAdvanceHook;
         private readonly ManualResetEventSlim playbackManagerCaptured = new(false);
         private readonly SemaphoreSlim playbackOperationLock = new(1, 1);
         private readonly object playbackApiLock = new();
         private readonly CancellationTokenSource playbackLifetime = new();
         private string playbackBridgePath = "";
         private long playbackMovieManagerAddress;
+        private long playbackMovieAddress;
         private int vghdInjectionInProgress;
         private volatile bool playbackBridgeLoaded;
         private volatile bool playbackManagerRegistered;
+        private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
         private volatile bool playbackBusy;
         private double requestedPlaybackSpeed = 1.0;
@@ -615,7 +619,6 @@ namespace IStripperQuickPlayer
             ModelCard? card = Datastore.findCardByTag(tag.ToString());
             if (card == null) return;
             clipListTag = tag.ToString();
-            lblCipListDetails.Text = card.modelName + ": " + card.outfit;
             if (myData != null)
                 txtUserTags.Text = string.Join(",", myData.GetCardTags(tag.ToString()));
             listClips.BeginUpdate();
@@ -980,8 +983,10 @@ namespace IStripperQuickPlayer
         {
             playbackBridgeLoaded = false;
             playbackManagerRegistered = false;
+            playbackMovieRegistered = false;
             playbackFastDecodeEnabled = false;
             Interlocked.Exchange(ref playbackMovieManagerAddress, 0);
+            Interlocked.Exchange(ref playbackMovieAddress, 0);
             playbackManagerCaptured.Reset();
 
             try
@@ -1052,6 +1057,9 @@ namespace IStripperQuickPlayer
                 playbackSetRateHook = CreatePlaybackCaptureHook(process,
                     IntPtr.Add(module.BaseAddress, MovieManagerSetRateRva),
                     "vghd.exe!MovieManager::setPlayRate", captureFlags);
+                playbackMovieAdvanceHook = CreatePlaybackCaptureHook(process,
+                    IntPtr.Add(module.BaseAddress, MovieAdvanceRva),
+                    "vghd.exe!Movie::advance", captureFlags);
 
                 playbackBridgeLoaded = true;
                 int decoderOpenCount = 0;
@@ -1107,6 +1115,19 @@ namespace IStripperQuickPlayer
             {
                 return callbackHook.FunctionName.StartsWith("vghd.exe!MovieManager::",
                     StringComparison.Ordinal);
+            }
+        }
+
+        private bool IsPlaybackMovieCaptureHook(NktHook callbackHook)
+        {
+            try
+            {
+                return playbackMovieAdvanceHook != null &&
+                    playbackMovieAdvanceHook.Id == callbackHook.Id;
+            }
+            catch
+            {
+                return callbackHook.FunctionName == "vghd.exe!Movie::advance";
             }
         }
 
@@ -1204,7 +1225,9 @@ namespace IStripperQuickPlayer
                 playbackFastDecodeEnabled = fastDecodeResult >= 0;
             }
 
-            if (playbackManagerRegistered && Interlocked.Read(ref playbackMovieManagerAddress) != 0)
+            if ((playbackManagerRegistered &&
+                    Interlocked.Read(ref playbackMovieManagerAddress) != 0) ||
+                playbackMovieRegistered)
             {
                 return true;
             }
@@ -1475,10 +1498,22 @@ namespace IStripperQuickPlayer
                         unchecked((ulong)managerAddress));
                     playbackManagerRegistered = registered >= 0;
                 }
-                if (!playbackManagerRegistered)
+                long movieAddress = Interlocked.Read(ref playbackMovieAddress);
+                if (!playbackMovieRegistered && movieAddress != 0)
+                {
+                    int registered = CallPlaybackApi("IStripperSetMovie",
+                        unchecked((ulong)movieAddress));
+                    playbackMovieRegistered = registered >= 0;
+                }
+                if (!playbackManagerRegistered && !playbackMovieRegistered)
                 {
                     trkPlaybackPosition.Enabled = false;
                     return;
+                }
+                if (playbackMovieAdvanceHook != null)
+                {
+                    try { playbackMovieAdvanceHook.Hook(false); } catch { }
+                    playbackMovieAdvanceHook = null;
                 }
 
                 int state = CallPlaybackApi("IStripperGetState");
@@ -1488,7 +1523,8 @@ namespace IStripperQuickPlayer
                 }
 
                 DateTime now = DateTime.UtcNow;
-                if (now < playbackSpeedReapplyUntil &&
+                if (playbackManagerRegistered &&
+                    now < playbackSpeedReapplyUntil &&
                     now - playbackSpeedLastApplied >= TimeSpan.FromSeconds(1))
                 {
                     SetPlaybackRate(requestedPlaybackSpeed);
@@ -1532,6 +1568,20 @@ namespace IStripperQuickPlayer
         private void trkPlaybackPosition_MouseDown(object sender, MouseEventArgs e)
         {
             playbackTimelineDragging = true;
+            if (e.Button == MouseButtons.Left)
+            {
+                double position = (double)e.X /
+                    Math.Max(1, trkPlaybackPosition.ClientSize.Width - 1);
+                trkPlaybackPosition.Value = Math.Clamp(
+                    trkPlaybackPosition.Minimum +
+                        (int)Math.Round(position *
+                            (trkPlaybackPosition.Maximum -
+                                trkPlaybackPosition.Minimum)),
+                    trkPlaybackPosition.Minimum,
+                    trkPlaybackPosition.Maximum);
+                UpdatePlaybackTime(trkPlaybackPosition.Value,
+                    playbackTimelineDurationMilliseconds);
+            }
         }
 
         private void trkPlaybackPosition_Scroll(object sender, EventArgs e)
@@ -1593,7 +1643,7 @@ namespace IStripperQuickPlayer
             int target = Math.Max(0, requestedTarget);
             if (total > 0)
             {
-                target = Math.Min(target, Math.Max(0, total - 250));
+                target = Math.Min(target, Math.Max(0, total - 1_000));
             }
 
             string animationAtStart = GetCurrentAnimationPath();
@@ -1644,12 +1694,17 @@ namespace IStripperQuickPlayer
             }
             finally
             {
-                // Never leave iStripper running at the temporary scan rate.
-                try { RequirePlaybackResult("IStripperPause"); } catch { }
-                try { SetPlaybackRate(speedToRestore); } catch { }
-                if (wasPlaying)
+                // Do not pause or resume a replacement clip if the old one ended
+                // while its seek was still completing.
+                if (string.Equals(animationAtStart, GetCurrentAnimationPath(),
+                        StringComparison.Ordinal))
                 {
-                    try { RequirePlaybackResult("IStripperResume"); } catch { }
+                    try { RequirePlaybackResult("IStripperPause"); } catch { }
+                    try { SetPlaybackRate(speedToRestore); } catch { }
+                    if (wasPlaying)
+                    {
+                        try { RequirePlaybackResult("IStripperResume"); } catch { }
+                    }
                 }
             }
 
@@ -1726,17 +1781,18 @@ namespace IStripperQuickPlayer
                     throw new TimeoutException("iStripper could not decode the requested frame in time.");
                 }
 
+                string currentAnimation = GetCurrentAnimationPath();
+                if (!string.IsNullOrEmpty(animationAtStart) &&
+                    !string.Equals(animationAtStart, currentAnimation,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "The clip ended while seeking; the next clip was left untouched.");
+                }
+
                 if (pollCount % 8 == 0)
                 {
                     SetPlaybackStatus($"Decoding target frame {FormatPlaybackTime(current)} → {FormatPlaybackTime(target)}...");
-                    string currentAnimation = GetCurrentAnimationPath();
-                    if (!string.IsNullOrEmpty(animationAtStart) &&
-                        !string.IsNullOrEmpty(currentAnimation) &&
-                        !string.Equals(animationAtStart, currentAnimation,
-                            StringComparison.Ordinal))
-                    {
-                        throw new InvalidOperationException("The active clip changed while seeking.");
-                    }
                 }
 
                 int status = CallPlaybackApi("IStripperGetFastForwardStatus");
@@ -1834,6 +1890,17 @@ namespace IStripperQuickPlayer
         private uint lastv = 0;
         private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
         {
+            if (IsPlaybackMovieCaptureHook(hook))
+            {
+                long movieAddress = hookCallInfo.get_Register(
+                    eNktRegister.asmRegRcx).ToInt64();
+                if (movieAddress != 0)
+                {
+                    Interlocked.Exchange(ref playbackMovieAddress, movieAddress);
+                }
+                return;
+            }
+
             if (IsPlaybackCaptureHook(hook))
             {
                 long managerAddress = hookCallInfo.get_Register(eNktRegister.asmRegRcx).ToInt64();

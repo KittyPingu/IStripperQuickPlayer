@@ -18,6 +18,9 @@ namespace
     constexpr std::uintptr_t SetPlayRateRva = 0x280F90;
     constexpr std::uintptr_t AnimationFrameRva = 0x272780;
     constexpr std::uintptr_t MovieAdvanceRva = 0x27DA20;
+    constexpr std::uintptr_t MoviePauseRva = 0x27C7D0;
+    constexpr std::uintptr_t MovieResumeRva = 0x27C840;
+    constexpr std::uintptr_t MovieSetPlayRateRva = 0x27D720;
     constexpr std::uintptr_t AvcodecOpenCallRva = 0x286805;
     constexpr std::uintptr_t AvcodecOpenSlotRva = 0x726770;
     constexpr std::uintptr_t AvSeekFrameSlotRva = 0x726758;
@@ -25,6 +28,7 @@ namespace
     constexpr std::uintptr_t DecodeScaleSlotRva = 0x726750;
     constexpr std::uintptr_t DecoderWorkerTargetLoadRva = 0x286D60;
     constexpr std::uintptr_t VideoSeekRva = 0x286F70;
+    constexpr std::uintptr_t MovieVtableRva = 0x55AF50;
     constexpr std::uintptr_t VideoFfmpegVtableRva = 0x55CD30;
 
     constexpr std::size_t ManagerMovieOffset = 0x08;
@@ -91,6 +95,18 @@ namespace
         0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57
     };
 
+    constexpr unsigned char MoviePauseSignature[] = {
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B
+    };
+
+    constexpr unsigned char MovieResumeSignature[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x18, 0x57, 0x48, 0x83
+    };
+
+    constexpr unsigned char MovieSetPlayRateSignature[] = {
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x0F, 0x29
+    };
+
     constexpr unsigned char AvcodecOpenCallSignature[] = {
         0x48, 0x8B, 0x05, 0x64, 0xFF, 0x49, 0x00, 0x45,
         0x33, 0xC0, 0x49, 0x8B, 0xCE, 0xFF, 0xD0, 0x85
@@ -123,7 +139,9 @@ namespace
         MEM_EXTENDED_PARAMETER* parameters, ULONG parameterCount);
 
     PVOID volatile g_movieManager = nullptr;
+    PVOID volatile g_activeMovie = nullptr;
     LONG volatile g_compatibilityMask = -1;
+    LONG volatile g_fastForwardCompatibility = -1;
     PVOID volatile g_originalAvcodecOpen2 = nullptr;
     PVOID volatile g_originalAvSeekFrame = nullptr;
     LONG volatile g_decoderThreadCount = 0;
@@ -252,10 +270,21 @@ namespace
 
     bool HasFastForwardEngine()
     {
-        return HasSignature(AnimationFrameRva, AnimationFrameSignature,
-                sizeof(AnimationFrameSignature)) &&
-            HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
-                sizeof(MovieAdvanceSignature));
+        LONG cached = InterlockedCompareExchange(
+            &g_fastForwardCompatibility, -1, -1);
+        if (cached < 0)
+        {
+            const LONG detected =
+                HasSignature(AnimationFrameRva, AnimationFrameSignature,
+                    sizeof(AnimationFrameSignature)) &&
+                HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
+                    sizeof(MovieAdvanceSignature));
+            InterlockedCompareExchange(
+                &g_fastForwardCompatibility, detected, -1);
+            cached = InterlockedCompareExchange(
+                &g_fastForwardCompatibility, -1, -1);
+        }
+        return cached != 0;
     }
 
     bool HasFastDecodeEngine()
@@ -280,6 +309,17 @@ namespace
         return InterlockedCompareExchangePointer(&g_movieManager, nullptr, nullptr);
     }
 
+    bool IsMovie(void* movie)
+    {
+        if (!IsReadable(movie, MovieMutexOffset + sizeof(void*)))
+        {
+            return false;
+        }
+
+        return *reinterpret_cast<void**>(movie) ==
+            ImageBase() + MovieVtableRva;
+    }
+
     void* Movie(void* manager)
     {
         if (!IsReadable(manager, ManagerMovieOffset + sizeof(void*)))
@@ -288,7 +328,20 @@ namespace
         }
 
         void* movie = *reinterpret_cast<void**>(reinterpret_cast<unsigned char*>(manager) + ManagerMovieOffset);
-        return IsReadable(movie, MovieMutexOffset + sizeof(void*)) ? movie : nullptr;
+        return IsMovie(movie) ? movie : nullptr;
+    }
+
+    void* ActiveMovie()
+    {
+        void* movie = Movie(MovieManager());
+        if (movie != nullptr)
+        {
+            return movie;
+        }
+
+        movie = InterlockedCompareExchangePointer(
+            &g_activeMovie, nullptr, nullptr);
+        return IsMovie(movie) ? movie : nullptr;
     }
 
     void* VideoDecoder(void* animation)
@@ -673,7 +726,7 @@ namespace
             return EngineError();
         }
 
-        void* movie = Movie(MovieManager());
+        void* movie = ActiveMovie();
         if (movie == nullptr)
         {
             return ManagerError();
@@ -1058,6 +1111,8 @@ namespace
         // substitute the requested catch-up target. The worker consequently
         // labels the queue entry with the same target that decodeVideo reaches.
         const unsigned char code[] = {
+            0x9C,                                     // pushfq
+            0x50,                                     // push rax
             0x41, 0x8B, 0x6E, 0x78,                   // mov ebp,[r14+78h]
             0x48, 0xB8,                               // mov rax,video address
             0, 0, 0, 0, 0, 0, 0, 0,
@@ -1073,6 +1128,8 @@ namespace
             0x7D, 0x02,                               // jge done
             0x8B, 0xE9,                               // mov ebp,ecx
             0x49, 0x8B, 0x4E, 0x60,                   // mov rcx,[r14+60h]
+            0x58,                                     // pop rax
+            0x9D,                                     // popfq
             0xC3                                      // done: ret
         };
 
@@ -1088,8 +1145,8 @@ namespace
             reinterpret_cast<std::uintptr_t>(&g_decoderCatchupVideo);
         const std::uintptr_t targetAddress =
             reinterpret_cast<std::uintptr_t>(&g_decoderCatchupTargetFrame);
-        std::memcpy(thunk + 6, &videoAddress, sizeof(videoAddress));
-        std::memcpy(thunk + 21, &targetAddress, sizeof(targetAddress));
+        std::memcpy(thunk + 8, &videoAddress, sizeof(videoAddress));
+        std::memcpy(thunk + 23, &targetAddress, sizeof(targetAddress));
         FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
 
         const std::intptr_t relative =
@@ -1267,7 +1324,8 @@ namespace
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
-    return 10;
+    HasFastForwardEngine();
+    return 11;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -1307,6 +1365,30 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovieManager(SIZE_T 
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovie(SIZE_T movieAddress)
+{
+    __try
+    {
+        if (!HasCompatibleEngine())
+        {
+            return EngineError();
+        }
+
+        void* movie = reinterpret_cast<void*>(movieAddress);
+        if (!IsMovie(movie))
+        {
+            return E_INVALIDARG;
+        }
+
+        InterlockedExchangePointer(&g_activeMovie, movie);
+        return BridgeSuccess;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPause()
 {
     __try
@@ -1317,12 +1399,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPause()
         }
 
         void* manager = MovieManager();
-        if (Movie(manager) == nullptr)
+        void* movie = Movie(manager);
+        if (movie == nullptr)
         {
-            return ManagerError();
+            movie = ActiveMovie();
+            if (movie == nullptr ||
+                !HasSignature(MoviePauseRva, MoviePauseSignature,
+                    sizeof(MoviePauseSignature)))
+            {
+                return ManagerError();
+            }
+            FunctionAt<ManagerAction>(MoviePauseRva)(movie);
+        }
+        else
+        {
+            FunctionAt<ManagerAction>(PauseRva)(manager);
         }
 
-        FunctionAt<ManagerAction>(PauseRva)(manager);
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1341,12 +1434,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperResume()
         }
 
         void* manager = MovieManager();
-        if (Movie(manager) == nullptr)
+        void* movie = Movie(manager);
+        if (movie == nullptr)
         {
-            return ManagerError();
+            movie = ActiveMovie();
+            if (movie == nullptr ||
+                !HasSignature(MovieResumeRva, MovieResumeSignature,
+                    sizeof(MovieResumeSignature)))
+            {
+                return ManagerError();
+            }
+            FunctionAt<ManagerAction>(MovieResumeRva)(movie);
+        }
+        else
+        {
+            FunctionAt<ManagerAction>(ResumeRva)(manager);
         }
 
-        FunctionAt<ManagerAction>(ResumeRva)(manager);
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1365,9 +1469,18 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
         }
 
         void* manager = MovieManager();
-        if (Movie(manager) == nullptr)
+        void* movie = Movie(manager);
+        const bool useManager = movie != nullptr;
+        if (movie == nullptr)
         {
-            return ManagerError();
+            movie = ActiveMovie();
+            if (movie == nullptr ||
+                !HasSignature(MovieSetPlayRateRva,
+                    MovieSetPlayRateSignature,
+                    sizeof(MovieSetPlayRateSignature)))
+            {
+                return ManagerError();
+            }
         }
 
         static_assert(sizeof(double) == sizeof(rateBits), "Unexpected SIZE_T width");
@@ -1378,7 +1491,14 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
             return E_INVALIDARG;
         }
 
-        FunctionAt<ManagerSetPlayRate>(SetPlayRateRva)(manager, playRate);
+        if (useManager)
+        {
+            FunctionAt<ManagerSetPlayRate>(SetPlayRateRva)(manager, playRate);
+        }
+        else
+        {
+            FunctionAt<ManagerSetPlayRate>(MovieSetPlayRateRva)(movie, playRate);
+        }
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1420,7 +1540,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetState()
             return EngineError();
         }
 
-        void* movie = Movie(MovieManager());
+        void* movie = ActiveMovie();
         if (movie == nullptr)
         {
             return ManagerError();
@@ -1520,7 +1640,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
             return EngineError();
         }
 
-        void* movie = Movie(MovieManager());
+        void* movie = ActiveMovie();
         if (movie == nullptr)
         {
             return ManagerError();
@@ -1595,9 +1715,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
                         const std::uint64_t requestedFrame =
                             (static_cast<std::uint64_t>(targetMilliseconds) *
                                 static_cast<std::uint64_t>(framesPerSecond) + 999) / 1000;
+                        const int lastSeekableFrame = totalFrames > framesPerSecond
+                            ? totalFrames - framesPerSecond
+                            : totalFrames - 1;
                         const int targetFrame = static_cast<int>(
-                            requestedFrame >= static_cast<std::uint64_t>(totalFrames)
-                                ? totalFrames - 1
+                            requestedFrame >= static_cast<std::uint64_t>(
+                                lastSeekableFrame)
+                                ? lastSeekableFrame
                                 : requestedFrame);
                         if (targetFrame == currentFrame)
                         {
@@ -1749,7 +1873,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetFastForwardStatus()
             return HRESULT_FROM_WIN32(ERROR_NOT_READY);
         }
 
-        void* movie = Movie(MovieManager());
+        void* movie = ActiveMovie();
         if (movie == nullptr || movie != pendingMovie)
         {
             InterlockedExchange(&g_decoderCatchupTargetFrame, -1);
