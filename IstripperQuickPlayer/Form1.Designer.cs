@@ -108,7 +108,6 @@
             cmdFastForward = new Button();
             lblPlaybackSpeed = new Label();
             cmbPlaybackSpeed = new ComboBox();
-            lblPlaybackStatus = new Label();
             trkPlaybackPosition = new TrackBar();
             lblPlaybackTime = new Label();
             lblFilterClip = new Label();
@@ -840,7 +839,6 @@
             // 
             panelClip.Controls.Add(lblPlaybackTime);
             panelClip.Controls.Add(trkPlaybackPosition);
-            panelClip.Controls.Add(lblPlaybackStatus);
             panelClip.Controls.Add(cmbPlaybackSpeed);
             panelClip.Controls.Add(lblPlaybackSpeed);
             panelClip.Controls.Add(cmdFastForward);
@@ -924,16 +922,6 @@
             cmbPlaybackSpeed.TabIndex = 58;
             cmbPlaybackSpeed.SelectedIndex = 2;
             cmbPlaybackSpeed.SelectedIndexChanged += cmbPlaybackSpeed_SelectedIndexChanged;
-            //
-            // lblPlaybackStatus
-            //
-            lblPlaybackStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-            lblPlaybackStatus.AutoEllipsis = true;
-            lblPlaybackStatus.Location = new Point(503, 61);
-            lblPlaybackStatus.Name = "lblPlaybackStatus";
-            lblPlaybackStatus.Size = new Size(719, 30);
-            lblPlaybackStatus.TabIndex = 59;
-            lblPlaybackStatus.Text = "Waiting for iStripper 2.4.0.0...";
             //
             // trkPlaybackPosition
             //
@@ -1318,7 +1306,6 @@
         private Button cmdFastForward;
         private Label lblPlaybackSpeed;
         private ComboBox cmbPlaybackSpeed;
-        private Label lblPlaybackStatus;
         private TrackBar trkPlaybackPosition;
         private Label lblPlaybackTime;
         private Label lblFilterClip;

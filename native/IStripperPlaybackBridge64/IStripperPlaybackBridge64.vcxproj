@@ -75,6 +75,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="PlaybackBridge.cpp" />
+    <None Include="vghd-offsets.ini" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CopyOffsetProfile" AfterTargets="Build">
+    <Copy SourceFiles="$(ProjectDir)vghd-offsets.ini"
+          DestinationFolder="$(OutDir)" />
+  </Target>
 </Project>

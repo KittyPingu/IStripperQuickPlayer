@@ -1,89 +1,67 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <cstdint>
+#include <cstdlib>
+#include <cwchar>
 #include <cstring>
 #include <float.h>
 
-// This bridge is intentionally tied to vghd.exe 2.4.0.0.  These are private
-// functions and fields discovered in that build; every callable RVA is checked
-// before it is used so a future iStripper update fails closed instead of jumping
-// into an unknown instruction stream.
+// This bridge discovers private vghd functions and vtables from the loaded image.
+// Structural field offsets come from vghd-offsets.ini. Every resolved address and
+// object is validated so an incompatible update fails closed.
 namespace
 {
-    constexpr std::uintptr_t PlayRva = 0x280CF0;
-    constexpr std::uintptr_t PauseRva = 0x280D10;
-    constexpr std::uintptr_t ResumeRva = 0x280D30;
-    constexpr std::uintptr_t ElapsedRva = 0x280E00;
-    constexpr std::uintptr_t DurationRva = 0x280E20;
-    constexpr std::uintptr_t SetPlayRateRva = 0x280F90;
-    constexpr std::uintptr_t AnimationFrameRva = 0x272780;
-    constexpr std::uintptr_t MovieAdvanceRva = 0x27DA20;
-    constexpr std::uintptr_t MoviePauseRva = 0x27C7D0;
-    constexpr std::uintptr_t MovieResumeRva = 0x27C840;
-    constexpr std::uintptr_t MovieSetPlayRateRva = 0x27D720;
-    constexpr std::uintptr_t AvcodecOpenCallRva = 0x286805;
-    constexpr std::uintptr_t AvcodecOpenSlotRva = 0x726770;
-    constexpr std::uintptr_t AvSeekFrameSlotRva = 0x726758;
-    constexpr std::uintptr_t DecodeScaleCallRva = 0x28651A;
-    constexpr std::uintptr_t DecodeScaleSlotRva = 0x726750;
-    constexpr std::uintptr_t DecoderWorkerTargetLoadRva = 0x286D60;
-    constexpr std::uintptr_t VideoSeekRva = 0x286F70;
-    constexpr std::uintptr_t MovieVtableRva = 0x55AF50;
-    constexpr std::uintptr_t VideoFfmpegVtableRva = 0x55CD30;
+    std::uintptr_t AnimationFrameRva = 0;
+    std::uintptr_t MovieAdvanceRva = 0;
+    std::uintptr_t MoviePauseRva = 0;
+    std::uintptr_t MovieResumeRva = 0;
+    std::uintptr_t MovieSetPlayRateRva = 0;
+    std::uintptr_t AvcodecOpenSlotRva = 0;
+    std::uintptr_t AvSeekFrameSlotRva = 0;
+    std::uintptr_t DecodeScaleCallRva = 0;
+    std::uintptr_t DecodeScaleSlotRva = 0;
+    std::uintptr_t DecoderWorkerTargetLoadRva = 0;
+    std::uintptr_t VideoSeekRva = 0;
+    std::uintptr_t MovieVtableRva = 0;
+    std::uintptr_t VideoFfmpegVtableRva = 0;
 
-    constexpr std::size_t ManagerMovieOffset = 0x08;
-    constexpr std::size_t MovieStateOffset = 0x4C;
-    constexpr std::size_t MovieAnimationOffset = 0x88;
-    constexpr std::size_t MovieCurrentFrameOffset = 0x98;
-    constexpr std::size_t MovieMutexOffset = 0xE0;
-    constexpr std::size_t AnimationAlphaOutputOffset = 0x08;
-    constexpr std::size_t AnimationAlphaWidthOffset = 0x10;
-    constexpr std::size_t AnimationAlphaHeightOffset = 0x14;
-    constexpr std::size_t AnimationAlphaScratch1Offset = 0x58;
-    constexpr std::size_t AnimationAlphaScratch2Offset = 0x232D8;
-    constexpr std::size_t AnimationAlphaScratchPointer1Offset = 0x46558;
-    constexpr std::size_t AnimationAlphaScratchPointer2Offset = 0x46560;
-    constexpr std::size_t AnimationAlphaGenerationOffset = 0x46568;
-    constexpr std::size_t AnimationAlphaFrameOffset = 0x46570;
-    constexpr std::size_t AnimationSsvOffset = 0x46578;
-    constexpr std::size_t AnimationInfoOffset = 0x46580;
-    constexpr std::size_t AnimationTotalFramesOffset = 0x108;
-    constexpr std::size_t AnimationFramesPerSecondOffset = 0x10C;
-    constexpr std::size_t AnimationAlphaScratchSize =
-        AnimationAlphaScratch2Offset - AnimationAlphaScratch1Offset;
+    std::size_t MovieStateOffset = 0;
+    std::size_t MovieAnimationOffset = 0;
+    std::size_t MovieCurrentFrameOffset = 0;
+    std::size_t MovieMutexOffset = 0;
+    std::size_t AnimationAlphaOutputOffset = 0;
+    std::size_t AnimationAlphaWidthOffset = 0;
+    std::size_t AnimationAlphaHeightOffset = 0;
+    std::size_t AnimationAlphaScratch1Offset = 0;
+    std::size_t AnimationAlphaScratch2Offset = 0;
+    std::size_t AnimationAlphaScratchPointer1Offset = 0;
+    std::size_t AnimationAlphaScratchPointer2Offset = 0;
+    std::size_t AnimationAlphaGenerationOffset = 0;
+    std::size_t AnimationAlphaFrameOffset = 0;
+    std::size_t AnimationSsvOffset = 0;
+    std::size_t AnimationInfoOffset = 0;
+    std::size_t AnimationTotalFramesOffset = 0;
+    std::size_t AnimationFramesPerSecondOffset = 0;
     // Current high-resolution cards can carry a 6016x3172 alpha plane
     // (19,082,752 bytes). Keep a conservative upper bound while allowing
     // those native-resolution masks.
     constexpr std::size_t MaximumAlphaOutputSize = 64 * 1024 * 1024;
-    constexpr std::size_t SsvVideoDecoderOffset = 0x40;
-    constexpr std::size_t VideoFormatContextOffset = 0x38;
-    constexpr std::size_t VideoFrameQueueOffset = 0x58;
-    constexpr std::size_t VideoFrameQueueMutexOffset = 0x60;
-    constexpr std::size_t VideoCurrentFrameOffset = 0x78;
-    constexpr std::size_t StreamIndexEntriesOffset = 0x1C8;
-    constexpr std::size_t StreamIndexEntryCountOffset = 0x1D0;
+    constexpr std::size_t MaximumAlphaCheckpointBytes = 128 * 1024 * 1024;
+    constexpr int MaximumAlphaCheckpoints = 16;
+    constexpr int AlphaCheckpointIntervalSeconds = 5;
+    std::size_t SsvVideoDecoderOffset = 0;
+    std::size_t VideoFormatContextOffset = 0;
+    std::size_t VideoFrameQueueOffset = 0;
+    std::size_t VideoFrameQueueMutexOffset = 0;
+    std::size_t VideoCurrentFrameOffset = 0;
+    std::size_t StreamIndexEntriesOffset = 0;
+    std::size_t StreamIndexEntryCountOffset = 0;
 
     constexpr int PlayingState = 3;
     constexpr int PausedState = 4;
     constexpr HRESULT BridgeSuccess = 1;
     constexpr unsigned ExpectedAvformatVersion =
         (57u << 16) | (47u << 8) | 101u;
-
-    // Common prologue used by the MovieManager wrappers in vghd.exe 2.4.0.0.
-    constexpr unsigned char ManagerWrapperSignature[] = {
-        0x48, 0x89, 0x4C, 0x24, 0x08, 0x48, 0x83, 0xEC,
-        0x48, 0x48, 0x8B, 0x49, 0x08
-    };
-
-    constexpr unsigned char ElapsedWrapperSignature[] = {
-        0x48, 0x83, 0xEC, 0x48, 0x48, 0x8B, 0x49, 0x08,
-        0x48, 0x85, 0xC9, 0x74
-    };
-
-    constexpr unsigned char DurationWrapperSignature[] = {
-        0x40, 0x53, 0x48, 0x83, 0xEC, 0x40, 0x48, 0x8B,
-        0x59, 0x08, 0x48, 0x85, 0xDB, 0x74
-    };
 
     constexpr unsigned char AnimationFrameSignature[] = {
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74,
@@ -107,18 +85,8 @@ namespace
         0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x0F, 0x29
     };
 
-    constexpr unsigned char AvcodecOpenCallSignature[] = {
-        0x48, 0x8B, 0x05, 0x64, 0xFF, 0x49, 0x00, 0x45,
-        0x33, 0xC0, 0x49, 0x8B, 0xCE, 0xFF, 0xD0, 0x85
-    };
-
-    constexpr unsigned char DecodeScaleCallSignature[] = {
-        0xFF, 0x15, 0x30, 0x02, 0x4A, 0x00
-    };
-
-    constexpr unsigned char DecoderWorkerTargetLoadSignature[] = {
-        0x41, 0x8B, 0x6E, 0x78, 0x49, 0x8B, 0x4E, 0x60
-    };
+    constexpr std::size_t DecodeScaleCallLength = 6;
+    constexpr std::size_t DecoderWorkerTargetLoadLength = 8;
 
     using ManagerAction = void(__fastcall*)(void* manager);
     using ManagerSetPlayRate = void(__fastcall*)(void* manager, double playRate);
@@ -138,7 +106,6 @@ namespace
         SIZE_T size, ULONG allocationType, ULONG pageProtection,
         MEM_EXTENDED_PARAMETER* parameters, ULONG parameterCount);
 
-    PVOID volatile g_movieManager = nullptr;
     PVOID volatile g_activeMovie = nullptr;
     LONG volatile g_compatibilityMask = -1;
     LONG volatile g_fastForwardCompatibility = -1;
@@ -157,11 +124,38 @@ namespace
     LONG volatile g_codecFlushCount = 0;
     LONG volatile g_alphaResetCount = 0;
     LONG volatile g_lastAlphaFrameBeforeReset = -1;
+    LONG volatile g_alphaCheckpointRestoreCount = 0;
+    LONG volatile g_lastAlphaCheckpointFrame = -1;
     LONG volatile g_keyframeSeekCount = 0;
     LONG volatile g_lastKeyframeSeekFrame = -1;
+    LONG volatile g_offsetsResolved = 0;
+    LONG volatile g_offsetResolverMask = 0;
+    LONG volatile g_movieResolverMask = 0;
+    LONG volatile g_fastDecodeResolverMask = 0;
+    LONG volatile g_fastDecodeInstallStage = 0;
     SRWLOCK g_decodePatchLock = SRWLOCK_INIT;
+    SRWLOCK g_offsetResolveLock = SRWLOCK_INIT;
+    SRWLOCK g_alphaCheckpointLock = SRWLOCK_INIT;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
+
+    struct AlphaCheckpoint
+    {
+        int frame = -1;
+        int bucket = -1;
+        std::size_t outputSize = 0;
+        unsigned char* data = nullptr;
+    };
+
+    AlphaCheckpoint g_alphaCheckpoints[MaximumAlphaCheckpoints] = {};
+    int g_alphaCheckpointCount = 0;
+    std::size_t g_alphaCheckpointBytes = 0;
+    void* g_alphaCheckpointAnimation = nullptr;
+    void* g_alphaCheckpointSsv = nullptr;
+    void* g_alphaCheckpointInfo = nullptr;
+    void* g_alphaCheckpointOutput = nullptr;
+    int g_alphaCheckpointWidth = 0;
+    int g_alphaCheckpointHeight = 0;
 
     bool IsReadable(const void* address, std::size_t length)
     {
@@ -170,17 +164,33 @@ namespace
             return false;
         }
 
-        MEMORY_BASIC_INFORMATION memory = {};
-        if (VirtualQuery(address, &memory, sizeof(memory)) != sizeof(memory) ||
-            memory.State != MEM_COMMIT || (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+        const auto start = reinterpret_cast<std::uintptr_t>(address);
+        if (length > static_cast<std::size_t>(UINTPTR_MAX - start))
         {
             return false;
         }
-
-        const auto start = reinterpret_cast<std::uintptr_t>(address);
-        const auto regionStart = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
-        const auto regionEnd = regionStart + memory.RegionSize;
-        return start >= regionStart && length <= regionEnd - start;
+        const auto end = start + length;
+        auto current = start;
+        while (current < end)
+        {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(reinterpret_cast<const void*>(current), &memory,
+                    sizeof(memory)) != sizeof(memory) ||
+                memory.State != MEM_COMMIT ||
+                (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+            {
+                return false;
+            }
+            const auto regionStart =
+                reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
+            const auto regionEnd = regionStart + memory.RegionSize;
+            if (current < regionStart || regionEnd <= current)
+            {
+                return false;
+            }
+            current = regionEnd < end ? regionEnd : end;
+        }
+        return true;
     }
 
     bool IsWritable(const void* address, std::size_t length)
@@ -234,7 +244,839 @@ namespace
         }
 
         const std::size_t imageSize = ntHeader->OptionalHeader.SizeOfImage;
-        return rva < imageSize && length <= imageSize - rva;
+        return rva != 0 && rva < imageSize &&
+            length <= imageSize - rva;
+    }
+
+    const IMAGE_NT_HEADERS64* ImageHeaders()
+    {
+        const auto base = ImageBase();
+        if (!IsReadable(base, sizeof(IMAGE_DOS_HEADER)))
+        {
+            return nullptr;
+        }
+        const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0)
+        {
+            return nullptr;
+        }
+        const auto headers = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+            base + dos->e_lfanew);
+        return IsReadable(headers, sizeof(*headers)) &&
+            headers->Signature == IMAGE_NT_SIGNATURE
+            ? headers
+            : nullptr;
+    }
+
+    bool OffsetProfilePath(wchar_t (&path)[MAX_PATH])
+    {
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&OffsetProfilePath), &module) ||
+            GetModuleFileNameW(module, path, MAX_PATH) == 0)
+        {
+            return false;
+        }
+
+        wchar_t* fileName = std::wcsrchr(path, L'\\');
+        if (fileName == nullptr)
+        {
+            return false;
+        }
+        return wcscpy_s(fileName + 1,
+            MAX_PATH - static_cast<std::size_t>(fileName + 1 - path),
+            L"vghd-offsets.ini") == 0;
+    }
+
+    std::size_t ReadLayoutOffset(const wchar_t* key,
+        const wchar_t* profilePath)
+    {
+        wchar_t value[32] = {};
+        if (GetPrivateProfileStringW(L"layout", key, L"", value,
+                static_cast<DWORD>(sizeof(value) / sizeof(value[0])),
+                profilePath) == 0)
+        {
+            return 0;
+        }
+        return static_cast<std::size_t>(_wcstoui64(value, nullptr, 0));
+    }
+
+    bool LoadLayoutOffsets(const wchar_t* profilePath)
+    {
+        AnimationAlphaOutputOffset =
+            ReadLayoutOffset(L"AnimationAlphaOutput", profilePath);
+        AnimationAlphaWidthOffset =
+            ReadLayoutOffset(L"AnimationAlphaWidth", profilePath);
+        AnimationAlphaHeightOffset =
+            ReadLayoutOffset(L"AnimationAlphaHeight", profilePath);
+        AnimationAlphaScratch1Offset =
+            ReadLayoutOffset(L"AnimationAlphaScratch1", profilePath);
+        AnimationAlphaScratch2Offset =
+            ReadLayoutOffset(L"AnimationAlphaScratch2", profilePath);
+        AnimationAlphaScratchPointer1Offset =
+            ReadLayoutOffset(L"AnimationAlphaScratchPointer1", profilePath);
+        AnimationAlphaScratchPointer2Offset =
+            ReadLayoutOffset(L"AnimationAlphaScratchPointer2", profilePath);
+        AnimationAlphaGenerationOffset =
+            ReadLayoutOffset(L"AnimationAlphaGeneration", profilePath);
+        AnimationAlphaFrameOffset =
+            ReadLayoutOffset(L"AnimationAlphaFrame", profilePath);
+        AnimationSsvOffset =
+            ReadLayoutOffset(L"AnimationSsv", profilePath);
+        AnimationInfoOffset =
+            ReadLayoutOffset(L"AnimationInfo", profilePath);
+        AnimationTotalFramesOffset =
+            ReadLayoutOffset(L"AnimationTotalFrames", profilePath);
+        AnimationFramesPerSecondOffset =
+            ReadLayoutOffset(L"AnimationFramesPerSecond", profilePath);
+        SsvVideoDecoderOffset =
+            ReadLayoutOffset(L"SsvVideoDecoder", profilePath);
+        StreamIndexEntriesOffset =
+            ReadLayoutOffset(L"StreamIndexEntries", profilePath);
+        StreamIndexEntryCountOffset =
+            ReadLayoutOffset(L"StreamIndexEntryCount", profilePath);
+
+        return AnimationAlphaOutputOffset > 0 &&
+            AnimationAlphaWidthOffset > 0 &&
+            AnimationAlphaHeightOffset > 0 &&
+            AnimationAlphaScratch1Offset > 0 &&
+            AnimationAlphaScratch2Offset > AnimationAlphaScratch1Offset &&
+            AnimationAlphaScratchPointer1Offset >
+                AnimationAlphaScratch2Offset &&
+            AnimationSsvOffset > AnimationAlphaScratchPointer2Offset &&
+            AnimationInfoOffset > AnimationSsvOffset &&
+            AnimationTotalFramesOffset > 0 &&
+            AnimationFramesPerSecondOffset > 0 &&
+            SsvVideoDecoderOffset > 0 &&
+            StreamIndexEntriesOffset > 0 &&
+            StreamIndexEntryCountOffset > StreamIndexEntriesOffset;
+    }
+
+    bool IsExecutableAddress(const unsigned char* address)
+    {
+        const auto headers = ImageHeaders();
+        const auto base = ImageBase();
+        if (headers == nullptr || base == nullptr)
+        {
+            return false;
+        }
+        const auto sections = IMAGE_FIRST_SECTION(headers);
+        for (unsigned index = 0; index < headers->FileHeader.NumberOfSections;
+            index++)
+        {
+            const std::size_t size = sections[index].Misc.VirtualSize;
+            const auto start = base + sections[index].VirtualAddress;
+            if ((sections[index].Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0 &&
+                address >= start && address < start + size)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const unsigned char* FindSequence(const unsigned char* start,
+        std::size_t length, const unsigned char* sequence,
+        std::size_t sequenceLength)
+    {
+        if (!IsReadable(start, length) || sequenceLength == 0 ||
+            sequenceLength > length)
+        {
+            return nullptr;
+        }
+        for (std::size_t offset = 0;
+            offset <= length - sequenceLength; offset++)
+        {
+            if (std::memcmp(start + offset, sequence, sequenceLength) == 0)
+            {
+                return start + offset;
+            }
+        }
+        return nullptr;
+    }
+
+    bool ValidFunctionCandidate(const unsigned char* candidate, int kind)
+    {
+        if (!IsReadable(candidate, 128))
+        {
+            return false;
+        }
+        if (kind == 0)
+        {
+            const unsigned char mutex[] = { 0x48, 0x81, 0xC1 };
+            const unsigned char state[] = { 0x8B, 0x43 };
+            const auto stateLoad = FindSequence(candidate, 96,
+                state, sizeof(state));
+            return FindSequence(candidate, 48, mutex, sizeof(mutex)) != nullptr &&
+                stateLoad != nullptr && stateLoad[3] == 0x83 &&
+                stateLoad[4] == 0xF8 && stateLoad[5] == 0x01;
+        }
+        if (kind == 1)
+        {
+            const unsigned char mutex[] = { 0x48, 0x8D, 0xB9 };
+            const unsigned char state[] = { 0x8B, 0x43 };
+            const auto stateLoad = FindSequence(candidate, 112,
+                state, sizeof(state));
+            return FindSequence(candidate, 48, mutex, sizeof(mutex)) != nullptr &&
+                stateLoad != nullptr && stateLoad[3] == 0x83 &&
+                stateLoad[4] == 0xF8;
+        }
+        if (kind == 3)
+        {
+            const unsigned char mutex[] = { 0x48, 0x81, 0xC1 };
+            const unsigned char current[] = { 0x44, 0x8B, 0xBB };
+            if (AnimationFrameRva == 0 ||
+                FindSequence(candidate, 64, mutex, sizeof(mutex)) == nullptr ||
+                FindSequence(candidate, 128, current, sizeof(current)) == nullptr)
+            {
+                return false;
+            }
+            const auto animationFrame = ImageBase() + AnimationFrameRva;
+            for (std::size_t offset = 0; offset + 12 <= 224; offset++)
+            {
+                if (candidate[offset] != 0x48 ||
+                    candidate[offset + 1] != 0x8B ||
+                    candidate[offset + 2] != 0x8B ||
+                    candidate[offset + 7] != 0xE8)
+                {
+                    continue;
+                }
+                const auto displacement =
+                    *reinterpret_cast<const std::int32_t*>(
+                        candidate + offset + 8);
+                if (candidate + offset + 12 + displacement == animationFrame)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+        const unsigned char mutex[] = { 0x48, 0x81, 0xC1 };
+        const unsigned char rate[] = { 0xF2, 0x0F, 0x11, 0x73 };
+        return FindSequence(candidate, 48, mutex, sizeof(mutex)) != nullptr &&
+            FindSequence(candidate, 96, rate, sizeof(rate)) != nullptr;
+    }
+
+    unsigned char* FindUniqueFunction(const unsigned char* signature,
+        std::size_t signatureLength, int kind)
+    {
+        const auto headers = ImageHeaders();
+        auto base = ImageBase();
+        if (headers == nullptr || base == nullptr)
+        {
+            return nullptr;
+        }
+
+        unsigned char* result = nullptr;
+        const auto sections = IMAGE_FIRST_SECTION(headers);
+        for (unsigned sectionIndex = 0;
+            sectionIndex < headers->FileHeader.NumberOfSections;
+            sectionIndex++)
+        {
+            if ((sections[sectionIndex].Characteristics &
+                    IMAGE_SCN_MEM_EXECUTE) == 0)
+            {
+                continue;
+            }
+            auto start = base + sections[sectionIndex].VirtualAddress;
+            const std::size_t size = sections[sectionIndex].Misc.VirtualSize;
+            if (!IsReadable(start, size) || signatureLength > size)
+            {
+                continue;
+            }
+            for (std::size_t offset = 0;
+                offset <= size - signatureLength; offset++)
+            {
+                auto candidate = start + offset;
+                if (std::memcmp(candidate, signature, signatureLength) == 0 &&
+                    (kind < 0 || ValidFunctionCandidate(candidate, kind)))
+                {
+                    if (result != nullptr)
+                    {
+                        return nullptr;
+                    }
+                    result = candidate;
+                }
+            }
+        }
+        return result;
+    }
+
+    std::uintptr_t FindVtableRva(const char* decoratedClassName)
+    {
+        const auto headers = ImageHeaders();
+        auto base = ImageBase();
+        if (headers == nullptr || base == nullptr)
+        {
+            return 0;
+        }
+
+        const std::size_t nameLength = std::strlen(decoratedClassName) + 1;
+        unsigned char* name = nullptr;
+        const auto sections = IMAGE_FIRST_SECTION(headers);
+        for (unsigned sectionIndex = 0;
+            sectionIndex < headers->FileHeader.NumberOfSections &&
+                name == nullptr; sectionIndex++)
+        {
+            auto start = base + sections[sectionIndex].VirtualAddress;
+            const std::size_t size = sections[sectionIndex].Misc.VirtualSize;
+            if (!IsReadable(start, size) || nameLength > size)
+            {
+                continue;
+            }
+            for (std::size_t offset = 0; offset <= size - nameLength; offset++)
+            {
+                if (std::memcmp(start + offset, decoratedClassName,
+                        nameLength) == 0)
+                {
+                    name = start + offset;
+                    break;
+                }
+            }
+        }
+        if (name == nullptr || name < base + 16)
+        {
+            return 0;
+        }
+
+        const std::uint32_t typeDescriptorRva =
+            static_cast<std::uint32_t>((name - 16) - base);
+        unsigned char* locator = nullptr;
+        for (unsigned sectionIndex = 0;
+            sectionIndex < headers->FileHeader.NumberOfSections &&
+                locator == nullptr; sectionIndex++)
+        {
+            auto start = base + sections[sectionIndex].VirtualAddress;
+            const std::size_t size = sections[sectionIndex].Misc.VirtualSize;
+            if (!IsReadable(start, size) || size < 24)
+            {
+                continue;
+            }
+            for (std::size_t offset = 0; offset <= size - 24; offset += 4)
+            {
+                auto candidate = reinterpret_cast<const std::uint32_t*>(
+                    start + offset);
+                const std::uint32_t candidateRva =
+                    static_cast<std::uint32_t>(start + offset - base);
+                if (candidate[0] == 1 &&
+                    candidate[3] == typeDescriptorRva &&
+                    candidate[5] == candidateRva)
+                {
+                    locator = start + offset;
+                    break;
+                }
+            }
+        }
+        if (locator == nullptr)
+        {
+            return 0;
+        }
+
+        const void* locatorAddress = locator;
+        for (unsigned sectionIndex = 0;
+            sectionIndex < headers->FileHeader.NumberOfSections;
+            sectionIndex++)
+        {
+            auto start = base + sections[sectionIndex].VirtualAddress;
+            const std::size_t size = sections[sectionIndex].Misc.VirtualSize;
+            if (!IsReadable(start, size) || size < sizeof(void*) * 2)
+            {
+                continue;
+            }
+            for (std::size_t offset = 0;
+                offset <= size - sizeof(void*) * 2; offset += sizeof(void*))
+            {
+                auto candidate = reinterpret_cast<void**>(start + offset);
+                if (candidate[0] == locatorAddress &&
+                    IsExecutableAddress(
+                        reinterpret_cast<unsigned char*>(candidate[1])))
+                {
+                    return static_cast<std::uintptr_t>(
+                        start + offset + sizeof(void*) - base);
+                }
+            }
+        }
+        return 0;
+    }
+
+    std::uintptr_t RvaFromAddress(const void* address)
+    {
+        return static_cast<std::uintptr_t>(
+            reinterpret_cast<const unsigned char*>(address) - ImageBase());
+    }
+
+    bool ResolveMovieOffsets()
+    {
+        LONG mask = 0;
+        auto animationFrame = FindUniqueFunction(AnimationFrameSignature,
+            sizeof(AnimationFrameSignature), -1);
+        mask |= animationFrame != nullptr ? 16 : 0;
+        AnimationFrameRva = animationFrame == nullptr
+            ? 0
+            : RvaFromAddress(animationFrame);
+        auto pause = FindUniqueFunction(MoviePauseSignature,
+            sizeof(MoviePauseSignature), 0);
+        mask |= pause != nullptr ? 1 : 0;
+        auto resume = FindUniqueFunction(MovieResumeSignature,
+            sizeof(MovieResumeSignature), 1);
+        mask |= resume != nullptr ? 2 : 0;
+        auto setRate = FindUniqueFunction(MovieSetPlayRateSignature,
+            sizeof(MovieSetPlayRateSignature), 2);
+        mask |= setRate != nullptr ? 4 : 0;
+        auto advance = FindUniqueFunction(MovieAdvanceSignature,
+            sizeof(MovieAdvanceSignature), 3);
+        mask |= advance != nullptr ? 8 : 0;
+        if (pause == nullptr || resume == nullptr || setRate == nullptr ||
+            advance == nullptr || animationFrame == nullptr)
+        {
+            InterlockedExchange(&g_movieResolverMask, mask);
+            return false;
+        }
+
+        const unsigned char addMutex[] = { 0x48, 0x81, 0xC1 };
+        const unsigned char loadState[] = { 0x8B, 0x43 };
+        const unsigned char storeRate[] = { 0xF2, 0x0F, 0x11, 0x73 };
+        const auto pauseMutex = FindSequence(pause, 48,
+            addMutex, sizeof(addMutex));
+        const auto pauseState = FindSequence(pause, 96,
+            loadState, sizeof(loadState));
+        const auto rateStore = FindSequence(setRate, 96,
+            storeRate, sizeof(storeRate));
+        if (pauseMutex == nullptr || pauseState == nullptr ||
+            rateStore == nullptr)
+        {
+            InterlockedExchange(&g_movieResolverMask, mask);
+            return false;
+        }
+        mask |= 32;
+
+        MoviePauseRva = RvaFromAddress(pause);
+        MovieResumeRva = RvaFromAddress(resume);
+        MovieSetPlayRateRva = RvaFromAddress(setRate);
+        MovieAdvanceRva = RvaFromAddress(advance);
+        MovieMutexOffset = *reinterpret_cast<const std::uint32_t*>(
+            pauseMutex + 3);
+        MovieStateOffset = pauseState[2];
+
+        const unsigned char loadCurrent[] = { 0x44, 0x8B, 0xBB };
+        const auto currentLoad = FindSequence(advance, 128,
+            loadCurrent, sizeof(loadCurrent));
+        const auto advanceMutex = FindSequence(advance, 64,
+            addMutex, sizeof(addMutex));
+        if (currentLoad == nullptr || advanceMutex == nullptr ||
+            *reinterpret_cast<const std::uint32_t*>(advanceMutex + 3) !=
+                MovieMutexOffset)
+        {
+            InterlockedExchange(&g_movieResolverMask, mask);
+            return false;
+        }
+        mask |= 64;
+        MovieCurrentFrameOffset =
+            *reinterpret_cast<const std::uint32_t*>(currentLoad + 3);
+
+        MovieAnimationOffset = 0;
+        for (std::size_t offset = 0; offset < 224; offset++)
+        {
+            if (advance[offset] == 0x48 && advance[offset + 1] == 0x8B &&
+                advance[offset + 2] == 0x8B &&
+                advance[offset + 7] == 0xE8)
+            {
+                const std::int32_t displacement =
+                    *reinterpret_cast<const std::int32_t*>(
+                        advance + offset + 8);
+                const auto target = advance + offset + 12 + displacement;
+                if (target == animationFrame)
+                {
+                    MovieAnimationOffset =
+                        *reinterpret_cast<const std::uint32_t*>(
+                            advance + offset + 3);
+                    break;
+                }
+            }
+        }
+        mask |= MovieAnimationOffset > 0 ? 128 : 0;
+        MovieVtableRva = FindVtableRva(".?AVMovie@@");
+        mask |= MovieVtableRva > 0 ? 256 : 0;
+        const bool resolved =
+            MovieAnimationOffset > 0 && MovieCurrentFrameOffset > 0 &&
+            MovieMutexOffset > 0 && MovieStateOffset > 0 &&
+            rateStore[4] > 0 && MovieVtableRva > 0;
+        mask |= resolved ? 512 : 0;
+        InterlockedExchange(&g_movieResolverMask, mask);
+        return resolved;
+    }
+
+    bool ResolveVideoOffsets()
+    {
+        VideoFfmpegVtableRva = FindVtableRva(".?AVVideoFFmpeg@@");
+        if (!IsRvaInImage(VideoFfmpegVtableRva,
+                sizeof(void*) * 15))
+        {
+            return false;
+        }
+
+        auto vtable = reinterpret_cast<void**>(
+            ImageBase() + VideoFfmpegVtableRva);
+        auto worker = reinterpret_cast<unsigned char*>(vtable[11]);
+        auto seek = reinterpret_cast<unsigned char*>(vtable[14]);
+        if (!IsExecutableAddress(worker) || !IsExecutableAddress(seek))
+        {
+            return false;
+        }
+        VideoSeekRva = RvaFromAddress(seek);
+
+        const unsigned char workerLoadPrefix[] =
+            { 0x41, 0x8B, 0x6E };
+        const unsigned char queuePrefix[] =
+            { 0x49, 0x8B, 0x4E };
+        const unsigned char queueSuffix[] =
+            { 0x8B, 0x41, 0x0C };
+        const unsigned char* targetLoad = nullptr;
+        for (std::size_t offset = 0; offset < 512; offset++)
+        {
+            if (std::memcmp(worker + offset, workerLoadPrefix,
+                    sizeof(workerLoadPrefix)) == 0 &&
+                std::memcmp(worker + offset + 4, queuePrefix,
+                    sizeof(queuePrefix)) == 0)
+            {
+                targetLoad = worker + offset;
+                break;
+            }
+        }
+        if (targetLoad == nullptr)
+        {
+            return false;
+        }
+        DecoderWorkerTargetLoadRva = RvaFromAddress(targetLoad);
+        VideoCurrentFrameOffset = targetLoad[3];
+        VideoFrameQueueMutexOffset = targetLoad[7];
+
+        VideoFrameQueueOffset = 0;
+        for (std::size_t offset = 8; offset < 128; offset++)
+        {
+            if (std::memcmp(targetLoad + offset, queuePrefix,
+                    sizeof(queuePrefix)) == 0 &&
+                std::memcmp(targetLoad + offset + 4, queueSuffix,
+                    sizeof(queueSuffix)) == 0)
+            {
+                VideoFrameQueueOffset = targetLoad[offset + 3];
+                break;
+            }
+        }
+
+        const unsigned char seekSuffix[] = {
+            0x41, 0xB9, 0x04, 0x00, 0x00, 0x00,
+            0x45, 0x33, 0xC0, 0x41, 0x8D, 0x51, 0xFB,
+            0x48, 0x8B, 0x4B
+        };
+        const auto suffix = FindSequence(seek, 512,
+            seekSuffix, sizeof(seekSuffix));
+        if (suffix == nullptr || suffix < seek + 7 ||
+            suffix[-7] != 0x48 || suffix[-6] != 0x8B ||
+            suffix[-5] != 0x05)
+        {
+            return false;
+        }
+        const auto slotInstruction = suffix - 7;
+        const std::int32_t slotDisplacement =
+            *reinterpret_cast<const std::int32_t*>(slotInstruction + 3);
+        AvSeekFrameSlotRva = RvaFromAddress(
+            slotInstruction + 7 + slotDisplacement);
+        VideoFormatContextOffset = suffix[16];
+
+        const unsigned char clearCurrent[] = { 0xC7, 0x43 };
+        const auto currentClear = FindSequence(suffix, 96,
+            clearCurrent, sizeof(clearCurrent));
+        if (currentClear == nullptr ||
+            *reinterpret_cast<const std::uint32_t*>(currentClear + 3) != 0)
+        {
+            return false;
+        }
+        if (VideoCurrentFrameOffset != currentClear[2])
+        {
+            return false;
+        }
+        return VideoFrameQueueOffset > 0 &&
+            VideoFrameQueueMutexOffset > 0 &&
+            VideoFormatContextOffset > 0 &&
+            IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*));
+    }
+
+    void ImageProfileSection(wchar_t (&section)[64])
+    {
+        const auto headers = ImageHeaders();
+        if (headers == nullptr)
+        {
+            section[0] = L'\0';
+            return;
+        }
+        swprintf_s(section, L"image_%08X_%08X",
+            headers->FileHeader.TimeDateStamp,
+            headers->OptionalHeader.SizeOfImage);
+    }
+
+    void WriteResolvedValue(const wchar_t* path, const wchar_t* section,
+        const wchar_t* key, std::uintptr_t value)
+    {
+        wchar_t text[32] = {};
+        swprintf_s(text, L"0x%llX",
+            static_cast<unsigned long long>(value));
+        WritePrivateProfileStringW(section, key, text, path);
+    }
+
+    void SaveResolvedOffsets(const wchar_t* profilePath)
+    {
+        wchar_t section[64] = {};
+        ImageProfileSection(section);
+        if (section[0] == L'\0')
+        {
+            return;
+        }
+        WriteResolvedValue(profilePath, section,
+            L"MoviePauseRva", MoviePauseRva);
+        WriteResolvedValue(profilePath, section,
+            L"MovieResumeRva", MovieResumeRva);
+        WriteResolvedValue(profilePath, section,
+            L"MovieSetPlayRateRva", MovieSetPlayRateRva);
+        WriteResolvedValue(profilePath, section,
+            L"MovieAdvanceRva", MovieAdvanceRva);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationFrameRva", AnimationFrameRva);
+        WriteResolvedValue(profilePath, section,
+            L"MovieVtableRva", MovieVtableRva);
+        WriteResolvedValue(profilePath, section,
+            L"VideoFfmpegVtableRva", VideoFfmpegVtableRva);
+        WriteResolvedValue(profilePath, section,
+            L"VideoSeekRva", VideoSeekRva);
+        WriteResolvedValue(profilePath, section,
+            L"DecoderWorkerTargetLoadRva",
+            DecoderWorkerTargetLoadRva);
+        WriteResolvedValue(profilePath, section,
+            L"AvSeekFrameSlotRva", AvSeekFrameSlotRva);
+        WriteResolvedValue(profilePath, section,
+            L"MovieStateOffset", MovieStateOffset);
+        WriteResolvedValue(profilePath, section,
+            L"MovieAnimationOffset", MovieAnimationOffset);
+        WriteResolvedValue(profilePath, section,
+            L"MovieCurrentFrameOffset", MovieCurrentFrameOffset);
+        WriteResolvedValue(profilePath, section,
+            L"MovieMutexOffset", MovieMutexOffset);
+        WriteResolvedValue(profilePath, section,
+            L"VideoFormatContextOffset", VideoFormatContextOffset);
+        WriteResolvedValue(profilePath, section,
+            L"VideoFrameQueueOffset", VideoFrameQueueOffset);
+        WriteResolvedValue(profilePath, section,
+            L"VideoFrameQueueMutexOffset", VideoFrameQueueMutexOffset);
+        WriteResolvedValue(profilePath, section,
+            L"VideoCurrentFrameOffset", VideoCurrentFrameOffset);
+    }
+
+    bool EnsureEngineOffsets()
+    {
+        const LONG state = InterlockedCompareExchange(
+            &g_offsetsResolved, 0, 0);
+        if (state != 0)
+        {
+            return state > 0;
+        }
+
+        AcquireSRWLockExclusive(&g_offsetResolveLock);
+        if (InterlockedCompareExchange(&g_offsetsResolved, 0, 0) == 0)
+        {
+            wchar_t profilePath[MAX_PATH] = {};
+            LONG mask = 0;
+            const bool hasPath = OffsetProfilePath(profilePath);
+            mask |= hasPath ? 1 : 0;
+            const bool hasLayout = hasPath &&
+                LoadLayoutOffsets(profilePath);
+            mask |= hasLayout ? 2 : 0;
+            const bool hasMovie = hasLayout && ResolveMovieOffsets();
+            mask |= hasMovie ? 4 : 0;
+            const bool hasVideo = hasMovie && ResolveVideoOffsets();
+            mask |= hasVideo ? 8 : 0;
+            const bool resolved = hasVideo;
+            InterlockedExchange(&g_offsetResolverMask, mask);
+            if (resolved)
+            {
+                SaveResolvedOffsets(profilePath);
+            }
+            InterlockedExchange(&g_offsetsResolved, resolved ? 1 : -1);
+        }
+        const bool resolved =
+            InterlockedCompareExchange(&g_offsetsResolved, 0, 0) > 0;
+        ReleaseSRWLockExclusive(&g_offsetResolveLock);
+        return resolved;
+    }
+
+    bool ResolveFastDecodeOffsets()
+    {
+        LONG mask = 0;
+        if (!EnsureEngineOffsets())
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, mask);
+            return false;
+        }
+        mask |= 1;
+        if (IsRvaInImage(AvcodecOpenSlotRva, sizeof(void*)) &&
+            IsRvaInImage(DecodeScaleSlotRva, sizeof(void*)) &&
+            IsRvaInImage(DecodeScaleCallRva,
+                DecodeScaleCallLength))
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, 0x3F);
+            return true;
+        }
+
+        const HMODULE avcodec = GetModuleHandleW(L"avcodec-57.dll");
+        const HMODULE swscale = GetModuleHandleW(L"swscale-4.dll");
+        void* expectedOpen = avcodec == nullptr
+            ? nullptr
+            : reinterpret_cast<void*>(
+                GetProcAddress(avcodec, "avcodec_open2"));
+        void* expectedScale = swscale == nullptr
+            ? nullptr
+            : reinterpret_cast<void*>(
+                GetProcAddress(swscale, "sws_scale"));
+        const auto headers = ImageHeaders();
+        auto base = ImageBase();
+        if (expectedOpen == nullptr || expectedScale == nullptr ||
+            headers == nullptr || base == nullptr)
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, mask);
+            return false;
+        }
+        mask |= 2;
+
+        std::uintptr_t openSlot = 0;
+        std::uintptr_t scaleSlot = 0;
+        std::uintptr_t scaleCall = 0;
+        if (!IsRvaInImage(VideoFfmpegVtableRva,
+                sizeof(void*) * 15))
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, mask);
+            return false;
+        }
+        auto vtable = reinterpret_cast<unsigned char**>(
+            base + VideoFfmpegVtableRva);
+        auto scaleFunction = vtable[3];
+        auto openFunction = vtable[12];
+        if (!IsExecutableAddress(scaleFunction) ||
+            !IsExecutableAddress(openFunction))
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, mask);
+            return false;
+        }
+        mask |= 4;
+
+        const auto functionLength = [vtable](
+            const unsigned char* function) -> std::size_t
+        {
+            const unsigned char* end = function + 0x2000;
+            for (int index = 0; index < 17; index++)
+            {
+                auto candidate = vtable[index];
+                if (candidate > function && candidate < end &&
+                    IsExecutableAddress(candidate))
+                {
+                    end = candidate;
+                }
+            }
+            return static_cast<std::size_t>(end - function);
+        };
+        const std::size_t openLength = functionLength(openFunction);
+        const std::size_t scaleLength = functionLength(scaleFunction);
+        if (!IsReadable(openFunction, openLength) ||
+            !IsReadable(scaleFunction, scaleLength))
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, mask);
+            return false;
+        }
+
+        for (std::size_t offset = 0; offset + 32 < openLength; offset++)
+        {
+            auto instruction = openFunction + offset;
+            if (instruction[0] != 0x48 || instruction[1] != 0x8B ||
+                instruction[2] != 0x05)
+            {
+                continue;
+            }
+            const std::int32_t displacement =
+                *reinterpret_cast<const std::int32_t*>(instruction + 3);
+            auto slot = instruction + 7 + displacement;
+            if (IsReadable(slot, sizeof(void*)) &&
+                *reinterpret_cast<void**>(slot) == expectedOpen &&
+                FindSequence(instruction + 7, 24,
+                    reinterpret_cast<const unsigned char*>("\xFF\xD0"),
+                    2) != nullptr)
+            {
+                const std::uintptr_t candidate = RvaFromAddress(slot);
+                if (openSlot != 0 && openSlot != candidate)
+                {
+                    InterlockedExchange(&g_fastDecodeResolverMask, mask);
+                    return false;
+                }
+                openSlot = candidate;
+            }
+        }
+        mask |= openSlot != 0 ? 8 : 0;
+
+        for (std::size_t offset = 0;
+            offset + DecodeScaleCallLength <= scaleLength; offset++)
+        {
+            auto instruction = scaleFunction + offset;
+            if (instruction[0] == 0xFF && instruction[1] == 0x15)
+            {
+                const std::int32_t displacement =
+                    *reinterpret_cast<const std::int32_t*>(
+                        instruction + 2);
+                auto slot = instruction + DecodeScaleCallLength +
+                    displacement;
+                if (IsReadable(slot, sizeof(void*)) &&
+                    *reinterpret_cast<void**>(slot) == expectedScale)
+                {
+                    const std::uintptr_t candidateSlot =
+                        RvaFromAddress(slot);
+                    const std::uintptr_t candidateCall =
+                        RvaFromAddress(instruction);
+                    if ((scaleSlot != 0 &&
+                            scaleSlot != candidateSlot) ||
+                        (scaleCall != 0 &&
+                            scaleCall != candidateCall))
+                    {
+                        InterlockedExchange(&g_fastDecodeResolverMask, mask);
+                        return false;
+                    }
+                    scaleSlot = candidateSlot;
+                    scaleCall = candidateCall;
+                }
+            }
+        }
+        mask |= scaleSlot != 0 && scaleCall != 0 ? 16 : 0;
+        if (openSlot == 0 || scaleSlot == 0 || scaleCall == 0)
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, mask);
+            return false;
+        }
+        AvcodecOpenSlotRva = openSlot;
+        DecodeScaleSlotRva = scaleSlot;
+        DecodeScaleCallRva = scaleCall;
+
+        wchar_t profilePath[MAX_PATH] = {};
+        wchar_t section[64] = {};
+        if (OffsetProfilePath(profilePath))
+        {
+            ImageProfileSection(section);
+            WriteResolvedValue(profilePath, section,
+                L"AvcodecOpenSlotRva", AvcodecOpenSlotRva);
+            WriteResolvedValue(profilePath, section,
+                L"DecodeScaleSlotRva", DecodeScaleSlotRva);
+            WriteResolvedValue(profilePath, section,
+                L"DecodeScaleCallRva", DecodeScaleCallRva);
+        }
+        mask |= 32;
+        InterlockedExchange(&g_fastDecodeResolverMask, mask);
+        return true;
     }
 
     bool HasSignature(std::uintptr_t rva, const unsigned char* signature, std::size_t length)
@@ -244,15 +1086,62 @@ namespace
             std::memcmp(base + rva, signature, length) == 0;
     }
 
+    bool IsIndirectCallToSlot(std::uintptr_t callRva,
+        std::uintptr_t slotRva)
+    {
+        if (!IsRvaInImage(callRva, DecodeScaleCallLength) ||
+            !IsRvaInImage(slotRva, sizeof(void*)))
+        {
+            return false;
+        }
+        const auto call = ImageBase() + callRva;
+        if (call[0] != 0xFF || call[1] != 0x15)
+        {
+            return false;
+        }
+        const auto displacement =
+            *reinterpret_cast<const std::int32_t*>(call + 2);
+        return call + DecodeScaleCallLength + displacement ==
+            ImageBase() + slotRva;
+    }
+
+    bool IsDecoderWorkerTargetLoad()
+    {
+        if (!IsRvaInImage(DecoderWorkerTargetLoadRva,
+                DecoderWorkerTargetLoadLength) ||
+            VideoCurrentFrameOffset > 0x7F ||
+            VideoFrameQueueMutexOffset > 0x7F)
+        {
+            return false;
+        }
+        const auto load = ImageBase() + DecoderWorkerTargetLoadRva;
+        return load[0] == 0x41 && load[1] == 0x8B &&
+            load[2] == 0x6E &&
+            load[3] == static_cast<unsigned char>(
+                VideoCurrentFrameOffset) &&
+            load[4] == 0x49 && load[5] == 0x8B &&
+            load[6] == 0x4E &&
+            load[7] == static_cast<unsigned char>(
+                VideoFrameQueueMutexOffset);
+    }
+
     int CompatibilityMask()
     {
+        if (!EnsureEngineOffsets())
+        {
+            return 0;
+        }
         int mask = 0;
-        mask |= HasSignature(PauseRva, ManagerWrapperSignature, sizeof(ManagerWrapperSignature)) ? 1 : 0;
-        mask |= HasSignature(ResumeRva, ManagerWrapperSignature, sizeof(ManagerWrapperSignature)) ? 2 : 0;
-        mask |= HasSignature(ElapsedRva, ElapsedWrapperSignature, sizeof(ElapsedWrapperSignature)) ? 4 : 0;
-        mask |= HasSignature(DurationRva, DurationWrapperSignature, sizeof(DurationWrapperSignature)) ? 8 : 0;
-        mask |= HasSignature(SetPlayRateRva, ManagerWrapperSignature, sizeof(ManagerWrapperSignature)) ? 16 : 0;
-        mask |= HasSignature(PlayRva, ManagerWrapperSignature, sizeof(ManagerWrapperSignature)) ? 32 : 0;
+        mask |= HasSignature(MoviePauseRva, MoviePauseSignature,
+            sizeof(MoviePauseSignature)) ? 1 : 0;
+        mask |= HasSignature(MovieResumeRva, MovieResumeSignature,
+            sizeof(MovieResumeSignature)) ? 2 : 0;
+        mask |= HasSignature(MovieSetPlayRateRva, MovieSetPlayRateSignature,
+            sizeof(MovieSetPlayRateSignature)) ? 4 : 0;
+        mask |= IsRvaInImage(MovieVtableRva, sizeof(void*)) ? 8 : 0;
+        mask |= IsRvaInImage(VideoFfmpegVtableRva, sizeof(void*)) ? 16 : 0;
+        mask |= HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
+            sizeof(MovieAdvanceSignature)) ? 32 : 0;
         return mask;
     }
 
@@ -270,6 +1159,10 @@ namespace
 
     bool HasFastForwardEngine()
     {
+        if (!EnsureEngineOffsets())
+        {
+            return false;
+        }
         LONG cached = InterlockedCompareExchange(
             &g_fastForwardCompatibility, -1, -1);
         if (cached < 0)
@@ -289,24 +1182,16 @@ namespace
 
     bool HasFastDecodeEngine()
     {
-        return HasSignature(AvcodecOpenCallRva, AvcodecOpenCallSignature,
-                sizeof(AvcodecOpenCallSignature)) &&
+        return ResolveFastDecodeOffsets() &&
             IsRvaInImage(AvcodecOpenSlotRva, sizeof(void*)) &&
             IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)) &&
             IsRvaInImage(DecodeScaleSlotRva, sizeof(void*)) &&
             (InterlockedCompareExchangePointer(&g_decodeScaleThunk, nullptr, nullptr) != nullptr ||
-                HasSignature(DecodeScaleCallRva, DecodeScaleCallSignature,
-                    sizeof(DecodeScaleCallSignature))) &&
+                IsIndirectCallToSlot(
+                    DecodeScaleCallRva, DecodeScaleSlotRva)) &&
             (InterlockedCompareExchangePointer(&g_decoderWorkerTargetThunk,
                     nullptr, nullptr) != nullptr ||
-                HasSignature(DecoderWorkerTargetLoadRva,
-                    DecoderWorkerTargetLoadSignature,
-                    sizeof(DecoderWorkerTargetLoadSignature)));
-    }
-
-    void* MovieManager()
-    {
-        return InterlockedCompareExchangePointer(&g_movieManager, nullptr, nullptr);
+                IsDecoderWorkerTargetLoad());
     }
 
     bool IsMovie(void* movie)
@@ -320,26 +1205,9 @@ namespace
             ImageBase() + MovieVtableRva;
     }
 
-    void* Movie(void* manager)
-    {
-        if (!IsReadable(manager, ManagerMovieOffset + sizeof(void*)))
-        {
-            return nullptr;
-        }
-
-        void* movie = *reinterpret_cast<void**>(reinterpret_cast<unsigned char*>(manager) + ManagerMovieOffset);
-        return IsMovie(movie) ? movie : nullptr;
-    }
-
     void* ActiveMovie()
     {
-        void* movie = Movie(MovieManager());
-        if (movie != nullptr)
-        {
-            return movie;
-        }
-
-        movie = InterlockedCompareExchangePointer(
+        void* movie = InterlockedCompareExchangePointer(
             &g_activeMovie, nullptr, nullptr);
         return IsMovie(movie) ? movie : nullptr;
     }
@@ -682,12 +1550,19 @@ namespace
 
         const std::size_t outputSize =
             static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        if (AnimationAlphaScratch2Offset <= AnimationAlphaScratch1Offset ||
+            AnimationSsvOffset <= AnimationAlphaScratch1Offset)
+        {
+            return false;
+        }
+        const std::size_t scratchSize =
+            AnimationAlphaScratch2Offset - AnimationAlphaScratch1Offset;
         void* scratch1 = animationBytes + AnimationAlphaScratch1Offset;
         void* scratch2 = animationBytes + AnimationAlphaScratch2Offset;
         if (outputSize == 0 || outputSize > MaximumAlphaOutputSize ||
             !IsWritable(output, outputSize) ||
-            !IsWritable(scratch1, AnimationAlphaScratchSize) ||
-            !IsWritable(scratch2, AnimationAlphaScratchSize))
+            !IsWritable(scratch1, scratchSize) ||
+            !IsWritable(scratch2, scratchSize))
         {
             return false;
         }
@@ -711,13 +1586,15 @@ namespace
             animationBytes + AnimationAlphaHeightOffset);
         const std::size_t outputSize =
             static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        const std::size_t scratchSize =
+            AnimationAlphaScratch2Offset - AnimationAlphaScratch1Offset;
         void* scratch1 = animationBytes + AnimationAlphaScratch1Offset;
         void* scratch2 = animationBytes + AnimationAlphaScratch2Offset;
         const int previousAlphaFrame = *reinterpret_cast<const int*>(
             animationBytes + AnimationAlphaFrameOffset);
         std::memset(output, 0, outputSize);
-        std::memset(scratch1, 0, AnimationAlphaScratchSize);
-        std::memset(scratch2, 0, AnimationAlphaScratchSize);
+        std::memset(scratch1, 0, scratchSize);
+        std::memset(scratch2, 0, scratchSize);
         *reinterpret_cast<void**>(
             animationBytes + AnimationAlphaScratchPointer1Offset) = nullptr;
         *reinterpret_cast<void**>(
@@ -728,6 +1605,223 @@ namespace
             animationBytes + AnimationAlphaFrameOffset) = 0;
         InterlockedExchange(&g_lastAlphaFrameBeforeReset, previousAlphaFrame);
         InterlockedIncrement(&g_alphaResetCount);
+        return true;
+    }
+
+    void FreeAlphaCheckpoint(AlphaCheckpoint& checkpoint)
+    {
+        if (checkpoint.data != nullptr)
+        {
+            HeapFree(GetProcessHeap(), 0, checkpoint.data);
+        }
+        checkpoint = {};
+    }
+
+    void ClearAlphaCheckpointsLocked()
+    {
+        for (int index = 0; index < g_alphaCheckpointCount; index++)
+        {
+            FreeAlphaCheckpoint(g_alphaCheckpoints[index]);
+        }
+        g_alphaCheckpointCount = 0;
+        g_alphaCheckpointBytes = 0;
+        g_alphaCheckpointAnimation = nullptr;
+        g_alphaCheckpointSsv = nullptr;
+        g_alphaCheckpointInfo = nullptr;
+        g_alphaCheckpointOutput = nullptr;
+        g_alphaCheckpointWidth = 0;
+        g_alphaCheckpointHeight = 0;
+    }
+
+    void ClearAlphaCheckpoints()
+    {
+        AcquireSRWLockExclusive(&g_alphaCheckpointLock);
+        ClearAlphaCheckpointsLocked();
+        ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+    }
+
+    bool ReadAlphaCheckpointIdentity(void* animation, void*& ssv, void*& info,
+        void*& output, int& width, int& height, std::size_t& outputSize)
+    {
+        if (!CanResetAnimationAlpha(animation) ||
+            !IsReadable(animation, AnimationInfoOffset + sizeof(void*)))
+        {
+            return false;
+        }
+
+        auto bytes = reinterpret_cast<unsigned char*>(animation);
+        ssv = *reinterpret_cast<void**>(bytes + AnimationSsvOffset);
+        info = *reinterpret_cast<void**>(bytes + AnimationInfoOffset);
+        output = *reinterpret_cast<void**>(bytes + AnimationAlphaOutputOffset);
+        width = *reinterpret_cast<const int*>(bytes + AnimationAlphaWidthOffset);
+        height = *reinterpret_cast<const int*>(bytes + AnimationAlphaHeightOffset);
+        outputSize =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        return ssv != nullptr && info != nullptr && output != nullptr &&
+            outputSize > 0 && outputSize <= MaximumAlphaOutputSize;
+    }
+
+    bool HasAlphaCheckpointIdentity(void* animation, void* ssv, void* info,
+        void* output, int width, int height)
+    {
+        return g_alphaCheckpointAnimation == animation &&
+            g_alphaCheckpointSsv == ssv &&
+            g_alphaCheckpointInfo == info &&
+            g_alphaCheckpointOutput == output &&
+            g_alphaCheckpointWidth == width &&
+            g_alphaCheckpointHeight == height;
+    }
+
+    int CaptureAlphaCheckpoint(void* animation, int frame, int framesPerSecond)
+    {
+        void* ssv = nullptr;
+        void* info = nullptr;
+        void* output = nullptr;
+        int width = 0;
+        int height = 0;
+        std::size_t outputSize = 0;
+        if (frame < 0 || framesPerSecond <= 0 ||
+            !ReadAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height, outputSize))
+        {
+            return -1;
+        }
+
+        const int interval = framesPerSecond * AlphaCheckpointIntervalSeconds;
+        const int bucket = interval > 0 ? frame / interval : frame;
+        const std::size_t stateSize =
+            AnimationSsvOffset - AnimationAlphaScratch1Offset;
+        const std::size_t checkpointSize =
+            outputSize + stateSize;
+        if (checkpointSize > MaximumAlphaCheckpointBytes)
+        {
+            return -1;
+        }
+
+        AcquireSRWLockExclusive(&g_alphaCheckpointLock);
+        if (!HasAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height))
+        {
+            ClearAlphaCheckpointsLocked();
+            g_alphaCheckpointAnimation = animation;
+            g_alphaCheckpointSsv = ssv;
+            g_alphaCheckpointInfo = info;
+            g_alphaCheckpointOutput = output;
+            g_alphaCheckpointWidth = width;
+            g_alphaCheckpointHeight = height;
+        }
+
+        for (int index = 0; index < g_alphaCheckpointCount; index++)
+        {
+            if (g_alphaCheckpoints[index].bucket == bucket)
+            {
+                const int count = g_alphaCheckpointCount;
+                ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+                return count;
+            }
+        }
+
+        while (g_alphaCheckpointCount > 0 &&
+            (g_alphaCheckpointCount >= MaximumAlphaCheckpoints ||
+                checkpointSize >
+                    MaximumAlphaCheckpointBytes - g_alphaCheckpointBytes))
+        {
+            g_alphaCheckpointBytes -=
+                g_alphaCheckpoints[0].outputSize +
+                stateSize;
+            FreeAlphaCheckpoint(g_alphaCheckpoints[0]);
+            std::memmove(&g_alphaCheckpoints[0], &g_alphaCheckpoints[1],
+                static_cast<std::size_t>(g_alphaCheckpointCount - 1) *
+                    sizeof(AlphaCheckpoint));
+            g_alphaCheckpoints[--g_alphaCheckpointCount] = {};
+        }
+
+        auto data = static_cast<unsigned char*>(HeapAlloc(
+            GetProcessHeap(), 0, checkpointSize));
+        if (data == nullptr)
+        {
+            ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+            return -1;
+        }
+
+        std::memcpy(data, output, outputSize);
+        std::memcpy(data + outputSize,
+            reinterpret_cast<unsigned char*>(animation) +
+                AnimationAlphaScratch1Offset,
+            stateSize);
+
+        int insertAt = g_alphaCheckpointCount;
+        while (insertAt > 0 &&
+            g_alphaCheckpoints[insertAt - 1].frame > frame)
+        {
+            g_alphaCheckpoints[insertAt] =
+                g_alphaCheckpoints[insertAt - 1];
+            insertAt--;
+        }
+        g_alphaCheckpoints[insertAt].frame = frame;
+        g_alphaCheckpoints[insertAt].bucket = bucket;
+        g_alphaCheckpoints[insertAt].outputSize = outputSize;
+        g_alphaCheckpoints[insertAt].data = data;
+        g_alphaCheckpointCount++;
+        g_alphaCheckpointBytes += checkpointSize;
+        const int count = g_alphaCheckpointCount;
+        ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+        return count;
+    }
+
+    bool RestoreAlphaCheckpoint(void* animation, int targetFrame,
+        int& restoredFrame)
+    {
+        void* ssv = nullptr;
+        void* info = nullptr;
+        void* output = nullptr;
+        int width = 0;
+        int height = 0;
+        std::size_t outputSize = 0;
+        if (targetFrame <= 0 ||
+            !ReadAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height, outputSize))
+        {
+            return false;
+        }
+
+        AcquireSRWLockShared(&g_alphaCheckpointLock);
+        if (!HasAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height))
+        {
+            ReleaseSRWLockShared(&g_alphaCheckpointLock);
+            return false;
+        }
+
+        const AlphaCheckpoint* checkpoint = nullptr;
+        for (int index = 0; index < g_alphaCheckpointCount; index++)
+        {
+            if (g_alphaCheckpoints[index].frame < targetFrame)
+            {
+                checkpoint = &g_alphaCheckpoints[index];
+            }
+            else
+            {
+                break;
+            }
+        }
+        if (checkpoint == nullptr || checkpoint->data == nullptr ||
+            checkpoint->outputSize != outputSize)
+        {
+            ReleaseSRWLockShared(&g_alphaCheckpointLock);
+            return false;
+        }
+
+        std::memcpy(output, checkpoint->data, outputSize);
+        std::memcpy(
+            reinterpret_cast<unsigned char*>(animation) +
+                AnimationAlphaScratch1Offset,
+            checkpoint->data + outputSize,
+            AnimationSsvOffset - AnimationAlphaScratch1Offset);
+        restoredFrame = checkpoint->frame;
+        InterlockedExchange(&g_lastAlphaCheckpointFrame, restoredFrame);
+        InterlockedIncrement(&g_alphaCheckpointRestoreCount);
+        ReleaseSRWLockShared(&g_alphaCheckpointLock);
         return true;
     }
 
@@ -1078,8 +2172,8 @@ namespace
         }
 
         unsigned char* call = ImageBase() + DecodeScaleCallRva;
-        if (!HasSignature(DecodeScaleCallRva, DecodeScaleCallSignature,
-                sizeof(DecodeScaleCallSignature)))
+        if (!IsIndirectCallToSlot(
+                DecodeScaleCallRva, DecodeScaleSlotRva))
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
             return EngineError();
@@ -1139,6 +2233,7 @@ namespace
         std::memcpy(thunk + 38, &skippedCounter, sizeof(skippedCounter));
         std::memcpy(thunk + 54, &originalScaleAddress,
             sizeof(originalScaleAddress));
+        thunk[33] = static_cast<unsigned char>(VideoCurrentFrameOffset);
         FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
 
         const std::intptr_t relative =
@@ -1161,7 +2256,7 @@ namespace
         }
 
         DWORD oldProtection = 0;
-        if (!VirtualProtect(call, sizeof(DecodeScaleCallSignature),
+        if (!VirtualProtect(call, DecodeScaleCallLength,
                 PAGE_EXECUTE_READWRITE, &oldProtection))
         {
             result = HRESULT_FROM_WIN32(GetLastError());
@@ -1173,9 +2268,9 @@ namespace
             std::memcpy(call + 1, &displacement, sizeof(displacement));
             call[5] = 0x90;
             FlushInstructionCache(GetCurrentProcess(), call,
-                sizeof(DecodeScaleCallSignature));
+                DecodeScaleCallLength);
             DWORD ignoredProtection = 0;
-            VirtualProtect(call, sizeof(DecodeScaleCallSignature),
+            VirtualProtect(call, DecodeScaleCallLength,
                 oldProtection, &ignoredProtection);
             InterlockedExchangePointer(&g_decodeScaleThunk, thunk);
         }
@@ -1201,9 +2296,7 @@ namespace
         }
 
         unsigned char* load = ImageBase() + DecoderWorkerTargetLoadRva;
-        if (!HasSignature(DecoderWorkerTargetLoadRva,
-                DecoderWorkerTargetLoadSignature,
-                sizeof(DecoderWorkerTargetLoadSignature)))
+        if (!IsDecoderWorkerTargetLoad())
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
             return EngineError();
@@ -1249,6 +2342,9 @@ namespace
             reinterpret_cast<std::uintptr_t>(&g_decoderCatchupTargetFrame);
         std::memcpy(thunk + 8, &videoAddress, sizeof(videoAddress));
         std::memcpy(thunk + 23, &targetAddress, sizeof(targetAddress));
+        thunk[5] = static_cast<unsigned char>(VideoCurrentFrameOffset);
+        thunk[51] = static_cast<unsigned char>(
+            VideoFrameQueueMutexOffset);
         FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
 
         const std::intptr_t relative =
@@ -1271,7 +2367,7 @@ namespace
         }
 
         DWORD oldProtection = 0;
-        if (!VirtualProtect(load, sizeof(DecoderWorkerTargetLoadSignature),
+        if (!VirtualProtect(load, DecoderWorkerTargetLoadLength,
                 PAGE_EXECUTE_READWRITE, &oldProtection))
         {
             result = HRESULT_FROM_WIN32(GetLastError());
@@ -1282,11 +2378,11 @@ namespace
             load[0] = 0xE8;
             std::memcpy(load + 1, &displacement, sizeof(displacement));
             std::memset(load + 5, 0x90,
-                sizeof(DecoderWorkerTargetLoadSignature) - 5);
+                DecoderWorkerTargetLoadLength - 5);
             FlushInstructionCache(GetCurrentProcess(), load,
-                sizeof(DecoderWorkerTargetLoadSignature));
+                DecoderWorkerTargetLoadLength);
             DWORD ignoredProtection = 0;
-            VirtualProtect(load, sizeof(DecoderWorkerTargetLoadSignature),
+            VirtualProtect(load, DecoderWorkerTargetLoadLength,
                 oldProtection, &ignoredProtection);
             InterlockedExchangePointer(&g_decoderWorkerTargetThunk, thunk);
         }
@@ -1302,10 +2398,12 @@ namespace
 
     HRESULT InstallFastDecodeHook(LONG threadCount)
     {
+        InterlockedExchange(&g_fastDecodeInstallStage, 0);
         if (!HasCompatibleEngine() || !HasFastDecodeEngine())
         {
             return EngineError();
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 1);
 
         if (threadCount < 1 || threadCount > 64)
         {
@@ -1319,6 +2417,7 @@ namespace
         {
             return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 2);
 
         void* expectedOpen = reinterpret_cast<void*>(
             GetProcAddress(avcodec, "avcodec_open2"));
@@ -1331,6 +2430,7 @@ namespace
         {
             return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 4);
 
         auto slot = reinterpret_cast<PVOID volatile*>(ImageBase() + AvcodecOpenSlotRva);
         auto seekSlot = reinterpret_cast<PVOID volatile*>(
@@ -1340,6 +2440,7 @@ namespace
         {
             return EngineError();
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 8);
 
         void* current = InterlockedCompareExchangePointer(slot, nullptr, nullptr);
         void* currentSeek = InterlockedCompareExchangePointer(
@@ -1351,6 +2452,7 @@ namespace
         {
             return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 16);
 
         // The process-local function-pointer hook must not outlive this DLL.
         // Pinning is safer than relying on Deviare's custom-DLL unload timing;
@@ -1362,23 +2464,27 @@ namespace
         {
             return HRESULT_FROM_WIN32(GetLastError());
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 32);
 
         const HRESULT workerPatch = InstallDecoderWorkerTargetPatch();
         if (workerPatch < 0)
         {
             return workerPatch;
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 64);
 
         const HRESULT scalePatch = InstallScaleSkipPatch();
         if (scalePatch < 0)
         {
             return scalePatch;
         }
+        InterlockedExchange(&g_fastDecodeInstallStage, 128);
 
         InterlockedExchange(&g_decoderThreadCount, threadCount);
         InterlockedCompareExchangePointer(&g_originalAvcodecOpen2, expectedOpen, nullptr);
         InterlockedCompareExchangePointer(
             &g_originalAvSeekFrame, expectedSeek, nullptr);
+        InterlockedExchange(&g_fastDecodeInstallStage, 256);
 
         if (current != hook)
         {
@@ -1427,7 +2533,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 12;
+    return 13;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -1443,28 +2549,46 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetOffsetResolverMask()
+{
+    EnsureEngineOffsets();
+    return InterlockedCompareExchange(&g_offsetResolverMask, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetMovieResolverMask()
+{
+    EnsureEngineOffsets();
+    return InterlockedCompareExchange(&g_movieResolverMask, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetFastDecodeResolverMask()
+{
+    ResolveFastDecodeOffsets();
+    return InterlockedCompareExchange(&g_fastDecodeResolverMask, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetFastDecodeCompatibilityMask()
+{
+    int mask = 0;
+    mask |= ResolveFastDecodeOffsets() ? 1 : 0;
+    mask |= IsRvaInImage(AvcodecOpenSlotRva, sizeof(void*)) ? 2 : 0;
+    mask |= IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)) ? 4 : 0;
+    mask |= IsRvaInImage(DecodeScaleSlotRva, sizeof(void*)) ? 8 : 0;
+    mask |= IsIndirectCallToSlot(
+        DecodeScaleCallRva, DecodeScaleSlotRva) ? 16 : 0;
+    mask |= IsDecoderWorkerTargetLoad() ? 32 : 0;
+    return mask;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetFastDecodeInstallStage()
+{
+    return InterlockedCompareExchange(&g_fastDecodeInstallStage, 0, 0);
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovieManager(SIZE_T managerAddress)
 {
-    __try
-    {
-        if (!HasCompatibleEngine())
-        {
-            return EngineError();
-        }
-
-        void* manager = reinterpret_cast<void*>(managerAddress);
-        if (Movie(manager) == nullptr)
-        {
-            return E_INVALIDARG;
-        }
-
-        InterlockedExchangePointer(&g_movieManager, manager);
-        return BridgeSuccess;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return E_UNEXPECTED;
-    }
+    UNREFERENCED_PARAMETER(managerAddress);
+    return E_NOTIMPL;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovie(SIZE_T movieAddress)
@@ -1524,23 +2648,14 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPause()
             return EngineError();
         }
 
-        void* manager = MovieManager();
-        void* movie = Movie(manager);
-        if (movie == nullptr)
+        void* movie = ActiveMovie();
+        if (movie == nullptr ||
+            !HasSignature(MoviePauseRva, MoviePauseSignature,
+                sizeof(MoviePauseSignature)))
         {
-            movie = ActiveMovie();
-            if (movie == nullptr ||
-                !HasSignature(MoviePauseRva, MoviePauseSignature,
-                    sizeof(MoviePauseSignature)))
-            {
-                return ManagerError();
-            }
-            FunctionAt<ManagerAction>(MoviePauseRva)(movie);
+            return ManagerError();
         }
-        else
-        {
-            FunctionAt<ManagerAction>(PauseRva)(manager);
-        }
+        FunctionAt<ManagerAction>(MoviePauseRva)(movie);
 
         return BridgeSuccess;
     }
@@ -1559,23 +2674,14 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperResume()
             return EngineError();
         }
 
-        void* manager = MovieManager();
-        void* movie = Movie(manager);
-        if (movie == nullptr)
+        void* movie = ActiveMovie();
+        if (movie == nullptr ||
+            !HasSignature(MovieResumeRva, MovieResumeSignature,
+                sizeof(MovieResumeSignature)))
         {
-            movie = ActiveMovie();
-            if (movie == nullptr ||
-                !HasSignature(MovieResumeRva, MovieResumeSignature,
-                    sizeof(MovieResumeSignature)))
-            {
-                return ManagerError();
-            }
-            FunctionAt<ManagerAction>(MovieResumeRva)(movie);
+            return ManagerError();
         }
-        else
-        {
-            FunctionAt<ManagerAction>(ResumeRva)(manager);
-        }
+        FunctionAt<ManagerAction>(MovieResumeRva)(movie);
 
         return BridgeSuccess;
     }
@@ -1594,19 +2700,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
             return EngineError();
         }
 
-        void* manager = MovieManager();
-        void* movie = Movie(manager);
-        const bool useManager = movie != nullptr;
-        if (movie == nullptr)
+        void* movie = ActiveMovie();
+        if (movie == nullptr ||
+            !HasSignature(MovieSetPlayRateRva,
+                MovieSetPlayRateSignature,
+                sizeof(MovieSetPlayRateSignature)))
         {
-            movie = ActiveMovie();
-            if (movie == nullptr ||
-                !HasSignature(MovieSetPlayRateRva,
-                    MovieSetPlayRateSignature,
-                    sizeof(MovieSetPlayRateSignature)))
-            {
-                return ManagerError();
-            }
+            return ManagerError();
         }
 
         static_assert(sizeof(double) == sizeof(rateBits), "Unexpected SIZE_T width");
@@ -1617,14 +2717,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
             return E_INVALIDARG;
         }
 
-        if (useManager)
-        {
-            FunctionAt<ManagerSetPlayRate>(SetPlayRateRva)(manager, playRate);
-        }
-        else
-        {
-            FunctionAt<ManagerSetPlayRate>(MovieSetPlayRateRva)(movie, playRate);
-        }
+        FunctionAt<ManagerSetPlayRate>(MovieSetPlayRateRva)(movie, playRate);
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1740,6 +2833,95 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetAlphaResetCount()
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetLastAlphaFrameBeforeReset()
 {
     return InterlockedCompareExchange(&g_lastAlphaFrameBeforeReset, -1, -1);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetAlphaCheckpointRestoreCount()
+{
+    return InterlockedCompareExchange(&g_alphaCheckpointRestoreCount, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetLastAlphaCheckpointFrame()
+{
+    return InterlockedCompareExchange(&g_lastAlphaCheckpointFrame, -1, -1);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperClearAlphaCheckpoints()
+{
+    ClearAlphaCheckpoints();
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperCaptureAlphaCheckpoint()
+{
+    __try
+    {
+        if (!HasCompatibleEngine())
+        {
+            return EngineError();
+        }
+
+        void* movie = ActiveMovie();
+        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const auto lockMutex = qtCore == nullptr
+            ? nullptr
+            : reinterpret_cast<MutexAction>(GetProcAddress(
+                qtCore, "?lock@QMutex@@QEAAXXZ"));
+        const auto unlockMutex = qtCore == nullptr
+            ? nullptr
+            : reinterpret_cast<MutexAction>(GetProcAddress(
+                qtCore, "?unlock@QMutex@@QEAAXXZ"));
+        if (movie == nullptr || lockMutex == nullptr || unlockMutex == nullptr)
+        {
+            return ManagerError();
+        }
+
+        void* mutex = reinterpret_cast<unsigned char*>(movie) + MovieMutexOffset;
+        bool mutexLocked = false;
+        HRESULT result = E_FAIL;
+        __try
+        {
+            lockMutex(mutex);
+            mutexLocked = true;
+            void* animation = *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset);
+            void* info = IsReadable(animation,
+                AnimationInfoOffset + sizeof(void*))
+                ? *reinterpret_cast<void**>(
+                    reinterpret_cast<unsigned char*>(animation) +
+                        AnimationInfoOffset)
+                : nullptr;
+            if (!IsReadable(info,
+                    AnimationFramesPerSecondOffset + sizeof(int)))
+            {
+                result = ManagerError();
+            }
+            else
+            {
+                const int frame = *reinterpret_cast<const int*>(
+                    reinterpret_cast<unsigned char*>(movie) +
+                        MovieCurrentFrameOffset);
+                const int framesPerSecond = *reinterpret_cast<const int*>(
+                    reinterpret_cast<unsigned char*>(info) +
+                        AnimationFramesPerSecondOffset);
+                const int count = CaptureAlphaCheckpoint(
+                    animation, frame, framesPerSecond);
+                result = count < 0 ? E_FAIL : count;
+            }
+        }
+        __finally
+        {
+            if (mutexLocked)
+            {
+                unlockMutex(mutex);
+            }
+        }
+        return result;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetKeyframeSeekCount()
@@ -1919,7 +3101,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
 
                                     if (decoderReady)
                                     {
-                                        if (!ResetAnimationAlpha(animation))
+                                        int alphaStartFrame = -1;
+                                        const bool restoredCheckpoint =
+                                            RestoreAlphaCheckpoint(animation,
+                                                targetFrame, alphaStartFrame);
+                                        if (!restoredCheckpoint &&
+                                            !ResetAnimationAlpha(animation))
                                         {
                                             result = E_FAIL;
                                         }
@@ -1942,11 +3129,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
                                             else
                                             {
                                                 // Movie::advance asks CAnim for
-                                                // currentFrame + 1. Its alpha position
-                                                // was reset above, so CAnim rebuilds
-                                                // every delta-alpha record through the
-                                                // exact colour target before Movie
-                                                // publishes that target as current.
+                                                // currentFrame + 1. CAnim continues
+                                                // from the restored checkpoint, or
+                                                // frame zero when none was available,
+                                                // before Movie publishes the target.
                                                 *currentAddress = targetFrame - 1;
                                                 InterlockedExchange(
                                                     &g_lastDecoderCatchupDistance,

@@ -32,36 +32,7 @@ namespace IStripperQuickPlayer
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
 
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool IsWindowVisible(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool GetClientRect(IntPtr hWnd, out PlaybackRect rect);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct PlaybackRect
-        {
-            public int Left;
-            public int Top;
-            public int Right;
-            public int Bottom;
-        }
-
-        private const string SupportedVghdVersion = "2.4.0.0";
-        private const int PlaybackBridgeVersion = 12;
-        private const int MovieManagerPlayRva = 0x280CF0;
-        private const int MovieManagerPauseRva = 0x280D10;
-        private const int MovieManagerResumeRva = 0x280D30;
-        private const int MovieManagerSetRateRva = 0x280F90;
-        private const uint WmLeftButtonDown = 0x0201;
-        private const uint WmLeftButtonUp = 0x0202;
-        private const int MkLeftButton = 0x0001;
+        private const int PlaybackBridgeVersion = 13;
 
         private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
@@ -91,19 +62,12 @@ namespace IStripperQuickPlayer
         //deviare2 hooking
         private NktSpyMgr _spyMgr;
         private Int32 vghd_procID = 0;
-        private NktHook? playbackPlayHook;
-        private NktHook? playbackPauseHook;
-        private NktHook? playbackResumeHook;
-        private NktHook? playbackSetRateHook;
-        private readonly ManualResetEventSlim playbackManagerCaptured = new(false);
         private readonly SemaphoreSlim playbackOperationLock = new(1, 1);
         private readonly object playbackApiLock = new();
         private readonly CancellationTokenSource playbackLifetime = new();
         private string playbackBridgePath = "";
-        private long playbackMovieManagerAddress;
         private int vghdInjectionInProgress;
         private volatile bool playbackBridgeLoaded;
-        private volatile bool playbackManagerRegistered;
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
         private volatile bool playbackBusy;
@@ -112,6 +76,7 @@ namespace IStripperQuickPlayer
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
+        private int playbackAlphaCheckpointBucket = -1;
         private string playbackTimelineAnimationPath = "";
         private string playbackCompletedAnimationPath = "";
         private DateTime playbackNextClipRetryAt = DateTime.MinValue;
@@ -982,28 +947,11 @@ namespace IStripperQuickPlayer
         private void ConfigurePlaybackHooks(NktProcess process)
         {
             playbackBridgeLoaded = false;
-            playbackManagerRegistered = false;
             playbackMovieRegistered = false;
             playbackFastDecodeEnabled = false;
-            Interlocked.Exchange(ref playbackMovieManagerAddress, 0);
-            playbackManagerCaptured.Reset();
 
             try
             {
-                string executablePath = process.Path;
-                if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
-                {
-                    executablePath = Process.GetProcessById(process.Id).MainModule?.FileName ?? "";
-                }
-
-                FileVersionInfo version = FileVersionInfo.GetVersionInfo(executablePath);
-                string detectedVersion = $"{version.FileMajorPart}.{version.FileMinorPart}.{version.FileBuildPart}.{version.FilePrivatePart}";
-                if (!string.Equals(detectedVersion, SupportedVghdVersion, StringComparison.Ordinal))
-                {
-                    SetPlaybackStatus($"Playback controls require vghd.exe {SupportedVghdVersion}; found {detectedVersion}.");
-                    return;
-                }
-
                 playbackBridgePath = Path.Combine(AppContext.BaseDirectory, "IStripperPlaybackBridge64.dll");
                 if (!File.Exists(playbackBridgePath))
                 {
@@ -1036,26 +984,6 @@ namespace IStripperQuickPlayer
                     "IStripperEnableFastDecode", ref decoderThreadParameter, true);
                 playbackFastDecodeEnabled = fastDecodeResult >= 0;
 
-                NktModule module = process.ModuleByName("vghd.exe");
-                if (module == null || module.BaseAddress == IntPtr.Zero)
-                {
-                    SetPlaybackStatus("Could not locate vghd.exe in the iStripper process.");
-                    return;
-                }
-
-                int captureFlags = (int)(eNktHookFlags.flgOnlyPreCall | eNktHookFlags.flgDisableStackWalk);
-                playbackPlayHook = CreatePlaybackCaptureHook(process,
-                    IntPtr.Add(module.BaseAddress, MovieManagerPlayRva),
-                    "vghd.exe!MovieManager::play", captureFlags);
-                playbackPauseHook = CreatePlaybackCaptureHook(process,
-                    IntPtr.Add(module.BaseAddress, MovieManagerPauseRva),
-                    "vghd.exe!MovieManager::pause", captureFlags);
-                playbackResumeHook = CreatePlaybackCaptureHook(process,
-                    IntPtr.Add(module.BaseAddress, MovieManagerResumeRva),
-                    "vghd.exe!MovieManager::resume", captureFlags);
-                playbackSetRateHook = CreatePlaybackCaptureHook(process,
-                    IntPtr.Add(module.BaseAddress, MovieManagerSetRateRva),
-                    "vghd.exe!MovieManager::setPlayRate", captureFlags);
                 playbackBridgeLoaded = true;
                 int decoderOpenCount = 0;
                 int decoderOptionResult = 0;
@@ -1070,7 +998,11 @@ namespace IStripperQuickPlayer
                 }
 
                 string decoderStatus = !playbackFastDecodeEnabled
-                    ? $"FFmpeg/queue acceleration was unavailable (0x{fastDecodeResult:X8}); fast-frame scan remains enabled."
+                    ? $"FFmpeg/queue acceleration was unavailable (0x{fastDecodeResult:X8}; " +
+                      $"resolver 0x{CallPlaybackApi("IStripperGetFastDecodeResolverMask"):X}, " +
+                      $"compatibility 0x{CallPlaybackApi("IStripperGetFastDecodeCompatibilityMask"):X}, " +
+                      $"install stage 0x{CallPlaybackApi("IStripperGetFastDecodeInstallStage"):X}); " +
+                      "fast-frame scan remains enabled."
                     : decoderOpenCount > 0 && decoderOptionResult < 0
                         ? $"FFmpeg rejected the {decoderThreads}-thread option on the last codec open (0x{decoderOptionResult:X8})."
                         : decoderOpenCount > 0
@@ -1085,36 +1017,9 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private NktHook CreatePlaybackCaptureHook(NktProcess process, IntPtr address,
-            string functionName, int flags)
-        {
-            NktHook captureHook = _spyMgr.CreateHookForAddress(address, functionName, flags);
-            captureHook.Hook(true);
-            captureHook.Attach(process, true);
-            return captureHook;
-        }
-
-        private bool IsPlaybackCaptureHook(NktHook callbackHook)
-        {
-            try
-            {
-                IntPtr callbackId = callbackHook.Id;
-                return (playbackPlayHook != null && playbackPlayHook.Id == callbackId) ||
-                    (playbackPauseHook != null && playbackPauseHook.Id == callbackId) ||
-                    (playbackResumeHook != null && playbackResumeHook.Id == callbackId) ||
-                    (playbackSetRateHook != null && playbackSetRateHook.Id == callbackId) ||
-                    callbackHook.FunctionName.StartsWith("vghd.exe!MovieManager::",
-                        StringComparison.Ordinal);
-            }
-            catch
-            {
-                return callbackHook.FunctionName.StartsWith("vghd.exe!MovieManager::",
-                    StringComparison.Ordinal);
-            }
-        }
-
         private void SetPlaybackStatus(string status)
         {
+            System.Diagnostics.Debug.WriteLine(status);
             if (formIsClosing || IsDisposed)
             {
                 return;
@@ -1127,14 +1032,12 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                lblPlaybackStatus.Text = status;
                 bool enabled = playbackBridgeLoaded && !playbackBusy;
                 cmdRewind.Enabled = enabled;
                 cmdPlayPause.Enabled = enabled;
                 cmdFastForward.Enabled = enabled;
                 cmbPlaybackSpeed.Enabled = enabled;
-                trkPlaybackPosition.Enabled = enabled &&
-                    (playbackManagerRegistered || playbackMovieRegistered);
+                trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered;
             }
 
             if (InvokeRequired)
@@ -1162,8 +1065,7 @@ namespace IStripperQuickPlayer
             cmdPlayPause.Enabled = enabled;
             cmdFastForward.Enabled = enabled;
             cmbPlaybackSpeed.Enabled = enabled;
-            trkPlaybackPosition.Enabled = enabled &&
-                (playbackManagerRegistered || playbackMovieRegistered);
+            trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered;
         }
 
         private int CallPlaybackApi(string apiName, ulong? parameter = null)
@@ -1191,14 +1093,15 @@ namespace IStripperQuickPlayer
             return result;
         }
 
-        private async Task<bool> EnsurePlaybackReadyAsync(CancellationToken cancellationToken)
+        private Task<bool> EnsurePlaybackReadyAsync(CancellationToken cancellationToken)
         {
             if (!playbackBridgeLoaded)
             {
                 SetPlaybackStatus("Playback controls are not available for this iStripper process.");
-                return false;
+                return Task.FromResult(false);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             // vghd loads its FFmpeg DLLs lazily with the first animation. If
             // attachment happened earlier, retry now that a clip is available.
             if (!playbackFastDecodeEnabled)
@@ -1209,155 +1112,18 @@ namespace IStripperQuickPlayer
                 playbackFastDecodeEnabled = fastDecodeResult >= 0;
             }
 
-            if ((playbackManagerRegistered &&
-                    Interlocked.Read(ref playbackMovieManagerAddress) != 0) ||
-                playbackMovieRegistered)
+            if (playbackMovieRegistered)
             {
-                return true;
+                return Task.FromResult(true);
             }
 
             playbackMovieRegistered =
                 CallPlaybackApi("IStripperDiscoverMovie") >= 0;
-            if (playbackMovieRegistered)
+            if (!playbackMovieRegistered)
             {
-                return true;
+                SetPlaybackStatus("No active desktop video was found. Start a clip in iStripper and try again.");
             }
-
-            if (Interlocked.Read(ref playbackMovieManagerAddress) == 0)
-            {
-                SetPlaybackStatus("Connecting to the active desktop video...");
-                bool captured = await CapturePlaybackManagerAsync(cancellationToken);
-                if (!captured)
-                {
-                    SetPlaybackStatus("No active desktop video was found. Start a clip in iStripper and try again.");
-                    return false;
-                }
-            }
-
-            long managerAddress = Interlocked.Read(ref playbackMovieManagerAddress);
-            int result = CallPlaybackApi("IStripperSetMovieManager", unchecked((ulong)managerAddress));
-            if (result < 0)
-            {
-                Interlocked.Exchange(ref playbackMovieManagerAddress, 0);
-                playbackManagerRegistered = false;
-                throw new COMException($"The captured movie manager was rejected (0x{result:X8}).", result);
-            }
-
-            playbackManagerRegistered = true;
-            return true;
-        }
-
-        private async Task<bool> CapturePlaybackManagerAsync(CancellationToken cancellationToken)
-        {
-            IntPtr overlayWindow = FindPlaybackOverlayWindow();
-            if (overlayWindow == IntPtr.Zero)
-            {
-                return false;
-            }
-
-            RegistryKey? playerKey = null;
-            object? previousAction = null;
-            RegistryValueKind previousKind = RegistryValueKind.String;
-            bool hadPreviousAction = false;
-            bool firstClickSent = false;
-
-            try
-            {
-                playerKey = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\player", true);
-                if (playerKey != null)
-                {
-                    hadPreviousAction = playerKey.GetValueNames().Contains("defaultAction",
-                        StringComparer.OrdinalIgnoreCase);
-                    if (hadPreviousAction)
-                    {
-                        previousAction = playerKey.GetValue("defaultAction", null,
-                            RegistryValueOptions.DoNotExpandEnvironmentNames);
-                        previousKind = playerKey.GetValueKind("defaultAction");
-                    }
-                    playerKey.SetValue("defaultAction", "enum:DoPausePlay", RegistryValueKind.String);
-                }
-
-                playbackManagerCaptured.Reset();
-                await Task.Delay(75, cancellationToken);
-                firstClickSent = PostPlaybackClick(overlayWindow);
-                if (!firstClickSent)
-                {
-                    return false;
-                }
-
-                return await Task.Run(
-                    () => playbackManagerCaptured.Wait(TimeSpan.FromSeconds(2), cancellationToken),
-                    cancellationToken);
-            }
-            finally
-            {
-                if (firstClickSent)
-                {
-                    // A second toggle restores the play/pause state used to capture
-                    // MovieManager.  Leave enough time for the first queued call to finish.
-                    await Task.Delay(175, CancellationToken.None);
-                    PostPlaybackClick(overlayWindow);
-                }
-
-                if (playerKey != null)
-                {
-                    try
-                    {
-                        if (hadPreviousAction && previousAction != null)
-                        {
-                            playerKey.SetValue("defaultAction", previousAction, previousKind);
-                        }
-                        else
-                        {
-                            playerKey.DeleteValue("defaultAction", false);
-                        }
-                    }
-                    finally
-                    {
-                        playerKey.Dispose();
-                    }
-                }
-            }
-        }
-
-        private IntPtr FindPlaybackOverlayWindow()
-        {
-            IntPtr overlayWindow = IntPtr.Zero;
-            FindWindow.EnumWindows((window, _) =>
-            {
-                FindWindow.GetWindowThreadProcessId(window, out int processId);
-                if (processId != vghd_procID || !IsWindowVisible(window))
-                {
-                    return true;
-                }
-
-                StringBuilder className = new(256);
-                FindWindow.GetClassName(window, className, className.Capacity);
-                if (className.ToString().Contains("QWindowToolSaveBitsOwnDC", StringComparison.Ordinal))
-                {
-                    overlayWindow = window;
-                    return false;
-                }
-                return true;
-            }, IntPtr.Zero);
-            return overlayWindow;
-        }
-
-        private static bool PostPlaybackClick(IntPtr window)
-        {
-            if (!GetClientRect(window, out PlaybackRect bounds))
-            {
-                return false;
-            }
-
-            int x = Math.Max(0, (bounds.Right - bounds.Left) / 2);
-            int y = Math.Max(0, (bounds.Bottom - bounds.Top) / 2);
-            int packedPosition = (y & 0xFFFF) << 16 | (x & 0xFFFF);
-            bool downSent = PostMessage(window, WmLeftButtonDown, new IntPtr(MkLeftButton),
-                new IntPtr(packedPosition));
-            bool upSent = PostMessage(window, WmLeftButtonUp, IntPtr.Zero,
-                new IntPtr(packedPosition));
-            return downSent && upSent;
+            return Task.FromResult(playbackMovieRegistered);
         }
 
         private async Task RunPlaybackOperationAsync(Func<CancellationToken, Task> operation)
@@ -1472,10 +1238,10 @@ namespace IStripperQuickPlayer
                 {
                     string previousAnimationPath = playbackTimelineAnimationPath;
                     playbackTimelineAnimationPath = animationPath;
-                    if (!playbackManagerRegistered)
-                    {
-                        playbackMovieRegistered = false;
-                    }
+                    playbackAlphaCheckpointBucket = -1;
+                    try { CallPlaybackApi("IStripperClearAlphaCheckpoints"); }
+                    catch { }
+                    playbackMovieRegistered = false;
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
                     playbackSpeedLastApplied = DateTime.MinValue;
                     if (!playbackTimelineDragging)
@@ -1521,19 +1287,12 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                long managerAddress = Interlocked.Read(ref playbackMovieManagerAddress);
-                if (!playbackManagerRegistered && managerAddress != 0)
-                {
-                    int registered = CallPlaybackApi("IStripperSetMovieManager",
-                        unchecked((ulong)managerAddress));
-                    playbackManagerRegistered = registered >= 0;
-                }
-                if (!playbackManagerRegistered && !playbackMovieRegistered)
+                if (!playbackMovieRegistered)
                 {
                     playbackMovieRegistered =
                         CallPlaybackApi("IStripperDiscoverMovie") >= 0;
                 }
-                if (!playbackManagerRegistered && !playbackMovieRegistered)
+                if (!playbackMovieRegistered)
                 {
                     trkPlaybackPosition.Enabled = false;
                     return;
@@ -1545,7 +1304,7 @@ namespace IStripperQuickPlayer
                 }
 
                 DateTime now = DateTime.UtcNow;
-                if (playbackManagerRegistered &&
+                if (playbackMovieRegistered &&
                     now < playbackSpeedReapplyUntil &&
                     now - playbackSpeedLastApplied >= TimeSpan.FromSeconds(1))
                 {
@@ -1555,6 +1314,12 @@ namespace IStripperQuickPlayer
 
                 int elapsed = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
                 int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
+                int checkpointBucket = elapsed / 5_000;
+                if (checkpointBucket != playbackAlphaCheckpointBucket &&
+                    CallPlaybackApi("IStripperCaptureAlphaCheckpoint") >= 0)
+                {
+                    playbackAlphaCheckpointBucket = checkpointBucket;
+                }
                 playbackTimelineDurationMilliseconds = Math.Max(0, total);
                 if (!playbackTimelineDragging)
                 {
@@ -1912,21 +1677,6 @@ namespace IStripperQuickPlayer
         private uint lastv = 0;
         private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
         {
-            if (IsPlaybackCaptureHook(hook))
-            {
-                long managerAddress = hookCallInfo.get_Register(eNktRegister.asmRegRcx).ToInt64();
-                if (managerAddress != 0)
-                {
-                    long previousAddress = Interlocked.Exchange(ref playbackMovieManagerAddress, managerAddress);
-                    if (previousAddress != managerAddress)
-                    {
-                        playbackManagerRegistered = false;
-                    }
-                    playbackManagerCaptured.Set();
-                }
-                return;
-            }
-
             if (hook.FunctionName == "user32.dll!CallWindowProcW")
             {
                 if (playerlocked)
@@ -2378,7 +2128,7 @@ namespace IStripperQuickPlayer
             playbackTimelineTimer.Dispose();
             playbackLifetime.Cancel();
             timerhook?.Dispose();
-            if (playbackBridgeLoaded && playbackManagerRegistered)
+            if (playbackBridgeLoaded && playbackMovieRegistered)
             {
                 // If the form closes during an accelerated scan, restore the user's
                 // selected rate before the Deviare agent and bridge are released.
