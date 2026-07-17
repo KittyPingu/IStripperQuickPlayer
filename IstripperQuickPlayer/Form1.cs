@@ -54,7 +54,7 @@ namespace IStripperQuickPlayer
         }
 
         private const string SupportedVghdVersion = "2.4.0.0";
-        private const int PlaybackBridgeVersion = 7;
+        private const int PlaybackBridgeVersion = 9;
         private const int MovieManagerPlayRva = 0x280CF0;
         private const int MovieManagerPauseRva = 0x280D10;
         private const int MovieManagerResumeRva = 0x280D30;
@@ -1452,6 +1452,12 @@ namespace IStripperQuickPlayer
             int skippedScaleCountBefore = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetFastDecodeSkippedScaleCount"))
                 : 0;
+            int alphaResetCountBefore = playbackFastDecodeEnabled
+                ? Math.Max(0, CallPlaybackApi("IStripperGetAlphaResetCount"))
+                : 0;
+            int codecFlushCountBefore = playbackFastDecodeEnabled
+                ? Math.Max(0, CallPlaybackApi("IStripperGetCodecFlushCount"))
+                : 0;
             Stopwatch seekStopwatch = Stopwatch.StartNew();
             int finalPosition = current;
             try
@@ -1508,12 +1514,27 @@ namespace IStripperQuickPlayer
             int droppedVideoFrames = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetFastDecodeDroppedFrameCount"))
                 : 0;
+            int alphaResetCount = playbackFastDecodeEnabled
+                ? Math.Max(0, CallPlaybackApi("IStripperGetAlphaResetCount"))
+                : alphaResetCountBefore;
+            int alphaFrameBeforeReset = alphaResetCount > alphaResetCountBefore
+                ? Math.Max(0, CallPlaybackApi("IStripperGetLastAlphaFrameBeforeReset"))
+                : 0;
+            int codecFlushCount = playbackFastDecodeEnabled
+                ? Math.Max(0, CallPlaybackApi("IStripperGetCodecFlushCount"))
+                : codecFlushCountBefore;
             string acceleration = decoderCatchupDistance > 0
                 ? $" Decoder catch-up: {decoderCatchupDistance} frames in {seekStopwatch.Elapsed.TotalSeconds:0.00}s; " +
                   $"{skippedDuringSeek} colour conversions skipped and {droppedVideoFrames} stale queued frames dropped."
                 : "";
+            string alphaRebuild = alphaResetCount > alphaResetCountBefore
+                ? $" Alpha state reset from frame {alphaFrameBeforeReset} and replayed from frame 0."
+                : "";
+            string codecFlush = codecFlushCount > codecFlushCountBefore
+                ? " VP9 reference and delayed-frame state flushed after demux rewind."
+                : "";
             SetPlaybackStatus(
-                $"{action} to about {FormatPlaybackTime(finalPosition)}; {stateText} at {speedToRestore:0.##}x.{acceleration}");
+                $"{action} to about {FormatPlaybackTime(finalPosition)}; {stateText} at {speedToRestore:0.##}x.{acceleration}{alphaRebuild}{codecFlush}");
         }
 
         private async Task<int?> TryDecodeTargetFrameAsync(int current, int target,

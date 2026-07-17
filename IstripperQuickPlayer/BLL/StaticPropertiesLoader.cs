@@ -127,12 +127,11 @@ namespace IStripperQuickPlayer.BLL
             }
                        
             string fullpath = Path.Combine(localapp, "staticProperties loaded from server.xml");
-            //if (File.Exists(fullpath))
-            //{
-            //    return new FileInfo(fullpath);
-            //}
-            //else
-            //{
+            if (File.Exists(fullpath))
+            {
+                return new FileInfo(fullpath);
+            }
+
                 //we need to get it from the server
                 string url = @"http://www.istripper.com/bof/mselistGenerator/staticProperties_iStripper.xml.gz";
                 using (var webClient = new WebClient())
@@ -140,7 +139,6 @@ namespace IStripperQuickPlayer.BLL
                     DownloadGZFile(url, fullpath);                    
                 }
                 return new FileInfo(fullpath);
-            //}
         }
 
         private static void DownloadGZFile(string url, string DecompressedFileName)

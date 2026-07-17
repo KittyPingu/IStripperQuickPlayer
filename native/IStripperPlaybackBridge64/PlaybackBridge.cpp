@@ -20,6 +20,7 @@ namespace
     constexpr std::uintptr_t MovieAdvanceRva = 0x27DA20;
     constexpr std::uintptr_t AvcodecOpenCallRva = 0x286805;
     constexpr std::uintptr_t AvcodecOpenSlotRva = 0x726770;
+    constexpr std::uintptr_t AvSeekFrameSlotRva = 0x726758;
     constexpr std::uintptr_t DecodeScaleCallRva = 0x28651A;
     constexpr std::uintptr_t DecodeScaleSlotRva = 0x726750;
     constexpr std::uintptr_t DecoderWorkerTargetLoadRva = 0x286D60;
@@ -31,10 +32,22 @@ namespace
     constexpr std::size_t MovieAnimationOffset = 0x88;
     constexpr std::size_t MovieCurrentFrameOffset = 0x98;
     constexpr std::size_t MovieMutexOffset = 0xE0;
+    constexpr std::size_t AnimationAlphaOutputOffset = 0x08;
+    constexpr std::size_t AnimationAlphaWidthOffset = 0x10;
+    constexpr std::size_t AnimationAlphaHeightOffset = 0x14;
+    constexpr std::size_t AnimationAlphaScratch1Offset = 0x58;
+    constexpr std::size_t AnimationAlphaScratch2Offset = 0x232D8;
+    constexpr std::size_t AnimationAlphaScratchPointer1Offset = 0x46558;
+    constexpr std::size_t AnimationAlphaScratchPointer2Offset = 0x46560;
+    constexpr std::size_t AnimationAlphaGenerationOffset = 0x46568;
+    constexpr std::size_t AnimationAlphaFrameOffset = 0x46570;
     constexpr std::size_t AnimationSsvOffset = 0x46578;
     constexpr std::size_t AnimationInfoOffset = 0x46580;
     constexpr std::size_t AnimationTotalFramesOffset = 0x108;
     constexpr std::size_t AnimationFramesPerSecondOffset = 0x10C;
+    constexpr std::size_t AnimationAlphaScratchSize =
+        AnimationAlphaScratch2Offset - AnimationAlphaScratch1Offset;
+    constexpr std::size_t MaximumAlphaOutputSize = 16 * 1024 * 1024;
     constexpr std::size_t SsvVideoDecoderOffset = 0x40;
     constexpr std::size_t VideoFrameQueueOffset = 0x58;
     constexpr std::size_t VideoFrameQueueMutexOffset = 0x60;
@@ -87,6 +100,9 @@ namespace
     using ManagerSetPlayRate = void(__fastcall*)(void* manager, double playRate);
     using MutexAction = void(__fastcall*)(void* mutex);
     using AvcodecOpen2 = int(__cdecl*)(void* codecContext, const void* codec, void* options);
+    using AvcodecFlushBuffers = void(__cdecl*)(void* codecContext);
+    using AvSeekFrame = int(__cdecl*)(void* formatContext, int streamIndex,
+        std::int64_t timestamp, int flags);
     using AvOptSetInt = int(__cdecl*)(void* target, const char* name,
         std::int64_t value, int searchFlags);
     using VideoSeek = bool(__fastcall*)(void* video, int frame);
@@ -97,6 +113,7 @@ namespace
     PVOID volatile g_movieManager = nullptr;
     LONG volatile g_compatibilityMask = -1;
     PVOID volatile g_originalAvcodecOpen2 = nullptr;
+    PVOID volatile g_originalAvSeekFrame = nullptr;
     LONG volatile g_decoderThreadCount = 0;
     LONG volatile g_decoderOpenCount = 0;
     LONG volatile g_lastThreadOptionResult = (-2147483647L - 1);
@@ -107,6 +124,9 @@ namespace
     LONG volatile g_decoderCatchupTargetFrame = -1;
     LONG volatile g_lastDecoderCatchupDistance = 0;
     LONG volatile g_lastDroppedVideoFrames = 0;
+    LONG volatile g_codecFlushCount = 0;
+    LONG volatile g_alphaResetCount = 0;
+    LONG volatile g_lastAlphaFrameBeforeReset = -1;
     SRWLOCK g_decodePatchLock = SRWLOCK_INIT;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
@@ -129,6 +149,31 @@ namespace
         const auto regionStart = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
         const auto regionEnd = regionStart + memory.RegionSize;
         return start >= regionStart && length <= regionEnd - start;
+    }
+
+    bool IsWritable(const void* address, std::size_t length)
+    {
+        if (!IsReadable(address, length))
+        {
+            return false;
+        }
+
+        MEMORY_BASIC_INFORMATION memory = {};
+        if (VirtualQuery(address, &memory, sizeof(memory)) != sizeof(memory))
+        {
+            return false;
+        }
+
+        switch (memory.Protect & 0xFF)
+        {
+        case PAGE_READWRITE:
+        case PAGE_WRITECOPY:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        default:
+            return false;
+        }
     }
 
     unsigned char* ImageBase()
@@ -204,6 +249,7 @@ namespace
         return HasSignature(AvcodecOpenCallRva, AvcodecOpenCallSignature,
                 sizeof(AvcodecOpenCallSignature)) &&
             IsRvaInImage(AvcodecOpenSlotRva, sizeof(void*)) &&
+            IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)) &&
             IsRvaInImage(DecodeScaleSlotRva, sizeof(void*)) &&
             (InterlockedCompareExchangePointer(&g_decodeScaleThunk, nullptr, nullptr) != nullptr ||
                 HasSignature(DecodeScaleCallRva, DecodeScaleCallSignature,
@@ -254,6 +300,93 @@ namespace
 
         void* vtable = *reinterpret_cast<void**>(video);
         return vtable == ImageBase() + VideoFfmpegVtableRva ? video : nullptr;
+    }
+
+    void* VideoCodecContext(void* formatContext)
+    {
+        auto formatBytes = reinterpret_cast<unsigned char*>(formatContext);
+        if (!IsReadable(formatContext, 0x38))
+        {
+            return nullptr;
+        }
+
+        const int streamCount = *reinterpret_cast<const int*>(formatBytes + 0x2C);
+        void** streams = *reinterpret_cast<void***>(formatBytes + 0x30);
+        if (streamCount < 1 || streamCount > 64 ||
+            !IsReadable(streams,
+                static_cast<std::size_t>(streamCount) * sizeof(void*)))
+        {
+            return nullptr;
+        }
+
+        for (int index = 0; index < streamCount; index++)
+        {
+            void* stream = streams[index];
+            if (!IsReadable(stream, 0x10))
+            {
+                continue;
+            }
+
+            void* codecContext = *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(stream) + 0x08);
+            if (IsReadable(codecContext, 0x10) &&
+                *reinterpret_cast<const int*>(
+                    reinterpret_cast<unsigned char*>(codecContext) + 0x0C) == 0)
+            {
+                return codecContext;
+            }
+        }
+        return nullptr;
+    }
+
+    bool ResetAnimationAlpha(void* animation)
+    {
+        auto animationBytes = reinterpret_cast<unsigned char*>(animation);
+        if (!IsWritable(animation,
+                AnimationAlphaFrameOffset + sizeof(int)))
+        {
+            return false;
+        }
+
+        void* output = *reinterpret_cast<void**>(
+            animationBytes + AnimationAlphaOutputOffset);
+        const int width = *reinterpret_cast<const int*>(
+            animationBytes + AnimationAlphaWidthOffset);
+        const int height = *reinterpret_cast<const int*>(
+            animationBytes + AnimationAlphaHeightOffset);
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        const std::size_t outputSize =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        void* scratch1 = animationBytes + AnimationAlphaScratch1Offset;
+        void* scratch2 = animationBytes + AnimationAlphaScratch2Offset;
+        if (outputSize == 0 || outputSize > MaximumAlphaOutputSize ||
+            !IsWritable(output, outputSize) ||
+            !IsWritable(scratch1, AnimationAlphaScratchSize) ||
+            !IsWritable(scratch2, AnimationAlphaScratchSize))
+        {
+            return false;
+        }
+
+        const int previousAlphaFrame = *reinterpret_cast<const int*>(
+            animationBytes + AnimationAlphaFrameOffset);
+        std::memset(output, 0, outputSize);
+        std::memset(scratch1, 0, AnimationAlphaScratchSize);
+        std::memset(scratch2, 0, AnimationAlphaScratchSize);
+        *reinterpret_cast<void**>(
+            animationBytes + AnimationAlphaScratchPointer1Offset) = nullptr;
+        *reinterpret_cast<void**>(
+            animationBytes + AnimationAlphaScratchPointer2Offset) = nullptr;
+        *reinterpret_cast<int*>(
+            animationBytes + AnimationAlphaGenerationOffset) = 0;
+        *reinterpret_cast<int*>(
+            animationBytes + AnimationAlphaFrameOffset) = 0;
+        InterlockedExchange(&g_lastAlphaFrameBeforeReset, previousAlphaFrame);
+        InterlockedIncrement(&g_alphaResetCount);
+        return true;
     }
 
     bool ArmDecoderCatchup(void* video, int targetFrame,
@@ -475,6 +608,32 @@ namespace
         const auto original = reinterpret_cast<AvcodecOpen2>(
             InterlockedCompareExchangePointer(&g_originalAvcodecOpen2, nullptr, nullptr));
         return original != nullptr ? original(codecContext, codec, options) : -1;
+    }
+
+    int __cdecl FastAvSeekFrame(void* formatContext, int streamIndex,
+        std::int64_t timestamp, int flags)
+    {
+        const auto original = reinterpret_cast<AvSeekFrame>(
+            InterlockedCompareExchangePointer(
+                &g_originalAvSeekFrame, nullptr, nullptr));
+        const int result = original != nullptr
+            ? original(formatContext, streamIndex, timestamp, flags)
+            : -1;
+        if (result >= 0)
+        {
+            void* codecContext = VideoCodecContext(formatContext);
+            const HMODULE avcodec = GetModuleHandleW(L"avcodec-57.dll");
+            const auto flush = avcodec == nullptr
+                ? nullptr
+                : reinterpret_cast<AvcodecFlushBuffers>(
+                    GetProcAddress(avcodec, "avcodec_flush_buffers"));
+            if (codecContext != nullptr && flush != nullptr)
+            {
+                flush(codecContext);
+                InterlockedIncrement(&g_codecFlushCount);
+            }
+        }
+        return result;
     }
 
     struct SuspendedThreads
@@ -818,29 +977,41 @@ namespace
         }
 
         const HMODULE avcodec = GetModuleHandleW(L"avcodec-57.dll");
+        const HMODULE avformat = GetModuleHandleW(L"avformat-57.dll");
         const HMODULE avutil = GetModuleHandleW(L"avutil-55.dll");
-        if (avcodec == nullptr || avutil == nullptr)
+        if (avcodec == nullptr || avformat == nullptr || avutil == nullptr)
         {
             return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
         }
 
         void* expectedOpen = reinterpret_cast<void*>(
             GetProcAddress(avcodec, "avcodec_open2"));
+        void* expectedSeek = reinterpret_cast<void*>(
+            GetProcAddress(avformat, "av_seek_frame"));
         if (expectedOpen == nullptr ||
+            expectedSeek == nullptr ||
+            GetProcAddress(avcodec, "avcodec_flush_buffers") == nullptr ||
             GetProcAddress(avutil, "av_opt_set_int") == nullptr)
         {
             return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
         }
 
         auto slot = reinterpret_cast<PVOID volatile*>(ImageBase() + AvcodecOpenSlotRva);
-        if (!IsReadable(const_cast<PVOID*>(slot), sizeof(void*)))
+        auto seekSlot = reinterpret_cast<PVOID volatile*>(
+            ImageBase() + AvSeekFrameSlotRva);
+        if (!IsReadable(const_cast<PVOID*>(slot), sizeof(void*)) ||
+            !IsReadable(const_cast<PVOID*>(seekSlot), sizeof(void*)))
         {
             return EngineError();
         }
 
         void* current = InterlockedCompareExchangePointer(slot, nullptr, nullptr);
+        void* currentSeek = InterlockedCompareExchangePointer(
+            seekSlot, nullptr, nullptr);
         void* hook = reinterpret_cast<void*>(&FastAvcodecOpen2);
-        if (current != expectedOpen && current != hook)
+        void* seekHook = reinterpret_cast<void*>(&FastAvSeekFrame);
+        if ((current != expectedOpen && current != hook) ||
+            (currentSeek != expectedSeek && currentSeek != seekHook))
         {
             return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
         }
@@ -870,6 +1041,8 @@ namespace
 
         InterlockedExchange(&g_decoderThreadCount, threadCount);
         InterlockedCompareExchangePointer(&g_originalAvcodecOpen2, expectedOpen, nullptr);
+        InterlockedCompareExchangePointer(
+            &g_originalAvSeekFrame, expectedSeek, nullptr);
 
         if (current != hook)
         {
@@ -890,6 +1063,26 @@ namespace
             }
         }
 
+        if (currentSeek != seekHook)
+        {
+            DWORD oldProtection = 0;
+            if (!VirtualProtect(const_cast<PVOID*>(seekSlot), sizeof(void*),
+                    PAGE_READWRITE, &oldProtection))
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            void* previous = InterlockedCompareExchangePointer(
+                seekSlot, seekHook, expectedSeek);
+            DWORD ignoredProtection = 0;
+            VirtualProtect(const_cast<PVOID*>(seekSlot), sizeof(void*),
+                oldProtection, &ignoredProtection);
+            if (previous != expectedSeek && previous != seekHook)
+            {
+                return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+            }
+        }
+
         return BridgeSuccess;
     }
 }
@@ -897,7 +1090,7 @@ namespace
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
-    return 7;
+    return 9;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -1111,6 +1304,21 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetFastDecodeDroppedFra
     return InterlockedCompareExchange(&g_lastDroppedVideoFrames, 0, 0);
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCodecFlushCount()
+{
+    return InterlockedCompareExchange(&g_codecFlushCount, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetAlphaResetCount()
+{
+    return InterlockedCompareExchange(&g_alphaResetCount, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetLastAlphaFrameBeforeReset()
+{
+    return InterlockedCompareExchange(&g_lastAlphaFrameBeforeReset, -1, -1);
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilliseconds(
     SIZE_T targetMilliseconds)
 {
@@ -1238,35 +1446,45 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
 
                                 if (decoderReady)
                                 {
-                                    int droppedFrames = 0;
-                                    // Publish the persistent conversion target
-                                    // before waking the independent decoder
-                                    // worker through ArmDecoderCatchup.
-                                    InterlockedExchange(
-                                        &g_fastForwardTargetFrame, targetFrame);
-                                    if (targetFrame < decoderFrame ||
-                                        !ArmDecoderCatchup(video, targetFrame,
-                                            lockMutex, unlockMutex, droppedFrames))
+                                    if (!ResetAnimationAlpha(animation))
                                     {
-                                        InterlockedExchange(
-                                            &g_fastForwardTargetFrame, -1);
                                         result = E_FAIL;
                                     }
                                     else
                                     {
-                                        // Movie::advance asks CAnim for currentFrame
-                                        // + 1. The decoder worker now produces and
-                                        // labels that exact frame in its own queue.
-                                        *currentAddress = targetFrame - 1;
+                                        int droppedFrames = 0;
+                                        // Publish the persistent conversion target
+                                        // before waking the independent decoder
+                                        // worker through ArmDecoderCatchup.
                                         InterlockedExchange(
-                                            &g_lastDecoderCatchupDistance,
-                                            targetFrame - decoderFrame);
-                                        InterlockedExchange(
-                                            &g_lastDroppedVideoFrames,
-                                            droppedFrames);
-                                        InterlockedExchangePointer(
-                                            &g_fastForwardMovie, movie);
-                                        result = BridgeSuccess;
+                                            &g_fastForwardTargetFrame, targetFrame);
+                                        if (targetFrame < decoderFrame ||
+                                            !ArmDecoderCatchup(video, targetFrame,
+                                                lockMutex, unlockMutex, droppedFrames))
+                                        {
+                                            InterlockedExchange(
+                                                &g_fastForwardTargetFrame, -1);
+                                            result = E_FAIL;
+                                        }
+                                        else
+                                        {
+                                            // Movie::advance asks CAnim for
+                                            // currentFrame + 1. Its alpha position
+                                            // was reset above, so CAnim rebuilds
+                                            // every delta-alpha record through the
+                                            // exact colour target before Movie
+                                            // publishes that target as current.
+                                            *currentAddress = targetFrame - 1;
+                                            InterlockedExchange(
+                                                &g_lastDecoderCatchupDistance,
+                                                targetFrame - decoderFrame);
+                                            InterlockedExchange(
+                                                &g_lastDroppedVideoFrames,
+                                                droppedFrames);
+                                            InterlockedExchangePointer(
+                                                &g_fastForwardMovie, movie);
+                                            result = BridgeSuccess;
+                                        }
                                     }
                                 }
                             }
