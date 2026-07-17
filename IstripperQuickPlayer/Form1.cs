@@ -76,9 +76,11 @@ namespace IStripperQuickPlayer
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
+        private int playbackLastKnownElapsedMilliseconds;
         private int playbackAlphaCheckpointBucket = -1;
         private string playbackTimelineAnimationPath = "";
         private string playbackCompletedAnimationPath = "";
+        private string playbackRequestedAnimationPath = "";
         private DateTime playbackNextClipRetryAt = DateTime.MinValue;
         private DateTime playbackReplacementStableAt = DateTime.MinValue;
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
@@ -107,6 +109,10 @@ namespace IStripperQuickPlayer
 
         public Form1()
         {
+#if DEBUG
+            System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
+            System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
+#endif
             InitializeComponent();
             playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
             playbackTimelineTimer.Start();
@@ -699,6 +705,7 @@ namespace IStripperQuickPlayer
                 if (currentkey != null) currentkeystring = currentkey.ToString();
                 if (currentkey != null && currentkeystring != full)
                 {
+                    BeginAnimationReplacement(full);
                     key.SetValue("ForceAnim", full);
                     key.Close();
                 }
@@ -1237,7 +1244,11 @@ namespace IStripperQuickPlayer
                         StringComparison.Ordinal))
                 {
                     string previousAnimationPath = playbackTimelineAnimationPath;
+                    bool previousAnimationReachedEnd = PlaybackReachedEnd(
+                        playbackLastKnownElapsedMilliseconds,
+                        playbackTimelineDurationMilliseconds);
                     playbackTimelineAnimationPath = animationPath;
+                    playbackLastKnownElapsedMilliseconds = 0;
                     playbackAlphaCheckpointBucket = -1;
                     try { CallPlaybackApi("IStripperClearAlphaCheckpoints"); }
                     catch { }
@@ -1254,10 +1265,13 @@ namespace IStripperQuickPlayer
                     if (string.IsNullOrEmpty(animationPath) &&
                         !string.IsNullOrEmpty(previousAnimationPath))
                     {
-                        if (string.IsNullOrEmpty(playbackCompletedAnimationPath))
+                        if (string.IsNullOrEmpty(playbackRequestedAnimationPath) &&
+                            string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
+                            previousAnimationReachedEnd)
                         {
                             playbackCompletedAnimationPath = previousAnimationPath;
-                            playbackNextClipRetryAt = DateTime.MinValue;
+                            playbackNextClipRetryAt =
+                                DateTime.UtcNow.AddSeconds(1);
                         }
                         playbackReplacementStableAt = DateTime.MinValue;
                     }
@@ -1266,6 +1280,15 @@ namespace IStripperQuickPlayer
                     {
                         playbackReplacementStableAt =
                             DateTime.UtcNow.AddSeconds(2);
+                    }
+                    if (!string.IsNullOrEmpty(animationPath) &&
+                        string.Equals(animationPath,
+                            playbackRequestedAnimationPath,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        playbackRequestedAnimationPath = "";
+                        playbackCompletedAnimationPath = "";
+                        playbackReplacementStableAt = DateTime.MinValue;
                     }
                 }
 
@@ -1314,6 +1337,7 @@ namespace IStripperQuickPlayer
 
                 int elapsed = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
                 int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
+                playbackLastKnownElapsedMilliseconds = elapsed;
                 int checkpointBucket = elapsed / 5_000;
                 if (checkpointBucket != playbackAlphaCheckpointBucket &&
                     CallPlaybackApi("IStripperCaptureAlphaCheckpoint") >= 0)
@@ -1497,6 +1521,7 @@ namespace IStripperQuickPlayer
 
             string action = target < current ? "Rewound" :
                 target > current ? "Fast-forwarded" : "Stayed";
+            playbackLastKnownElapsedMilliseconds = finalPosition;
             string stateText = wasPlaying ? "playing" : "paused";
             int skippedScaleCount = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetFastDecodeSkippedScaleCount"))
@@ -1664,6 +1689,17 @@ namespace IStripperQuickPlayer
         {
             using RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
             return key?.GetValue("CurrentAnim", "")?.ToString() ?? "";
+        }
+
+        private static bool PlaybackReachedEnd(int elapsed, int total) =>
+            total > 0 && elapsed >= Math.Max(0, total - 2_000);
+
+        private void BeginAnimationReplacement(string animationPath)
+        {
+            playbackRequestedAnimationPath = animationPath;
+            playbackCompletedAnimationPath = "";
+            playbackNextClipRetryAt = DateTime.MinValue;
+            playbackReplacementStableAt = DateTime.MinValue;
         }
 
         private static string FormatPlaybackTime(int milliseconds)
@@ -2238,6 +2274,10 @@ namespace IStripperQuickPlayer
                     string full = p + "\\" + r;
                     if (keynew != null)
                     {
+                        if (completedAnimation == null)
+                        {
+                            BeginAnimationReplacement(full);
+                        }
                         keynew.SetValue("ForceAnim", full);
                         keynew.Close();
                     }
@@ -2629,7 +2669,7 @@ namespace IStripperQuickPlayer
                                     || (lastWallpaperShortTag == "" || lastWallpaperShortTag != nowPlayingTagShort)))
                             {
 
-                                Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL(), modelname, model.outfit);
+                                await Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL(), modelname, model.outfit);
                             }
                         }
                     }

@@ -19,7 +19,7 @@ namespace IStripperQuickPlayer.BLL
         public static Dictionary<uint, Bitmap> initialImages = new Dictionary<uint, Bitmap>();
         public static string _modelname = "";
         public static string _outfit = "";
-        public static async void ChangeWallpaper(uint monitorNumber, string url, string modelname, string outfit)
+        public static async Task ChangeWallpaper(uint monitorNumber, string url, string modelname, string outfit)
         {
             if (Properties.Settings.Default.HideDesktopIcons)
                 hideIcons();
@@ -39,7 +39,7 @@ namespace IStripperQuickPlayer.BLL
 
                 string tempfilepath = Path.GetTempFileName();
                 string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".jpg");
-                Bitmap m = await GetImageBitmapFromUrl(url);
+                Bitmap m = await GetImageBitmapFromUrl(url).ConfigureAwait(false);
                 m = ResizeBitmap(m, wallpaper.GetMonitorRECT(monitorId));
                 DirectBitmap direct = new DirectBitmap(m.Width, m.Height);
                 Graphics g = Graphics.FromImage(direct.Bitmap);
