@@ -103,6 +103,12 @@
             lblCollection = new Label();
             lblAge = new Label();
             panelClip = new Panel();
+            cmdRewind = new Button();
+            cmdPlayPause = new Button();
+            cmdFastForward = new Button();
+            lblPlaybackSpeed = new Label();
+            cmbPlaybackSpeed = new ComboBox();
+            lblPlaybackStatus = new Label();
             lblFilterClip = new Label();
             cmdWallpaper = new Button();
             txtClipType = new TextBox();
@@ -280,11 +286,11 @@
             // 
             listClips.Columns.AddRange(new ColumnHeader[] { ClipNumber, ClipName, Hotness, ClipType, ClipSize });
             listClips.FullRowSelect = true;
-            listClips.Location = new Point(13, 173);
+            listClips.Location = new Point(13, 214);
             listClips.Margin = new Padding(6, 7, 6, 5);
             listClips.MultiSelect = false;
             listClips.Name = "listClips";
-            listClips.Size = new Size(1222, 911);
+            listClips.Size = new Size(1222, 870);
             listClips.TabIndex = 13;
             listClips.UseCompatibleStateImageBehavior = false;
             listClips.View = View.Details;
@@ -830,6 +836,12 @@
             // 
             // panelClip
             // 
+            panelClip.Controls.Add(lblPlaybackStatus);
+            panelClip.Controls.Add(cmbPlaybackSpeed);
+            panelClip.Controls.Add(lblPlaybackSpeed);
+            panelClip.Controls.Add(cmdFastForward);
+            panelClip.Controls.Add(cmdPlayPause);
+            panelClip.Controls.Add(cmdRewind);
             panelClip.Controls.Add(lblFilterClip);
             panelClip.Controls.Add(cmdWallpaper);
             panelClip.Controls.Add(txtClipType);
@@ -849,13 +861,81 @@
             panelClip.Location = new Point(0, 0);
             panelClip.Margin = new Padding(4, 5, 4, 5);
             panelClip.Name = "panelClip";
-            panelClip.Size = new Size(1236, 174);
+            panelClip.Size = new Size(1236, 215);
             panelClip.TabIndex = 40;
+            //
+            // cmdRewind
+            //
+            cmdRewind.Enabled = false;
+            cmdRewind.Location = new Point(13, 55);
+            cmdRewind.Margin = new Padding(4);
+            cmdRewind.Name = "cmdRewind";
+            cmdRewind.Size = new Size(83, 38);
+            cmdRewind.TabIndex = 54;
+            cmdRewind.Text = "-10 sec";
+            cmdRewind.UseVisualStyleBackColor = true;
+            cmdRewind.Click += cmdRewind_Click;
+            //
+            // cmdPlayPause
+            //
+            cmdPlayPause.Enabled = false;
+            cmdPlayPause.Location = new Point(104, 55);
+            cmdPlayPause.Margin = new Padding(4);
+            cmdPlayPause.Name = "cmdPlayPause";
+            cmdPlayPause.Size = new Size(123, 38);
+            cmdPlayPause.TabIndex = 55;
+            cmdPlayPause.Text = "Pause / Play";
+            cmdPlayPause.UseVisualStyleBackColor = true;
+            cmdPlayPause.Click += cmdPlayPause_Click;
+            //
+            // cmdFastForward
+            //
+            cmdFastForward.Enabled = false;
+            cmdFastForward.Location = new Point(235, 55);
+            cmdFastForward.Margin = new Padding(4);
+            cmdFastForward.Name = "cmdFastForward";
+            cmdFastForward.Size = new Size(83, 38);
+            cmdFastForward.TabIndex = 56;
+            cmdFastForward.Text = "+10 sec";
+            cmdFastForward.UseVisualStyleBackColor = true;
+            cmdFastForward.Click += cmdFastForward_Click;
+            //
+            // lblPlaybackSpeed
+            //
+            lblPlaybackSpeed.AutoSize = true;
+            lblPlaybackSpeed.Location = new Point(330, 62);
+            lblPlaybackSpeed.Name = "lblPlaybackSpeed";
+            lblPlaybackSpeed.Size = new Size(63, 25);
+            lblPlaybackSpeed.TabIndex = 57;
+            lblPlaybackSpeed.Text = "Speed";
+            //
+            // cmbPlaybackSpeed
+            //
+            cmbPlaybackSpeed.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbPlaybackSpeed.Enabled = false;
+            cmbPlaybackSpeed.FormattingEnabled = true;
+            cmbPlaybackSpeed.Items.AddRange(new object[] { "0.25x", "0.5x", "1x", "1.5x", "2x", "3x", "4x" });
+            cmbPlaybackSpeed.Location = new Point(400, 58);
+            cmbPlaybackSpeed.Name = "cmbPlaybackSpeed";
+            cmbPlaybackSpeed.Size = new Size(88, 33);
+            cmbPlaybackSpeed.TabIndex = 58;
+            cmbPlaybackSpeed.SelectedIndex = 2;
+            cmbPlaybackSpeed.SelectedIndexChanged += cmbPlaybackSpeed_SelectedIndexChanged;
+            //
+            // lblPlaybackStatus
+            //
+            lblPlaybackStatus.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            lblPlaybackStatus.AutoEllipsis = true;
+            lblPlaybackStatus.Location = new Point(503, 61);
+            lblPlaybackStatus.Name = "lblPlaybackStatus";
+            lblPlaybackStatus.Size = new Size(719, 30);
+            lblPlaybackStatus.TabIndex = 59;
+            lblPlaybackStatus.Text = "Waiting for iStripper 2.4.0.0...";
             // 
             // lblFilterClip
             // 
             lblFilterClip.AutoSize = true;
-            lblFilterClip.Location = new Point(698, 138);
+            lblFilterClip.Location = new Point(698, 179);
             lblFilterClip.Margin = new Padding(4, 0, 4, 0);
             lblFilterClip.Name = "lblFilterClip";
             lblFilterClip.Size = new Size(122, 25);
@@ -875,7 +955,7 @@
             // 
             // txtClipType
             // 
-            txtClipType.Location = new Point(829, 131);
+            txtClipType.Location = new Point(829, 172);
             txtClipType.Margin = new Padding(4);
             txtClipType.Name = "txtClipType";
             txtClipType.Size = new Size(222, 31);
@@ -885,7 +965,7 @@
             // numMinSizeMB
             // 
             numMinSizeMB.Increment = new decimal(new int[] { 10, 0, 0, 0 });
-            numMinSizeMB.Location = new Point(935, 90);
+            numMinSizeMB.Location = new Point(935, 131);
             numMinSizeMB.Margin = new Padding(6, 5, 6, 5);
             numMinSizeMB.Maximum = new decimal(new int[] { 9999, 0, 0, 0 });
             numMinSizeMB.Name = "numMinSizeMB";
@@ -896,7 +976,7 @@
             // lblMinSize
             // 
             lblMinSize.AutoSize = true;
-            lblMinSize.Location = new Point(804, 92);
+            lblMinSize.Location = new Point(804, 133);
             lblMinSize.Margin = new Padding(6, 0, 6, 0);
             lblMinSize.Name = "lblMinSize";
             lblMinSize.Size = new Size(119, 25);
@@ -907,7 +987,7 @@
             // 
             lblCipListDetails.AutoSize = true;
             lblCipListDetails.Font = new Font("Segoe UI", 12F, FontStyle.Regular, GraphicsUnit.Point);
-            lblCipListDetails.Location = new Point(7, 91);
+            lblCipListDetails.Location = new Point(7, 132);
             lblCipListDetails.Margin = new Padding(0);
             lblCipListDetails.Name = "lblCipListDetails";
             lblCipListDetails.Size = new Size(0, 32);
@@ -955,7 +1035,7 @@
             // chkDemo
             // 
             chkDemo.AutoSize = true;
-            chkDemo.Location = new Point(1072, 138);
+            chkDemo.Location = new Point(1072, 179);
             chkDemo.Margin = new Padding(6, 0, 6, 0);
             chkDemo.Name = "chkDemo";
             chkDemo.Size = new Size(87, 29);
@@ -969,7 +1049,7 @@
             chkXXX.AutoSize = true;
             chkXXX.Checked = true;
             chkXXX.CheckState = CheckState.Checked;
-            chkXXX.Location = new Point(614, 138);
+            chkXXX.Location = new Point(614, 179);
             chkXXX.Margin = new Padding(6, 0, 6, 0);
             chkXXX.Name = "chkXXX";
             chkXXX.Size = new Size(71, 29);
@@ -983,7 +1063,7 @@
             chkFullNudity.AutoSize = true;
             chkFullNudity.Checked = true;
             chkFullNudity.CheckState = CheckState.Checked;
-            chkFullNudity.Location = new Point(472, 138);
+            chkFullNudity.Location = new Point(472, 179);
             chkFullNudity.Margin = new Padding(6, 0, 6, 0);
             chkFullNudity.Name = "chkFullNudity";
             chkFullNudity.Size = new Size(123, 29);
@@ -997,7 +1077,7 @@
             chkNudity.AutoSize = true;
             chkNudity.Checked = true;
             chkNudity.CheckState = CheckState.Checked;
-            chkNudity.Location = new Point(367, 138);
+            chkNudity.Location = new Point(367, 179);
             chkNudity.Margin = new Padding(6, 0, 6, 0);
             chkNudity.Name = "chkNudity";
             chkNudity.Size = new Size(91, 29);
@@ -1011,7 +1091,7 @@
             chkTopless.AutoSize = true;
             chkTopless.Checked = true;
             chkTopless.CheckState = CheckState.Checked;
-            chkTopless.Location = new Point(256, 138);
+            chkTopless.Location = new Point(256, 179);
             chkTopless.Margin = new Padding(6, 0, 6, 0);
             chkTopless.Name = "chkTopless";
             chkTopless.Size = new Size(96, 29);
@@ -1025,7 +1105,7 @@
             chkNoNudity.AutoSize = true;
             chkNoNudity.Checked = true;
             chkNoNudity.CheckState = CheckState.Checked;
-            chkNoNudity.Location = new Point(118, 138);
+            chkNoNudity.Location = new Point(118, 179);
             chkNoNudity.Margin = new Padding(6, 0, 6, 0);
             chkNoNudity.Name = "chkNoNudity";
             chkNoNudity.Size = new Size(120, 29);
@@ -1037,7 +1117,7 @@
             // chkPublic
             // 
             chkPublic.AutoSize = true;
-            chkPublic.Location = new Point(13, 138);
+            chkPublic.Location = new Point(13, 179);
             chkPublic.Margin = new Padding(6, 0, 6, 0);
             chkPublic.Name = "chkPublic";
             chkPublic.Size = new Size(85, 29);
@@ -1215,6 +1295,12 @@
         private Label lblCollection;
         private Label lblAge;
         private Panel panelClip;
+        private Button cmdRewind;
+        private Button cmdPlayPause;
+        private Button cmdFastForward;
+        private Label lblPlaybackSpeed;
+        private ComboBox cmbPlaybackSpeed;
+        private Label lblPlaybackStatus;
         private Label lblFilterClip;
         private TextBox txtClipType;
         private NumericUpDown numMinSizeMB;

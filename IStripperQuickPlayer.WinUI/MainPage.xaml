@@ -1,0 +1,310 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="IStripperQuickPlayer.WinUI.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:IStripperQuickPlayer.WinUI.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:IStripperQuickPlayer.WinUI"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+    Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+    mc:Ignorable="d">
+
+    <Grid
+        Padding="18"
+        Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+        RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <CommandBar DefaultLabelPosition="Right">
+            <AppBarButton Click="Reload_Click" Icon="Refresh" Label="Reload" />
+            <AppBarButton Click="Favourite_Click" Icon="Favorite" Label="Favourite" />
+            <AppBarButton Click="NextClip_Click" Icon="Play" Label="Next Clip" />
+            <AppBarButton Click="NextCard_Click" Icon="Forward" Label="Next Card" />
+            <AppBarButton Click="Photos_Click" Icon="Pictures" Label="Photos" />
+            <AppBarButton Click="Wallpaper_Click" Icon="SetLockScreen" Label="Wallpaper" />
+            <AppBarButton Click="WallpaperOptions_Click" Icon="Setting" Label="Wallpaper Options" />
+            <AppBarButton Click="OpenBrowser_Click" Icon="World" Label="Browser" />
+            <AppBarButton Click="LoadPlaylist_Click" Icon="OpenFile" Label="Playlist" />
+            <AppBarButton Click="DeleteCard_Click" Icon="Delete" Label="Delete" />
+            <AppBarButton Click="Hotkeys_Click" Icon="Keyboard" Label="Hotkeys" />
+            <AppBarButton Click="Tray_Click" Icon="Remove" Label="Tray" />
+            <AppBarToggleButton x:Name="LockPlayerButton" Click="LockPlayer_Click" IsChecked="{Binding Settings.LockPlayer, Mode=TwoWay}" Label="Lock">
+                <AppBarToggleButton.Icon>
+                    <FontIcon Glyph="&#xE72E;" />
+                </AppBarToggleButton.Icon>
+            </AppBarToggleButton>
+            <AppBarToggleButton Click="DarkMode_Click" Icon="View" IsChecked="{Binding Settings.DarkMode, Mode=TwoWay}" Label="Dark" />
+        </CommandBar>
+
+        <Grid Grid.Row="1" ColumnSpacing="18">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="520" />
+                <ColumnDefinition Width="0.95*" MinWidth="420" />
+            </Grid.ColumnDefinitions>
+
+            <Grid RowSpacing="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="145" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock
+                        VerticalAlignment="Bottom"
+                        FontSize="18"
+                        Text="{Binding CardsShownText}" />
+
+                    <ComboBox
+                        Grid.Column="1"
+                        Header="Sort By"
+                        ItemsSource="{Binding SortOptions}"
+                        SelectedItem="{Binding Settings.SortBy, Mode=TwoWay}"
+                        SelectionChanged="SettingsChanged" />
+
+                    <ComboBox
+                        Grid.Column="2"
+                        Header="Direction"
+                        ItemsSource="{Binding SortDirections}"
+                        SelectedItem="{Binding Settings.SortDirection, Mode=TwoWay}"
+                        SelectionChanged="SettingsChanged" />
+
+                    <CheckBox
+                        Grid.Column="3"
+                        VerticalAlignment="Bottom"
+                        Checked="SettingsChanged"
+                        Content="Only Favourites"
+                        IsChecked="{Binding Settings.FavouritesFilter, Mode=TwoWay}"
+                        Unchecked="SettingsChanged" />
+
+                    <CheckBox
+                        Grid.Column="4"
+                        VerticalAlignment="Bottom"
+                        Checked="SettingsChanged"
+                        Content="Stars"
+                        IsChecked="{Binding Settings.ShowRatingStars, Mode=TwoWay}"
+                        Unchecked="SettingsChanged" />
+
+                    <Slider
+                        Grid.Column="5"
+                        Header="Scale"
+                        Maximum="2"
+                        Minimum="0.75"
+                        StepFrequency="0.05"
+                        Value="{Binding Settings.CardScale, Mode=TwoWay}"
+                        ValueChanged="SettingsChanged" />
+                </Grid>
+
+                <TextBox
+                    Grid.Row="1"
+                    Header="Search"
+                    PlaceholderText="model name or tag"
+                    Text="{Binding SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                <Grid Grid.Row="2" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="180" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <ComboBox
+                        Header="Filter"
+                        ItemsSource="{Binding FilterNames}"
+                        SelectedItem="{Binding SelectedFilterName, Mode=TwoWay}"
+                        SelectionChanged="FilterSelectionChanged" />
+                    <Button Grid.Column="1" VerticalAlignment="Bottom" Click="SaveFilter_Click" Content="Save" />
+                    <Button Grid.Column="2" VerticalAlignment="Bottom" Click="SaveFilterAs_Click" Content="Save As" />
+                    <Button Grid.Column="3" VerticalAlignment="Bottom" Click="DeleteFilter_Click" Content="Delete" />
+                    <Button Grid.Column="4" VerticalAlignment="Bottom" Click="AdvancedFilter_Click" Content="Edit" />
+                    <Button Grid.Column="5" VerticalAlignment="Bottom" Click="ImportFilter_Click" Content="Import" />
+                    <Button Grid.Column="6" VerticalAlignment="Bottom" Click="ExportFilter_Click" Content="Export" />
+                    <TextBox
+                        Grid.Column="7"
+                        Header="Filter Tags"
+                        Text="{Binding CurrentFilter.Tags, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        TextChanged="FilterChanged" />
+                </Grid>
+
+                <Border
+                    Grid.Row="3"
+                    Background="{ThemeResource LayerFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1">
+                    <controls:CardGrid
+                        x:Name="CardsGrid"
+                        CardScale="{Binding Settings.CardScale}"
+                        Cards="{Binding Cards}"
+                        CardContextRequested="CardsGrid_CardContextRequested"
+                        CardDoubleClicked="CardsGrid_CardDoubleClicked"
+                        HoverZoomRatio="{Binding Settings.ZoomOnHover}"
+                        RatingChanged="CardsGrid_RatingChanged"
+                        SelectedCardChanged="CardsGrid_SelectedCardChanged" />
+                </Border>
+            </Grid>
+
+            <Grid Grid.Column="1" RowSpacing="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="160" />
+                </Grid.RowDefinitions>
+
+                <Grid ColumnSpacing="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock FontSize="18" Text="{Binding NowPlayingText}" />
+                    <TextBlock Grid.Column="1" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Status}" />
+                </Grid>
+
+                <Grid Grid.Row="1" ColumnSpacing="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock
+                        VerticalAlignment="Bottom"
+                        FontSize="16"
+                        Text="{Binding SelectedCardTitle}" />
+                    <Button Grid.Column="1" Click="NextClip_Click" Content="Next Clip" />
+                    <Button Grid.Column="2" Click="NextCard_Click" Content="Next Card" />
+                    <Button Grid.Column="3" Click="Photos_Click" Content="Photos" />
+                    <Button Grid.Column="4" Click="Wallpaper_Click" Content="Wallpaper" />
+                    <Button Grid.Column="5" Click="ShowModel_Click" Content="Show Model" />
+                </Grid>
+
+                <Grid Grid.Row="2" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <CheckBox Checked="SettingsChanged" Content="Public" IsChecked="{Binding Settings.ClipFilter.Public, Mode=TwoWay}" Unchecked="SettingsChanged" />
+                    <CheckBox Grid.Column="1" Checked="SettingsChanged" Content="No Nudity" IsChecked="{Binding Settings.ClipFilter.NoNudity, Mode=TwoWay}" Unchecked="SettingsChanged" />
+                    <CheckBox Grid.Column="2" Checked="SettingsChanged" Content="Topless" IsChecked="{Binding Settings.ClipFilter.Topless, Mode=TwoWay}" Unchecked="SettingsChanged" />
+                    <CheckBox Grid.Column="3" Checked="SettingsChanged" Content="Nudity" IsChecked="{Binding Settings.ClipFilter.Nudity, Mode=TwoWay}" Unchecked="SettingsChanged" />
+                    <CheckBox Grid.Column="4" Checked="SettingsChanged" Content="Full Nudity" IsChecked="{Binding Settings.ClipFilter.FullNudity, Mode=TwoWay}" Unchecked="SettingsChanged" />
+                    <CheckBox Grid.Column="5" Checked="SettingsChanged" Content="XXX" IsChecked="{Binding Settings.ClipFilter.Xxx, Mode=TwoWay}" Unchecked="SettingsChanged" />
+                    <CheckBox Grid.Column="6" Checked="SettingsChanged" Content="Demo" IsChecked="{Binding Settings.ClipFilter.Demo, Mode=TwoWay}" Unchecked="SettingsChanged" />
+                    <NumberBox
+                        Grid.Column="7"
+                        Header="Min MB"
+                        Minimum="0"
+                        SmallChange="1"
+                        Value="{Binding Settings.MinSizeMB, Mode=TwoWay}"
+                        ValueChanged="SettingsChanged" />
+                    <TextBox
+                        Grid.Column="8"
+                        Header="Filter ClipType"
+                        Text="{Binding Settings.ClipFilter.ClipTypeSearch, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                        TextChanged="SettingsChanged" />
+                </Grid>
+
+                <ListView
+                    Grid.Row="3"
+                    ItemsSource="{Binding Clips}"
+                    SelectedItem="{Binding SelectedClip, Mode=TwoWay}">
+                    <ListView.Header>
+                        <Grid Padding="8,4" ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="42" />
+                                <ColumnDefinition Width="1.4*" />
+                                <ColumnDefinition Width="100" />
+                                <ColumnDefinition Width="1.2*" />
+                                <ColumnDefinition Width="70" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="Cl..." />
+                            <TextBlock Grid.Column="1" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="ClipName" />
+                            <TextBlock Grid.Column="2" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="Hotness" />
+                            <TextBlock Grid.Column="3" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="ClipType" />
+                            <TextBlock Grid.Column="4" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="Size" />
+                        </Grid>
+                    </ListView.Header>
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Padding="8,3" ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="42" />
+                                    <ColumnDefinition Width="1.4*" />
+                                    <ColumnDefinition Width="100" />
+                                    <ColumnDefinition Width="1.2*" />
+                                    <ColumnDefinition Width="70" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="{Binding Number}" />
+                                <TextBlock Grid.Column="1" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="2" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="{Binding Hotness}" />
+                                <TextBlock Grid.Column="3" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="{Binding Type}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="4" Foreground="{ThemeResource TextFillColorPrimaryBrush}" Text="{Binding Size}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <Grid Grid.Row="4" ColumnSpacing="18">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding SelectedCollectionText}" />
+                    <TextBlock Grid.Column="1" Text="{Binding SelectedResolutionText}" />
+                    <TextBlock Grid.Column="2" Text="{Binding SelectedRatingText}" />
+                </Grid>
+
+                <Grid Grid.Row="5" RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBox Header="User Tags" Text="{Binding UserTags, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+
+                    <TextBox
+                        Grid.Row="1"
+                        AcceptsReturn="True"
+                        IsReadOnly="True"
+                        Text="{Binding SelectedDescription}"
+                        TextWrapping="Wrap" />
+                </Grid>
+            </Grid>
+        </Grid>
+    </Grid>
+</Page>

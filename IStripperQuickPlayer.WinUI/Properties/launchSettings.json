@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "IStripperQuickPlayer.WinUI (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "IStripperQuickPlayer.WinUI (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -15,6 +15,8 @@ If you are not on windows 11 you should install Segoe Fluent Icons font from htt
 - clicking the "Now Playing" text will zoom to that card
 - button to play next clip in the cards list
 - hotkeys for next clip/card
+- pause/resume desktop playback, select 0.25x-4x speed, and seek backward or
+  forward by 10 seconds without reloading the active clip
 - reload models menu - use this when you have downloaded/bought new cards
 - filter clip list by explicitness/size/type
 - set windows wallpaper based on card now playing

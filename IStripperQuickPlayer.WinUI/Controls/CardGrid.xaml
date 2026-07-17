@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<UserControl
+    x:Class="IStripperQuickPlayer.WinUI.Controls.CardGrid"
+    x:Name="Root"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer
+        x:Name="ScrollHost"
+        Background="{ThemeResource LayerFillColorDefaultBrush}"
+        HorizontalScrollBarVisibility="Disabled"
+        HorizontalScrollMode="Disabled"
+        SizeChanged="ScrollHost_SizeChanged"
+        VerticalScrollBarVisibility="Auto"
+        VerticalScrollMode="Enabled"
+        ViewChanged="ScrollHost_ViewChanged"
+        ZoomMode="Disabled">
+        <Canvas
+            x:Name="ContentCanvas"
+            Background="{ThemeResource LayerFillColorDefaultBrush}"
+            DoubleTapped="ContentCanvas_DoubleTapped"
+            PointerExited="ContentCanvas_PointerExited"
+            PointerMoved="ContentCanvas_PointerMoved"
+            PointerPressed="ContentCanvas_PointerPressed"
+            RightTapped="ContentCanvas_RightTapped">
+            <Image
+                x:Name="ViewportImage"
+                IsHitTestVisible="False"
+                Stretch="None" />
+        </Canvas>
+    </ScrollViewer>
+</UserControl>
