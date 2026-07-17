@@ -47,15 +47,23 @@ namespace
     constexpr std::size_t AnimationFramesPerSecondOffset = 0x10C;
     constexpr std::size_t AnimationAlphaScratchSize =
         AnimationAlphaScratch2Offset - AnimationAlphaScratch1Offset;
-    constexpr std::size_t MaximumAlphaOutputSize = 16 * 1024 * 1024;
+    // Current high-resolution cards can carry a 6016x3172 alpha plane
+    // (19,082,752 bytes). Keep a conservative upper bound while allowing
+    // those native-resolution masks.
+    constexpr std::size_t MaximumAlphaOutputSize = 64 * 1024 * 1024;
     constexpr std::size_t SsvVideoDecoderOffset = 0x40;
+    constexpr std::size_t VideoFormatContextOffset = 0x38;
     constexpr std::size_t VideoFrameQueueOffset = 0x58;
     constexpr std::size_t VideoFrameQueueMutexOffset = 0x60;
     constexpr std::size_t VideoCurrentFrameOffset = 0x78;
+    constexpr std::size_t StreamIndexEntriesOffset = 0x1C8;
+    constexpr std::size_t StreamIndexEntryCountOffset = 0x1D0;
 
     constexpr int PlayingState = 3;
     constexpr int PausedState = 4;
     constexpr HRESULT BridgeSuccess = 1;
+    constexpr unsigned ExpectedAvformatVersion =
+        (57u << 16) | (47u << 8) | 101u;
 
     // Common prologue used by the MovieManager wrappers in vghd.exe 2.4.0.0.
     constexpr unsigned char ManagerWrapperSignature[] = {
@@ -105,7 +113,11 @@ namespace
         std::int64_t timestamp, int flags);
     using AvOptSetInt = int(__cdecl*)(void* target, const char* name,
         std::int64_t value, int searchFlags);
+    using AvformatVersion = unsigned(__cdecl*)();
     using VideoSeek = bool(__fastcall*)(void* video, int frame);
+    using QThreadRequestInterruption = void(__fastcall*)(void* thread);
+    using QThreadWait = bool(__fastcall*)(void* thread, unsigned long milliseconds);
+    using QThreadStart = void(__fastcall*)(void* thread, int priority);
     using VirtualAlloc2Action = PVOID(WINAPI*)(HANDLE process, PVOID baseAddress,
         SIZE_T size, ULONG allocationType, ULONG pageProtection,
         MEM_EXTENDED_PARAMETER* parameters, ULONG parameterCount);
@@ -127,6 +139,8 @@ namespace
     LONG volatile g_codecFlushCount = 0;
     LONG volatile g_alphaResetCount = 0;
     LONG volatile g_lastAlphaFrameBeforeReset = -1;
+    LONG volatile g_keyframeSeekCount = 0;
+    LONG volatile g_lastKeyframeSeekFrame = -1;
     SRWLOCK g_decodePatchLock = SRWLOCK_INIT;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
@@ -339,7 +353,159 @@ namespace
         return nullptr;
     }
 
-    bool ResetAnimationAlpha(void* animation)
+    bool FlushVideoCodec(void* formatContext)
+    {
+        void* codecContext = VideoCodecContext(formatContext);
+        const HMODULE avcodec = GetModuleHandleW(L"avcodec-57.dll");
+        const auto flush = avcodec == nullptr
+            ? nullptr
+            : reinterpret_cast<AvcodecFlushBuffers>(
+                GetProcAddress(avcodec, "avcodec_flush_buffers"));
+        if (codecContext == nullptr || flush == nullptr)
+        {
+            return false;
+        }
+
+        flush(codecContext);
+        InterlockedIncrement(&g_codecFlushCount);
+        return true;
+    }
+
+    struct AvIndexEntry57
+    {
+        std::int64_t position;
+        std::int64_t timestamp;
+        std::uint32_t flagsAndSize;
+        int minimumDistance;
+    };
+    static_assert(sizeof(AvIndexEntry57) == 24,
+        "Unexpected FFmpeg 3.1 index-entry layout");
+
+    bool FindVideoKeyframe(void* formatContext, int targetFrame, int totalFrames,
+        int& streamIndex, int& keyframeFrame, std::int64_t& timestamp)
+    {
+        const HMODULE avformat = GetModuleHandleW(L"avformat-57.dll");
+        const auto version = avformat == nullptr
+            ? nullptr
+            : reinterpret_cast<AvformatVersion>(
+                GetProcAddress(avformat, "avformat_version"));
+        if (version == nullptr || version() != ExpectedAvformatVersion ||
+            targetFrame < 0 || totalFrames <= 0)
+        {
+            return false;
+        }
+
+        auto formatBytes = reinterpret_cast<unsigned char*>(formatContext);
+        if (!IsReadable(formatContext, 0x38))
+        {
+            return false;
+        }
+
+        const int streamCount = *reinterpret_cast<const int*>(formatBytes + 0x2C);
+        void** streams = *reinterpret_cast<void***>(formatBytes + 0x30);
+        if (streamCount < 1 || streamCount > 64 ||
+            !IsReadable(streams,
+                static_cast<std::size_t>(streamCount) * sizeof(void*)))
+        {
+            return false;
+        }
+
+        for (int index = 0; index < streamCount; index++)
+        {
+            auto stream = reinterpret_cast<unsigned char*>(streams[index]);
+            if (!IsReadable(stream, StreamIndexEntryCountOffset + sizeof(int)))
+            {
+                continue;
+            }
+
+            void* codecContext = *reinterpret_cast<void**>(stream + 0x08);
+            if (!IsReadable(codecContext, 0x10) ||
+                *reinterpret_cast<const int*>(
+                    reinterpret_cast<unsigned char*>(codecContext) + 0x0C) != 0)
+            {
+                continue;
+            }
+
+            auto entries = *reinterpret_cast<AvIndexEntry57**>(
+                stream + StreamIndexEntriesOffset);
+            const int entryCount = *reinterpret_cast<const int*>(
+                stream + StreamIndexEntryCountOffset);
+            if (entryCount != totalFrames || targetFrame >= entryCount ||
+                !IsReadable(entries,
+                    static_cast<std::size_t>(entryCount) *
+                        sizeof(AvIndexEntry57)) ||
+                entries[0].timestamp != 0 ||
+                (entries[0].flagsAndSize & 1u) == 0)
+            {
+                return false;
+            }
+
+            for (int frame = targetFrame; frame >= 0; frame--)
+            {
+                if ((entries[frame].flagsAndSize & 1u) != 0)
+                {
+                    streamIndex = *reinterpret_cast<const int*>(stream);
+                    keyframeFrame = frame;
+                    timestamp = entries[frame].timestamp;
+                    return streamIndex >= 0;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    bool SeekVideoToKeyframe(void* video, int streamIndex, int keyframeFrame,
+        std::int64_t timestamp)
+    {
+        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const auto requestInterruption = qtCore == nullptr
+            ? nullptr
+            : reinterpret_cast<QThreadRequestInterruption>(GetProcAddress(
+                qtCore, "?requestInterruption@QThread@@QEAAXXZ"));
+        const auto wait = qtCore == nullptr
+            ? nullptr
+            : reinterpret_cast<QThreadWait>(GetProcAddress(
+                qtCore, "?wait@QThread@@QEAA_NK@Z"));
+        const auto start = qtCore == nullptr
+            ? nullptr
+            : reinterpret_cast<QThreadStart>(GetProcAddress(
+                qtCore, "?start@QThread@@QEAAXW4Priority@1@@Z"));
+        const auto seek = reinterpret_cast<AvSeekFrame>(
+            InterlockedCompareExchangePointer(
+                &g_originalAvSeekFrame, nullptr, nullptr));
+        auto videoBytes = reinterpret_cast<unsigned char*>(video);
+        void* formatContext = *reinterpret_cast<void**>(
+            videoBytes + VideoFormatContextOffset);
+        auto currentFrame = reinterpret_cast<int*>(
+            videoBytes + VideoCurrentFrameOffset);
+        if (requestInterruption == nullptr || wait == nullptr || start == nullptr ||
+            seek == nullptr || !IsReadable(formatContext, 0x38) ||
+            !IsWritable(currentFrame, sizeof(int)))
+        {
+            return false;
+        }
+
+        requestInterruption(video);
+        if (!wait(video, INFINITE))
+        {
+            start(video, 7);
+            return false;
+        }
+
+        const int result = seek(formatContext, streamIndex, timestamp, 1);
+        if (result >= 0)
+        {
+            *currentFrame = keyframeFrame;
+            FlushVideoCodec(formatContext);
+            InterlockedExchange(&g_lastKeyframeSeekFrame, keyframeFrame);
+            InterlockedIncrement(&g_keyframeSeekCount);
+        }
+        start(video, 7);
+        return result >= 0;
+    }
+
+    bool CanResetAnimationAlpha(void* animation)
     {
         auto animationBytes = reinterpret_cast<unsigned char*>(animation);
         if (!IsWritable(animation,
@@ -371,6 +537,27 @@ namespace
             return false;
         }
 
+        return true;
+    }
+
+    bool ResetAnimationAlpha(void* animation)
+    {
+        if (!CanResetAnimationAlpha(animation))
+        {
+            return false;
+        }
+
+        auto animationBytes = reinterpret_cast<unsigned char*>(animation);
+        void* output = *reinterpret_cast<void**>(
+            animationBytes + AnimationAlphaOutputOffset);
+        const int width = *reinterpret_cast<const int*>(
+            animationBytes + AnimationAlphaWidthOffset);
+        const int height = *reinterpret_cast<const int*>(
+            animationBytes + AnimationAlphaHeightOffset);
+        const std::size_t outputSize =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        void* scratch1 = animationBytes + AnimationAlphaScratch1Offset;
+        void* scratch2 = animationBytes + AnimationAlphaScratch2Offset;
         const int previousAlphaFrame = *reinterpret_cast<const int*>(
             animationBytes + AnimationAlphaFrameOffset);
         std::memset(output, 0, outputSize);
@@ -621,17 +808,7 @@ namespace
             : -1;
         if (result >= 0)
         {
-            void* codecContext = VideoCodecContext(formatContext);
-            const HMODULE avcodec = GetModuleHandleW(L"avcodec-57.dll");
-            const auto flush = avcodec == nullptr
-                ? nullptr
-                : reinterpret_cast<AvcodecFlushBuffers>(
-                    GetProcAddress(avcodec, "avcodec_flush_buffers"));
-            if (codecContext != nullptr && flush != nullptr)
-            {
-                flush(codecContext);
-                InterlockedIncrement(&g_codecFlushCount);
-            }
+            FlushVideoCodec(formatContext);
         }
         return result;
     }
@@ -1090,7 +1267,7 @@ namespace
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
-    return 9;
+    return 10;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -1319,6 +1496,16 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetLastAlphaFrameBefore
     return InterlockedCompareExchange(&g_lastAlphaFrameBeforeReset, -1, -1);
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetKeyframeSeekCount()
+{
+    return InterlockedCompareExchange(&g_keyframeSeekCount, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetLastKeyframeSeekFrame()
+{
+    return InterlockedCompareExchange(&g_lastKeyframeSeekFrame, -1, -1);
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilliseconds(
     SIZE_T targetMilliseconds)
 {
@@ -1418,72 +1605,109 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
                         }
                         else
                         {
-                            void* video = VideoDecoder(animation);
-                            if (video == nullptr)
+                            if (!CanResetAnimationAlpha(animation))
                             {
-                                result = EngineError();
+                                result = E_FAIL;
                             }
                             else
                             {
-                                auto decoderFrameAddress = reinterpret_cast<int*>(
-                                    reinterpret_cast<unsigned char*>(video) +
-                                    VideoCurrentFrameOffset);
-                                int decoderFrame = *decoderFrameAddress;
-                                bool decoderReady = true;
-                                if (targetFrame < decoderFrame)
+                                void* video = VideoDecoder(animation);
+                                if (video == nullptr)
                                 {
-                                    const auto seek = FunctionAt<VideoSeek>(VideoSeekRva);
-                                    if (!seek(video, 0))
-                                    {
-                                        result = E_FAIL;
-                                        decoderReady = false;
-                                    }
-                                    else
-                                    {
-                                        decoderFrame = *decoderFrameAddress;
-                                    }
+                                    result = EngineError();
                                 }
-
-                                if (decoderReady)
+                                else
                                 {
-                                    if (!ResetAnimationAlpha(animation))
+                                    auto decoderFrameAddress = reinterpret_cast<int*>(
+                                        reinterpret_cast<unsigned char*>(video) +
+                                        VideoCurrentFrameOffset);
+                                    int decoderFrame = *decoderFrameAddress;
+                                    bool decoderReady = true;
+                                    int streamIndex = -1;
+                                    int keyframeFrame = -1;
+                                    std::int64_t keyframeTimestamp = 0;
+                                    const bool hasKeyframe = FindVideoKeyframe(
+                                        *reinterpret_cast<void**>(
+                                            reinterpret_cast<unsigned char*>(video) +
+                                            VideoFormatContextOffset),
+                                        targetFrame, totalFrames, streamIndex,
+                                        keyframeFrame, keyframeTimestamp);
+                                    const bool useKeyframe = hasKeyframe &&
+                                        (targetFrame < decoderFrame ||
+                                            keyframeFrame > decoderFrame + 30);
+                                    if (useKeyframe)
                                     {
-                                        result = E_FAIL;
-                                    }
-                                    else
-                                    {
-                                        int droppedFrames = 0;
-                                        // Publish the persistent conversion target
-                                        // before waking the independent decoder
-                                        // worker through ArmDecoderCatchup.
-                                        InterlockedExchange(
-                                            &g_fastForwardTargetFrame, targetFrame);
-                                        if (targetFrame < decoderFrame ||
-                                            !ArmDecoderCatchup(video, targetFrame,
-                                                lockMutex, unlockMutex, droppedFrames))
+                                        decoderReady = SeekVideoToKeyframe(video,
+                                            streamIndex, keyframeFrame,
+                                            keyframeTimestamp);
+                                        if (decoderReady)
                                         {
-                                            InterlockedExchange(
-                                                &g_fastForwardTargetFrame, -1);
+                                            decoderFrame = *decoderFrameAddress;
+                                        }
+                                    }
+
+                                    if (targetFrame < decoderFrame)
+                                    {
+                                        const auto seek = FunctionAt<VideoSeek>(VideoSeekRva);
+                                        if (!seek(video, 0))
+                                        {
+                                            result = E_FAIL;
+                                            decoderReady = false;
+                                        }
+                                        else
+                                        {
+                                            decoderFrame = *decoderFrameAddress;
+                                            decoderReady = true;
+                                        }
+                                    }
+                                    else if (!decoderReady)
+                                    {
+                                        // A failed forward keyframe probe leaves the
+                                        // existing sequential decoder state usable.
+                                        decoderReady = true;
+                                    }
+
+                                    if (decoderReady)
+                                    {
+                                        if (!ResetAnimationAlpha(animation))
+                                        {
                                             result = E_FAIL;
                                         }
                                         else
                                         {
-                                            // Movie::advance asks CAnim for
-                                            // currentFrame + 1. Its alpha position
-                                            // was reset above, so CAnim rebuilds
-                                            // every delta-alpha record through the
-                                            // exact colour target before Movie
-                                            // publishes that target as current.
-                                            *currentAddress = targetFrame - 1;
+                                            int droppedFrames = 0;
+                                            // Publish the persistent conversion target
+                                            // before waking the independent decoder
+                                            // worker through ArmDecoderCatchup.
                                             InterlockedExchange(
-                                                &g_lastDecoderCatchupDistance,
-                                                targetFrame - decoderFrame);
-                                            InterlockedExchange(
-                                                &g_lastDroppedVideoFrames,
-                                                droppedFrames);
-                                            InterlockedExchangePointer(
-                                                &g_fastForwardMovie, movie);
-                                            result = BridgeSuccess;
+                                                &g_fastForwardTargetFrame, targetFrame);
+                                            if (targetFrame < decoderFrame ||
+                                                !ArmDecoderCatchup(video, targetFrame,
+                                                    lockMutex, unlockMutex, droppedFrames))
+                                            {
+                                                InterlockedExchange(
+                                                    &g_fastForwardTargetFrame, -1);
+                                                result = E_FAIL;
+                                            }
+                                            else
+                                            {
+                                                // Movie::advance asks CAnim for
+                                                // currentFrame + 1. Its alpha position
+                                                // was reset above, so CAnim rebuilds
+                                                // every delta-alpha record through the
+                                                // exact colour target before Movie
+                                                // publishes that target as current.
+                                                *currentAddress = targetFrame - 1;
+                                                InterlockedExchange(
+                                                    &g_lastDecoderCatchupDistance,
+                                                    targetFrame - decoderFrame);
+                                                InterlockedExchange(
+                                                    &g_lastDroppedVideoFrames,
+                                                    droppedFrames);
+                                                InterlockedExchangePointer(
+                                                    &g_fastForwardMovie, movie);
+                                                result = BridgeSuccess;
+                                            }
                                         }
                                     }
                                 }

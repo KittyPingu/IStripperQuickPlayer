@@ -54,7 +54,7 @@ namespace IStripperQuickPlayer
         }
 
         private const string SupportedVghdVersion = "2.4.0.0";
-        private const int PlaybackBridgeVersion = 9;
+        private const int PlaybackBridgeVersion = 10;
         private const int MovieManagerPlayRva = 0x280CF0;
         private const int MovieManagerPauseRva = 0x280D10;
         private const int MovieManagerResumeRva = 0x280D30;
@@ -107,6 +107,13 @@ namespace IStripperQuickPlayer
         private volatile bool playbackFastDecodeEnabled;
         private volatile bool playbackBusy;
         private double requestedPlaybackSpeed = 1.0;
+        private readonly System.Windows.Forms.Timer playbackTimelineTimer = new() { Interval = 250 };
+        private bool playbackTimelinePolling;
+        private bool playbackTimelineDragging;
+        private int playbackTimelineDurationMilliseconds;
+        private string playbackTimelineAnimationPath = "";
+        private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
+        private DateTime playbackSpeedLastApplied = DateTime.MinValue;
         private bool formIsClosing;
         private ControlScrollListener _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
@@ -132,6 +139,8 @@ namespace IStripperQuickPlayer
         public Form1()
         {
             InitializeComponent();
+            playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
+            playbackTimelineTimer.Start();
             SetSkin();
         }
 
@@ -1121,6 +1130,7 @@ namespace IStripperQuickPlayer
                 cmdPlayPause.Enabled = enabled;
                 cmdFastForward.Enabled = enabled;
                 cmbPlaybackSpeed.Enabled = enabled;
+                trkPlaybackPosition.Enabled = enabled && playbackManagerRegistered;
             }
 
             if (InvokeRequired)
@@ -1148,6 +1158,7 @@ namespace IStripperQuickPlayer
             cmdPlayPause.Enabled = enabled;
             cmdFastForward.Enabled = enabled;
             cmbPlaybackSpeed.Enabled = enabled;
+            trkPlaybackPosition.Enabled = enabled && playbackManagerRegistered;
         }
 
         private int CallPlaybackApi(string apiName, ulong? parameter = null)
@@ -1430,7 +1441,144 @@ namespace IStripperQuickPlayer
             });
         }
 
+        private void playbackTimelineTimer_Tick(object? sender, EventArgs e)
+        {
+            if (formIsClosing || playbackTimelinePolling || playbackBusy ||
+                !playbackBridgeLoaded)
+            {
+                return;
+            }
+
+            playbackTimelinePolling = true;
+            try
+            {
+                string animationPath = GetCurrentAnimationPath();
+                if (!string.Equals(animationPath, playbackTimelineAnimationPath,
+                        StringComparison.Ordinal))
+                {
+                    playbackTimelineAnimationPath = animationPath;
+                    playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
+                    playbackSpeedLastApplied = DateTime.MinValue;
+                    if (!playbackTimelineDragging)
+                    {
+                        trkPlaybackPosition.Maximum = 1;
+                        trkPlaybackPosition.Value = 0;
+                        playbackTimelineDurationMilliseconds = 0;
+                        UpdatePlaybackTime(0, 0);
+                    }
+                }
+
+                long managerAddress = Interlocked.Read(ref playbackMovieManagerAddress);
+                if (!playbackManagerRegistered && managerAddress != 0)
+                {
+                    int registered = CallPlaybackApi("IStripperSetMovieManager",
+                        unchecked((ulong)managerAddress));
+                    playbackManagerRegistered = registered >= 0;
+                }
+                if (!playbackManagerRegistered)
+                {
+                    trkPlaybackPosition.Enabled = false;
+                    return;
+                }
+
+                int state = CallPlaybackApi("IStripperGetState");
+                if (state != 3 && state != 4)
+                {
+                    return;
+                }
+
+                DateTime now = DateTime.UtcNow;
+                if (now < playbackSpeedReapplyUntil &&
+                    now - playbackSpeedLastApplied >= TimeSpan.FromSeconds(1))
+                {
+                    SetPlaybackRate(requestedPlaybackSpeed);
+                    playbackSpeedLastApplied = now;
+                }
+
+                int elapsed = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
+                int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
+                playbackTimelineDurationMilliseconds = Math.Max(0, total);
+                if (!playbackTimelineDragging)
+                {
+                    int maximum = Math.Max(1, playbackTimelineDurationMilliseconds);
+                    if (trkPlaybackPosition.Maximum != maximum)
+                    {
+                        trkPlaybackPosition.Maximum = maximum;
+                        trkPlaybackPosition.SmallChange = Math.Min(1_000, maximum);
+                        trkPlaybackPosition.LargeChange = Math.Min(10_000, maximum);
+                    }
+                    trkPlaybackPosition.Value = Math.Clamp(elapsed, 0, maximum);
+                    UpdatePlaybackTime(elapsed, playbackTimelineDurationMilliseconds);
+                }
+                trkPlaybackPosition.Enabled = !playbackBusy;
+            }
+            catch
+            {
+                // Clip transitions briefly invalidate the movie pointer. The next
+                // timer tick retries without replacing the useful operation status.
+            }
+            finally
+            {
+                playbackTimelinePolling = false;
+            }
+        }
+
+        private void UpdatePlaybackTime(int elapsedMilliseconds, int totalMilliseconds)
+        {
+            lblPlaybackTime.Text =
+                $"{FormatPlaybackTime(elapsedMilliseconds)} / {FormatPlaybackTime(totalMilliseconds)}";
+        }
+
+        private void trkPlaybackPosition_MouseDown(object sender, MouseEventArgs e)
+        {
+            playbackTimelineDragging = true;
+        }
+
+        private void trkPlaybackPosition_Scroll(object sender, EventArgs e)
+        {
+            UpdatePlaybackTime(trkPlaybackPosition.Value,
+                playbackTimelineDurationMilliseconds);
+        }
+
+        private async void trkPlaybackPosition_MouseUp(object sender, MouseEventArgs e)
+        {
+            playbackTimelineDragging = false;
+            int target = trkPlaybackPosition.Value;
+            await RunPlaybackOperationAsync(token => SeekAbsoluteAsync(target, token));
+        }
+
+        private void trkPlaybackPosition_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Left || e.KeyCode == Keys.Right ||
+                e.KeyCode == Keys.PageUp || e.KeyCode == Keys.PageDown ||
+                e.KeyCode == Keys.Home || e.KeyCode == Keys.End)
+            {
+                playbackTimelineDragging = true;
+            }
+        }
+
+        private async void trkPlaybackPosition_KeyUp(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.Left && e.KeyCode != Keys.Right &&
+                e.KeyCode != Keys.PageUp && e.KeyCode != Keys.PageDown &&
+                e.KeyCode != Keys.Home && e.KeyCode != Keys.End)
+            {
+                return;
+            }
+
+            playbackTimelineDragging = false;
+            int target = trkPlaybackPosition.Value;
+            await RunPlaybackOperationAsync(token => SeekAbsoluteAsync(target, token));
+        }
+
         private async Task SeekRelativeAsync(int deltaMilliseconds, CancellationToken cancellationToken)
+        {
+            int current = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
+            await SeekAbsoluteAsync(current + deltaMilliseconds, cancellationToken);
+        }
+
+        private async Task SeekAbsoluteAsync(int requestedTarget,
+            CancellationToken cancellationToken)
         {
             int state = RequirePlaybackResult("IStripperGetState");
             if (state != 3 && state != 4)
@@ -1442,7 +1590,7 @@ namespace IStripperQuickPlayer
             double speedToRestore = requestedPlaybackSpeed;
             int current = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
             int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
-            int target = Math.Max(0, current + deltaMilliseconds);
+            int target = Math.Max(0, requestedTarget);
             if (total > 0)
             {
                 target = Math.Min(target, Math.Max(0, total - 250));
@@ -1457,6 +1605,9 @@ namespace IStripperQuickPlayer
                 : 0;
             int codecFlushCountBefore = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetCodecFlushCount"))
+                : 0;
+            int keyframeSeekCountBefore = playbackFastDecodeEnabled
+                ? Math.Max(0, CallPlaybackApi("IStripperGetKeyframeSeekCount"))
                 : 0;
             Stopwatch seekStopwatch = Stopwatch.StartNew();
             int finalPosition = current;
@@ -1502,7 +1653,8 @@ namespace IStripperQuickPlayer
                 }
             }
 
-            string action = deltaMilliseconds < 0 ? "Rewound" : "Fast-forwarded";
+            string action = target < current ? "Rewound" :
+                target > current ? "Fast-forwarded" : "Stayed";
             string stateText = wasPlaying ? "playing" : "paused";
             int skippedScaleCount = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetFastDecodeSkippedScaleCount"))
@@ -1523,6 +1675,12 @@ namespace IStripperQuickPlayer
             int codecFlushCount = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetCodecFlushCount"))
                 : codecFlushCountBefore;
+            int keyframeSeekCount = playbackFastDecodeEnabled
+                ? Math.Max(0, CallPlaybackApi("IStripperGetKeyframeSeekCount"))
+                : keyframeSeekCountBefore;
+            int keyframeFrame = keyframeSeekCount > keyframeSeekCountBefore
+                ? Math.Max(0, CallPlaybackApi("IStripperGetLastKeyframeSeekFrame"))
+                : 0;
             string acceleration = decoderCatchupDistance > 0
                 ? $" Decoder catch-up: {decoderCatchupDistance} frames in {seekStopwatch.Elapsed.TotalSeconds:0.00}s; " +
                   $"{skippedDuringSeek} colour conversions skipped and {droppedVideoFrames} stale queued frames dropped."
@@ -1533,8 +1691,11 @@ namespace IStripperQuickPlayer
             string codecFlush = codecFlushCount > codecFlushCountBefore
                 ? " VP9 reference and delayed-frame state flushed after demux rewind."
                 : "";
+            string keyframeSeek = keyframeSeekCount > keyframeSeekCountBefore
+                ? $" Colour decode started at indexed VP9 keyframe {keyframeFrame}."
+                : "";
             SetPlaybackStatus(
-                $"{action} to about {FormatPlaybackTime(finalPosition)}; {stateText} at {speedToRestore:0.##}x.{acceleration}{alphaRebuild}{codecFlush}");
+                $"{action} to about {FormatPlaybackTime(finalPosition)}; {stateText} at {speedToRestore:0.##}x.{acceleration}{alphaRebuild}{codecFlush}{keyframeSeek}");
         }
 
         private async Task<int?> TryDecodeTargetFrameAsync(int current, int target,
@@ -2135,6 +2296,8 @@ namespace IStripperQuickPlayer
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             formIsClosing = true;
+            playbackTimelineTimer.Stop();
+            playbackTimelineTimer.Dispose();
             playbackLifetime.Cancel();
             timerhook?.Dispose();
             if (playbackBridgeLoaded && playbackManagerRegistered)

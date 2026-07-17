@@ -109,6 +109,8 @@
             lblPlaybackSpeed = new Label();
             cmbPlaybackSpeed = new ComboBox();
             lblPlaybackStatus = new Label();
+            trkPlaybackPosition = new TrackBar();
+            lblPlaybackTime = new Label();
             lblFilterClip = new Label();
             cmdWallpaper = new Button();
             txtClipType = new TextBox();
@@ -134,6 +136,7 @@
             ((System.ComponentModel.ISupportInitialize)errorProvider1).BeginInit();
             panelModelDetails.SuspendLayout();
             panelClip.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)trkPlaybackPosition).BeginInit();
             ((System.ComponentModel.ISupportInitialize)numMinSizeMB).BeginInit();
             ((System.ComponentModel.ISupportInitialize)splitContainer1).BeginInit();
             splitContainer1.Panel1.SuspendLayout();
@@ -836,6 +839,8 @@
             // 
             // panelClip
             // 
+            panelClip.Controls.Add(lblPlaybackTime);
+            panelClip.Controls.Add(trkPlaybackPosition);
             panelClip.Controls.Add(lblPlaybackStatus);
             panelClip.Controls.Add(cmbPlaybackSpeed);
             panelClip.Controls.Add(lblPlaybackSpeed);
@@ -931,6 +936,31 @@
             lblPlaybackStatus.Size = new Size(719, 30);
             lblPlaybackStatus.TabIndex = 59;
             lblPlaybackStatus.Text = "Waiting for iStripper 2.4.0.0...";
+            //
+            // trkPlaybackPosition
+            //
+            trkPlaybackPosition.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            trkPlaybackPosition.Enabled = false;
+            trkPlaybackPosition.Location = new Point(141, 94);
+            trkPlaybackPosition.Maximum = 1;
+            trkPlaybackPosition.Name = "trkPlaybackPosition";
+            trkPlaybackPosition.Size = new Size(1081, 56);
+            trkPlaybackPosition.TabIndex = 60;
+            trkPlaybackPosition.TickStyle = TickStyle.None;
+            trkPlaybackPosition.Scroll += trkPlaybackPosition_Scroll;
+            trkPlaybackPosition.KeyDown += trkPlaybackPosition_KeyDown;
+            trkPlaybackPosition.KeyUp += trkPlaybackPosition_KeyUp;
+            trkPlaybackPosition.MouseDown += trkPlaybackPosition_MouseDown;
+            trkPlaybackPosition.MouseUp += trkPlaybackPosition_MouseUp;
+            //
+            // lblPlaybackTime
+            //
+            lblPlaybackTime.Location = new Point(13, 102);
+            lblPlaybackTime.Name = "lblPlaybackTime";
+            lblPlaybackTime.Size = new Size(122, 30);
+            lblPlaybackTime.TabIndex = 61;
+            lblPlaybackTime.Text = "0:00 / 0:00";
+            lblPlaybackTime.TextAlign = ContentAlignment.MiddleRight;
             // 
             // lblFilterClip
             // 
@@ -1230,6 +1260,7 @@
             ((System.ComponentModel.ISupportInitialize)errorProvider1).EndInit();
             panelModelDetails.ResumeLayout(false);
             panelModelDetails.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)trkPlaybackPosition).EndInit();
             panelClip.ResumeLayout(false);
             panelClip.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)numMinSizeMB).EndInit();
@@ -1301,6 +1332,8 @@
         private Label lblPlaybackSpeed;
         private ComboBox cmbPlaybackSpeed;
         private Label lblPlaybackStatus;
+        private TrackBar trkPlaybackPosition;
+        private Label lblPlaybackTime;
         private Label lblFilterClip;
         private TextBox txtClipType;
         private NumericUpDown numMinSizeMB;
