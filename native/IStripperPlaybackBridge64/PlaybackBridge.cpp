@@ -2957,7 +2957,11 @@ namespace
     {
         LONGLONG rateBits = 0;
         std::memcpy(&rateBits, &playRate, sizeof(playRate));
-        InterlockedExchange64(&g_audioPlaybackRateBits, rateBits);
+        if (InterlockedExchange64(
+                &g_audioPlaybackRateBits, rateBits) == rateBits)
+        {
+            return;
+        }
 
         AcquireSRWLockExclusive(&g_audioControlLock);
         if (!IsMovieAudioHeld(movie))

@@ -59,6 +59,7 @@ namespace IStripperQuickPlayer
         Action? actionNextCard = null;
         Combination? toggleLock;// = Combination.FromString("Control+Alt+C");
         Action? actionToggleLock = null;
+        IKeyboardMouseEvents? keyHook;
         //deviare2 hooking
         private NktSpyMgr _spyMgr;
         private Int32 vghd_procID = 0;
@@ -94,7 +95,7 @@ namespace IStripperQuickPlayer
         private ControlScrollListener _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
-        bool playerlocked = Properties.Settings.Default.LockPlayer;
+        bool playerlocked;
         //private WebView2DevToolsContext devtoolsContext = null;
 
         private void actNextClip()
@@ -769,6 +770,7 @@ namespace IStripperQuickPlayer
             }
             Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
             lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
+            playerlocked = lockPlayerToolStripMenuItem.Checked;
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             cmbSortDirection.Text = Properties.Settings.Default.SortDirection;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
@@ -886,7 +888,9 @@ namespace IStripperQuickPlayer
                 {nextCard, actionNextCard},
                 {toggleLock, actToggleLock}
             };
-            Hook.GlobalEvents().OnCombination(assignment);
+            keyHook?.Dispose();
+            keyHook = Hook.GlobalEvents();
+            keyHook.OnCombination(assignment);
         }
 
         System.Threading.Timer timerhook;
@@ -2252,6 +2256,7 @@ namespace IStripperQuickPlayer
             playbackTimelineTimer.Stop();
             playbackTimelineTimer.Dispose();
             playbackLifetime.Cancel();
+            keyHook?.Dispose();
             timerhook?.Dispose();
             if (playerLockBridgeLoaded)
             {
@@ -3020,55 +3025,8 @@ namespace IStripperQuickPlayer
             ChangePlayerLocked();
         }
 
-        private bool isPinnedToTaskbar()
+        private void doTaskbarPadlock()
         {
-            var pinnedTaskBarItemsPath = Environment.ExpandEnvironmentVariables(@"%AppData%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar");
-            var pinnedTaskBarFiles = Directory.GetFiles(pinnedTaskBarItemsPath);
-
-            foreach (var file in pinnedTaskBarFiles)
-            {
-                FileInfo fileInfo = new FileInfo(file);
-                if (fileInfo.FullName.ToLower().IndexOf("istripperquickplayer") > 0) return true;
-            }
-            return false;
-        }
-
-
-        [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "GetStartupInfoA", CharSet = CharSet.Auto)]
-        public static extern void GetStartupInfo(out STARTUPINFO lpStartupInfo);
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-        public struct STARTUPINFO
-        {
-            public uint cb;
-            public string lpReserved;
-            public string lpDesktop;
-            public string lpTitle;
-            public uint dwX;
-            public uint dwY;
-            public uint dwXSize;
-            public uint dwYSize;
-            public uint dwXCountChars;
-            public uint dwYCountChars;
-            public uint dwFillAttribute;
-            public uint dwFlags;
-            public ushort wShowWindow;
-            public ushort cbReserved2;
-            public IntPtr lpReserved2;
-            public IntPtr hStdInput;
-            public IntPtr hStdOutput;
-            public IntPtr hStdError;
-        }
-
-        string startupPath = "";
-        private async void doTaskbarPadlock()
-        {
-            if (startupPath == "")
-            {
-                STARTUPINFO startInfo;
-                GetStartupInfo(out startInfo);
-                startupPath = startInfo.lpTitle;
-            }
             if (!TaskbarManager.IsPlatformSupported)
             {
                 uint WM_SETICON = 0x80u;
@@ -3086,10 +3044,12 @@ namespace IStripperQuickPlayer
                 }
                 return;
             }
-            if ((startupPath.EndsWith(".lnk") || isPinnedToTaskbar()) && playerlocked)
-                TaskbarManager.Instance.SetOverlayIcon(Properties.Resources.padlock, "iStripper is locked");
-            else
-                TaskbarManager.Instance.SetOverlayIcon(null, "");
+
+            this.Icon =
+                Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
+            TaskbarManager.Instance.SetOverlayIcon(
+                playerlocked ? Properties.Resources.padlock : null,
+                playerlocked ? "iStripper is locked" : "");
         }
 
         private void ChangePlayerLocked()
@@ -3107,12 +3067,10 @@ namespace IStripperQuickPlayer
             if (!playerlocked)
             {
                 notifyIcon1.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
-                this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             }
             else
             {
                 notifyIcon1.Icon = Properties.Resources.locked;
-                this.Icon = Properties.Resources.locked;
             }
             doTaskbarPadlock();
         }
