@@ -57,7 +57,7 @@
   </ItemGroup>
   <ItemGroup>
     <Reference Include="ColorSlider">
-      <HintPath>ColorSlider.dll</HintPath>
+      <HintPath>dependencies\ColorSlider.dll</HintPath>
     </Reference>
     <Reference Include="DesktopWallpaper">
       <HintPath>dependencies\DesktopWallpaper.dll</HintPath>

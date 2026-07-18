@@ -1,0 +1,107 @@
+name: Build installer
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Set package version
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            "0.36.$env:GITHUB_RUN_NUMBER"
+          }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build native playback bridge
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -products * `
+            -find MSBuild\**\Bin\MSBuild.exe | Select-Object -First 1
+          if (-not $msbuild) {
+            throw "MSBuild was not found."
+          }
+          & $msbuild native\IStripperPlaybackBridge64\IStripperPlaybackBridge64.vcxproj `
+            /p:Configuration=Release /p:Platform=x64 /m
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Publish self-contained application
+        shell: pwsh
+        run: |
+          $project = "IstripperQuickPlayer\IstripperQuickPlayer.csproj"
+          $publishDir = "$env:GITHUB_WORKSPACE\artifacts\publish"
+          dotnet restore $project --runtime win-x64
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          dotnet publish $project --configuration Release --runtime win-x64 `
+            --self-contained true --no-restore --output $publishDir `
+            -p:Version=$env:APP_VERSION -p:DebugType=None -p:DebugSymbols=false
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          Copy-Item "IstripperQuickPlayer\dependencies\*" $publishDir -Force
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc installer\IStripperQuickPlayer.iss `
+            "/DAppVersion=$env:APP_VERSION" `
+            "/DSourceDir=$env:GITHUB_WORKSPACE\artifacts\publish" `
+            "/DOutputDir=$env:GITHUB_WORKSPACE\artifacts\installer"
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installer
+          path: artifacts/installer/*.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: installer
+          path: release
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/*.exe --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" release/*.exe --verify-tag --generate-notes --repo "$GITHUB_REPOSITORY"
+          fi

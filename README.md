@@ -21,3 +21,9 @@ If you are not on windows 11 you should install Segoe Fluent Icons font from htt
 - filter clip list by explicitness/size/type
 - set windows wallpaper based on card now playing
 
+## Releases
+
+Every push to `master` and pull request targeting it builds a self-contained
+Windows installer. Pushing a tag such as `v0.36.0` also creates or updates the
+matching GitHub release.
+
