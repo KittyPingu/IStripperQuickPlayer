@@ -477,7 +477,9 @@ namespace IStripperQuickPlayer.BLL
 
             Image? image = null;
             string localapp = getDataFolderPath();
-            string fullpath = Path.Combine(localapp, card.name.Split(new char[] { '-' }).First(), card.name + ".jpg");
+            string fullpath = card.imagefile ?? "";
+            if (!File.Exists(fullpath))
+                fullpath = Path.Combine(localapp, card.name.Split(new char[] { '-' }).First(), card.name + ".jpg");
             if (!File.Exists(fullpath)) {
                 fullpath = Path.Combine(localapp, card.name.Split(new char[] { '-' }).First(), card.name + "c.jpg");
                 if (!File.Exists(fullpath))

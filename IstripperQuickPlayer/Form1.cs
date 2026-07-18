@@ -124,6 +124,8 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("platinum"));
             System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("doubleDiamond"));
             System.Diagnostics.Debug.Assert(!HasPlatinumPlaybackEntitlement("gold"));
+            System.Diagnostics.Debug.Assert(IsPlayingClip(
+                "f0636_6144401.vghd", @"f0636\f0636_6144401.vghd"));
 #endif
             InitializeComponent();
             RefreshPlaybackControlVisibility();
@@ -650,6 +652,7 @@ namespace IStripperQuickPlayer
                     listClips.Items.Add(item);
                 }
             }
+            RefreshPlayingClipHighlight();
             listClips.EndUpdate();
             txtDescription.Text = card.description;
             lblAge.Text = "Age: " + card.modelAge;
@@ -1368,6 +1371,7 @@ namespace IStripperQuickPlayer
                 if (!string.Equals(animationPath, playbackTimelineAnimationPath,
                         StringComparison.Ordinal))
                 {
+                    ShowNowPlaying(animationPath);
                     string previousAnimationPath = playbackTimelineAnimationPath;
                     bool previousAnimationReachedEnd = PlaybackReachedEnd(
                         playbackLastKnownElapsedMilliseconds,
@@ -2197,10 +2201,18 @@ namespace IStripperQuickPlayer
         {
             try
             {
-                if (path == nowPlayingPath) return;
+                if (path == nowPlayingPath)
+                {
+                    listClips.BeginInvoke(RefreshPlayingClipHighlight);
+                    return;
+                }
                 nowPlayingPath = path;
                 nowPlaying = "";
-                if (path == "") return;
+                if (path == "")
+                {
+                    listClips.BeginInvoke(RefreshPlayingClipHighlight);
+                    return;
+                }
                 if (Datastore.modelcards == null) return;
                 if (Datastore.modelcards.Count > 0)
                 {
@@ -2217,6 +2229,7 @@ namespace IStripperQuickPlayer
                     }
                     nowPlayingClipNumber = Convert.ToInt32(modelClip.clipNumber);
                 }
+                listClips.BeginInvoke(RefreshPlayingClipHighlight);
                 if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying; }));
                 if (listClips.Items.Count == 0)
                     this.BeginInvoke((Action)(() => NowPlayingClick(true)));
@@ -2232,6 +2245,21 @@ namespace IStripperQuickPlayer
                 nowPlaying != "")
                 BeginInvoke((Action)(() => _ = ChangeWallpaper()));
         }
+
+        private void RefreshPlayingClipHighlight()
+        {
+            foreach (ListViewItem item in listClips.Items)
+            {
+                bool isPlaying = item.SubItems.Count > 1 &&
+                    IsPlayingClip(item.SubItems[1].Text, nowPlayingPath);
+                item.BackColor = isPlaying ? SystemColors.Info : listClips.BackColor;
+                item.ForeColor = isPlaying ? SystemColors.InfoText : listClips.ForeColor;
+            }
+        }
+
+        private static bool IsPlayingClip(string clipName, string animationPath) =>
+            string.Equals(clipName, animationPath.Split('\\').LastOrDefault(),
+                StringComparison.OrdinalIgnoreCase);
 
         private void chk_CheckedChanged(object sender, EventArgs e)
         {
