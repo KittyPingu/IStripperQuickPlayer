@@ -184,6 +184,7 @@ namespace
     LONG volatile g_fastDecodeResolverMask = 0;
     LONG volatile g_fastDecodeInstallStage = 0;
     LONG volatile g_playerLocked = 0;
+    LONG volatile g_bridgePinned = 0;
     SRWLOCK g_decodePatchLock = SRWLOCK_INIT;
     SRWLOCK g_offsetResolveLock = SRWLOCK_INIT;
     SRWLOCK g_alphaCheckpointLock = SRWLOCK_INIT;
@@ -191,6 +192,7 @@ namespace
     SRWLOCK g_movieWindowLock = SRWLOCK_INIT;
     HMODULE g_bridgeModule = nullptr;
     HWINEVENTHOOK g_movieWindowEventHook = nullptr;
+    UINT g_movieWindowProbeMessage = 0;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
     void* g_wmvRateAnimation = nullptr;
@@ -204,7 +206,10 @@ namespace
         WNDPROC original = nullptr;
     };
 
+    // ponytail: fixed storage keeps window callbacks allocation-free; raise
+    // this only if vghd ever creates more than 64 movie windows.
     constexpr int MaximumMovieWindows = 64;
+    constexpr LRESULT MovieWindowProbeResult = 0x514C4F43;
     MovieWindowSubclass g_movieWindows[MaximumMovieWindows] = {};
 
     struct AlphaCheckpoint
@@ -224,6 +229,24 @@ namespace
     void* g_alphaCheckpointOutput = nullptr;
     int g_alphaCheckpointWidth = 0;
     int g_alphaCheckpointHeight = 0;
+
+    HRESULT PinBridge()
+    {
+        if (InterlockedCompareExchange(&g_bridgePinned, 0, 0) != 0)
+        {
+            return BridgeSuccess;
+        }
+
+        HMODULE pinnedModule = nullptr;
+        if (!GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<LPCWSTR>(&PinBridge), &pinnedModule))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+        InterlockedExchange(&g_bridgePinned, 1);
+        return BridgeSuccess;
+    }
 
     bool IsMovieWindow(HWND window)
     {
@@ -256,6 +279,11 @@ namespace
     LRESULT CALLBACK MovieWindowProc(HWND window, UINT message,
         WPARAM wParam, LPARAM lParam)
     {
+        if (g_movieWindowProbeMessage != 0 &&
+            message == g_movieWindowProbeMessage)
+        {
+            return MovieWindowProbeResult;
+        }
         if (message == WM_NCHITTEST &&
             InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
         {
@@ -268,6 +296,19 @@ namespace
             : CallWindowProcW(original, window, message, wParam, lParam);
     }
 
+    bool TryHasMovieWindowProc(HWND window, bool& active)
+    {
+        DWORD_PTR result = 0;
+        if (g_movieWindowProbeMessage == 0 ||
+            SendMessageTimeoutW(window, g_movieWindowProbeMessage, 0, 0,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &result) == 0)
+        {
+            return false;
+        }
+        active = result == static_cast<DWORD_PTR>(MovieWindowProbeResult);
+        return true;
+    }
+
     bool SubclassMovieWindow(HWND window)
     {
         if (InterlockedCompareExchange(&g_playerLocked, 0, 0) == 0 ||
@@ -276,21 +317,35 @@ namespace
             return false;
         }
 
+        bool alreadySubclassed = false;
+        const bool probeCompleted =
+            TryHasMovieWindowProc(window, alreadySubclassed);
         AcquireSRWLockExclusive(&g_movieWindowLock);
         MovieWindowSubclass* empty = nullptr;
+        MovieWindowSubclass* existing = nullptr;
         for (auto& entry : g_movieWindows)
         {
             if (entry.window == window)
             {
-                ReleaseSRWLockExclusive(&g_movieWindowLock);
-                return true;
+                existing = &entry;
+                break;
             }
             if (empty == nullptr && entry.window == nullptr)
             {
                 empty = &entry;
             }
         }
-        if (empty == nullptr)
+        if (alreadySubclassed)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return existing != nullptr;
+        }
+        if (existing != nullptr && !probeCompleted)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return false;
+        }
+        if (existing == nullptr && empty == nullptr)
         {
             ReleaseSRWLockExclusive(&g_movieWindowLock);
             return false;
@@ -304,8 +359,9 @@ namespace
             ReleaseSRWLockExclusive(&g_movieWindowLock);
             return false;
         }
-        empty->window = window;
-        empty->original = reinterpret_cast<WNDPROC>(previous);
+        MovieWindowSubclass* entry = existing == nullptr ? empty : existing;
+        entry->window = window;
+        entry->original = reinterpret_cast<WNDPROC>(previous);
         ReleaseSRWLockExclusive(&g_movieWindowLock);
         return true;
     }
@@ -320,24 +376,6 @@ namespace
                 entry = {};
                 break;
             }
-        }
-        ReleaseSRWLockExclusive(&g_movieWindowLock);
-    }
-
-    void RestoreMovieWindows()
-    {
-        AcquireSRWLockExclusive(&g_movieWindowLock);
-        for (auto& entry : g_movieWindows)
-        {
-            if (entry.window != nullptr && entry.original != nullptr &&
-                IsWindow(entry.window) &&
-                reinterpret_cast<WNDPROC>(GetWindowLongPtrW(
-                    entry.window, GWLP_WNDPROC)) == &MovieWindowProc)
-            {
-                SetWindowLongPtrW(entry.window, GWLP_WNDPROC,
-                    reinterpret_cast<LONG_PTR>(entry.original));
-            }
-            entry = {};
         }
         ReleaseSRWLockExclusive(&g_movieWindowLock);
     }
@@ -369,6 +407,20 @@ namespace
     {
         if (locked)
         {
+            const HRESULT pinResult = PinBridge();
+            if (pinResult < 0)
+            {
+                return pinResult;
+            }
+            if (g_movieWindowProbeMessage == 0)
+            {
+                g_movieWindowProbeMessage = RegisterWindowMessageW(
+                    L"IStripperQuickPlayer.MovieWindowProc.v18");
+                if (g_movieWindowProbeMessage == 0)
+                {
+                    return HRESULT_FROM_WIN32(GetLastError());
+                }
+            }
             InterlockedExchange(&g_playerLocked, 1);
             if (g_movieWindowEventHook == nullptr)
             {
@@ -391,12 +443,6 @@ namespace
         }
 
         InterlockedExchange(&g_playerLocked, 0);
-        if (g_movieWindowEventHook != nullptr)
-        {
-            UnhookWinEvent(g_movieWindowEventHook);
-            g_movieWindowEventHook = nullptr;
-        }
-        RestoreMovieWindows();
         return BridgeSuccess;
     }
 
@@ -3771,15 +3817,11 @@ namespace
         }
         InterlockedExchange(&g_fastDecodeInstallStage, 16);
 
-        // The process-local function-pointer hook must not outlive this DLL.
-        // Pinning is safer than relying on Deviare's custom-DLL unload timing;
-        // Windows releases it normally when vghd.exe exits.
-        HMODULE pinnedModule = nullptr;
-        if (!GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                reinterpret_cast<LPCWSTR>(&FastAvcodecOpen2), &pinnedModule))
+        // The process-local function-pointer hooks must not outlive this DLL.
+        const HRESULT pinResult = PinBridge();
+        if (pinResult < 0)
         {
-            return HRESULT_FROM_WIN32(GetLastError());
+            return pinResult;
         }
         InterlockedExchange(&g_fastDecodeInstallStage, 32);
 
@@ -3863,7 +3905,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 17;
+    return 18;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

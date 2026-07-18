@@ -32,7 +32,7 @@ namespace IStripperQuickPlayer
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
 
-        private const int PlaybackBridgeVersion = 17;
+        private const int PlaybackBridgeVersion = 18;
 
         private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
@@ -74,6 +74,7 @@ namespace IStripperQuickPlayer
         private volatile bool playbackSeekingSupported = true;
         private volatile int playbackDecoderKind;
         private volatile bool playbackBusy;
+        private volatile bool playbackControlsAvailableForAccount;
         private double requestedPlaybackSpeed = 1.0;
         private readonly System.Windows.Forms.Timer playbackTimelineTimer = new() { Interval = 250 };
         private bool playbackTimelinePolling;
@@ -116,8 +117,12 @@ namespace IStripperQuickPlayer
 #if DEBUG
             System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
             System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
+            System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("platinum"));
+            System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("doubleDiamond"));
+            System.Diagnostics.Debug.Assert(!HasPlatinumPlaybackEntitlement("gold"));
 #endif
             InitializeComponent();
+            RefreshPlaybackControlVisibility();
             playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
             playbackTimelineTimer.Start();
             SetSkin();
@@ -143,6 +148,7 @@ namespace IStripperQuickPlayer
 
         private void ReloadModels()
         {
+            RefreshPlaybackControlVisibility();
             ReloadStaticProperties();
             ModelsLstLoader lstLoader = new ModelsLstLoader();
             listModelsNew.Items.Clear();
@@ -1052,13 +1058,7 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                bool enabled = playbackBridgeLoaded && !playbackBusy;
-                cmdRewind.Enabled = enabled && playbackSeekingSupported;
-                cmdPlayPause.Enabled = enabled;
-                cmdFastForward.Enabled = enabled && playbackSeekingSupported;
-                cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported;
-                trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered &&
-                    playbackSeekingSupported;
+                UpdatePlaybackControlsEnabled();
             }
 
             if (InvokeRequired)
@@ -1081,13 +1081,47 @@ namespace IStripperQuickPlayer
             {
                 return;
             }
-            bool enabled = playbackBridgeLoaded && !busy && !formIsClosing;
+            UpdatePlaybackControlsEnabled();
+        }
+
+        private void UpdatePlaybackControlsEnabled()
+        {
+            bool enabled = playbackControlsAvailableForAccount &&
+                playbackBridgeLoaded && !playbackBusy && !formIsClosing;
             cmdRewind.Enabled = enabled && playbackSeekingSupported;
             cmdPlayPause.Enabled = enabled;
             cmdFastForward.Enabled = enabled && playbackSeekingSupported;
             cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported;
             trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered &&
                 playbackSeekingSupported;
+        }
+
+        private static bool HasPlatinumPlaybackEntitlement(string? userLevel)
+        {
+            return userLevel?.Trim().ToLowerInvariant() is
+                "platinum" or "diamond" or "doublediamond" or
+                "triplediamond" or "elite" or "master";
+        }
+
+        private void RefreshPlaybackControlVisibility(string? userLevel = null)
+        {
+            if (userLevel == null)
+            {
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Totem\vghd", false);
+                userLevel = key?.GetValue("PreviousUserLevel")?.ToString();
+            }
+
+            bool visible = HasPlatinumPlaybackEntitlement(userLevel);
+            playbackControlsAvailableForAccount = visible;
+            cmdRewind.Visible = visible;
+            cmdPlayPause.Visible = visible;
+            cmdFastForward.Visible = visible;
+            lblPlaybackSpeed.Visible = visible;
+            cmbPlaybackSpeed.Visible = visible;
+            lblPlaybackTime.Visible = visible;
+            trkPlaybackPosition.Visible = visible;
+            UpdatePlaybackControlsEnabled();
         }
 
         private int SetVghdPlayerLocked(bool locked)
@@ -1172,6 +1206,10 @@ namespace IStripperQuickPlayer
 
         private async Task RunPlaybackOperationAsync(Func<CancellationToken, Task> operation)
         {
+            if (!playbackControlsAvailableForAccount)
+            {
+                return;
+            }
             if (!await playbackOperationLock.WaitAsync(0))
             {
                 SetPlaybackStatus("Another playback operation is already running.");
@@ -1268,7 +1306,7 @@ namespace IStripperQuickPlayer
         private void playbackTimelineTimer_Tick(object? sender, EventArgs e)
         {
             if (formIsClosing || playbackTimelinePolling || playbackBusy ||
-                !playbackBridgeLoaded)
+                !playbackControlsAvailableForAccount || !playbackBridgeLoaded)
             {
                 return;
             }
@@ -1804,8 +1842,17 @@ namespace IStripperQuickPlayer
                 }
                 if (param.Name == "lpValueName") keyname = param.Value.ToString();
             }
-            if (keyname != "CurrentAnim" || length < 1) return;
+            if (length < 1) return;
             string str = GetStringFromPointer(pointer, length);
+            if (keyname == "PreviousUserLevel")
+            {
+                if (!formIsClosing && IsHandleCreated)
+                {
+                    BeginInvoke((Action)(() => RefreshPlaybackControlVisibility(str)));
+                }
+                return;
+            }
+            if (keyname != "CurrentAnim") return;
             System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
 
                 //check if this propsed card is in the filterd list

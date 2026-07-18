@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v16
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v18
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -299,6 +299,16 @@ keyframe seeking, bounded per-animation alpha checkpoints, and synchronized
 legacy WMV reader restarts. A modern checkpoint restores the output plane and
 the complete mutable CAnim alpha block before composition; both decoder paths
 finish by letting vghd's own `Movie::advance` publish the final position.
+
+## Player locking
+
+Lock Player no longer hooks every `CallWindowProcW` call in vghd. Bridge v18
+subclasses only vghd's Qt movie windows, returns `HTTRANSPARENT` for
+`WM_NCHITTEST`, and watches for replacement movie windows. The subclass remains
+installed for that vghd process and unlock only disables its hit-test override;
+this avoids dismantling and rebuilding a Qt-managed window-procedure chain.
+The bridge is pinned for the remaining vghd process lifetime before installing
+any process-local window or decoder hook.
 
 ## Build
 
