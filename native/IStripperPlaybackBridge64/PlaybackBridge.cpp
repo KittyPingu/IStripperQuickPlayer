@@ -25,6 +25,9 @@ namespace
     std::uintptr_t MovieVtableRva = 0;
     std::uintptr_t VideoFfmpegVtableRva = 0;
     std::uintptr_t VideoWmvCoreVtableRva = 0;
+    std::uintptr_t SsvReaderVtableRva = 0;
+    std::uintptr_t WmvClearQueuesRva = 0;
+    std::uintptr_t WmvPeekFrameRva = 0;
 
     std::size_t MovieStateOffset = 0;
     std::size_t MovieAnimationOffset = 0;
@@ -57,10 +60,22 @@ namespace
     std::size_t VideoCurrentFrameOffset = 0;
     std::size_t StreamIndexEntriesOffset = 0;
     std::size_t StreamIndexEntryCountOffset = 0;
+    std::size_t WmvReaderObjectOffset = 0;
+    std::size_t WmvReaderInterfaceOffset = 0;
+    std::size_t WmvAdvancedInterfaceOffset = 0;
+    std::size_t WmvStatusEventOffset = 0;
+    std::size_t WmvLastResultOffset = 0;
+    std::size_t WmvSampleCounterOffset = 0;
+    std::size_t WmvReaderPausedOffset = 0;
+    std::size_t WmvQueueMutexOffset = 0;
+    std::size_t WmvColorQueueOffset = 0;
+    std::size_t WmvAlphaQueueOffset = 0;
 
     constexpr int PlayingState = 3;
     constexpr int PausedState = 4;
     constexpr HRESULT BridgeSuccess = 1;
+    constexpr HRESULT WmvInvalidRequest =
+        static_cast<HRESULT>(0xC00D002B);
     constexpr unsigned ExpectedAvformatVersion =
         (57u << 16) | (47u << 8) | 101u;
 
@@ -86,6 +101,20 @@ namespace
         0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x0F, 0x29
     };
 
+    constexpr unsigned char WmvClearQueuesSignature[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x74,
+        0x24, 0x20, 0x55, 0x57, 0x41, 0x54, 0x41, 0x56,
+        0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0xC9, 0x48,
+        0x81, 0xEC, 0xD0, 0x00, 0x00, 0x00, 0x48, 0x8B,
+        0xF1
+    };
+
+    constexpr unsigned char WmvPeekFrameSignature[] = {
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B,
+        0xD9, 0x48, 0x83, 0xC1, 0x68, 0x48, 0x89, 0x4C,
+        0x24, 0x30
+    };
+
     constexpr std::size_t DecodeScaleCallLength = 6;
     constexpr std::size_t DecoderWorkerTargetLoadLength = 8;
 
@@ -100,6 +129,15 @@ namespace
         std::int64_t value, int searchFlags);
     using AvformatVersion = unsigned(__cdecl*)();
     using VideoSeek = bool(__fastcall*)(void* video, int frame);
+    using WmvAction = HRESULT(__fastcall*)(void* reader);
+    using WmvStart = HRESULT(__fastcall*)(void* reader,
+        std::uint64_t startTime, std::uint64_t duration, float rate,
+        void* context);
+    using WmvSetUserClock = HRESULT(__fastcall*)(void* reader, BOOL enabled);
+    using WmvDeliverTime = HRESULT(__fastcall*)(void* reader,
+        std::uint64_t time);
+    using WmvClearQueues = void(__fastcall*)(void* reader);
+    using WmvPeekFrame = void*(__fastcall*)(void* reader);
     using QThreadRequestInterruption = void(__fastcall*)(void* thread);
     using QThreadWait = bool(__fastcall*)(void* thread, unsigned long milliseconds);
     using QThreadStart = void(__fastcall*)(void* thread, int priority);
@@ -108,6 +146,7 @@ namespace
         MEM_EXTENDED_PARAMETER* parameters, ULONG parameterCount);
 
     PVOID volatile g_activeMovie = nullptr;
+    PVOID volatile g_activeAnimation = nullptr;
     LONG volatile g_compatibilityMask = -1;
     LONG volatile g_fastForwardCompatibility = -1;
     PVOID volatile g_originalAvcodecOpen2 = nullptr;
@@ -137,8 +176,13 @@ namespace
     SRWLOCK g_decodePatchLock = SRWLOCK_INIT;
     SRWLOCK g_offsetResolveLock = SRWLOCK_INIT;
     SRWLOCK g_alphaCheckpointLock = SRWLOCK_INIT;
+    SRWLOCK g_wmvRestartLock = SRWLOCK_INIT;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
+    void* g_wmvRateAnimation = nullptr;
+    void* g_wmvRateVideo = nullptr;
+    double g_wmvRate = 1.0;
+    bool g_wmvUserClock = false;
 
     struct AlphaCheckpoint
     {
@@ -376,6 +420,29 @@ namespace
             }
         }
         return false;
+    }
+
+    bool IsExecutableMemory(const void* address)
+    {
+        MEMORY_BASIC_INFORMATION memory = {};
+        if (address == nullptr ||
+            VirtualQuery(address, &memory, sizeof(memory)) != sizeof(memory) ||
+            memory.State != MEM_COMMIT ||
+            (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+        {
+            return false;
+        }
+
+        switch (memory.Protect & 0xFF)
+        {
+        case PAGE_EXECUTE:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        default:
+            return false;
+        }
     }
 
     const unsigned char* FindSequence(const unsigned char* start,
@@ -713,8 +780,13 @@ namespace
     {
         VideoFfmpegVtableRva = FindVtableRva(".?AVVideoFFmpeg@@");
         VideoWmvCoreVtableRva = FindVtableRva(".?AVVideoWmvCore@@");
+        SsvReaderVtableRva = FindVtableRva(".?AVCSsvReader@@");
         if (!IsRvaInImage(VideoFfmpegVtableRva,
-                sizeof(void*) * 15))
+                sizeof(void*) * 15) ||
+            !IsRvaInImage(VideoWmvCoreVtableRva,
+                sizeof(void*) * 15) ||
+            !IsRvaInImage(SsvReaderVtableRva,
+                sizeof(void*) * 5))
         {
             return false;
         }
@@ -800,10 +872,190 @@ namespace
         {
             return false;
         }
+
+        auto wmvVtable = reinterpret_cast<void**>(
+            ImageBase() + VideoWmvCoreVtableRva);
+        auto wmvDestroy = reinterpret_cast<unsigned char*>(wmvVtable[3]);
+        auto wmvGetFrame = reinterpret_cast<unsigned char*>(wmvVtable[13]);
+        auto ssvVtable = reinterpret_cast<void**>(
+            ImageBase() + SsvReaderVtableRva);
+        auto onStatus = reinterpret_cast<unsigned char*>(ssvVtable[3]);
+        auto onSample = reinterpret_cast<unsigned char*>(ssvVtable[4]);
+        if (!IsExecutableAddress(wmvDestroy) ||
+            !IsExecutableAddress(wmvGetFrame) ||
+            !IsExecutableAddress(onStatus) ||
+            !IsExecutableAddress(onSample))
+        {
+            return false;
+        }
+
+        const unsigned char wmvReaderLoadPrefix[] = { 0x48, 0x8B, 0x49 };
+        const auto wmvReaderLoad = FindSequence(wmvDestroy, 64,
+            wmvReaderLoadPrefix, sizeof(wmvReaderLoadPrefix));
+        if (wmvReaderLoad == nullptr)
+        {
+            return false;
+        }
+        WmvReaderObjectOffset = wmvReaderLoad[3];
+
+        WmvReaderInterfaceOffset = 0;
+        WmvSampleCounterOffset = 0;
+        WmvReaderPausedOffset = 0;
+        for (std::size_t offset = 0; offset + 10 <= 512; offset++)
+        {
+            const auto candidate = onSample + offset;
+            if (candidate[0] == 0x48 && candidate[1] == 0x8B &&
+                candidate[2] == 0x4E && candidate[4] == 0x48 &&
+                candidate[5] == 0x8B && candidate[6] == 0x01 &&
+                candidate[7] == 0xFF && candidate[8] == 0x50 &&
+                candidate[9] == 0x60)
+            {
+                WmvReaderInterfaceOffset = candidate[3];
+            }
+            if (candidate[0] == 0x8B && candidate[1] == 0x4E &&
+                candidate[3] == 0x89 && candidate[4] == 0x48 &&
+                candidate[5] == 0x20)
+            {
+                WmvSampleCounterOffset = candidate[2];
+            }
+            if (candidate[0] == 0x80 && candidate[1] == 0x7E &&
+                candidate[3] == 0x00)
+            {
+                WmvReaderPausedOffset = candidate[2];
+            }
+        }
+
+        WmvQueueMutexOffset = 0;
+        WmvColorQueueOffset = 0;
+        WmvAlphaQueueOffset = 0;
+        for (std::size_t offset = 0; offset + 13 <= 512; offset++)
+        {
+            const auto candidate = onSample + offset;
+            if (candidate[0] == 0x48 && candidate[1] == 0x83 &&
+                candidate[2] == 0xC1 && candidate[3] >= 0x20 &&
+                (candidate[3] & 7) == 0)
+            {
+                int matchingAdds = 0;
+                for (std::size_t other = 0; other + 4 <= 512; other++)
+                {
+                    const auto otherCandidate = onSample + other;
+                    if (otherCandidate[0] == 0x48 &&
+                        otherCandidate[1] == 0x83 &&
+                        otherCandidate[2] == 0xC1 &&
+                        otherCandidate[3] == candidate[3])
+                    {
+                        matchingAdds++;
+                    }
+                }
+                if (matchingAdds >= 2)
+                {
+                    WmvQueueMutexOffset = candidate[3];
+                }
+            }
+
+            // The colour callback checks QListData::end - begin immediately
+            // after loading its completed-frame queue.
+            if (candidate[0] == 0x48 && candidate[1] == 0x8B &&
+                candidate[2] == 0x86 &&
+                candidate[7] == 0x8B && candidate[8] == 0x48 &&
+                candidate[9] == 0x0C &&
+                candidate[10] == 0x2B && candidate[11] == 0x48 &&
+                candidate[12] == 0x08)
+            {
+                WmvColorQueueOffset =
+                    *reinterpret_cast<const std::uint32_t*>(candidate + 3);
+            }
+        }
+
+        if (WmvColorQueueOffset > 0)
+        {
+            for (std::size_t offset = 0; offset + 12 <= 512; offset++)
+            {
+                const auto candidate = onSample + offset;
+                if (candidate[0] != 0x48 || candidate[1] != 0x8D ||
+                    candidate[2] != 0x8E || candidate[7] != 0xE8)
+                {
+                    continue;
+                }
+
+                const std::size_t queueOffset =
+                    *reinterpret_cast<const std::uint32_t*>(candidate + 3);
+                if (queueOffset > WmvColorQueueOffset &&
+                    queueOffset <= WmvColorQueueOffset + 0x20 &&
+                    (queueOffset & 7) == 0)
+                {
+                    WmvAlphaQueueOffset = queueOffset;
+                }
+            }
+        }
+
+        WmvAdvancedInterfaceOffset = 0;
+        WmvStatusEventOffset = 0;
+        WmvLastResultOffset = 0;
+        for (std::size_t offset = 0; offset + 6 <= 512; offset++)
+        {
+            const auto candidate = onStatus + offset;
+            if (offset + 12 <= 512 &&
+                candidate[0] == 0x48 && candidate[1] == 0x8B &&
+                candidate[2] == 0x4B && candidate[4] == 0x48 &&
+                candidate[5] == 0x8B && candidate[6] == 0x01 &&
+                candidate[7] == 0x33 && candidate[8] == 0xD2 &&
+                candidate[9] == 0xFF && candidate[10] == 0x50 &&
+                candidate[11] == 0x28)
+            {
+                WmvAdvancedInterfaceOffset = candidate[3];
+            }
+            if (candidate[0] == 0x89 && candidate[1] == 0x7B)
+            {
+                if (WmvLastResultOffset != 0 &&
+                    WmvLastResultOffset != candidate[2])
+                {
+                    return false;
+                }
+                WmvLastResultOffset = candidate[2];
+            }
+            if (candidate[0] == 0x48 && candidate[1] == 0x8B &&
+                candidate[2] == 0x4B && candidate[4] == 0xFF &&
+                candidate[5] == 0x15)
+            {
+                if (WmvStatusEventOffset != 0 &&
+                    WmvStatusEventOffset != candidate[3])
+                {
+                    return false;
+                }
+                WmvStatusEventOffset = candidate[3];
+            }
+        }
+
+        auto clearQueues = FindUniqueFunction(WmvClearQueuesSignature,
+            sizeof(WmvClearQueuesSignature), -1);
+        WmvClearQueuesRva = clearQueues == nullptr
+            ? 0
+            : RvaFromAddress(clearQueues);
+
+        auto peekFrame = FindUniqueFunction(WmvPeekFrameSignature,
+            sizeof(WmvPeekFrameSignature), -1);
+        WmvPeekFrameRva = peekFrame == nullptr
+            ? 0
+            : RvaFromAddress(peekFrame);
+
         return VideoFrameQueueOffset > 0 &&
             VideoFrameQueueMutexOffset > 0 &&
             VideoFormatContextOffset > 0 &&
-            IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*));
+            IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)) &&
+            WmvReaderObjectOffset > 0 &&
+            WmvReaderInterfaceOffset > 0 &&
+            WmvAdvancedInterfaceOffset > 0 &&
+            WmvStatusEventOffset > 0 &&
+            WmvLastResultOffset > 0 &&
+            WmvSampleCounterOffset > 0 &&
+            WmvReaderPausedOffset > 0 &&
+            WmvQueueMutexOffset > 0 &&
+            WmvColorQueueOffset > 0 &&
+            WmvAlphaQueueOffset > WmvColorQueueOffset &&
+            IsRvaInImage(WmvClearQueuesRva,
+                sizeof(WmvClearQueuesSignature)) &&
+            IsRvaInImage(WmvPeekFrameRva, 64);
     }
 
     void ImageProfileSection(wchar_t (&section)[64])
@@ -853,6 +1105,12 @@ namespace
         WriteResolvedValue(profilePath, section,
             L"VideoWmvCoreVtableRva", VideoWmvCoreVtableRva);
         WriteResolvedValue(profilePath, section,
+            L"SsvReaderVtableRva", SsvReaderVtableRva);
+        WriteResolvedValue(profilePath, section,
+            L"WmvClearQueuesRva", WmvClearQueuesRva);
+        WriteResolvedValue(profilePath, section,
+            L"WmvPeekFrameRva", WmvPeekFrameRva);
+        WriteResolvedValue(profilePath, section,
             L"VideoSeekRva", VideoSeekRva);
         WriteResolvedValue(profilePath, section,
             L"DecoderWorkerTargetLoadRva",
@@ -875,6 +1133,26 @@ namespace
             L"VideoFrameQueueMutexOffset", VideoFrameQueueMutexOffset);
         WriteResolvedValue(profilePath, section,
             L"VideoCurrentFrameOffset", VideoCurrentFrameOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvReaderObjectOffset", WmvReaderObjectOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvReaderInterfaceOffset", WmvReaderInterfaceOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvAdvancedInterfaceOffset", WmvAdvancedInterfaceOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvStatusEventOffset", WmvStatusEventOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvLastResultOffset", WmvLastResultOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvSampleCounterOffset", WmvSampleCounterOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvReaderPausedOffset", WmvReaderPausedOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvQueueMutexOffset", WmvQueueMutexOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvColorQueueOffset", WmvColorQueueOffset);
+        WriteResolvedValue(profilePath, section,
+            L"WmvAlphaQueueOffset", WmvAlphaQueueOffset);
     }
 
     bool EnsureEngineOffsets()
@@ -1301,6 +1579,10 @@ namespace
 
     void* DiscoverActiveMovie()
     {
+        void* previousMovie = ActiveMovie();
+        void* previousAnimation = InterlockedCompareExchangePointer(
+            &g_activeAnimation, nullptr, nullptr);
+        void* reusedMovie = nullptr;
         SYSTEM_INFO systemInfo = {};
         GetSystemInfo(&systemInfo);
         const auto minimum = reinterpret_cast<std::uintptr_t>(
@@ -1343,12 +1625,21 @@ namespace
                         candidate + sizeof(void*) <= regionEnd;
                         candidate += sizeof(void*))
                     {
+                        void* movie = reinterpret_cast<void*>(candidate);
                         if (*reinterpret_cast<void**>(candidate) ==
                                 expectedVtable &&
-                            IsActiveMovieCandidate(
-                                reinterpret_cast<void*>(candidate)))
+                            IsActiveMovieCandidate(movie))
                         {
-                            return reinterpret_cast<void*>(candidate);
+                            void* animation = *reinterpret_cast<void**>(
+                                reinterpret_cast<unsigned char*>(movie) +
+                                    MovieAnimationOffset);
+                            if (previousMovie == nullptr ||
+                                movie != previousMovie ||
+                                animation != previousAnimation)
+                            {
+                                return movie;
+                            }
+                            reusedMovie = movie;
                         }
                     }
                 }
@@ -1359,7 +1650,7 @@ namespace
             }
             address = regionEnd;
         }
-        return nullptr;
+        return reusedMovie;
     }
 
     void* VideoCodecContext(void* formatContext)
@@ -1926,6 +2217,236 @@ namespace
     T FunctionAt(std::uintptr_t rva)
     {
         return reinterpret_cast<T>(ImageBase() + rva);
+    }
+
+    HRESULT ManagerError();
+
+    int WmvQueueDepth(void* ssvReader, std::size_t queueOffset)
+    {
+        auto queueAddress = reinterpret_cast<unsigned char*>(ssvReader) +
+            queueOffset;
+        if (!IsReadable(queueAddress, sizeof(void*)))
+        {
+            return -1;
+        }
+
+        void* data = *reinterpret_cast<void**>(queueAddress);
+        if (!IsReadable(data, 16))
+        {
+            return -1;
+        }
+
+        const int begin = *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(data) + 8);
+        const int end = *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(data) + 12);
+        return begin >= 0 && end >= begin && end - begin <= 4096
+            ? end - begin
+            : -1;
+    }
+
+    bool WmvOutputQueuesPrimed(void* ssvReader)
+    {
+        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const auto lockMutex = qtCore == nullptr
+            ? nullptr
+            : reinterpret_cast<MutexAction>(GetProcAddress(
+                qtCore, "?lock@QMutex@@QEAAXXZ"));
+        const auto unlockMutex = qtCore == nullptr
+            ? nullptr
+            : reinterpret_cast<MutexAction>(GetProcAddress(
+                qtCore, "?unlock@QMutex@@QEAAXXZ"));
+        if (lockMutex == nullptr || unlockMutex == nullptr ||
+            !IsReadable(ssvReader, WmvAlphaQueueOffset + sizeof(void*)))
+        {
+            return false;
+        }
+
+        void* mutex = reinterpret_cast<unsigned char*>(ssvReader) +
+            WmvQueueMutexOffset;
+        bool locked = false;
+        bool primed = false;
+        __try
+        {
+            lockMutex(mutex);
+            locked = true;
+            primed = WmvQueueDepth(ssvReader, WmvColorQueueOffset) > 0 &&
+                WmvQueueDepth(ssvReader, WmvAlphaQueueOffset) > 0;
+        }
+        __finally
+        {
+            if (locked)
+            {
+                unlockMutex(mutex);
+            }
+        }
+        return primed;
+    }
+
+    HRESULT RestartWmvReader(void* video, int firstFrame,
+        int framesPerSecond, int totalFrames, bool useUserClock)
+    {
+        if (!IsWmvDecoder(video) || firstFrame < 0 ||
+            framesPerSecond <= 0 || totalFrames <= 0)
+        {
+            return E_INVALIDARG;
+        }
+
+        auto videoBytes = reinterpret_cast<unsigned char*>(video);
+        if (!IsReadable(videoBytes + WmvReaderObjectOffset, sizeof(void*)))
+        {
+            return ManagerError();
+        }
+        void* ssvReader = *reinterpret_cast<void**>(
+            videoBytes + WmvReaderObjectOffset);
+        if (!IsReadable(ssvReader, sizeof(void*)) ||
+            *reinterpret_cast<void**>(ssvReader) !=
+                ImageBase() + SsvReaderVtableRva)
+        {
+            return ManagerError();
+        }
+
+        auto readerBytes = reinterpret_cast<unsigned char*>(ssvReader);
+        auto counter = reinterpret_cast<std::uint64_t*>(
+            readerBytes + WmvSampleCounterOffset);
+        auto paused = readerBytes + WmvReaderPausedOffset;
+        auto lastResult = reinterpret_cast<volatile HRESULT*>(
+            readerBytes + WmvLastResultOffset);
+        if (!IsWritable(counter, sizeof(*counter)) ||
+            !IsWritable(paused, sizeof(*paused)) ||
+            !IsWritable(const_cast<HRESULT*>(lastResult),
+                sizeof(*lastResult)) ||
+            !IsReadable(readerBytes + WmvReaderInterfaceOffset,
+                sizeof(void*)) ||
+            !IsReadable(readerBytes + WmvAdvancedInterfaceOffset,
+                sizeof(void*)) ||
+            !IsReadable(readerBytes + WmvStatusEventOffset,
+                sizeof(HANDLE)))
+        {
+            return ManagerError();
+        }
+
+        void* reader = *reinterpret_cast<void**>(
+            readerBytes + WmvReaderInterfaceOffset);
+        void* advanced = *reinterpret_cast<void**>(
+            readerBytes + WmvAdvancedInterfaceOffset);
+        HANDLE statusEvent = *reinterpret_cast<HANDLE*>(
+            readerBytes + WmvStatusEventOffset);
+        if (!IsReadable(reader, sizeof(void*)) ||
+            !IsReadable(advanced, sizeof(void*)) ||
+            statusEvent == nullptr || statusEvent == INVALID_HANDLE_VALUE)
+        {
+            return ManagerError();
+        }
+
+        auto vtable = *reinterpret_cast<void***>(reader);
+        auto advancedVtable = *reinterpret_cast<void***>(advanced);
+        if (!IsReadable(vtable, sizeof(void*) * 12) ||
+            !IsExecutableMemory(vtable[10]) ||
+            !IsExecutableMemory(vtable[11]) ||
+            !IsReadable(advancedVtable, sizeof(void*) * 6) ||
+            !IsExecutableMemory(advancedVtable[3]) ||
+            !IsExecutableMemory(advancedVtable[5]))
+        {
+            return ManagerError();
+        }
+
+        // Stop accepting samples before stopping the asynchronous reader.
+        // Otherwise a callback already in flight can refill a queue after it
+        // was cleared, leaving Movie waiting forever for the new target.
+        const unsigned char previousPaused = *paused;
+        *paused = 1;
+        ResetEvent(statusEvent);
+        HRESULT result = reinterpret_cast<WmvAction>(vtable[11])(reader);
+        if (FAILED(result) && result != WmvInvalidRequest)
+        {
+            *paused = previousPaused;
+            return result;
+        }
+
+        if (SUCCEEDED(result))
+        {
+            const DWORD wait = WaitForSingleObject(statusEvent, 10'000);
+            if (wait != WAIT_OBJECT_0)
+            {
+                *paused = previousPaused;
+                return wait == WAIT_FAILED
+                    ? HRESULT_FROM_WIN32(GetLastError())
+                    : HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            }
+        }
+
+        FunctionAt<WmvClearQueues>(WmvClearQueuesRva)(ssvReader);
+        *counter = static_cast<std::uint64_t>(firstFrame);
+        *lastResult = E_PENDING;
+        ResetEvent(statusEvent);
+
+        result = reinterpret_cast<WmvSetUserClock>(
+            advancedVtable[3])(advanced, useUserClock);
+        if (FAILED(result))
+        {
+            *paused = previousPaused;
+            return result;
+        }
+
+        const std::uint64_t startTime =
+            (static_cast<std::uint64_t>(firstFrame) * 10'000'000ULL +
+                static_cast<std::uint64_t>(framesPerSecond / 2)) /
+            static_cast<std::uint64_t>(framesPerSecond);
+        *paused = 0;
+        result = reinterpret_cast<WmvStart>(vtable[10])(
+            reader, startTime, 0, 1.0f, nullptr);
+        if (FAILED(result))
+        {
+            return result;
+        }
+
+        if (useUserClock)
+        {
+            const ULONGLONG startedDeadline =
+                GetTickCount64() + 10'000;
+            while (*lastResult == E_PENDING)
+            {
+                if (GetTickCount64() >= startedDeadline)
+                {
+                    return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+                }
+                Sleep(2);
+            }
+            if (FAILED(*lastResult))
+            {
+                return *lastResult;
+            }
+
+            // vghd's WMT_STARTED callback stores its result before it calls
+            // DeliverTime(0). Let that callback finish so our real clock
+            // horizon cannot be overwritten by its initial zero.
+            Sleep(20);
+            const std::uint64_t endTime =
+                (static_cast<std::uint64_t>(totalFrames) *
+                    10'000'000ULL +
+                    static_cast<std::uint64_t>(framesPerSecond / 2)) /
+                static_cast<std::uint64_t>(framesPerSecond);
+            result = reinterpret_cast<WmvDeliverTime>(
+                advancedVtable[5])(advanced, endTime);
+            if (FAILED(result))
+            {
+                return result;
+            }
+        }
+
+        const ULONGLONG deadline = GetTickCount64() + 10'000;
+        // Movie must not resume on a colour-only partial restart. Wait for
+        // both completed streams so the first displayed frame has its mask.
+        while (!WmvOutputQueuesPrimed(ssvReader))
+        {
+            if (GetTickCount64() >= deadline)
+            {
+                return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            }
+            Sleep(2);
+        }
+        return S_OK;
     }
 
     HRESULT EngineError()
@@ -2556,7 +3077,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 14;
+    return 15;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -2630,6 +3151,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovie(SIZE_T movieAd
         }
 
         InterlockedExchangePointer(&g_activeMovie, movie);
+        InterlockedExchangePointer(&g_activeAnimation,
+            *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset));
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -2654,6 +3179,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperDiscoverMovie()
         }
 
         InterlockedExchangePointer(&g_activeMovie, movie);
+        InterlockedExchangePointer(&g_activeAnimation,
+            *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset));
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -2738,6 +3267,121 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
         if (!_finite(playRate) || playRate < 0.01 || playRate > 100.0)
         {
             return E_INVALIDARG;
+        }
+
+        void* animation = *reinterpret_cast<void**>(
+            reinterpret_cast<unsigned char*>(movie) + MovieAnimationOffset);
+        void* video = AnimationVideoDecoder(animation);
+        if (IsWmvDecoder(video))
+        {
+            AcquireSRWLockExclusive(&g_wmvRestartLock);
+            HRESULT result = E_FAIL;
+            __try
+            {
+                const bool sameDecoder =
+                    animation == g_wmvRateAnimation &&
+                    video == g_wmvRateVideo;
+                const double previousRate =
+                    sameDecoder ? g_wmvRate : 1.0;
+                const bool previousUserClock =
+                    sameDecoder && g_wmvUserClock;
+                if (playRate == previousRate || previousUserClock)
+                {
+                    FunctionAt<ManagerSetPlayRate>(
+                        MovieSetPlayRateRva)(movie, playRate);
+                    g_wmvRateAnimation = animation;
+                    g_wmvRateVideo = video;
+                    g_wmvRate = playRate;
+                    g_wmvUserClock = previousUserClock;
+                    result = BridgeSuccess;
+                }
+                else
+                {
+                    void* info = IsReadable(animation,
+                        AnimationInfoOffset + sizeof(void*))
+                        ? *reinterpret_cast<void**>(
+                            reinterpret_cast<unsigned char*>(animation) +
+                                AnimationInfoOffset)
+                        : nullptr;
+                    auto currentAddress = reinterpret_cast<int*>(
+                        reinterpret_cast<unsigned char*>(movie) +
+                            MovieCurrentFrameOffset);
+                    auto stateAddress = reinterpret_cast<int*>(
+                        reinterpret_cast<unsigned char*>(movie) +
+                            MovieStateOffset);
+                    if (!IsReadable(info,
+                            AnimationFramesPerSecondOffset + sizeof(int)) ||
+                        !IsWritable(currentAddress, sizeof(int)) ||
+                        !IsReadable(stateAddress, sizeof(int)))
+                    {
+                        result = ManagerError();
+                    }
+                    else
+                    {
+                        const int totalFrames = *reinterpret_cast<const int*>(
+                            reinterpret_cast<unsigned char*>(info) +
+                                AnimationTotalFramesOffset);
+                        const int framesPerSecond =
+                            *reinterpret_cast<const int*>(
+                                reinterpret_cast<unsigned char*>(info) +
+                                    AnimationFramesPerSecondOffset);
+                        const int currentFrame = *currentAddress;
+                        if (totalFrames <= 0 || framesPerSecond <= 0 ||
+                            currentFrame < 0)
+                        {
+                            result = E_INVALIDARG;
+                        }
+                        else
+                        {
+                            const bool wasPlaying =
+                                *stateAddress == PlayingState;
+                            if (wasPlaying)
+                            {
+                                FunctionAt<ManagerAction>(
+                                    MoviePauseRva)(movie);
+                            }
+
+                            const int firstFrame = currentFrame + 1 < totalFrames
+                                ? currentFrame + 1
+                                : totalFrames - 1;
+                            result = RestartWmvReader(video, firstFrame,
+                                framesPerSecond, totalFrames, true);
+                            if (SUCCEEDED(result))
+                            {
+                                FunctionAt<ManagerSetPlayRate>(
+                                    MovieSetPlayRateRva)(movie, playRate);
+                                g_wmvRateAnimation = animation;
+                                g_wmvRateVideo = video;
+                                g_wmvRate = playRate;
+                                g_wmvUserClock = true;
+                                result = BridgeSuccess;
+                            }
+                            else if (SUCCEEDED(RestartWmvReader(video,
+                                    firstFrame, framesPerSecond, totalFrames,
+                                    false)))
+                            {
+                                FunctionAt<ManagerSetPlayRate>(
+                                    MovieSetPlayRateRva)(movie, previousRate);
+                                g_wmvRateAnimation = animation;
+                                g_wmvRateVideo = video;
+                                g_wmvRate = previousRate;
+                                g_wmvUserClock = false;
+                            }
+
+                            if (wasPlaying)
+                            {
+                                FunctionAt<ManagerAction>(
+                                    MovieResumeRva)(movie);
+                            }
+                        }
+                    }
+                }
+            }
+            __finally
+            {
+                ReleaseSRWLockExclusive(&g_wmvRestartLock);
+            }
+            return result;
         }
 
         FunctionAt<ManagerSetPlayRate>(MovieSetPlayRateRva)(movie, playRate);
@@ -2993,11 +3637,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
 {
     __try
     {
-        if (!HasCompatibleEngine() || !HasFastForwardEngine() ||
-            InterlockedCompareExchangePointer(&g_decodeScaleThunk,
-                nullptr, nullptr) == nullptr ||
-            InterlockedCompareExchangePointer(&g_decoderWorkerTargetThunk,
-                nullptr, nullptr) == nullptr)
+        if (!HasCompatibleEngine() || !HasFastForwardEngine())
         {
             return EngineError();
         }
@@ -3092,9 +3732,37 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
                         else
                         {
                             void* anyVideo = AnimationVideoDecoder(animation);
-                            if (IsWmvDecoder(anyVideo))
+                            const bool isWmv = IsWmvDecoder(anyVideo);
+                            const bool hasFfmpegAcceleration =
+                                InterlockedCompareExchangePointer(
+                                    &g_decodeScaleThunk,
+                                    nullptr, nullptr) != nullptr &&
+                                InterlockedCompareExchangePointer(
+                                    &g_decoderWorkerTargetThunk,
+                                    nullptr, nullptr) != nullptr;
+                            if (!isWmv && !hasFfmpegAcceleration)
                             {
                                 result = EngineError();
+                            }
+                            else if (isWmv)
+                            {
+                                result = RestartWmvReader(anyVideo,
+                                    targetFrame, framesPerSecond,
+                                    totalFrames, true);
+                                if (SUCCEEDED(result))
+                                {
+                                    *currentAddress = targetFrame - 1;
+                                    g_wmvRateAnimation = animation;
+                                    g_wmvRateVideo = anyVideo;
+                                    g_wmvRate = 1.0;
+                                    g_wmvUserClock = true;
+                                    InterlockedExchange(
+                                        &g_fastForwardTargetFrame,
+                                        targetFrame);
+                                    InterlockedExchangePointer(
+                                        &g_fastForwardMovie, movie);
+                                    result = BridgeSuccess;
+                                }
                             }
                             else if (!CanResetAnimationAlpha(animation))
                             {
@@ -3261,7 +3929,24 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetFastForwardStatus()
             return ManagerError();
         }
 
-        if (*currentAddress < targetFrame)
+        int completionFrame = targetFrame;
+        void* animation = IsReadable(movie,
+            MovieAnimationOffset + sizeof(void*))
+            ? *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset)
+            : nullptr;
+        if (IsWmvDecoder(AnimationVideoDecoder(animation)) &&
+            targetFrame <= MAXLONG - 2)
+        {
+            // Reaching the relabelled target only proves the first queued
+            // colour frame was displayed. Two subsequent Movie advances prove
+            // that the restarted reader and alpha consumer are both moving
+            // before WinForms enables the seek controls again.
+            completionFrame += 2;
+        }
+
+        if (*currentAddress < completionFrame)
         {
             return S_OK;
         }

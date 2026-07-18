@@ -32,7 +32,7 @@ namespace IStripperQuickPlayer
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
 
-        private const int PlaybackBridgeVersion = 14;
+        private const int PlaybackBridgeVersion = 15;
 
         private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
@@ -71,6 +71,7 @@ namespace IStripperQuickPlayer
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
         private volatile bool playbackSeekingSupported = true;
+        private volatile int playbackDecoderKind;
         private volatile bool playbackBusy;
         private double requestedPlaybackSpeed = 1.0;
         private readonly System.Windows.Forms.Timer playbackTimelineTimer = new() { Interval = 250 };
@@ -958,6 +959,7 @@ namespace IStripperQuickPlayer
             playbackBridgeLoaded = false;
             playbackMovieRegistered = false;
             playbackSeekingSupported = true;
+            playbackDecoderKind = 0;
             playbackNextMovieDiscoveryAt = DateTime.MinValue;
             playbackFastDecodeEnabled = false;
 
@@ -1134,8 +1136,10 @@ namespace IStripperQuickPlayer
                 CallPlaybackApi("IStripperDiscoverMovie") >= 0;
             if (playbackMovieRegistered)
             {
+                playbackDecoderKind =
+                    CallPlaybackApi("IStripperGetDecoderKind");
                 playbackSeekingSupported =
-                    CallPlaybackApi("IStripperGetDecoderKind") != 2;
+                    playbackDecoderKind is 1 or 2;
             }
             if (!playbackMovieRegistered)
             {
@@ -1265,6 +1269,7 @@ namespace IStripperQuickPlayer
                     catch { }
                     playbackMovieRegistered = false;
                     playbackSeekingSupported = true;
+                    playbackDecoderKind = 0;
                     playbackNextMovieDiscoveryAt = DateTime.MinValue;
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
                     playbackSpeedLastApplied = DateTime.MinValue;
@@ -1283,7 +1288,8 @@ namespace IStripperQuickPlayer
                             previousAnimationReachedEnd)
                         {
                             playbackCompletedAnimationPath = previousAnimationPath;
-                            playbackNextClipRetryAt = DateTime.UtcNow;
+                            playbackNextClipRetryAt =
+                                DateTime.UtcNow.AddSeconds(1);
                         }
                         playbackReplacementStableAt = DateTime.MinValue;
                     }
@@ -1329,8 +1335,10 @@ namespace IStripperQuickPlayer
                         CallPlaybackApi("IStripperDiscoverMovie") >= 0;
                     if (playbackMovieRegistered)
                     {
+                        playbackDecoderKind =
+                            CallPlaybackApi("IStripperGetDecoderKind");
                         playbackSeekingSupported =
-                            CallPlaybackApi("IStripperGetDecoderKind") != 2;
+                            playbackDecoderKind is 1 or 2;
                         SetPlaybackBusy(playbackBusy);
                     }
                     playbackNextMovieDiscoveryAt = playbackMovieRegistered
@@ -1349,19 +1357,25 @@ namespace IStripperQuickPlayer
                 }
 
                 DateTime now = DateTime.UtcNow;
-                if (playbackMovieRegistered &&
-                    now < playbackSpeedReapplyUntil &&
-                    now - playbackSpeedLastApplied >= TimeSpan.FromSeconds(1))
-                {
-                    SetPlaybackRate(requestedPlaybackSpeed);
-                    playbackSpeedLastApplied = now;
-                }
-
                 int elapsed = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
                 int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
+                if (playbackMovieRegistered &&
+                    now < playbackSpeedReapplyUntil &&
+                    now - playbackSpeedLastApplied >= TimeSpan.FromSeconds(1) &&
+                    (playbackDecoderKind != 2 || elapsed >= 2_000))
+                {
+                    playbackSpeedLastApplied = now;
+                    SetPlaybackRate(requestedPlaybackSpeed);
+                    if (playbackDecoderKind == 2)
+                    {
+                        playbackSpeedReapplyUntil = DateTime.MinValue;
+                    }
+                }
+
                 playbackLastKnownElapsedMilliseconds = elapsed;
                 int checkpointBucket = elapsed / 5_000;
-                if (checkpointBucket != playbackAlphaCheckpointBucket &&
+                if (playbackDecoderKind == 1 &&
+                    checkpointBucket != playbackAlphaCheckpointBucket &&
                     CallPlaybackApi("IStripperCaptureAlphaCheckpoint") >= 0)
                 {
                     playbackAlphaCheckpointBucket = checkpointBucket;
@@ -1467,7 +1481,7 @@ namespace IStripperQuickPlayer
             if (!playbackSeekingSupported)
             {
                 throw new NotSupportedException(
-                    "Legacy WMV clips support the timer and pause/play, but not seeking or speed changes.");
+                    "This clip's decoder does not support seeking or speed changes.");
             }
 
             int state = RequirePlaybackResult("IStripperGetState");
@@ -1601,11 +1615,19 @@ namespace IStripperQuickPlayer
                 unchecked((ulong)target));
             if (prepared < 0)
             {
+                if (playbackDecoderKind == 2)
+                {
+                    throw new COMException(
+                        $"The WMV reader could not seek (0x{prepared:X8}).",
+                        prepared);
+                }
                 return null;
             }
 
             int distance = Math.Abs(target - current);
-            double timeoutSeconds = Math.Clamp(distance / 650.0 + 15.0, 20.0, 1200.0);
+            double timeoutSeconds = playbackDecoderKind == 2
+                ? 10.0
+                : Math.Clamp(distance / 650.0 + 15.0, 20.0, 1200.0);
             DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
 
             // One normal-rate advance invokes CAnim for the primed target. Keeping
@@ -1720,8 +1742,14 @@ namespace IStripperQuickPlayer
             return key?.GetValue("CurrentAnim", "")?.ToString() ?? "";
         }
 
-        private static bool PlaybackReachedEnd(int elapsed, int total) =>
-            total > 0 && elapsed >= Math.Max(0, total - 2_000);
+        private bool PlaybackReachedEnd(int elapsed, int total)
+        {
+            int transitionAllowance = (int)Math.Ceiling(
+                Math.Max(1.0, requestedPlaybackSpeed) * 5_000);
+            return total > 0 &&
+                elapsed >= Math.Max(0, total -
+                    Math.Max(2_000, transitionAllowance));
+        }
 
         private void BeginAnimationReplacement(string animationPath)
         {

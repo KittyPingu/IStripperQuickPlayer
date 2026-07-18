@@ -99,9 +99,11 @@ closed instead of calling an unverified address.
 
 Direct Movie discovery scans committed private writable regions once for the
 resolved Movie vtable, then validates the playing/paused state,
-animation pointer, frame range, FPS, and `VideoFFmpeg` vtable before accepting a
-candidate. It makes no persistent code change and avoids blocking vghd's
-per-frame thread while QuickPlayer is loading.
+animation pointer, frame range, FPS, and active video-decoder vtable before
+accepting a candidate. On a clip replacement it prefers a new Movie/CAnim pair
+but can accept an object that vghd reused in place. It makes no persistent code
+change and avoids blocking vghd's per-frame thread while QuickPlayer is
+loading.
 
 ## There is no 4x playback limiter
 
@@ -138,11 +140,56 @@ be a position setter is identified by vghd's Qt metadata as
 not safe for seeking.
 
 Older cards use `VideoWmvCore` instead of `VideoFFmpeg`. Its virtual seek
-operation returns false, and `Movie::setPlayRate` does not change its timeline
-rate. Bridge v14 still discovers the shared `Movie`/`CAnim` object so the timer
-and pause/play work, but reports the decoder kind to QuickPlayer so WMV seek
-and speed controls are disabled instead of starting a repeated heap scan or a
-CPU-heavy real-time fallback.
+operation returns false, and changing only `Movie::setPlayRate` starves its
+bounded sample queues. Bridge v15 bypasses that wrapper and controls the
+existing Windows Media asynchronous reader owned by `CSsvReader`.
+
+For a legacy seek, the bridge:
+
+1. Pauses the Movie, gates new sample callbacks, and stops `IWMReader`,
+   waiting for vghd's status event.
+2. Calls vghd's queue-clear helper so all five colour/alpha sample queues are
+   discarded together.
+3. Resets the reader's sample counter to the target frame and starts
+   `IWMReader` at the corresponding 100-nanosecond media time.
+4. Enables `IWMReaderAdvanced`'s user-provided clock and delivers the clip-end
+   time. This lets the asynchronous reader decode ahead only as its original
+   bounded queues have room; it does not busy-loop through the whole file.
+5. Waits until both completed colour and alpha queues contain data. A
+   colour-only restart is not exposed to `Movie`, because doing so can display
+   an unpaired mask or leave the scheduler waiting on the next sample.
+6. Sets `Movie.currentFrame` to `target - 1` and resumes the original advance
+   path. vghd's own `Movie::advance` publishes the target position. The bridge
+   does not report completion to QuickPlayer until two further frames have
+   advanced, so the timer and playback controls remain disabled until the
+   restarted reader is demonstrably moving.
+
+Legacy speed changes use that same user-clock mode to keep the synchronized
+queues supplied, while `Movie::setPlayRate` controls presentation speed.
+Subsequent changes between 0.25x and 4x only update the Movie scheduler and do
+not restart the reader. The reader itself remains at 1x because its non-1
+`Start` rate is unsupported for these files.
+
+The WMV path is resolved from the current executable rather than compiled
+addresses. For the investigated image the diagnostic profile contains:
+
+| `VideoWmvCore` / `CSsvReader` item | RVA / field |
+| --- | ---: |
+| `VideoWmvCore` vtable | `0x555C50` |
+| `CSsvReader` vtable | `0x5559F8` |
+| clear all sample queues | `0x268740` |
+| peek colour queue | `0x2686F0` |
+| `VideoWmvCore` to `CSsvReader*` | `+0x38` |
+| `CSsvReader` to `IWMReader*` / `IWMReaderAdvanced*` | `+0x40` / `+0x48` |
+| status event / last callback result | `+0x30` / `+0x38` |
+| sample counter / paused flag | `+0x18` / `+0x10` |
+| shared queue mutex | `+0x68` |
+| completed colour / alpha queues | `+0x80` / `+0x90` |
+
+The resolver derives those vtables, functions, COM-interface fields, event,
+counter, and queue fields from RTTI and verified instruction relationships on
+each vghd start. They are written to the per-image INI section for diagnostics;
+failure to resolve a unique, internally consistent path disables the bridge.
 
 There is a second, private route: `Movie::advance` normally calls the CAnim
 frame wrapper with `Movie.currentFrame + 1`, and that wrapper accepts a larger
@@ -227,10 +274,10 @@ A genuinely independent, clean-room player would need all of the following:
 - synchronized composition and a click-through transparent desktop renderer.
 
 The bridge now implements intermediate-RGB-conversion skipping, indexed VP9
-keyframe seeking, and bounded per-animation alpha checkpoints. A checkpoint
-restores the output plane and the complete mutable CAnim alpha block before
-composition; the final position is still published by vghd's own
-`Movie::advance` counter update.
+keyframe seeking, bounded per-animation alpha checkpoints, and synchronized
+legacy WMV reader restarts. A modern checkpoint restores the output plane and
+the complete mutable CAnim alpha block before composition; both decoder paths
+finish by letting vghd's own `Movie::advance` publish the final position.
 
 ## Build
 
