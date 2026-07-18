@@ -2,13 +2,19 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline, but callable
-addresses are now discovered and validated against the loaded executable rather
-than compiled as fixed RVAs.
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v16
+discovers and validates every vghd-owned function, vtable, hook site, and
+object-layout field against the loaded executable rather than compiling or
+loading fixed values.
 
-The build investigated here has SHA-256:
+The 2.4.0.0 baseline has SHA-256:
 
 `61F70A43CEB1ECD59A9E215F91955E092A11524E67745BB25956AA9E1C9197E3`
+
+The same resolver has also been run successfully against downgraded iStripper
+2.3.0.3 (`C2C24A3DAEC4C2F2258A5B1364808D683D3A52F77F3DD9FBED4F628DFD227693`).
+Its code RVAs moved while the resolver independently recovered the complete
+layout.
 
 ## How the transparent desktop movie is built
 
@@ -61,8 +67,8 @@ The WinForms app already uses
 [`Deviare`](https://www.nektra.com/products/deviare-api-hook-windows/) to attach
 to `vghd.exe`. The added path reuses that agent:
 
-1. Load the structural layout from `vghd-offsets.ini`.
-2. Load `IStripperPlaybackBridge64.dll` in the x64 vghd process.
+1. Load `IStripperPlaybackBridge64.dll` in the x64 vghd process.
+2. Read the running executable's file version and PE identity.
 3. Scan executable code and MSVC RTTI to resolve the Movie/Video functions,
    imported FFmpeg slots, patch sites, and vtables. Each candidate must be
    unique and its internal field relationships must agree.
@@ -71,7 +77,7 @@ to `vghd.exe`. The added path reuses that agent:
 5. Read the current frame, total-frame count, and FPS under the movie's Qt
    mutex to expose a content-time position to WinForms.
 
-The resolver produced this profile for the investigated executable:
+The resolver produced this profile for the 2.4.0.0 baseline:
 
 | Purpose | RVA / field |
 | --- | ---: |
@@ -85,17 +91,31 @@ The resolver produced this profile for the investigated executable:
 | `CAnim` to animation info | `+0x46580` |
 | `CAnim` delta-alpha position | `+0x46570` |
 | Info total frames / FPS | `+0x108` / `+0x10C` |
-| Info mask encoding | `+0x15C` |
 | `Movie::advance` | `0x27DA20` |
 | `CAnim` frame wrapper | `0x272780` |
 
-Function RVAs are not read back as trusted configuration. They are rediscovered
-on every vghd process start, then written under an
-`[image_<PE timestamp>_<image size>]` section for diagnostics. The `[layout]`
-section contains structural CAnim/SSV offsets that cannot be identified from a
-single safe signature. The resolver cross-checks all code-derived Movie and
-Video offsets and live objects before use. A changed or ambiguous image fails
-closed instead of calling an unverified address.
+Nothing is read back from the INI as trusted configuration. On every vghd
+process start, the bridge derives all vghd-owned code and object fields from
+instruction relationships and RTTI, cross-checks their layout invariants, and
+then writes the result to:
+
+`%LOCALAPPDATA%\IStripperQuickPlayer\vghd-offsets.ini`
+
+Each section is keyed by the actual iStripper file version, PE timestamp, and
+image size, for example
+`[vghd_2.3.0.3_6A463E88_00760000]`. It includes resolver-stage masks so a
+future incompatible build still leaves a useful partial diagnostic. An edited,
+stale, or copied INI cannot supply an address to the bridge. A changed or
+ambiguous image is rescanned and fails closed instead of calling an unverified
+address.
+
+The only pinned structure fields belong to the separately version-checked
+FFmpeg 3.1 ABI: the `AVFormatContext` stream count/list, the `AVStream` codec
+context and index entries/count, and the `AVCodecContext` media type. Per the
+current compatibility policy, those remain valid while `avformat_version()` is
+exactly 57.47.101. They are still named and written to the diagnostic INI.
+All CAnim, SSV, Movie, VideoFFmpeg, VideoWmvCore, queue-container, mutex,
+counter, import-slot, and hook-site fields are derived dynamically.
 
 Direct Movie discovery scans committed private writable regions once for the
 resolved Movie vtable, then validates the playing/paused state,
@@ -126,7 +146,8 @@ option before future codec opens. It pins the bridge for the remaining vghd
 process lifetime so the hook cannot point into an unloaded DLL.
 
 This improves clips whose VP9 bitstream supports useful frame threading, but it
-cannot make all work parallel. `VideoFFmpeg::decodeVideo` (`0x287490`) must
+cannot make all work parallel. `VideoFFmpeg::decodeVideo` (baseline
+`0x287490`) must
 still feed dependent packets through `avcodec_decode_video2`, and the alpha
 decoder remains serial.
 
@@ -273,7 +294,7 @@ A genuinely independent, clean-room player would need all of the following:
 - independently decodable mask keyframes for cold seeks without a checkpoint;
 - synchronized composition and a click-through transparent desktop renderer.
 
-The bridge now implements intermediate-RGB-conversion skipping, indexed VP9
+The bridge implements intermediate-RGB-conversion skipping, indexed VP9
 keyframe seeking, bounded per-animation alpha checkpoints, and synchronized
 legacy WMV reader restarts. A modern checkpoint restores the output plane and
 the complete mutable CAnim alpha block before composition; both decoder paths
@@ -281,7 +302,8 @@ finish by letting vghd's own `Movie::advance` publish the final position.
 
 ## Build
 
-Build the solution as `x64` in Visual Studio. The C++ project writes the bridge
-and the tracked `vghd-offsets.ini` profile to the WinForms `dependencies`
-directory, and the WinForms post-build step copies dependencies to its output
-directory. The bridge is x64-only because `vghd.exe` is x64.
+Build the solution as `x64` in Visual Studio. The C++ project writes only the
+bridge to the WinForms `dependencies` directory; the WinForms post-build step
+copies dependencies to its output directory. The runtime creates its diagnostic
+INI under `%LOCALAPPDATA%\IStripperQuickPlayer`. The bridge is x64-only because
+`vghd.exe` is x64.

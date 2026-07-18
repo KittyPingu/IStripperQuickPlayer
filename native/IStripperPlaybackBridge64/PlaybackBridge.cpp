@@ -5,10 +5,12 @@
 #include <cwchar>
 #include <cstring>
 #include <float.h>
+#include <winver.h>
 
-// This bridge discovers private vghd functions and vtables from the loaded image.
-// Structural field offsets come from vghd-offsets.ini. Every resolved address and
-// object is validated so an incompatible update fails closed.
+#pragma comment(lib, "Version.lib")
+
+// This bridge discovers private vghd functions, vtables, hook sites, and object
+// layouts from the loaded image. The INI is an audit trail, never trusted input.
 namespace
 {
     std::uintptr_t AnimationFrameRva = 0;
@@ -26,6 +28,7 @@ namespace
     std::uintptr_t VideoFfmpegVtableRva = 0;
     std::uintptr_t VideoWmvCoreVtableRva = 0;
     std::uintptr_t SsvReaderVtableRva = 0;
+    std::uintptr_t SsvFileVtableRva = 0;
     std::uintptr_t WmvClearQueuesRva = 0;
     std::uintptr_t WmvPeekFrameRva = 0;
 
@@ -58,6 +61,10 @@ namespace
     std::size_t VideoFrameQueueOffset = 0;
     std::size_t VideoFrameQueueMutexOffset = 0;
     std::size_t VideoCurrentFrameOffset = 0;
+    std::size_t QueueBeginOffset = 0;
+    std::size_t QueueEndOffset = 0;
+    std::size_t QueueEntriesOffset = 0;
+    std::size_t VideoQueueEntryReadyOffset = 0;
     std::size_t StreamIndexEntriesOffset = 0;
     std::size_t StreamIndexEntryCountOffset = 0;
     std::size_t WmvReaderObjectOffset = 0;
@@ -78,6 +85,10 @@ namespace
         static_cast<HRESULT>(0xC00D002B);
     constexpr unsigned ExpectedAvformatVersion =
         (57u << 16) | (47u << 8) | 101u;
+    constexpr std::size_t FormatContextStreamCountOffset = 0x2C;
+    constexpr std::size_t FormatContextStreamsOffset = 0x30;
+    constexpr std::size_t StreamCodecContextOffset = 0x08;
+    constexpr std::size_t CodecContextMediaTypeOffset = 0x0C;
 
     constexpr unsigned char AnimationFrameSignature[] = {
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74,
@@ -111,8 +122,7 @@ namespace
 
     constexpr unsigned char WmvPeekFrameSignature[] = {
         0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B,
-        0xD9, 0x48, 0x83, 0xC1, 0x68, 0x48, 0x89, 0x4C,
-        0x24, 0x30
+        0xD9, 0x48, 0x83, 0xC1
     };
 
     constexpr std::size_t DecodeScaleCallLength = 6;
@@ -315,6 +325,22 @@ namespace
 
     bool OffsetProfilePath(wchar_t (&path)[MAX_PATH])
     {
+        wchar_t localAppData[MAX_PATH] = {};
+        const DWORD localLength = GetEnvironmentVariableW(
+            L"LOCALAPPDATA", localAppData, MAX_PATH);
+        if (localLength > 0 && localLength < MAX_PATH)
+        {
+            wchar_t directory[MAX_PATH] = {};
+            if (swprintf_s(directory, L"%s\\IStripperQuickPlayer",
+                    localAppData) > 0 &&
+                (CreateDirectoryW(directory, nullptr) ||
+                    GetLastError() == ERROR_ALREADY_EXISTS) &&
+                swprintf_s(path, L"%s\\vghd-offsets.ini", directory) > 0)
+            {
+                return true;
+            }
+        }
+
         HMODULE module = nullptr;
         if (!GetModuleHandleExW(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -335,68 +361,44 @@ namespace
             L"vghd-offsets.ini") == 0;
     }
 
-    std::size_t ReadLayoutOffset(const wchar_t* key,
-        const wchar_t* profilePath)
+    bool ImageVersion(wchar_t (&version)[64])
     {
-        wchar_t value[32] = {};
-        if (GetPrivateProfileStringW(L"layout", key, L"", value,
-                static_cast<DWORD>(sizeof(value) / sizeof(value[0])),
-                profilePath) == 0)
+        wchar_t imagePath[MAX_PATH] = {};
+        if (GetModuleFileNameW(GetModuleHandleW(L"vghd.exe"),
+                imagePath, MAX_PATH) == 0)
         {
-            return 0;
+            return false;
         }
-        return static_cast<std::size_t>(_wcstoui64(value, nullptr, 0));
-    }
 
-    bool LoadLayoutOffsets(const wchar_t* profilePath)
-    {
-        AnimationAlphaOutputOffset =
-            ReadLayoutOffset(L"AnimationAlphaOutput", profilePath);
-        AnimationAlphaWidthOffset =
-            ReadLayoutOffset(L"AnimationAlphaWidth", profilePath);
-        AnimationAlphaHeightOffset =
-            ReadLayoutOffset(L"AnimationAlphaHeight", profilePath);
-        AnimationAlphaScratch1Offset =
-            ReadLayoutOffset(L"AnimationAlphaScratch1", profilePath);
-        AnimationAlphaScratch2Offset =
-            ReadLayoutOffset(L"AnimationAlphaScratch2", profilePath);
-        AnimationAlphaScratchPointer1Offset =
-            ReadLayoutOffset(L"AnimationAlphaScratchPointer1", profilePath);
-        AnimationAlphaScratchPointer2Offset =
-            ReadLayoutOffset(L"AnimationAlphaScratchPointer2", profilePath);
-        AnimationAlphaGenerationOffset =
-            ReadLayoutOffset(L"AnimationAlphaGeneration", profilePath);
-        AnimationAlphaFrameOffset =
-            ReadLayoutOffset(L"AnimationAlphaFrame", profilePath);
-        AnimationSsvOffset =
-            ReadLayoutOffset(L"AnimationSsv", profilePath);
-        AnimationInfoOffset =
-            ReadLayoutOffset(L"AnimationInfo", profilePath);
-        AnimationTotalFramesOffset =
-            ReadLayoutOffset(L"AnimationTotalFrames", profilePath);
-        AnimationFramesPerSecondOffset =
-            ReadLayoutOffset(L"AnimationFramesPerSecond", profilePath);
-        SsvVideoDecoderOffset =
-            ReadLayoutOffset(L"SsvVideoDecoder", profilePath);
-        StreamIndexEntriesOffset =
-            ReadLayoutOffset(L"StreamIndexEntries", profilePath);
-        StreamIndexEntryCountOffset =
-            ReadLayoutOffset(L"StreamIndexEntryCount", profilePath);
+        DWORD ignored = 0;
+        const DWORD size = GetFileVersionInfoSizeW(imagePath, &ignored);
+        if (size == 0)
+        {
+            return false;
+        }
+        void* data = HeapAlloc(GetProcessHeap(), 0, size);
+        if (data == nullptr)
+        {
+            return false;
+        }
 
-        return AnimationAlphaOutputOffset > 0 &&
-            AnimationAlphaWidthOffset > 0 &&
-            AnimationAlphaHeightOffset > 0 &&
-            AnimationAlphaScratch1Offset > 0 &&
-            AnimationAlphaScratch2Offset > AnimationAlphaScratch1Offset &&
-            AnimationAlphaScratchPointer1Offset >
-                AnimationAlphaScratch2Offset &&
-            AnimationSsvOffset > AnimationAlphaScratchPointer2Offset &&
-            AnimationInfoOffset > AnimationSsvOffset &&
-            AnimationTotalFramesOffset > 0 &&
-            AnimationFramesPerSecondOffset > 0 &&
-            SsvVideoDecoderOffset > 0 &&
-            StreamIndexEntriesOffset > 0 &&
-            StreamIndexEntryCountOffset > StreamIndexEntriesOffset;
+        VS_FIXEDFILEINFO* info = nullptr;
+        UINT infoSize = 0;
+        const bool found = GetFileVersionInfoW(imagePath, 0, size, data) &&
+            VerQueryValueW(data, L"\\",
+                reinterpret_cast<void**>(&info), &infoSize) &&
+            info != nullptr && infoSize >= sizeof(*info) &&
+            info->dwSignature == VS_FFI_SIGNATURE;
+        if (found)
+        {
+            swprintf_s(version, L"%u.%u.%u.%u",
+                HIWORD(info->dwFileVersionMS),
+                LOWORD(info->dwFileVersionMS),
+                HIWORD(info->dwFileVersionLS),
+                LOWORD(info->dwFileVersionLS));
+        }
+        HeapFree(GetProcessHeap(), 0, data);
+        return found;
     }
 
     bool IsExecutableAddress(const unsigned char* address)
@@ -517,6 +519,63 @@ namespace
                 if (candidate + offset + 12 + displacement == animationFrame)
                 {
                     return true;
+                }
+            }
+            return false;
+        }
+        if (kind == 4)
+        {
+            if (WmvQueueMutexOffset == 0 ||
+                WmvColorQueueOffset == 0 ||
+                QueueBeginOffset == 0 ||
+                QueueEndOffset == 0 ||
+                QueueEntriesOffset == 0 ||
+                candidate[12] != WmvQueueMutexOffset)
+            {
+                return false;
+            }
+
+            for (std::size_t offset = 16; offset + 24 <= 96; offset++)
+            {
+                std::size_t queue = 0;
+                std::size_t next = 0;
+                if (candidate[offset] == 0x48 &&
+                    candidate[offset + 1] == 0x8B &&
+                    candidate[offset + 2] == 0x5B)
+                {
+                    queue = candidate[offset + 3];
+                    next = offset + 4;
+                }
+                else if (candidate[offset] == 0x48 &&
+                    candidate[offset + 1] == 0x8B &&
+                    candidate[offset + 2] == 0x9B)
+                {
+                    queue = *reinterpret_cast<const std::uint32_t*>(
+                        candidate + offset + 3);
+                    next = offset + 7;
+                }
+                if (queue != WmvColorQueueOffset ||
+                    candidate[next] != 0x48 ||
+                    candidate[next + 1] != 0x63 ||
+                    candidate[next + 2] != 0x43 ||
+                    candidate[next + 3] != QueueBeginOffset ||
+                    candidate[next + 4] != 0x39 ||
+                    candidate[next + 5] != 0x43 ||
+                    candidate[next + 6] != QueueEndOffset)
+                {
+                    continue;
+                }
+                for (std::size_t entry = next + 7;
+                    entry + 5 <= next + 24; entry++)
+                {
+                    if (candidate[entry] == 0x48 &&
+                        candidate[entry + 1] == 0x8B &&
+                        candidate[entry + 2] == 0x5C &&
+                        candidate[entry + 3] == 0xC3 &&
+                        candidate[entry + 4] == QueueEntriesOffset)
+                    {
+                        return true;
+                    }
                 }
             }
             return false;
@@ -675,6 +734,404 @@ namespace
             reinterpret_cast<const unsigned char*>(address) - ImageBase());
     }
 
+    unsigned char* DirectCallTarget(const unsigned char* instruction)
+    {
+        if (!IsReadable(instruction, 5) || instruction[0] != 0xE8)
+        {
+            return nullptr;
+        }
+        const auto displacement =
+            *reinterpret_cast<const std::int32_t*>(instruction + 1);
+        auto target = const_cast<unsigned char*>(
+            instruction + 5 + displacement);
+        return IsExecutableAddress(target) ? target : nullptr;
+    }
+
+    bool ReadAlphaStateLayout(const unsigned char* function,
+        std::size_t& scratch1, std::size_t& scratch2,
+        std::size_t& pointer1, std::size_t& pointer2,
+        std::size_t& generation)
+    {
+        constexpr std::size_t ScanLength = 384;
+        if (!IsReadable(function, ScanLength))
+        {
+            return false;
+        }
+
+        for (std::size_t offset = 0;
+            offset + 160 <= ScanLength; offset++)
+        {
+            const auto load = function + offset;
+            if (load[0] != 0x48 || load[1] != 0x8B || load[2] != 0x89)
+            {
+                continue;
+            }
+            const std::size_t candidatePointer1 =
+                *reinterpret_cast<const std::uint32_t*>(load + 3);
+            std::size_t candidateScratch1 = 0;
+            const unsigned char* pointer1Store = nullptr;
+            for (std::size_t next = offset + 7;
+                next + 7 <= offset + 64; next++)
+            {
+                const auto candidate = function + next;
+                if (candidate[0] == 0x48 && candidate[1] == 0x8D &&
+                    candidate[2] == 0x4E)
+                {
+                    candidateScratch1 = candidate[3];
+                }
+                else if (candidate[0] == 0x48 && candidate[1] == 0x8D &&
+                    candidate[2] == 0x8E)
+                {
+                    candidateScratch1 =
+                        *reinterpret_cast<const std::uint32_t*>(candidate + 3);
+                }
+                if (candidate[0] == 0x48 && candidate[1] == 0x89 &&
+                    candidate[2] == 0x8E &&
+                    *reinterpret_cast<const std::uint32_t*>(candidate + 3) ==
+                        candidatePointer1)
+                {
+                    pointer1Store = candidate;
+                    break;
+                }
+            }
+            if (candidateScratch1 == 0 || pointer1Store == nullptr)
+            {
+                continue;
+            }
+
+            for (std::size_t next = static_cast<std::size_t>(
+                    pointer1Store + 7 - function);
+                next + 14 <= offset + 128; next++)
+            {
+                const auto candidate = function + next;
+                if (candidate[0] != 0x48 || candidate[1] != 0x8D ||
+                    candidate[2] != 0x86)
+                {
+                    continue;
+                }
+                const std::size_t candidateScratch2 =
+                    *reinterpret_cast<const std::uint32_t*>(candidate + 3);
+                const auto store = candidate + 7;
+                if (store[0] != 0x48 || store[1] != 0x89 ||
+                    store[2] != 0x86)
+                {
+                    continue;
+                }
+                const std::size_t candidatePointer2 =
+                    *reinterpret_cast<const std::uint32_t*>(store + 3);
+
+                for (std::size_t state = next + 14;
+                    state + 6 <= offset + 160; state++)
+                {
+                    const auto stateStore = function + state;
+                    if (stateStore[0] == 0x89 && stateStore[1] == 0x96)
+                    {
+                        const std::size_t candidateGeneration =
+                            *reinterpret_cast<const std::uint32_t*>(
+                                stateStore + 2);
+                        if (candidateScratch1 < candidateScratch2 &&
+                            candidateScratch2 < candidatePointer1 &&
+                            candidatePointer1 < candidatePointer2 &&
+                            candidateScratch2 - candidateScratch1 ==
+                                candidatePointer1 - candidateScratch2)
+                        {
+                            scratch1 = candidateScratch1;
+                            scratch2 = candidateScratch2;
+                            pointer1 = candidatePointer1;
+                            pointer2 = candidatePointer2;
+                            generation = candidateGeneration;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    bool ResolveFramesPerSecondOffset()
+    {
+        const auto headers = ImageHeaders();
+        auto base = ImageBase();
+        if (headers == nullptr || base == nullptr)
+        {
+            return false;
+        }
+
+        std::size_t result = 0;
+        const auto sections = IMAGE_FIRST_SECTION(headers);
+        for (unsigned sectionIndex = 0;
+            sectionIndex < headers->FileHeader.NumberOfSections;
+            sectionIndex++)
+        {
+            if ((sections[sectionIndex].Characteristics &
+                    IMAGE_SCN_MEM_EXECUTE) == 0)
+            {
+                continue;
+            }
+            auto start = base + sections[sectionIndex].VirtualAddress;
+            const std::size_t size = sections[sectionIndex].Misc.VirtualSize;
+            if (!IsReadable(start, size))
+            {
+                continue;
+            }
+
+            for (std::size_t offset = 0; offset + 15 <= size; offset++)
+            {
+                const auto candidate = start + offset;
+                if (candidate[0] != 0x48 || candidate[1] != 0x8B ||
+                    (candidate[2] & 0xC0) != 0x80 ||
+                    *reinterpret_cast<const std::uint32_t*>(candidate + 3) !=
+                        AnimationInfoOffset)
+                {
+                    continue;
+                }
+
+                const unsigned sourceRegister =
+                    (candidate[2] >> 3) & 7;
+                std::size_t next = 7;
+                if ((candidate[next] & 0xF0) == 0x40)
+                {
+                    next++;
+                }
+                if (candidate[next] != 0x8B ||
+                    (candidate[next + 1] & 0xC0) != 0x80 ||
+                    static_cast<unsigned>(candidate[next + 1] & 7) !=
+                        sourceRegister)
+                {
+                    continue;
+                }
+                const std::size_t field =
+                    *reinterpret_cast<const std::uint32_t*>(
+                        candidate + next + 2);
+                if (field != AnimationTotalFramesOffset + sizeof(int))
+                {
+                    continue;
+                }
+                if (result != 0 && result != field)
+                {
+                    return false;
+                }
+                result = field;
+            }
+        }
+        AnimationFramesPerSecondOffset = result;
+        return result > 0;
+    }
+
+    bool ResolveSsvFileLayout()
+    {
+        SsvFileVtableRva = FindVtableRva(".?AVCSsvFile@@");
+        if (!IsRvaInImage(SsvFileVtableRva, sizeof(void*) * 13))
+        {
+            return false;
+        }
+
+        int counts[256] = {};
+        auto vtable = reinterpret_cast<unsigned char**>(
+            ImageBase() + SsvFileVtableRva);
+        for (int slot = 0; slot < 13; slot++)
+        {
+            const auto function = vtable[slot];
+            if (!IsExecutableAddress(function) ||
+                !IsReadable(function, 8) ||
+                function[0] != 0x48 || function[1] != 0x8B ||
+                (function[2] != 0x41 && function[2] != 0x49))
+            {
+                continue;
+            }
+            const unsigned field = function[3];
+            if (field > 0 && (field & 7) == 0)
+            {
+                counts[field]++;
+            }
+        }
+
+        int bestCount = 0;
+        std::size_t bestField = 0;
+        for (std::size_t field = 8; field < 256; field += 8)
+        {
+            if (counts[field] > bestCount)
+            {
+                bestCount = counts[field];
+                bestField = field;
+            }
+        }
+        SsvVideoDecoderOffset = bestCount >= 3 ? bestField : 0;
+        return SsvVideoDecoderOffset > 0;
+    }
+
+    bool ResolveAnimationLayout()
+    {
+        const auto wrapper = ImageBase() + AnimationFrameRva;
+        if (!IsReadable(wrapper, 96))
+        {
+            return false;
+        }
+
+        const unsigned char* prepare = nullptr;
+        const unsigned char* render = nullptr;
+        for (std::size_t callOffset = 0;
+            callOffset + 5 <= 96; callOffset++)
+        {
+            const auto target = DirectCallTarget(wrapper + callOffset);
+            if (target == nullptr || !IsReadable(target, 512))
+            {
+                continue;
+            }
+            for (std::size_t offset = 0; offset + 12 <= 480; offset++)
+            {
+                const auto candidate = target + offset;
+                if (candidate[0] == 0x44 && candidate[1] == 0x8B &&
+                    candidate[2] == 0x4E &&
+                    candidate[4] == 0x44 && candidate[5] == 0x8B &&
+                    candidate[6] == 0x46 &&
+                    candidate[8] == 0x48 && candidate[9] == 0x8B &&
+                    candidate[10] == 0x56)
+                {
+                    AnimationAlphaHeightOffset = candidate[3];
+                    AnimationAlphaWidthOffset = candidate[7];
+                    AnimationAlphaOutputOffset = candidate[11];
+                    render = target;
+                    break;
+                }
+            }
+
+            for (std::size_t offset = 0; offset + 80 <= 256; offset++)
+            {
+                const auto infoLoad = target + offset;
+                if (infoLoad[0] != 0x48 || infoLoad[1] != 0x8B ||
+                    infoLoad[2] != 0x83)
+                {
+                    continue;
+                }
+                const std::size_t info =
+                    *reinterpret_cast<const std::uint32_t*>(infoLoad + 3);
+                for (std::size_t next = offset + 7;
+                    next + 7 <= offset + 48; next++)
+                {
+                    const auto totalLoad = target + next;
+                    if (totalLoad[0] != 0x3B || totalLoad[1] != 0x88)
+                    {
+                        continue;
+                    }
+                    const std::size_t total =
+                        *reinterpret_cast<const std::uint32_t*>(
+                            totalLoad + 2);
+                    for (std::size_t ssvSearch = next + 6;
+                        ssvSearch + 7 <= next + 48; ssvSearch++)
+                    {
+                        const auto ssvLoad = target + ssvSearch;
+                        if (ssvLoad[0] == 0x48 && ssvLoad[1] == 0x8B &&
+                            ssvLoad[2] == 0x8B)
+                        {
+                            const std::size_t ssv =
+                                *reinterpret_cast<const std::uint32_t*>(
+                                    ssvLoad + 3);
+                            if (info > ssv && total > 0)
+                            {
+                                AnimationInfoOffset = info;
+                                AnimationSsvOffset = ssv;
+                                AnimationTotalFramesOffset = total;
+                                prepare = target;
+                                break;
+                            }
+                        }
+                    }
+                    if (prepare != nullptr)
+                    {
+                        break;
+                    }
+                }
+                if (prepare != nullptr)
+                {
+                    break;
+                }
+            }
+        }
+        if (prepare == nullptr || render == nullptr)
+        {
+            return false;
+        }
+
+        AnimationAlphaFrameOffset = 0;
+        for (std::size_t offset = 0; offset + 7 <= 512; offset++)
+        {
+            const auto store = prepare + offset;
+            if (store[0] != 0x89 || store[1] != 0xBB)
+            {
+                continue;
+            }
+            const std::size_t field =
+                *reinterpret_cast<const std::uint32_t*>(store + 2);
+            for (std::size_t next = offset + 6;
+                next + 7 <= 512; next++)
+            {
+                const auto load = prepare + next;
+                if (load[0] == 0x8B && load[1] == 0x83 &&
+                    *reinterpret_cast<const std::uint32_t*>(load + 2) ==
+                        field)
+                {
+                    AnimationAlphaFrameOffset = field;
+                    break;
+                }
+            }
+            if (AnimationAlphaFrameOffset > 0)
+            {
+                break;
+            }
+        }
+
+        bool hasAlphaState = false;
+        for (std::size_t offset = 0; offset + 5 <= 512; offset++)
+        {
+            const auto target = DirectCallTarget(prepare + offset);
+            std::size_t scratch1 = 0;
+            std::size_t scratch2 = 0;
+            std::size_t pointer1 = 0;
+            std::size_t pointer2 = 0;
+            std::size_t generation = 0;
+            if (target != nullptr &&
+                ReadAlphaStateLayout(target, scratch1, scratch2,
+                    pointer1, pointer2, generation))
+            {
+                AnimationAlphaScratch1Offset = scratch1;
+                AnimationAlphaScratch2Offset = scratch2;
+                AnimationAlphaScratchPointer1Offset = pointer1;
+                AnimationAlphaScratchPointer2Offset = pointer2;
+                AnimationAlphaGenerationOffset = generation;
+                hasAlphaState = true;
+                break;
+            }
+        }
+
+        // FFmpeg 3.1's public AVStream layout belongs to avformat-57, not
+        // vghd. These are the only intentionally ABI-pinned fields.
+        StreamIndexEntriesOffset = 0x1C8;
+        StreamIndexEntryCountOffset = 0x1D0;
+
+        return hasAlphaState &&
+            ResolveFramesPerSecondOffset() &&
+            ResolveSsvFileLayout() &&
+            AnimationAlphaOutputOffset > 0 &&
+            AnimationAlphaWidthOffset > AnimationAlphaOutputOffset &&
+            AnimationAlphaHeightOffset > AnimationAlphaWidthOffset &&
+            AnimationAlphaScratch1Offset > AnimationAlphaHeightOffset &&
+            AnimationAlphaScratch2Offset > AnimationAlphaScratch1Offset &&
+            AnimationAlphaScratchPointer1Offset >
+                AnimationAlphaScratch2Offset &&
+            AnimationAlphaScratchPointer2Offset ==
+                AnimationAlphaScratchPointer1Offset + sizeof(void*) &&
+            AnimationAlphaGenerationOffset ==
+                AnimationAlphaScratchPointer2Offset + sizeof(void*) &&
+            AnimationAlphaFrameOffset ==
+                AnimationAlphaGenerationOffset + sizeof(void*) &&
+            AnimationSsvOffset ==
+                AnimationAlphaFrameOffset + sizeof(void*) &&
+            AnimationInfoOffset == AnimationSsvOffset + sizeof(void*) &&
+            StreamIndexEntryCountOffset > StreamIndexEntriesOffset;
+    }
+
     bool ResolveMovieOffsets()
     {
         LONG mask = 0;
@@ -805,8 +1262,6 @@ namespace
             { 0x41, 0x8B, 0x6E };
         const unsigned char queuePrefix[] =
             { 0x49, 0x8B, 0x4E };
-        const unsigned char queueSuffix[] =
-            { 0x8B, 0x41, 0x0C };
         const unsigned char* targetLoad = nullptr;
         for (std::size_t offset = 0; offset < 512; offset++)
         {
@@ -828,15 +1283,50 @@ namespace
         VideoFrameQueueMutexOffset = targetLoad[7];
 
         VideoFrameQueueOffset = 0;
-        for (std::size_t offset = 8; offset < 128; offset++)
+        QueueBeginOffset = 0;
+        QueueEndOffset = 0;
+        for (std::size_t offset = 8; offset + 10 <= 128; offset++)
         {
             if (std::memcmp(targetLoad + offset, queuePrefix,
                     sizeof(queuePrefix)) == 0 &&
-                std::memcmp(targetLoad + offset + 4, queueSuffix,
-                    sizeof(queueSuffix)) == 0)
+                targetLoad[offset + 4] == 0x8B &&
+                targetLoad[offset + 5] == 0x41 &&
+                targetLoad[offset + 7] == 0x2B &&
+                targetLoad[offset + 8] == 0x41)
             {
                 VideoFrameQueueOffset = targetLoad[offset + 3];
+                QueueEndOffset = targetLoad[offset + 6];
+                QueueBeginOffset = targetLoad[offset + 9];
                 break;
+            }
+        }
+
+        QueueEntriesOffset = 0;
+        VideoQueueEntryReadyOffset = 0;
+        for (std::size_t offset = 0; offset + 5 <= 512; offset++)
+        {
+            const auto candidate = worker + offset;
+            if (candidate[0] == 0x48 && candidate[1] == 0x8B &&
+                candidate[2] == 0x44 && candidate[3] == 0xC1)
+            {
+                const std::size_t field = candidate[4];
+                if (QueueEntriesOffset != 0 &&
+                    QueueEntriesOffset != field)
+                {
+                    return false;
+                }
+                QueueEntriesOffset = field;
+            }
+            if (candidate[0] == 0xC6 && candidate[1] == 0x40 &&
+                candidate[3] == 0x01)
+            {
+                const std::size_t field = candidate[2];
+                if (VideoQueueEntryReadyOffset != 0 &&
+                    VideoQueueEntryReadyOffset != field)
+                {
+                    return false;
+                }
+                VideoQueueEntryReadyOffset = field;
             }
         }
 
@@ -1034,13 +1524,17 @@ namespace
             : RvaFromAddress(clearQueues);
 
         auto peekFrame = FindUniqueFunction(WmvPeekFrameSignature,
-            sizeof(WmvPeekFrameSignature), -1);
+            sizeof(WmvPeekFrameSignature), 4);
         WmvPeekFrameRva = peekFrame == nullptr
             ? 0
             : RvaFromAddress(peekFrame);
 
         return VideoFrameQueueOffset > 0 &&
             VideoFrameQueueMutexOffset > 0 &&
+            QueueBeginOffset > 0 &&
+            QueueEndOffset > QueueBeginOffset &&
+            QueueEntriesOffset > QueueEndOffset &&
+            VideoQueueEntryReadyOffset > 0 &&
             VideoFormatContextOffset > 0 &&
             IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)) &&
             WmvReaderObjectOffset > 0 &&
@@ -1061,12 +1555,13 @@ namespace
     void ImageProfileSection(wchar_t (&section)[64])
     {
         const auto headers = ImageHeaders();
-        if (headers == nullptr)
+        wchar_t version[64] = {};
+        if (headers == nullptr || !ImageVersion(version))
         {
             section[0] = L'\0';
             return;
         }
-        swprintf_s(section, L"image_%08X_%08X",
+        swprintf_s(section, L"vghd_%s_%08X_%08X", version,
             headers->FileHeader.TimeDateStamp,
             headers->OptionalHeader.SizeOfImage);
     }
@@ -1088,6 +1583,26 @@ namespace
         {
             return;
         }
+        wchar_t version[64] = {};
+        if (ImageVersion(version))
+        {
+            WritePrivateProfileStringW(section,
+                L"IStripperVersion", version, profilePath);
+        }
+        WritePrivateProfileStringW(section,
+            L"Resolver", L"dynamic", profilePath);
+        WriteResolvedValue(profilePath, section,
+            L"OffsetResolverMask",
+            static_cast<std::uintptr_t>(InterlockedCompareExchange(
+                &g_offsetResolverMask, 0, 0)));
+        WriteResolvedValue(profilePath, section,
+            L"MovieResolverMask",
+            static_cast<std::uintptr_t>(InterlockedCompareExchange(
+                &g_movieResolverMask, 0, 0)));
+        WriteResolvedValue(profilePath, section,
+            L"FastDecodeResolverMask",
+            static_cast<std::uintptr_t>(InterlockedCompareExchange(
+                &g_fastDecodeResolverMask, 0, 0)));
         WriteResolvedValue(profilePath, section,
             L"MoviePauseRva", MoviePauseRva);
         WriteResolvedValue(profilePath, section,
@@ -1106,6 +1621,8 @@ namespace
             L"VideoWmvCoreVtableRva", VideoWmvCoreVtableRva);
         WriteResolvedValue(profilePath, section,
             L"SsvReaderVtableRva", SsvReaderVtableRva);
+        WriteResolvedValue(profilePath, section,
+            L"SsvFileVtableRva", SsvFileVtableRva);
         WriteResolvedValue(profilePath, section,
             L"WmvClearQueuesRva", WmvClearQueuesRva);
         WriteResolvedValue(profilePath, section,
@@ -1126,6 +1643,53 @@ namespace
         WriteResolvedValue(profilePath, section,
             L"MovieMutexOffset", MovieMutexOffset);
         WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaOutputOffset", AnimationAlphaOutputOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaWidthOffset", AnimationAlphaWidthOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaHeightOffset", AnimationAlphaHeightOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaScratch1Offset", AnimationAlphaScratch1Offset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaScratch2Offset", AnimationAlphaScratch2Offset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaScratchPointer1Offset",
+            AnimationAlphaScratchPointer1Offset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaScratchPointer2Offset",
+            AnimationAlphaScratchPointer2Offset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaGenerationOffset",
+            AnimationAlphaGenerationOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaFrameOffset", AnimationAlphaFrameOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationSsvOffset", AnimationSsvOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationInfoOffset", AnimationInfoOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationTotalFramesOffset", AnimationTotalFramesOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AnimationFramesPerSecondOffset",
+            AnimationFramesPerSecondOffset);
+        WriteResolvedValue(profilePath, section,
+            L"SsvVideoDecoderOffset", SsvVideoDecoderOffset);
+        WriteResolvedValue(profilePath, section,
+            L"StreamIndexEntriesOffset", StreamIndexEntriesOffset);
+        WriteResolvedValue(profilePath, section,
+            L"StreamIndexEntryCountOffset", StreamIndexEntryCountOffset);
+        WriteResolvedValue(profilePath, section,
+            L"FormatContextStreamCountOffset",
+            FormatContextStreamCountOffset);
+        WriteResolvedValue(profilePath, section,
+            L"FormatContextStreamsOffset",
+            FormatContextStreamsOffset);
+        WriteResolvedValue(profilePath, section,
+            L"StreamCodecContextOffset", StreamCodecContextOffset);
+        WriteResolvedValue(profilePath, section,
+            L"CodecContextMediaTypeOffset",
+            CodecContextMediaTypeOffset);
+        WriteResolvedValue(profilePath, section,
             L"VideoFormatContextOffset", VideoFormatContextOffset);
         WriteResolvedValue(profilePath, section,
             L"VideoFrameQueueOffset", VideoFrameQueueOffset);
@@ -1133,6 +1697,15 @@ namespace
             L"VideoFrameQueueMutexOffset", VideoFrameQueueMutexOffset);
         WriteResolvedValue(profilePath, section,
             L"VideoCurrentFrameOffset", VideoCurrentFrameOffset);
+        WriteResolvedValue(profilePath, section,
+            L"QueueBeginOffset", QueueBeginOffset);
+        WriteResolvedValue(profilePath, section,
+            L"QueueEndOffset", QueueEndOffset);
+        WriteResolvedValue(profilePath, section,
+            L"QueueEntriesOffset", QueueEntriesOffset);
+        WriteResolvedValue(profilePath, section,
+            L"VideoQueueEntryReadyOffset",
+            VideoQueueEntryReadyOffset);
         WriteResolvedValue(profilePath, section,
             L"WmvReaderObjectOffset", WmvReaderObjectOffset);
         WriteResolvedValue(profilePath, section,
@@ -1153,6 +1726,12 @@ namespace
             L"WmvColorQueueOffset", WmvColorQueueOffset);
         WriteResolvedValue(profilePath, section,
             L"WmvAlphaQueueOffset", WmvAlphaQueueOffset);
+        WriteResolvedValue(profilePath, section,
+            L"AvcodecOpenSlotRva", AvcodecOpenSlotRva);
+        WriteResolvedValue(profilePath, section,
+            L"DecodeScaleSlotRva", DecodeScaleSlotRva);
+        WriteResolvedValue(profilePath, section,
+            L"DecodeScaleCallRva", DecodeScaleCallRva);
     }
 
     bool EnsureEngineOffsets()
@@ -1171,16 +1750,15 @@ namespace
             LONG mask = 0;
             const bool hasPath = OffsetProfilePath(profilePath);
             mask |= hasPath ? 1 : 0;
-            const bool hasLayout = hasPath &&
-                LoadLayoutOffsets(profilePath);
-            mask |= hasLayout ? 2 : 0;
-            const bool hasMovie = hasLayout && ResolveMovieOffsets();
+            const bool hasMovie = ResolveMovieOffsets();
             mask |= hasMovie ? 4 : 0;
-            const bool hasVideo = hasMovie && ResolveVideoOffsets();
+            const bool hasLayout = hasMovie && ResolveAnimationLayout();
+            mask |= hasLayout ? 2 : 0;
+            const bool hasVideo = hasLayout && ResolveVideoOffsets();
             mask |= hasVideo ? 8 : 0;
             const bool resolved = hasVideo;
             InterlockedExchange(&g_offsetResolverMask, mask);
-            if (resolved)
+            if (hasPath)
             {
                 SaveResolvedOffsets(profilePath);
             }
@@ -1194,11 +1772,21 @@ namespace
 
     bool ResolveFastDecodeOffsets()
     {
+        const auto finish = [](LONG mask, bool resolved)
+        {
+            InterlockedExchange(&g_fastDecodeResolverMask, mask);
+            wchar_t profilePath[MAX_PATH] = {};
+            if (OffsetProfilePath(profilePath))
+            {
+                SaveResolvedOffsets(profilePath);
+            }
+            return resolved;
+        };
+
         LONG mask = 0;
         if (!EnsureEngineOffsets())
         {
-            InterlockedExchange(&g_fastDecodeResolverMask, mask);
-            return false;
+            return finish(mask, false);
         }
         mask |= 1;
         if (IsRvaInImage(AvcodecOpenSlotRva, sizeof(void*)) &&
@@ -1206,8 +1794,7 @@ namespace
             IsRvaInImage(DecodeScaleCallRva,
                 DecodeScaleCallLength))
         {
-            InterlockedExchange(&g_fastDecodeResolverMask, 0x3F);
-            return true;
+            return finish(0x3F, true);
         }
 
         const HMODULE avcodec = GetModuleHandleW(L"avcodec-57.dll");
@@ -1225,8 +1812,7 @@ namespace
         if (expectedOpen == nullptr || expectedScale == nullptr ||
             headers == nullptr || base == nullptr)
         {
-            InterlockedExchange(&g_fastDecodeResolverMask, mask);
-            return false;
+            return finish(mask, false);
         }
         mask |= 2;
 
@@ -1236,8 +1822,7 @@ namespace
         if (!IsRvaInImage(VideoFfmpegVtableRva,
                 sizeof(void*) * 15))
         {
-            InterlockedExchange(&g_fastDecodeResolverMask, mask);
-            return false;
+            return finish(mask, false);
         }
         auto vtable = reinterpret_cast<unsigned char**>(
             base + VideoFfmpegVtableRva);
@@ -1246,8 +1831,7 @@ namespace
         if (!IsExecutableAddress(scaleFunction) ||
             !IsExecutableAddress(openFunction))
         {
-            InterlockedExchange(&g_fastDecodeResolverMask, mask);
-            return false;
+            return finish(mask, false);
         }
         mask |= 4;
 
@@ -1271,8 +1855,7 @@ namespace
         if (!IsReadable(openFunction, openLength) ||
             !IsReadable(scaleFunction, scaleLength))
         {
-            InterlockedExchange(&g_fastDecodeResolverMask, mask);
-            return false;
+            return finish(mask, false);
         }
 
         for (std::size_t offset = 0; offset + 32 < openLength; offset++)
@@ -1295,8 +1878,7 @@ namespace
                 const std::uintptr_t candidate = RvaFromAddress(slot);
                 if (openSlot != 0 && openSlot != candidate)
                 {
-                    InterlockedExchange(&g_fastDecodeResolverMask, mask);
-                    return false;
+                    return finish(mask, false);
                 }
                 openSlot = candidate;
             }
@@ -1326,8 +1908,7 @@ namespace
                         (scaleCall != 0 &&
                             scaleCall != candidateCall))
                     {
-                        InterlockedExchange(&g_fastDecodeResolverMask, mask);
-                        return false;
+                        return finish(mask, false);
                     }
                     scaleSlot = candidateSlot;
                     scaleCall = candidateCall;
@@ -1337,28 +1918,14 @@ namespace
         mask |= scaleSlot != 0 && scaleCall != 0 ? 16 : 0;
         if (openSlot == 0 || scaleSlot == 0 || scaleCall == 0)
         {
-            InterlockedExchange(&g_fastDecodeResolverMask, mask);
-            return false;
+            return finish(mask, false);
         }
         AvcodecOpenSlotRva = openSlot;
         DecodeScaleSlotRva = scaleSlot;
         DecodeScaleCallRva = scaleCall;
 
-        wchar_t profilePath[MAX_PATH] = {};
-        wchar_t section[64] = {};
-        if (OffsetProfilePath(profilePath))
-        {
-            ImageProfileSection(section);
-            WriteResolvedValue(profilePath, section,
-                L"AvcodecOpenSlotRva", AvcodecOpenSlotRva);
-            WriteResolvedValue(profilePath, section,
-                L"DecodeScaleSlotRva", DecodeScaleSlotRva);
-            WriteResolvedValue(profilePath, section,
-                L"DecodeScaleCallRva", DecodeScaleCallRva);
-        }
         mask |= 32;
-        InterlockedExchange(&g_fastDecodeResolverMask, mask);
-        return true;
+        return finish(mask, true);
     }
 
     bool HasSignature(std::uintptr_t rva, const unsigned char* signature, std::size_t length)
@@ -1656,13 +2223,16 @@ namespace
     void* VideoCodecContext(void* formatContext)
     {
         auto formatBytes = reinterpret_cast<unsigned char*>(formatContext);
-        if (!IsReadable(formatContext, 0x38))
+        if (!IsReadable(formatContext,
+                FormatContextStreamsOffset + sizeof(void*)))
         {
             return nullptr;
         }
 
-        const int streamCount = *reinterpret_cast<const int*>(formatBytes + 0x2C);
-        void** streams = *reinterpret_cast<void***>(formatBytes + 0x30);
+        const int streamCount = *reinterpret_cast<const int*>(
+            formatBytes + FormatContextStreamCountOffset);
+        void** streams = *reinterpret_cast<void***>(
+            formatBytes + FormatContextStreamsOffset);
         if (streamCount < 1 || streamCount > 64 ||
             !IsReadable(streams,
                 static_cast<std::size_t>(streamCount) * sizeof(void*)))
@@ -1673,16 +2243,20 @@ namespace
         for (int index = 0; index < streamCount; index++)
         {
             void* stream = streams[index];
-            if (!IsReadable(stream, 0x10))
+            if (!IsReadable(stream,
+                    StreamCodecContextOffset + sizeof(void*)))
             {
                 continue;
             }
 
             void* codecContext = *reinterpret_cast<void**>(
-                reinterpret_cast<unsigned char*>(stream) + 0x08);
-            if (IsReadable(codecContext, 0x10) &&
+                reinterpret_cast<unsigned char*>(stream) +
+                    StreamCodecContextOffset);
+            if (IsReadable(codecContext,
+                    CodecContextMediaTypeOffset + sizeof(int)) &&
                 *reinterpret_cast<const int*>(
-                    reinterpret_cast<unsigned char*>(codecContext) + 0x0C) == 0)
+                    reinterpret_cast<unsigned char*>(codecContext) +
+                        CodecContextMediaTypeOffset) == 0)
             {
                 return codecContext;
             }
@@ -1733,13 +2307,16 @@ namespace
         }
 
         auto formatBytes = reinterpret_cast<unsigned char*>(formatContext);
-        if (!IsReadable(formatContext, 0x38))
+        if (!IsReadable(formatContext,
+                FormatContextStreamsOffset + sizeof(void*)))
         {
             return false;
         }
 
-        const int streamCount = *reinterpret_cast<const int*>(formatBytes + 0x2C);
-        void** streams = *reinterpret_cast<void***>(formatBytes + 0x30);
+        const int streamCount = *reinterpret_cast<const int*>(
+            formatBytes + FormatContextStreamCountOffset);
+        void** streams = *reinterpret_cast<void***>(
+            formatBytes + FormatContextStreamsOffset);
         if (streamCount < 1 || streamCount > 64 ||
             !IsReadable(streams,
                 static_cast<std::size_t>(streamCount) * sizeof(void*)))
@@ -1755,10 +2332,13 @@ namespace
                 continue;
             }
 
-            void* codecContext = *reinterpret_cast<void**>(stream + 0x08);
-            if (!IsReadable(codecContext, 0x10) ||
+            void* codecContext = *reinterpret_cast<void**>(
+                stream + StreamCodecContextOffset);
+            if (!IsReadable(codecContext,
+                    CodecContextMediaTypeOffset + sizeof(int)) ||
                 *reinterpret_cast<const int*>(
-                    reinterpret_cast<unsigned char*>(codecContext) + 0x0C) != 0)
+                    reinterpret_cast<unsigned char*>(codecContext) +
+                        CodecContextMediaTypeOffset) != 0)
             {
                 continue;
             }
@@ -2160,19 +2740,22 @@ namespace
 
             void* queue = *reinterpret_cast<void**>(
                 videoBytes + VideoFrameQueueOffset);
-            if (IsReadable(queue, 16))
+            if (IsReadable(queue, QueueEntriesOffset))
             {
                 const int begin = *reinterpret_cast<const int*>(
-                    reinterpret_cast<unsigned char*>(queue) + 8);
+                    reinterpret_cast<unsigned char*>(queue) +
+                        QueueBeginOffset);
                 const int end = *reinterpret_cast<const int*>(
-                    reinterpret_cast<unsigned char*>(queue) + 12);
+                    reinterpret_cast<unsigned char*>(queue) +
+                        QueueEndOffset);
                 if (begin >= 0 && end >= begin && end - begin <= 64)
                 {
                     valid = true;
                     for (int index = begin; index < end; index++)
                     {
                         auto slotAddress = reinterpret_cast<unsigned char*>(queue) +
-                            16 + static_cast<std::size_t>(index) * sizeof(void*);
+                            QueueEntriesOffset +
+                            static_cast<std::size_t>(index) * sizeof(void*);
                         if (!IsReadable(slotAddress, sizeof(void*)))
                         {
                             valid = false;
@@ -2180,7 +2763,8 @@ namespace
                         }
 
                         void* entry = *reinterpret_cast<void**>(slotAddress);
-                        if (!IsReadable(entry, 17))
+                        if (!IsReadable(entry,
+                                VideoQueueEntryReadyOffset + 1))
                         {
                             valid = false;
                             break;
@@ -2192,7 +2776,8 @@ namespace
                             droppedFrames++;
                         }
                         *frame = -1;
-                        *(reinterpret_cast<unsigned char*>(entry) + 16) = 0;
+                        *(reinterpret_cast<unsigned char*>(entry) +
+                            VideoQueueEntryReadyOffset) = 0;
                     }
                     if (valid)
                     {
@@ -2231,15 +2816,15 @@ namespace
         }
 
         void* data = *reinterpret_cast<void**>(queueAddress);
-        if (!IsReadable(data, 16))
+        if (!IsReadable(data, QueueEntriesOffset))
         {
             return -1;
         }
 
         const int begin = *reinterpret_cast<const int*>(
-            reinterpret_cast<unsigned char*>(data) + 8);
+            reinterpret_cast<unsigned char*>(data) + QueueBeginOffset);
         const int end = *reinterpret_cast<const int*>(
-            reinterpret_cast<unsigned char*>(data) + 12);
+            reinterpret_cast<unsigned char*>(data) + QueueEndOffset);
         return begin >= 0 && end >= begin && end - begin <= 4096
             ? end - begin
             : -1;
@@ -3077,7 +3662,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 15;
+    return 16;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

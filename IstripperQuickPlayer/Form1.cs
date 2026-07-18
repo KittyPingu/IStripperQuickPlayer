@@ -32,7 +32,7 @@ namespace IStripperQuickPlayer
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
 
-        private const int PlaybackBridgeVersion = 15;
+        private const int PlaybackBridgeVersion = 16;
 
         private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
