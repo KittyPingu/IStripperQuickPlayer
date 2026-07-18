@@ -16,6 +16,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
 using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
 using Size = System.Drawing.Size;
@@ -37,6 +38,8 @@ namespace IStripperQuickPlayer
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
         private const int PlaybackBridgeVersion = 21;
+        private const string LatestReleaseApiUrl =
+            "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
 
         private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
@@ -126,8 +129,14 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(!HasPlatinumPlaybackEntitlement("gold"));
             System.Diagnostics.Debug.Assert(IsPlayingClip(
                 "f0636_6144401.vghd", @"f0636\f0636_6144401.vghd"));
+            System.Diagnostics.Debug.Assert(ParseUpdateVersion("v0.62.0") ==
+                new Version(0, 62, 0));
 #endif
             InitializeComponent();
+            fileToolStripMenuItem.DropDownItems.Insert(
+                fileToolStripMenuItem.DropDownItems.Count - 1,
+                new ToolStripMenuItem("Check for Updates...", null,
+                    async (_, _) => await CheckForUpdatesAsync(true)));
             RefreshPlaybackControlVisibility();
             playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
             if (Properties.Settings.Default.EnablePlaybackControl)
@@ -812,6 +821,93 @@ namespace IStripperQuickPlayer
             GetNowPlaying();
             clickingNowPlaying = false;
             SetupKeyHooks();
+            if (!Application.ProductVersion.Contains(
+                    "-dev", StringComparison.OrdinalIgnoreCase))
+                _ = CheckForUpdatesAsync(false);
+        }
+
+        private async Task CheckForUpdatesAsync(bool showUpToDateMessage)
+        {
+            try
+            {
+                using HttpRequestMessage request =
+                    new(HttpMethod.Get, LatestReleaseApiUrl);
+                request.Headers.UserAgent.ParseAdd(
+                    $"IStripperQuickPlayer/{Application.ProductVersion}");
+                request.Headers.Accept.ParseAdd("application/vnd.github+json");
+                request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+                using CancellationTokenSource timeout =
+                    new(TimeSpan.FromSeconds(10));
+                using HttpResponseMessage response =
+                    await client.SendAsync(request, timeout.Token);
+                response.EnsureSuccessStatusCode();
+                using JsonDocument release = JsonDocument.Parse(
+                    await response.Content.ReadAsStringAsync(timeout.Token));
+
+                string tag = release.RootElement.GetProperty("tag_name").GetString() ?? "";
+                string releaseUrl =
+                    release.RootElement.GetProperty("html_url").GetString() ?? "";
+                Version? latest = ParseUpdateVersion(tag);
+                Version? current = ParseUpdateVersion(Application.ProductVersion);
+                if (latest == null || current == null || string.IsNullOrEmpty(releaseUrl))
+                    throw new InvalidDataException("GitHub returned invalid release information.");
+
+                string currentDisplay = Application.ProductVersion.Split('+')[0];
+                if (currentDisplay.Contains("-dev", StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show(this,
+                        $"Development build {currentDisplay}.\r\n" +
+                        $"Latest GitHub release: {tag}.",
+                        "Check for Updates", MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (latest <= current)
+                {
+                    if (showUpToDateMessage)
+                    {
+                        MessageBox.Show(this,
+                            $"QuickPlayer is up to date (version {currentDisplay}).",
+                            "Check for Updates", MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                    }
+                    return;
+                }
+
+                if (MessageBox.Show(this,
+                        $"QuickPlayer {latest} is available. Open the download page?",
+                        "Update Available", MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Information) == DialogResult.Yes)
+                {
+                    Process.Start(new ProcessStartInfo(releaseUrl)
+                    {
+                        UseShellExecute = true
+                    });
+                }
+            }
+            catch (Exception exception) when (!showUpToDateMessage)
+            {
+                Debug.WriteLine("Update check failed: " + exception.Message);
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(this,
+                    "Could not check for updates: " + exception.Message,
+                    "Check for Updates", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        private static Version? ParseUpdateVersion(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+            string version = value.Trim().TrimStart('v', 'V');
+            int suffix = version.IndexOfAny(new[] { '-', '+' });
+            if (suffix >= 0)
+                version = version[..suffix];
+            return Version.TryParse(version, out Version? parsed) ? parsed : null;
         }
 
         private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)

@@ -17,6 +17,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify local development versioning
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "version-test"
+          $first = & .\tools\Get-LocalBuildVersion.ps1 -RepositoryRoot .
+          $second = & .\tools\Get-LocalBuildVersion.ps1 -RepositoryRoot .
+          if ([version]($second -replace "-dev$", "") -le [version]($first -replace "-dev$", "")) {
+            throw "Local build version did not increase: $first -> $second"
+          }
 
       - uses: actions/setup-dotnet@v5
         with:
@@ -67,6 +79,11 @@ jobs:
       - name: Smoke-test WinForms controls
         shell: pwsh
         run: |
+          $actualVersion = (Get-Item `
+            "$env:GITHUB_WORKSPACE\artifacts\publish\IStripperQuickPlayer.exe").VersionInfo.ProductVersion.Split("+")[0]
+          if ($actualVersion -ne $env:APP_VERSION) {
+            throw "Published version '$actualVersion' does not match '$env:APP_VERSION'."
+          }
           $process = Start-Process `
             "$env:GITHUB_WORKSPACE\artifacts\publish\IStripperQuickPlayer.exe" `
             -ArgumentList "--verify-controls" -Wait -PassThru

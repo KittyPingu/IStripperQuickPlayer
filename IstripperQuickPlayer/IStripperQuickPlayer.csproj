@@ -3,6 +3,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
 	  <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
@@ -116,6 +117,19 @@
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\TextTemplating\Microsoft.TextTemplating.targets"
           Condition="Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\TextTemplating\Microsoft.TextTemplating.targets')" />
+  <Target Name="SetLocalDevelopmentVersion"
+          BeforeTargets="GetAssemblyVersion"
+          Condition="'$(Version)' == '0.0.0-dev' and '$(DesignTimeBuild)' != 'true'">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\tools\Get-LocalBuildVersion.ps1&quot; -RepositoryRoot &quot;$(MSBuildProjectDirectory)\..&quot;"
+          ConsoleToMSBuild="true" StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="LocalBuildVersion" />
+    </Exec>
+    <PropertyGroup>
+      <Version>$(LocalBuildVersion)</Version>
+      <InformationalVersion>$(LocalBuildVersion)</InformationalVersion>
+      <FileVersion>$([System.Text.RegularExpressions.Regex]::Replace('$(LocalBuildVersion)', '-.*$', ''))</FileVersion>
+    </PropertyGroup>
+  </Target>
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
     <Exec Command="xcopy /d /q /y &quot;$(ProjectDir)dependencies\*.*&quot; &quot;$(TargetDir)&quot;&#xD;&#xA;" />
   </Target>
