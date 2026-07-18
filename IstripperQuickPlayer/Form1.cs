@@ -32,7 +32,7 @@ namespace IStripperQuickPlayer
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
 
-        private const int PlaybackBridgeVersion = 13;
+        private const int PlaybackBridgeVersion = 14;
 
         private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
@@ -70,6 +70,7 @@ namespace IStripperQuickPlayer
         private volatile bool playbackBridgeLoaded;
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
+        private volatile bool playbackSeekingSupported = true;
         private volatile bool playbackBusy;
         private double requestedPlaybackSpeed = 1.0;
         private readonly System.Windows.Forms.Timer playbackTimelineTimer = new() { Interval = 250 };
@@ -81,6 +82,7 @@ namespace IStripperQuickPlayer
         private string playbackTimelineAnimationPath = "";
         private string playbackCompletedAnimationPath = "";
         private string playbackRequestedAnimationPath = "";
+        private DateTime playbackNextMovieDiscoveryAt = DateTime.MinValue;
         private DateTime playbackNextClipRetryAt = DateTime.MinValue;
         private DateTime playbackReplacementStableAt = DateTime.MinValue;
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
@@ -955,6 +957,8 @@ namespace IStripperQuickPlayer
         {
             playbackBridgeLoaded = false;
             playbackMovieRegistered = false;
+            playbackSeekingSupported = true;
+            playbackNextMovieDiscoveryAt = DateTime.MinValue;
             playbackFastDecodeEnabled = false;
 
             try
@@ -1040,11 +1044,12 @@ namespace IStripperQuickPlayer
                 }
 
                 bool enabled = playbackBridgeLoaded && !playbackBusy;
-                cmdRewind.Enabled = enabled;
+                cmdRewind.Enabled = enabled && playbackSeekingSupported;
                 cmdPlayPause.Enabled = enabled;
-                cmdFastForward.Enabled = enabled;
-                cmbPlaybackSpeed.Enabled = enabled;
-                trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered;
+                cmdFastForward.Enabled = enabled && playbackSeekingSupported;
+                cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported;
+                trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered &&
+                    playbackSeekingSupported;
             }
 
             if (InvokeRequired)
@@ -1068,11 +1073,12 @@ namespace IStripperQuickPlayer
                 return;
             }
             bool enabled = playbackBridgeLoaded && !busy && !formIsClosing;
-            cmdRewind.Enabled = enabled;
+            cmdRewind.Enabled = enabled && playbackSeekingSupported;
             cmdPlayPause.Enabled = enabled;
-            cmdFastForward.Enabled = enabled;
-            cmbPlaybackSpeed.Enabled = enabled;
-            trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered;
+            cmdFastForward.Enabled = enabled && playbackSeekingSupported;
+            cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported;
+            trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered &&
+                playbackSeekingSupported;
         }
 
         private int CallPlaybackApi(string apiName, ulong? parameter = null)
@@ -1126,6 +1132,11 @@ namespace IStripperQuickPlayer
 
             playbackMovieRegistered =
                 CallPlaybackApi("IStripperDiscoverMovie") >= 0;
+            if (playbackMovieRegistered)
+            {
+                playbackSeekingSupported =
+                    CallPlaybackApi("IStripperGetDecoderKind") != 2;
+            }
             if (!playbackMovieRegistered)
             {
                 SetPlaybackStatus("No active desktop video was found. Start a clip in iStripper and try again.");
@@ -1253,6 +1264,8 @@ namespace IStripperQuickPlayer
                     try { CallPlaybackApi("IStripperClearAlphaCheckpoints"); }
                     catch { }
                     playbackMovieRegistered = false;
+                    playbackSeekingSupported = true;
+                    playbackNextMovieDiscoveryAt = DateTime.MinValue;
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
                     playbackSpeedLastApplied = DateTime.MinValue;
                     if (!playbackTimelineDragging)
@@ -1270,8 +1283,7 @@ namespace IStripperQuickPlayer
                             previousAnimationReachedEnd)
                         {
                             playbackCompletedAnimationPath = previousAnimationPath;
-                            playbackNextClipRetryAt =
-                                DateTime.UtcNow.AddSeconds(1);
+                            playbackNextClipRetryAt = DateTime.UtcNow;
                         }
                         playbackReplacementStableAt = DateTime.MinValue;
                     }
@@ -1310,10 +1322,20 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                if (!playbackMovieRegistered)
+                if (!playbackMovieRegistered &&
+                    DateTime.UtcNow >= playbackNextMovieDiscoveryAt)
                 {
                     playbackMovieRegistered =
                         CallPlaybackApi("IStripperDiscoverMovie") >= 0;
+                    if (playbackMovieRegistered)
+                    {
+                        playbackSeekingSupported =
+                            CallPlaybackApi("IStripperGetDecoderKind") != 2;
+                        SetPlaybackBusy(playbackBusy);
+                    }
+                    playbackNextMovieDiscoveryAt = playbackMovieRegistered
+                        ? DateTime.MinValue
+                        : DateTime.UtcNow.AddSeconds(1);
                 }
                 if (!playbackMovieRegistered)
                 {
@@ -1357,7 +1379,8 @@ namespace IStripperQuickPlayer
                     trkPlaybackPosition.Value = Math.Clamp(elapsed, 0, maximum);
                     UpdatePlaybackTime(elapsed, playbackTimelineDurationMilliseconds);
                 }
-                trkPlaybackPosition.Enabled = !playbackBusy;
+                trkPlaybackPosition.Enabled =
+                    !playbackBusy && playbackSeekingSupported;
             }
             catch
             {
@@ -1441,6 +1464,12 @@ namespace IStripperQuickPlayer
         private async Task SeekAbsoluteAsync(int requestedTarget,
             CancellationToken cancellationToken)
         {
+            if (!playbackSeekingSupported)
+            {
+                throw new NotSupportedException(
+                    "Legacy WMV clips support the timer and pause/play, but not seeking or speed changes.");
+            }
+
             int state = RequirePlaybackResult("IStripperGetState");
             if (state != 3 && state != 4)
             {

@@ -24,6 +24,7 @@ namespace
     std::uintptr_t VideoSeekRva = 0;
     std::uintptr_t MovieVtableRva = 0;
     std::uintptr_t VideoFfmpegVtableRva = 0;
+    std::uintptr_t VideoWmvCoreVtableRva = 0;
 
     std::size_t MovieStateOffset = 0;
     std::size_t MovieAnimationOffset = 0;
@@ -711,6 +712,7 @@ namespace
     bool ResolveVideoOffsets()
     {
         VideoFfmpegVtableRva = FindVtableRva(".?AVVideoFFmpeg@@");
+        VideoWmvCoreVtableRva = FindVtableRva(".?AVVideoWmvCore@@");
         if (!IsRvaInImage(VideoFfmpegVtableRva,
                 sizeof(void*) * 15))
         {
@@ -848,6 +850,8 @@ namespace
             L"MovieVtableRva", MovieVtableRva);
         WriteResolvedValue(profilePath, section,
             L"VideoFfmpegVtableRva", VideoFfmpegVtableRva);
+        WriteResolvedValue(profilePath, section,
+            L"VideoWmvCoreVtableRva", VideoWmvCoreVtableRva);
         WriteResolvedValue(profilePath, section,
             L"VideoSeekRva", VideoSeekRva);
         WriteResolvedValue(profilePath, section,
@@ -1212,7 +1216,7 @@ namespace
         return IsMovie(movie) ? movie : nullptr;
     }
 
-    void* VideoDecoder(void* animation)
+    void* AnimationVideoDecoder(void* animation)
     {
         if (!IsReadable(animation, AnimationSsvOffset + sizeof(void*)))
         {
@@ -1228,13 +1232,33 @@ namespace
 
         void* video = *reinterpret_cast<void**>(
             reinterpret_cast<unsigned char*>(ssv) + SsvVideoDecoderOffset);
-        if (!IsReadable(video, VideoCurrentFrameOffset + sizeof(int)))
+        if (!IsReadable(video, sizeof(void*)))
+        {
+            return nullptr;
+        }
+
+        return video;
+    }
+
+    void* VideoDecoder(void* animation)
+    {
+        void* video = AnimationVideoDecoder(animation);
+        if (video == nullptr ||
+            !IsReadable(video, VideoCurrentFrameOffset + sizeof(int)))
         {
             return nullptr;
         }
 
         void* vtable = *reinterpret_cast<void**>(video);
         return vtable == ImageBase() + VideoFfmpegVtableRva ? video : nullptr;
+    }
+
+    bool IsWmvDecoder(void* video)
+    {
+        return video != nullptr &&
+            IsRvaInImage(VideoWmvCoreVtableRva, sizeof(void*)) &&
+            *reinterpret_cast<void**>(video) ==
+                ImageBase() + VideoWmvCoreVtableRva;
     }
 
     bool IsActiveMovieCandidate(void* movie)
@@ -1272,8 +1296,7 @@ namespace
             reinterpret_cast<unsigned char*>(info) +
             AnimationFramesPerSecondOffset);
         return totalFrames > 0 && currentFrame <= totalFrames &&
-            framesPerSecond > 0 && framesPerSecond <= 240 &&
-            VideoDecoder(animation) != nullptr;
+            framesPerSecond > 0 && framesPerSecond <= 240;
     }
 
     void* DiscoverActiveMovie()
@@ -2533,7 +2556,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 13;
+    return 14;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -2934,6 +2957,37 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetLastKeyframeSeekFram
     return InterlockedCompareExchange(&g_lastKeyframeSeekFrame, -1, -1);
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetDecoderKind()
+{
+    __try
+    {
+        void* movie = ActiveMovie();
+        if (movie == nullptr)
+        {
+            return 0;
+        }
+
+        void* animation = *reinterpret_cast<void**>(
+            reinterpret_cast<unsigned char*>(movie) + MovieAnimationOffset);
+        void* video = AnimationVideoDecoder(animation);
+        if (video == nullptr)
+        {
+            return 0;
+        }
+
+        void* vtable = *reinterpret_cast<void**>(video);
+        if (vtable == ImageBase() + VideoFfmpegVtableRva)
+        {
+            return 1;
+        }
+        return IsWmvDecoder(video) ? 2 : 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 0;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilliseconds(
     SIZE_T targetMilliseconds)
 {
@@ -3037,7 +3091,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
                         }
                         else
                         {
-                            if (!CanResetAnimationAlpha(animation))
+                            void* anyVideo = AnimationVideoDecoder(animation);
+                            if (IsWmvDecoder(anyVideo))
+                            {
+                                result = EngineError();
+                            }
+                            else if (!CanResetAnimationAlpha(animation))
                             {
                                 result = E_FAIL;
                             }

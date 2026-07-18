@@ -316,7 +316,7 @@ namespace IStripperQuickPlayer.BLL
             {
                 using (var webClient = new WebClient())
                 {
-                    var imageBytes = await webClient.DownloadDataTaskAsync (url);
+                    var imageBytes = await webClient.DownloadDataTaskAsync(url).ConfigureAwait(false);
                     if (imageBytes != null && imageBytes.Length > 0)
                     {
                         Bitmap bmp;

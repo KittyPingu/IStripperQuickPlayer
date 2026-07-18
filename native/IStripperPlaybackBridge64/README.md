@@ -137,6 +137,13 @@ be a position setter is identified by vghd's Qt metadata as
 `MovieManager::setPrefinishMark`; it schedules a one-shot near-end event and is
 not safe for seeking.
 
+Older cards use `VideoWmvCore` instead of `VideoFFmpeg`. Its virtual seek
+operation returns false, and `Movie::setPlayRate` does not change its timeline
+rate. Bridge v14 still discovers the shared `Movie`/`CAnim` object so the timer
+and pause/play work, but reports the decoder kind to QuickPlayer so WMV seek
+and speed controls are disabled instead of starting a repeated heap scan or a
+CPU-heavy real-time fallback.
+
 There is a second, private route: `Movie::advance` normally calls the CAnim
 frame wrapper with `Movie.currentFrame + 1`, and that wrapper accepts a larger
 absolute target. Simply priming `Movie.currentFrame` to `target - 1` did not

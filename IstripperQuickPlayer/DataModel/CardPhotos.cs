@@ -19,7 +19,7 @@ namespace IStripperQuickPlayer.DataModel
         {
             cardTag = nowPlayingTag;
             string url = @"https://www.istripper.com/free/sets/" + cardTag.Split(new char[] {'-'}).First() + @"/photos/photos.json";
-            var jsonString = await httpClient.GetStringAsync(url);
+            var jsonString = await httpClient.GetStringAsync(url).ConfigureAwait(false);
             if (jsonString == null) return false;
             data = Newtonsoft.Json.JsonConvert.DeserializeObject<RootPhotos>(jsonString);            
             //if (data == null) return false;
