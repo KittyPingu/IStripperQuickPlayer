@@ -190,8 +190,10 @@ namespace
     SRWLOCK g_alphaCheckpointLock = SRWLOCK_INIT;
     SRWLOCK g_wmvRestartLock = SRWLOCK_INIT;
     SRWLOCK g_movieWindowLock = SRWLOCK_INIT;
+    INIT_ONCE g_movieWindowWatcherOnce = INIT_ONCE_STATIC_INIT;
     HMODULE g_bridgeModule = nullptr;
     HWINEVENTHOOK g_movieWindowEventHook = nullptr;
+    LONG volatile g_movieWindowWatcherResult = E_PENDING;
     UINT g_movieWindowProbeMessage = 0;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
@@ -403,6 +405,88 @@ namespace
         }
     }
 
+    DWORD WINAPI MovieWindowWatcher(void* parameter)
+    {
+        const HANDLE readyEvent = static_cast<HANDLE>(parameter);
+        MSG message = {};
+        PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+        g_movieWindowEventHook = SetWinEventHook(
+            EVENT_OBJECT_CREATE, EVENT_OBJECT_LOCATIONCHANGE,
+            g_bridgeModule, &MovieWindowEvent,
+            GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
+        const HRESULT result = g_movieWindowEventHook == nullptr
+            ? HRESULT_FROM_WIN32(
+                GetLastError() == ERROR_SUCCESS
+                    ? ERROR_HOOK_NOT_INSTALLED
+                    : GetLastError())
+            : BridgeSuccess;
+        InterlockedExchange(&g_movieWindowWatcherResult, result);
+        SetEvent(readyEvent);
+        if (result < 0)
+        {
+            return 0;
+        }
+
+        while (GetMessageW(&message, nullptr, 0, 0) > 0)
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        return 0;
+    }
+
+    BOOL CALLBACK StartMovieWindowWatcher(
+        PINIT_ONCE, PVOID, PVOID*)
+    {
+        const HANDLE readyEvent =
+            CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (readyEvent == nullptr)
+        {
+            InterlockedExchange(&g_movieWindowWatcherResult,
+                HRESULT_FROM_WIN32(GetLastError()));
+            return TRUE;
+        }
+
+        const HANDLE thread = CreateThread(nullptr, 0,
+            &MovieWindowWatcher, readyEvent, 0, nullptr);
+        if (thread == nullptr)
+        {
+            InterlockedExchange(&g_movieWindowWatcherResult,
+                HRESULT_FROM_WIN32(GetLastError()));
+            CloseHandle(readyEvent);
+            return TRUE;
+        }
+        CloseHandle(thread);
+
+        const DWORD waitResult =
+            WaitForSingleObject(readyEvent, 5000);
+        if (waitResult == WAIT_OBJECT_0)
+        {
+            CloseHandle(readyEvent);
+        }
+        else
+        {
+            InterlockedExchange(&g_movieWindowWatcherResult,
+                HRESULT_FROM_WIN32(
+                    waitResult == WAIT_TIMEOUT
+                        ? ERROR_TIMEOUT
+                        : GetLastError()));
+            // The watcher still owns this handle until it signals readiness.
+        }
+        return TRUE;
+    }
+
+    HRESULT EnsureMovieWindowWatcher()
+    {
+        if (!InitOnceExecuteOnce(&g_movieWindowWatcherOnce,
+                &StartMovieWindowWatcher, nullptr, nullptr))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+        return static_cast<HRESULT>(InterlockedCompareExchange(
+            &g_movieWindowWatcherResult, E_PENDING, E_PENDING));
+    }
+
     HRESULT SetPlayerLocked(bool locked)
     {
         if (locked)
@@ -415,28 +499,18 @@ namespace
             if (g_movieWindowProbeMessage == 0)
             {
                 g_movieWindowProbeMessage = RegisterWindowMessageW(
-                    L"IStripperQuickPlayer.MovieWindowProc.v18");
+                    L"IStripperQuickPlayer.MovieWindowProc.v19");
                 if (g_movieWindowProbeMessage == 0)
                 {
                     return HRESULT_FROM_WIN32(GetLastError());
                 }
             }
             InterlockedExchange(&g_playerLocked, 1);
-            if (g_movieWindowEventHook == nullptr)
+            const HRESULT watcherResult = EnsureMovieWindowWatcher();
+            if (watcherResult < 0)
             {
-                g_movieWindowEventHook = SetWinEventHook(
-                    EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW,
-                    g_bridgeModule, &MovieWindowEvent,
-                    GetCurrentProcessId(), 0, WINEVENT_INCONTEXT);
-                if (g_movieWindowEventHook == nullptr)
-                {
-                    InterlockedExchange(&g_playerLocked, 0);
-                    const DWORD error = GetLastError();
-                    return HRESULT_FROM_WIN32(
-                        error == ERROR_SUCCESS
-                            ? ERROR_HOOK_NOT_INSTALLED
-                            : error);
-                }
+                InterlockedExchange(&g_playerLocked, 0);
+                return watcherResult;
             }
             EnumWindows(&FindMovieWindow, 0);
             return BridgeSuccess;
@@ -3905,7 +3979,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 18;
+    return 19;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
