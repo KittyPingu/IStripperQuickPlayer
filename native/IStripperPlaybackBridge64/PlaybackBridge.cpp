@@ -2953,6 +2953,11 @@ namespace
         ReleaseSRWLockExclusive(&g_audioControlLock);
     }
 
+    bool IsNormalPlaybackRate(double playRate)
+    {
+        return playRate > 0.999 && playRate < 1.001;
+    }
+
     void SetMovieAudioRate(void* movie, double playRate)
     {
         LONGLONG rateBits = 0;
@@ -2967,7 +2972,11 @@ namespace
         if (!IsMovieAudioHeld(movie))
         {
             SuppressMovieAudioWrites(movie);
-            if (IsMoviePlaying(movie))
+            if (!IsNormalPlaybackRate(playRate))
+            {
+                ControlMovieAudio(movie, AudioCommand::Suspend);
+            }
+            else if (IsMoviePlaying(movie))
             {
                 if (ReleaseMovieAudioWrites(movie, true))
                 {
@@ -4101,63 +4110,10 @@ namespace
         }
 
         const double rate = AudioPlaybackRate();
-        if (sampleCount <= 1 || (rate > 0.999 && rate < 1.001))
+        if (IsNormalPlaybackRate(rate))
         {
             original(sound, firstChannel, secondChannel, sampleCount);
-            return;
         }
-
-        const std::size_t sourceBytes =
-            static_cast<std::size_t>(sampleCount) * sizeof(float);
-        if (!IsReadable(firstChannel, sourceBytes) ||
-            !IsReadable(secondChannel, sourceBytes))
-        {
-            original(sound, firstChannel, secondChannel, sampleCount);
-            return;
-        }
-
-        const double requestedCount = sampleCount / rate;
-        if (requestedCount < 1.0 ||
-            requestedCount > static_cast<double>(INT_MAX / 2))
-        {
-            original(sound, firstChannel, secondChannel, sampleCount);
-            return;
-        }
-        const int outputCount = static_cast<int>(requestedCount + 0.5);
-        const std::size_t outputBytes =
-            static_cast<std::size_t>(outputCount) * sizeof(float);
-        auto output = static_cast<float*>(HeapAlloc(
-            GetProcessHeap(), 0, outputBytes * 2));
-        if (output == nullptr)
-        {
-            original(sound, firstChannel, secondChannel, sampleCount);
-            return;
-        }
-
-        const auto first = static_cast<const float*>(firstChannel);
-        const auto second = static_cast<const float*>(secondChannel);
-        auto firstOutput = output;
-        auto secondOutput = reinterpret_cast<float*>(
-            reinterpret_cast<unsigned char*>(output) + outputBytes);
-        for (int index = 0; index < outputCount; index++)
-        {
-            const double sourcePosition = index * rate;
-            const int requestedLower =
-                static_cast<int>(sourcePosition);
-            const int lower = requestedLower < sampleCount
-                ? requestedLower : sampleCount - 1;
-            const int upper = lower + 1 < sampleCount
-                ? lower + 1 : sampleCount - 1;
-            const float fraction = static_cast<float>(
-                sourcePosition - lower);
-            firstOutput[index] = first[lower] +
-                (first[upper] - first[lower]) * fraction;
-            secondOutput[index] = second[lower] +
-                (second[upper] - second[lower]) * fraction;
-        }
-
-        original(sound, firstOutput, secondOutput, outputCount);
-        HeapFree(GetProcessHeap(), 0, output);
     }
 
     void __fastcall GuardedBpkSoundWrite(void* sound, const void* begin,
@@ -5112,11 +5068,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
                             {
                                 FunctionAt<ManagerAction>(
                                     MovieResumeRva)(movie);
-                                ControlMovieAudio(
-                                    movie, AudioCommand::Resume);
                             }
                         }
                     }
+                }
+                if (SUCCEEDED(result))
+                {
+                    SetMovieAudioRate(movie, playRate);
                 }
             }
             __finally
