@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v19
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v21
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -40,6 +40,8 @@ have to be kept in sync:
 HD2/HD3 SSV container
         |
         +-- VideoFFmpeg ------ colour frame
+        |        |
+        |        +------------ decoded PCM --> CBpkSound --> QAudioOutput
         |
         +-- CShape ----------- RLE alpha for the same frame
                     \
@@ -76,6 +78,9 @@ to `vghd.exe`. The added path reuses that agent:
    rate methods. No per-frame or input-simulation capture hook is required.
 5. Read the current frame, total-frame count, and FPS under the movie's Qt
    mutex to expose a content-time position to WinForms.
+6. Resolve the active `VideoFFmpeg` object's `CBpkSound` and `QAudioOutput`
+   ownership so pause and seek operations control the same audio stream that
+   vghd opened for the clip.
 
 The resolver produced this profile for the 2.4.0.0 baseline:
 
@@ -93,6 +98,11 @@ The resolver produced this profile for the 2.4.0.0 baseline:
 | Info total frames / FPS | `+0x108` / `+0x10C` |
 | `Movie::advance` | `0x27DA20` |
 | `CAnim` frame wrapper | `0x272780` |
+| `CBpkSound` vtable / close helper | `0x55C558` / `0x281FB0` |
+| `VideoFFmpeg` / `VideoWmvCore` to `CBpkSound*` | `+0x28` |
+| `CBpkSound` to `QAudioOutput*` | `+0x10` |
+| `CBpkSound` to output `QIODevice*` | `+0x18` |
+| `CBpkSound` pending `QByteArray` | `+0x20` |
 
 Nothing is read back from the INI as trusted configuration. On every vghd
 process start, the bridge derives all vghd-owned code and object fields from
@@ -115,7 +125,8 @@ context and index entries/count, and the `AVCodecContext` media type. Per the
 current compatibility policy, those remain valid while `avformat_version()` is
 exactly 57.47.101. They are still named and written to the diagnostic INI.
 All CAnim, SSV, Movie, VideoFFmpeg, VideoWmvCore, queue-container, mutex,
-counter, import-slot, and hook-site fields are derived dynamically.
+sound-object, counter, import-slot, and hook-site fields are derived
+dynamically.
 
 Direct Movie discovery scans committed private writable regions once for the
 resolved Movie vtable, then validates the playing/paused state,
@@ -169,17 +180,21 @@ For a legacy seek, the bridge:
 
 1. Pauses the Movie, gates new sample callbacks, and stops `IWMReader`,
    waiting for vghd's status event.
-2. Calls vghd's queue-clear helper so all five colour/alpha sample queues are
+2. Clears `CBpkSound`'s pending PCM and restarts its `QAudioOutput` while the
+   sample callback is stopped, then leaves the fresh output suspended until
+   Movie resumes at the target.
+3. Calls vghd's queue-clear helper so all five colour/alpha sample queues are
    discarded together.
-3. Resets the reader's sample counter to the target frame and starts
+4. Resets the reader's sample counter to the target frame and starts
    `IWMReader` at the corresponding 100-nanosecond media time.
-4. Enables `IWMReaderAdvanced`'s user-provided clock and delivers the clip-end
-   time. This lets the asynchronous reader decode ahead only as its original
-   bounded queues have room; it does not busy-loop through the whole file.
-5. Waits until both completed colour and alpha queues contain data. A
+5. Leaves `IWMReaderAdvanced` on its normal reader clock. Earlier builds
+   switched every seek to the user-provided clock and raced vghd's
+   `WMT_STARTED` callback: its final `DeliverTime(0)` could overwrite the
+   bridge's later horizon and strand the bounded queues.
+6. Waits until both completed colour and alpha queues contain data. A
    colour-only restart is not exposed to `Movie`, because doing so can display
    an unpaired mask or leave the scheduler waiting on the next sample.
-6. Sets `Movie.currentFrame` to `target - 1` and resumes the original advance
+7. Sets `Movie.currentFrame` to `target - 1` and resumes the original advance
    path. vghd's own `Movie::advance` publishes the target position. The bridge
    does not report completion to QuickPlayer until two further frames have
    advanced, so the timer and playback controls remain disabled until the
@@ -264,6 +279,13 @@ The direct seek path now does the following while the movie is paused:
    the dynamically discovered current-frame field (`Movie+0x98` in the
    baseline).
 8. Report completion only after observing that final current-frame value.
+9. Suspend the clip's `QAudioOutput` and suppress `CBpkSound::write` while
+   rapidly rebuilding VP9 references. Before restarting the output, clear
+   `CBpkSound`'s internal pending `QByteArray` as well as Qt's output queue;
+   otherwise pre-seek PCM can be written after the target and make sound lag or
+   distort. The guarded write hook stores the newly returned `QIODevice*` back
+   into `CBpkSound` and discards catch-up PCM. Normal writes resume only after
+   the target colour and alpha frame has been published.
 
 The temporary `target - 1` value is therefore never treated as completion, and
 WinForms does not maintain a separate position clock. Rewind no longer reloads
@@ -277,6 +299,16 @@ Delta-RLE masks still require CAnim to apply records between the restored
 checkpoint and the requested target. The cache is populated opportunistically,
 so an unvisited part of a clip still falls back to frame zero. Each operation
 finishes with the original `Movie+0x98` counter at the requested position.
+
+`Movie::pause` and `Movie::resume` do not control `CBpkSound` themselves, so
+bridge v21 suspends and resumes the associated `QAudioOutput` with the Movie.
+`Movie::setPlayRate` likewise changes only the picture scheduler. The bridge's
+guarded PCM hook linearly resamples each decoded stereo block to the selected
+duration, preserving audio/video timing and decoder back-pressure from 0.25x
+through 4x. This changes pitch rather than performing time-stretching. Each
+rate transition restarts the output and refreshes `CBpkSound`'s device pointer
+so already queued samples from the previous rate cannot drift into the new
+timeline.
 
 ## Why the bridge does not clone vghd's decoder
 
@@ -295,10 +327,11 @@ A genuinely independent, clean-room player would need all of the following:
 - synchronized composition and a click-through transparent desktop renderer.
 
 The bridge implements intermediate-RGB-conversion skipping, indexed VP9
-keyframe seeking, bounded per-animation alpha checkpoints, and synchronized
-legacy WMV reader restarts. A modern checkpoint restores the output plane and
-the complete mutable CAnim alpha block before composition; both decoder paths
-finish by letting vghd's own `Movie::advance` publish the final position.
+keyframe seeking, bounded per-animation alpha checkpoints, synchronized
+FFmpeg audio flushing, and synchronized legacy WMV reader restarts. A modern
+checkpoint restores the output plane and the complete mutable CAnim alpha block
+before composition; both decoder paths finish by letting vghd's own
+`Movie::advance` publish the final position.
 
 ## Player locking
 
