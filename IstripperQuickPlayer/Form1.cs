@@ -32,7 +32,7 @@ namespace IStripperQuickPlayer
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
 
-        private const int PlaybackBridgeVersion = 16;
+        private const int PlaybackBridgeVersion = 17;
 
         private float cardScale = 1.0f;
         private bool isAutoSelecting = false;
@@ -67,6 +67,7 @@ namespace IStripperQuickPlayer
         private readonly CancellationTokenSource playbackLifetime = new();
         private string playbackBridgePath = "";
         private int vghdInjectionInProgress;
+        private volatile bool playerLockBridgeLoaded;
         private volatile bool playbackBridgeLoaded;
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
@@ -884,7 +885,6 @@ namespace IStripperQuickPlayer
 
         System.Threading.Timer timerhook;
         NktHook hook;
-        NktHook hook2;
         NktProcess tempProcess;
         private void SetupRegHooks()
         {
@@ -918,10 +918,7 @@ namespace IStripperQuickPlayer
                     timerhook.Dispose();
                     hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
                     hook.Hook(true);
-                    hook2 = _spyMgr.CreateHook("user32.dll!CallWindowProcW", (int)(eNktHookFlags.flgAutoHookChildProcess));
-                    hook2.Hook(true);
                     hook.Attach(tempProcess, true);
-                    if (playerlocked) hook2.Attach(tempProcess, true);
                     vghd_procID = tempProcess.Id;
                     ConfigurePlaybackHooks(tempProcess);
                     //check that we havent played a new clip while we weren't hooked
@@ -956,6 +953,7 @@ namespace IStripperQuickPlayer
 
         private void ConfigurePlaybackHooks(NktProcess process)
         {
+            playerLockBridgeLoaded = false;
             playbackBridgeLoaded = false;
             playbackMovieRegistered = false;
             playbackSeekingSupported = true;
@@ -980,6 +978,15 @@ namespace IStripperQuickPlayer
                 {
                     SetPlaybackStatus($"Unsupported playback bridge version {bridgeVersion}.");
                     return;
+                }
+
+                playerLockBridgeLoaded = true;
+                int lockResult = SetVghdPlayerLocked(playerlocked);
+                if (lockResult < 0)
+                {
+                    throw new COMException(
+                        $"Player lock setup failed (0x{lockResult:X8}).",
+                        lockResult);
                 }
 
                 noParameters = null!;
@@ -1081,6 +1088,21 @@ namespace IStripperQuickPlayer
             cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported;
             trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered &&
                 playbackSeekingSupported;
+        }
+
+        private int SetVghdPlayerLocked(bool locked)
+        {
+            if (!playerLockBridgeLoaded || vghd_procID == 0)
+            {
+                return unchecked((int)0x80070015);
+            }
+
+            object parameter = locked ? 1UL : 0UL;
+            lock (playbackApiLock)
+            {
+                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
+                    "IStripperSetPlayerLocked", ref parameter, true);
+            }
         }
 
         private int CallPlaybackApi(string apiName, ulong? parameter = null)
@@ -1767,60 +1789,24 @@ namespace IStripperQuickPlayer
                 : time.ToString(@"m\:ss", CultureInfo.InvariantCulture);
         }
 
-        private uint lastv = 0;
         private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
         {
-            if (hook.FunctionName == "user32.dll!CallWindowProcW")
+            var p = hookCallInfo.Params();
+            IntPtr pointer = IntPtr.Zero;
+            string keyname = "";
+            int length = 0;
+            foreach (INktParam param in p)
             {
-                if (playerlocked)
+                if (param.Name == "lpData") pointer = param.PointerVal;
+                if (param.Name == "cbData")
                 {
-                    var u = hookCallInfo.ThreadId;
-                    var p = hookCallInfo.Params();
-                    foreach (INktParam param in p)
-                    {
-
-                        if (param.Name == "Msg")
-                        {
-                            uint v = (uint)(param.Value);
-                            if (v == 132)
-                            {
-                                hookCallInfo.Result().LongVal = -1;
-                                hookCallInfo.Result().LongLongVal = -1;
-                            }
-                            return;
-                            //else
-                            //{
-                            //    if (v != lastv)
-                            //        System.Diagnostics.Debug.WriteLine("Msg = " + v.ToString());
-                            //    lastv = v;
-                            //}
-                        }
-                    }
-
-                    //hookCallInfo.Result().LongLongVal = -1;
-                    //hookCallInfo.LastError = 5;
+                    length = Convert.ToInt16(param.Value);
                 }
+                if (param.Name == "lpValueName") keyname = param.Value.ToString();
             }
-            else
-            {
-                string newclip = @"f0954\f0954_6176201.vghd";
-
-                var p = hookCallInfo.Params();
-                IntPtr pointer = IntPtr.Zero;
-                string keyname = "";
-                int length = 0;
-                foreach (INktParam param in p)
-                {
-                    if (param.Name == "lpData") pointer = param.PointerVal;
-                    if (param.Name == "cbData")
-                    {
-                        length = Convert.ToInt16(param.Value);
-                    }
-                    if (param.Name == "lpValueName") keyname = param.Value.ToString();
-                }
-                if (keyname != "CurrentAnim" || length < 1) return;
-                string str = GetStringFromPointer(pointer, length);
-                System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
+            if (keyname != "CurrentAnim" || length < 1) return;
+            string str = GetStringFromPointer(pointer, length);
+            System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
 
                 //check if this propsed card is in the filterd list
                 string newcardstring = str ?? "";
@@ -1934,7 +1920,6 @@ namespace IStripperQuickPlayer
                 //if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
                 isAutoSelecting = true;
                 return;
-            }
         }
 
         private List<ModelClip>? FilterClipList(List<ModelClip> clips)
@@ -2221,6 +2206,11 @@ namespace IStripperQuickPlayer
             playbackTimelineTimer.Dispose();
             playbackLifetime.Cancel();
             timerhook?.Dispose();
+            if (playerLockBridgeLoaded)
+            {
+                try { SetVghdPlayerLocked(false); } catch { }
+                playerLockBridgeLoaded = false;
+            }
             if (playbackBridgeLoaded && playbackMovieRegistered)
             {
                 // If the form closes during an accelerated scan, restore the user's
@@ -3057,16 +3047,23 @@ namespace IStripperQuickPlayer
 
         private void ChangePlayerLocked()
         {
+            if (playerLockBridgeLoaded)
+            {
+                int result = SetVghdPlayerLocked(playerlocked);
+                if (result < 0)
+                {
+                    SetPlaybackStatus(
+                        $"Player lock update failed (0x{result:X8}).");
+                }
+            }
+
             if (!playerlocked)
             {
-                if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stActive) hook2.Enable(tempProcess, false);
                 notifyIcon1.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
                 this.Icon = Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             }
             else
             {
-                if (hook2 != null && (hook2.State(tempProcess) != eNktHookState.stActive && hook2.State(tempProcess) != eNktHookState.stDisabled)) hook2.Attach(tempProcess, true);
-                if (hook2 != null && hook2.State(tempProcess) == eNktHookState.stDisabled) hook2.Enable(tempProcess, true);
                 notifyIcon1.Icon = Properties.Resources.locked;
                 this.Icon = Properties.Resources.locked;
             }

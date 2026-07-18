@@ -183,16 +183,29 @@ namespace
     LONG volatile g_movieResolverMask = 0;
     LONG volatile g_fastDecodeResolverMask = 0;
     LONG volatile g_fastDecodeInstallStage = 0;
+    LONG volatile g_playerLocked = 0;
     SRWLOCK g_decodePatchLock = SRWLOCK_INIT;
     SRWLOCK g_offsetResolveLock = SRWLOCK_INIT;
     SRWLOCK g_alphaCheckpointLock = SRWLOCK_INIT;
     SRWLOCK g_wmvRestartLock = SRWLOCK_INIT;
+    SRWLOCK g_movieWindowLock = SRWLOCK_INIT;
+    HMODULE g_bridgeModule = nullptr;
+    HWINEVENTHOOK g_movieWindowEventHook = nullptr;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
     void* g_wmvRateAnimation = nullptr;
     void* g_wmvRateVideo = nullptr;
     double g_wmvRate = 1.0;
     bool g_wmvUserClock = false;
+
+    struct MovieWindowSubclass
+    {
+        HWND window = nullptr;
+        WNDPROC original = nullptr;
+    };
+
+    constexpr int MaximumMovieWindows = 64;
+    MovieWindowSubclass g_movieWindows[MaximumMovieWindows] = {};
 
     struct AlphaCheckpoint
     {
@@ -211,6 +224,181 @@ namespace
     void* g_alphaCheckpointOutput = nullptr;
     int g_alphaCheckpointWidth = 0;
     int g_alphaCheckpointHeight = 0;
+
+    bool IsMovieWindow(HWND window)
+    {
+        DWORD processId = 0;
+        wchar_t className[128] = {};
+        return window != nullptr &&
+            GetWindowThreadProcessId(window, &processId) != 0 &&
+            processId == GetCurrentProcessId() &&
+            GetClassNameW(window, className,
+                static_cast<int>(_countof(className))) > 0 &&
+            std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") != nullptr;
+    }
+
+    WNDPROC OriginalMovieWindowProc(HWND window)
+    {
+        WNDPROC original = nullptr;
+        AcquireSRWLockShared(&g_movieWindowLock);
+        for (const auto& entry : g_movieWindows)
+        {
+            if (entry.window == window)
+            {
+                original = entry.original;
+                break;
+            }
+        }
+        ReleaseSRWLockShared(&g_movieWindowLock);
+        return original;
+    }
+
+    LRESULT CALLBACK MovieWindowProc(HWND window, UINT message,
+        WPARAM wParam, LPARAM lParam)
+    {
+        if (message == WM_NCHITTEST &&
+            InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
+        {
+            return HTTRANSPARENT;
+        }
+
+        WNDPROC original = OriginalMovieWindowProc(window);
+        return original == nullptr
+            ? DefWindowProcW(window, message, wParam, lParam)
+            : CallWindowProcW(original, window, message, wParam, lParam);
+    }
+
+    bool SubclassMovieWindow(HWND window)
+    {
+        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) == 0 ||
+            !IsMovieWindow(window))
+        {
+            return false;
+        }
+
+        AcquireSRWLockExclusive(&g_movieWindowLock);
+        MovieWindowSubclass* empty = nullptr;
+        for (auto& entry : g_movieWindows)
+        {
+            if (entry.window == window)
+            {
+                ReleaseSRWLockExclusive(&g_movieWindowLock);
+                return true;
+            }
+            if (empty == nullptr && entry.window == nullptr)
+            {
+                empty = &entry;
+            }
+        }
+        if (empty == nullptr)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return false;
+        }
+
+        SetLastError(ERROR_SUCCESS);
+        const LONG_PTR previous = SetWindowLongPtrW(window, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(&MovieWindowProc));
+        if (previous == 0 && GetLastError() != ERROR_SUCCESS)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return false;
+        }
+        empty->window = window;
+        empty->original = reinterpret_cast<WNDPROC>(previous);
+        ReleaseSRWLockExclusive(&g_movieWindowLock);
+        return true;
+    }
+
+    void RemoveMovieWindow(HWND window)
+    {
+        AcquireSRWLockExclusive(&g_movieWindowLock);
+        for (auto& entry : g_movieWindows)
+        {
+            if (entry.window == window)
+            {
+                entry = {};
+                break;
+            }
+        }
+        ReleaseSRWLockExclusive(&g_movieWindowLock);
+    }
+
+    void RestoreMovieWindows()
+    {
+        AcquireSRWLockExclusive(&g_movieWindowLock);
+        for (auto& entry : g_movieWindows)
+        {
+            if (entry.window != nullptr && entry.original != nullptr &&
+                IsWindow(entry.window) &&
+                reinterpret_cast<WNDPROC>(GetWindowLongPtrW(
+                    entry.window, GWLP_WNDPROC)) == &MovieWindowProc)
+            {
+                SetWindowLongPtrW(entry.window, GWLP_WNDPROC,
+                    reinterpret_cast<LONG_PTR>(entry.original));
+            }
+            entry = {};
+        }
+        ReleaseSRWLockExclusive(&g_movieWindowLock);
+    }
+
+    BOOL CALLBACK FindMovieWindow(HWND window, LPARAM)
+    {
+        SubclassMovieWindow(window);
+        return TRUE;
+    }
+
+    void CALLBACK MovieWindowEvent(HWINEVENTHOOK, DWORD event,
+        HWND window, LONG objectId, LONG childId, DWORD, DWORD)
+    {
+        if (objectId != OBJID_WINDOW || childId != CHILDID_SELF)
+        {
+            return;
+        }
+        if (event == EVENT_OBJECT_DESTROY)
+        {
+            RemoveMovieWindow(window);
+        }
+        else
+        {
+            SubclassMovieWindow(window);
+        }
+    }
+
+    HRESULT SetPlayerLocked(bool locked)
+    {
+        if (locked)
+        {
+            InterlockedExchange(&g_playerLocked, 1);
+            if (g_movieWindowEventHook == nullptr)
+            {
+                g_movieWindowEventHook = SetWinEventHook(
+                    EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW,
+                    g_bridgeModule, &MovieWindowEvent,
+                    GetCurrentProcessId(), 0, WINEVENT_INCONTEXT);
+                if (g_movieWindowEventHook == nullptr)
+                {
+                    InterlockedExchange(&g_playerLocked, 0);
+                    const DWORD error = GetLastError();
+                    return HRESULT_FROM_WIN32(
+                        error == ERROR_SUCCESS
+                            ? ERROR_HOOK_NOT_INSTALLED
+                            : error);
+                }
+            }
+            EnumWindows(&FindMovieWindow, 0);
+            return BridgeSuccess;
+        }
+
+        InterlockedExchange(&g_playerLocked, 0);
+        if (g_movieWindowEventHook != nullptr)
+        {
+            UnhookWinEvent(g_movieWindowEventHook);
+            g_movieWindowEventHook = nullptr;
+        }
+        RestoreMovieWindows();
+        return BridgeSuccess;
+    }
 
     bool IsReadable(const void* address, std::size_t length)
     {
@@ -3658,11 +3846,24 @@ namespace
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerLocked(
+    SIZE_T locked)
+{
+    __try
+    {
+        return SetPlayerLocked(locked != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 16;
+    return 17;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -4551,6 +4752,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
+        g_bridgeModule = instance;
         DisableThreadLibraryCalls(instance);
     }
     return TRUE;
