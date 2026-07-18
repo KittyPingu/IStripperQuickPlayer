@@ -1,10 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.Serialization;
-using System.Runtime.Serialization.Formatters.Binary;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace IStripperQuickPlayer.DataModel
 {
@@ -50,26 +45,17 @@ namespace IStripperQuickPlayer.DataModel
                 MessageBox.Show("You must enter a name for the filter", "No name supplied", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
-            if (filters.ContainsKey(settingsName))
-                filters[settingsName] = (FilterSettings)filterSettings.Clone();
-            else
-                filters.Add(settingsName, (FilterSettings)filterSettings.Clone());
+            if (filterSettings is null)
+                return;
+
+            filters[settingsName] = (FilterSettings)filterSettings.Clone();
             Persist();
         }
 
         internal static void Persist()
         {
-            
             string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "filters.bin");
-            string mdatafolder = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer");
-            if (!Directory.Exists(mdatafolder))
-                Directory.CreateDirectory(mdatafolder);
-            System.IO.Stream ms = File.OpenWrite(mdatafilepath);     
-            BinaryFormatter formatter = new BinaryFormatter();              
-            formatter.Serialize(ms, filters);  
-            ms.Flush();  
-            ms.Close();  
-            ms.Dispose();  
+            Persistence.Save(mdatafilepath, filters);
         }
 
         internal static void Load()
@@ -77,24 +63,12 @@ namespace IStripperQuickPlayer.DataModel
             string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "filters.bin");
             if (File.Exists(mdatafilepath))
             {
-                FileStream fs = null;
                 try
                 {
-                    BinaryFormatter formatter = new BinaryFormatter();  
-   
-                    //Reading the file from the server  
-                    fs = File.Open(mdatafilepath, FileMode.Open);   
-                    object obj = formatter.Deserialize(fs);  
-                    filters = (Dictionary<string, FilterSettings>)obj;  
-                    fs.Flush();  
-                    fs.Close();  
-                    fs.Dispose(); 
+                    filters = Persistence.Load<Dictionary<string, FilterSettings>>(mdatafilepath);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    fs.Flush();  
-                    fs.Close();  
-                    fs.Dispose(); 
                     string backupfile = mdatafilepath + "." + DateTime.Now.Ticks.ToString();
                     File.Copy(mdatafilepath, backupfile, true);
                     File.Delete(mdatafilepath);

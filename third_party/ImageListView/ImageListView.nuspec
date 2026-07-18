@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package>
+  <metadata>
+    <id>$id$</id>
+    <version>$version$</version>
+    <title>$title$</title>
+    <authors>$author$</authors>
+    <owners>$author$</owners>
+    <license type="expression">Apache-2.0</license>
+    <projectUrl>https://github.com/oozcitak/imagelistview</projectUrl>
+	<icon>images\imagelistview_64.png</icon>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>$description$</description>
+    <copyright>$copyright$</copyright>
+    <tags>winforms controls listview image imagelistview</tags>
+    <references>
+      <reference file="ImageListView.dll"></reference>
+    </references>
+  </metadata>
+  <files>
+    <file src="..\imagelistview_64.png" target="images\"/>
+    <file src="..\WPFThumbnailExtractor\bin\Release\WPFThumbnailExtractor.dll" target="lib\net35"/>
+  </files>
+</package>

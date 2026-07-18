@@ -24,6 +24,7 @@ public class TrackBarMenuItem : ToolStripControlHost
 
         // Add properties, events etc. you want to expose...
         #region Properties
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public decimal Value
         {
             get
@@ -34,6 +35,7 @@ public class TrackBarMenuItem : ToolStripControlHost
             set { if (trackBar!=null) trackBar.Value = value; }
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public decimal Value2
         {
             get
@@ -44,6 +46,7 @@ public class TrackBarMenuItem : ToolStripControlHost
             set { if (trackBar!=null) trackBar.Value = value; }
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public decimal Maximum
         {
             get
@@ -54,6 +57,7 @@ public class TrackBarMenuItem : ToolStripControlHost
             set { if (trackBar!=null) trackBar.Maximum = value; }
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public decimal Minimum
         {
             get
@@ -64,6 +68,7 @@ public class TrackBarMenuItem : ToolStripControlHost
             set { if (trackBar!=null) trackBar.Minimum = value; }
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public TickStyle TickStyle
         {
             get
@@ -74,28 +79,35 @@ public class TrackBarMenuItem : ToolStripControlHost
             set { if (trackBar!=null) trackBar.TickStyle = value; }
         }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public Color TrackbarColor
         {get { if (trackBar == null) return Color.White; return trackBar.BackColor; } set {if (trackBar!=null) trackBar.BackColor = value; } }
 
         
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public decimal SmallChange
         {get { if (trackBar == null) return 0;return trackBar.SmallChange; } set {if (trackBar!=null) trackBar.SmallChange = value; } }
 
                 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public decimal LargeChange
         {get { if (trackBar == null) return 0;return trackBar.LargeChange; } set {if (trackBar!=null) trackBar.LargeChange = value; } }
 
                         
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public Size ClientSize
         {get { if (trackBar == null) return new Size();return trackBar.ClientSize; } set {if (trackBar!=null) trackBar.ClientSize = value; } }
  
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public bool Has2Values
         {get { if (trackBar == null) return false;return trackBar.Has2Values; } set {if (trackBar!=null) trackBar.Has2Values = value; } }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public decimal ScaleDivisions
         {get { if (trackBar == null) return 0M;return trackBar.ScaleDivisions; } set {if (trackBar!=null) trackBar.ScaleDivisions = value; } }
 
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
         public Color TickColor
         {get { if (trackBar == null) return Color.Black;return trackBar.TickColor; } set {if (trackBar!=null) trackBar.TickColor = value; } }
 

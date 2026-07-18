@@ -18,7 +18,7 @@ namespace IStripperQuickPlayer
         internal CardResolutionType resolution;
         internal CardResolutionType bestResolution;
         internal string xmlstring;
-        [NonSerialized]
+        [NonSerialized, Newtonsoft.Json.JsonIgnore]
         internal XmlDocument? XML;
 
         internal byte? a;
@@ -65,6 +65,7 @@ namespace IStripperQuickPlayer
         internal string? hotnessLevel;
         internal int? frameCount;
         internal string? xmlSize;
+        [NonSerialized, Newtonsoft.Json.JsonIgnore]
         internal Image? image;
         internal string? modelName;
         internal decimal modelAge;

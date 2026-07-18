@@ -1,6 +1,5 @@
 using DesktopWallpaper;
 using EnumDescription;
-using Gma.System.MouseKeyHook;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
 using Manina.Windows.Forms;
@@ -16,7 +15,6 @@ using System.Drawing.Text;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
 using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
@@ -31,6 +29,12 @@ namespace IStripperQuickPlayer
 
         [DllImport("dwmapi.dll")]
         static extern int DwmInvalidateIconicBitmaps(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnregisterHotKey(IntPtr window, int id);
 
         private const int PlaybackBridgeVersion = 21;
 
@@ -53,13 +57,14 @@ namespace IStripperQuickPlayer
         private CultureInfo culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
         private Bitmap thumbnail = null;
         //global hotkeys
-        Combination? nextClip;// = Combination.FromString("Control+Alt+N");
-        Action? actionNextClip = null;
-        Combination? nextCard;// = Combination.FromString("Control+Alt+C");
-        Action? actionNextCard = null;
-        Combination? toggleLock;// = Combination.FromString("Control+Alt+C");
-        Action? actionToggleLock = null;
-        IKeyboardMouseEvents? keyHook;
+        private const int WmHotkey = 0x0312;
+        private const int NextClipHotkeyId = 1;
+        private const int NextCardHotkeyId = 2;
+        private const int ToggleLockHotkeyId = 3;
+        private const uint ModAlt = 0x0001;
+        private const uint ModControl = 0x0002;
+        private const uint ModShift = 0x0004;
+        private const uint ModNoRepeat = 0x4000;
         //deviare2 hooking
         private NktSpyMgr _spyMgr;
         private Int32 vghd_procID = 0;
@@ -174,8 +179,14 @@ namespace IStripperQuickPlayer
             string modelfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "models.bin");
             if (System.IO.File.Exists(modelfilepath))
             {
-                Datastore.modelcards = Deserialize(modelfilepath);
-                this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
+                List<ModelCard>? models = Deserialize(modelfilepath);
+                if (models is null)
+                    this.BeginInvoke((Action)(() => { ReloadModels(); }));
+                else
+                {
+                    Datastore.modelcards = models;
+                    this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
+                }
             }
             else
             {
@@ -464,73 +475,42 @@ namespace IStripperQuickPlayer
 
         internal List<ModelCard>? Deserialize(String filename)
         {
-            //Format the object as Binary  
             try
             {
-                BinaryFormatter formatter = new BinaryFormatter();
+                if (Persistence.IsLegacy(filename))
+                {
+                    Persistence.MoveLegacyAside(filename);
+                    return null;
+                }
 
-                //Reading the file from the server  
-                FileStream fs = System.IO.File.Open(filename, FileMode.Open);
-                object obj = formatter.Deserialize(fs);
-                List<ModelCard>? emps = (List<ModelCard>?)obj;
-                fs.Flush();
-                fs.Close();
-                fs.Dispose();
-
-                return emps;
+                List<ModelCard> models = Persistence.Load<List<ModelCard>>(filename);
+                foreach (ModelCard card in models)
+                    card.image = ModelsLstLoader.LoadCardImage(card);
+                return models;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return new List<ModelCard> { };
+                return null;
             }
         }
 
         internal void Serialize(List<ModelCard>? emps, String filename)
         {
-            //Create the stream to add object into it.  
-            System.IO.Stream ms = System.IO.File.OpenWrite(filename);
-            //Format the object as Binary  
-
-            BinaryFormatter formatter = new BinaryFormatter();
-            //It serialize the employee object  
-            formatter.Serialize(ms, emps);
-            ms.Flush();
-            ms.Close();
-            ms.Dispose();
+            Persistence.Save(filename, emps ?? new List<ModelCard>());
         }
 
         internal void SerializeFilter(FilterSettings filter, String filename)
         {
-            //Create the stream to add object into it.  
-            System.IO.Stream ms = System.IO.File.OpenWrite(filename);
-            //Format the object as Binary  
-
-            BinaryFormatter formatter = new BinaryFormatter();
-            //It serialize the employee object  
-            formatter.Serialize(ms, filter);
-            ms.Flush();
-            ms.Close();
-            ms.Dispose();
+            Persistence.Save(filename, filter);
         }
 
-        internal FilterSettings DeserializeFilter(string filename)
+        internal FilterSettings? DeserializeFilter(string filename)
         {
-            //Format the object as Binary  
             try
             {
-                BinaryFormatter formatter = new BinaryFormatter();
-
-                //Reading the file from the server  
-                FileStream fs = System.IO.File.Open(filename, FileMode.Open);
-                object obj = formatter.Deserialize(fs);
-                FilterSettings f = (FilterSettings)obj;
-                fs.Flush();
-                fs.Close();
-                fs.Dispose();
-
-                return f;
+                return Persistence.Load<FilterSettings>(filename);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return null;
             }
@@ -539,16 +519,7 @@ namespace IStripperQuickPlayer
         internal void SaveMyData()
         {
             string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
-            string mdatafolder = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer");
-            if (!Directory.Exists(mdatafolder))
-                Directory.CreateDirectory(mdatafolder);
-
-            System.IO.Stream ms = System.IO.File.OpenWrite(mdatafilepath);
-            BinaryFormatter formatter = new BinaryFormatter();
-            formatter.Serialize(ms, myData);
-            ms.Flush();
-            ms.Close();
-            ms.Dispose();
+            Persistence.Save(mdatafilepath, myData ?? new MyData());
         }
 
         internal MyData RetrieveMyData()
@@ -558,16 +529,7 @@ namespace IStripperQuickPlayer
             {
                 string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
                 if (!System.IO.File.Exists(mdatafilepath)) return new MyData();
-                BinaryFormatter formatter = new BinaryFormatter();
-
-                //Reading the file from the server  
-                FileStream fs = System.IO.File.Open(mdatafilepath, FileMode.Open);
-                object obj = formatter.Deserialize(fs);
-                MyData m = (MyData)obj;
-                fs.Flush();
-                fs.Close();
-                fs.Dispose();
-                return m;
+                return Persistence.Load<MyData>(mdatafilepath);
             }
             catch (Exception ex)
             {
@@ -876,21 +838,68 @@ namespace IStripperQuickPlayer
 
         private void SetupKeyHooks()
         {
-            nextClip = Combination.FromString(Properties.Settings.Default.NextClipString);
-            nextCard = Combination.FromString(Properties.Settings.Default.NextCardString);
-            toggleLock = Combination.FromString(Properties.Settings.Default.ToggleLockString);
-            actionNextClip = actNextClip;
-            actionNextCard = actNextCard;
-            actionToggleLock = actToggleLock;
-            var assignment = new Dictionary<Combination, Action>
+            UnregisterHotKeys();
+            if (Properties.Settings.Default.NextClipEnabled)
+                RegisterConfiguredHotKey(NextClipHotkeyId, Properties.Settings.Default.NextClipString);
+            if (Properties.Settings.Default.NextCardEnabled)
+                RegisterConfiguredHotKey(NextCardHotkeyId, Properties.Settings.Default.NextCardString);
+            if (Properties.Settings.Default.ToggleLockEnabled)
+                RegisterConfiguredHotKey(ToggleLockHotkeyId, Properties.Settings.Default.ToggleLockString);
+        }
+
+        private void RegisterConfiguredHotKey(int id, string shortcut)
+        {
+            if (TryParseHotKey(shortcut, out uint modifiers, out uint key))
+                RegisterHotKey(Handle, id, modifiers, key);
+        }
+
+        private void UnregisterHotKeys()
+        {
+            UnregisterHotKey(Handle, NextClipHotkeyId);
+            UnregisterHotKey(Handle, NextCardHotkeyId);
+            UnregisterHotKey(Handle, ToggleLockHotkeyId);
+        }
+
+        internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
+        {
+            modifiers = ModNoRepeat;
+            key = 0;
+            try
             {
-                {nextClip, actionNextClip},
-                {nextCard, actionNextCard},
-                {toggleLock, actToggleLock}
-            };
-            keyHook?.Dispose();
-            keyHook = Hook.GlobalEvents();
-            keyHook.OnCombination(assignment);
+                if (new KeysConverter().ConvertFromInvariantString(shortcut) is not Keys keys)
+                    return false;
+
+                if (keys.HasFlag(Keys.Alt)) modifiers |= ModAlt;
+                if (keys.HasFlag(Keys.Control)) modifiers |= ModControl;
+                if (keys.HasFlag(Keys.Shift)) modifiers |= ModShift;
+                key = (uint)(keys & Keys.KeyCode);
+                return key != 0;
+            }
+            catch (Exception exception) when (
+                exception is NotSupportedException or FormatException)
+            {
+                return false;
+            }
+        }
+
+        protected override void WndProc(ref System.Windows.Forms.Message message)
+        {
+            if (message.Msg == WmHotkey)
+            {
+                switch (message.WParam.ToInt32())
+                {
+                    case NextClipHotkeyId:
+                        actNextClip();
+                        return;
+                    case NextCardHotkeyId:
+                        actNextCard();
+                        return;
+                    case ToggleLockHotkeyId:
+                        actToggleLock();
+                        return;
+                }
+            }
+            base.WndProc(ref message);
         }
 
         System.Threading.Timer timerhook;
@@ -2256,7 +2265,7 @@ namespace IStripperQuickPlayer
             playbackTimelineTimer.Stop();
             playbackTimelineTimer.Dispose();
             playbackLifetime.Cancel();
-            keyHook?.Dispose();
+            UnregisterHotKeys();
             timerhook?.Dispose();
             if (playerLockBridgeLoaded)
             {
@@ -3150,6 +3159,11 @@ namespace IStripperQuickPlayer
             if (r == DialogResult.OK)
             {
                 var f = DeserializeFilter(dlg.FileName);
+                if (f is null)
+                {
+                    MessageBox.Show("The selected filter file could not be read.");
+                    return;
+                }
                 var fname = Path.GetFileNameWithoutExtension(dlg.FileName);
                 if (!FilterSettingsList.filters.ContainsKey(fname))
                 {

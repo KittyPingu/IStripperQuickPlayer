@@ -27,3 +27,7 @@ Every push to `master` and pull request targeting it builds a self-contained
 Windows installer. Pushing a tag such as `v0.36.0` also creates or updates the
 matching GitHub release.
 
+On the first .NET 10 launch, legacy filters, ratings, favourites, and tags are
+converted to JSON in place. The original files are retained beside them with a
+`.binary-backup` suffix. The derived model cache is rebuilt automatically.
+

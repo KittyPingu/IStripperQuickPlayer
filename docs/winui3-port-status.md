@@ -61,4 +61,4 @@ The WinForms project is intentionally left as the working reference app. The Win
 
 ## Data Safety
 
-The WinUI app does not write the WinForms `mydata.bin`. Its ratings, favourites, tags, and settings are stored under `%LOCALAPPDATA%\IStripperQuickPlayer.WinUI` to avoid breaking the existing WinForms app's `BinaryFormatter` data files.
+The WinUI app does not write the WinForms `mydata.bin`. Its ratings, favourites, tags, and settings are stored under `%LOCALAPPDATA%\IStripperQuickPlayer.WinUI` to avoid breaking the existing WinForms app's data files.

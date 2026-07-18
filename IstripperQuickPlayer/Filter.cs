@@ -5,13 +5,10 @@ using System.ComponentModel;
 using System.Data;
 using System.Drawing;
 using System.Linq;
-using System.Runtime.Serialization;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using IStripperQuickPlayer.BLL;
-using Essy.Tools.InputBox;
 using DG.UI.Helpers;
 using MaterialSkin;
 using MaterialSkin.Controls;
@@ -28,7 +25,7 @@ namespace IStripperQuickPlayer
         bool isLoaded = false;
         bool ok = false;
         public FilterSettings? filterSettings;
-        byte[]? savedSettings;
+        FilterSettings? savedSettings;
         bool deleting = false;
         private void SetSkin()
         {
@@ -281,19 +278,14 @@ namespace IStripperQuickPlayer
         internal void Save()
         {
             if (filterSettings == null) return;
-            using (MemoryStream memStream = new MemoryStream())
-            {
-                BinaryFormatter binSerializer = new BinaryFormatter();
-                binSerializer.Serialize(memStream, filterSettings);
-                savedSettings = memStream.ToArray();
-            }
+            savedSettings = (FilterSettings)filterSettings.Clone();
         }
 
 
         internal void Restore()
         {
-            BinaryFormatter binSerializer = new BinaryFormatter();
-            filterSettings = (FilterSettings)binSerializer.Deserialize(new MemoryStream(savedSettings));
+            if (savedSettings is null) return;
+            filterSettings = (FilterSettings)savedSettings.Clone();
             Form1? frm = Utils.GetMainForm();
             if (frm != null)
             {
@@ -304,8 +296,8 @@ namespace IStripperQuickPlayer
 
         private void cmdRevert_Click(object sender, EventArgs e)
         {
-            BinaryFormatter binSerializer = new BinaryFormatter();
-            filterSettings = (FilterSettings)binSerializer.Deserialize(new MemoryStream(savedSettings));
+            if (savedSettings is null) return;
+            filterSettings = (FilterSettings)savedSettings.Clone();
             isLoaded = false;
             ReadValues();
             this.Controls.RemoveAt(this.Controls.Count - 1);
@@ -334,7 +326,8 @@ namespace IStripperQuickPlayer
         private void cmdSaveAs_Click(object sender, EventArgs e)
         {
             //this.TopMost = false;
-            string name = InputBox.ShowInputBox("Enter a name for this filter");
+            string name = Microsoft.VisualBasic.Interaction.InputBox(
+                "Enter a name for this filter", "Save filter");
             if (!string.IsNullOrEmpty(name) && name != "Default")
             {
                 FilterSettingsList.Save(name, filterSettings);

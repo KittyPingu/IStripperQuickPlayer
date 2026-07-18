@@ -117,7 +117,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.modelName = getXMLValue(card, "name");
                                 decimal.TryParse(getXMLValue(card, "age"), style, culture,  out card.modelAge);
                                 if (card.modelAge > 50) card.modelAge = 50;
-                                card.image = loadCardImage(card);
+                                card.image = LoadCardImage(card);
                             }
 
                             //read static properties for model
@@ -320,7 +320,7 @@ namespace IStripperQuickPlayer.BLL
                                     card.modelName = getXMLValue(card, "name");
                                     decimal.TryParse(getXMLValue(card, "age"), style, culture, out card.modelAge);
                                     if (card.modelAge > 50) card.modelAge = 50;
-                                    card.image = loadCardImage(card);
+                                    card.image = LoadCardImage(card);
                                 }
 
                                 //read static properties for model
@@ -475,7 +475,7 @@ namespace IStripperQuickPlayer.BLL
                          .Select(w => w.Substring(0,1).ToUpper() + w.Substring(1).ToLower()));
         }
 
-        private Image? loadCardImage(ModelCard card) {   
+        internal static Image? LoadCardImage(ModelCard card) {
 
             Image? image = null;
             string localapp = getDataFolderPath();
@@ -644,7 +644,7 @@ namespace IStripperQuickPlayer.BLL
                 return null;
         }
 
-        private string getDataFolderPath()
+        private static string getDataFolderPath()
         {            
             RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\System", false);
             string localapp = "";
