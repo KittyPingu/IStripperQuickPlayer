@@ -15,6 +15,7 @@ using System.Drawing.Text;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
@@ -37,7 +38,10 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 21;
+        private const int PlaybackBridgeVersion = 22;
+        private const int PlaybackTimelineIntervalMilliseconds = 500;
+        private const int PlaybackTransitionIntervalMilliseconds = 100;
+        private const int PlaybackMovieDiscoveryRetryMilliseconds = 250;
         private const string LatestReleaseApiUrl =
             "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
 
@@ -84,7 +88,9 @@ namespace IStripperQuickPlayer
         private volatile bool playbackBusy;
         private volatile bool playbackControlsAvailableForAccount;
         private double requestedPlaybackSpeed = 1.0;
-        private readonly System.Windows.Forms.Timer playbackTimelineTimer = new() { Interval = 500 };
+        private readonly System.Windows.Forms.Timer playbackTimelineTimer =
+            new() { Interval = PlaybackTimelineIntervalMilliseconds };
+        private readonly ToolStripMenuItem updateToolStripMenuItem = new();
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
@@ -131,12 +137,18 @@ namespace IStripperQuickPlayer
                 "f0636_6144401.vghd", @"f0636\f0636_6144401.vghd"));
             System.Diagnostics.Debug.Assert(ParseUpdateVersion("v0.62.0") ==
                 new Version(0, 62, 0));
+            System.Diagnostics.Debug.Assert(IsSetupAssetName(
+                "IStripperQuickPlayer-0.63.0-Setup.exe"));
+            System.Diagnostics.Debug.Assert(!IsSetupAssetName(
+                "IStripperQuickPlayer-0.63.0.zip"));
 #endif
             InitializeComponent();
+            updateToolStripMenuItem.Text = "Check for Updates...";
+            updateToolStripMenuItem.Click +=
+                async (_, _) => await CheckForUpdatesAsync(true);
             fileToolStripMenuItem.DropDownItems.Insert(
                 fileToolStripMenuItem.DropDownItems.Count - 1,
-                new ToolStripMenuItem("Check for Updates...", null,
-                    async (_, _) => await CheckForUpdatesAsync(true)));
+                updateToolStripMenuItem);
             RefreshPlaybackControlVisibility();
             playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
             if (Properties.Settings.Default.EnablePlaybackControl)
@@ -845,11 +857,9 @@ namespace IStripperQuickPlayer
                     await response.Content.ReadAsStringAsync(timeout.Token));
 
                 string tag = release.RootElement.GetProperty("tag_name").GetString() ?? "";
-                string releaseUrl =
-                    release.RootElement.GetProperty("html_url").GetString() ?? "";
                 Version? latest = ParseUpdateVersion(tag);
                 Version? current = ParseUpdateVersion(Application.ProductVersion);
-                if (latest == null || current == null || string.IsNullOrEmpty(releaseUrl))
+                if (latest == null || current == null)
                     throw new InvalidDataException("GitHub returned invalid release information.");
 
                 string currentDisplay = Application.ProductVersion.Split('+')[0];
@@ -875,16 +885,35 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                if (MessageBox.Show(this,
-                        $"QuickPlayer {latest} is available. Open the download page?",
-                        "Update Available", MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Information) == DialogResult.Yes)
+                JsonElement setupAsset = release.RootElement
+                    .GetProperty("assets")
+                    .EnumerateArray()
+                    .FirstOrDefault(asset =>
+                        IsSetupAssetName(asset.GetProperty("name").GetString()));
+                if (setupAsset.ValueKind == JsonValueKind.Undefined)
+                    throw new InvalidDataException(
+                        "The release does not contain a QuickPlayer Setup executable.");
+
+                string installerName =
+                    setupAsset.GetProperty("name").GetString() ?? "";
+                string installerUrl =
+                    setupAsset.GetProperty("browser_download_url").GetString() ?? "";
+                string digest = setupAsset.GetProperty("digest").GetString() ?? "";
+                if (!Uri.TryCreate(installerUrl, UriKind.Absolute,
+                        out Uri? installerUri) ||
+                    installerUri.Scheme != Uri.UriSchemeHttps ||
+                    !installerUri.Host.Equals("github.com",
+                        StringComparison.OrdinalIgnoreCase) ||
+                    !digest.StartsWith("sha256:",
+                        StringComparison.OrdinalIgnoreCase))
                 {
-                    Process.Start(new ProcessStartInfo(releaseUrl)
-                    {
-                        UseShellExecute = true
-                    });
+                    throw new InvalidDataException(
+                        "GitHub returned invalid installer information.");
                 }
+
+                if (ShowUpdatePrompt(tag))
+                    await DownloadAndLaunchUpdateAsync(
+                        installerName, installerUri, digest[7..]);
             }
             catch (Exception exception) when (!showUpToDateMessage)
             {
@@ -898,6 +927,136 @@ namespace IStripperQuickPlayer
                     MessageBoxIcon.Warning);
             }
         }
+
+        private bool ShowUpdatePrompt(string tag)
+        {
+            using Form prompt = new()
+            {
+                Text = "Update Available",
+                ClientSize = new Size(430, 145),
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+                StartPosition = FormStartPosition.CenterParent,
+                Font = Font
+            };
+            Label message = new()
+            {
+                AutoSize = false,
+                Location = new Point(20, 18),
+                Size = new Size(390, 62),
+                Text = $"QuickPlayer {tag} is available.\r\n" +
+                    "Download and install it now?"
+            };
+            Button update = new()
+            {
+                Text = "Update",
+                DialogResult = DialogResult.OK,
+                Location = new Point(224, 96),
+                Size = new Size(90, 32)
+            };
+            Button later = new()
+            {
+                Text = "Later",
+                DialogResult = DialogResult.Cancel,
+                Location = new Point(320, 96),
+                Size = new Size(90, 32)
+            };
+            prompt.Controls.AddRange(new Control[] { message, update, later });
+            prompt.AcceptButton = update;
+            prompt.CancelButton = later;
+            return prompt.ShowDialog(this) == DialogResult.OK;
+        }
+
+        private async Task DownloadAndLaunchUpdateAsync(
+            string installerName, Uri installerUri, string expectedSha256)
+        {
+            string previousMenuText =
+                updateToolStripMenuItem.Text ?? "Check for Updates...";
+            updateToolStripMenuItem.Text = "Downloading Update...";
+            updateToolStripMenuItem.Enabled = false;
+            UseWaitCursor = true;
+            string partialPath = "";
+            try
+            {
+                byte[] expectedDigest = Convert.FromHexString(expectedSha256);
+                if (expectedDigest.Length != 32)
+                    throw new InvalidDataException("The installer digest is invalid.");
+
+                string updateDirectory = Path.Combine(Path.GetTempPath(),
+                    "IStripperQuickPlayer", "updates");
+                Directory.CreateDirectory(updateDirectory);
+                string installerPath = Path.Combine(updateDirectory,
+                    Path.GetFileName(installerName));
+                partialPath = installerPath + ".download";
+
+                using HttpRequestMessage request =
+                    new(HttpMethod.Get, installerUri);
+                request.Headers.UserAgent.ParseAdd(
+                    $"IStripperQuickPlayer/{Application.ProductVersion}");
+                using CancellationTokenSource timeout =
+                    new(TimeSpan.FromMinutes(10));
+                using HttpResponseMessage response = await client.SendAsync(
+                    request, HttpCompletionOption.ResponseHeadersRead,
+                    timeout.Token);
+                response.EnsureSuccessStatusCode();
+                await using (Stream source =
+                    await response.Content.ReadAsStreamAsync(timeout.Token))
+                await using (FileStream destination = new(partialPath,
+                    FileMode.Create, FileAccess.Write, FileShare.None,
+                    81920, FileOptions.Asynchronous))
+                {
+                    await source.CopyToAsync(destination, timeout.Token);
+                }
+
+                byte[] actualDigest;
+                await using (FileStream downloaded = File.OpenRead(partialPath))
+                {
+                    actualDigest =
+                        await SHA256.HashDataAsync(downloaded, timeout.Token);
+                }
+                if (!CryptographicOperations.FixedTimeEquals(
+                        actualDigest, expectedDigest))
+                {
+                    throw new InvalidDataException(
+                        "The downloaded installer failed its SHA-256 check.");
+                }
+
+                File.Move(partialPath, installerPath, true);
+                Process.Start(new ProcessStartInfo(installerPath)
+                {
+                    UseShellExecute = true
+                });
+                Application.Exit();
+            }
+            catch (Exception exception)
+            {
+                if (!string.IsNullOrEmpty(partialPath))
+                {
+                    try { File.Delete(partialPath); }
+                    catch { }
+                }
+                MessageBox.Show(this,
+                    "Could not install the update: " + exception.Message,
+                    "QuickPlayer Update", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                if (!formIsClosing && !IsDisposed)
+                {
+                    UseWaitCursor = false;
+                    updateToolStripMenuItem.Text = previousMenuText;
+                    updateToolStripMenuItem.Enabled = true;
+                }
+            }
+        }
+
+        private static bool IsSetupAssetName(string? name) =>
+            name?.StartsWith("IStripperQuickPlayer-",
+                StringComparison.OrdinalIgnoreCase) == true &&
+            name.EndsWith("-Setup.exe", StringComparison.OrdinalIgnoreCase);
 
         private static Version? ParseUpdateVersion(string? value)
         {
@@ -1539,6 +1698,8 @@ namespace IStripperQuickPlayer
 
                 if (string.IsNullOrEmpty(animationPath))
                 {
+                    playbackTimelineTimer.Interval =
+                        PlaybackTimelineIntervalMilliseconds;
                     trkPlaybackPosition.Enabled = false;
                     return;
                 }
@@ -1560,6 +1721,8 @@ namespace IStripperQuickPlayer
                     });
                     if (playbackMovieRegistered)
                     {
+                        playbackTimelineTimer.Interval =
+                            PlaybackTimelineIntervalMilliseconds;
                         playbackDecoderKind = discoveredDecoderKind;
                         playbackSeekingSupported =
                             playbackDecoderKind is 1 or 2;
@@ -1567,7 +1730,8 @@ namespace IStripperQuickPlayer
                     }
                     playbackNextMovieDiscoveryAt = playbackMovieRegistered
                         ? DateTime.MinValue
-                        : DateTime.UtcNow.AddSeconds(1);
+                        : DateTime.UtcNow.AddMilliseconds(
+                            PlaybackMovieDiscoveryRetryMilliseconds);
                 }
                 if (!playbackMovieRegistered)
                 {
@@ -2303,6 +2467,7 @@ namespace IStripperQuickPlayer
                     return;
                 }
                 nowPlayingPath = path;
+                WakePlaybackTimeline();
                 nowPlaying = "";
                 if (path == "")
                 {
@@ -2340,6 +2505,30 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.AutoWallpaper && doWallpaper &&
                 nowPlaying != "")
                 BeginInvoke((Action)(() => _ = ChangeWallpaper()));
+        }
+
+        private void WakePlaybackTimeline()
+        {
+            if (!Properties.Settings.Default.EnablePlaybackControl ||
+                !playbackControlsAvailableForAccount || !playbackBridgeLoaded ||
+                !IsHandleCreated || IsDisposed)
+            {
+                return;
+            }
+
+            void Wake()
+            {
+                playbackNextMovieDiscoveryAt = DateTime.MinValue;
+                playbackTimelineTimer.Interval =
+                    PlaybackTransitionIntervalMilliseconds;
+                if (!playbackTimelineTimer.Enabled)
+                    playbackTimelineTimer.Start();
+            }
+
+            if (InvokeRequired)
+                BeginInvoke((Action)Wake);
+            else
+                Wake();
         }
 
         private void RefreshPlayingClipHighlight()

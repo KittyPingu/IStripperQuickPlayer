@@ -3035,6 +3035,18 @@ namespace
         void* previousMovie = ActiveMovie();
         void* previousAnimation = InterlockedCompareExchangePointer(
             &g_activeAnimation, nullptr, nullptr);
+        if (previousMovie != nullptr &&
+            IsActiveMovieCandidate(previousMovie))
+        {
+            void* animation = *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(previousMovie) +
+                    MovieAnimationOffset);
+            if (animation != previousAnimation)
+            {
+                return previousMovie;
+            }
+        }
+
         void* reusedMovie = nullptr;
         SYSTEM_INFO systemInfo = {};
         GetSystemInfo(&systemInfo);
@@ -4708,7 +4720,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 21;
+    return 22;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
