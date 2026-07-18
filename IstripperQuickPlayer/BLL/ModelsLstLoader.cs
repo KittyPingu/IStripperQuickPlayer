@@ -155,12 +155,11 @@ namespace IStripperQuickPlayer.BLL
                             {
                                 card.dateReleased = cardProp2.daterel;
                                 if (card.dateReleased.Year == 2007 && card.dateReleased.Month == 1 && card.dateReleased.Day == 1)
-                                    if (card.dateShow != null)
-                                        card.dateReleased = card.dateShow.AddMonths(2);
+                                    card.dateReleased = card.dateShow.AddMonths(2);
                             }
                             
                             //if model age is 0, calculate it from release date and birthdate
-                            if (card.modelAge == 0 && card.birthdate != null && card.dateReleased != null)
+                            if (card.modelAge == 0 && card.birthdate != null)
                             {
                                 var rel = LocalDateTime.FromDateTime(card.dateReleased);
                                 var birth = LocalDateTime.FromDateTime((DateTime)card.birthdate);
@@ -358,12 +357,11 @@ namespace IStripperQuickPlayer.BLL
                                 {
                                     card.dateReleased = cardProp2.daterel;
                                     if (card.dateReleased.Year == 2007 && card.dateReleased.Month == 1 && card.dateReleased.Day == 1)
-                                        if (card.dateShow != null)
-                                            card.dateReleased = card.dateShow.AddMonths(2);
+                                        card.dateReleased = card.dateShow.AddMonths(2);
                                 }
 
                                 //if model age is 0, calculate it from release date and birthdate
-                                if (card.modelAge == 0 && card.birthdate != null && card.dateReleased != null)
+                                if (card.modelAge == 0 && card.birthdate != null)
                                 {
                                     var rel = LocalDateTime.FromDateTime(card.dateReleased);
                                     var birth = LocalDateTime.FromDateTime((DateTime)card.birthdate);
@@ -450,9 +448,8 @@ namespace IStripperQuickPlayer.BLL
             return modelsLoaded;
         }
 
-        private string GetModelsString(string card_modelId)
+        private string GetModelsString(string? card_modelId)
         {
-            string model = "";
             if (card_modelId == null) return "";        
             var modelIDs = card_modelId.Split(",");
             string modelName = "";
@@ -460,6 +457,7 @@ namespace IStripperQuickPlayer.BLL
             { 
                 //var m = StaticPropertiesLoader.getModelByID(cm);
                 var d = StaticPropertiesLoader.getBioByID(cm);
+                if (d == null) continue;
                 if (modelName != "")
                     modelName += " &_" + d.Name;
                 else

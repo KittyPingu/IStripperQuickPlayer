@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using DesktopWallpaper;
-using System.Net;
+using System.Net.Http;
 using System.Drawing.Imaging;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -15,11 +15,12 @@ namespace IStripperQuickPlayer.BLL
 {
     public static class Wallpaper
     {
+        private static readonly HttpClient client = new();
         public static Dictionary<uint, string> originalWallpaper = new Dictionary<uint, string>();
         public static Dictionary<uint, Bitmap> initialImages = new Dictionary<uint, Bitmap>();
         public static string _modelname = "";
         public static string _outfit = "";
-        public static async Task ChangeWallpaper(uint monitorNumber, string url, string modelname, string outfit)
+        public static async Task ChangeWallpaper(uint monitorNumber, string? url, string modelname, string outfit)
         {
             if (Properties.Settings.Default.HideDesktopIcons)
                 hideIcons();
@@ -28,7 +29,9 @@ namespace IStripperQuickPlayer.BLL
             if (url == null)return;       
             _modelname = modelname;
             _outfit = outfit;
-            var str = Utils.GetMainForm().lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
+            Form1? form = Utils.GetMainForm();
+            if (form == null) return;
+            var str = form.lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
             if (string.IsNullOrEmpty(str)) return;
             try
             {
@@ -37,9 +40,10 @@ namespace IStripperQuickPlayer.BLL
                
                 if (!originalWallpaper.ContainsKey(monitorNumber)) originalWallpaper.Add(monitorNumber, wallpaper.GetWallpaper(monitorId.ToString()));
 
-                string tempfilepath = Path.GetTempFileName();
                 string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".jpg");
-                Bitmap m = await GetImageBitmapFromUrl(url).ConfigureAwait(false);
+                Bitmap? downloaded = await GetImageBitmapFromUrl(url).ConfigureAwait(false);
+                if (downloaded == null) return;
+                Bitmap m = downloaded;
                 m = ResizeBitmap(m, wallpaper.GetMonitorRECT(monitorId));
                 DirectBitmap direct = new DirectBitmap(m.Width, m.Height);
                 Graphics g = Graphics.FromImage(direct.Bitmap);
@@ -57,7 +61,7 @@ namespace IStripperQuickPlayer.BLL
                 wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
                 m.Dispose();               
             }
-            catch (Exception ex){}
+            catch (Exception){}
         }
 
         private static void showIcons()
@@ -273,7 +277,7 @@ namespace IStripperQuickPlayer.BLL
             return b;
         }
 
-        public static async void RedrawImage()
+        public static void RedrawImage()
         {
             try
             {
@@ -304,32 +308,22 @@ namespace IStripperQuickPlayer.BLL
                     wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
                 }        
             }
-            catch (Exception ex){}           
+            catch (Exception){}
         }
 
 
 
-        static async Task<Bitmap> GetImageBitmapFromUrl( string url)
+        static async Task<Bitmap?> GetImageBitmapFromUrl(string url)
         {
-            Bitmap imageBitmap = null;
             try
             {
-                using (var webClient = new WebClient())
-                {
-                    var imageBytes = await webClient.DownloadDataTaskAsync(url).ConfigureAwait(false);
-                    if (imageBytes != null && imageBytes.Length > 0)
-                    {
-                        Bitmap bmp;
-                        using (var ms = new MemoryStream(imageBytes))
-                        {
-                            imageBitmap = new Bitmap(ms);
-                        }
-                    }
-                }
+                byte[] imageBytes = await client.GetByteArrayAsync(url)
+                    .ConfigureAwait(false);
+                using var ms = new MemoryStream(imageBytes);
+                using var source = new Bitmap(ms);
+                return new Bitmap(source);
             }
-            catch (Exception ex) {}
-
-            return imageBitmap;
+            catch (Exception) { return null; }
         }
 
         private static Bitmap AdjustBrightness(Image image, float brightness)
@@ -379,7 +373,7 @@ namespace IStripperQuickPlayer.BLL
                         wallpaper.SetWallpaper(monitorId.ToString(), paper.Value);
                 }
             }
-            catch(Exception ex){}            
+            catch(Exception){}
         }
 
         internal static void RestoreWallpaperByID(uint monitorNumber)
@@ -396,7 +390,7 @@ namespace IStripperQuickPlayer.BLL
                     initialImages.Remove(monitorNumber);
                 }
             }
-            catch (Exception ex){}
+            catch (Exception){}
         }
     }
 }

@@ -55,7 +55,6 @@ public class DirectBitmap : IDisposable
         Disposed = true;
         Bitmap.Dispose();
         BitsHandle.Free();
-        Bits = null;
     }
 }
 }

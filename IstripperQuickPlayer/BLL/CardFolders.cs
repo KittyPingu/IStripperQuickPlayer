@@ -67,14 +67,14 @@ namespace IStripperQuickPlayer.BLL
             }
                        
             if (Directory.Exists(Path.Combine(localapp,tag))) return Path.Combine(localapp,tag);
-            string[] localapparray=null;
+            string[] localapparray = Array.Empty<string>();
             key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\System", false);
             if (key != null)
             {
                 var a = key.GetValue("ModelsMultiPath", "");
-                if (a != null)
-                { 
-                    localapparray = (string[])a;
+                if (a is string[] paths)
+                {
+                    localapparray = paths;
                     key.Close();
                 }
                 else

@@ -18,7 +18,7 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
-using System.Net;
+using System.Net.Http;
 using System.Text;
 
 namespace Manina.Windows.Forms.ImageListViewItemAdaptors
@@ -155,6 +155,7 @@ namespace Manina.Windows.Forms.ImageListViewItemAdaptors
     /// </summary>
     public class URIAdaptor : ImageListView.ImageListViewItemAdaptor
     {
+        private static readonly HttpClient client = new HttpClient();
         private bool disposed;
 
         /// <summary>
@@ -181,15 +182,12 @@ namespace Manina.Windows.Forms.ImageListViewItemAdaptors
             string uri = (string)key;
             try
             {
-                using (WebClient client = new WebClient())
+                byte[] imageData = client.GetByteArrayAsync(uri).GetAwaiter().GetResult();
+                using (MemoryStream stream = new MemoryStream(imageData))
                 {
-                    byte[] imageData = client.DownloadData(uri);
-                    using (MemoryStream stream = new MemoryStream(imageData))
+                    using (Image sourceImage = Image.FromStream(stream))
                     {
-                        using (Image sourceImage = Image.FromStream(stream))
-                        {
-                            return Extractor.Instance.GetThumbnail(sourceImage, size, useEmbeddedThumbnails, useExifOrientation);
-                        }
+                        return Extractor.Instance.GetThumbnail(sourceImage, size, useEmbeddedThumbnails, useExifOrientation);
                     }
                 }
             }
@@ -236,11 +234,8 @@ namespace Manina.Windows.Forms.ImageListViewItemAdaptors
             try
             {
                 string filename = Path.GetTempFileName();
-                using (WebClient client = new WebClient())
-                {
-                    client.DownloadFile(uri, filename);
-                    return filename;
-                }
+                File.WriteAllBytes(filename, client.GetByteArrayAsync(uri).GetAwaiter().GetResult());
+                return filename;
             }
             catch
             {

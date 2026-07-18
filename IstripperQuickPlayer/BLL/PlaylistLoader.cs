@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -17,9 +16,6 @@ namespace IStripperQuickPlayer.BLL
             //largeimagelist.ImageSize = new Size(130,180);
             //largeimagelist.ColorDepth = ColorDepth.Depth32Bit;
          
-            var style = NumberStyles.AllowDecimalPoint;
-            var culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
-            culture.NumberFormat.NumberDecimalSeparator = ".";
             if (!string.IsNullOrEmpty(filename))
             {
                 

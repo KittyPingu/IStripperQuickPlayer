@@ -147,7 +147,7 @@ namespace Manina.Windows.Forms
                 /// 0 if the two items can be drawn in any order.</returns>
                 public int Compare(DrawItemParams param1, DrawItemParams param2)
                 {
-                    if (ReferenceEquals(param1, param2))
+                    if (param1.Equals(param2))
                         return 0;
                     if (ReferenceEquals(param1.Item, param2.Item))
                         return 0;

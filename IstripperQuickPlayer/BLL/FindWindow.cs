@@ -23,7 +23,6 @@ namespace IStripperQuickPlayer.BLL
         {
             List<IntPtr> handleList = new List<IntPtr>();
             Process[] processes = Process.GetProcessesByName(processName);
-            Process proc = null;
 
             // Cycle through all top-level windows
             EnumWindows(delegate (IntPtr hWnd, IntPtr lParam)
@@ -32,7 +31,7 @@ namespace IStripperQuickPlayer.BLL
                 GetWindowThreadProcessId(hWnd, out int processId);
 
                 // Get process matching PID
-                proc = processes.FirstOrDefault(p => p.Id == processId);
+                Process? proc = processes.FirstOrDefault(p => p.Id == processId);
 
                 if (proc != null)
                 {

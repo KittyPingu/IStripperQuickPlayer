@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Win32;
@@ -12,29 +12,24 @@ namespace IStripperQuickPlayer.DataModel
 {
     internal class CardPhotos
     {
+        private static readonly HttpClient defaultClient = new();
         private string cardTag = "";
-        internal RootPhotos data;
+        private HttpClient client = defaultClient;
+        internal RootPhotos? data;
 
-        public async Task<object> LoadCardPhotos(HttpClient httpClient, string nowPlayingTag)
+        public async Task<bool> LoadCardPhotos(HttpClient httpClient, string nowPlayingTag)
         {
+            client = httpClient;
             cardTag = nowPlayingTag;
             string url = @"https://www.istripper.com/free/sets/" + cardTag.Split(new char[] {'-'}).First() + @"/photos/photos.json";
             var jsonString = await httpClient.GetStringAsync(url).ConfigureAwait(false);
-            if (jsonString == null) return false;
-            data = Newtonsoft.Json.JsonConvert.DeserializeObject<RootPhotos>(jsonString);            
-            //if (data == null) return false;
-            //if (data.Last == null) return false;
-            //JToken last = data.Last;
-            //if (last.First == null) return false;
-            //JToken list = last.First;
-            //var listphotos = list.ToList();
-            return true;
+            data = Newtonsoft.Json.JsonConvert.DeserializeObject<RootPhotos>(jsonString);
+            return data != null;
         }
 
         public int getNumberOfPhotos()
         {
-            if (data == null || data.photos == null) return 0;
-            return data.photos.Count();
+            return data?.photos.Length ?? 0;
         }
 
         public Image? getPhoto(int number)
@@ -47,8 +42,8 @@ namespace IStripperQuickPlayer.DataModel
 
         public string? getPhotoFullPath(int number)
         {
-            if (number < 0 || number > getNumberOfPhotos()) return null;
-            string fullpath = "";
+            if (data == null || number < 0 || number >= data.photos.Length)
+                return null;
             var p = data.photos[number];
             return getPhotoFullPathFromPhoto(p);
         }
@@ -72,6 +67,7 @@ namespace IStripperQuickPlayer.DataModel
         public string? getRandomWidescreenURL()
         {
             if (getNumberOfPhotos() == 0) return null;
+            if (data == null) return null;
             Random rnd = new Random();
             var p = data.photos.Where(c => c.size.width > c.size.height)
                   .OrderBy(x => rnd.Next())
@@ -82,67 +78,45 @@ namespace IStripperQuickPlayer.DataModel
 
         public async Task<Bitmap[]> getThumbnails()
         {
-            ///fileaccess/image/f0953/VGI1446P02119.jpg/6f9?filename=VGI1446P02119.jpg&private=yes&ui=m28734858&uk=EGNILAPABNIHCKLIIDKGOIPABLEBPAKJ&explicit=1&language=en
-            if (getNumberOfPhotos()==0) return null;
-            string fullpath = "";
-           
-            return (await Task.WhenAll(data.photos.Select(i => GetImageBitmapFromUrl("http://www.istripper.com/" + i.files.mini))));
+            if (data == null || data.photos.Length == 0)
+                return Array.Empty<Bitmap>();
 
-           
+            return await Task.WhenAll(data.photos.Select(i =>
+                GetImageBitmapFromUrl("http://www.istripper.com/" + i.files.mini)));
         }
 
         async Task<Bitmap> GetImageBitmapFromUrl( string url)
         {
             Debug.WriteLine(url);
-            Bitmap imageBitmap = null;
             try
             {
-                using (var webClient = new WebClient())
-                {
-                    var imageBytes = await webClient.DownloadDataTaskAsync (url);
-                    if (imageBytes != null && imageBytes.Length > 0)
-                    {
-                        Bitmap bmp;
-                        using (var ms = new MemoryStream(imageBytes))
-                        {
-                            imageBitmap = new Bitmap(ms);
-                        }
-                    }
-                }
+                byte[] imageBytes = await client.GetByteArrayAsync(url);
+                using var ms = new MemoryStream(imageBytes);
+                using var source = new Bitmap(ms);
+                return new Bitmap(source);
             }
             catch (Exception ex)
             {
-                //Silence is gold.
                 Debug.WriteLine(ex.Message);
+                return new Bitmap(1, 1);
             }
-            return imageBitmap;
         }
 
 
-        private System.Drawing.Image DownloadImageFromUrl(string imageUrl)
+        private Image? DownloadImageFromUrl(string imageUrl)
         {
-            System.Drawing.Image image = null;
- 
             try
             {
-                System.Net.HttpWebRequest webRequest = (System.Net.HttpWebRequest)System.Net.HttpWebRequest.Create(imageUrl);
-                webRequest.AllowWriteStreamBuffering = true;
-                webRequest.Timeout = 30000;
- 
-                System.Net.WebResponse webResponse = webRequest.GetResponse();
- 
-                System.IO.Stream stream = webResponse.GetResponseStream();
- 
-                image = System.Drawing.Image.FromStream(stream);
- 
-                webResponse.Close();
+                byte[] imageBytes = client.GetByteArrayAsync(imageUrl)
+                    .GetAwaiter().GetResult();
+                using var stream = new MemoryStream(imageBytes);
+                using var source = Image.FromStream(stream);
+                return new Bitmap(source);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return null;
             }
- 
-            return image;
         }
 
         private string getUserName()
@@ -180,19 +154,19 @@ namespace IStripperQuickPlayer.DataModel
 
     public class RootPhotos
     {
-        public string zip { get; set; }
-        public Photo[] photos { get; set; }
+        public string zip { get; set; } = "";
+        public Photo[] photos { get; set; } = Array.Empty<Photo>();
     }
 
     public class Photo
     {
-        public string id { get; set; }
-        public string type { get; set; }
-        public string access { get; set; }
-        public string name { get; set; }
-        public Size size { get; set; }
-        public Files files { get; set; }
-        public string fullscreen { get; set; }
+        public string id { get; set; } = "";
+        public string type { get; set; } = "";
+        public string access { get; set; } = "";
+        public string name { get; set; } = "";
+        public Size size { get; set; } = new();
+        public Files files { get; set; } = new();
+        public string fullscreen { get; set; } = "";
     }
 
     public class Size
@@ -203,8 +177,8 @@ namespace IStripperQuickPlayer.DataModel
 
     public class Files
     {
-        public string mini { get; set; }
-        public string full { get; set; }
+        public string mini { get; set; } = "";
+        public string full { get; set; } = "";
     }
 
 

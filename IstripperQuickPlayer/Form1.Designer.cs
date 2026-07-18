@@ -85,6 +85,7 @@
             hideDesktopIconsToolStripMenuItem = new ToolStripMenuItem();
             showKittyToolStripMenuItem = new ToolStripMenuItem();
             lockPlayerToolStripMenuItem = new ToolStripMenuItem();
+            enablePlaybackControlToolStripMenuItem = new ToolStripMenuItem();
             minimizeToTrayToolStripMenuItem = new ToolStripMenuItem();
             darkModeToolStripMenuItem = new ToolStripMenuItem();
             cmdFilter = new Button();
@@ -439,7 +440,7 @@
             // 
             // settingsToolStripMenuItem
             // 
-            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, cardScaleToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
+            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, cardScaleToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, enablePlaybackControlToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
             settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
             settingsToolStripMenuItem.Size = new Size(92, 29);
             settingsToolStripMenuItem.Text = "Settings";
@@ -652,6 +653,16 @@
             lockPlayerToolStripMenuItem.Size = new Size(342, 34);
             lockPlayerToolStripMenuItem.Text = "Lock Player";
             lockPlayerToolStripMenuItem.Click += lockPlayerToolStripMenuItem_Click;
+            //
+            // enablePlaybackControlToolStripMenuItem
+            //
+            enablePlaybackControlToolStripMenuItem.Checked = true;
+            enablePlaybackControlToolStripMenuItem.CheckOnClick = true;
+            enablePlaybackControlToolStripMenuItem.CheckState = CheckState.Checked;
+            enablePlaybackControlToolStripMenuItem.Name = "enablePlaybackControlToolStripMenuItem";
+            enablePlaybackControlToolStripMenuItem.Size = new Size(342, 34);
+            enablePlaybackControlToolStripMenuItem.Text = "Enable playback control";
+            enablePlaybackControlToolStripMenuItem.CheckedChanged += enablePlaybackControlToolStripMenuItem_Click;
             // 
             // minimizeToTrayToolStripMenuItem
             // 
@@ -1337,6 +1348,7 @@
         private ToolStripSeparator toolStripSeparator2;
         private ToolStripMenuItem showInBrowserToolStripMenuItem;
         private ToolStripMenuItem lockPlayerToolStripMenuItem;
+        private ToolStripMenuItem enablePlaybackControlToolStripMenuItem;
         private NotifyIcon notifyIcon1;
         private ToolStripMenuItem minimizeToTrayToolStripMenuItem;
         private ToolStripMenuItem blurImageToolStripMenuItem;

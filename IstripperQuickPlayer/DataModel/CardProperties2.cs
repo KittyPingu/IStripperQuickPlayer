@@ -14,7 +14,7 @@ namespace IStripperQuickPlayer.DataModel
 
         public CardProperties2(XmlNode? element)
         {
-            string d = element.SelectSingleNode("rd").FirstChild.Value;       
+            string d = element?.SelectSingleNode("rd")?.InnerText ?? "";
             string[] dele = d.Split("-");
             if (dele.Length > 2)
             {

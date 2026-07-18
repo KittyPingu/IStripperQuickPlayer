@@ -50,12 +50,11 @@ namespace IStripperQuickPlayer
         private string clipListTag = "";
         private MyData? myData = null;
         private bool fontInstalled = false;
-        public CardRenderer cardRenderer = null;
+        public CardRenderer cardRenderer = null!;
         internal FilterSettings filterSettings = new FilterSettings();
         static readonly HttpClient client = new HttpClient();
         private NumberStyles style = NumberStyles.AllowDecimalPoint;
         private CultureInfo culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
-        private Bitmap thumbnail = null;
         //global hotkeys
         private const int WmHotkey = 0x0312;
         private const int NextClipHotkeyId = 1;
@@ -66,7 +65,7 @@ namespace IStripperQuickPlayer
         private const uint ModShift = 0x0004;
         private const uint ModNoRepeat = 0x4000;
         //deviare2 hooking
-        private NktSpyMgr _spyMgr;
+        private NktSpyMgr _spyMgr = null!;
         private Int32 vghd_procID = 0;
         private readonly SemaphoreSlim playbackOperationLock = new(1, 1);
         private readonly object playbackApiLock = new();
@@ -82,7 +81,7 @@ namespace IStripperQuickPlayer
         private volatile bool playbackBusy;
         private volatile bool playbackControlsAvailableForAccount;
         private double requestedPlaybackSpeed = 1.0;
-        private readonly System.Windows.Forms.Timer playbackTimelineTimer = new() { Interval = 250 };
+        private readonly System.Windows.Forms.Timer playbackTimelineTimer = new() { Interval = 500 };
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
@@ -95,9 +94,8 @@ namespace IStripperQuickPlayer
         private DateTime playbackNextClipRetryAt = DateTime.MinValue;
         private DateTime playbackReplacementStableAt = DateTime.MinValue;
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
-        private DateTime playbackSpeedLastApplied = DateTime.MinValue;
         private bool formIsClosing;
-        private ControlScrollListener _processListViewScrollListener;
+        private ControlScrollListener? _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
         bool playerlocked;
@@ -130,7 +128,8 @@ namespace IStripperQuickPlayer
             InitializeComponent();
             RefreshPlaybackControlVisibility();
             playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
-            playbackTimelineTimer.Start();
+            if (Properties.Settings.Default.EnablePlaybackControl)
+                playbackTimelineTimer.Start();
             SetSkin();
         }
 
@@ -374,7 +373,6 @@ namespace IStripperQuickPlayer
             listModelsNew.ThumbnailSize = new Size((int)(cardScale * 162), (int)(242 * cardScale));
             foreach (var i in items)
             {
-                ModelCard? card = Datastore.findCardByTag(i.Tag.ToString());
                 var im = new ImageListViewItem();
                 im.FileName = ".";
                 im.Text = i.Text;
@@ -463,7 +461,7 @@ namespace IStripperQuickPlayer
                 if (Properties.Settings.Default.ShowKitty && (txtSearch.Text == "" || txtSearch.Text.ToLower().Contains("kitty")))
                     currentCards.Add(Datastore.modelcards.Where(c => c.name == "f9998").First());
             }
-            catch (Exception ex) { }
+            catch (Exception) { }
 
             return currentCards;
         }
@@ -560,11 +558,12 @@ namespace IStripperQuickPlayer
 
         private void loadListClips(object tag)
         {
-            ModelCard? card = Datastore.findCardByTag(tag.ToString());
+            string cardTag = tag.ToString() ?? "";
+            ModelCard? card = Datastore.findCardByTag(cardTag);
             if (card == null) return;
-            clipListTag = tag.ToString();
+            clipListTag = cardTag;
             if (myData != null)
-                txtUserTags.Text = string.Join(",", myData.GetCardTags(tag.ToString()));
+                txtUserTags.Text = string.Join(",", myData.GetCardTags(cardTag));
             listClips.BeginUpdate();
             listClips.Items.Clear();
             if (card.clips == null) return;
@@ -642,7 +641,12 @@ namespace IStripperQuickPlayer
                 //if (!string.IsNullOrEmpty(txtClipType.Text) && !clip.clipType.ToLower().Contains(txtClipType.Text.ToLower())) addThis = false;
                 if (addThis)
                 {
-                    ListViewItem item = new ListViewItem(new[] { clip.clipNumber.ToString(), clip.clipName, clip.hotnessCode.ToString(), clip.clipType, (clip.size / 1024 / 1024).ToString() + "MB" });
+                    ListViewItem item = new ListViewItem(new string[] {
+                        clip.clipNumber?.ToString() ?? "",
+                        clip.clipName ?? "",
+                        clip.hotnessCode?.ToString() ?? "",
+                        clip.clipType ?? "",
+                        (clip.size / 1024 / 1024)?.ToString() + "MB" });
                     listClips.Items.Add(item);
                 }
             }
@@ -733,6 +737,13 @@ namespace IStripperQuickPlayer
             Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
             lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
+            enablePlaybackControlToolStripMenuItem.Checked =
+                Properties.Settings.Default.EnablePlaybackControl;
+            if (Properties.Settings.Default.EnablePlaybackControl)
+                playbackTimelineTimer.Start();
+            else
+                playbackTimelineTimer.Stop();
+            RefreshPlaybackControlVisibility();
             cmbSortBy.Text = Properties.Settings.Default.SortBy;
             cmbSortDirection.Text = Properties.Settings.Default.SortDirection;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
@@ -747,7 +758,7 @@ namespace IStripperQuickPlayer
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
             }
-            System.Threading.Tasks.Task.Run(() => SetupRegHooks());
+            _ = Task.Run(SetupRegHooks);
 
             //get number of monitors for wallpaper
             try
@@ -902,9 +913,8 @@ namespace IStripperQuickPlayer
             base.WndProc(ref message);
         }
 
-        System.Threading.Timer timerhook;
-        NktHook hook;
-        NktProcess tempProcess;
+        System.Threading.Timer? timerhook;
+        NktProcess? tempProcess;
         private void SetupRegHooks()
         {
             try
@@ -917,7 +927,7 @@ namespace IStripperQuickPlayer
                     return;
                 }
                 _spyMgr.OnFunctionCalled += new DNktSpyMgrEvents_OnFunctionCalledEventHandler(OnFunctionCalled);
-                timerhook = new System.Threading.Timer(new TimerCallback(waitForIStripper), null, 100, 250);
+                timerhook = new System.Threading.Timer(waitForIStripper, null, 100, 250);
             }
             catch (Exception exception)
             {
@@ -934,8 +944,8 @@ namespace IStripperQuickPlayer
             {
                 if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 64)
                 {
-                    timerhook.Dispose();
-                    hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
+                    timerhook?.Dispose();
+                    NktHook hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
                     hook.Hook(true);
                     hook.Attach(tempProcess, true);
                     vghd_procID = tempProcess.Id;
@@ -953,7 +963,7 @@ namespace IStripperQuickPlayer
             return false;
         }
 
-        private void waitForIStripper(object state)
+        private void waitForIStripper(object? state)
         {
             if (Interlocked.Exchange(ref vghdInjectionInProgress, 1) != 0)
             {
@@ -962,7 +972,7 @@ namespace IStripperQuickPlayer
 
             try
             {
-                if (InjectVGHDProcess()) timerhook.Dispose();
+                if (InjectVGHDProcess()) timerhook?.Dispose();
             }
             finally
             {
@@ -1008,7 +1018,25 @@ namespace IStripperQuickPlayer
                         lockResult);
                 }
 
-                noParameters = null!;
+                if (!Properties.Settings.Default.EnablePlaybackControl)
+                {
+                    return;
+                }
+
+                ConfigurePlaybackFunctions(process);
+            }
+            catch (Exception exception)
+            {
+                playbackBridgeLoaded = false;
+                SetPlaybackStatus("Playback controls could not attach: " + exception.Message);
+            }
+        }
+
+        private void ConfigurePlaybackFunctions(NktProcess process)
+        {
+            try
+            {
+                object noParameters = null!;
                 int compatibilityMask = _spyMgr.CallCustomApi(process, playbackBridgePath,
                     "IStripperGetCompatibilityMask", ref noParameters, true);
                 if (compatibilityMask != 0x3F)
@@ -1099,7 +1127,8 @@ namespace IStripperQuickPlayer
 
         private void UpdatePlaybackControlsEnabled()
         {
-            bool enabled = playbackControlsAvailableForAccount &&
+            bool enabled = Properties.Settings.Default.EnablePlaybackControl &&
+                playbackControlsAvailableForAccount &&
                 playbackBridgeLoaded && !playbackBusy && !formIsClosing;
             cmdRewind.Enabled = enabled && playbackSeekingSupported;
             cmdPlayPause.Enabled = enabled;
@@ -1125,7 +1154,8 @@ namespace IStripperQuickPlayer
                 userLevel = key?.GetValue("PreviousUserLevel")?.ToString();
             }
 
-            bool visible = HasPlatinumPlaybackEntitlement(userLevel);
+            bool visible = Properties.Settings.Default.EnablePlaybackControl &&
+                HasPlatinumPlaybackEntitlement(userLevel);
             playbackControlsAvailableForAccount = visible;
             cmdRewind.Visible = visible;
             cmdPlayPause.Visible = visible;
@@ -1177,7 +1207,8 @@ namespace IStripperQuickPlayer
             return result;
         }
 
-        private Task<bool> EnsurePlaybackReadyAsync(CancellationToken cancellationToken)
+        private Task<bool> EnsurePlaybackReadyAsync(
+            CancellationToken cancellationToken, bool prepareFastDecode)
         {
             if (!playbackBridgeLoaded)
             {
@@ -1188,7 +1219,7 @@ namespace IStripperQuickPlayer
             cancellationToken.ThrowIfCancellationRequested();
             // vghd loads its FFmpeg DLLs lazily with the first animation. If
             // attachment happened earlier, retry now that a clip is available.
-            if (!playbackFastDecodeEnabled)
+            if (prepareFastDecode && !playbackFastDecodeEnabled)
             {
                 int decoderThreads = Math.Clamp((Environment.ProcessorCount + 1) / 2, 1, 8);
                 int fastDecodeResult = CallPlaybackApi("IStripperEnableFastDecode",
@@ -1217,9 +1248,12 @@ namespace IStripperQuickPlayer
             return Task.FromResult(playbackMovieRegistered);
         }
 
-        private async Task RunPlaybackOperationAsync(Func<CancellationToken, Task> operation)
+        private async Task RunPlaybackOperationAsync(
+            Func<CancellationToken, Task> operation,
+            bool prepareFastDecode = true)
         {
-            if (!playbackControlsAvailableForAccount)
+            if (!Properties.Settings.Default.EnablePlaybackControl ||
+                !playbackControlsAvailableForAccount)
             {
                 return;
             }
@@ -1233,9 +1267,11 @@ namespace IStripperQuickPlayer
             try
             {
                 CancellationToken cancellationToken = playbackLifetime.Token;
-                if (await EnsurePlaybackReadyAsync(cancellationToken))
+                if (await Task.Run(() => EnsurePlaybackReadyAsync(
+                        cancellationToken, prepareFastDecode)))
                 {
-                    await operation(cancellationToken);
+                    await Task.Run(() => operation(cancellationToken),
+                        cancellationToken);
                 }
             }
             catch (OperationCanceledException) when (formIsClosing)
@@ -1280,7 +1316,7 @@ namespace IStripperQuickPlayer
                     throw new InvalidOperationException("There is no video in a controllable play/pause state.");
                 }
                 return Task.CompletedTask;
-            });
+            }, prepareFastDecode: false);
         }
 
         private async void cmdRewind_Click(object sender, EventArgs e)
@@ -1316,9 +1352,10 @@ namespace IStripperQuickPlayer
             });
         }
 
-        private void playbackTimelineTimer_Tick(object? sender, EventArgs e)
+        private async void playbackTimelineTimer_Tick(object? sender, EventArgs e)
         {
             if (formIsClosing || playbackTimelinePolling || playbackBusy ||
+                !Properties.Settings.Default.EnablePlaybackControl ||
                 !playbackControlsAvailableForAccount || !playbackBridgeLoaded)
             {
                 return;
@@ -1345,7 +1382,6 @@ namespace IStripperQuickPlayer
                     playbackDecoderKind = 0;
                     playbackNextMovieDiscoveryAt = DateTime.MinValue;
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
-                    playbackSpeedLastApplied = DateTime.MinValue;
                     if (!playbackTimelineDragging)
                     {
                         trkPlaybackPosition.Maximum = 1;
@@ -1401,15 +1437,30 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
+                if (string.IsNullOrEmpty(animationPath))
+                {
+                    trkPlaybackPosition.Enabled = false;
+                    return;
+                }
+
                 if (!playbackMovieRegistered &&
                     DateTime.UtcNow >= playbackNextMovieDiscoveryAt)
                 {
-                    playbackMovieRegistered =
-                        CallPlaybackApi("IStripperDiscoverMovie") >= 0;
+                    int discoveredDecoderKind = 0;
+                    playbackMovieRegistered = await Task.Run(() =>
+                    {
+                        bool registered =
+                            CallPlaybackApi("IStripperDiscoverMovie") >= 0;
+                        if (registered)
+                        {
+                            discoveredDecoderKind =
+                                CallPlaybackApi("IStripperGetDecoderKind");
+                        }
+                        return registered;
+                    });
                     if (playbackMovieRegistered)
                     {
-                        playbackDecoderKind =
-                            CallPlaybackApi("IStripperGetDecoderKind");
+                        playbackDecoderKind = discoveredDecoderKind;
                         playbackSeekingSupported =
                             playbackDecoderKind is 1 or 2;
                         SetPlaybackBusy(playbackBusy);
@@ -1423,35 +1474,45 @@ namespace IStripperQuickPlayer
                     trkPlaybackPosition.Enabled = false;
                     return;
                 }
-                int state = CallPlaybackApi("IStripperGetState");
-                if (state != 3 && state != 4)
+
+                DateTime now = DateTime.UtcNow;
+                int elapsed = await Task.Run(() =>
+                    RequirePlaybackResult("IStripperGetElapsedMilliseconds"));
+                int total = playbackTimelineDurationMilliseconds;
+                if (total <= 0)
+                {
+                    total = await Task.Run(() =>
+                        RequirePlaybackResult("IStripperGetTotalMilliseconds"));
+                }
+                if (formIsClosing || IsDisposed ||
+                    !string.Equals(animationPath, GetCurrentAnimationPath(),
+                        StringComparison.Ordinal) || playbackBusy)
                 {
                     return;
                 }
 
-                DateTime now = DateTime.UtcNow;
-                int elapsed = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
-                int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
-                if (playbackMovieRegistered &&
+                int reapplyAfter = playbackDecoderKind == 2 ? 2_000 : 500;
+                if (Math.Abs(requestedPlaybackSpeed - 1.0) > 0.001 &&
                     now < playbackSpeedReapplyUntil &&
-                    now - playbackSpeedLastApplied >= TimeSpan.FromSeconds(1) &&
-                    (playbackDecoderKind != 2 || elapsed >= 2_000))
+                    elapsed >= reapplyAfter)
                 {
-                    playbackSpeedLastApplied = now;
-                    SetPlaybackRate(requestedPlaybackSpeed);
-                    if (playbackDecoderKind == 2)
-                    {
-                        playbackSpeedReapplyUntil = DateTime.MinValue;
-                    }
+                    await Task.Run(() => SetPlaybackRate(requestedPlaybackSpeed));
+                    playbackSpeedReapplyUntil = DateTime.MinValue;
+                }
+                else if (Math.Abs(requestedPlaybackSpeed - 1.0) <= 0.001)
+                {
+                    playbackSpeedReapplyUntil = DateTime.MinValue;
                 }
 
                 playbackLastKnownElapsedMilliseconds = elapsed;
                 int checkpointBucket = elapsed / 5_000;
                 if (playbackDecoderKind == 1 &&
-                    checkpointBucket != playbackAlphaCheckpointBucket &&
-                    CallPlaybackApi("IStripperCaptureAlphaCheckpoint") >= 0)
+                    checkpointBucket != playbackAlphaCheckpointBucket)
                 {
-                    playbackAlphaCheckpointBucket = checkpointBucket;
+                    int checkpointResult = await Task.Run(() =>
+                        CallPlaybackApi("IStripperCaptureAlphaCheckpoint"));
+                    if (checkpointResult >= 0)
+                        playbackAlphaCheckpointBucket = checkpointBucket;
                 }
                 playbackTimelineDurationMilliseconds = Math.Max(0, total);
                 if (!playbackTimelineDragging)
@@ -1853,7 +1914,8 @@ namespace IStripperQuickPlayer
                 {
                     length = Convert.ToInt16(param.Value);
                 }
-                if (param.Name == "lpValueName") keyname = param.Value.ToString();
+                if (param.Name == "lpValueName")
+                    keyname = param.Value?.ToString() ?? "";
             }
             if (length < 1) return;
             string str = GetStringFromPointer(pointer, length);
@@ -1934,20 +1996,28 @@ namespace IStripperQuickPlayer
                             }
                             //choose a random clip from those shown
                             var mod = Datastore.findCardByText(newtag);
-                            List<ModelClip>? clips = FilterClipList(mod.clips);
+                            if (mod == null) continue;
+                            List<ModelClip> clips = FilterClipList(mod.clips);
                             if (clips.Count > 0)
                             {
                                 Random r = new Random();
-                                var itemnum = r.Next(clips.Count - 1);
-                                res2 = clips[itemnum];
-                                newcardstring = clips[itemnum].clipName.Split("_")[0] + "\\" + clips[itemnum].clipName;
+                                var itemnum = r.Next(clips.Count);
+                                ModelClip selectedClip = clips[itemnum];
+                                if (selectedClip.clipName == null) continue;
+                                res2 = selectedClip;
+                                newcardstring =
+                                    selectedClip.clipName.Split("_")[0] + "\\" +
+                                    selectedClip.clipName;
                                 found = true;
 
                                 listModelsNew.Invoke((Action)(() => listModelsNew.ClearSelection()));
                                 int? index = items.ToList().FindIndex(x => x.Text == newtag);
                                 if (index != null)
                                 {
-                                    listModelsNew.Invoke((Action)(() => listModelsNew.SelectWhere(x => x.Tag == newtag)));
+                                    listModelsNew.Invoke((Action)(() =>
+                                        listModelsNew.SelectWhere(x =>
+                                            string.Equals(x.Tag?.ToString(), newtag,
+                                                StringComparison.Ordinal))));
                                 }
                             }
 
@@ -1982,7 +2052,7 @@ namespace IStripperQuickPlayer
                 return;
         }
 
-        private List<ModelClip>? FilterClipList(List<ModelClip> clips)
+        private List<ModelClip> FilterClipList(List<ModelClip> clips)
         {
             var currentClips = clips;
 
@@ -2155,8 +2225,12 @@ namespace IStripperQuickPlayer
             }
             catch { }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-            if (doWallpaper) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying; }));
-            if (Properties.Settings.Default.AutoWallpaper && doWallpaper && nowPlaying != "") this.BeginInvoke((Action)(() => ChangeWallpaper()));
+            if (doWallpaper && lblNowPlaying != null)
+                lblNowPlaying.BeginInvoke((Action)(() =>
+                    lblNowPlaying.Text = "Now Playing: " + nowPlaying));
+            if (Properties.Settings.Default.AutoWallpaper && doWallpaper &&
+                nowPlaying != "")
+                BeginInvoke((Action)(() => _ = ChangeWallpaper()));
         }
 
         private void chk_CheckedChanged(object sender, EventArgs e)
@@ -2348,7 +2422,7 @@ namespace IStripperQuickPlayer
                 {
                     if (clips.Count == 0) return;
                     Random rand = new Random();
-                    mnew = clips[rand.Next(clips.Count - 1)];
+                    mnew = clips[rand.Next(clips.Count)];
                 }
                 else
                 {
@@ -2407,7 +2481,11 @@ namespace IStripperQuickPlayer
                 {
                     Int64 newr = r.Next(items.Length);
                     newtag = items[(int)newr].Text;
-                    if (FilterClipList(Datastore.findCardByTag(items[(int)newr].Tag.ToString()).clips).Count < 1) newtag = nowPlayingTag;
+                    ModelCard? candidate = Datastore.findCardByTag(
+                        items[(int)newr].Tag?.ToString() ?? "");
+                    if (candidate == null ||
+                        FilterClipList(candidate.clips).Count < 1)
+                        newtag = nowPlayingTag;
                     if (items.Length == 1) break;
                 }
             }
@@ -2469,7 +2547,8 @@ namespace IStripperQuickPlayer
             //if (frm == null)
             //{
             string f = "Default";
-            if (cmbFilter.SelectedItem != null) f = cmbFilter.SelectedItem.ToString();
+            if (cmbFilter.SelectedItem != null)
+                f = cmbFilter.SelectedItem.ToString() ?? "Default";
             var frm = new Filter(filterSettings, f);
             frm.StartPosition = FormStartPosition.CenterParent;
             frm.ShowDialog(this);
@@ -2539,7 +2618,6 @@ namespace IStripperQuickPlayer
 
         private ImageListViewItem? mousedownCard = null;
         private ImageListViewItem? currentMenuCard = null;
-        private Rectangle? thumbnailclip;
         private void menuCardFavourite_CheckedChanged(object sender, EventArgs e)
         {
             if (myData == null || currentMenuCard == null) return;
@@ -2612,9 +2690,8 @@ namespace IStripperQuickPlayer
                 this.Cursor = Cursors.WaitCursor;
                 CardPhotos photos = new CardPhotos();
                 await photos.LoadCardPhotos(client, clipListTag);
-                PhotoViewer p = new PhotoViewer();
-                p.photos = photos;
-                p.Populate();
+                PhotoViewer p = new PhotoViewer(photos);
+                await p.PopulateAsync();
                 p.Show();
                 this.Cursor = Cursors.Arrow;
             }
@@ -2632,7 +2709,9 @@ namespace IStripperQuickPlayer
 
         private void cmbFilter_SelectedIndexChanged(object sender, EventArgs e)
         {
-            filterSettings = FilterSettingsList.GetFilter(cmbFilter.SelectedItem.ToString());
+            string? selectedFilter = cmbFilter.SelectedItem?.ToString();
+            if (selectedFilter == null) return;
+            filterSettings = FilterSettingsList.GetFilter(selectedFilter);
             PopulateModelListview();
         }
 
@@ -2652,7 +2731,6 @@ namespace IStripperQuickPlayer
                 ChangePlayerLocked();
                 TaskbarThumbnail();
 
-                string cmdPath = Assembly.GetEntryAssembly().Location;
                 ThumbnailToolBarManager tb = TaskbarManager.Instance.ThumbnailToolBars;
 
                 ThumbnailToolBarButton nextclipbtn = new ThumbnailToolBarButton(Properties.Resources.next_clip, "Next Clip");
@@ -2668,7 +2746,7 @@ namespace IStripperQuickPlayer
 
 
             }
-            catch (Exception ex)
+            catch (Exception)
             { }
         }
 
@@ -2690,12 +2768,12 @@ namespace IStripperQuickPlayer
 
         }
 
-        private void nextclipButton_click(object sender, ThumbnailButtonClickedEventArgs e)
+        private void nextclipButton_click(object? sender, ThumbnailButtonClickedEventArgs e)
         {
             this.BeginInvoke((Action)(() => GetNextClip()));
         }
 
-        private void nextclipModel_click(object sender, ThumbnailButtonClickedEventArgs e)
+        private void nextclipModel_click(object? sender, ThumbnailButtonClickedEventArgs e)
         {
             GetNextCard();
         }
@@ -2735,7 +2813,7 @@ namespace IStripperQuickPlayer
         {
             lastWallpaperClipNumber = 0;
             lastWallpaperShortTag = "";
-            ChangeWallpaper();
+            await ChangeWallpaper();
         }
 
         private string lastWallpaperShortTag = "";
@@ -2762,30 +2840,32 @@ namespace IStripperQuickPlayer
 
             string modelname = GetModelsString(model);
 
-            foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
+            foreach (ToolStripMenuItem item in
+                wallpaperToolStripMenuItem.DropDownItems.OfType<ToolStripMenuItem>())
             {
-                if (item is ToolStripMenuItem)
-                    if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
+                if (item.Tag is not uint monitorNumber) continue;
+                if (item.Checked)
+                {
+                    if (NotFromCheck || Properties.Settings.Default.AutoWallpaper)
                     {
-                        if ((NotFromCheck || Properties.Settings.Default.AutoWallpaper))
+                        CardPhotos photos = new CardPhotos();
+                        await photos.LoadCardPhotos(client, nowPlayingTagShort);
+                        if (res2 != null &&
+                            ((lastWallpaperClipNumber != nowPlayingClipNumber ||
+                              lastWallpaperClipNumber == 0) ||
+                             (lastWallpaperShortTag == "" ||
+                              lastWallpaperShortTag != nowPlayingTagShort)))
                         {
-                            CardPhotos photos = new CardPhotos();
-                            await photos.LoadCardPhotos(client, nowPlayingTagShort);
-                            Random r = new Random();
-                            if (res2 != null &&
-                                    ((lastWallpaperClipNumber != nowPlayingClipNumber || lastWallpaperClipNumber == 0)
-                                    || (lastWallpaperShortTag == "" || lastWallpaperShortTag != nowPlayingTagShort)))
-                            {
-
-                                await Wallpaper.ChangeWallpaper((uint)((ToolStripMenuItem)item).Tag, photos.getRandomWidescreenURL(), modelname, model.outfit);
-                            }
+                            await Wallpaper.ChangeWallpaper(monitorNumber,
+                                photos.getRandomWidescreenURL(), modelname,
+                                model.outfit);
                         }
                     }
-                    else if (((ToolStripMenuItem)item).Tag != null)
-                    {
-                        Wallpaper.RestoreWallpaperByID((uint)((ToolStripMenuItem)item).Tag);
-                    }
-
+                }
+                else
+                {
+                    Wallpaper.RestoreWallpaperByID(monitorNumber);
+                }
             }
             lastWallpaperShortTag = nowPlayingTagShort;
             lastWallpaperClipNumber = nowPlayingClipNumber;
@@ -2804,24 +2884,22 @@ namespace IStripperQuickPlayer
                          .Select(w => w.Substring(0, 1).ToUpper() + w.Substring(1).ToLower()));
         }
 
-        private void WallpaperMonitor_CheckedChanged(object? sender, EventArgs e)
+        private async void WallpaperMonitor_CheckedChanged(object? sender, EventArgs e)
         {
             string m = "";
             foreach (var item in wallpaperToolStripMenuItem.DropDownItems)
             {
-                if (item is ToolStripMenuItem)
+                if (item is ToolStripMenuItem menuItem &&
+                    menuItem.Checked && menuItem.Tag is uint monitorNumber)
                 {
-                    if (((ToolStripMenuItem)item).Checked && ((ToolStripMenuItem)item).Tag != null)
-                    {
-                        if (m == "")
-                            m += ((uint)((ToolStripMenuItem)item).Tag + 1).ToString();
-                        else
-                            m += "," + ((uint)((ToolStripMenuItem)item).Tag + 1).ToString();
-                    }
+                    if (m == "")
+                        m += (monitorNumber + 1).ToString();
+                    else
+                        m += "," + (monitorNumber + 1).ToString();
                 }
             }
             Properties.Settings.Default.WallpaperMonitors = m;
-            if (nowPlayingTag != "") this.BeginInvoke((Action)(() => ChangeWallpaper(false)));
+            if (nowPlayingTag != "") await ChangeWallpaper(false);
         }
 
         private void automaticWallpaperToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
@@ -2829,13 +2907,13 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.AutoWallpaper = automaticWallpaperToolStripMenuItem.Checked;
         }
 
-        private void trackbarWallpaperBrightness_ValueChanged(object sender, EventArgs e)
+        private void trackbarWallpaperBrightness_ValueChanged(object? sender, EventArgs e)
         {
             trackbarWallpaperBrightness.MouseUp += trackbarWallpaperBrightness_MouseUp;
             trackbarWallpaperBrightness.ValueChanged -= trackbarWallpaperBrightness_ValueChanged;
         }
 
-        private async void trackbarWallpaperBrightness_MouseUp(object sender, EventArgs e)
+        private void trackbarWallpaperBrightness_MouseUp(object? sender, EventArgs e)
         {
             trackbarWallpaperBrightness.MouseUp -= trackbarWallpaperBrightness_MouseUp;
             trackbarWallpaperBrightness.ValueChanged += trackbarWallpaperBrightness_ValueChanged;
@@ -2844,12 +2922,12 @@ namespace IStripperQuickPlayer
             this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
         }
 
-        private void showTextToolStripMenuItem_Click(object sender, EventArgs e)
+        private async void showTextToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;
             lastWallpaperClipNumber = 0;
             lastWallpaperShortTag = "";
-            this.BeginInvoke((Action)(() => ChangeWallpaper()));
+            await ChangeWallpaper();
         }
 
         private void showKittyToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
@@ -3018,13 +3096,39 @@ namespace IStripperQuickPlayer
                     psi.FileName = url;
                     System.Diagnostics.Process.Start(psi);
                 }
-                catch (Exception ex) { };
+                catch (Exception) { }
             }
         }
 
         private void lockPlayerToolStripMenuItem_Click(object sender, EventArgs e)
         {
             setPlayerLocked();
+        }
+
+        private void enablePlaybackControlToolStripMenuItem_Click(
+            object sender, EventArgs e)
+        {
+            bool enabled = enablePlaybackControlToolStripMenuItem.Checked;
+            Properties.Settings.Default.EnablePlaybackControl = enabled;
+
+            if (enabled)
+            {
+                playbackTimelineTimer.Start();
+                if (playerLockBridgeLoaded && !playbackBridgeLoaded &&
+                    tempProcess != null)
+                {
+                    NktProcess process = tempProcess;
+                    _ = Task.Run(() => ConfigurePlaybackFunctions(process));
+                }
+            }
+            else
+            {
+                playbackTimelineTimer.Stop();
+                playbackBridgeLoaded = false;
+                playbackMovieRegistered = false;
+            }
+
+            RefreshPlaybackControlVisibility();
         }
 
         private void setPlayerLocked()
@@ -3103,14 +3207,14 @@ namespace IStripperQuickPlayer
             this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
         }
 
-        private void trackBarBlur_ValueChanged(object sender, EventArgs e)
+        private void trackBarBlur_ValueChanged(object? sender, EventArgs e)
         {
             trackBarBlur.MouseUp += trackBarBlur_MouseUp;
             trackBarBlur.KeyUp += trackBarBlur_MouseUp;
             trackBarBlur.ValueChanged -= trackBarBlur_ValueChanged;
         }
 
-        private async void trackBarBlur_MouseUp(object sender, EventArgs e)
+        private void trackBarBlur_MouseUp(object? sender, EventArgs e)
         {
             trackBarBlur.MouseUp -= trackBarBlur_MouseUp;
             trackBarBlur.KeyUp -= trackBarBlur_MouseUp;
@@ -3182,7 +3286,9 @@ namespace IStripperQuickPlayer
                         this.BeginInvoke((Action)(() => { PopulateFilterList(); }));
                         if (cmbFilter.Text == fname)
                         {
-                            filterSettings = FilterSettingsList.GetFilter(cmbFilter.SelectedItem.ToString());
+                            string? selectedFilter = cmbFilter.SelectedItem?.ToString();
+                            if (selectedFilter != null)
+                                filterSettings = FilterSettingsList.GetFilter(selectedFilter);
                             this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
                         }
                     }
@@ -3194,7 +3300,8 @@ namespace IStripperQuickPlayer
         {
             var r = MessageBox.Show("Really delete this card from local disk?\r\nIt is best if you Exit iStripper before deleting cards here\r\nUser rating/tags will be retained", "Delete card?", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (r == DialogResult.No) return;
-            var t = mousedownCard.Tag.ToString();
+            string? t = mousedownCard?.Tag?.ToString();
+            if (t == null) return;
             string cardfolder = CardFolders.findCardFolder(t);
             if (!string.IsNullOrEmpty(cardfolder)) Directory.Delete(cardfolder, true);
             var c = Datastore.modelcards.Where(x => x.name == t).FirstOrDefault();

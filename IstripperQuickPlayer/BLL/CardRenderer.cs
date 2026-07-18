@@ -18,7 +18,7 @@ namespace IStripperQuickPlayer.BLL
         internal MyData? myData = null;
         internal float cardScale = 1.0f;
         internal string sortBy = "";
-        internal CultureInfo culture = null;
+        internal CultureInfo culture = CultureInfo.CurrentCulture;
         internal bool fontInstalled = true;
         internal string nowPlayingTag = "";
         internal NumberStyles style = NumberStyles.AllowDecimalPoint;
@@ -208,8 +208,7 @@ namespace IStripperQuickPlayer.BLL
                             break;
                         case "Release Date":
                         case "Release Date (Descending)":
-                            if (card.dateReleased != null)
-                                text = ((DateTime)card.dateReleased).ToShortDateString();
+                            text = card.dateReleased.ToShortDateString();
                             break;
                         default:
                             break;
@@ -412,10 +411,8 @@ namespace IStripperQuickPlayer.BLL
              
                 }
 
-                bool isPlaying = false;
                 if (nowPlayingTag == card.modelName + "\r\n" + card.outfit)
                 {
-                    isPlaying = true;
                     g.InterpolationMode = InterpolationMode.High;
                     g.SmoothingMode = SmoothingMode.HighQuality;
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;

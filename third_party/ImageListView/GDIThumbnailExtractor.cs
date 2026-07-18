@@ -195,7 +195,7 @@ namespace Manina.Windows.Forms
                     using (FileStream stream = new FileStream(filename, FileMode.Open, FileAccess.Read))
                     {
                         byte[] gifSignature = new byte[4];
-                        stream.Read(gifSignature, 0, 4);
+                        stream.ReadExactly(gifSignature);
                         if (Encoding.ASCII.GetString(gifSignature) == "GIF8")
                         {
                             stream.Seek(0, SeekOrigin.Begin);

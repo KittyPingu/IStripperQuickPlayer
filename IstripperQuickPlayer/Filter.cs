@@ -59,13 +59,12 @@ namespace IStripperQuickPlayer
 
         private void ReadValues()
         {
-            float dx, dy;
+            float dx;
 
             Graphics g = this.CreateGraphics();
             try
             {
                 dx = 120;//g.DpiX;
-                dy = 120;//g.DpiY;
             }
             finally
             {
@@ -319,7 +318,7 @@ namespace IStripperQuickPlayer
 
             _filterName = "Default";
             Form1? frm = Utils.GetMainForm();
-            frm.setFilter(_filterName);
+            frm?.setFilter(_filterName);
 
         }
 
@@ -335,7 +334,7 @@ namespace IStripperQuickPlayer
                 if (_filterName == "Default") button1.Enabled = false;
                 else button1.Enabled = true;
                 Form1? frm = Utils.GetMainForm();
-                frm.setFilter(name);
+                frm?.setFilter(name);
             }
             else if (name == "Default")
             {
@@ -352,7 +351,7 @@ namespace IStripperQuickPlayer
                 deleting = true;
                 Form1? frm = Utils.GetMainForm();
                 FilterSettingsList.Delete(_filterName);
-                frm.setFilter("Default");
+                frm?.setFilter("Default");
                 this.Close();
             }
         }

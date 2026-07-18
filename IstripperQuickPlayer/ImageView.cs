@@ -15,7 +15,7 @@ namespace IStripperQuickPlayer
 {
     public partial class ImageView : MaterialForm
     {
-        Cyotek.Windows.Forms.ImageBox viewer;
+        Cyotek.Windows.Forms.ImageBox? viewer;
         public ImageView()
         {
             InitializeComponent();
@@ -45,7 +45,7 @@ namespace IStripperQuickPlayer
         // To Copy to Clipboard
         private void copyToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            if (viewer.Image != null)
+            if (viewer?.Image != null)
             {
                 Clipboard.SetImage(viewer.Image);
             }
@@ -54,7 +54,7 @@ namespace IStripperQuickPlayer
         // To Save to File
         private void saveAsToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            if (viewer.Image != null)
+            if (viewer?.Image != null)
             {
                 using (SaveFileDialog sfd = new SaveFileDialog())
                 {

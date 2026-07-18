@@ -46,7 +46,7 @@ namespace IStripperQuickPlayer.BLL
 
         }
 
-        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+        [DllImport("user32.dll", SetLastError = true)] static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
         [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetWindow(IntPtr hWnd, GetWindow_Cmd uCmd);
         enum GetWindow_Cmd : uint
         {
@@ -70,7 +70,7 @@ namespace IStripperQuickPlayer.BLL
         }   
 
         [DllImport("user32.dll", SetLastError = true)]
-        public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string className, string windowTitle);
+        public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string? className, string? windowTitle);
         [DllImport("user32.dll", SetLastError = false)]
         static extern IntPtr GetDesktopWindow();
 
@@ -188,7 +188,7 @@ namespace IStripperQuickPlayer.BLL
 
     internal class ControlScrollListener : NativeWindow, IDisposable
         {
-        public event ControlScrolledEventHandler ControlScrolled;
+        public event ControlScrolledEventHandler? ControlScrolled;
         public delegate void ControlScrolledEventHandler(object sender, EventArgs e);
 
         private const uint WM_MOUSEWHEEL = 0x020A;
@@ -234,12 +234,9 @@ namespace IStripperQuickPlayer.BLL
 
         private void HandleControlScrollMessages(Message m)
         {
-            if (m.Msg == WM_HSCROLL | m.Msg == WM_VSCROLL | m.Msg == WM_MOUSEWHEEL)
+            if (m.Msg == WM_HSCROLL || m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL)
             {
-                if (ControlScrolled != null)
-                {
-                    ControlScrolled(_control, new EventArgs());
-                }
+                ControlScrolled?.Invoke(_control, EventArgs.Empty);
             }
         }
     }

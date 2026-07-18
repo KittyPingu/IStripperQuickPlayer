@@ -3954,99 +3954,64 @@ namespace
             return ManagerError();
         }
 
-        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
-        if (qtCore == nullptr)
+        // The timer display tolerates a transient read. Taking Movie's QMutex
+        // here stalled vghd window input on every QuickPlayer poll.
+        auto animationAddress =
+            reinterpret_cast<unsigned char*>(movie) + MovieAnimationOffset;
+        if (!IsReadable(animationAddress, sizeof(void*)))
         {
-            return EngineError();
+            return ManagerError();
         }
 
-        const auto lockMutex = reinterpret_cast<MutexAction>(GetProcAddress(
-            qtCore, "?lock@QMutex@@QEAAXXZ"));
-        const auto unlockMutex = reinterpret_cast<MutexAction>(GetProcAddress(
-            qtCore, "?unlock@QMutex@@QEAAXXZ"));
-        if (lockMutex == nullptr || unlockMutex == nullptr)
+        void* animation = *reinterpret_cast<void**>(animationAddress);
+        if (!IsReadable(animation, 0x20))
         {
-            return EngineError();
+            return ManagerError();
         }
 
-        void* mutex = reinterpret_cast<unsigned char*>(movie) + MovieMutexOffset;
-        bool mutexLocked = false;
-        HRESULT result = E_FAIL;
-        __try
+        auto infoAddress =
+            reinterpret_cast<unsigned char*>(animation) + AnimationInfoOffset;
+        if (!IsReadable(infoAddress, sizeof(void*)))
         {
-            lockMutex(mutex);
-            mutexLocked = true;
+            return ManagerError();
+        }
 
-            auto animationAddress = reinterpret_cast<unsigned char*>(movie) + MovieAnimationOffset;
-            if (!IsReadable(animationAddress, sizeof(void*)))
-            {
-                result = ManagerError();
-            }
-            else
-            {
-                void* animation = *reinterpret_cast<void**>(animationAddress);
-                if (!IsReadable(animation, 0x20))
-                {
-                    result = ManagerError();
-                }
-                else
-                {
-                    auto infoAddress = reinterpret_cast<unsigned char*>(animation) + AnimationInfoOffset;
-                    if (!IsReadable(infoAddress, sizeof(void*)))
-                    {
-                        result = ManagerError();
-                    }
-                    else
-                    {
-                        void* info = *reinterpret_cast<void**>(infoAddress);
-                        if (info == nullptr)
-                        {
-                            result = ManagerError();
-                        }
-                        else
-                        {
-                            auto totalFramesAddress = reinterpret_cast<unsigned char*>(info) + AnimationTotalFramesOffset;
-                            auto framesPerSecondAddress = reinterpret_cast<unsigned char*>(info) + AnimationFramesPerSecondOffset;
-                            auto currentFrameAddress = reinterpret_cast<unsigned char*>(movie) + MovieCurrentFrameOffset;
-                            if (!IsReadable(totalFramesAddress, sizeof(int)) ||
-                                !IsReadable(framesPerSecondAddress, sizeof(int)) ||
-                                !IsReadable(currentFrameAddress, sizeof(int)))
-                            {
-                                result = ManagerError();
-                            }
-                            else
-                            {
-                                const int framesPerSecond = *reinterpret_cast<const int*>(framesPerSecondAddress);
-                                const int frames = totalDuration
-                                    ? *reinterpret_cast<const int*>(totalFramesAddress)
-                                    : *reinterpret_cast<const int*>(currentFrameAddress);
-                                if (framesPerSecond <= 0 || (totalDuration && frames < 0))
-                                {
-                                    result = E_FAIL;
-                                }
-                                else
-                                {
-                                    const int timelineFrames = frames < 0 ? 0 : frames;
-                                    const std::int64_t milliseconds =
-                                        static_cast<std::int64_t>(timelineFrames) * 1000 / framesPerSecond;
-                                    result = milliseconds > MAXLONG
-                                        ? MAXLONG
-                                        : static_cast<HRESULT>(milliseconds);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        __finally
+        void* info = *reinterpret_cast<void**>(infoAddress);
+        if (info == nullptr)
         {
-            if (mutexLocked)
-            {
-                unlockMutex(mutex);
-            }
+            return ManagerError();
         }
-        return result;
+
+        auto totalFramesAddress =
+            reinterpret_cast<unsigned char*>(info) + AnimationTotalFramesOffset;
+        auto framesPerSecondAddress =
+            reinterpret_cast<unsigned char*>(info) +
+                AnimationFramesPerSecondOffset;
+        auto currentFrameAddress =
+            reinterpret_cast<unsigned char*>(movie) + MovieCurrentFrameOffset;
+        if (!IsReadable(totalFramesAddress, sizeof(int)) ||
+            !IsReadable(framesPerSecondAddress, sizeof(int)) ||
+            !IsReadable(currentFrameAddress, sizeof(int)))
+        {
+            return ManagerError();
+        }
+
+        const int framesPerSecond =
+            *reinterpret_cast<const int*>(framesPerSecondAddress);
+        const int frames = totalDuration
+            ? *reinterpret_cast<const int*>(totalFramesAddress)
+            : *reinterpret_cast<const int*>(currentFrameAddress);
+        if (framesPerSecond <= 0 || (totalDuration && frames < 0))
+        {
+            return E_FAIL;
+        }
+
+        const int timelineFrames = frames < 0 ? 0 : frames;
+        const std::int64_t milliseconds =
+            static_cast<std::int64_t>(timelineFrames) * 1000 / framesPerSecond;
+        return milliseconds > MAXLONG
+            ? MAXLONG
+            : static_cast<HRESULT>(milliseconds);
     }
 
     int __cdecl FastAvcodecOpen2(void* codecContext, const void* codec, void* options)
@@ -4899,8 +4864,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPause()
         {
             return ManagerError();
         }
-        PauseMovieAudio(movie);
+        // Stop the visible frame first. QAudioOutput::suspend can block while
+        // its device drains, which previously made pause look sluggish.
         FunctionAt<ManagerAction>(MoviePauseRva)(movie);
+        PauseMovieAudio(movie);
 
         return BridgeSuccess;
     }

@@ -4,7 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO.Compression;
 using System.Linq;
-using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
@@ -14,6 +14,7 @@ namespace IStripperQuickPlayer.BLL
 {
     internal static class StaticPropertiesLoader
     {
+        private static readonly HttpClient client = new();
         internal static XmlDocument PropertiesXML = new XmlDocument();
         internal static XmlNodeList? cnode;
         internal static XmlNodeList? mnode;
@@ -134,26 +135,19 @@ namespace IStripperQuickPlayer.BLL
 
                 //we need to get it from the server
                 string url = @"http://www.istripper.com/bof/mselistGenerator/staticProperties_iStripper.xml.gz";
-                using (var webClient = new WebClient())
-                {
-                    DownloadGZFile(url, fullpath);                    
-                }
+                DownloadGZFile(url, fullpath);
                 return new FileInfo(fullpath);
         }
 
         private static void DownloadGZFile(string url, string DecompressedFileName)
         {
             string path = Path.Join(Path.GetTempPath(), "staticProperties_iStripper.xml.gz");
-            using (var client = new WebClient())
-            {
-                client.DownloadFile(url, path);
-            }
-            Stream inStream = File.OpenRead(path);
+            File.WriteAllBytes(path,
+                client.GetByteArrayAsync(url).GetAwaiter().GetResult());
+            using Stream inStream = File.OpenRead(path);
             using FileStream outputFileStream = File.Create(DecompressedFileName);
             using var decompressor = new GZipStream(inStream, CompressionMode.Decompress);
             decompressor.CopyTo(outputFileStream);
-
-            inStream.Close();
         }
     }
 }

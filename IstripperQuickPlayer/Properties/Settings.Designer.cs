@@ -298,6 +298,18 @@ namespace IStripperQuickPlayer.Properties {
                 this["LockPlayer"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool EnablePlaybackControl {
+            get {
+                return ((bool)(this["EnablePlaybackControl"]));
+            }
+            set {
+                this["EnablePlaybackControl"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

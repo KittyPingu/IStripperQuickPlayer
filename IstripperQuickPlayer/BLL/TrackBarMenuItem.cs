@@ -115,26 +115,20 @@ public class TrackBarMenuItem : ToolStripControlHost
 
         #region Events
 
-        protected override void OnSubscribeControlEvents(Control c)
-{
+        protected override void OnSubscribeControlEvents(Control? c)
+        {
             // Call the base so the base events are connected.
             base.OnSubscribeControlEvents(c);
-            // Cast the control to a ColorSlider control.
-            ColorSlider.ColorSlider trackBar = (ColorSlider.ColorSlider) c;
-            // Add the event.
-            trackBar.ValueChanged +=
-                new EventHandler(OnValueChanged);
+            if (c is ColorSlider.ColorSlider trackBar)
+                trackBar.ValueChanged += OnValueChanged;
         }
 
-        protected override void OnUnsubscribeControlEvents(Control c)
+        protected override void OnUnsubscribeControlEvents(Control? c)
         {
             // Call the base method so the basic events are unsubscribed.
             base.OnUnsubscribeControlEvents(c);
-            // Cast the control to a ColorSlider control.
-            ColorSlider.ColorSlider trackBar = (ColorSlider.ColorSlider) c;
-            // Remove the event.
-            trackBar.ValueChanged -=
-                new EventHandler(OnValueChanged);
+            if (c is ColorSlider.ColorSlider trackBar)
+                trackBar.ValueChanged -= OnValueChanged;
         }
 
         public event EventHandler? ValueChanged;

@@ -15,8 +15,8 @@ namespace IStripperQuickPlayer
 {
     public partial class PhotoViewer : MaterialForm
     {
-        internal CardPhotos photos;
-        Bitmap[] thumbs;
+        private CardPhotos? photos;
+        private Bitmap[] thumbs = Array.Empty<Bitmap>();
 
         private void SetSkin()
         {
@@ -35,8 +35,14 @@ namespace IStripperQuickPlayer
             SetSkin();
         }
 
-        internal async void Populate()
+        internal PhotoViewer(CardPhotos photos) : this()
         {
+            this.photos = photos;
+        }
+
+        internal async Task PopulateAsync()
+        {
+            if (photos == null) return;
             listView1.BeginUpdate();
             imageList1.Images.Add(new Bitmap(256,256,System.Drawing.Imaging.PixelFormat.Format24bppRgb));
 
@@ -83,7 +89,7 @@ namespace IStripperQuickPlayer
 
         private void listView1_DoubleClick(object sender, EventArgs e)
         {
-            if (listView1.SelectedItems.Count == 0) return;
+            if (photos == null || listView1.SelectedItems.Count == 0) return;
             ImageView img = new ImageView();
             img.LoadImage(photos.getPhoto(listView1.SelectedItems[0].Index));
             img.Show();
