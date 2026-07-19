@@ -186,9 +186,11 @@ existing Windows Media asynchronous reader owned by `CSsvReader`.
 For a legacy seek, the bridge:
 
 1. Pauses the Movie and stops `IWMReader`, waiting for vghd's status event.
-2. Clears `CBpkSound`'s pending PCM and restarts its `QAudioOutput` while the
-   sample callback is stopped, then leaves the fresh output suspended until
-   Movie resumes at the target.
+2. Guards the WMV `OnSample` raw-PCM write call so catch-up audio is discarded.
+   At the target hand-off it clears `CBpkSound`'s pending PCM. WMV retains its
+   existing `QAudioOutput` and device because stopping and restarting that Qt
+   object from the WMF callback thread changes its configured buffer size and
+   prevents PCM from draining at the source rate.
 3. Calls vghd's queue-clear helper so all five colour/audio sample queues are
    discarded together, then clears `VideoWmvCore`'s dynamically resolved
    held-frame flag. Otherwise its next `getFrame` discards the first new colour
@@ -205,8 +207,12 @@ For a legacy seek, the bridge:
    become seekable and could strand audio clips during restart.
 7. Sets `Movie.currentFrame` to `target - 1` and resumes the original advance
    path. vghd's own `Movie::advance` publishes the target position. After two
-   further frames advance, the bridge flushes catch-up audio and a pinned native
-   worker keeps the user clock only two seconds ahead of presentation. The
+   further frames advance, the bridge calls vghd's resolved destructor for all
+   five catch-up sample queues and clears `VideoWmvCore`'s held-frame flag
+   before the hand-off. At normal speed, a pinned native worker then restarts
+   the same reader at the target with its user clock disabled, returning colour
+   and audio to WMF's normal real-time pacing before audio is released. Faster
+   playback keeps the 250 ms user-clock horizon while audio remains muted. The
    final partial delivery bypasses batching and advances the reader clock one
    second past nominal duration so legacy ASF files emit EOF. The timer and
    playback controls remain disabled until that hand-off completes.
@@ -278,7 +284,7 @@ The direct seek path now does the following while the movie is paused:
    its alpha state to frame zero when no checkpoint exists. QuickPlayer captures
    the complete mutable alpha block and output plane every five seconds during
    playback. Checkpoints are scoped to one animation and capped at 128 MiB in
-   memory. When **Enable alpha checkpoint cache** is selected, bridge v38
+   memory. When **Enable alpha checkpoint cache** is selected, bridge v38+
    normalizes the two embedded scratch pointers, compresses each checkpoint
    with Windows XPRESS Huffman on a thread-pool worker, and writes it atomically
    under `%LOCALAPPDATA%\IStripperQuickPlayer\alpha-cache`.

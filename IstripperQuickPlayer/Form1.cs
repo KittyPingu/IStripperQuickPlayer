@@ -38,7 +38,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 38;
+        private const int PlaybackBridgeVersion = 57;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -115,6 +115,7 @@ namespace IStripperQuickPlayer
         private DateTime playbackNextClipRetryAt = DateTime.MinValue;
         private DateTime playbackReplacementStableAt = DateTime.MinValue;
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
+        private DateTime playbackLastProgressAt = DateTime.UtcNow;
         private bool formIsClosing;
         private ControlScrollListener? _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
@@ -166,6 +167,11 @@ namespace IStripperQuickPlayer
 #if DEBUG
             System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
             System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
+            DateTime stallCheck = DateTime.UtcNow;
+            System.Diagnostics.Debug.Assert(LegacyPlaybackStalledNearEnd(
+                96_000, 100_000, stallCheck.AddSeconds(-3), stallCheck, 3));
+            System.Diagnostics.Debug.Assert(!LegacyPlaybackStalledNearEnd(
+                96_000, 100_000, stallCheck.AddSeconds(-3), stallCheck, 4));
             System.Diagnostics.Debug.Assert(!SeekTargetReachesEnd(98_000, 100_000));
             System.Diagnostics.Debug.Assert(SeekTargetReachesEnd(99_000, 100_000));
             System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("platinum"));
@@ -1783,6 +1789,7 @@ namespace IStripperQuickPlayer
                         playbackLastKnownElapsedMilliseconds,
                         playbackTimelineDurationMilliseconds);
                     playbackTimelineAnimationPath = animationPath;
+                    playbackLastProgressAt = DateTime.UtcNow;
                     playbackAlphaCheckpointBucket = -1;
                     try
                     {
@@ -1941,6 +1948,22 @@ namespace IStripperQuickPlayer
                         playbackDecoderKind = decoderKind;
                         playbackSeekingSupported = true;
                     }
+                }
+
+                if (elapsed > playbackLastKnownElapsedMilliseconds)
+                {
+                    playbackLastProgressAt = now;
+                }
+                else if (playbackDecoderKind == 2 &&
+                    LegacyPlaybackStalledNearEnd(elapsed, total,
+                        playbackLastProgressAt, now,
+                        await Task.Run(() =>
+                            CallPlaybackApi("IStripperGetState"))))
+                {
+                    playbackCompletedAnimationPath = animationPath;
+                    playbackNextClipRetryAt = now.AddSeconds(1);
+                    GetNextClip(null, animationPath);
+                    return;
                 }
 
                 int seekReadyResult = playbackSeekReady ? 1 :
@@ -2777,6 +2800,11 @@ namespace IStripperQuickPlayer
                 nowPlaying != "")
                 BeginInvoke((Action)(() => _ = ChangeWallpaper()));
         }
+
+        private bool LegacyPlaybackStalledNearEnd(int elapsed, int total,
+            DateTime lastProgress, DateTime now, int state) =>
+            state == 3 && PlaybackReachedEnd(elapsed, total) &&
+            now - lastProgress >= TimeSpan.FromSeconds(2);
 
         private static bool SeekTargetReachesEnd(int target, int total) =>
             total > 0 && target >= Math.Max(0, total - 1_000);

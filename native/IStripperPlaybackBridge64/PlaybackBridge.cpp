@@ -35,6 +35,8 @@ namespace
     std::uintptr_t BpkSoundCloseRva = 0;
     std::uintptr_t BpkSoundWriteRva = 0;
     std::uintptr_t AudioWriteCallRva = 0;
+    std::uintptr_t BpkSoundRawWriteRva = 0;
+    std::uintptr_t WmvAudioWriteCallRva = 0;
     std::uintptr_t VideoWmvCoreVtableRva = 0;
     std::uintptr_t SsvReaderVtableRva = 0;
     std::uintptr_t SsvFileVtableRva = 0;
@@ -154,6 +156,12 @@ namespace
         0xD9, 0x48, 0x83, 0xC1
     };
 
+    constexpr unsigned char BpkSoundRawWriteSignature[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57,
+        0x41, 0x56, 0x41, 0x57, 0x48, 0x8B, 0xEC, 0x48,
+        0x83, 0xEC, 0x40
+    };
+
     constexpr std::size_t DecodeScaleCallLength = 6;
     constexpr std::size_t DecoderWorkerTargetLoadLength = 8;
 
@@ -185,6 +193,8 @@ namespace
     using QByteArrayAction = void(__fastcall*)(void* bytes);
     using BpkSoundWrite = void(__fastcall*)(void* sound, const void* begin,
         const void* end, int sampleCount);
+    using BpkSoundRawWrite = void(__fastcall*)(void* sound,
+        const void* bytes, int byteCount);
     using VirtualAlloc2Action = PVOID(WINAPI*)(HANDLE process, PVOID baseAddress,
         SIZE_T size, ULONG allocationType, ULONG pageProtection,
         MEM_EXTENDED_PARAMETER* parameters, ULONG parameterCount);
@@ -214,6 +224,8 @@ namespace
     PVOID volatile g_decoderWorkerTargetThunk = nullptr;
     PVOID volatile g_audioWriteThunk = nullptr;
     PVOID volatile g_originalBpkSoundWrite = nullptr;
+    PVOID volatile g_wmvAudioWriteThunk = nullptr;
+    PVOID volatile g_originalBpkSoundRawWrite = nullptr;
     PVOID volatile g_decoderCatchupVideo = nullptr;
     LONG volatile g_decoderCatchupTargetFrame = -1;
     LONG volatile g_lastDecoderCatchupDistance = 0;
@@ -1812,8 +1824,42 @@ namespace
         }
         mask |= IsRvaInImage(BpkSoundWriteRva, 96) ? 16 : 0;
         mask |= IsRvaInImage(AudioWriteCallRva, 5) ? 32 : 0;
-        const bool resolved = mask == 0x3F;
-        mask |= resolved ? 64 : 0;
+
+        BpkSoundRawWriteRva = 0;
+        WmvAudioWriteCallRva = 0;
+        auto readerVtable = reinterpret_cast<void**>(
+            ImageBase() + SsvReaderVtableRva);
+        auto onSample = reinterpret_cast<unsigned char*>(readerVtable[4]);
+        if (IsExecutableAddress(onSample) && IsReadable(onSample, 512))
+        {
+            for (std::size_t offset = 4; offset + 5 <= 512; offset++)
+            {
+                auto call = onSample + offset;
+                if (call[0] != 0xE8 ||
+                    call[-4] != 0x48 || call[-3] != 0x8B ||
+                    call[-2] != 0x48 ||
+                    call[-1] != static_cast<unsigned char>(VideoSoundOffset))
+                {
+                    continue;
+                }
+                auto write = DirectCallTarget(call);
+                if (write == nullptr ||
+                    !IsReadable(write, sizeof(BpkSoundRawWriteSignature)) ||
+                    std::memcmp(write, BpkSoundRawWriteSignature,
+                        sizeof(BpkSoundRawWriteSignature)) != 0)
+                {
+                    continue;
+                }
+                BpkSoundRawWriteRva = RvaFromAddress(write);
+                WmvAudioWriteCallRva = RvaFromAddress(call);
+                break;
+            }
+        }
+        mask |= IsRvaInImage(BpkSoundRawWriteRva,
+            sizeof(BpkSoundRawWriteSignature)) ? 64 : 0;
+        mask |= IsRvaInImage(WmvAudioWriteCallRva, 5) ? 128 : 0;
+        const bool resolved = mask == 0xFF;
+        mask |= resolved ? 256 : 0;
         InterlockedExchange(&g_audioResolverMask, mask);
         return resolved;
     }
@@ -2204,6 +2250,10 @@ namespace
             L"BpkSoundWriteRva", BpkSoundWriteRva);
         WriteResolvedValue(profilePath, section,
             L"AudioWriteCallRva", AudioWriteCallRva);
+        WriteResolvedValue(profilePath, section,
+            L"BpkSoundRawWriteRva", BpkSoundRawWriteRva);
+        WriteResolvedValue(profilePath, section,
+            L"WmvAudioWriteCallRva", WmvAudioWriteCallRva);
         WriteResolvedValue(profilePath, section,
             L"VideoWmvCoreVtableRva", VideoWmvCoreVtableRva);
         WriteResolvedValue(profilePath, section,
@@ -2918,18 +2968,36 @@ namespace
         return true;
     }
 
+    bool ClearSoundPending(void* sound)
+    {
+        if (!IsReadable(sound, BpkSoundPendingOffset + sizeof(void*)))
+        {
+            return false;
+        }
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const auto clear = core == nullptr
+            ? nullptr
+            : reinterpret_cast<QByteArrayAction>(GetProcAddress(
+                core, "?clear@QByteArray@@QEAAXXZ"));
+        if (clear == nullptr)
+        {
+            return false;
+        }
+        clear(reinterpret_cast<unsigned char*>(sound) +
+            BpkSoundPendingOffset);
+        return true;
+    }
+
     bool RestartSoundAudio(void* sound)
     {
         void* output = SoundAudioOutput(sound);
-        if (output == nullptr ||
-            !IsReadable(sound, BpkSoundPendingOffset + sizeof(void*)))
+        if (output == nullptr)
         {
-            return output == nullptr;
+            return true;
         }
 
         const HMODULE multimedia = GetModuleHandleW(L"Qt5Multimedia.dll");
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
-        if (multimedia == nullptr || core == nullptr)
+        if (multimedia == nullptr)
         {
             return false;
         }
@@ -2937,15 +3005,12 @@ namespace
             multimedia, "?stop@QAudioOutput@@QEAAXXZ"));
         const auto start = reinterpret_cast<QAudioStart>(GetProcAddress(
             multimedia, "?start@QAudioOutput@@QEAAPEAVQIODevice@@XZ"));
-        const auto clear = reinterpret_cast<QByteArrayAction>(GetProcAddress(
-            core, "?clear@QByteArray@@QEAAXXZ"));
-        if (stop == nullptr || start == nullptr || clear == nullptr)
+        if (stop == nullptr || start == nullptr ||
+            !ClearSoundPending(sound))
         {
             return false;
         }
 
-        clear(reinterpret_cast<unsigned char*>(sound) +
-            BpkSoundPendingOffset);
         stop(output);
         void* device = start(output);
         *reinterpret_cast<void**>(
@@ -2959,8 +3024,26 @@ namespace
         return true;
     }
 
+    bool IsWmvMovie(void* movie)
+    {
+        void* animation = IsReadable(movie,
+            MovieAnimationOffset + sizeof(void*))
+            ? *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset)
+            : nullptr;
+        return IsWmvDecoder(AnimationVideoDecoder(animation));
+    }
+
     bool ControlMovieAudio(void* movie, AudioCommand command)
     {
+        // QAudioOutput belongs to a Qt thread, while legacy playback controls
+        // run on the injected call/WMF threads. WMV already stops producing
+        // PCM when its Movie is paused, so do not touch the Qt device here.
+        if (IsWmvMovie(movie))
+        {
+            return true;
+        }
         void* sound = MovieAudioSound(movie);
         return sound == nullptr || ControlSoundAudio(sound, command);
     }
@@ -2995,7 +3078,8 @@ namespace
         InterlockedExchange(&g_audioResumeAfterReset, 0);
         InterlockedExchangePointer(
             &g_audioReleaseAfterResetSound, nullptr);
-        InterlockedExchangePointer(&g_audioResetPendingSound, sound);
+        InterlockedExchangePointer(&g_audioResetPendingSound,
+            IsWmvMovie(movie) ? nullptr : sound);
         return true;
     }
 
@@ -4802,15 +4886,19 @@ namespace
         {
             return true;
         }
-        if (!RestartSoundAudio(sound))
+        WaitForAudioWrites();
+        if (!ClearSoundPending(sound))
         {
             return false;
         }
-        ControlSoundAudio(sound, AudioCommand::Suspend);
         InterlockedCompareExchangePointer(
-            &g_audioResetPendingSound, nullptr, sound);
+            &g_audioSuppressedSound, nullptr, sound);
         return true;
     }
+
+    HRESULT RestartWmvReader(void* video, int firstFrame,
+        int deliveredUntilFrame, int framesPerSecond,
+        int totalFrames, bool useUserClock);
 
     DWORD WINAPI WmvClockWorker(void*)
     {
@@ -4857,8 +4945,16 @@ namespace
                 }
 
                 const int currentFrame = *currentAddress;
+                if (!g_wmvUserClock &&
+                    InterlockedCompareExchange(
+                        &g_wmvClockResult, E_PENDING, E_PENDING) ==
+                            BridgeSuccess)
+                {
+                    __leave;
+                }
                 const int releaseFrame = InterlockedCompareExchange(
                     &g_wmvClockReleaseFrame, -1, -1);
+                bool justReleased = false;
                 if (InterlockedCompareExchange(
                         &g_wmvClockStreaming, 0, 0) == 0)
                 {
@@ -4866,25 +4962,71 @@ namespace
                     {
                         __leave;
                     }
+                    if (IsNormalPlaybackRate(g_wmvRate))
+                    {
+                        const int firstFrame = currentFrame + 1 <
+                            totalFrames ? currentFrame + 1 : totalFrames - 1;
+                        const int deliveredUntilFrame =
+                            firstFrame + 1 <= totalFrames
+                                ? firstFrame + 1 : totalFrames;
+                        const HRESULT restartResult = RestartWmvReader(
+                            video, firstFrame, deliveredUntilFrame,
+                            framesPerSecond, totalFrames, false);
+                        if (FAILED(restartResult) ||
+                            !ReleaseWmvClockAudio(video))
+                        {
+                            InterlockedExchange(&g_wmvClockResult,
+                                FAILED(restartResult)
+                                    ? restartResult : E_FAIL);
+                            __leave;
+                        }
+                        g_wmvUserClock = false;
+                        InterlockedExchange(&g_wmvClockStreaming, 1);
+                        InterlockedExchange(
+                            &g_wmvClockResult, BridgeSuccess);
+                        __leave;
+                    }
+                    auto videoBytes =
+                        reinterpret_cast<unsigned char*>(video);
+                    void* ssvReader = IsReadable(videoBytes +
+                            WmvReaderObjectOffset, sizeof(void*))
+                        ? *reinterpret_cast<void**>(
+                            videoBytes + WmvReaderObjectOffset)
+                        : nullptr;
+                    auto frameHeld =
+                        videoBytes + WmvFrameHeldOffset;
+                    if (!IsReadable(ssvReader, sizeof(void*)) ||
+                        !IsWritable(frameHeld, sizeof(*frameHeld)))
+                    {
+                        InterlockedExchange(
+                            &g_wmvClockResult, ManagerError());
+                        __leave;
+                    }
+                    FunctionAt<WmvClearQueues>(
+                        WmvClearQueuesRva)(ssvReader);
+                    *frameHeld = 0;
+                    InterlockedExchange(
+                        &g_wmvClockDeliveredUntilFrame,
+                        currentFrame + 1);
                     if (!ReleaseWmvClockAudio(video))
                     {
                         InterlockedExchange(&g_wmvClockResult, E_FAIL);
                         __leave;
                     }
                     InterlockedExchange(&g_wmvClockStreaming, 1);
-                    InterlockedExchange(&g_wmvClockResult, BridgeSuccess);
+                    justReleased = true;
                 }
 
-                constexpr int bufferSeconds = 2;
+                const int bufferFrames =
+                    framesPerSecond > 4 ? framesPerSecond / 4 : 1;
                 const int finalUntilFrame = totalFrames <=
                     MAXLONG - framesPerSecond
                         ? totalFrames + framesPerSecond
                         : totalFrames;
                 const int desiredUntilFrame = currentFrame >=
-                    totalFrames - framesPerSecond * bufferSeconds - 1
+                    totalFrames - bufferFrames - 1
                     ? finalUntilFrame
-                    : currentFrame +
-                        framesPerSecond * bufferSeconds + 1;
+                    : currentFrame + bufferFrames + 1;
                 const int deliveredUntilFrame = InterlockedCompareExchange(
                     &g_wmvClockDeliveredUntilFrame, 0, 0);
                 const int deliveryStep =
@@ -4906,7 +5048,17 @@ namespace
                         InterlockedExchange(
                             &g_wmvClockDeliveredUntilFrame,
                             desiredUntilFrame);
+                        if (justReleased)
+                        {
+                            InterlockedExchange(
+                                &g_wmvClockResult, BridgeSuccess);
+                        }
                     }
+                }
+                else if (justReleased)
+                {
+                    InterlockedExchange(
+                        &g_wmvClockResult, BridgeSuccess);
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
@@ -5093,15 +5245,13 @@ namespace
                     : HRESULT_FROM_WIN32(ERROR_TIMEOUT);
             }
         }
-        // VideoWmvCore owns the same CBpkSound base field as VideoFFmpeg, but
-        // its PCM arrives on the Windows Media sample callback. With
-        // IWMReader fully stopped, it is safe to discard
-        // both CBpkSound's pending bytes and Qt's pre-seek device queue.
-        // Keep the fresh output suspended until Movie resumes at the target.
+        // WMV PCM arrives on the Windows Media callback, not the guarded
+        // FFmpeg write site. Clear only CBpkSound's pending bytes here; calling
+        // QAudioOutput::stop/start from this non-Qt worker corrupts its timers.
         void* sound = VideoAudioSound(video);
-        if (sound != nullptr && RestartSoundAudio(sound))
+        if (sound != nullptr)
         {
-            ControlSoundAudio(sound, AudioCommand::Suspend);
+            ClearSoundPending(sound);
         }
 
         FunctionAt<WmvClearQueues>(WmvClearQueuesRva)(ssvReader);
@@ -5461,6 +5611,44 @@ namespace
         else
         {
             InterlockedIncrement(&g_audioWritesSkipped);
+        }
+        InterlockedDecrement(&g_audioWritesInFlight);
+    }
+
+    void __fastcall GuardedBpkSoundRawWrite(void* sound, const void* bytes,
+        int byteCount)
+    {
+        InterlockedIncrement(&g_audioWritesInFlight);
+        bool writePcm = InterlockedCompareExchangePointer(
+            &g_audioSuppressedSound, nullptr, nullptr) != sound;
+        if (writePcm &&
+            InterlockedCompareExchangePointer(
+                &g_audioResetPendingSound, nullptr, nullptr) == sound)
+        {
+            writePcm = RestartSoundAudio(sound);
+            if (writePcm)
+            {
+                InterlockedCompareExchangePointer(
+                    &g_audioResetPendingSound, nullptr, sound);
+                InterlockedCompareExchangePointer(
+                    &g_audioReleaseAfterResetSound, nullptr, sound);
+                InterlockedExchange(&g_audioResumeAfterReset, 0);
+            }
+        }
+
+        if (!writePcm)
+        {
+            InterlockedIncrement(&g_audioWritesSkipped);
+        }
+        else
+        {
+            const auto original = reinterpret_cast<BpkSoundRawWrite>(
+                InterlockedCompareExchangePointer(
+                    &g_originalBpkSoundRawWrite, nullptr, nullptr));
+            if (original != nullptr)
+            {
+                original(sound, bytes, byteCount);
+            }
         }
         InterlockedDecrement(&g_audioWritesInFlight);
     }
@@ -5912,21 +6100,23 @@ namespace
         return result;
     }
 
-    HRESULT InstallAudioWritePatch()
+    HRESULT InstallDirectCallPatch(std::uintptr_t callRva,
+        std::uintptr_t targetRva, void* hook, PVOID volatile* thunkSlot,
+        PVOID volatile* originalSlot)
     {
         AcquireSRWLockExclusive(&g_decodePatchLock);
         HRESULT result = BridgeSuccess;
         if (InterlockedCompareExchangePointer(
-                &g_audioWriteThunk, nullptr, nullptr) != nullptr)
+                thunkSlot, nullptr, nullptr) != nullptr)
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
             return result;
         }
 
-        unsigned char* call = ImageBase() + AudioWriteCallRva;
-        unsigned char* originalWrite = ImageBase() + BpkSoundWriteRva;
-        if (!IsRvaInImage(AudioWriteCallRva, 5) ||
-            !IsRvaInImage(BpkSoundWriteRva, 96) ||
+        unsigned char* call = ImageBase() + callRva;
+        unsigned char* originalWrite = ImageBase() + targetRva;
+        if (!IsRvaInImage(callRva, 5) ||
+            !IsRvaInImage(targetRva, 16) ||
             DirectCallTarget(call) != originalWrite)
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
@@ -5946,7 +6136,7 @@ namespace
         };
         std::memcpy(thunk, code, sizeof(code));
         const std::uintptr_t hookAddress =
-            reinterpret_cast<std::uintptr_t>(&GuardedBpkSoundWrite);
+            reinterpret_cast<std::uintptr_t>(hook);
         std::memcpy(thunk + 2, &hookAddress, sizeof(hookAddress));
         FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
 
@@ -5970,7 +6160,7 @@ namespace
         }
 
         InterlockedExchangePointer(
-            &g_originalBpkSoundWrite, originalWrite);
+            originalSlot, originalWrite);
         DWORD oldProtection = 0;
         if (!VirtualProtect(call, 5, PAGE_EXECUTE_READWRITE,
                 &oldProtection))
@@ -5985,18 +6175,33 @@ namespace
             FlushInstructionCache(GetCurrentProcess(), call, 5);
             DWORD ignoredProtection = 0;
             VirtualProtect(call, 5, oldProtection, &ignoredProtection);
-            InterlockedExchangePointer(&g_audioWriteThunk, thunk);
+            InterlockedExchangePointer(thunkSlot, thunk);
         }
 
         ResumeThreads(suspended);
         if (result < 0)
         {
             InterlockedExchangePointer(
-                &g_originalBpkSoundWrite, nullptr);
+                originalSlot, nullptr);
             VirtualFree(thunk, 0, MEM_RELEASE);
         }
         ReleaseSRWLockExclusive(&g_decodePatchLock);
         return result;
+    }
+
+    HRESULT InstallAudioWritePatch()
+    {
+        return InstallDirectCallPatch(AudioWriteCallRva, BpkSoundWriteRva,
+            reinterpret_cast<void*>(&GuardedBpkSoundWrite),
+            &g_audioWriteThunk, &g_originalBpkSoundWrite);
+    }
+
+    HRESULT InstallWmvAudioWritePatch()
+    {
+        return InstallDirectCallPatch(
+            WmvAudioWriteCallRva, BpkSoundRawWriteRva,
+            reinterpret_cast<void*>(&GuardedBpkSoundRawWrite),
+            &g_wmvAudioWriteThunk, &g_originalBpkSoundRawWrite);
     }
 
     HRESULT InstallFastDecodeHook(LONG threadCount)
@@ -6086,11 +6291,18 @@ namespace
         }
         InterlockedExchange(&g_fastDecodeInstallStage, 256);
 
+        const HRESULT wmvAudioPatch = InstallWmvAudioWritePatch();
+        if (wmvAudioPatch < 0)
+        {
+            return wmvAudioPatch;
+        }
+        InterlockedExchange(&g_fastDecodeInstallStage, 512);
+
         InterlockedExchange(&g_decoderThreadCount, threadCount);
         InterlockedCompareExchangePointer(&g_originalAvcodecOpen2, expectedOpen, nullptr);
         InterlockedCompareExchangePointer(
             &g_originalAvSeekFrame, expectedSeek, nullptr);
-        InterlockedExchange(&g_fastDecodeInstallStage, 512);
+        InterlockedExchange(&g_fastDecodeInstallStage, 1024);
 
         if (current != hook)
         {
@@ -6152,7 +6364,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 38;
+    return 57;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -6238,7 +6450,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovieManager(SIZE_T 
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperInstallMovieCaptureHook()
 {
-    return InstallMovieCaptureHook();
+    HRESULT result = InstallMovieCaptureHook();
+    if (FAILED(result))
+    {
+        return result;
+    }
+    result = InstallAudioWritePatch();
+    return FAILED(result) ? result : InstallWmvAudioWritePatch();
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperResetPlaybackSession()
