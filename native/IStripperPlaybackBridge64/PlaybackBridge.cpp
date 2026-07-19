@@ -65,8 +65,8 @@ namespace
     constexpr std::size_t MaximumAlphaCheckpointBytes = 128 * 1024 * 1024;
     constexpr int MaximumAlphaCheckpoints = 16;
     constexpr int AlphaCheckpointIntervalSeconds = 5;
-    constexpr std::uint64_t MaximumPersistentAlphaCacheBytes =
-        1024ULL * 1024 * 1024;
+    constexpr std::uint64_t DefaultPersistentAlphaCacheBytes =
+        256ULL * 1024 * 1024;
     constexpr std::uint32_t PersistentAlphaMagic = 0x43415051;
     constexpr std::uint16_t PersistentAlphaVersion = 1;
     std::size_t SsvVideoDecoderOffset = 0;
@@ -224,6 +224,8 @@ namespace
     LONG volatile g_alphaCheckpointRestoreCount = 0;
     LONG volatile g_lastAlphaCheckpointFrame = -1;
     LONGLONG volatile g_alphaCheckpointClipKey = 0;
+    LONGLONG volatile g_persistentAlphaCacheLimit =
+        DefaultPersistentAlphaCacheBytes;
     LONG volatile g_keyframeSeekCount = 0;
     LONG volatile g_lastKeyframeSeekFrame = -1;
     LONG volatile g_offsetsResolved = 0;
@@ -3780,6 +3782,9 @@ namespace
 
     void PrunePersistentAlphaCache(const wchar_t* directory)
     {
+        const auto cacheLimit = static_cast<std::uint64_t>(
+            InterlockedCompareExchange64(
+                &g_persistentAlphaCacheLimit, 0, 0));
         wchar_t searchPath[MAX_PATH] = {};
         if (swprintf_s(searchPath, L"%s\\*.qpac", directory) <= 0)
         {
@@ -3818,7 +3823,7 @@ namespace
         } while (FindNextFileW(search, &data));
         FindClose(search);
 
-        if (totalBytes <= MaximumPersistentAlphaCacheBytes)
+        if (totalBytes <= cacheLimit)
         {
             return;
         }
@@ -3827,11 +3832,9 @@ namespace
             {
                 return left.writeTime < right.writeTime;
             });
-        // ponytail: one process-wide 1 GB cache; add a user size control only
-        // if the fixed cap proves unsuitable in real use.
         for (const auto& file : files)
         {
-            if (totalBytes <= MaximumPersistentAlphaCacheBytes)
+            if (totalBytes <= cacheLimit)
             {
                 break;
             }
@@ -6149,7 +6152,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 37;
+    return 38;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -6700,6 +6703,26 @@ IStripperSetAlphaCheckpointCacheKey(SIZE_T clipKey)
 {
     InterlockedExchange64(&g_alphaCheckpointClipKey,
         static_cast<LONGLONG>(clipKey));
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetAlphaCheckpointCacheLimitBytes(SIZE_T cacheBytes)
+{
+    constexpr SIZE_T minimum = 64ULL * 1024 * 1024;
+    constexpr SIZE_T maximum = 64ULL * 1024 * 1024 * 1024;
+    if (cacheBytes < minimum || cacheBytes > maximum)
+    {
+        return E_INVALIDARG;
+    }
+
+    InterlockedExchange64(&g_persistentAlphaCacheLimit,
+        static_cast<LONGLONG>(cacheBytes));
+    wchar_t directory[MAX_PATH] = {};
+    if (AlphaCacheDirectory(directory))
+    {
+        PrunePersistentAlphaCache(directory);
+    }
     return BridgeSuccess;
 }
 

@@ -278,7 +278,7 @@ The direct seek path now does the following while the movie is paused:
    its alpha state to frame zero when no checkpoint exists. QuickPlayer captures
    the complete mutable alpha block and output plane every five seconds during
    playback. Checkpoints are scoped to one animation and capped at 128 MiB in
-   memory. When **Enable alpha checkpoint cache** is selected, bridge v36
+   memory. When **Enable alpha checkpoint cache** is selected, bridge v38
    normalizes the two embedded scratch pointers, compresses each checkpoint
    with Windows XPRESS Huffman on a thread-pool worker, and writes it atomically
    under `%LOCALAPPDATA%\IStripperQuickPlayer\alpha-cache`.
@@ -314,7 +314,8 @@ verified FFmpeg 3.1 `AVStream` layout (`index_entries` at `+0x1C8`, count at
 Delta-RLE masks still require CAnim to apply records between the restored
 checkpoint and the requested target. Persistent checkpoints are loaded on
 demand for later instances of the same clip and the disk cache discards its
-oldest files above 1 GiB. The cache is populated opportunistically, so a
+oldest files above the configured limit (256 MiB by default). The cache is
+populated opportunistically, so a
 never-visited part of a clip still falls back to frame zero. Each operation
 finishes with the original `Movie+0x98` counter at the requested position.
 

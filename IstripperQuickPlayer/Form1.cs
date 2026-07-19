@@ -38,7 +38,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 37;
+        private const int PlaybackBridgeVersion = 38;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -95,6 +95,8 @@ namespace IStripperQuickPlayer
         private readonly ToolStripMenuItem updateToolStripMenuItem = new();
         private readonly ToolStripMenuItem alphaCheckpointCacheToolStripMenuItem =
             new();
+        private readonly ToolStripMenuItem alphaCheckpointCacheSizeToolStripMenuItem =
+            new("Alpha checkpoint cache size");
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
@@ -162,6 +164,24 @@ namespace IStripperQuickPlayer
                 settingsToolStripMenuItem.DropDownItems.IndexOf(
                     enablePlaybackControlToolStripMenuItem) + 1,
                 alphaCheckpointCacheToolStripMenuItem);
+            foreach (int size in new[] { 64, 128, 256, 512, 1024, 2048, 4096 })
+            {
+                ToolStripMenuItem item = new(
+                    size < 1024 ? $"{size} MB" : $"{size / 1024} GB")
+                {
+                    Tag = size,
+                    Checked = size ==
+                        Properties.Settings.Default.AlphaCheckpointCacheSizeMB
+                };
+                item.Click += alphaCheckpointCacheSizeToolStripMenuItem_Click;
+                alphaCheckpointCacheSizeToolStripMenuItem.DropDownItems.Add(item);
+            }
+            alphaCheckpointCacheSizeToolStripMenuItem.Enabled =
+                alphaCheckpointCacheToolStripMenuItem.Checked;
+            settingsToolStripMenuItem.DropDownItems.Insert(
+                settingsToolStripMenuItem.DropDownItems.IndexOf(
+                    alphaCheckpointCacheToolStripMenuItem) + 1,
+                alphaCheckpointCacheSizeToolStripMenuItem);
             updateToolStripMenuItem.Text = "Check for Updates...";
             updateToolStripMenuItem.Click +=
                 async (_, _) => await CheckForUpdatesAsync(true);
@@ -1359,6 +1379,20 @@ namespace IStripperQuickPlayer
                 int fastDecodeResult = _spyMgr.CallCustomApi(process, playbackBridgePath,
                     "IStripperEnableFastDecode", ref decoderThreadParameter, true);
                 playbackFastDecodeEnabled = fastDecodeResult >= 0;
+
+                object cacheLimitParameter = unchecked((ulong)
+                    Properties.Settings.Default.AlphaCheckpointCacheSizeMB *
+                    1024 * 1024);
+                int cacheLimitResult = _spyMgr.CallCustomApi(process,
+                    playbackBridgePath,
+                    "IStripperSetAlphaCheckpointCacheLimitBytes",
+                    ref cacheLimitParameter, true);
+                if (cacheLimitResult < 0)
+                {
+                    throw new COMException(
+                        $"Alpha cache limit setup failed (0x{cacheLimitResult:X8}).",
+                        cacheLimitResult);
+                }
 
                 playbackBridgeLoaded = true;
 #if DEBUG
@@ -2736,12 +2770,18 @@ namespace IStripperQuickPlayer
 
         private void RefreshPlayingClipHighlight()
         {
+            Color playingBackColor = Properties.Settings.Default.DarkMode
+                ? Color.FromArgb(38, 90, 58)
+                : Color.FromArgb(198, 239, 206);
+            Color playingForeColor = Properties.Settings.Default.DarkMode
+                ? Color.White
+                : Color.FromArgb(0, 80, 24);
             foreach (ListViewItem item in listClips.Items)
             {
                 bool isPlaying = item.SubItems.Count > 1 &&
                     IsPlayingClip(item.SubItems[1].Text, nowPlayingPath);
-                item.BackColor = isPlaying ? SystemColors.Info : listClips.BackColor;
-                item.ForeColor = isPlaying ? SystemColors.InfoText : listClips.ForeColor;
+                item.BackColor = isPlaying ? playingBackColor : listClips.BackColor;
+                item.ForeColor = isPlaying ? playingForeColor : listClips.ForeColor;
             }
         }
 
@@ -3653,6 +3693,7 @@ namespace IStripperQuickPlayer
         {
             bool enabled = alphaCheckpointCacheToolStripMenuItem.Checked;
             Properties.Settings.Default.EnableAlphaCheckpointCache = enabled;
+            alphaCheckpointCacheSizeToolStripMenuItem.Enabled = enabled;
             if (!playbackBridgeLoaded)
                 return;
 
@@ -3663,6 +3704,33 @@ namespace IStripperQuickPlayer
                 {
                     CallPlaybackApi("IStripperSetAlphaCheckpointCacheKey",
                         enabled ? AlphaCheckpointClipKey(animationPath) : 0);
+                }
+                catch { }
+            });
+        }
+
+        private void alphaCheckpointCacheSizeToolStripMenuItem_Click(
+            object? sender, EventArgs e)
+        {
+            if (sender is not ToolStripMenuItem { Tag: int size })
+                return;
+
+            Properties.Settings.Default.AlphaCheckpointCacheSizeMB = size;
+            foreach (ToolStripMenuItem item in
+                alphaCheckpointCacheSizeToolStripMenuItem.DropDownItems)
+            {
+                item.Checked = item.Tag is int itemSize && itemSize == size;
+            }
+            if (!playbackBridgeLoaded)
+                return;
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    CallPlaybackApi(
+                        "IStripperSetAlphaCheckpointCacheLimitBytes",
+                        unchecked((ulong)size * 1024 * 1024));
                 }
                 catch { }
             });

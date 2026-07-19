@@ -322,6 +322,18 @@ namespace IStripperQuickPlayer.Properties {
                 this["EnableAlphaCheckpointCache"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("256")]
+        public int AlphaCheckpointCacheSizeMB {
+            get {
+                return ((int)(this["AlphaCheckpointCacheSizeMB"]));
+            }
+            set {
+                this["AlphaCheckpointCacheSizeMB"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
