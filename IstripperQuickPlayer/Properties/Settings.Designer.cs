@@ -154,6 +154,30 @@ namespace IStripperQuickPlayer.Properties {
                 this["FastForwardHotkeyString"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool RestartClipHotkeyEnabled {
+            get {
+                return ((bool)(this["RestartClipHotkeyEnabled"]));
+            }
+            set {
+                this["RestartClipHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+Home")]
+        public string RestartClipHotkeyString {
+            get {
+                return ((string)(this["RestartClipHotkeyString"]));
+            }
+            set {
+                this["RestartClipHotkeyString"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

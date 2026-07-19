@@ -71,6 +71,7 @@ namespace IStripperQuickPlayer
         private const int PauseHotkeyId = 4;
         private const int RewindHotkeyId = 5;
         private const int FastForwardHotkeyId = 6;
+        private const int RestartClipHotkeyId = 7;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -154,11 +155,19 @@ namespace IStripperQuickPlayer
                 cmdFastForward.PerformClick();
         }
 
+        private async void actRestartClip()
+        {
+            if (Properties.Settings.Default.RestartClipHotkeyEnabled)
+                await RunPlaybackOperationAsync(token => SeekAbsoluteAsync(0, token));
+        }
+
         public Form1()
         {
 #if DEBUG
             System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
             System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
+            System.Diagnostics.Debug.Assert(!SeekTargetReachesEnd(98_000, 100_000));
+            System.Diagnostics.Debug.Assert(SeekTargetReachesEnd(99_000, 100_000));
             System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("platinum"));
             System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("doubleDiamond"));
             System.Diagnostics.Debug.Assert(!HasPlatinumPlaybackEntitlement("gold"));
@@ -175,6 +184,8 @@ namespace IStripperQuickPlayer
                 AlphaCheckpointClipKey(@"a\b.vghd"));
             System.Diagnostics.Debug.Assert(TryParseHotKey(
                 "Control+Alt+Left", out _, out _));
+            System.Diagnostics.Debug.Assert(TryParseHotKey(
+                "Control+Alt+Home", out _, out _));
 #endif
             InitializeComponent();
             alphaCheckpointCacheToolStripMenuItem.Text =
@@ -1183,6 +1194,8 @@ namespace IStripperQuickPlayer
                 RegisterConfiguredHotKey(RewindHotkeyId, Properties.Settings.Default.RewindHotkeyString);
             if (Properties.Settings.Default.FastForwardHotkeyEnabled)
                 RegisterConfiguredHotKey(FastForwardHotkeyId, Properties.Settings.Default.FastForwardHotkeyString);
+            if (Properties.Settings.Default.RestartClipHotkeyEnabled)
+                RegisterConfiguredHotKey(RestartClipHotkeyId, Properties.Settings.Default.RestartClipHotkeyString);
         }
 
         private void RegisterConfiguredHotKey(int id, string shortcut)
@@ -1199,6 +1212,7 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, PauseHotkeyId);
             UnregisterHotKey(Handle, RewindHotkeyId);
             UnregisterHotKey(Handle, FastForwardHotkeyId);
+            UnregisterHotKey(Handle, RestartClipHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -1246,6 +1260,9 @@ namespace IStripperQuickPlayer
                         return;
                     case FastForwardHotkeyId:
                         actFastForward();
+                        return;
+                    case RestartClipHotkeyId:
+                        actRestartClip();
                         return;
                 }
             }
@@ -2110,6 +2127,11 @@ namespace IStripperQuickPlayer
                     "The clip's decoders are not ready to seek yet.");
             }
             int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
+            if (SeekTargetReachesEnd(requestedTarget, total))
+            {
+                GetNextClip();
+                return;
+            }
             int target = Math.Max(0, requestedTarget);
             if (total > 0)
             {
@@ -2755,6 +2777,9 @@ namespace IStripperQuickPlayer
                 nowPlaying != "")
                 BeginInvoke((Action)(() => _ = ChangeWallpaper()));
         }
+
+        private static bool SeekTargetReachesEnd(int target, int total) =>
+            total > 0 && target >= Math.Max(0, total - 1_000);
 
         private void WakePlaybackTimeline()
         {

@@ -41,6 +41,8 @@
             chkRewind = new CheckBox();
             txtFastForward = new TextBox();
             chkFastForward = new CheckBox();
+            txtRestartClip = new TextBox();
+            chkRestartClip = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -83,7 +85,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 424);
+            cmdOK.Location = new Point(229, 477);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -161,12 +163,31 @@
             chkFastForward.TabIndex = 11;
             chkFastForward.Text = "+10%";
             chkFastForward.UseVisualStyleBackColor = true;
+            //
+            // txtRestartClip
+            //
+            txtRestartClip.Location = new Point(229, 398);
+            txtRestartClip.Name = "txtRestartClip";
+            txtRestartClip.Size = new Size(263, 31);
+            txtRestartClip.TabIndex = 14;
+            //
+            // chkRestartClip
+            //
+            chkRestartClip.AutoSize = true;
+            chkRestartClip.Location = new Point(70, 402);
+            chkRestartClip.Name = "chkRestartClip";
+            chkRestartClip.Size = new Size(128, 29);
+            chkRestartClip.TabIndex = 13;
+            chkRestartClip.Text = "Restart Clip";
+            chkRestartClip.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(10F, 25F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(578, 500);
+            ClientSize = new Size(578, 553);
+            Controls.Add(txtRestartClip);
+            Controls.Add(chkRestartClip);
             Controls.Add(txtFastForward);
             Controls.Add(chkFastForward);
             Controls.Add(txtRewind);
@@ -208,5 +229,7 @@
         private CheckBox chkRewind;
         private TextBox txtFastForward;
         private CheckBox chkFastForward;
+        private TextBox txtRestartClip;
+        private CheckBox chkRestartClip;
     }
 }
