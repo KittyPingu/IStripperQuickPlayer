@@ -35,6 +35,12 @@
             cmdOK = new Button();
             txtToggleLock = new TextBox();
             chkToggleLock = new CheckBox();
+            txtPause = new TextBox();
+            chkPause = new CheckBox();
+            txtRewind = new TextBox();
+            chkRewind = new CheckBox();
+            txtFastForward = new TextBox();
+            chkFastForward = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -77,7 +83,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 268);
+            cmdOK.Location = new Point(229, 424);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -104,12 +110,69 @@
             chkToggleLock.TabIndex = 5;
             chkToggleLock.Text = "Toggle Lock";
             chkToggleLock.UseVisualStyleBackColor = true;
+            //
+            // txtPause
+            //
+            txtPause.Location = new Point(229, 239);
+            txtPause.Name = "txtPause";
+            txtPause.Size = new Size(263, 31);
+            txtPause.TabIndex = 8;
+            //
+            // chkPause
+            //
+            chkPause.AutoSize = true;
+            chkPause.Location = new Point(70, 243);
+            chkPause.Name = "chkPause";
+            chkPause.Size = new Size(136, 29);
+            chkPause.TabIndex = 7;
+            chkPause.Text = "Pause / Play";
+            chkPause.UseVisualStyleBackColor = true;
+            //
+            // txtRewind
+            //
+            txtRewind.Location = new Point(229, 292);
+            txtRewind.Name = "txtRewind";
+            txtRewind.Size = new Size(263, 31);
+            txtRewind.TabIndex = 10;
+            //
+            // chkRewind
+            //
+            chkRewind.AutoSize = true;
+            chkRewind.Location = new Point(70, 296);
+            chkRewind.Name = "chkRewind";
+            chkRewind.Size = new Size(91, 29);
+            chkRewind.TabIndex = 9;
+            chkRewind.Text = "-10%";
+            chkRewind.UseVisualStyleBackColor = true;
+            //
+            // txtFastForward
+            //
+            txtFastForward.Location = new Point(229, 345);
+            txtFastForward.Name = "txtFastForward";
+            txtFastForward.Size = new Size(263, 31);
+            txtFastForward.TabIndex = 12;
+            //
+            // chkFastForward
+            //
+            chkFastForward.AutoSize = true;
+            chkFastForward.Location = new Point(70, 349);
+            chkFastForward.Name = "chkFastForward";
+            chkFastForward.Size = new Size(97, 29);
+            chkFastForward.TabIndex = 11;
+            chkFastForward.Text = "+10%";
+            chkFastForward.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(10F, 25F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(578, 344);
+            ClientSize = new Size(578, 500);
+            Controls.Add(txtFastForward);
+            Controls.Add(chkFastForward);
+            Controls.Add(txtRewind);
+            Controls.Add(chkRewind);
+            Controls.Add(txtPause);
+            Controls.Add(chkPause);
             Controls.Add(txtToggleLock);
             Controls.Add(chkToggleLock);
             Controls.Add(cmdOK);
@@ -139,5 +202,11 @@
         private Button cmdOK;
         private TextBox txtToggleLock;
         private CheckBox chkToggleLock;
+        private TextBox txtPause;
+        private CheckBox chkPause;
+        private TextBox txtRewind;
+        private CheckBox chkRewind;
+        private TextBox txtFastForward;
+        private CheckBox chkFastForward;
     }
 }

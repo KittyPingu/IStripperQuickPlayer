@@ -82,6 +82,78 @@ namespace IStripperQuickPlayer.Properties {
                 this["NextCardString"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool PauseHotkeyEnabled {
+            get {
+                return ((bool)(this["PauseHotkeyEnabled"]));
+            }
+            set {
+                this["PauseHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+P")]
+        public string PauseHotkeyString {
+            get {
+                return ((string)(this["PauseHotkeyString"]));
+            }
+            set {
+                this["PauseHotkeyString"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool RewindHotkeyEnabled {
+            get {
+                return ((bool)(this["RewindHotkeyEnabled"]));
+            }
+            set {
+                this["RewindHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+Left")]
+        public string RewindHotkeyString {
+            get {
+                return ((string)(this["RewindHotkeyString"]));
+            }
+            set {
+                this["RewindHotkeyString"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool FastForwardHotkeyEnabled {
+            get {
+                return ((bool)(this["FastForwardHotkeyEnabled"]));
+            }
+            set {
+                this["FastForwardHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+Right")]
+        public string FastForwardHotkeyString {
+            get {
+                return ((string)(this["FastForwardHotkeyString"]));
+            }
+            set {
+                this["FastForwardHotkeyString"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

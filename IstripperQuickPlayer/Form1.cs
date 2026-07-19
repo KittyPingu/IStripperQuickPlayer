@@ -42,6 +42,7 @@ namespace IStripperQuickPlayer
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
+        private const int PlaybackForcedReadyMilliseconds = 5_000;
         private const string LatestReleaseApiUrl =
             "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
 
@@ -67,6 +68,9 @@ namespace IStripperQuickPlayer
         private const int NextClipHotkeyId = 1;
         private const int NextCardHotkeyId = 2;
         private const int ToggleLockHotkeyId = 3;
+        private const int PauseHotkeyId = 4;
+        private const int RewindHotkeyId = 5;
+        private const int FastForwardHotkeyId = 6;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -132,6 +136,24 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.ToggleLockEnabled) this.BeginInvoke((Action)(() => { lockPlayerToolStripMenuItem.Checked = !lockPlayerToolStripMenuItem.Checked; setPlayerLocked(); }));
         }
 
+        private void actPause()
+        {
+            if (Properties.Settings.Default.PauseHotkeyEnabled)
+                cmdPlayPause.PerformClick();
+        }
+
+        private void actRewind()
+        {
+            if (Properties.Settings.Default.RewindHotkeyEnabled)
+                cmdRewind.PerformClick();
+        }
+
+        private void actFastForward()
+        {
+            if (Properties.Settings.Default.FastForwardHotkeyEnabled)
+                cmdFastForward.PerformClick();
+        }
+
         public Form1()
         {
 #if DEBUG
@@ -151,6 +173,8 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(
                 AlphaCheckpointClipKey(@"A/B.VGHD") ==
                 AlphaCheckpointClipKey(@"a\b.vghd"));
+            System.Diagnostics.Debug.Assert(TryParseHotKey(
+                "Control+Alt+Left", out _, out _));
 #endif
             InitializeComponent();
             alphaCheckpointCacheToolStripMenuItem.Text =
@@ -1153,6 +1177,12 @@ namespace IStripperQuickPlayer
                 RegisterConfiguredHotKey(NextCardHotkeyId, Properties.Settings.Default.NextCardString);
             if (Properties.Settings.Default.ToggleLockEnabled)
                 RegisterConfiguredHotKey(ToggleLockHotkeyId, Properties.Settings.Default.ToggleLockString);
+            if (Properties.Settings.Default.PauseHotkeyEnabled)
+                RegisterConfiguredHotKey(PauseHotkeyId, Properties.Settings.Default.PauseHotkeyString);
+            if (Properties.Settings.Default.RewindHotkeyEnabled)
+                RegisterConfiguredHotKey(RewindHotkeyId, Properties.Settings.Default.RewindHotkeyString);
+            if (Properties.Settings.Default.FastForwardHotkeyEnabled)
+                RegisterConfiguredHotKey(FastForwardHotkeyId, Properties.Settings.Default.FastForwardHotkeyString);
         }
 
         private void RegisterConfiguredHotKey(int id, string shortcut)
@@ -1166,6 +1196,9 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, NextClipHotkeyId);
             UnregisterHotKey(Handle, NextCardHotkeyId);
             UnregisterHotKey(Handle, ToggleLockHotkeyId);
+            UnregisterHotKey(Handle, PauseHotkeyId);
+            UnregisterHotKey(Handle, RewindHotkeyId);
+            UnregisterHotKey(Handle, FastForwardHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -1204,6 +1237,15 @@ namespace IStripperQuickPlayer
                         return;
                     case ToggleLockHotkeyId:
                         actToggleLock();
+                        return;
+                    case PauseHotkeyId:
+                        actPause();
+                        return;
+                    case RewindHotkeyId:
+                        actRewind();
+                        return;
+                    case FastForwardHotkeyId:
+                        actFastForward();
                         return;
                 }
             }
@@ -1670,12 +1712,12 @@ namespace IStripperQuickPlayer
 
         private async void cmdRewind_Click(object sender, EventArgs e)
         {
-            await RunPlaybackOperationAsync(token => SeekRelativeAsync(-10_000, token));
+            await RunPlaybackOperationAsync(token => SeekRelativeAsync(-0.1, token));
         }
 
         private async void cmdFastForward_Click(object sender, EventArgs e)
         {
-            await RunPlaybackOperationAsync(token => SeekRelativeAsync(10_000, token));
+            await RunPlaybackOperationAsync(token => SeekRelativeAsync(0.1, token));
         }
 
         private async void cmbPlaybackSpeed_SelectedIndexChanged(object sender, EventArgs e)
@@ -1909,6 +1951,11 @@ namespace IStripperQuickPlayer
                         playbackSeekReady = true;
                     }
                 }
+                if (!playbackSeekReady && playbackDecoderKind is 1 or 2 &&
+                    elapsed >= PlaybackForcedReadyMilliseconds)
+                {
+                    playbackSeekReady = true;
+                }
                 else if (!playbackSeekReady && playbackDecoderKind == 1)
                 {
                     int readinessMask = await Task.Run(() =>
@@ -2030,10 +2077,13 @@ namespace IStripperQuickPlayer
             await RunPlaybackOperationAsync(token => SeekAbsoluteAsync(target, token));
         }
 
-        private async Task SeekRelativeAsync(int deltaMilliseconds, CancellationToken cancellationToken)
+        private async Task SeekRelativeAsync(double clipFraction,
+            CancellationToken cancellationToken)
         {
             int current = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
-            await SeekAbsoluteAsync(current + deltaMilliseconds, cancellationToken);
+            int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
+            await SeekAbsoluteAsync(current +
+                (int)Math.Round(total * clipFraction), cancellationToken);
         }
 
         private async Task SeekAbsoluteAsync(int requestedTarget,
@@ -2054,8 +2104,7 @@ namespace IStripperQuickPlayer
             bool wasPlaying = state == 3;
             double speedToRestore = requestedPlaybackSpeed;
             int current = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
-            if (!playbackSeekReady ||
-                CallPlaybackApi("IStripperIsSeekReady") != 1)
+            if (!playbackSeekReady)
             {
                 throw new InvalidOperationException(
                     "The clip's decoders are not ready to seek yet.");

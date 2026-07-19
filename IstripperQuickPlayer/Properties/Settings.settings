@@ -17,6 +17,24 @@
     <Setting Name="NextCardString" Type="System.String" Scope="User">
       <Value Profile="(Default)">Control+Alt+C</Value>
     </Setting>
+    <Setting Name="PauseHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="PauseHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+P</Value>
+    </Setting>
+    <Setting Name="RewindHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="RewindHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+Left</Value>
+    </Setting>
+    <Setting Name="FastForwardHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="FastForwardHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+Right</Value>
+    </Setting>
     <Setting Name="MinSizeMB" Type="System.Int64" Scope="User">
       <Value Profile="(Default)">25</Value>
     </Setting>

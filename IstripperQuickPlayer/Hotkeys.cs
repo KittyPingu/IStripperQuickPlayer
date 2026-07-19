@@ -35,9 +35,15 @@ namespace IStripperQuickPlayer
             chkNextClip.Checked = Properties.Settings.Default.NextClipEnabled;
             chkNextCard.Checked = Properties.Settings.Default.NextCardEnabled;
             chkToggleLock.Checked = Properties.Settings.Default.ToggleLockEnabled;
+            chkPause.Checked = Properties.Settings.Default.PauseHotkeyEnabled;
+            chkRewind.Checked = Properties.Settings.Default.RewindHotkeyEnabled;
+            chkFastForward.Checked = Properties.Settings.Default.FastForwardHotkeyEnabled;
             txtNextClip.Text = Properties.Settings.Default.NextClipString;
             txtNextCard.Text = Properties.Settings.Default.NextCardString;
             txtToggleLock.Text = Properties.Settings.Default.ToggleLockString;
+            txtPause.Text = Properties.Settings.Default.PauseHotkeyString;
+            txtRewind.Text = Properties.Settings.Default.RewindHotkeyString;
+            txtFastForward.Text = Properties.Settings.Default.FastForwardHotkeyString;
         }
 
         private void cmdOK_Click(object sender, EventArgs e)
@@ -45,9 +51,15 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.NextClipEnabled = chkNextClip.Checked;
             Properties.Settings.Default.NextCardEnabled = chkNextCard.Checked;
             Properties.Settings.Default.ToggleLockEnabled = chkToggleLock.Checked;
+            Properties.Settings.Default.PauseHotkeyEnabled = chkPause.Checked;
+            Properties.Settings.Default.RewindHotkeyEnabled = chkRewind.Checked;
+            Properties.Settings.Default.FastForwardHotkeyEnabled = chkFastForward.Checked;
             Properties.Settings.Default.NextClipString = txtNextClip.Text;
             Properties.Settings.Default.NextCardString = txtNextCard.Text;
             Properties.Settings.Default.ToggleLockString = txtToggleLock.Text;
+            Properties.Settings.Default.PauseHotkeyString = txtPause.Text;
+            Properties.Settings.Default.RewindHotkeyString = txtRewind.Text;
+            Properties.Settings.Default.FastForwardHotkeyString = txtFastForward.Text;
             this.Close();
         }
     }

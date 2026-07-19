@@ -884,7 +884,7 @@
             cmdRewind.Name = "cmdRewind";
             cmdRewind.Size = new Size(83, 38);
             cmdRewind.TabIndex = 54;
-            cmdRewind.Text = "-10 sec";
+            cmdRewind.Text = "-10%";
             cmdRewind.UseVisualStyleBackColor = true;
             cmdRewind.Click += cmdRewind_Click;
             //
@@ -908,7 +908,7 @@
             cmdFastForward.Name = "cmdFastForward";
             cmdFastForward.Size = new Size(83, 38);
             cmdFastForward.TabIndex = 56;
-            cmdFastForward.Text = "+10 sec";
+            cmdFastForward.Text = "+10%";
             cmdFastForward.UseVisualStyleBackColor = true;
             cmdFastForward.Click += cmdFastForward_Click;
             //
