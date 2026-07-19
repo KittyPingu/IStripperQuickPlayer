@@ -98,6 +98,18 @@ namespace
     constexpr std::size_t StreamCodecContextOffset = 0x08;
     constexpr std::size_t CodecContextMediaTypeOffset = 0x0C;
 
+    constexpr bool DecoderFramesReady(
+        int movieFrame, int decoderFrame)
+    {
+        return movieFrame > 0 && decoderFrame >= movieFrame;
+    }
+
+    static_assert(!DecoderFramesReady(0, 0));
+    static_assert(!DecoderFramesReady(30, 20));
+    static_assert(DecoderFramesReady(30, 30));
+    constexpr int RequiredAlphaProgressObservations = 4;
+    static_assert(RequiredAlphaProgressObservations > 1);
+
     constexpr unsigned char AnimationFrameSignature[] = {
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74,
         0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x40, 0x41
@@ -172,8 +184,14 @@ namespace
     PVOID volatile g_activeAnimation = nullptr;
     PVOID volatile g_consumedMovie = nullptr;
     PVOID volatile g_consumedAnimation = nullptr;
+    PVOID volatile g_consumedSsv = nullptr;
+    PVOID volatile g_consumedInfo = nullptr;
     PVOID volatile g_originalMovieAdvance = nullptr;
+    // ponytail: process-wide count; use per-Movie counters only if several
+    // simultaneous windows prevent a 250 ms checkpoint gap.
+    LONG volatile g_movieAdvancesInFlight = 0;
     LONG volatile g_movieCaptureArmed = 0;
+    LONG volatile g_movieCaptureArmedFrame = -1;
     LONG volatile g_movieCaptureReady = 0;
     LONG volatile g_compatibilityMask = -1;
     LONG volatile g_fastForwardCompatibility = -1;
@@ -221,6 +239,7 @@ namespace
     SRWLOCK g_decodePatchLock = SRWLOCK_INIT;
     SRWLOCK g_offsetResolveLock = SRWLOCK_INIT;
     SRWLOCK g_alphaCheckpointLock = SRWLOCK_INIT;
+    SRWLOCK g_seekReadinessLock = SRWLOCK_INIT;
     SRWLOCK g_audioControlLock = SRWLOCK_INIT;
     SRWLOCK g_wmvRestartLock = SRWLOCK_INIT;
     SRWLOCK g_movieWindowLock = SRWLOCK_INIT;
@@ -265,6 +284,16 @@ namespace
     void* g_alphaCheckpointOutput = nullptr;
     int g_alphaCheckpointWidth = 0;
     int g_alphaCheckpointHeight = 0;
+    void* g_seekReadinessAnimation = nullptr;
+    void* g_seekReadinessSsv = nullptr;
+    void* g_seekReadinessInfo = nullptr;
+    void* g_seekReadinessOutput = nullptr;
+    int g_seekReadinessMovieFrame = -1;
+    std::uint64_t g_seekReadinessAlphaSignature = 0;
+    int g_seekReadinessAlphaProgress = 0;
+    void* g_seekReadinessWmvReader = nullptr;
+    int g_seekReadinessWmvFrame = -1;
+    int g_seekReadinessWmvProgress = 0;
 
     HRESULT PinBridge()
     {
@@ -2598,25 +2627,56 @@ namespace
 
     void MarkMovieConsumed(void* movie)
     {
+        void* animation = InterlockedCompareExchangePointer(
+            &g_activeAnimation, nullptr, nullptr);
         InterlockedExchangePointer(&g_consumedMovie, movie);
-        InterlockedExchangePointer(&g_consumedAnimation,
-            InterlockedCompareExchangePointer(
-                &g_activeAnimation, nullptr, nullptr));
+        InterlockedExchangePointer(&g_consumedAnimation, animation);
+        InterlockedExchangePointer(&g_consumedSsv,
+            IsReadable(animation, AnimationSsvOffset + sizeof(void*))
+                ? *reinterpret_cast<void**>(
+                    reinterpret_cast<unsigned char*>(animation) +
+                        AnimationSsvOffset)
+                : nullptr);
+        InterlockedExchangePointer(&g_consumedInfo,
+            IsReadable(animation, AnimationInfoOffset + sizeof(void*))
+                ? *reinterpret_cast<void**>(
+                    reinterpret_cast<unsigned char*>(animation) +
+                        AnimationInfoOffset)
+                : nullptr);
     }
 
     void __fastcall CapturingMovieAdvance(void* movie)
     {
-        if (IsMovie(movie))
+        if (IsMovie(movie) &&
+            InterlockedCompareExchange(&g_movieCaptureArmed, 0, 0) != 0)
         {
+            auto movieBytes = reinterpret_cast<unsigned char*>(movie);
             void* animation = *reinterpret_cast<void**>(
-                reinterpret_cast<unsigned char*>(movie) +
-                    MovieAnimationOffset);
-            if (InterlockedCompareExchange(
-                    &g_movieCaptureArmed, 0, 0) != 0 ||
-                movie != InterlockedCompareExchangePointer(
+                movieBytes + MovieAnimationOffset);
+            void* ssv = IsReadable(
+                animation, AnimationSsvOffset + sizeof(void*))
+                ? *reinterpret_cast<void**>(
+                    reinterpret_cast<unsigned char*>(animation) +
+                        AnimationSsvOffset)
+                : nullptr;
+            void* info = IsReadable(
+                animation, AnimationInfoOffset + sizeof(void*))
+                ? *reinterpret_cast<void**>(
+                    reinterpret_cast<unsigned char*>(animation) +
+                        AnimationInfoOffset)
+                : nullptr;
+            const int currentFrame = *reinterpret_cast<const int*>(
+                movieBytes + MovieCurrentFrameOffset);
+            if (movie != InterlockedCompareExchangePointer(
                     &g_consumedMovie, nullptr, nullptr) ||
                 animation != InterlockedCompareExchangePointer(
-                    &g_consumedAnimation, nullptr, nullptr))
+                    &g_consumedAnimation, nullptr, nullptr) ||
+                ssv != InterlockedCompareExchangePointer(
+                    &g_consumedSsv, nullptr, nullptr) ||
+                info != InterlockedCompareExchangePointer(
+                    &g_consumedInfo, nullptr, nullptr) ||
+                currentFrame < InterlockedCompareExchange(
+                    &g_movieCaptureArmedFrame, -1, -1))
             {
                 StoreActiveMovie(movie);
                 InterlockedExchange(&g_movieCaptureReady, 1);
@@ -2628,8 +2688,45 @@ namespace
                 &g_originalMovieAdvance, nullptr, nullptr));
         if (original != nullptr)
         {
-            original(movie);
+            InterlockedIncrement(&g_movieAdvancesInFlight);
+            __try
+            {
+                original(movie);
+            }
+            __finally
+            {
+                InterlockedDecrement(&g_movieAdvancesInFlight);
+            }
         }
+    }
+
+    bool TryLockMovieMutexWhenIdle(void* mutex, MutexAction lockMutex,
+        MutexAction unlockMutex, ULONGLONG timeoutMilliseconds)
+    {
+        const ULONGLONG deadline =
+            GetTickCount64() + timeoutMilliseconds;
+        while (GetTickCount64() < deadline)
+        {
+            while (InterlockedCompareExchange(
+                    &g_movieAdvancesInFlight, 0, 0) != 0)
+            {
+                if (GetTickCount64() >= deadline)
+                {
+                    return false;
+                }
+                Sleep(0);
+            }
+
+            lockMutex(mutex);
+            if (InterlockedCompareExchange(
+                    &g_movieAdvancesInFlight, 0, 0) == 0)
+            {
+                return true;
+            }
+            unlockMutex(mutex);
+            Sleep(0);
+        }
+        return false;
     }
 
     void* AnimationVideoDecoder(void* animation)
@@ -3480,6 +3577,19 @@ namespace
         AcquireSRWLockExclusive(&g_alphaCheckpointLock);
         ClearAlphaCheckpointsLocked();
         ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+
+        AcquireSRWLockExclusive(&g_seekReadinessLock);
+        g_seekReadinessAnimation = nullptr;
+        g_seekReadinessSsv = nullptr;
+        g_seekReadinessInfo = nullptr;
+        g_seekReadinessOutput = nullptr;
+        g_seekReadinessMovieFrame = -1;
+        g_seekReadinessAlphaSignature = 0;
+        g_seekReadinessAlphaProgress = 0;
+        g_seekReadinessWmvReader = nullptr;
+        g_seekReadinessWmvFrame = -1;
+        g_seekReadinessWmvProgress = 0;
+        ReleaseSRWLockExclusive(&g_seekReadinessLock);
     }
 
     bool ReadAlphaCheckpointIdentity(void* animation, void*& ssv, void*& info,
@@ -3501,6 +3611,82 @@ namespace
             static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
         return ssv != nullptr && info != nullptr && output != nullptr &&
             outputSize > 0 && outputSize <= MaximumAlphaOutputSize;
+    }
+
+    bool ObserveDecodedAlphaProgress(void* animation, int movieFrame)
+    {
+        void* ssv = nullptr;
+        void* info = nullptr;
+        void* output = nullptr;
+        int width = 0;
+        int height = 0;
+        std::size_t outputSize = 0;
+        if (!ReadAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height, outputSize))
+        {
+            return false;
+        }
+
+        AcquireSRWLockExclusive(&g_seekReadinessLock);
+        const bool sameIdentity =
+            g_seekReadinessAnimation == animation &&
+            g_seekReadinessSsv == ssv &&
+            g_seekReadinessInfo == info &&
+            g_seekReadinessOutput == output;
+        if (sameIdentity &&
+            g_seekReadinessAlphaProgress >=
+                RequiredAlphaProgressObservations)
+        {
+            ReleaseSRWLockExclusive(&g_seekReadinessLock);
+            return true;
+        }
+        ReleaseSRWLockExclusive(&g_seekReadinessLock);
+
+        auto animationBytes =
+            static_cast<const unsigned char*>(animation);
+        const auto state =
+            animationBytes + AnimationAlphaScratch1Offset;
+        const std::size_t stateSize =
+            AnimationSsvOffset - AnimationAlphaScratch1Offset;
+        auto outputBytes = static_cast<const unsigned char*>(output);
+        std::uint64_t signature = 1469598103934665603ULL;
+        bool hasState = false;
+        bool hasAlpha = false;
+        for (std::size_t index = 0; index < stateSize; index++)
+        {
+            hasState |= state[index] != 0;
+            signature ^= state[index];
+            signature *= 1099511628211ULL;
+        }
+        for (std::size_t index = 0; index < outputSize; index++)
+        {
+            hasAlpha |= outputBytes[index] != 0;
+            signature ^= outputBytes[index];
+            signature *= 1099511628211ULL;
+        }
+
+        AcquireSRWLockExclusive(&g_seekReadinessLock);
+        if (!sameIdentity)
+        {
+            g_seekReadinessAnimation = animation;
+            g_seekReadinessSsv = ssv;
+            g_seekReadinessInfo = info;
+            g_seekReadinessOutput = output;
+            g_seekReadinessAlphaProgress = 0;
+        }
+        else if (hasState && hasAlpha &&
+            movieFrame > g_seekReadinessMovieFrame &&
+            signature != g_seekReadinessAlphaSignature)
+        {
+            g_seekReadinessAlphaProgress++;
+        }
+        g_seekReadinessMovieFrame = movieFrame;
+        g_seekReadinessAlphaSignature = signature;
+        const bool ready =
+            g_seekReadinessAlphaProgress >=
+                RequiredAlphaProgressObservations;
+        ReleaseSRWLockExclusive(&g_seekReadinessLock);
+        return ready;
     }
 
     bool HasAlphaCheckpointIdentity(void* animation, void* ssv, void* info,
@@ -3991,6 +4177,94 @@ namespace
             Sleep(2);
         }
         return S_OK;
+    }
+
+    bool ObserveWmvQueueProgress(void* reader, int movieFrame)
+    {
+        const bool queuesPrimed = WmvOutputQueuesPrimed(reader);
+        AcquireSRWLockExclusive(&g_seekReadinessLock);
+        if (g_seekReadinessWmvReader != reader)
+        {
+            g_seekReadinessWmvReader = reader;
+            g_seekReadinessWmvFrame = movieFrame;
+            g_seekReadinessWmvProgress = 0;
+        }
+        else if (queuesPrimed && movieFrame > g_seekReadinessWmvFrame)
+        {
+            g_seekReadinessWmvProgress++;
+            g_seekReadinessWmvFrame = movieFrame;
+        }
+        const bool ready =
+            g_seekReadinessWmvProgress >=
+                RequiredAlphaProgressObservations;
+        ReleaseSRWLockExclusive(&g_seekReadinessLock);
+        return ready;
+    }
+
+    bool IsSeekReady(void* movie)
+    {
+        if (!HasFastForwardEngine() || !IsActiveMovieCandidate(movie))
+        {
+            return false;
+        }
+
+        auto movieBytes = reinterpret_cast<unsigned char*>(movie);
+        void* animation = *reinterpret_cast<void**>(
+            movieBytes + MovieAnimationOffset);
+        void* video = AnimationVideoDecoder(animation);
+        if (IsWmvDecoder(video))
+        {
+            auto videoBytes = reinterpret_cast<unsigned char*>(video);
+            if (!IsReadable(
+                    videoBytes + WmvReaderObjectOffset, sizeof(void*)))
+            {
+                return false;
+            }
+            void* reader = *reinterpret_cast<void**>(
+                videoBytes + WmvReaderObjectOffset);
+            if (!IsReadable(reader, sizeof(void*)) ||
+                *reinterpret_cast<void**>(reader) !=
+                    ImageBase() + SsvReaderVtableRva)
+            {
+                return false;
+            }
+            return ObserveWmvQueueProgress(reader,
+                *reinterpret_cast<const int*>(
+                    movieBytes + MovieCurrentFrameOffset));
+        }
+
+        video = VideoDecoder(animation);
+        if (video == nullptr)
+        {
+            return false;
+        }
+        if (!CanResetAnimationAlpha(animation))
+        {
+            return false;
+        }
+
+        auto videoBytes = reinterpret_cast<unsigned char*>(video);
+        void* formatContext = *reinterpret_cast<void**>(
+            videoBytes + VideoFormatContextOffset);
+        void* queue = *reinterpret_cast<void**>(
+            videoBytes + VideoFrameQueueOffset);
+        void* queueMutex = *reinterpret_cast<void**>(
+            videoBytes + VideoFrameQueueMutexOffset);
+        if (!IsReadable(formatContext, 0x38) ||
+            !IsReadable(queue, QueueEntriesOffset) ||
+            queueMutex == nullptr)
+        {
+            return false;
+        }
+
+        const int movieFrame = *reinterpret_cast<const int*>(
+            movieBytes + MovieCurrentFrameOffset);
+        const int decoderFrame = *reinterpret_cast<const int*>(
+            videoBytes + VideoCurrentFrameOffset);
+        const bool alphaReady =
+            ObserveDecodedAlphaProgress(animation, movieFrame);
+        return alphaReady &&
+            DecoderFramesReady(movieFrame, decoderFrame);
     }
 
     HRESULT EngineError()
@@ -4883,7 +5157,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 31;
+    return 34;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -4979,6 +5253,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperArmMovieCapture()
     {
         return EngineError();
     }
+    void* movie = ActiveMovie();
+    const int frame = movie != nullptr
+        ? *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(movie) +
+                MovieCurrentFrameOffset)
+        : -1;
+    InterlockedExchange(&g_movieCaptureArmedFrame, frame);
     InterlockedExchange(&g_movieCaptureArmed, 1);
     return BridgeSuccess;
 }
@@ -5416,13 +5697,22 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperCaptureAlphaCheckpoint(
         {
             return ManagerError();
         }
+        if (!IsSeekReady(movie))
+        {
+            return ManagerError();
+        }
 
         void* mutex = reinterpret_cast<unsigned char*>(movie) + MovieMutexOffset;
         bool mutexLocked = false;
         HRESULT result = E_FAIL;
         __try
         {
-            lockMutex(mutex);
+            if (!TryLockMovieMutexWhenIdle(
+                    mutex, lockMutex, unlockMutex, 250))
+            {
+                result = HRESULT_FROM_WIN32(ERROR_BUSY);
+                __leave;
+            }
             mutexLocked = true;
             void* animation = *reinterpret_cast<void**>(
                 reinterpret_cast<unsigned char*>(movie) +
@@ -5507,6 +5797,22 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetDecoderKind()
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperIsSeekReady()
+{
+    __try
+    {
+        if (!HasCompatibleEngine())
+        {
+            return EngineError();
+        }
+        return IsSeekReady(ActiveMovie()) ? BridgeSuccess : S_OK;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilliseconds(
     SIZE_T targetMilliseconds)
 {
@@ -5550,7 +5856,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
         HRESULT result = E_FAIL;
         __try
         {
-            lockMutex(mutex);
+            if (!TryLockMovieMutexWhenIdle(
+                    mutex, lockMutex, unlockMutex, 10'000))
+            {
+                result = HRESULT_FROM_WIN32(ERROR_BUSY);
+                __leave;
+            }
             mutexLocked = true;
             InterlockedExchange(&g_decoderCatchupTargetFrame, -1);
             InterlockedExchangePointer(&g_decoderCatchupVideo, nullptr);

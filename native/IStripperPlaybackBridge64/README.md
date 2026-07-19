@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v31
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v34
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -136,13 +136,12 @@ playing/paused state, animation pointer, frame range, FPS, and active
 video-decoder vtable before accepting a candidate. That broad scan can take
 seconds because video and frame buffers are writable private memory too.
 
-Normal clip changes no longer use that scan. The bridge installs a verified
-five-byte jump at `Movie::advance`, captures its `this` pointer while the
-registry path is between clips, and immediately resumes the original function
-through a trampoline. It also remembers the last consumed Movie/CAnim pair, so
-a different card can be captured when vghd advances it before clearing
-`CurrentAnim`; explicit arming handles objects reused in place. The broad scan
-remains for a late QuickPlayer attach or an incompatible/missed capture.
+Normal clip changes use the verified `Movie::advance` capture hook, with
+validated memory discovery retained as the late-attach fallback. Seeking stays
+disabled until the native decoder reports synchronized state: FFmpeg must have
+an initialized frame queue, repeated progress in the complete restorable alpha
+state, and a captured checkpoint; legacy WMV must repeatedly advance while
+both colour and alpha queues remain populated.
 
 ## There is no 4x playback limiter
 
@@ -338,8 +337,10 @@ The bridge implements intermediate-RGB-conversion skipping, indexed VP9
 keyframe seeking, bounded per-animation alpha checkpoints, synchronized
 FFmpeg audio flushing, and synchronized legacy WMV reader restarts. A modern
 checkpoint restores the output plane and the complete mutable CAnim alpha block
-before composition; both decoder paths finish by letting vghd's own
-`Movie::advance` publish the final position.
+before composition. Capture and seek wait for the existing `Movie::advance`
+hook to report no frame in flight, then lock and recheck the Movie mutex;
+both decoder paths finish by letting vghd's own `Movie::advance` publish the
+final position.
 
 ## Player locking
 

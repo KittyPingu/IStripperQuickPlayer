@@ -38,7 +38,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 31;
+        private const int PlaybackBridgeVersion = 34;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -85,6 +85,7 @@ namespace IStripperQuickPlayer
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
         private volatile bool playbackSeekingSupported = true;
+        private volatile bool playbackSeekReady;
         private volatile int playbackDecoderKind;
         private volatile bool playbackBusy;
         private volatile bool playbackControlsAvailableForAccount;
@@ -1247,6 +1248,7 @@ namespace IStripperQuickPlayer
             movieCaptureHookInstalled = false;
             playbackMovieRegistered = false;
             playbackSeekingSupported = true;
+            playbackSeekReady = false;
             playbackDecoderKind = 0;
             playbackNextMovieDiscoveryAt = DateTime.MinValue;
             playbackFastDecodeEnabled = false;
@@ -1411,12 +1413,13 @@ namespace IStripperQuickPlayer
             bool enabled = Properties.Settings.Default.EnablePlaybackControl &&
                 playbackControlsAvailableForAccount &&
                 playbackBridgeLoaded && !playbackBusy && !formIsClosing;
-            cmdRewind.Enabled = enabled && playbackSeekingSupported;
+            bool seekEnabled = enabled && playbackMovieRegistered &&
+                playbackSeekingSupported && playbackSeekReady;
+            cmdRewind.Enabled = seekEnabled;
             cmdPlayPause.Enabled = enabled;
-            cmdFastForward.Enabled = enabled && playbackSeekingSupported;
+            cmdFastForward.Enabled = seekEnabled;
             cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported;
-            trkPlaybackPosition.Enabled = enabled && playbackMovieRegistered &&
-                playbackSeekingSupported;
+            trkPlaybackPosition.Enabled = seekEnabled;
         }
 
         private static bool HasPlatinumPlaybackEntitlement(string? userLevel)
@@ -1661,7 +1664,9 @@ namespace IStripperQuickPlayer
                     catch { }
                     playbackMovieRegistered = false;
                     playbackSeekingSupported = true;
+                    playbackSeekReady = false;
                     playbackDecoderKind = 0;
+                    UpdatePlaybackControlsEnabled();
                     playbackNextMovieDiscoveryAt = DateTime.MinValue;
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
                     if (!string.IsNullOrEmpty(animationPath) &&
@@ -1796,6 +1801,39 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
+                if (playbackDecoderKind == 0)
+                {
+                    int decoderKind = await Task.Run(() =>
+                        CallPlaybackApi("IStripperGetDecoderKind"));
+                    if (decoderKind is 1 or 2)
+                    {
+                        playbackDecoderKind = decoderKind;
+                        playbackSeekingSupported = true;
+                    }
+                }
+
+                if (!playbackSeekReady &&
+                    playbackDecoderKind is 1 or 2 &&
+                    await Task.Run(() =>
+                        CallPlaybackApi("IStripperIsSeekReady")) == 1)
+                {
+                    if (playbackDecoderKind == 1)
+                    {
+                        int checkpointResult = await Task.Run(() =>
+                            CallPlaybackApi(
+                                "IStripperCaptureAlphaCheckpoint"));
+                        if (checkpointResult >= 0)
+                        {
+                            playbackAlphaCheckpointBucket = elapsed / 5_000;
+                            playbackSeekReady = true;
+                        }
+                    }
+                    else
+                    {
+                        playbackSeekReady = true;
+                    }
+                }
+
                 int reapplyAfter = playbackDecoderKind == 2 ? 2_000 : 500;
                 if (Math.Abs(requestedPlaybackSpeed - 1.0) > 0.001 &&
                     now < playbackSpeedReapplyUntil &&
@@ -1812,6 +1850,7 @@ namespace IStripperQuickPlayer
                 playbackLastKnownElapsedMilliseconds = elapsed;
                 int checkpointBucket = elapsed / 5_000;
                 if (playbackDecoderKind == 1 &&
+                    playbackSeekReady &&
                     checkpointBucket != playbackAlphaCheckpointBucket)
                 {
                     int checkpointResult = await Task.Run(() =>
@@ -1832,8 +1871,7 @@ namespace IStripperQuickPlayer
                     trkPlaybackPosition.Value = Math.Clamp(elapsed, 0, maximum);
                     UpdatePlaybackTime(elapsed, playbackTimelineDurationMilliseconds);
                 }
-                trkPlaybackPosition.Enabled =
-                    !playbackBusy && playbackSeekingSupported;
+                UpdatePlaybackControlsEnabled();
             }
             catch
             {
@@ -1932,6 +1970,12 @@ namespace IStripperQuickPlayer
             bool wasPlaying = state == 3;
             double speedToRestore = requestedPlaybackSpeed;
             int current = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
+            if (!playbackSeekReady ||
+                CallPlaybackApi("IStripperIsSeekReady") != 1)
+            {
+                throw new InvalidOperationException(
+                    "The colour and alpha decoders are not ready to seek yet.");
+            }
             int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
             int target = Math.Max(0, requestedTarget);
             if (total > 0)
