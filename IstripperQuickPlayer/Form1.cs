@@ -38,7 +38,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 34;
+        private const int PlaybackBridgeVersion = 35;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -1418,7 +1418,8 @@ namespace IStripperQuickPlayer
             cmdRewind.Enabled = seekEnabled;
             cmdPlayPause.Enabled = enabled;
             cmdFastForward.Enabled = seekEnabled;
-            cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported;
+            cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported &&
+                (playbackDecoderKind != 2 || playbackSeekReady);
             trkPlaybackPosition.Enabled = seekEnabled;
         }
 
@@ -1815,7 +1816,8 @@ namespace IStripperQuickPlayer
                 if (!playbackSeekReady &&
                     playbackDecoderKind is 1 or 2 &&
                     await Task.Run(() =>
-                        CallPlaybackApi("IStripperIsSeekReady")) == 1)
+                        CallPlaybackApi("IStripperIsSeekReady")) == 1 &&
+                    (playbackDecoderKind != 2 || elapsed >= 3_500))
                 {
                     if (playbackDecoderKind == 1)
                     {
@@ -1834,10 +1836,11 @@ namespace IStripperQuickPlayer
                     }
                 }
 
-                int reapplyAfter = playbackDecoderKind == 2 ? 2_000 : 500;
+                int reapplyAfter = playbackDecoderKind == 2 ? 3_500 : 500;
                 if (Math.Abs(requestedPlaybackSpeed - 1.0) > 0.001 &&
                     now < playbackSpeedReapplyUntil &&
-                    elapsed >= reapplyAfter)
+                    elapsed >= reapplyAfter &&
+                    (playbackDecoderKind != 2 || playbackSeekReady))
                 {
                     await Task.Run(() => SetPlaybackRate(requestedPlaybackSpeed));
                     playbackSpeedReapplyUntil = DateTime.MinValue;
@@ -1974,7 +1977,7 @@ namespace IStripperQuickPlayer
                 CallPlaybackApi("IStripperIsSeekReady") != 1)
             {
                 throw new InvalidOperationException(
-                    "The colour and alpha decoders are not ready to seek yet.");
+                    "The clip's decoders are not ready to seek yet.");
             }
             int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
             int target = Math.Max(0, requestedTarget);
@@ -2109,7 +2112,7 @@ namespace IStripperQuickPlayer
 
             int distance = Math.Abs(target - current);
             double timeoutSeconds = playbackDecoderKind == 2
-                ? 10.0
+                ? Math.Clamp(target / 10_000.0 + 10.0, 10.0, 60.0)
                 : Math.Clamp(distance / 650.0 + 15.0, 20.0, 1200.0);
             DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
 

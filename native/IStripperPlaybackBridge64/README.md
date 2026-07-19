@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v34
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v35
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -141,7 +141,7 @@ validated memory discovery retained as the late-attach fallback. Seeking stays
 disabled until the native decoder reports synchronized state: FFmpeg must have
 an initialized frame queue, repeated progress in the complete restorable alpha
 state, and a captured checkpoint; legacy WMV must repeatedly advance while
-both colour and alpha queues remain populated.
+its completed colour queue remains populated.
 
 ## There is no 4x playback limiter
 
@@ -180,32 +180,36 @@ not safe for seeking.
 
 Older cards use `VideoWmvCore` instead of `VideoFFmpeg`. Its virtual seek
 operation returns false, and changing only `Movie::setPlayRate` starves its
-bounded sample queues. Bridge v15 bypasses that wrapper and controls the
+bounded sample queues. The bridge bypasses that wrapper and controls the
 existing Windows Media asynchronous reader owned by `CSsvReader`.
 
 For a legacy seek, the bridge:
 
-1. Pauses the Movie, gates new sample callbacks, and stops `IWMReader`,
-   waiting for vghd's status event.
+1. Pauses the Movie and stops `IWMReader`, waiting for vghd's status event.
 2. Clears `CBpkSound`'s pending PCM and restarts its `QAudioOutput` while the
    sample callback is stopped, then leaves the fresh output suspended until
    Movie resumes at the target.
-3. Calls vghd's queue-clear helper so all five colour/alpha sample queues are
-   discarded together.
-4. Resets the reader's sample counter to the target frame and starts
-   `IWMReader` at the corresponding 100-nanosecond media time.
-5. Leaves `IWMReaderAdvanced` on its normal reader clock. Earlier builds
-   switched every seek to the user-provided clock and raced vghd's
-   `WMT_STARTED` callback: its final `DeliverTime(0)` could overwrite the
-   bridge's later horizon and strand the bounded queues.
-6. Waits until both completed colour and alpha queues contain data. A
-   colour-only restart is not exposed to `Movie`, because doing so can display
-   an unpaired mask or leave the scheduler waiting on the next sample.
+3. Calls vghd's queue-clear helper so all five colour/audio sample queues are
+   discarded together, then clears `VideoWmvCore`'s dynamically resolved
+   held-frame flag. Otherwise its next `getFrame` discards the first new colour
+   frame while `CAnim` applies the target frame's SSV mask.
+4. Restarts the reader at frame zero under `IWMReaderAdvanced`'s user-provided
+   clock. Many legacy containers are not indexed: a non-zero `IWMReader::Start`
+   can report success but produce no further colour samples.
+5. Waits for vghd's `WMT_STARTED` callback to finish, then delivers only
+   through the target plus two verification frames. `VideoWmvCore::getFrame`
+   drains decoded predecessors through vghd's normal bounded-queue path without
+   letting the asynchronous reader decode the rest of the clip into memory.
+6. Waits until the completed colour queue contains data. Audio is optional and
+   is consumed independently; requiring its queue caused silent clips never to
+   become seekable and could strand audio clips during restart.
 7. Sets `Movie.currentFrame` to `target - 1` and resumes the original advance
-   path. vghd's own `Movie::advance` publishes the target position. The bridge
-   does not report completion to QuickPlayer until two further frames have
-   advanced, so the timer and playback controls remain disabled until the
-   restarted reader is demonstrably moving.
+   path. vghd's own `Movie::advance` publishes the target position. After two
+   further frames advance, the bridge flushes catch-up audio and a pinned native
+   worker keeps the user clock only two seconds ahead of presentation. The
+   final partial delivery bypasses batching and advances the reader clock one
+   second past nominal duration so legacy ASF files emit EOF. The timer and
+   playback controls remain disabled until that hand-off completes.
 
 Legacy speed changes use that same user-clock mode to keep the synchronized
 queues supplied, while `Movie::setPlayRate` controls presentation speed.
@@ -223,11 +227,12 @@ addresses. For the investigated image the diagnostic profile contains:
 | clear all sample queues | `0x268740` |
 | peek colour queue | `0x2686F0` |
 | `VideoWmvCore` to `CSsvReader*` | `+0x38` |
+| `VideoWmvCore` held-frame flag | `+0x40` |
 | `CSsvReader` to `IWMReader*` / `IWMReaderAdvanced*` | `+0x40` / `+0x48` |
 | status event / last callback result | `+0x30` / `+0x38` |
 | sample counter / paused flag | `+0x18` / `+0x10` |
 | shared queue mutex | `+0x68` |
-| completed colour / alpha queues | `+0x80` / `+0x90` |
+| completed colour / audio queues | `+0x80` / `+0x90` |
 
 The resolver derives those vtables, functions, COM-interface fields, event,
 counter, and queue fields from RTTI and verified instruction relationships on
