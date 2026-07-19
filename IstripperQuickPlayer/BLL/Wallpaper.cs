@@ -43,23 +43,26 @@ namespace IStripperQuickPlayer.BLL
                 string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".jpg");
                 Bitmap? downloaded = await GetImageBitmapFromUrl(url).ConfigureAwait(false);
                 if (downloaded == null) return;
-                Bitmap m = downloaded;
-                m = ResizeBitmap(m, wallpaper.GetMonitorRECT(monitorId));
-                DirectBitmap direct = new DirectBitmap(m.Width, m.Height);
-                Graphics g = Graphics.FromImage(direct.Bitmap);
-                g.DrawImageUnscaled(m, 0,0);
-                g.Dispose();
-                if (initialImages.ContainsKey(monitorNumber))
-                    initialImages[monitorNumber] = m;
-                else
-                    initialImages.Add(monitorNumber, m);
-                if (Properties.Settings.Default.BlurWallpaper) direct = AddBlur(direct);
-                if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(direct.Bitmap, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
-                if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
-                m.Save(wpfilepath);
-                direct.Dispose();
-                wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
-                m.Dispose();               
+                await Task.Run(() =>
+                {
+                    Bitmap m = downloaded;
+                    m = ResizeBitmap(m, wallpaper.GetMonitorRECT(monitorId));
+                    DirectBitmap direct = new DirectBitmap(m.Width, m.Height);
+                    Graphics g = Graphics.FromImage(direct.Bitmap);
+                    g.DrawImageUnscaled(m, 0,0);
+                    g.Dispose();
+                    if (initialImages.ContainsKey(monitorNumber))
+                        initialImages[monitorNumber] = m;
+                    else
+                        initialImages.Add(monitorNumber, m);
+                    if (Properties.Settings.Default.BlurWallpaper) direct = AddBlur(direct);
+                    if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(direct.Bitmap, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
+                    if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
+                    m.Save(wpfilepath, ImageFormat.Jpeg);
+                    direct.Dispose();
+                    wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
+                    m.Dispose();
+                }).ConfigureAwait(false);
             }
             catch (Exception){}
         }
@@ -302,7 +305,7 @@ namespace IStripperQuickPlayer.BLL
                          b.Dispose();
                     }
                     if (Properties.Settings.Default.WallpaperDetails) o = AddDetails(o, wallpaper.GetMonitorRECT(monitorId));
-                    o.Save(wpfilepath);
+                    o.Save(wpfilepath, ImageFormat.Jpeg);
                     o.Dispose();
 
                     wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);

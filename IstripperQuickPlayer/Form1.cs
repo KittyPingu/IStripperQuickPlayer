@@ -38,7 +38,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 36;
+        private const int PlaybackBridgeVersion = 37;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -1288,6 +1288,16 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
+                int resetResult = _spyMgr.CallCustomApi(process,
+                    playbackBridgePath, "IStripperResetPlaybackSession",
+                    ref noParameters, true);
+                if (resetResult < 0)
+                {
+                    throw new COMException(
+                        $"Playback session reset failed (0x{resetResult:X8}).",
+                        resetResult);
+                }
+
                 playerLockBridgeLoaded = true;
                 int lockResult = SetVghdPlayerLocked(playerlocked);
                 if (lockResult < 0)
@@ -1840,10 +1850,13 @@ namespace IStripperQuickPlayer
                     }
                 }
 
-                if (!playbackSeekReady &&
-                    playbackDecoderKind is 1 or 2 &&
-                    await Task.Run(() =>
-                        CallPlaybackApi("IStripperIsSeekReady")) == 1 &&
+                int seekReadyResult = playbackSeekReady ? 1 :
+                    playbackDecoderKind is 1 or 2
+                        ? await Task.Run(() =>
+                            CallPlaybackApi("IStripperIsSeekReady"))
+                        : 0;
+                if (!playbackSeekReady && playbackDecoderKind is 1 or 2 &&
+                    seekReadyResult == 1 &&
                     (playbackDecoderKind != 2 || elapsed >= 3_500))
                 {
                     if (playbackDecoderKind == 1)
@@ -1861,6 +1874,13 @@ namespace IStripperQuickPlayer
                     {
                         playbackSeekReady = true;
                     }
+                }
+                else if (!playbackSeekReady && playbackDecoderKind == 1)
+                {
+                    int readinessMask = await Task.Run(() =>
+                        CallPlaybackApi("IStripperGetSeekReadinessMask"));
+                    trkPlaybackPosition.AccessibleDescription =
+                        $"Seek readiness 0x{readinessMask:X}";
                 }
 
                 int reapplyAfter = playbackDecoderKind == 2 ? 3_500 : 500;

@@ -6149,7 +6149,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 36;
+    return 37;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -6236,6 +6236,20 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovieManager(SIZE_T 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperInstallMovieCaptureHook()
 {
     return InstallMovieCaptureHook();
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperResetPlaybackSession()
+{
+    InterlockedExchange(&g_movieCaptureArmed, 0);
+    InterlockedExchange(&g_movieCaptureReady, 0);
+    InterlockedExchangePointer(&g_activeMovie, nullptr);
+    InterlockedExchangePointer(&g_activeAnimation, nullptr);
+    InterlockedExchangePointer(&g_consumedMovie, nullptr);
+    InterlockedExchangePointer(&g_consumedAnimation, nullptr);
+    InterlockedExchangePointer(&g_consumedSsv, nullptr);
+    InterlockedExchangePointer(&g_consumedInfo, nullptr);
+    ClearAlphaCheckpoints();
+    return BridgeSuccess;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperArmMovieCapture()
@@ -6821,6 +6835,96 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperIsSeekReady()
             return EngineError();
         }
         return IsSeekReady(ActiveMovie()) ? BridgeSuccess : S_OK;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetSeekReadinessMask()
+{
+    __try
+    {
+        void* movie = ActiveMovie();
+        if (!HasFastForwardEngine() || !IsActiveMovieCandidate(movie))
+        {
+            return 0;
+        }
+
+        int mask = 1;
+        auto movieBytes = reinterpret_cast<unsigned char*>(movie);
+        void* animation = *reinterpret_cast<void**>(
+            movieBytes + MovieAnimationOffset);
+        if (!IsReadable(animation, AnimationSsvOffset + sizeof(void*)))
+        {
+            return mask;
+        }
+        mask |= 2;
+
+        void* video = VideoDecoder(animation);
+        if (video == nullptr)
+        {
+            return mask;
+        }
+        mask |= 4;
+        if (!CanResetAnimationAlpha(animation))
+        {
+            return mask;
+        }
+        mask |= 8;
+
+        auto videoBytes = reinterpret_cast<unsigned char*>(video);
+        void* formatContext = *reinterpret_cast<void**>(
+            videoBytes + VideoFormatContextOffset);
+        void* queue = *reinterpret_cast<void**>(
+            videoBytes + VideoFrameQueueOffset);
+        void* queueMutex = *reinterpret_cast<void**>(
+            videoBytes + VideoFrameQueueMutexOffset);
+        if (IsReadable(formatContext, 0x38))
+        {
+            mask |= 0x10;
+        }
+        if (IsReadable(queue, QueueEntriesOffset))
+        {
+            mask |= 0x20;
+        }
+        if (queueMutex != nullptr)
+        {
+            mask |= 0x40;
+        }
+
+        auto animationBytes =
+            reinterpret_cast<unsigned char*>(animation);
+        void* ssv = *reinterpret_cast<void**>(
+            animationBytes + AnimationSsvOffset);
+        void* info = *reinterpret_cast<void**>(
+            animationBytes + AnimationInfoOffset);
+        void* output = *reinterpret_cast<void**>(
+            animationBytes + AnimationAlphaOutputOffset);
+        AcquireSRWLockShared(&g_seekReadinessLock);
+        const bool alphaReady =
+            g_seekReadinessAnimation == animation &&
+            g_seekReadinessSsv == ssv &&
+            g_seekReadinessInfo == info &&
+            g_seekReadinessOutput == output &&
+            g_seekReadinessAlphaProgress >=
+                RequiredAlphaProgressObservations;
+        ReleaseSRWLockShared(&g_seekReadinessLock);
+        if (alphaReady)
+        {
+            mask |= 0x80;
+        }
+
+        const int movieFrame = *reinterpret_cast<const int*>(
+            movieBytes + MovieCurrentFrameOffset);
+        const int decoderFrame = *reinterpret_cast<const int*>(
+            videoBytes + VideoCurrentFrameOffset);
+        if (DecoderFramesReady(movieFrame, decoderFrame))
+        {
+            mask |= 0x100;
+        }
+        return mask;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
