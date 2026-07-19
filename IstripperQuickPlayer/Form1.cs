@@ -38,7 +38,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 35;
+        private const int PlaybackBridgeVersion = 36;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -93,6 +93,8 @@ namespace IStripperQuickPlayer
         private readonly System.Windows.Forms.Timer playbackTimelineTimer =
             new() { Interval = PlaybackTimelineIntervalMilliseconds };
         private readonly ToolStripMenuItem updateToolStripMenuItem = new();
+        private readonly ToolStripMenuItem alphaCheckpointCacheToolStripMenuItem =
+            new();
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
@@ -144,8 +146,22 @@ namespace IStripperQuickPlayer
                 "IStripperQuickPlayer-0.63.0-Setup.exe"));
             System.Diagnostics.Debug.Assert(!IsSetupAssetName(
                 "IStripperQuickPlayer-0.63.0.zip"));
+            System.Diagnostics.Debug.Assert(
+                AlphaCheckpointClipKey(@"A/B.VGHD") ==
+                AlphaCheckpointClipKey(@"a\b.vghd"));
 #endif
             InitializeComponent();
+            alphaCheckpointCacheToolStripMenuItem.Text =
+                "Enable alpha checkpoint cache";
+            alphaCheckpointCacheToolStripMenuItem.CheckOnClick = true;
+            alphaCheckpointCacheToolStripMenuItem.Checked =
+                Properties.Settings.Default.EnableAlphaCheckpointCache;
+            alphaCheckpointCacheToolStripMenuItem.CheckedChanged +=
+                alphaCheckpointCacheToolStripMenuItem_CheckedChanged;
+            settingsToolStripMenuItem.DropDownItems.Insert(
+                settingsToolStripMenuItem.DropDownItems.IndexOf(
+                    enablePlaybackControlToolStripMenuItem) + 1,
+                alphaCheckpointCacheToolStripMenuItem);
             updateToolStripMenuItem.Text = "Check for Updates...";
             updateToolStripMenuItem.Click +=
                 async (_, _) => await CheckForUpdatesAsync(true);
@@ -1665,7 +1681,14 @@ namespace IStripperQuickPlayer
                         playbackTimelineDurationMilliseconds);
                     playbackTimelineAnimationPath = animationPath;
                     playbackAlphaCheckpointBucket = -1;
-                    try { CallPlaybackApi("IStripperClearAlphaCheckpoints"); }
+                    try
+                    {
+                        CallPlaybackApi("IStripperClearAlphaCheckpoints");
+                        CallPlaybackApi("IStripperSetAlphaCheckpointCacheKey",
+                            Properties.Settings.Default.EnableAlphaCheckpointCache
+                                ? AlphaCheckpointClipKey(animationPath)
+                                : 0);
+                    }
                     catch { }
                     playbackMovieRegistered = false;
                     playbackSeekingSupported = true;
@@ -2242,6 +2265,24 @@ namespace IStripperQuickPlayer
         {
             using RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
             return key?.GetValue("CurrentAnim", "")?.ToString() ?? "";
+        }
+
+        private static ulong AlphaCheckpointClipKey(string animationPath)
+        {
+            if (string.IsNullOrEmpty(animationPath))
+                return 0;
+
+            const ulong offset = 14695981039346656037;
+            const ulong prime = 1099511628211;
+            ulong hash = offset;
+            foreach (char rawCharacter in animationPath)
+            {
+                char character = char.ToUpperInvariant(
+                    rawCharacter == '/' ? '\\' : rawCharacter);
+                hash = (hash ^ (byte)character) * prime;
+                hash = (hash ^ (byte)(character >> 8)) * prime;
+            }
+            return hash == 0 ? 1 : hash;
         }
 
         private bool PlaybackReachedEnd(int elapsed, int total)
@@ -3585,6 +3626,26 @@ namespace IStripperQuickPlayer
             }
 
             RefreshPlaybackControlVisibility();
+        }
+
+        private void alphaCheckpointCacheToolStripMenuItem_CheckedChanged(
+            object? sender, EventArgs e)
+        {
+            bool enabled = alphaCheckpointCacheToolStripMenuItem.Checked;
+            Properties.Settings.Default.EnableAlphaCheckpointCache = enabled;
+            if (!playbackBridgeLoaded)
+                return;
+
+            string animationPath = GetCurrentAnimationPath();
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    CallPlaybackApi("IStripperSetAlphaCheckpointCacheKey",
+                        enabled ? AlphaCheckpointClipKey(animationPath) : 0);
+                }
+                catch { }
+            });
         }
 
         private void setPlayerLocked()

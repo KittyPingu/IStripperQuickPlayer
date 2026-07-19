@@ -310,6 +310,18 @@ namespace IStripperQuickPlayer.Properties {
                 this["EnablePlaybackControl"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool EnableAlphaCheckpointCache {
+            get {
+                return ((bool)(this["EnableAlphaCheckpointCache"]));
+            }
+            set {
+                this["EnableAlphaCheckpointCache"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

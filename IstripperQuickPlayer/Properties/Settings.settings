@@ -74,6 +74,9 @@
     <Setting Name="EnablePlaybackControl" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>
+    <Setting Name="EnableAlphaCheckpointCache" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
     <Setting Name="ToggleLockString" Type="System.String" Scope="User">
       <Value Profile="(Default)">Control+Alt+L</Value>
     </Setting>

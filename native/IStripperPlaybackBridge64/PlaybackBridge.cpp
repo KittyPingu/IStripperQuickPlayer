@@ -1,12 +1,17 @@
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <compressapi.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
 #include <cstring>
 #include <float.h>
+#include <string>
+#include <vector>
 #include <winver.h>
 
+#pragma comment(lib, "Cabinet.lib")
 #pragma comment(lib, "Version.lib")
 
 // This bridge discovers private vghd functions, vtables, hook sites, and object
@@ -60,6 +65,10 @@ namespace
     constexpr std::size_t MaximumAlphaCheckpointBytes = 128 * 1024 * 1024;
     constexpr int MaximumAlphaCheckpoints = 16;
     constexpr int AlphaCheckpointIntervalSeconds = 5;
+    constexpr std::uint64_t MaximumPersistentAlphaCacheBytes =
+        1024ULL * 1024 * 1024;
+    constexpr std::uint32_t PersistentAlphaMagic = 0x43415051;
+    constexpr std::uint16_t PersistentAlphaVersion = 1;
     std::size_t SsvVideoDecoderOffset = 0;
     std::size_t VideoFormatContextOffset = 0;
     std::size_t VideoFrameQueueOffset = 0;
@@ -214,6 +223,7 @@ namespace
     LONG volatile g_lastAlphaFrameBeforeReset = -1;
     LONG volatile g_alphaCheckpointRestoreCount = 0;
     LONG volatile g_lastAlphaCheckpointFrame = -1;
+    LONGLONG volatile g_alphaCheckpointClipKey = 0;
     LONG volatile g_keyframeSeekCount = 0;
     LONG volatile g_lastKeyframeSeekFrame = -1;
     LONG volatile g_offsetsResolved = 0;
@@ -284,6 +294,37 @@ namespace
         int bucket = -1;
         std::size_t outputSize = 0;
         unsigned char* data = nullptr;
+    };
+
+#pragma pack(push, 1)
+    struct PersistentAlphaHeader
+    {
+        std::uint32_t magic = PersistentAlphaMagic;
+        std::uint16_t version = PersistentAlphaVersion;
+        std::uint16_t compression = 0;
+        std::uint64_t clipKey = 0;
+        std::int32_t frame = -1;
+        std::int32_t bucket = -1;
+        std::int32_t width = 0;
+        std::int32_t height = 0;
+        std::int32_t framesPerSecond = 0;
+        std::int32_t totalFrames = 0;
+        std::uint64_t outputSize = 0;
+        std::uint64_t stateSize = 0;
+        std::int64_t pointer1 = 0;
+        std::int64_t pointer2 = 0;
+        std::uint64_t checksum = 0;
+        std::uint64_t storedSize = 0;
+    };
+#pragma pack(pop)
+
+    struct PersistentAlphaWriteJob
+    {
+        PersistentAlphaHeader header;
+        void* animation = nullptr;
+        void* ssv = nullptr;
+        void* info = nullptr;
+        void* output = nullptr;
     };
 
     AlphaCheckpoint g_alphaCheckpoints[MaximumAlphaCheckpoints] = {};
@@ -3589,6 +3630,429 @@ namespace
         ReleaseSRWLockExclusive(&g_seekReadinessLock);
     }
 
+    bool AlphaCacheDirectory(wchar_t (&path)[MAX_PATH])
+    {
+        wchar_t localAppData[MAX_PATH] = {};
+        const DWORD length = GetEnvironmentVariableW(
+            L"LOCALAPPDATA", localAppData, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH)
+        {
+            return false;
+        }
+
+        wchar_t applicationDirectory[MAX_PATH] = {};
+        return swprintf_s(applicationDirectory,
+                L"%s\\IStripperQuickPlayer", localAppData) > 0 &&
+            (CreateDirectoryW(applicationDirectory, nullptr) ||
+                GetLastError() == ERROR_ALREADY_EXISTS) &&
+            swprintf_s(path, L"%s\\alpha-cache",
+                applicationDirectory) > 0 &&
+            (CreateDirectoryW(path, nullptr) ||
+                GetLastError() == ERROR_ALREADY_EXISTS);
+    }
+
+    bool AlphaCacheFilePath(std::uint64_t clipKey, int frame,
+        wchar_t (&path)[MAX_PATH])
+    {
+        wchar_t directory[MAX_PATH] = {};
+        return clipKey != 0 && frame >= 0 &&
+            AlphaCacheDirectory(directory) &&
+            swprintf_s(path, L"%s\\%016llX_%08X.qpac", directory,
+                static_cast<unsigned long long>(clipKey),
+                static_cast<unsigned>(frame)) > 0;
+    }
+
+    std::uint64_t PersistentAlphaChecksum(
+        const unsigned char* data, std::size_t size)
+    {
+        std::uint64_t hash = 1469598103934665603ULL;
+        for (std::size_t index = 0; index < size; index++)
+        {
+            hash ^= data[index];
+            hash *= 1099511628211ULL;
+        }
+        return hash;
+    }
+
+    bool EncodePersistentAlphaPointer(void* animation, void* output,
+        std::size_t outputSize, void* pointer, std::int64_t& encoded)
+    {
+        encoded = 0;
+        if (pointer == nullptr)
+        {
+            return true;
+        }
+
+        const auto address = reinterpret_cast<std::uintptr_t>(pointer);
+        const auto animationAddress =
+            reinterpret_cast<std::uintptr_t>(animation);
+        const auto scratchBegin =
+            animationAddress + AnimationAlphaScratch1Offset;
+        const auto scratchEnd = animationAddress + AnimationSsvOffset;
+        if (address >= scratchBegin && address < scratchEnd)
+        {
+            encoded = static_cast<std::int64_t>(
+                address - animationAddress) + 1;
+            return true;
+        }
+
+        const auto outputAddress =
+            reinterpret_cast<std::uintptr_t>(output);
+        if (address >= outputAddress &&
+            address - outputAddress < outputSize)
+        {
+            encoded = -static_cast<std::int64_t>(
+                address - outputAddress) - 1;
+            return true;
+        }
+        return false;
+    }
+
+    void* DecodePersistentAlphaPointer(void* animation, void* output,
+        std::size_t outputSize, std::int64_t encoded)
+    {
+        if (encoded == 0)
+        {
+            return nullptr;
+        }
+        if (encoded > 0)
+        {
+            const std::uint64_t offset =
+                static_cast<std::uint64_t>(encoded - 1);
+            return offset >= AnimationAlphaScratch1Offset &&
+                offset < AnimationSsvOffset
+                ? reinterpret_cast<unsigned char*>(animation) + offset
+                : nullptr;
+        }
+
+        const std::uint64_t outputOffset =
+            static_cast<std::uint64_t>(-(encoded + 1));
+        return outputOffset < outputSize
+            ? reinterpret_cast<unsigned char*>(output) + outputOffset
+            : nullptr;
+    }
+
+    bool WriteFileFully(HANDLE file, const void* data, std::size_t size)
+    {
+        const auto bytes = static_cast<const unsigned char*>(data);
+        std::size_t written = 0;
+        while (written < size)
+        {
+            const DWORD chunk = static_cast<DWORD>(
+                (size - written) < MAXDWORD
+                    ? size - written : MAXDWORD);
+            DWORD count = 0;
+            if (!WriteFile(file, bytes + written, chunk, &count, nullptr) ||
+                count != chunk)
+            {
+                return false;
+            }
+            written += count;
+        }
+        return true;
+    }
+
+    bool ReadFileFully(HANDLE file, void* data, std::size_t size)
+    {
+        auto bytes = static_cast<unsigned char*>(data);
+        std::size_t read = 0;
+        while (read < size)
+        {
+            const DWORD chunk = static_cast<DWORD>(
+                (size - read) < MAXDWORD ? size - read : MAXDWORD);
+            DWORD count = 0;
+            if (!ReadFile(file, bytes + read, chunk, &count, nullptr) ||
+                count != chunk)
+            {
+                return false;
+            }
+            read += count;
+        }
+        return true;
+    }
+
+    struct PersistentAlphaCacheFile
+    {
+        std::wstring path;
+        std::uint64_t size = 0;
+        std::uint64_t writeTime = 0;
+    };
+
+    void PrunePersistentAlphaCache(const wchar_t* directory)
+    {
+        wchar_t searchPath[MAX_PATH] = {};
+        if (swprintf_s(searchPath, L"%s\\*.qpac", directory) <= 0)
+        {
+            return;
+        }
+
+        WIN32_FIND_DATAW data = {};
+        HANDLE search = FindFirstFileW(searchPath, &data);
+        if (search == INVALID_HANDLE_VALUE)
+        {
+            return;
+        }
+
+        std::uint64_t totalBytes = 0;
+        std::vector<PersistentAlphaCacheFile> files;
+        do
+        {
+            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+            {
+                continue;
+            }
+            wchar_t path[MAX_PATH] = {};
+            if (swprintf_s(path, L"%s\\%s", directory,
+                    data.cFileName) <= 0)
+            {
+                continue;
+            }
+            ULARGE_INTEGER size = {};
+            size.HighPart = data.nFileSizeHigh;
+            size.LowPart = data.nFileSizeLow;
+            ULARGE_INTEGER time = {};
+            time.HighPart = data.ftLastWriteTime.dwHighDateTime;
+            time.LowPart = data.ftLastWriteTime.dwLowDateTime;
+            files.push_back({ path, size.QuadPart, time.QuadPart });
+            totalBytes += size.QuadPart;
+        } while (FindNextFileW(search, &data));
+        FindClose(search);
+
+        if (totalBytes <= MaximumPersistentAlphaCacheBytes)
+        {
+            return;
+        }
+        std::sort(files.begin(), files.end(),
+            [](const auto& left, const auto& right)
+            {
+                return left.writeTime < right.writeTime;
+            });
+        // ponytail: one process-wide 1 GB cache; add a user size control only
+        // if the fixed cap proves unsuitable in real use.
+        for (const auto& file : files)
+        {
+            if (totalBytes <= MaximumPersistentAlphaCacheBytes)
+            {
+                break;
+            }
+            if (DeleteFileW(file.path.c_str()))
+            {
+                totalBytes -= file.size;
+            }
+        }
+    }
+
+    void CALLBACK WritePersistentAlphaCheckpoint(
+        PTP_CALLBACK_INSTANCE, void* context)
+    {
+        auto job = static_cast<PersistentAlphaWriteJob*>(context);
+        unsigned char* raw = nullptr;
+        unsigned char* compressed = nullptr;
+        __try
+        {
+            const std::size_t outputSize =
+                static_cast<std::size_t>(job->header.outputSize);
+            const std::size_t stateSize =
+                static_cast<std::size_t>(job->header.stateSize);
+            const std::size_t rawSize = outputSize + stateSize;
+            if (rawSize == 0 || rawSize > MaximumAlphaCheckpointBytes ||
+                static_cast<std::uint64_t>(
+                    InterlockedCompareExchange64(
+                        &g_alphaCheckpointClipKey, 0, 0)) !=
+                    job->header.clipKey)
+            {
+                __leave;
+            }
+
+            AcquireSRWLockShared(&g_alphaCheckpointLock);
+            const AlphaCheckpoint* checkpoint = nullptr;
+            if (g_alphaCheckpointAnimation == job->animation &&
+                g_alphaCheckpointSsv == job->ssv &&
+                g_alphaCheckpointInfo == job->info &&
+                g_alphaCheckpointOutput == job->output &&
+                g_alphaCheckpointWidth == job->header.width &&
+                g_alphaCheckpointHeight == job->header.height)
+            {
+                for (int index = 0;
+                    index < g_alphaCheckpointCount; index++)
+                {
+                    if (g_alphaCheckpoints[index].frame ==
+                        job->header.frame)
+                    {
+                        checkpoint = &g_alphaCheckpoints[index];
+                        break;
+                    }
+                }
+            }
+            if (checkpoint != nullptr &&
+                checkpoint->outputSize == outputSize)
+            {
+                raw = static_cast<unsigned char*>(HeapAlloc(
+                    GetProcessHeap(), 0, rawSize));
+                if (raw != nullptr)
+                {
+                    std::memcpy(raw, checkpoint->data, rawSize);
+                }
+            }
+            ReleaseSRWLockShared(&g_alphaCheckpointLock);
+            if (raw == nullptr)
+            {
+                __leave;
+            }
+
+            const std::size_t pointer1Offset = outputSize +
+                AnimationAlphaScratchPointer1Offset -
+                AnimationAlphaScratch1Offset;
+            const std::size_t pointer2Offset = outputSize +
+                AnimationAlphaScratchPointer2Offset -
+                AnimationAlphaScratch1Offset;
+            if (pointer2Offset + sizeof(void*) > rawSize)
+            {
+                __leave;
+            }
+            void* pointer1 = nullptr;
+            void* pointer2 = nullptr;
+            std::memcpy(&pointer1, raw + pointer1Offset,
+                sizeof(pointer1));
+            std::memcpy(&pointer2, raw + pointer2Offset,
+                sizeof(pointer2));
+            if (!EncodePersistentAlphaPointer(job->animation,
+                    job->output, outputSize, pointer1,
+                    job->header.pointer1) ||
+                !EncodePersistentAlphaPointer(job->animation,
+                    job->output, outputSize, pointer2,
+                    job->header.pointer2))
+            {
+                __leave;
+            }
+            std::memset(raw + pointer1Offset, 0, sizeof(void*));
+            std::memset(raw + pointer2Offset, 0, sizeof(void*));
+            job->header.checksum =
+                PersistentAlphaChecksum(raw, rawSize);
+
+            const unsigned char* stored = raw;
+            std::size_t storedSize = rawSize;
+            COMPRESSOR_HANDLE compressor = nullptr;
+            if (CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF,
+                    nullptr, &compressor))
+            {
+                SIZE_T required = 0;
+                Compress(compressor, raw, rawSize,
+                    nullptr, 0, &required);
+                if (required > 0 &&
+                    required < MaximumAlphaCheckpointBytes)
+                {
+                    compressed = static_cast<unsigned char*>(HeapAlloc(
+                        GetProcessHeap(), 0, required));
+                    SIZE_T actual = 0;
+                    if (compressed != nullptr &&
+                        Compress(compressor, raw, rawSize,
+                            compressed, required, &actual) &&
+                        actual < rawSize)
+                    {
+                        stored = compressed;
+                        storedSize = actual;
+                        job->header.compression = 1;
+                    }
+                }
+                CloseCompressor(compressor);
+            }
+            job->header.storedSize = storedSize;
+
+            wchar_t destination[MAX_PATH] = {};
+            wchar_t directory[MAX_PATH] = {};
+            wchar_t temporary[MAX_PATH] = {};
+            if (!AlphaCacheFilePath(job->header.clipKey,
+                    job->header.frame, destination) ||
+                !AlphaCacheDirectory(directory) ||
+                swprintf_s(temporary, L"%s\\%016llX_%08X_%08X.tmp",
+                    directory,
+                    static_cast<unsigned long long>(
+                        job->header.clipKey),
+                    static_cast<unsigned>(job->header.frame),
+                    GetCurrentThreadId()) <= 0)
+            {
+                __leave;
+            }
+
+            HANDLE file = CreateFileW(temporary, GENERIC_WRITE, 0,
+                nullptr, CREATE_ALWAYS,
+                FILE_ATTRIBUTE_TEMPORARY, nullptr);
+            if (file == INVALID_HANDLE_VALUE)
+            {
+                __leave;
+            }
+            const bool written =
+                WriteFileFully(file, &job->header,
+                    sizeof(job->header)) &&
+                WriteFileFully(file, stored, storedSize) &&
+                FlushFileBuffers(file);
+            CloseHandle(file);
+            if (!written ||
+                !MoveFileExW(temporary, destination,
+                    MOVEFILE_REPLACE_EXISTING |
+                    MOVEFILE_WRITE_THROUGH))
+            {
+                DeleteFileW(temporary);
+                __leave;
+            }
+            PrunePersistentAlphaCache(directory);
+        }
+        __finally
+        {
+            if (compressed != nullptr)
+            {
+                HeapFree(GetProcessHeap(), 0, compressed);
+            }
+            if (raw != nullptr)
+            {
+                HeapFree(GetProcessHeap(), 0, raw);
+            }
+            HeapFree(GetProcessHeap(), 0, job);
+        }
+    }
+
+    void QueuePersistentAlphaCheckpoint(void* animation, void* ssv,
+        void* info, void* output, int width, int height,
+        int framesPerSecond, int totalFrames, int frame, int bucket,
+        std::size_t outputSize, std::size_t stateSize)
+    {
+        const auto clipKey = static_cast<std::uint64_t>(
+            InterlockedCompareExchange64(
+                &g_alphaCheckpointClipKey, 0, 0));
+        if (clipKey == 0 || PinBridge() < 0)
+        {
+            return;
+        }
+        auto job = static_cast<PersistentAlphaWriteJob*>(HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY,
+            sizeof(PersistentAlphaWriteJob)));
+        if (job == nullptr)
+        {
+            return;
+        }
+        job->header.magic = PersistentAlphaMagic;
+        job->header.version = PersistentAlphaVersion;
+        job->header.clipKey = clipKey;
+        job->header.frame = frame;
+        job->header.bucket = bucket;
+        job->header.width = width;
+        job->header.height = height;
+        job->header.framesPerSecond = framesPerSecond;
+        job->header.totalFrames = totalFrames;
+        job->header.outputSize = outputSize;
+        job->header.stateSize = stateSize;
+        job->animation = animation;
+        job->ssv = ssv;
+        job->info = info;
+        job->output = output;
+        if (!TrySubmitThreadpoolCallback(
+                &WritePersistentAlphaCheckpoint, job, nullptr))
+        {
+            HeapFree(GetProcessHeap(), 0, job);
+        }
+    }
+
     bool ReadAlphaCheckpointIdentity(void* animation, void*& ssv, void*& info,
         void*& output, int& width, int& height, std::size_t& outputSize)
     {
@@ -3697,6 +4161,302 @@ namespace
             g_alphaCheckpointHeight == height;
     }
 
+    bool InsertAlphaCheckpointLocked(int frame, int bucket,
+        std::size_t outputSize, std::size_t stateSize,
+        unsigned char* data)
+    {
+        for (int index = 0; index < g_alphaCheckpointCount; index++)
+        {
+            if (g_alphaCheckpoints[index].bucket != bucket)
+            {
+                continue;
+            }
+            if (g_alphaCheckpoints[index].frame >= frame)
+            {
+                HeapFree(GetProcessHeap(), 0, data);
+                return false;
+            }
+            g_alphaCheckpointBytes -=
+                g_alphaCheckpoints[index].outputSize + stateSize;
+            FreeAlphaCheckpoint(g_alphaCheckpoints[index]);
+            std::memmove(&g_alphaCheckpoints[index],
+                &g_alphaCheckpoints[index + 1],
+                static_cast<std::size_t>(
+                    g_alphaCheckpointCount - index - 1) *
+                    sizeof(AlphaCheckpoint));
+            g_alphaCheckpoints[--g_alphaCheckpointCount] = {};
+            break;
+        }
+
+        while (g_alphaCheckpointCount > 0 &&
+            (g_alphaCheckpointCount >= MaximumAlphaCheckpoints ||
+                outputSize + stateSize >
+                    MaximumAlphaCheckpointBytes -
+                        g_alphaCheckpointBytes))
+        {
+            g_alphaCheckpointBytes -=
+                g_alphaCheckpoints[0].outputSize + stateSize;
+            FreeAlphaCheckpoint(g_alphaCheckpoints[0]);
+            std::memmove(&g_alphaCheckpoints[0],
+                &g_alphaCheckpoints[1],
+                static_cast<std::size_t>(
+                    g_alphaCheckpointCount - 1) *
+                    sizeof(AlphaCheckpoint));
+            g_alphaCheckpoints[--g_alphaCheckpointCount] = {};
+        }
+
+        int insertAt = g_alphaCheckpointCount;
+        while (insertAt > 0 &&
+            g_alphaCheckpoints[insertAt - 1].frame > frame)
+        {
+            g_alphaCheckpoints[insertAt] =
+                g_alphaCheckpoints[insertAt - 1];
+            insertAt--;
+        }
+        g_alphaCheckpoints[insertAt].frame = frame;
+        g_alphaCheckpoints[insertAt].bucket = bucket;
+        g_alphaCheckpoints[insertAt].outputSize = outputSize;
+        g_alphaCheckpoints[insertAt].data = data;
+        g_alphaCheckpointCount++;
+        g_alphaCheckpointBytes += outputSize + stateSize;
+        return true;
+    }
+
+    bool LoadPersistentAlphaCheckpoint(void* animation,
+        int targetFrame)
+    {
+        const auto clipKey = static_cast<std::uint64_t>(
+            InterlockedCompareExchange64(
+                &g_alphaCheckpointClipKey, 0, 0));
+        if (clipKey == 0 || targetFrame <= 0)
+        {
+            return false;
+        }
+
+        void* ssv = nullptr;
+        void* info = nullptr;
+        void* output = nullptr;
+        int width = 0;
+        int height = 0;
+        std::size_t outputSize = 0;
+        if (!ReadAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height, outputSize) ||
+            !IsReadable(reinterpret_cast<unsigned char*>(info) +
+                    AnimationFramesPerSecondOffset, sizeof(int)) ||
+            !IsReadable(reinterpret_cast<unsigned char*>(info) +
+                    AnimationTotalFramesOffset, sizeof(int)))
+        {
+            return false;
+        }
+        const int framesPerSecond = *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(info) +
+                AnimationFramesPerSecondOffset);
+        const int totalFrames = *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(info) +
+                AnimationTotalFramesOffset);
+        const std::size_t stateSize =
+            AnimationSsvOffset - AnimationAlphaScratch1Offset;
+        const std::size_t rawSize = outputSize + stateSize;
+
+        int bestFrame = -1;
+        AcquireSRWLockShared(&g_alphaCheckpointLock);
+        if (HasAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height))
+        {
+            for (int index = 0; index < g_alphaCheckpointCount; index++)
+            {
+                if (g_alphaCheckpoints[index].frame < targetFrame)
+                {
+                    bestFrame = g_alphaCheckpoints[index].frame;
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+        ReleaseSRWLockShared(&g_alphaCheckpointLock);
+
+        wchar_t directory[MAX_PATH] = {};
+        wchar_t searchPath[MAX_PATH] = {};
+        if (!AlphaCacheDirectory(directory) ||
+            swprintf_s(searchPath, L"%s\\%016llX_*.qpac",
+                directory,
+                static_cast<unsigned long long>(clipKey)) <= 0)
+        {
+            return false;
+        }
+
+        wchar_t candidatePath[MAX_PATH] = {};
+        WIN32_FIND_DATAW data = {};
+        HANDLE search = FindFirstFileW(searchPath, &data);
+        if (search == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        do
+        {
+            unsigned long long fileKey = 0;
+            unsigned fileFrame = 0;
+            if ((data.dwFileAttributes &
+                    FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+                swscanf_s(data.cFileName, L"%llX_%X.qpac",
+                    &fileKey, &fileFrame) != 2 ||
+                fileKey != clipKey || fileFrame > MAXLONG ||
+                static_cast<int>(fileFrame) <= bestFrame ||
+                static_cast<int>(fileFrame) >= targetFrame)
+            {
+                continue;
+            }
+            bestFrame = static_cast<int>(fileFrame);
+            if (swprintf_s(candidatePath, L"%s\\%s",
+                    directory, data.cFileName) <= 0)
+            {
+                candidatePath[0] = L'\0';
+            }
+        } while (FindNextFileW(search, &data));
+        FindClose(search);
+        if (candidatePath[0] == L'\0')
+        {
+            return false;
+        }
+
+        HANDLE file = CreateFileW(candidatePath,
+            GENERIC_READ | FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        LARGE_INTEGER fileSize = {};
+        PersistentAlphaHeader header = {};
+        bool valid = GetFileSizeEx(file, &fileSize) &&
+            ReadFileFully(file, &header, sizeof(header)) &&
+            header.magic == PersistentAlphaMagic &&
+            header.version == PersistentAlphaVersion &&
+            header.clipKey == clipKey &&
+            header.frame == bestFrame &&
+            header.frame < targetFrame &&
+            header.bucket >= 0 &&
+            header.width == width && header.height == height &&
+            header.framesPerSecond == framesPerSecond &&
+            header.totalFrames == totalFrames &&
+            header.outputSize == outputSize &&
+            header.stateSize == stateSize &&
+            header.storedSize > 0 &&
+            header.storedSize <= rawSize &&
+            fileSize.QuadPart ==
+                static_cast<LONGLONG>(
+                    sizeof(header) + header.storedSize) &&
+            (header.compression == 0 || header.compression == 1);
+
+        unsigned char* stored = nullptr;
+        unsigned char* raw = nullptr;
+        if (valid)
+        {
+            stored = static_cast<unsigned char*>(HeapAlloc(
+                GetProcessHeap(), 0,
+                static_cast<std::size_t>(header.storedSize)));
+            raw = static_cast<unsigned char*>(HeapAlloc(
+                GetProcessHeap(), 0, rawSize));
+            valid = stored != nullptr && raw != nullptr &&
+                ReadFileFully(file, stored,
+                    static_cast<std::size_t>(header.storedSize));
+        }
+        if (valid && header.compression == 0)
+        {
+            valid = header.storedSize == rawSize;
+            if (valid)
+            {
+                std::memcpy(raw, stored, rawSize);
+            }
+        }
+        else if (valid)
+        {
+            DECOMPRESSOR_HANDLE decompressor = nullptr;
+            SIZE_T actual = 0;
+            valid = CreateDecompressor(
+                    COMPRESS_ALGORITHM_XPRESS_HUFF,
+                    nullptr, &decompressor) &&
+                Decompress(decompressor, stored,
+                    static_cast<std::size_t>(header.storedSize),
+                    raw, rawSize, &actual) &&
+                actual == rawSize;
+            if (decompressor != nullptr)
+            {
+                CloseDecompressor(decompressor);
+            }
+        }
+        valid = valid &&
+            PersistentAlphaChecksum(raw, rawSize) == header.checksum;
+
+        const std::size_t pointer1Offset = outputSize +
+            AnimationAlphaScratchPointer1Offset -
+            AnimationAlphaScratch1Offset;
+        const std::size_t pointer2Offset = outputSize +
+            AnimationAlphaScratchPointer2Offset -
+            AnimationAlphaScratch1Offset;
+        if (valid &&
+            pointer2Offset + sizeof(void*) <= rawSize)
+        {
+            void* pointer1 = DecodePersistentAlphaPointer(
+                animation, output, outputSize, header.pointer1);
+            void* pointer2 = DecodePersistentAlphaPointer(
+                animation, output, outputSize, header.pointer2);
+            valid = (header.pointer1 == 0 || pointer1 != nullptr) &&
+                (header.pointer2 == 0 || pointer2 != nullptr);
+            if (valid)
+            {
+                std::memcpy(raw + pointer1Offset,
+                    &pointer1, sizeof(pointer1));
+                std::memcpy(raw + pointer2Offset,
+                    &pointer2, sizeof(pointer2));
+            }
+        }
+        else
+        {
+            valid = false;
+        }
+
+        FILETIME now = {};
+        GetSystemTimeAsFileTime(&now);
+        if (valid)
+        {
+            SetFileTime(file, nullptr, nullptr, &now);
+        }
+        CloseHandle(file);
+        if (stored != nullptr)
+        {
+            HeapFree(GetProcessHeap(), 0, stored);
+        }
+        if (!valid)
+        {
+            if (raw != nullptr)
+            {
+                HeapFree(GetProcessHeap(), 0, raw);
+            }
+            return false;
+        }
+
+        AcquireSRWLockExclusive(&g_alphaCheckpointLock);
+        const bool canInsert =
+            static_cast<std::uint64_t>(
+                InterlockedCompareExchange64(
+                    &g_alphaCheckpointClipKey, 0, 0)) == clipKey &&
+            HasAlphaCheckpointIdentity(animation, ssv, info, output,
+                width, height);
+        const bool inserted = canInsert &&
+            InsertAlphaCheckpointLocked(header.frame, header.bucket,
+                outputSize, stateSize, raw);
+        ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+        if (!canInsert)
+        {
+            HeapFree(GetProcessHeap(), 0, raw);
+        }
+        return inserted;
+    }
+
     int CaptureAlphaCheckpoint(void* animation, int frame, int framesPerSecond)
     {
         void* ssv = nullptr;
@@ -3718,7 +4478,16 @@ namespace
             AnimationSsvOffset - AnimationAlphaScratch1Offset;
         const std::size_t checkpointSize =
             outputSize + stateSize;
-        if (checkpointSize > MaximumAlphaCheckpointBytes)
+        if (checkpointSize > MaximumAlphaCheckpointBytes ||
+            !IsReadable(reinterpret_cast<unsigned char*>(info) +
+                AnimationTotalFramesOffset, sizeof(int)))
+        {
+            return -1;
+        }
+        const int totalFrames = *reinterpret_cast<const int*>(
+            reinterpret_cast<unsigned char*>(info) +
+                AnimationTotalFramesOffset);
+        if (totalFrames <= 0)
         {
             return -1;
         }
@@ -3746,21 +4515,6 @@ namespace
             }
         }
 
-        while (g_alphaCheckpointCount > 0 &&
-            (g_alphaCheckpointCount >= MaximumAlphaCheckpoints ||
-                checkpointSize >
-                    MaximumAlphaCheckpointBytes - g_alphaCheckpointBytes))
-        {
-            g_alphaCheckpointBytes -=
-                g_alphaCheckpoints[0].outputSize +
-                stateSize;
-            FreeAlphaCheckpoint(g_alphaCheckpoints[0]);
-            std::memmove(&g_alphaCheckpoints[0], &g_alphaCheckpoints[1],
-                static_cast<std::size_t>(g_alphaCheckpointCount - 1) *
-                    sizeof(AlphaCheckpoint));
-            g_alphaCheckpoints[--g_alphaCheckpointCount] = {};
-        }
-
         auto data = static_cast<unsigned char*>(HeapAlloc(
             GetProcessHeap(), 0, checkpointSize));
         if (data == nullptr)
@@ -3775,22 +4529,16 @@ namespace
                 AnimationAlphaScratch1Offset,
             stateSize);
 
-        int insertAt = g_alphaCheckpointCount;
-        while (insertAt > 0 &&
-            g_alphaCheckpoints[insertAt - 1].frame > frame)
-        {
-            g_alphaCheckpoints[insertAt] =
-                g_alphaCheckpoints[insertAt - 1];
-            insertAt--;
-        }
-        g_alphaCheckpoints[insertAt].frame = frame;
-        g_alphaCheckpoints[insertAt].bucket = bucket;
-        g_alphaCheckpoints[insertAt].outputSize = outputSize;
-        g_alphaCheckpoints[insertAt].data = data;
-        g_alphaCheckpointCount++;
-        g_alphaCheckpointBytes += checkpointSize;
+        const bool inserted = InsertAlphaCheckpointLocked(
+            frame, bucket, outputSize, stateSize, data);
         const int count = g_alphaCheckpointCount;
         ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+        if (inserted)
+        {
+            QueuePersistentAlphaCheckpoint(animation, ssv, info,
+                output, width, height, framesPerSecond,
+                totalFrames, frame, bucket, outputSize, stateSize);
+        }
         return count;
     }
 
@@ -3809,6 +4557,8 @@ namespace
         {
             return false;
         }
+
+        LoadPersistentAlphaCheckpoint(animation, targetFrame);
 
         AcquireSRWLockShared(&g_alphaCheckpointLock);
         if (!HasAlphaCheckpointIdentity(animation, ssv, info, output,
@@ -5399,7 +6149,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 35;
+    return 36;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -5928,6 +6678,14 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetLastAlphaCheckpointF
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperClearAlphaCheckpoints()
 {
     ClearAlphaCheckpoints();
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetAlphaCheckpointCacheKey(SIZE_T clipKey)
+{
+    InterlockedExchange64(&g_alphaCheckpointClipKey,
+        static_cast<LONGLONG>(clipKey));
     return BridgeSuccess;
 }
 
