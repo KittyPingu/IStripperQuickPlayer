@@ -193,6 +193,26 @@ namespace IStripperQuickPlayer
                 "Control+Alt+Left", out _, out _));
             System.Diagnostics.Debug.Assert(TryParseHotKey(
                 "Control+Alt+Home", out _, out _));
+            TextSearchDocument searchCheck = new(
+                "Anna Delos c1001 Pool Side duo red table",
+                "Anna Delos", "c1001", "Pool Side", "", "duo red table");
+            System.Diagnostics.Debug.Assert(
+                TextQuery.Parse("anna tag:duo !blue").Matches(searchCheck));
+            System.Diagnostics.Debug.Assert(
+                TextQuery.Parse("(beth OR model:anna) AND \"pool side\"")
+                    .Matches(searchCheck));
+            System.Diagnostics.Debug.Assert(
+                !TextQuery.Parse("anna AND tag:blue").Matches(searchCheck));
+            TextSearchDocument raeSearchCheck = new(
+                "Asia Rae pole", "Asia Rae", "", "", "", "pole");
+            TextSearchDocument kittySearchCheck = new(
+                "Ashby Kitty", "Ashby Kitty", "", "", "", "");
+            TextQuery unionSearchCheck =
+                TextQuery.Parse("(rae AND pole) OR kitty");
+            System.Diagnostics.Debug.Assert(unionSearchCheck.Matches(
+                raeSearchCheck));
+            System.Diagnostics.Debug.Assert(unionSearchCheck.Matches(
+                kittySearchCheck));
 #endif
             InitializeComponent();
             alphaCheckpointCacheToolStripMenuItem.Text =
@@ -298,7 +318,7 @@ namespace IStripperQuickPlayer
         }
 
         ListViewItem[]? items; //stores the list of virtualized cards for modelList operations
-        internal async void PopulateModelListview()
+        internal void PopulateModelListview()
         {
             //save the selected card, we can reselect it at the end if it's still valid
             string currentText = "";
@@ -312,61 +332,17 @@ namespace IStripperQuickPlayer
                 return;
             }
 
-            List<ModelCard>? currentCards = Datastore.modelcards;
-            if (txtSearch.Text != "")
+            List<ModelCard> currentCards = Datastore.modelcards;
+            if (!string.IsNullOrWhiteSpace(txtSearch.Text))
             {
-                string[] parts = txtSearch.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
-                foreach (string p in parts)
-                {
-
-                    List<string> taglist = p.Split(" or ").Select(p => p.Trim()).ToList();
-                    if (p.Contains("!"))
-                    {
-
-                        List<ModelCard>? poslist = null;
-                        List<ModelCard>? neglist = currentCards;
-                        foreach (string tag in taglist.Where(x => !x.Contains("!")))
-                        {
-                            //do all the positives first
-                            poslist = currentCards.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
-                             || (taglist.Any(d => c.name.ContainsWithNot(d)))
-                             || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
-                             || (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
-                             || (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) || string.Join(",", c.tags).ContainsWithNot(tag)).ToList();
-                        }
-                        if (poslist == null) poslist = new List<ModelCard> { };
-                        foreach (string tag in taglist.Where(x => x.Contains("!")))
-                        {
-                            neglist = neglist.Where(c => (c.modelName != null && c.modelName.ContainsWithNot(tag))
-                            && (taglist.Any(d => c.name.ContainsWithNot(d)))
-                            && (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
-                            && (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
-                            && (myData != null && string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(tag)) && string.Join(",", c.tags).ContainsWithNot(tag)).ToList();
-                        }
-                        if (poslist == null) currentCards = new List<ModelCard> { };
-                        else
-                            if (neglist == null) neglist = new List<ModelCard> { };
-                        currentCards = poslist.Union(neglist).ToList();
-                    }
-                    else
-                    {
-                        currentCards = currentCards.Where(c => (c.modelName != null && taglist.Any(y => c.modelName.ContainsWithNot(y)))
-                            || (taglist.Any(d => c.name.ContainsWithNot(d)))
-                            || (c.description != null && Properties.Settings.Default.ShowDescInSearch && taglist.Any(d => c.description.ContainsWithNot(d)))
-                            || (c.outfit != null && Properties.Settings.Default.ShowOutfitInSearch && taglist.Any(d => c.outfit.ContainsWithNot(d)))
-                            || myData != null && taglist.Any(x => string.Join(",", myData.GetCardTags(c.name)).ContainsWithNot(x.Trim())) || taglist.Any(y => string.Join(",", c.tags).ContainsWithNot(y))).ToList();
-                    }
-
-
-                }
-
-
+                TextQuery query = TextQuery.Parse(txtSearch.Text);
+                currentCards = currentCards.Where(card =>
+                    query.Matches(CreateSearchDocument(card))).ToList();
             }
-            else
-                currentCards = Datastore.modelcards;
 
-            if (currentCards == null || currentCards.Count == 0) return;
-            currentCards = Filter(currentCards);
+            currentCards = (Filter(currentCards) ?? [])
+                .Where(card => card.clips?.Count > 0)
+                .ToList();
 
             string sortText = cmbSortBy.Text;
             if (cmbSortDirection.Text.StartsWith("Desc"))
@@ -435,17 +411,15 @@ namespace IStripperQuickPlayer
             }
 
 
-            items = new ListViewItem[currentCards.Count()];
+            items = new ListViewItem[currentCards.Count];
             int idx = 0;
             foreach (var card in currentCards)
             {
-                if (card.clips != null && card.clips.Count > 0)
-                {
-                    items[idx] = new ListViewItem(card.modelName + Environment.NewLine + card.outfit, 0);
-                    items[idx].Tag = card.name;
-                    items[idx].ImageIndex = idx;
-                    idx++;
-                }
+                items[idx] = new ListViewItem(
+                    card.modelName + Environment.NewLine + card.outfit, 0);
+                items[idx].Tag = card.name;
+                items[idx].ImageIndex = idx;
+                idx++;
             }
             SetModelNewImageList();
 
@@ -464,6 +438,26 @@ namespace IStripperQuickPlayer
                 listModelsNew.Refresh();
             }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+        }
+
+        private TextSearchDocument CreateSearchDocument(ModelCard card)
+        {
+            string tags = string.Join(' ', card.tags);
+            string userTags = myData == null
+                ? string.Empty
+                : string.Join(' ', myData.GetCardTags(card.name));
+            string all = string.Join('\n',
+                card.modelName,
+                card.name,
+                Properties.Settings.Default.ShowOutfitInSearch
+                    ? card.outfit : string.Empty,
+                Properties.Settings.Default.ShowDescInSearch
+                    ? card.description : string.Empty,
+                tags,
+                userTags);
+            return new TextSearchDocument(all, card.modelName ?? string.Empty,
+                card.name, card.outfit, card.description,
+                string.Join(' ', tags, userTags));
         }
 
         private void SetModelNewImageList()

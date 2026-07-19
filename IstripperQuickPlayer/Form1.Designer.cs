@@ -350,7 +350,7 @@
             txtSearch.Location = new Point(407, 42);
             txtSearch.Margin = new Padding(6, 5, 6, 5);
             txtSearch.Name = "txtSearch";
-            txtSearch.PlaceholderText = "model name or tag";
+            txtSearch.PlaceholderText = "name, tag, AND / OR / !";
             txtSearch.Size = new Size(388, 36);
             txtSearch.TabIndex = 20;
             txtSearch.TextChanged += txtSearch_TextChanged;

@@ -186,6 +186,177 @@ namespace IStripperQuickPlayer.BLL
         }
     }
 
+    internal readonly record struct TextSearchDocument(
+        string All,
+        string Model,
+        string Card,
+        string Title,
+        string Description,
+        string Tags)
+    {
+        internal bool Contains(string? field, string value)
+        {
+            string text = field switch
+            {
+                "model" or "performer" => Model,
+                "card" or "name" or "id" => Card,
+                "title" or "show" or "outfit" => Title,
+                "description" or "desc" => Description,
+                "tag" or "tags" => Tags,
+                _ => All
+            };
+            return text.Contains(value, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    internal sealed class TextQuery
+    {
+        private readonly Func<TextSearchDocument, bool> matches;
+
+        private TextQuery(Func<TextSearchDocument, bool> matches) =>
+            this.matches = matches;
+
+        internal static TextQuery Parse(string text) =>
+            new(ParseExpression(text.Trim()));
+
+        internal bool Matches(in TextSearchDocument document) =>
+            matches(document);
+
+        private static Func<TextSearchDocument, bool> ParseExpression(
+            string expression)
+        {
+            expression = TrimParentheses(expression.Trim());
+            if (expression.Length == 0)
+            {
+                return _ => true;
+            }
+
+            List<string> parts = SplitTopLevel(expression, "or");
+            if (parts.Count > 1)
+            {
+                Func<TextSearchDocument, bool>[] alternatives =
+                    parts.Select(ParseExpression).ToArray();
+                return document =>
+                    alternatives.Any(match => match(document));
+            }
+
+            parts = SplitTopLevel(expression, "and");
+            if (parts.Count > 1)
+            {
+                Func<TextSearchDocument, bool>[] requirements =
+                    parts.Select(ParseExpression).ToArray();
+                return document =>
+                    requirements.All(match => match(document));
+            }
+
+            if (expression[0] is '!' or '-')
+            {
+                Func<TextSearchDocument, bool> child =
+                    ParseExpression(expression[1..]);
+                return document => !child(document);
+            }
+            if (expression.StartsWith("not ",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Func<TextSearchDocument, bool> child =
+                    ParseExpression(expression[4..]);
+                return document => !child(document);
+            }
+
+            int separator = expression.IndexOf(':');
+            string? field = null;
+            string value = expression;
+            if (separator > 0)
+            {
+                string candidate = expression[..separator].ToLowerInvariant();
+                if (candidate is "model" or "performer" or "card" or "name" or
+                    "id" or "title" or "show" or "outfit" or "description" or
+                    "desc" or "tag" or "tags")
+                {
+                    field = candidate;
+                    value = expression[(separator + 1)..];
+                }
+            }
+            value = value.Trim().Trim('"');
+            return document => document.Contains(field, value);
+        }
+
+        private static List<string> SplitTopLevel(
+            string text, string operation)
+        {
+            List<string> parts = [];
+            bool quoted = false;
+            int depth = 0;
+            int start = 0;
+            for (int index = 0; index <= text.Length - operation.Length; index++)
+            {
+                if (text[index] == '"')
+                {
+                    quoted = !quoted;
+                }
+                else if (!quoted && text[index] == '(')
+                {
+                    depth++;
+                }
+                else if (!quoted && text[index] == ')')
+                {
+                    depth--;
+                }
+                else if (!quoted && depth == 0 &&
+                    text.AsSpan(index, operation.Length)
+                        .Equals(operation, StringComparison.OrdinalIgnoreCase) &&
+                    IsBoundary(text, index - 1) &&
+                    IsBoundary(text, index + operation.Length))
+                {
+                    parts.Add(text[start..index].Trim());
+                    index += operation.Length - 1;
+                    start = index + 1;
+                }
+            }
+            if (parts.Count > 0)
+            {
+                parts.Add(text[start..].Trim());
+            }
+            return parts;
+        }
+
+        private static bool IsBoundary(string text, int index) =>
+            index < 0 || index >= text.Length ||
+            !char.IsLetterOrDigit(text[index]);
+
+        private static string TrimParentheses(string text)
+        {
+            while (text.Length >= 2 && text[0] == '(' && text[^1] == ')' &&
+                OuterParenthesesEncloseAll(text))
+            {
+                text = text[1..^1].Trim();
+            }
+            return text;
+        }
+
+        private static bool OuterParenthesesEncloseAll(string text)
+        {
+            bool quoted = false;
+            int depth = 0;
+            for (int index = 0; index < text.Length; index++)
+            {
+                if (text[index] == '"')
+                {
+                    quoted = !quoted;
+                }
+                else if (!quoted && text[index] == '(')
+                {
+                    depth++;
+                }
+                else if (!quoted && text[index] == ')' && --depth == 0)
+                {
+                    return index == text.Length - 1;
+                }
+            }
+            return false;
+        }
+    }
+
     internal class ControlScrollListener : NativeWindow, IDisposable
         {
         public event ControlScrolledEventHandler? ControlScrolled;
