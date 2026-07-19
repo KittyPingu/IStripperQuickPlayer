@@ -38,10 +38,10 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 22;
+        private const int PlaybackBridgeVersion = 31;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
-        private const int PlaybackMovieDiscoveryRetryMilliseconds = 250;
+        private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
         private const string LatestReleaseApiUrl =
             "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
 
@@ -77,6 +77,7 @@ namespace IStripperQuickPlayer
         private readonly SemaphoreSlim playbackOperationLock = new(1, 1);
         private readonly object playbackApiLock = new();
         private readonly CancellationTokenSource playbackLifetime = new();
+        private bool movieCaptureHookInstalled;
         private string playbackBridgePath = "";
         private int vghdInjectionInProgress;
         private volatile bool playerLockBridgeLoaded;
@@ -100,6 +101,7 @@ namespace IStripperQuickPlayer
         private string playbackCompletedAnimationPath = "";
         private string playbackRequestedAnimationPath = "";
         private DateTime playbackNextMovieDiscoveryAt = DateTime.MinValue;
+        private DateTime playbackMovieCaptureFallbackAt = DateTime.MinValue;
         private DateTime playbackNextClipRetryAt = DateTime.MinValue;
         private DateTime playbackReplacementStableAt = DateTime.MinValue;
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
@@ -1242,6 +1244,7 @@ namespace IStripperQuickPlayer
         {
             playerLockBridgeLoaded = false;
             playbackBridgeLoaded = false;
+            movieCaptureHookInstalled = false;
             playbackMovieRegistered = false;
             playbackSeekingSupported = true;
             playbackDecoderKind = 0;
@@ -1281,12 +1284,32 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
+                ConfigureMovieCaptureHook(process);
                 ConfigurePlaybackFunctions(process);
             }
             catch (Exception exception)
             {
                 playbackBridgeLoaded = false;
                 SetPlaybackStatus("Playback controls could not attach: " + exception.Message);
+            }
+        }
+
+        private void ConfigureMovieCaptureHook(NktProcess process)
+        {
+            try
+            {
+                object noParameters = null!;
+                movieCaptureHookInstalled = _spyMgr.CallCustomApi(
+                    process, playbackBridgePath,
+                    "IStripperInstallMovieCaptureHook",
+                    ref noParameters, true) >= 0;
+            }
+            catch (Exception exception)
+            {
+                movieCaptureHookInstalled = false;
+                Debug.WriteLine(
+                    "Movie capture hook was unavailable: " +
+                    exception.Message);
             }
         }
 
@@ -1627,12 +1650,12 @@ namespace IStripperQuickPlayer
                         StringComparison.Ordinal))
                 {
                     ShowNowPlaying(animationPath);
+                    ArmMovieCapture();
                     string previousAnimationPath = playbackTimelineAnimationPath;
                     bool previousAnimationReachedEnd = PlaybackReachedEnd(
                         playbackLastKnownElapsedMilliseconds,
                         playbackTimelineDurationMilliseconds);
                     playbackTimelineAnimationPath = animationPath;
-                    playbackLastKnownElapsedMilliseconds = 0;
                     playbackAlphaCheckpointBucket = -1;
                     try { CallPlaybackApi("IStripperClearAlphaCheckpoints"); }
                     catch { }
@@ -1641,8 +1664,10 @@ namespace IStripperQuickPlayer
                     playbackDecoderKind = 0;
                     playbackNextMovieDiscoveryAt = DateTime.MinValue;
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
-                    if (!playbackTimelineDragging)
+                    if (!string.IsNullOrEmpty(animationPath) &&
+                        !playbackTimelineDragging)
                     {
+                        playbackLastKnownElapsedMilliseconds = 0;
                         trkPlaybackPosition.Maximum = 1;
                         trkPlaybackPosition.Value = 0;
                         playbackTimelineDurationMilliseconds = 0;
@@ -1708,10 +1733,25 @@ namespace IStripperQuickPlayer
                     DateTime.UtcNow >= playbackNextMovieDiscoveryAt)
                 {
                     int discoveredDecoderKind = 0;
+                    bool allowFallbackDiscovery =
+                        !movieCaptureHookInstalled ||
+                        playbackMovieCaptureFallbackAt ==
+                            DateTime.MinValue ||
+                        DateTime.UtcNow >=
+                            playbackMovieCaptureFallbackAt;
+                    if (allowFallbackDiscovery)
+                        DisableMovieCapture();
                     playbackMovieRegistered = await Task.Run(() =>
                     {
-                        bool registered =
-                            CallPlaybackApi("IStripperDiscoverMovie") >= 0;
+                        bool registered = movieCaptureHookInstalled &&
+                            CallPlaybackApi(
+                                "IStripperConsumeCapturedMovie") >= 0;
+                        if (!registered && allowFallbackDiscovery)
+                        {
+                            registered =
+                                CallPlaybackApi(
+                                    "IStripperDiscoverMovie") >= 0;
+                        }
                         if (registered)
                         {
                             discoveredDecoderKind =
@@ -1721,6 +1761,7 @@ namespace IStripperQuickPlayer
                     });
                     if (playbackMovieRegistered)
                     {
+                        DisableMovieCapture();
                         playbackTimelineTimer.Interval =
                             PlaybackTimelineIntervalMilliseconds;
                         playbackDecoderKind = discoveredDecoderKind;
@@ -2468,6 +2509,7 @@ namespace IStripperQuickPlayer
                 }
                 nowPlayingPath = path;
                 WakePlaybackTimeline();
+                ArmMovieCapture();
                 nowPlaying = "";
                 if (path == "")
                 {
@@ -2529,6 +2571,43 @@ namespace IStripperQuickPlayer
                 BeginInvoke((Action)Wake);
             else
                 Wake();
+        }
+
+        private void ArmMovieCapture()
+        {
+            if (!movieCaptureHookInstalled || !playbackBridgeLoaded ||
+                !IsHandleCreated || IsDisposed)
+            {
+                playbackMovieCaptureFallbackAt = DateTime.MinValue;
+                return;
+            }
+
+            void Arm()
+            {
+                try
+                {
+                    CallPlaybackApi("IStripperArmMovieCapture");
+                    playbackMovieCaptureFallbackAt =
+                        DateTime.UtcNow.AddMilliseconds(750);
+                }
+                catch
+                {
+                    playbackMovieCaptureFallbackAt = DateTime.MinValue;
+                }
+            }
+
+            if (InvokeRequired)
+                BeginInvoke((Action)Arm);
+            else
+                Arm();
+        }
+
+        private void DisableMovieCapture()
+        {
+            if (!movieCaptureHookInstalled || !playbackBridgeLoaded)
+                return;
+            try { CallPlaybackApi("IStripperCancelMovieCapture"); }
+            catch { }
         }
 
         private void RefreshPlayingClipHighlight()
@@ -2654,6 +2733,7 @@ namespace IStripperQuickPlayer
             playbackLifetime.Cancel();
             UnregisterHotKeys();
             timerhook?.Dispose();
+            DisableMovieCapture();
             if (playerLockBridgeLoaded)
             {
                 try { SetVghdPlayerLocked(false); } catch { }

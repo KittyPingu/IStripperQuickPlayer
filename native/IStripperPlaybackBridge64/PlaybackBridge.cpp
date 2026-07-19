@@ -170,6 +170,11 @@ namespace
 
     PVOID volatile g_activeMovie = nullptr;
     PVOID volatile g_activeAnimation = nullptr;
+    PVOID volatile g_consumedMovie = nullptr;
+    PVOID volatile g_consumedAnimation = nullptr;
+    PVOID volatile g_originalMovieAdvance = nullptr;
+    LONG volatile g_movieCaptureArmed = 0;
+    LONG volatile g_movieCaptureReady = 0;
     LONG volatile g_compatibilityMask = -1;
     LONG volatile g_fastForwardCompatibility = -1;
     PVOID volatile g_originalAvcodecOpen2 = nullptr;
@@ -2582,6 +2587,51 @@ namespace
         return IsMovie(movie) ? movie : nullptr;
     }
 
+    void StoreActiveMovie(void* movie)
+    {
+        InterlockedExchangePointer(&g_activeMovie, movie);
+        InterlockedExchangePointer(&g_activeAnimation,
+            *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset));
+    }
+
+    void MarkMovieConsumed(void* movie)
+    {
+        InterlockedExchangePointer(&g_consumedMovie, movie);
+        InterlockedExchangePointer(&g_consumedAnimation,
+            InterlockedCompareExchangePointer(
+                &g_activeAnimation, nullptr, nullptr));
+    }
+
+    void __fastcall CapturingMovieAdvance(void* movie)
+    {
+        if (IsMovie(movie))
+        {
+            void* animation = *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset);
+            if (InterlockedCompareExchange(
+                    &g_movieCaptureArmed, 0, 0) != 0 ||
+                movie != InterlockedCompareExchangePointer(
+                    &g_consumedMovie, nullptr, nullptr) ||
+                animation != InterlockedCompareExchangePointer(
+                    &g_consumedAnimation, nullptr, nullptr))
+            {
+                StoreActiveMovie(movie);
+                InterlockedExchange(&g_movieCaptureReady, 1);
+            }
+        }
+
+        auto original = reinterpret_cast<ManagerAction>(
+            InterlockedCompareExchangePointer(
+                &g_originalMovieAdvance, nullptr, nullptr));
+        if (original != nullptr)
+        {
+            original(movie);
+        }
+    }
+
     void* AnimationVideoDecoder(void* animation)
     {
         if (!IsReadable(animation, AnimationSsvOffset + sizeof(void*)))
@@ -4244,6 +4294,119 @@ namespace
             PAGE_EXECUTE_READWRITE, &parameter, 1));
     }
 
+    HRESULT InstallMovieCaptureHook()
+    {
+        AcquireSRWLockExclusive(&g_decodePatchLock);
+        if (InterlockedCompareExchangePointer(
+                &g_originalMovieAdvance, nullptr, nullptr) != nullptr)
+        {
+            ReleaseSRWLockExclusive(&g_decodePatchLock);
+            return BridgeSuccess;
+        }
+        if (!HasCompatibleEngine() ||
+            !HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
+                sizeof(MovieAdvanceSignature)))
+        {
+            ReleaseSRWLockExclusive(&g_decodePatchLock);
+            return EngineError();
+        }
+
+        unsigned char* target = ImageBase() + MovieAdvanceRva;
+        unsigned char* thunk = AllocateNear(target + 5, 64);
+        if (thunk == nullptr)
+        {
+            const HRESULT result = HRESULT_FROM_WIN32(GetLastError());
+            ReleaseSRWLockExclusive(&g_decodePatchLock);
+            return result;
+        }
+
+        const unsigned char absoluteJump[] = {
+            0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
+            0xFF, 0xE0
+        };
+        std::memcpy(thunk, absoluteJump, sizeof(absoluteJump));
+        const std::uintptr_t hook =
+            reinterpret_cast<std::uintptr_t>(&CapturingMovieAdvance);
+        std::memcpy(thunk + 2, &hook, sizeof(hook));
+
+        constexpr std::size_t prologueSize =
+            sizeof(MovieAdvanceSignature);
+        unsigned char* trampoline = thunk + 16;
+        std::memcpy(trampoline, target, prologueSize);
+        std::memcpy(trampoline + prologueSize,
+            absoluteJump, sizeof(absoluteJump));
+        const std::uintptr_t continuation =
+            reinterpret_cast<std::uintptr_t>(target + prologueSize);
+        std::memcpy(trampoline + prologueSize + 2,
+            &continuation, sizeof(continuation));
+
+        const HRESULT pinResult = PinBridge();
+        if (pinResult < 0)
+        {
+            VirtualFree(thunk, 0, MEM_RELEASE);
+            ReleaseSRWLockExclusive(&g_decodePatchLock);
+            return pinResult;
+        }
+
+        SuspendedThreads suspended = {};
+        if (!SuspendOtherThreads(suspended))
+        {
+            ResumeThreads(suspended);
+            VirtualFree(thunk, 0, MEM_RELEASE);
+            ReleaseSRWLockExclusive(&g_decodePatchLock);
+            return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY);
+        }
+
+        HRESULT result = BridgeSuccess;
+        DWORD oldProtection = 0;
+        if (!HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
+                sizeof(MovieAdvanceSignature)))
+        {
+            result = EngineError();
+        }
+        else if (!VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE,
+                &oldProtection))
+        {
+            result = HRESULT_FROM_WIN32(GetLastError());
+        }
+        else
+        {
+            const std::intptr_t relative =
+                reinterpret_cast<std::intptr_t>(thunk) -
+                reinterpret_cast<std::intptr_t>(target + 5);
+            if (relative < INT_MIN || relative > INT_MAX)
+            {
+                result = HRESULT_FROM_WIN32(
+                    ERROR_INVALID_ADDRESS);
+            }
+            else
+            {
+                InterlockedExchangePointer(
+                    &g_originalMovieAdvance, trampoline);
+                target[0] = 0xE9;
+                const std::int32_t displacement =
+                    static_cast<std::int32_t>(relative);
+                std::memcpy(target + 1,
+                    &displacement, sizeof(displacement));
+                FlushInstructionCache(
+                    GetCurrentProcess(), target, 5);
+            }
+            DWORD ignoredProtection = 0;
+            VirtualProtect(target, 5, oldProtection,
+                &ignoredProtection);
+        }
+
+        ResumeThreads(suspended);
+        if (result < 0)
+        {
+            InterlockedExchangePointer(
+                &g_originalMovieAdvance, nullptr);
+            VirtualFree(thunk, 0, MEM_RELEASE);
+        }
+        ReleaseSRWLockExclusive(&g_decodePatchLock);
+        return result;
+    }
+
     HRESULT InstallScaleSkipPatch()
     {
         AcquireSRWLockExclusive(&g_decodePatchLock);
@@ -4720,7 +4883,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 22;
+    return 31;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -4804,6 +4967,45 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovieManager(SIZE_T 
     return E_NOTIMPL;
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperInstallMovieCaptureHook()
+{
+    return InstallMovieCaptureHook();
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperArmMovieCapture()
+{
+    if (InterlockedCompareExchangePointer(
+            &g_originalMovieAdvance, nullptr, nullptr) == nullptr)
+    {
+        return EngineError();
+    }
+    InterlockedExchange(&g_movieCaptureArmed, 1);
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperConsumeCapturedMovie()
+{
+    if (InterlockedExchange(&g_movieCaptureReady, 0) == 0)
+    {
+        return ManagerError();
+    }
+    InterlockedExchange(&g_movieCaptureArmed, 0);
+    void* movie = ActiveMovie();
+    if (movie == nullptr)
+    {
+        return ManagerError();
+    }
+    MarkMovieConsumed(movie);
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperCancelMovieCapture()
+{
+    InterlockedExchange(&g_movieCaptureArmed, 0);
+    InterlockedExchange(&g_movieCaptureReady, 0);
+    return BridgeSuccess;
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovie(SIZE_T movieAddress)
 {
     __try
@@ -4814,16 +5016,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMovie(SIZE_T movieAd
         }
 
         void* movie = reinterpret_cast<void*>(movieAddress);
-        if (!IsMovie(movie))
+        if (!IsActiveMovieCandidate(movie))
         {
             return E_INVALIDARG;
         }
-
-        InterlockedExchangePointer(&g_activeMovie, movie);
-        InterlockedExchangePointer(&g_activeAnimation,
-            *reinterpret_cast<void**>(
-                reinterpret_cast<unsigned char*>(movie) +
-                    MovieAnimationOffset));
+        StoreActiveMovie(movie);
+        MarkMovieConsumed(movie);
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -4847,11 +5045,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperDiscoverMovie()
             return ManagerError();
         }
 
-        InterlockedExchangePointer(&g_activeMovie, movie);
-        InterlockedExchangePointer(&g_activeAnimation,
-            *reinterpret_cast<void**>(
-                reinterpret_cast<unsigned char*>(movie) +
-                    MovieAnimationOffset));
+        StoreActiveMovie(movie);
+        MarkMovieConsumed(movie);
         return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)

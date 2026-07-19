@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v21
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v31
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -74,8 +74,10 @@ to `vghd.exe`. The added path reuses that agent:
 3. Scan executable code and MSVC RTTI to resolve the Movie/Video functions,
    imported FFmpeg slots, patch sites, and vtables. Each candidate must be
    unique and its internal field relationships must agree.
-4. Locate the active `Movie*` directly and call its resolved pause, resume, and
-   rate methods. No per-frame or input-simulation capture hook is required.
+4. Capture the active `Movie*` from the resolved `Movie::advance(this)` call
+   during a clip transition, then call its pause, resume, and rate methods.
+   Attaching after a clip has already started falls back to validated memory
+   discovery.
 5. Read the current frame, total-frame count, and FPS under the movie's Qt
    mutex to expose a content-time position to WinForms.
 6. Resolve the active `VideoFFmpeg` object's `CBpkSound` and `QAudioOutput`
@@ -128,13 +130,19 @@ All CAnim, SSV, Movie, VideoFFmpeg, VideoWmvCore, queue-container, mutex,
 sound-object, counter, import-slot, and hook-site fields are derived
 dynamically.
 
-Direct Movie discovery scans committed private writable regions once for the
-resolved Movie vtable, then validates the playing/paused state,
-animation pointer, frame range, FPS, and active video-decoder vtable before
-accepting a candidate. On a clip replacement it prefers a new Movie/CAnim pair
-but can accept an object that vghd reused in place. It makes no persistent code
-change and avoids blocking vghd's per-frame thread while QuickPlayer is
-loading.
+`IStripperDiscoverMovie` is the compatibility fallback. It scans committed
+private writable regions for the resolved Movie vtable, then validates the
+playing/paused state, animation pointer, frame range, FPS, and active
+video-decoder vtable before accepting a candidate. That broad scan can take
+seconds because video and frame buffers are writable private memory too.
+
+Normal clip changes no longer use that scan. The bridge installs a verified
+five-byte jump at `Movie::advance`, captures its `this` pointer while the
+registry path is between clips, and immediately resumes the original function
+through a trampoline. It also remembers the last consumed Movie/CAnim pair, so
+a different card can be captured when vghd advances it before clearing
+`CurrentAnim`; explicit arming handles objects reused in place. The broad scan
+remains for a late QuickPlayer attach or an incompatible/missed capture.
 
 ## There is no 4x playback limiter
 
