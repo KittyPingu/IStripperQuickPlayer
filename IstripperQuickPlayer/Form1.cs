@@ -1351,12 +1351,29 @@ namespace IStripperQuickPlayer
 
             try
             {
-                playbackBridgePath = Path.Combine(AppContext.BaseDirectory, "IStripperPlaybackBridge64.dll");
+                string localBridgePath = Path.Combine(AppContext.BaseDirectory,
+                    "IStripperPlaybackBridge64.dll");
+                playbackBridgePath = localBridgePath;
                 if (!File.Exists(playbackBridgePath))
                 {
                     SetPlaybackStatus("IStripperPlaybackBridge64.dll was not built or copied to the application folder.");
                     return;
                 }
+
+                // Function-pointer hooks keep the first bridge pinned in vghd.
+                // Reuse it when QuickPlayer is restarted from another folder.
+                try
+                {
+                    using Process target = Process.GetProcessById(process.Id);
+                    playbackBridgePath = target.Modules
+                            .Cast<ProcessModule>()
+                            .FirstOrDefault(module => string.Equals(
+                                module.ModuleName,
+                                Path.GetFileName(localBridgePath),
+                                StringComparison.OrdinalIgnoreCase))
+                            ?.FileName ?? localBridgePath;
+                }
+                catch { }
 
                 _spyMgr.LoadCustomDll(process, playbackBridgePath, true, true);
                 object noParameters = null!;
