@@ -1335,6 +1335,7 @@ namespace IStripperQuickPlayer
                 playbackFastDecodeEnabled = fastDecodeResult >= 0;
 
                 playbackBridgeLoaded = true;
+#if DEBUG
                 int decoderOpenCount = 0;
                 int decoderOptionResult = 0;
                 if (playbackFastDecodeEnabled)
@@ -1359,6 +1360,9 @@ namespace IStripperQuickPlayer
                             ? $"FFmpeg accepted the {decoderThreads}-thread option ({decoderOpenCount} codec opens); queue-aware catch-up is armed."
                             : $"FFmpeg {decoderThreads}-thread decode and queue-aware catch-up are armed for newly opened clips.";
                 SetPlaybackStatus($"Playback controls ready. {decoderStatus}");
+#else
+                SetPlaybackStatus(string.Empty);
+#endif
             }
             catch (Exception exception)
             {
@@ -1987,6 +1991,7 @@ namespace IStripperQuickPlayer
             }
 
             string animationAtStart = GetCurrentAnimationPath();
+#if DEBUG
             int skippedScaleCountBefore = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetFastDecodeSkippedScaleCount"))
                 : 0;
@@ -2000,6 +2005,7 @@ namespace IStripperQuickPlayer
                 ? Math.Max(0, CallPlaybackApi("IStripperGetKeyframeSeekCount"))
                 : 0;
             Stopwatch seekStopwatch = Stopwatch.StartNew();
+#endif
             int finalPosition = current;
             try
             {
@@ -2048,9 +2054,10 @@ namespace IStripperQuickPlayer
                 }
             }
 
+            playbackLastKnownElapsedMilliseconds = finalPosition;
+#if DEBUG
             string action = target < current ? "Rewound" :
                 target > current ? "Fast-forwarded" : "Stayed";
-            playbackLastKnownElapsedMilliseconds = finalPosition;
             string stateText = wasPlaying ? "playing" : "paused";
             int skippedScaleCount = playbackFastDecodeEnabled
                 ? Math.Max(0, CallPlaybackApi("IStripperGetFastDecodeSkippedScaleCount"))
@@ -2092,6 +2099,7 @@ namespace IStripperQuickPlayer
                 : "";
             SetPlaybackStatus(
                 $"{action} to about {FormatPlaybackTime(finalPosition)}; {stateText} at {speedToRestore:0.##}x.{acceleration}{alphaRebuild}{codecFlush}{keyframeSeek}");
+#endif
         }
 
         private async Task<int?> TryDecodeTargetFrameAsync(int current, int target,
@@ -2121,7 +2129,9 @@ namespace IStripperQuickPlayer
             SetPlaybackRate(1.0);
             RequirePlaybackResult("IStripperResume");
 
+#if DEBUG
             int pollCount = 0;
+#endif
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -2139,11 +2149,13 @@ namespace IStripperQuickPlayer
                         "The clip ended while seeking; the next clip was left untouched.");
                 }
 
+#if DEBUG
                 if (pollCount % 8 == 0)
                 {
                     SetPlaybackStatus($"Decoding target frame {FormatPlaybackTime(current)} → {FormatPlaybackTime(target)}...");
                 }
 
+#endif
                 int status = CallPlaybackApi("IStripperGetFastForwardStatus");
                 if (status < 0)
                 {
@@ -2156,7 +2168,9 @@ namespace IStripperQuickPlayer
                 }
 
                 await Task.Delay(35, cancellationToken);
+#if DEBUG
                 pollCount++;
+#endif
             }
         }
 
@@ -2204,7 +2218,9 @@ namespace IStripperQuickPlayer
 
                 if (pollCount % 8 == 0)
                 {
+#if DEBUG
                     SetPlaybackStatus($"Scanning {FormatPlaybackTime(current)} → {FormatPlaybackTime(target)}...");
+#endif
                     string currentAnimation = GetCurrentAnimationPath();
                     if (!string.IsNullOrEmpty(animationAtStart) &&
                         !string.IsNullOrEmpty(currentAnimation) &&
