@@ -38,7 +38,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 57;
+        private const int PlaybackBridgeVersion = 58;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -94,6 +94,7 @@ namespace IStripperQuickPlayer
         private volatile int playbackDecoderKind;
         private volatile bool playbackBusy;
         private volatile bool playbackControlsAvailableForAccount;
+        private bool suppressPlaybackSpeedSelection;
         private double requestedPlaybackSpeed = 1.0;
         private readonly System.Windows.Forms.Timer playbackTimelineTimer =
             new() { Interval = PlaybackTimelineIntervalMilliseconds };
@@ -1745,10 +1746,23 @@ namespace IStripperQuickPlayer
 
         private async void cmbPlaybackSpeed_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (suppressPlaybackSpeedSelection)
+            {
+                return;
+            }
             if (cmbPlaybackSpeed.SelectedItem is not string selected ||
                 !double.TryParse(selected.TrimEnd('x'), NumberStyles.AllowDecimalPoint,
                     CultureInfo.InvariantCulture, out double speed))
             {
+                return;
+            }
+
+            if (playbackDecoderKind == 2 && speed > 3.0)
+            {
+                suppressPlaybackSpeedSelection = true;
+                cmbPlaybackSpeed.SelectedItem =
+                    $"{requestedPlaybackSpeed:0.##}x";
+                suppressPlaybackSpeedSelection = false;
                 return;
             }
 

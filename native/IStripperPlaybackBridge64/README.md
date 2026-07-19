@@ -149,6 +149,9 @@ its completed colour queue remains populated.
 `Movie::run` multiplies the animation FPS by that rate and bottoms out at a
 one-millisecond sleep. The theoretical scheduler ceiling is therefore roughly
 1,000 displayed frames per second, well above the decoder's practical limit.
+QuickPlayer rejects 4x only for legacy WMV: sustained 4x playback can overrun
+vghd's old colour/alpha compositor and cause an access violation. Modern
+FFmpeg clips retain the 4x option.
 
 The installed decoder is the old dynamic FFmpeg 3-era set:
 
@@ -212,14 +215,15 @@ For a legacy seek, the bridge:
    before the hand-off. At normal speed, a pinned native worker then restarts
    the same reader at the target with its user clock disabled, returning colour
    and audio to WMF's normal real-time pacing before audio is released. Faster
-   playback keeps the 250 ms user-clock horizon while audio remains muted. The
+   playback keeps at least 250 ms of wall-clock headroom by growing the
+   user-clock horizon with the selected rate, while audio remains muted. The
    final partial delivery bypasses batching and advances the reader clock one
    second past nominal duration so legacy ASF files emit EOF. The timer and
    playback controls remain disabled until that hand-off completes.
 
 Legacy speed changes use that same user-clock mode to keep the synchronized
 queues supplied, while `Movie::setPlayRate` controls presentation speed.
-Subsequent changes between 0.25x and 4x only update the Movie scheduler and do
+Subsequent changes between 0.25x and 3x only update the Movie scheduler and do
 not restart the reader. The reader itself remains at 1x because its non-1
 `Start` rate is unsupported for these files.
 

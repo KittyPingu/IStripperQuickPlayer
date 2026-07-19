@@ -3247,6 +3247,11 @@ namespace
             {
                 ControlMovieAudio(movie, AudioCommand::Suspend);
             }
+            else if (IsWmvMovie(movie) && g_wmvUserClock)
+            {
+                // The WMF reader must return to its system clock before PCM
+                // writes resume at normal speed.
+            }
             else if (IsMoviePlaying(movie))
             {
                 if (ReleaseMovieAudioWrites(movie, true))
@@ -5017,8 +5022,11 @@ namespace
                     justReleased = true;
                 }
 
-                const int bufferFrames =
-                    framesPerSecond > 4 ? framesPerSecond / 4 : 1;
+                const double bufferedSeconds = std::max(
+                    0.25, std::min(g_wmvRate, 4.0) / 4.0);
+                const int bufferFrames = std::max(1,
+                    static_cast<int>(
+                        framesPerSecond * bufferedSeconds + 0.999));
                 const int finalUntilFrame = totalFrames <=
                     MAXLONG - framesPerSecond
                         ? totalFrames + framesPerSecond
@@ -5619,8 +5627,9 @@ namespace
         int byteCount)
     {
         InterlockedIncrement(&g_audioWritesInFlight);
-        bool writePcm = InterlockedCompareExchangePointer(
-            &g_audioSuppressedSound, nullptr, nullptr) != sound;
+        bool writePcm = IsNormalPlaybackRate(AudioPlaybackRate()) &&
+            InterlockedCompareExchangePointer(
+                &g_audioSuppressedSound, nullptr, nullptr) != sound;
         if (writePcm &&
             InterlockedCompareExchangePointer(
                 &g_audioResetPendingSound, nullptr, nullptr) == sound)
@@ -6364,7 +6373,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 57;
+    return 58;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -6650,6 +6659,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
         void* video = AnimationVideoDecoder(animation);
         if (IsWmvDecoder(video))
         {
+            if (playRate > 3.001)
+            {
+                return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+            }
             AcquireSRWLockExclusive(&g_wmvRestartLock);
             HRESULT result = E_FAIL;
             __try
@@ -6669,7 +6682,34 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
                     g_wmvRateVideo = video;
                     g_wmvRate = playRate;
                     g_wmvUserClock = previousUserClock;
-                    result = BridgeSuccess;
+                    if (previousUserClock &&
+                        IsNormalPlaybackRate(playRate))
+                    {
+                        auto currentAddress = reinterpret_cast<const int*>(
+                            reinterpret_cast<unsigned char*>(movie) +
+                                MovieCurrentFrameOffset);
+                        if (!IsReadable(currentAddress,
+                                sizeof(*currentAddress)) ||
+                            InterlockedCompareExchangePointer(
+                                &g_wmvClockMovie, nullptr, nullptr) != movie)
+                        {
+                            result = ManagerError();
+                        }
+                        else
+                        {
+                            InterlockedExchange(
+                                &g_wmvClockReleaseFrame, *currentAddress);
+                            InterlockedExchange(
+                                &g_wmvClockStreaming, 0);
+                            InterlockedExchange(
+                                &g_wmvClockResult, E_PENDING);
+                            result = BridgeSuccess;
+                        }
+                    }
+                    else
+                    {
+                        result = BridgeSuccess;
+                    }
                 }
                 else
                 {
