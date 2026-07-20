@@ -2,6 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/KittyPingu/IStripperQuickPlayer)](https://github.com/KittyPingu/IStripperQuickPlayer/releases/latest)
 [![Build installer](https://github.com/KittyPingu/IStripperQuickPlayer/actions/workflows/release.yml/badge.svg)](https://github.com/KittyPingu/IStripperQuickPlayer/actions/workflows/release.yml)
+[Project website](https://kittypingu.github.io/IStripperQuickPlayer/)
 
 A Windows companion for browsing your local iStripper library, launching the
 card or clip you want, and controlling compatible desktop playback.
