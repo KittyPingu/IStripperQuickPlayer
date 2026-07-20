@@ -288,20 +288,65 @@ svg {
   font-size: .94rem;
 }
 
-.queue-section {
+.showcase-section {
+  position: relative;
+  scroll-margin-top: 74px;
   padding: 96px 0;
   background: var(--background-deep);
   border-bottom: 1px solid var(--border);
 }
 
-.queue-grid {
+.showcase-anchor {
+  position: absolute;
+  top: 0;
+  scroll-margin-top: 74px;
+}
+
+.showcase-tabs {
+  display: flex;
+  gap: 6px;
+  width: fit-content;
+  margin-bottom: 48px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.showcase-tabs button {
+  min-width: 112px;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.showcase-tabs button:hover,
+.showcase-tabs button:focus-visible {
+  color: var(--text);
+}
+
+.showcase-tabs button[aria-selected="true"] {
+  background: var(--blue);
+  color: #fff;
+}
+
+.showcase-slide {
   display: grid;
   grid-template-columns: .76fr 1.44fr;
   align-items: center;
   gap: 72px;
 }
 
-.queue-copy h2,
+.showcase-slide[hidden] {
+  display: none;
+}
+
+.showcase-copy h2,
 .download-panel h2 {
   margin: 0;
   font-size: clamp(2rem, 4vw, 3.2rem);
@@ -309,26 +354,26 @@ svg {
   letter-spacing: -.035em;
 }
 
-.queue-copy p {
+.showcase-copy p {
   margin: 24px 0 0;
   color: var(--muted);
   font-size: 1.05rem;
 }
 
-.queue-copy ul {
+.showcase-copy ul {
   margin: 25px 0 0;
   padding: 0;
   list-style: none;
 }
 
-.queue-copy li {
+.showcase-copy li {
   position: relative;
   margin: 12px 0;
   padding-left: 22px;
   color: #d0d7df;
 }
 
-.queue-copy li::before {
+.showcase-copy li::before {
   content: "";
   position: absolute;
   top: .72em;
@@ -377,8 +422,9 @@ code {
   stroke-linejoin: round;
 }
 
-.queue-frame {
-  height: 470px;
+.showcase-frame {
+  position: relative;
+  height: 540px;
   overflow: hidden;
   border: 1px solid #354352;
   border-radius: var(--radius);
@@ -386,12 +432,165 @@ code {
   box-shadow: 0 24px 70px rgba(0, 0, 0, .34);
 }
 
-.queue-frame img {
+.showcase-frame img {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: cover;
-  object-position: center bottom;
+  object-fit: contain;
+  transition: filter 180ms ease, transform 240ms ease;
+}
+
+.annotated-frame:hover img,
+.annotated-frame:focus-within img {
+  filter: brightness(.65);
+  transform: scale(1.015);
+}
+
+.annotation-hint {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 6px;
+  background: rgba(5, 11, 18, .86);
+  color: #d7dfe7;
+  font-size: .76rem;
+  line-height: 1;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.annotated-frame:hover .annotation-hint,
+.annotated-frame:focus-within .annotation-hint {
+  opacity: 0;
+}
+
+.hotspot {
+  position: absolute;
+  z-index: 2;
+  top: var(--y);
+  left: var(--x);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(.65);
+  transition: opacity 180ms ease var(--delay),
+    transform 180ms ease var(--delay);
+}
+
+.annotated-frame:hover .hotspot,
+.annotated-frame:focus-within .hotspot {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.hotspot-pin {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 0 6px rgba(22, 131, 255, .23);
+  color: #fff;
+  font-size: .72rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.hotspot-card {
+  position: absolute;
+  width: 225px;
+  display: block;
+  padding: 13px 15px;
+  border: 1px solid #347fcb;
+  border-radius: 8px;
+  background: rgba(5, 11, 18, .96);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .48);
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 400;
+  line-height: 1.42;
+  text-align: left;
+  white-space: normal;
+}
+
+.hotspot-card strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text);
+  font-size: .86rem;
+}
+
+.hotspot-right .hotspot-card {
+  top: 50%;
+  left: 38px;
+  transform: translateY(-50%);
+}
+
+.hotspot-left .hotspot-card {
+  top: 50%;
+  right: 38px;
+  transform: translateY(-50%);
+}
+
+.hotspot-down .hotspot-card {
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.hotspot-up .hotspot-card {
+  bottom: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.showcase-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 28px;
+  color: var(--muted);
+  font-size: .88rem;
+}
+
+.showcase-controls button {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.showcase-controls button:hover,
+.showcase-controls button:focus-visible {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.showcase-controls svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .compatibility {
@@ -495,7 +694,7 @@ code {
   }
 
   .hero-grid,
-  .queue-grid {
+  .showcase-slide {
     grid-template-columns: 1fr;
   }
 
@@ -521,7 +720,7 @@ code {
     border-top: 1px solid var(--border);
   }
 
-  .queue-grid {
+  .showcase-slide {
     gap: 44px;
   }
 }
@@ -556,7 +755,7 @@ code {
   }
 
   .hero,
-  .queue-section {
+  .showcase-section {
     padding: 62px 0;
   }
 
@@ -606,8 +805,27 @@ code {
     padding-bottom: 0 !important;
   }
 
-  .queue-frame {
-    height: 330px;
+  .showcase-tabs {
+    width: 100%;
+    margin-bottom: 36px;
+  }
+
+  .showcase-tabs button {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 8px;
+  }
+
+  .showcase-frame {
+    height: 430px;
+  }
+
+  .showcase-controls {
+    justify-content: center;
+  }
+
+  .hotspot-card {
+    width: min(205px, 65vw);
   }
 
   .compatibility {
@@ -656,5 +874,21 @@ code {
   *::before,
   *::after {
     transition-duration: .01ms !important;
+  }
+}
+
+@media (hover: none) {
+  .hotspot {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+  }
+
+  .hotspot-card {
+    display: none;
+  }
+
+  .hotspot:focus .hotspot-card {
+    display: block;
   }
 }
