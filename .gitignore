@@ -363,6 +363,9 @@ MigrationBackup/
 FodyWeavers.xsd
 /IstripperQuickPlayer/*
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
+!/IstripperQuickPlayer/Controls/
+/IstripperQuickPlayer/Controls/*
+!/IstripperQuickPlayer/Controls/PlaybackSeekBar.cs
 !/IstripperQuickPlayer/DataModel/
 /IstripperQuickPlayer/DataModel/*
 !/IstripperQuickPlayer/DataModel/Persistence.cs
