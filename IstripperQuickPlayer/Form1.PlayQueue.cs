@@ -25,6 +25,13 @@ namespace IStripperQuickPlayer
             new("Enable play next queue") { CheckOnClick = true };
         private readonly ToolStripMenuItem autoQueueLengthToolStripMenuItem =
             new("Automatic queue length");
+        private readonly ToolStripMenuItem requeueCompletedManualItemsToolStripMenuItem =
+            new("Return completed manual items to end")
+            {
+                CheckOnClick = true
+            };
+        private readonly ToolStripMenuItem randomManualQueueSelectionToolStripMenuItem =
+            new("Choose manual items randomly") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackSettingsToolStripMenuItem =
             new("Playback & queue");
         private readonly ToolStripMenuItem librarySettingsToolStripMenuItem =
@@ -49,6 +56,7 @@ namespace IStripperQuickPlayer
         private SplitContainer playQueueSections = null!;
         private bool playQueueExpanded = true;
         private bool playQueueDividerMoving;
+        private bool resizingPlayQueueFlows;
         private int playQueueExpandedHeight = DefaultPlayQueueExpandedHeight;
         private int playQueueResizeStartY;
         private int playQueueResizeStartHeight;
@@ -59,14 +67,25 @@ namespace IStripperQuickPlayer
         private bool queuedAnimationPendingConfirmed;
         private DateTime queuedAnimationProtectedUntil = DateTime.MinValue;
         private PlayQueueEntry? activeQueuedCard;
+        private PlayQueueEntry? activeManualQueueEntry;
         private long activeQueuedCardStartedAt = -1;
         private string activeQueuedCardLastAnimationPath = "";
         private readonly System.Windows.Forms.Timer clipSelectionPlaybackTimer =
             new() { Interval = 15 };
+        private readonly System.Windows.Forms.Timer playQueueResizeTimer =
+            new() { Interval = 75 };
         private bool clipSelectionPlaybackPending;
         private bool clipDragInProgress;
         private void SetupPlayQueue()
         {
+            components.Add(playQueueResizeTimer);
+            playQueueResizeTimer.Tick += (_, _) =>
+            {
+                playQueueResizeTimer.Stop();
+                if (!playQueueResizeGrip.Capture &&
+                    !playQueueDividerMoving)
+                    ResizeBothPlayQueueFlows();
+            };
             playQueueExpandedHeight = Math.Max(110,
                 Properties.Settings.Default.PlayQueueHeight);
             enablePlayQueueToolStripMenuItem.Checked =
@@ -86,6 +105,18 @@ namespace IStripperQuickPlayer
                 if (enablePlayQueueToolStripMenuItem.Checked)
                     RebuildAutomaticQueue();
             };
+            requeueCompletedManualItemsToolStripMenuItem.Checked =
+                Properties.Settings.Default.RequeueCompletedManualItems;
+            requeueCompletedManualItemsToolStripMenuItem.CheckedChanged +=
+                (_, _) => Properties.Settings.Default
+                    .RequeueCompletedManualItems =
+                        requeueCompletedManualItemsToolStripMenuItem.Checked;
+            randomManualQueueSelectionToolStripMenuItem.Checked =
+                Properties.Settings.Default.RandomManualQueueSelection;
+            randomManualQueueSelectionToolStripMenuItem.CheckedChanged +=
+                (_, _) => Properties.Settings.Default
+                    .RandomManualQueueSelection =
+                        randomManualQueueSelectionToolStripMenuItem.Checked;
 
             foreach (int length in new[] { 5, 10, 15, 20, 30, 50 })
             {
@@ -187,8 +218,7 @@ namespace IStripperQuickPlayer
             playQueueSections.SplitterMoved += (_, _) =>
             {
                 playQueueDividerMoving = false;
-                ResizePlayQueueCards(manualQueueFlow);
-                ResizePlayQueueCards(automaticQueueFlow);
+                ResizeBothPlayQueueFlows();
             };
 
             playQueueBody = new Panel { Dock = DockStyle.Fill };
@@ -221,15 +251,17 @@ namespace IStripperQuickPlayer
             {
                 ClearPlayQueueCardHighlight();
                 if (!playQueueResizeGrip.Capture &&
-                    !playQueueDividerMoving)
-                    ResizePlayQueueCards(manualQueueFlow);
+                    !playQueueDividerMoving &&
+                    !resizingPlayQueueFlows)
+                    SchedulePlayQueueResize();
             };
             automaticQueueFlow.SizeChanged += (_, _) =>
             {
                 ClearPlayQueueCardHighlight();
                 if (!playQueueResizeGrip.Capture &&
-                    !playQueueDividerMoving)
-                    ResizePlayQueueCards(automaticQueueFlow);
+                    !playQueueDividerMoving &&
+                    !resizingPlayQueueFlows)
+                    SchedulePlayQueueResize();
             };
             listModelsNew.MouseMove += listModelsNew_MouseMoveForQueue;
             listClips.ItemDrag += listClips_ItemDragForQueue;
@@ -360,6 +392,8 @@ namespace IStripperQuickPlayer
             [
                 enablePlayQueueToolStripMenuItem,
                 autoQueueLengthToolStripMenuItem,
+                requeueCompletedManualItemsToolStripMenuItem,
+                randomManualQueueSelectionToolStripMenuItem,
                 new ToolStripSeparator(),
                 enforceCardFilterToolStripMenuItem,
                 randomPlayOrderToolStripMenuItem,
@@ -500,7 +534,6 @@ namespace IStripperQuickPlayer
             {
                 flow.ResumeLayout(true);
             }
-            flow.PerformLayout();
         }
 
         private static System.Drawing.Size PlayQueueCardSize(
@@ -550,7 +583,30 @@ namespace IStripperQuickPlayer
             finally
             {
                 flow.ResumeLayout(true);
-                flow.PerformLayout();
+            }
+        }
+
+        private void SchedulePlayQueueResize()
+        {
+            playQueueResizeTimer.Stop();
+            playQueueResizeTimer.Start();
+        }
+
+        private void ResizeBothPlayQueueFlows()
+        {
+            playQueueResizeTimer.Stop();
+            if (resizingPlayQueueFlows)
+                return;
+
+            resizingPlayQueueFlows = true;
+            try
+            {
+                ResizePlayQueueCards(manualQueueFlow);
+                ResizePlayQueueCards(automaticQueueFlow);
+            }
+            finally
+            {
+                resizingPlayQueueFlows = false;
             }
         }
 
@@ -585,8 +641,8 @@ namespace IStripperQuickPlayer
             playQueueResizeGrip.Capture = false;
             Properties.Settings.Default.PlayQueueHeight =
                 playQueueExpandedHeight;
-            ResizePlayQueueCards(manualQueueFlow);
-            ResizePlayQueueCards(automaticQueueFlow);
+            playQueueResizeTimer.Stop();
+            ResizeBothPlayQueueFlows();
             AdjustControls();
         }
 
@@ -1024,17 +1080,29 @@ namespace IStripperQuickPlayer
                 return false;
             }
 
+            bool completedManualItemRequeued = false;
+            if (activeManualQueueEntry != null && activeQueuedCard == null)
+                completedManualItemRequeued =
+                    CompleteActiveManualQueueEntry();
             if (TryContinueQueuedCard(out animationPath, out cardTag))
                 return true;
+            completedManualItemRequeued |= CompleteActiveManualQueueEntry();
 
             while (manualPlayQueue.Count > 0)
             {
-                PlayQueueEntry entry = manualPlayQueue[0];
-                manualPlayQueue.RemoveAt(0);
+                int selectableCount = manualPlayQueue.Count -
+                    (completedManualItemRequeued &&
+                     manualPlayQueue.Count > 1 ? 1 : 0);
+                int index = Properties.Settings.Default
+                    .RandomManualQueueSelection
+                        ? Random.Shared.Next(selectableCount) : 0;
+                PlayQueueEntry entry = manualPlayQueue[index];
+                manualPlayQueue.RemoveAt(index);
                 if (TryResolveQueueEntry(entry, out animationPath))
                 {
                     cardTag = entry.CardTag;
                     StartQueuedCardSession(entry, animationPath);
+                    activeManualQueueEntry = entry;
                     RenderPlayQueues();
                     return true;
                 }
@@ -1126,7 +1194,7 @@ namespace IStripperQuickPlayer
                 !TryResolveQueueEntry(activeQueuedCard, out animationPath,
                     activeQueuedCardLastAnimationPath))
             {
-                ClearQueuedCardSession();
+                ClearQueuedCardSession(clearManualQueueEntry: false);
                 return false;
             }
 
@@ -1149,11 +1217,36 @@ namespace IStripperQuickPlayer
             activeQueuedCardLastAnimationPath = animationPath;
         }
 
-        private void ClearQueuedCardSession()
+        private bool CompleteActiveManualQueueEntry()
+        {
+            bool requeue = Properties.Settings.Default
+                .RequeueCompletedManualItems &&
+                activeManualQueueEntry != null &&
+                IsAvailableQueueEntry(activeManualQueueEntry);
+            FinishManualQueueEntry(manualPlayQueue,
+                ref activeManualQueueEntry, requeue);
+            return requeue;
+        }
+
+        private static void FinishManualQueueEntry(
+            List<PlayQueueEntry> queue, ref PlayQueueEntry? active,
+            bool requeue)
+        {
+            if (active == null)
+                return;
+            if (requeue)
+                queue.Add(active);
+            active = null;
+        }
+
+        private void ClearQueuedCardSession(
+            bool clearManualQueueEntry = true)
         {
             activeQueuedCard = null;
             activeQueuedCardStartedAt = -1;
             activeQueuedCardLastAnimationPath = "";
+            if (clearManualQueueEntry)
+                activeManualQueueEntry = null;
         }
 
         private static bool ShouldContinueQueuedCard(long startedAt,

@@ -193,6 +193,13 @@ namespace IStripperQuickPlayer
                 1_000, 61_000, 1));
             System.Diagnostics.Debug.Assert(!ShouldContinueQueuedCard(
                 1_000, 61_001, 1));
+            List<PlayQueueEntry> requeueCheck = [new("second")];
+            PlayQueueEntry? completedQueueCheck = new("first", "clip.vghd");
+            FinishManualQueueEntry(requeueCheck,
+                ref completedQueueCheck, true);
+            System.Diagnostics.Debug.Assert(completedQueueCheck == null &&
+                requeueCheck.Select(entry => entry.CardTag)
+                    .SequenceEqual(["second", "first"]));
             DateTime stallCheck = DateTime.UtcNow;
             System.Diagnostics.Debug.Assert(LegacyPlaybackStalledNearEnd(
                 96_000, 100_000, stallCheck.AddSeconds(-3), stallCheck, 3));
@@ -3204,7 +3211,8 @@ namespace IStripperQuickPlayer
                     lblNowPlaying.Text = "Now Playing: " + nowPlaying));
             if (Properties.Settings.Default.AutoWallpaper && doWallpaper &&
                 nowPlaying != "")
-                BeginInvoke((Action)(() => _ = ChangeWallpaper()));
+                BeginInvoke((Action)(() => _ = ChangeWallpaper(
+                    onlyWhenCardChanges: true)));
         }
 
         private bool LegacyPlaybackStalledNearEnd(int elapsed, int total,
@@ -3916,16 +3924,22 @@ namespace IStripperQuickPlayer
 
         private async void cmdWallpaper_click(object sender, EventArgs e)
         {
-            lastWallpaperClipNumber = 0;
             lastWallpaperShortTag = "";
             await ChangeWallpaper();
         }
 
         private string lastWallpaperShortTag = "";
-        private int lastWallpaperClipNumber = 0;
-        private async System.Threading.Tasks.Task ChangeWallpaper(bool NotFromCheck = true)
+        private async System.Threading.Tasks.Task ChangeWallpaper(
+            bool NotFromCheck = true, bool onlyWhenCardChanges = false)
         {
             System.Diagnostics.Debug.WriteLine("ChangeWallpaper called with nowPlayingTagShort=" + nowPlayingTagShort + ", lbl=" + lblNowPlaying.Text);
+            if (string.IsNullOrEmpty(nowPlayingTagShort) ||
+                string.IsNullOrEmpty(lblNowPlaying.Text))
+                return;
+            if (onlyWhenCardChanges && string.Equals(lastWallpaperShortTag,
+                    nowPlayingTagShort, StringComparison.OrdinalIgnoreCase))
+                return;
+            lastWallpaperShortTag = nowPlayingTagShort;
             //check that this wallpaper really matches filters
             ModelCard? model = Datastore.findCardByTag(nowPlayingTagShort.Split("\\")[0]);
             ListViewItem? res = null;
@@ -3940,9 +3954,6 @@ namespace IStripperQuickPlayer
                 res2 = clipstest.Where(c => c.clipNumber == nowPlayingClipNumber).FirstOrDefault();
             }
 
-            if (nowPlayingTagShort == null || nowPlayingTagShort.Length == 0) return;
-            if (string.IsNullOrEmpty(lblNowPlaying.Text)) return;
-
             string modelname = GetModelsString(model);
 
             foreach (ToolStripMenuItem item in
@@ -3955,11 +3966,7 @@ namespace IStripperQuickPlayer
                     {
                         CardPhotos photos = new CardPhotos();
                         await photos.LoadCardPhotos(client, nowPlayingTagShort);
-                        if (res2 != null &&
-                            ((lastWallpaperClipNumber != nowPlayingClipNumber ||
-                              lastWallpaperClipNumber == 0) ||
-                             (lastWallpaperShortTag == "" ||
-                              lastWallpaperShortTag != nowPlayingTagShort)))
+                        if (res2 != null)
                         {
                             await Wallpaper.ChangeWallpaper(monitorNumber,
                                 photos.getRandomWidescreenURL(), modelname,
@@ -3972,8 +3979,6 @@ namespace IStripperQuickPlayer
                     Wallpaper.RestoreWallpaperByID(monitorNumber);
                 }
             }
-            lastWallpaperShortTag = nowPlayingTagShort;
-            lastWallpaperClipNumber = nowPlayingClipNumber;
         }
 
         private string GetModelsString(ModelCard card)
@@ -4030,7 +4035,6 @@ namespace IStripperQuickPlayer
         private async void showTextToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;
-            lastWallpaperClipNumber = 0;
             lastWallpaperShortTag = "";
             await ChangeWallpaper();
         }
@@ -4139,52 +4143,43 @@ namespace IStripperQuickPlayer
         private void AdjustControls()
         {
             if (spaceRightOfListModel == 0) return;
-            Graphics g = this.CreateGraphics();
-            float dy, dx = 120f;
-            try
-            {
-                dx = g.DpiX;
-                dy = g.DpiY;
-            }
-            finally
-            {
-                g.Dispose();
-            }
+            float dpi = DeviceDpi;
 
             int modelListHeight = Math.Max(0,
                 splitContainer1.Panel1.ClientSize.Height -
-                listModelsNew.Top - (int)(18 * dx / 120));
-            listClips.Top = txtClipType.Bottom + 10;
+                listModelsNew.Top - (int)(18 * dpi / 120));
+            int clipTop = txtClipType.Bottom + 10;
+            int clipWidth = splitContainer1.Panel2.Width - 28;
             int minimumClipListHeight = Math.Max(100,
-                (int)(150 * dx / 144));
+                (int)(150 * dpi / 144));
             int preferredClipListHeight =
                 splitContainer1.Panel2.ClientSize.Height -
-                panelModelDetails.Height - (int)(18.0 * dx / 96.0) -
-                listClips.Top;
+                panelModelDetails.Height - (int)(18.0 * dpi / 96.0) -
+                clipTop;
             int maximumClipListHeight = Math.Max(0,
                 splitContainer1.Panel2.ClientSize.Height -
-                listClips.Top - 8);
-            listClips.Height = Math.Min(maximumClipListHeight,
+                clipTop - 8);
+            int clipHeight = Math.Min(maximumClipListHeight,
                 Math.Max(minimumClipListHeight,
                     preferredClipListHeight));
-            panelModelDetails.Top = listClips.Bottom + 8;
+
             listModelsNew.Size = new Size(
                 splitContainer1.Panel1.Width - 24, modelListHeight);
             panelClip.Width = splitContainer1.Panel2.Width;
-            //cmdWallpaper.Left = panelClip.Width -  370; //(int)(370*dx/120);
-            //cmdNextClip.Left = cmdWallpaper.Right + 5;
-            //cmdShowModel.Left = cmdNextClip.Right + 5;            
-            listClips.Width = panelClip.Width - 28;
+            listClips.SetBounds(listClips.Left, clipTop,
+                clipWidth, clipHeight);
+            panelModelDetails.SetBounds(panelModelDetails.Left,
+                listClips.Bottom + 8, clipWidth,
+                panelModelDetails.Height);
             cmdShowModel.Left = listClips.Right - cmdShowModel.Width;
             cmdNextClip.Left = cmdShowModel.Left - cmdNextClip.Width - 5;
             cmdWallpaper.Left = cmdNextClip.Left - cmdWallpaper.Width - 5;
-            cmdPhotos.Top = listClips.Top;
-            cmdPhotos.Left = listClips.Right - cmdPhotos.Width;// - System.Windows.Forms.SystemInformation.VerticalScrollBarWidth;
-            panelModelDetails.Width = listClips.Width;
-            txtDescription.Width =
-                panelModelDetails.ClientSize.Width - txtDescription.Left - 2;
-            txtUserTags.Width =
-                panelModelDetails.ClientSize.Width - txtUserTags.Left - 2;
+            cmdPhotos.Location = new Point(
+                listClips.Right - cmdPhotos.Width, listClips.Top);
+            txtDescription.Width = panelModelDetails.ClientSize.Width -
+                txtDescription.Left - 2;
+            txtUserTags.Width = panelModelDetails.ClientSize.Width -
+                txtUserTags.Left - 2;
         }
 
         private void listModelsNew_MouseLeave(object sender, EventArgs e)

@@ -991,7 +991,7 @@
             // numMinSizeMB
             // 
             numMinSizeMB.Increment = new decimal(new int[] { 10, 0, 0, 0 });
-            numMinSizeMB.Location = new Point(935, 133);
+            numMinSizeMB.Location = new Point(935, 135);
             numMinSizeMB.Margin = new Padding(6, 5, 6, 5);
             numMinSizeMB.Maximum = new decimal(new int[] { 9999, 0, 0, 0 });
             numMinSizeMB.Name = "numMinSizeMB";
@@ -1002,7 +1002,7 @@
             // lblMinSize
             // 
             lblMinSize.AutoSize = true;
-            lblMinSize.Location = new Point(804, 135);
+            lblMinSize.Location = new Point(804, 137);
             lblMinSize.Margin = new Padding(6, 0, 6, 0);
             lblMinSize.Name = "lblMinSize";
             lblMinSize.Size = new Size(119, 25);

@@ -577,6 +577,30 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool RequeueCompletedManualItems {
+            get {
+                return ((bool)(this["RequeueCompletedManualItems"]));
+            }
+            set {
+                this["RequeueCompletedManualItems"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool RandomManualQueueSelection {
+            get {
+                return ((bool)(this["RandomManualQueueSelection"]));
+            }
+            set {
+                this["RandomManualQueueSelection"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("330")]
         public int PlayQueueHeight {
             get {
