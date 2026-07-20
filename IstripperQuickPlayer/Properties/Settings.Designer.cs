@@ -541,6 +541,18 @@ namespace IStripperQuickPlayer.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool AvoidRecentRepeats {
+            get {
+                return ((bool)(this["AvoidRecentRepeats"]));
+            }
+            set {
+                this["AvoidRecentRepeats"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool DarkMode {
             get {

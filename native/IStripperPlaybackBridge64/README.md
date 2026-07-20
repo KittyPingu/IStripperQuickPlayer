@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v35
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v58
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -331,13 +331,10 @@ finishes with the original `Movie+0x98` counter at the requested position.
 
 `Movie::pause` and `Movie::resume` do not control `CBpkSound` themselves, so
 bridge v21 suspends and resumes the associated `QAudioOutput` with the Movie.
-`Movie::setPlayRate` likewise changes only the picture scheduler. The bridge's
-guarded PCM hook linearly resamples each decoded stereo block to the selected
-duration, preserving audio/video timing and decoder back-pressure from 0.25x
-through 4x. This changes pitch rather than performing time-stretching. Each
-rate transition restarts the output and refreshes `CBpkSound`'s device pointer
-so already queued samples from the previous rate cannot drift into the new
-timeline.
+`Movie::setPlayRate` likewise changes only the picture scheduler. The bridge
+therefore suppresses PCM writes and suspends the output whenever playback is
+not 1x. Returning to 1x restarts the output, refreshes `CBpkSound`'s device
+pointer, and discards samples queued at the previous timeline position.
 
 ## Why the bridge does not clone vghd's decoder
 

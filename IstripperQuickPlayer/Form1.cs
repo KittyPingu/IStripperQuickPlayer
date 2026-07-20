@@ -20,6 +20,7 @@ using System.Text;
 using System.Text.Json;
 using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
 using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
+using SaveFileDialog = System.Windows.Forms.SaveFileDialog;
 using Size = System.Drawing.Size;
 using Task = System.Threading.Tasks.Task;
 //using WebView2.DevTools.Dom;
@@ -103,6 +104,15 @@ namespace IStripperQuickPlayer
             new();
         private readonly ToolStripMenuItem alphaCheckpointCacheSizeToolStripMenuItem =
             new("Alpha checkpoint cache size");
+        private readonly ToolStripMenuItem avoidRecentRepeatsToolStripMenuItem =
+            new("Avoid recently played clips");
+        private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
+            new("Playback History...");
+        private readonly ToolStripMenuItem backupToolStripMenuItem =
+            new("Backup QuickPlayer Data...");
+        private readonly ToolStripMenuItem restoreToolStripMenuItem =
+            new("Restore QuickPlayer Data...");
+        private readonly object playbackHistoryLock = new();
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
@@ -118,6 +128,7 @@ namespace IStripperQuickPlayer
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
         private DateTime playbackLastProgressAt = DateTime.UtcNow;
         private bool formIsClosing;
+        private bool restoringBackup;
         private ControlScrollListener? _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
@@ -193,6 +204,34 @@ namespace IStripperQuickPlayer
                 "Control+Alt+Left", out _, out _));
             System.Diagnostics.Debug.Assert(TryParseHotKey(
                 "Control+Alt+Home", out _, out _));
+            MyData historyCheck = new();
+            historyCheck.AddPlayback(@"c0001\c0001_1.vghd",
+                DateTime.UtcNow);
+            System.Diagnostics.Debug.Assert(historyCheck
+                .RecentPlaybackPaths(100).Contains(
+                    @"C0001\C0001_1.VGHD"));
+            System.Diagnostics.Debug.Assert(ExcludeRecentClips(
+                new[] { new ModelClip { clipName = "c0001_1.vghd" } },
+                historyCheck.RecentPlaybackPaths(100)).Count == 0);
+            string backupCheckPath = Path.Combine(Path.GetTempPath(),
+                $"quickplayer-backup-check-{Guid.NewGuid():N}.iqpb");
+            try
+            {
+                Persistence.Save(backupCheckPath, new QuickPlayerBackup
+                {
+                    UserData = historyCheck,
+                    Settings = new() { ["Randomize"] = "True" }
+                });
+                QuickPlayerBackup backupCheck =
+                    Persistence.Load<QuickPlayerBackup>(backupCheckPath);
+                System.Diagnostics.Debug.Assert(
+                    backupCheck.UserData.PlaybackHistory.Count == 1 &&
+                    backupCheck.Settings["Randomize"] == "True");
+            }
+            finally
+            {
+                File.Delete(backupCheckPath);
+            }
             TextSearchDocument searchCheck = new(
                 "Anna Delos c1001 Pool Side duo red table",
                 "Anna Delos", "c1001", "Pool Side", "", "duo red table");
@@ -244,6 +283,29 @@ namespace IStripperQuickPlayer
                 settingsToolStripMenuItem.DropDownItems.IndexOf(
                     alphaCheckpointCacheToolStripMenuItem) + 1,
                 alphaCheckpointCacheSizeToolStripMenuItem);
+            avoidRecentRepeatsToolStripMenuItem.CheckOnClick = true;
+            avoidRecentRepeatsToolStripMenuItem.Checked =
+                Properties.Settings.Default.AvoidRecentRepeats;
+            avoidRecentRepeatsToolStripMenuItem.CheckedChanged += (_, _) =>
+                Properties.Settings.Default.AvoidRecentRepeats =
+                    avoidRecentRepeatsToolStripMenuItem.Checked;
+            settingsToolStripMenuItem.DropDownItems.Insert(
+                settingsToolStripMenuItem.DropDownItems.IndexOf(
+                    randomPlayOrderToolStripMenuItem) + 1,
+                avoidRecentRepeatsToolStripMenuItem);
+            playbackHistoryToolStripMenuItem.Click += (_, _) =>
+                ShowPlaybackHistory();
+            backupToolStripMenuItem.Click += (_, _) => BackupQuickPlayerData();
+            restoreToolStripMenuItem.Click += (_, _) => RestoreQuickPlayerData();
+            fileToolStripMenuItem.DropDownItems.Insert(
+                fileToolStripMenuItem.DropDownItems.Count - 1,
+                playbackHistoryToolStripMenuItem);
+            fileToolStripMenuItem.DropDownItems.Insert(
+                fileToolStripMenuItem.DropDownItems.Count - 1,
+                backupToolStripMenuItem);
+            fileToolStripMenuItem.DropDownItems.Insert(
+                fileToolStripMenuItem.DropDownItems.Count - 1,
+                restoreToolStripMenuItem);
             updateToolStripMenuItem.Text = "Check for Updates...";
             updateToolStripMenuItem.Click +=
                 async (_, _) => await CheckForUpdatesAsync(true);
@@ -615,7 +677,8 @@ namespace IStripperQuickPlayer
         internal void SaveMyData()
         {
             string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
-            Persistence.Save(mdatafilepath, myData ?? new MyData());
+            lock (playbackHistoryLock)
+                Persistence.Save(mdatafilepath, myData ?? new MyData());
         }
 
         internal MyData RetrieveMyData()
@@ -625,13 +688,197 @@ namespace IStripperQuickPlayer
             {
                 string mdatafilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "mydata.bin");
                 if (!System.IO.File.Exists(mdatafilepath)) return new MyData();
-                return Persistence.Load<MyData>(mdatafilepath);
+                MyData data = Persistence.Load<MyData>(mdatafilepath);
+                data.Normalize();
+                return data;
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error reading MyData file\r\n" + ex.Message);
                 return new MyData();
             }
+        }
+
+        private void BackupQuickPlayerData()
+        {
+            using SaveFileDialog dialog = new()
+            {
+                Filter = "QuickPlayer backup (*.iqpb)|*.iqpb",
+                FileName = $"IStripperQuickPlayer-{DateTime.Now:yyyy-MM-dd}.iqpb",
+                AddExtension = true,
+                DefaultExt = "iqpb"
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            try
+            {
+                SaveMyData();
+                FilterSettingsList.Persist();
+                Properties.Settings.Default.Save();
+                QuickPlayerBackup backup = new()
+                {
+                    UserData = myData ?? new MyData(),
+                    Filters = FilterSettingsList.filters,
+                    Settings = Properties.Settings.Default.Properties
+                        .Cast<System.Configuration.SettingsProperty>()
+                        .ToDictionary(property => property.Name, property =>
+                            Properties.Settings.Default.PropertyValues[
+                                property.Name]?.SerializedValue?.ToString())
+                };
+                lock (playbackHistoryLock)
+                    Persistence.Save(dialog.FileName, backup);
+                MessageBox.Show(this, "QuickPlayer data was backed up.",
+                    "Backup Complete", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "The backup could not be created.\r\n" +
+                    ex.Message, "Backup Failed", MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
+        private void RestoreQuickPlayerData()
+        {
+            using OpenFileDialog dialog = new()
+            {
+                Filter = "QuickPlayer backup (*.iqpb)|*.iqpb",
+                CheckFileExists = true
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            try
+            {
+                QuickPlayerBackup backup =
+                    Persistence.Load<QuickPlayerBackup>(dialog.FileName);
+                if (backup.FormatVersion != 1 || backup.UserData == null ||
+                    backup.Filters == null || backup.Settings == null)
+                {
+                    throw new InvalidDataException(
+                        "This is not a supported QuickPlayer backup.");
+                }
+                if (MessageBox.Show(this,
+                        "Restore all QuickPlayer settings, filters, ratings, " +
+                        "tags, favourites and playback history?\r\n\r\n" +
+                        "QuickPlayer will restart afterwards.",
+                        "Restore Backup", MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question) != DialogResult.Yes)
+                {
+                    return;
+                }
+
+                backup.UserData.Normalize();
+                myData = backup.UserData;
+                FilterSettingsList.filters = backup.Filters;
+                foreach (KeyValuePair<string, string?> setting in backup.Settings)
+                {
+                    if (Properties.Settings.Default.Properties[setting.Key] ==
+                        null)
+                    {
+                        continue;
+                    }
+
+                    var value = Properties.Settings.Default.PropertyValues[
+                        setting.Key];
+                    value.SerializedValue = setting.Value;
+                    value.IsDirty = true;
+                }
+                SaveMyData();
+                FilterSettingsList.Persist();
+                Properties.Settings.Default.Save();
+                restoringBackup = true;
+                Application.Restart();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "The backup could not be restored.\r\n" +
+                    ex.Message, "Restore Failed", MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
+        private void ShowPlaybackHistory()
+        {
+            using Form dialog = new()
+            {
+                Text = "Playback History",
+                StartPosition = FormStartPosition.CenterParent,
+                Width = 850,
+                Height = 520,
+                MinimizeBox = false,
+                MaximizeBox = false
+            };
+            DataGridView grid = new()
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                RowHeadersVisible = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+            };
+            FlowLayoutPanel buttons = new()
+            {
+                Dock = DockStyle.Bottom,
+                Height = 48,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(6)
+            };
+            Button close = new() { Text = "Close", AutoSize = true };
+            Button clear = new() { Text = "Clear History", AutoSize = true };
+
+            void RefreshRows()
+            {
+                lock (playbackHistoryLock)
+                {
+                    grid.DataSource = myData?.PlaybackHistory
+                        .AsEnumerable()
+                        .Reverse()
+                        .Select(entry =>
+                        {
+                            string[] parts = entry.AnimationPath.Split('\\');
+                            string tag = parts.FirstOrDefault() ?? "";
+                            string clipName = parts.LastOrDefault() ?? "";
+                            ModelCard? card = Datastore.findCardByTag(tag);
+                            ModelClip? clip = card?.clips?.FirstOrDefault(
+                                item => string.Equals(item.clipName, clipName,
+                                    StringComparison.OrdinalIgnoreCase));
+                            return new
+                            {
+                                Played = entry.PlayedUtc.ToLocalTime(),
+                                Card = card == null ? tag :
+                                    $"{card.modelName}, {card.outfit}",
+                                Clip = clip?.clipNumber is int number
+                                    ? $"Clip {number}" : clipName
+                            };
+                        }).ToList();
+                }
+            }
+
+            close.Click += (_, _) => dialog.Close();
+            clear.Click += (_, _) =>
+            {
+                if (MessageBox.Show(dialog, "Clear all playback history?",
+                        "Clear History", MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question) != DialogResult.Yes)
+                {
+                    return;
+                }
+
+                lock (playbackHistoryLock)
+                    myData?.PlaybackHistory.Clear();
+                SaveMyData();
+                RefreshRows();
+            };
+            buttons.Controls.Add(close);
+            buttons.Controls.Add(clear);
+            dialog.Controls.Add(grid);
+            dialog.Controls.Add(buttons);
+            RefreshRows();
+            dialog.ShowDialog(this);
         }
 
         private void lblModelsLoaded_Click(object sender, EventArgs e)
@@ -1301,7 +1548,6 @@ namespace IStripperQuickPlayer
             {
                 if (tempProcess.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && tempProcess.PlatformBits == 64)
                 {
-                    timerhook?.Dispose();
                     NktHook hook = _spyMgr.CreateHook("KernelBase.dll!RegSetValueExW", (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
                     hook.Hook(true);
                     hook.Attach(tempProcess, true);
@@ -1311,8 +1557,6 @@ namespace IStripperQuickPlayer
                     clickingNowPlaying = true;
                     GetNowPlaying();
                     clickingNowPlaying = false;
-
-                    //set up a watch for this process finishing so we can start looking for a new one again
                     return true;
                 }
                 tempProcess = enumProcess.Next();
@@ -1329,12 +1573,69 @@ namespace IStripperQuickPlayer
 
             try
             {
-                if (InjectVGHDProcess()) timerhook?.Dispose();
+                if (AttachedVghdIsRunning())
+                    return;
+                if (Volatile.Read(ref vghd_procID) != 0)
+                    ResetVghdAttachment();
+                InjectVGHDProcess();
+            }
+            catch (Exception exception)
+            {
+                ResetVghdAttachment();
+                Debug.WriteLine(
+                    "iStripper process attachment failed: " +
+                    exception.Message);
             }
             finally
             {
                 Interlocked.Exchange(ref vghdInjectionInProgress, 0);
             }
+        }
+
+        private bool AttachedVghdIsRunning()
+        {
+            int processId = Volatile.Read(ref vghd_procID);
+            if (processId == 0)
+                return false;
+
+            try
+            {
+                using Process process = Process.GetProcessById(processId);
+                return !process.HasExited &&
+                    process.ProcessName.Equals("vghd",
+                        StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void ResetVghdAttachment()
+        {
+            lock (playbackApiLock)
+            {
+                vghd_procID = 0;
+                playerLockBridgeLoaded = false;
+                playbackBridgeLoaded = false;
+                movieCaptureHookInstalled = false;
+                playbackMovieRegistered = false;
+                playbackFastDecodeEnabled = false;
+                playbackSeekingSupported = true;
+                playbackSeekReady = false;
+                playbackDecoderKind = 0;
+                playbackTimelineAnimationPath = "";
+                playbackTimelineDurationMilliseconds = 0;
+                playbackLastKnownElapsedMilliseconds = 0;
+                playbackAlphaCheckpointBucket = -1;
+                playbackNextMovieDiscoveryAt = DateTime.MinValue;
+                playbackMovieCaptureFallbackAt = DateTime.MinValue;
+                playbackCompletedAnimationPath = "";
+                playbackRequestedAnimationPath = "";
+                playbackNextClipRetryAt = DateTime.MinValue;
+                playbackReplacementStableAt = DateTime.MinValue;
+            }
+            SetPlaybackStatus(string.Empty);
         }
 
         private void ConfigurePlaybackHooks(NktProcess process)
@@ -2475,6 +2776,81 @@ namespace IStripperQuickPlayer
             playbackReplacementStableAt = DateTime.MinValue;
         }
 
+        private HashSet<string> GetRecentPlaybackPaths()
+        {
+            if (!Properties.Settings.Default.AvoidRecentRepeats ||
+                myData == null)
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            lock (playbackHistoryLock)
+                return myData.RecentPlaybackPaths(100);
+        }
+
+        private static string GetAnimationPath(ModelClip clip)
+        {
+            string clipName = clip.clipName ?? "";
+            return string.IsNullOrEmpty(clipName)
+                ? ""
+                : clipName.Split('_')[0] + "\\" + clipName;
+        }
+
+        private static List<ModelClip> ExcludeRecentClips(
+            IEnumerable<ModelClip> clips, ISet<string> recentPaths)
+        {
+            return clips.Where(clip =>
+                !recentPaths.Contains(GetAnimationPath(clip))).ToList();
+        }
+
+        private bool TryChooseRandomAnimation(out string animationPath,
+            out string cardTag)
+        {
+            animationPath = "";
+            cardTag = "";
+            if (items == null || items.Length == 0)
+                return false;
+
+            HashSet<string> recentPaths = GetRecentPlaybackPaths();
+            var candidates = new List<(ListViewItem Item,
+                List<ModelClip> AllClips, List<ModelClip> FreshClips)>();
+            foreach (ListViewItem item in items)
+            {
+                ModelCard? card = Datastore.findCardByTag(
+                    item.Tag?.ToString() ?? "");
+                if (card?.clips == null)
+                    continue;
+
+                List<ModelClip> clips = FilterClipList(card.clips);
+                if (clips.Count == 0)
+                    continue;
+                candidates.Add((item, clips,
+                    ExcludeRecentClips(clips, recentPaths)));
+            }
+            if (candidates.Count == 0)
+                return false;
+
+            var alternatives = candidates.Where(candidate =>
+                !string.Equals(candidate.Item.Tag?.ToString(),
+                    nowPlayingTagShort, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (alternatives.Count > 0)
+                candidates = alternatives;
+
+            var freshCandidates = candidates.Where(candidate =>
+                candidate.FreshClips.Count > 0).ToList();
+            if (freshCandidates.Count > 0)
+                candidates = freshCandidates;
+
+            var selected = candidates[Random.Shared.Next(candidates.Count)];
+            List<ModelClip> selectableClips = selected.FreshClips.Count > 0
+                ? selected.FreshClips : selected.AllClips;
+            animationPath = GetAnimationPath(
+                selectableClips[Random.Shared.Next(selectableClips.Count)]);
+            cardTag = selected.Item.Tag?.ToString() ?? "";
+            return !string.IsNullOrEmpty(animationPath);
+        }
+
         private static string FormatPlaybackTime(int milliseconds)
         {
             TimeSpan time = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
@@ -2515,7 +2891,8 @@ namespace IStripperQuickPlayer
                 //check if this propsed card is in the filterd list
                 string newcardstring = str ?? "";
                 bool found = true;
-                if (Properties.Settings.Default.EnforceCardFilter)
+                if (Properties.Settings.Default.EnforceCardFilter ||
+                    Properties.Settings.Default.AvoidRecentRepeats)
                 {
                     if (string.IsNullOrEmpty(newcardstring) && !isAutoSelecting)
                     {
@@ -2542,67 +2919,33 @@ namespace IStripperQuickPlayer
                             string clipstring = newcardstring.Split("\\")[1];
                             res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
                         }
-                        if (res == null || res2 == null) found = false;
-                        while (!found)
+                        bool rejectedByFilter =
+                            Properties.Settings.Default.EnforceCardFilter &&
+                            (res == null || res2 == null);
+                        bool rejectedAsRecent =
+                            Properties.Settings.Default.AvoidRecentRepeats &&
+                            !string.Equals(newcardstring, nowPlayingPath,
+                                StringComparison.OrdinalIgnoreCase) &&
+                            GetRecentPlaybackPaths().Contains(newcardstring);
+                        found = !rejectedByFilter && !rejectedAsRecent;
+                        if (!found)
                         {
-                            //play a clip from a filtered card instead
-                            //find a new model from the filtered cards
-                            if (items == null || items.Length < 1) return;
-                            string newtag = nowPlayingFilterMatch;
-                            if (Properties.Settings.Default.Randomize)
+                            string selectedCardTag = "";
+                            bool selected = false;
+                            this.Invoke((Action)(() =>
                             {
-                                Random r = new Random();
-                                if (res == null || res2 == null) //choose a different card
+                                selected = TryChooseRandomAnimation(
+                                    out newcardstring, out selectedCardTag);
+                                if (selected)
                                 {
-                                    while (newtag == nowPlayingFilterMatch)
-                                    {
-                                        Int64 newr = r.Next(items.Length);
-                                        newtag = items[(int)newr].Text;
-                                        if (items.Length == 1) break;
-                                    }
-
+                                    listModelsNew.ClearSelection();
+                                    listModelsNew.SelectWhere(item =>
+                                        string.Equals(item.Tag?.ToString(),
+                                            selectedCardTag,
+                                            StringComparison.OrdinalIgnoreCase));
                                 }
-                            }
-                            else
-                            {
-                                //find the current card
-                                int i = 0;
-                                for (i = 0; i < items.Length; i++)
-                                {
-                                    if (items[i].Text.ToString() == newtag)
-                                        break;
-                                }
-                                i++;
-                                if (i > items.Length - 1) i = 0;
-                                newtag = items[i].Text;
-                            }
-                            //choose a random clip from those shown
-                            var mod = Datastore.findCardByText(newtag);
-                            if (mod == null) continue;
-                            List<ModelClip> clips = FilterClipList(mod.clips);
-                            if (clips.Count > 0)
-                            {
-                                Random r = new Random();
-                                var itemnum = r.Next(clips.Count);
-                                ModelClip selectedClip = clips[itemnum];
-                                if (selectedClip.clipName == null) continue;
-                                res2 = selectedClip;
-                                newcardstring =
-                                    selectedClip.clipName.Split("_")[0] + "\\" +
-                                    selectedClip.clipName;
-                                found = true;
-
-                                listModelsNew.Invoke((Action)(() => listModelsNew.ClearSelection()));
-                                int? index = items.ToList().FindIndex(x => x.Text == newtag);
-                                if (index != null)
-                                {
-                                    listModelsNew.Invoke((Action)(() =>
-                                        listModelsNew.SelectWhere(x =>
-                                            string.Equals(x.Tag?.ToString(), newtag,
-                                                StringComparison.Ordinal))));
-                                }
-                            }
-
+                            }));
+                            found = selected;
                         }
 
                     }
@@ -2793,6 +3136,8 @@ namespace IStripperQuickPlayer
                     listClips.BeginInvoke(RefreshPlayingClipHighlight);
                     return;
                 }
+                lock (playbackHistoryLock)
+                    myData?.AddPlayback(path, DateTime.UtcNow);
                 if (Datastore.modelcards == null) return;
                 if (Datastore.modelcards.Count > 0)
                 {
@@ -3042,6 +3387,8 @@ namespace IStripperQuickPlayer
             {
                 Utils.ToggleDesktopIcons();
             }
+            if (restoringBackup)
+                return;
             if (WindowState == FormWindowState.Maximized)
             {
                 Properties.Settings.Default.Location = RestoreBounds.Location;
@@ -3100,13 +3447,17 @@ namespace IStripperQuickPlayer
                 List<ModelClip> clips = new List<ModelClip>();
                 if (model.clips == null) return;
                 clips = FilterClipList(model.clips);
+                List<ModelClip> freshClips = ExcludeRecentClips(clips,
+                    GetRecentPlaybackPaths());
+                List<ModelClip> selectableClips = freshClips.Count > 0
+                    ? freshClips : clips;
 
                 ModelClip? mnew = null;
                 if (chooseRandom)
                 {
-                    if (clips.Count == 0) return;
-                    Random rand = new Random();
-                    mnew = clips[rand.Next(clips.Count)];
+                    if (selectableClips.Count == 0) return;
+                    mnew = selectableClips[
+                        Random.Shared.Next(selectableClips.Count)];
                 }
                 else
                 {
@@ -3114,20 +3465,13 @@ namespace IStripperQuickPlayer
                     if (cliplst.Count() > 0)
                     {
                         ModelClip modelClip = cliplst.First();
-                        if (modelClip.clipNumber < clips.Last().clipNumber)
-                        {
-                            //play next
-                            mnew = clips.Where((x) => x.clipNumber > modelClip.clipNumber).FirstOrDefault();
-                        }
-                        else
-                        {
-                            //play first
-                            mnew = clips.FirstOrDefault();
-                        }
+                        mnew = selectableClips.FirstOrDefault(x =>
+                            x.clipNumber > modelClip.clipNumber) ??
+                            selectableClips.FirstOrDefault();
                     }
                     else
                     {
-                        mnew = clips.FirstOrDefault();
+                        mnew = selectableClips.FirstOrDefault();
                     }
                 }
 
@@ -3156,22 +3500,41 @@ namespace IStripperQuickPlayer
         {
             //find a new model from the filtered cards
             if (items == null || items.Length < 1) return;
-            Random r = new Random();
+            Random r = Random.Shared;
 
             string newtag = nowPlayingFilterMatch;
             if (Properties.Settings.Default.Randomize)
             {
-                while (newtag == nowPlayingFilterMatch)
+                if (!TryChooseRandomAnimation(out string animationPath,
+                        out string cardTag))
                 {
-                    Int64 newr = r.Next(items.Length);
-                    newtag = items[(int)newr].Text;
-                    ModelCard? candidate = Datastore.findCardByTag(
-                        items[(int)newr].Tag?.ToString() ?? "");
-                    if (candidate == null ||
-                        FilterClipList(candidate.clips).Count < 1)
-                        newtag = nowPlayingTag;
-                    if (items.Length == 1) break;
+                    return;
                 }
+                listModelsNew.ClearSelection();
+                listModelsNew.SelectWhere(item => string.Equals(
+                    item.Tag?.ToString(), cardTag,
+                    StringComparison.OrdinalIgnoreCase));
+                string clipName = animationPath.Split('\\').Last();
+                ListViewItem? clipItem = listClips.Items
+                    .Cast<ListViewItem>()
+                    .FirstOrDefault(item => string.Equals(
+                        item.SubItems[1].Text, clipName,
+                        StringComparison.OrdinalIgnoreCase));
+                if (clipItem != null)
+                {
+                    listClips.SelectedItems.Clear();
+                    clipItem.Selected = true;
+                    listClips.EnsureVisible(clipItem.Index);
+                }
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Totem\vghd\parameters", true);
+                if (key != null)
+                {
+                    BeginAnimationReplacement(animationPath);
+                    key.SetValue("ForceAnim", animationPath);
+                }
+                BeginInvoke((Action)TaskbarThumbnail);
+                return;
             }
             else
             {
@@ -3195,9 +3558,17 @@ namespace IStripperQuickPlayer
             }
             //choose a random clip from those shown
             if (listClips.Items.Count == 0) return;
-            var itemnum = r.Next(listClips.Items.Count - 1);
+            List<ListViewItem> clipItems = listClips.Items
+                .Cast<ListViewItem>().ToList();
+            HashSet<string> recentPaths = GetRecentPlaybackPaths();
+            List<ListViewItem> freshItems = clipItems.Where(item =>
+                !recentPaths.Contains(item.SubItems[1].Text.Split('_')[0] +
+                    "\\" + item.SubItems[1].Text)).ToList();
+            if (freshItems.Count > 0)
+                clipItems = freshItems;
+            var itemnum = r.Next(clipItems.Count);
             listClips.SelectedItems.Clear();
-            var j = listClips.Items[(int)itemnum];
+            var j = clipItems[itemnum];
             if (j != null)
             {
                 j.Selected = true;

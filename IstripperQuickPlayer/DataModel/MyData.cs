@@ -1,11 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace IStripperQuickPlayer.DataModel
 {
+    [Serializable]
+    internal class PlaybackHistoryEntry
+    {
+        internal string AnimationPath = "";
+        internal DateTime PlayedUtc;
+    }
+
     [Serializable]
     internal class MyData
     {
@@ -15,6 +18,7 @@ namespace IStripperQuickPlayer.DataModel
         internal Dictionary<string, List<string>> ClipTags = new Dictionary<string, List<string>>();
         internal Dictionary<string, bool> CardFavourite = new Dictionary<string, bool>();
         internal Dictionary<string, bool> ClipFavourite = new Dictionary<string, bool>();
+        internal List<PlaybackHistoryEntry> PlaybackHistory = new();
 
         internal void AddCardRating(string tag, decimal rating)
         {
@@ -82,5 +86,48 @@ namespace IStripperQuickPlayer.DataModel
             else
                 return new List<string>{ };
         }
+
+        internal void AddPlayback(string animationPath, DateTime playedUtc)
+        {
+            if (string.IsNullOrWhiteSpace(animationPath))
+                return;
+
+            PlaybackHistory.Add(new PlaybackHistoryEntry
+            {
+                AnimationPath = animationPath.Replace('/', '\\'),
+                PlayedUtc = playedUtc
+            });
+            if (PlaybackHistory.Count > 1000)
+                PlaybackHistory.RemoveRange(0, PlaybackHistory.Count - 1000);
+        }
+
+        internal HashSet<string> RecentPlaybackPaths(int count)
+        {
+            return PlaybackHistory
+                .TakeLast(count)
+                .Select(entry => entry.AnimationPath)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        internal void Normalize()
+        {
+            CardRating ??= new();
+            ClipRating ??= new();
+            CardTags ??= new();
+            ClipTags ??= new();
+            CardFavourite ??= new();
+            ClipFavourite ??= new();
+            PlaybackHistory ??= new();
+        }
+    }
+
+    [Serializable]
+    internal class QuickPlayerBackup
+    {
+        internal int FormatVersion = 1;
+        internal DateTime CreatedUtc = DateTime.UtcNow;
+        internal MyData UserData = new();
+        internal Dictionary<string, FilterSettings> Filters = new();
+        internal Dictionary<string, string?> Settings = new();
     }
 }
