@@ -361,8 +361,7 @@ namespace IStripperQuickPlayer
             ReloadStaticProperties();
             ModelsLstLoader lstLoader = new ModelsLstLoader();
             listModelsNew.Items.Clear();
-            if (Datastore.modelcards != null)
-                Datastore.modelcards.Clear();
+            Datastore.modelcards = [];
             lstLoader.LoadModels();
             this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
             PersistModels();
@@ -2427,15 +2426,6 @@ namespace IStripperQuickPlayer
             playbackTimelineDragging = true;
             if (e.Button == MouseButtons.Left)
             {
-                double position = (double)e.X /
-                    Math.Max(1, trkPlaybackPosition.ClientSize.Width - 1);
-                trkPlaybackPosition.Value = Math.Clamp(
-                    trkPlaybackPosition.Minimum +
-                        (int)Math.Round(position *
-                            (trkPlaybackPosition.Maximum -
-                                trkPlaybackPosition.Minimum)),
-                    trkPlaybackPosition.Minimum,
-                    trkPlaybackPosition.Maximum);
                 UpdatePlaybackTime(trkPlaybackPosition.Value,
                     playbackTimelineDurationMilliseconds);
             }
@@ -4161,7 +4151,7 @@ namespace IStripperQuickPlayer
                 g.Dispose();
             }
 
-            listModelsNew.Height = Math.Max(0,
+            int modelListHeight = Math.Max(0,
                 splitContainer1.Panel1.ClientSize.Height -
                 listModelsNew.Top - (int)(18 * dx / 120));
             listClips.Top = txtClipType.Bottom + 10;
@@ -4178,7 +4168,8 @@ namespace IStripperQuickPlayer
                 Math.Max(minimumClipListHeight,
                     preferredClipListHeight));
             panelModelDetails.Top = listClips.Bottom + 8;
-            listModelsNew.Width = splitContainer1.Panel1.Width - 24;
+            listModelsNew.Size = new Size(
+                splitContainer1.Panel1.Width - 24, modelListHeight);
             panelClip.Width = splitContainer1.Panel2.Width;
             //cmdWallpaper.Left = panelClip.Width -  370; //(int)(370*dx/120);
             //cmdNextClip.Left = cmdWallpaper.Right + 5;
@@ -4194,7 +4185,6 @@ namespace IStripperQuickPlayer
                 panelModelDetails.ClientSize.Width - txtDescription.Left - 2;
             txtUserTags.Width =
                 panelModelDetails.ClientSize.Width - txtUserTags.Left - 2;
-            this.BeginInvoke(new Action(() => listModelsNew.Refresh()));
         }
 
         private void listModelsNew_MouseLeave(object sender, EventArgs e)

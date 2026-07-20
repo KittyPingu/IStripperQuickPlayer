@@ -1091,7 +1091,7 @@ namespace IStripperQuickPlayer
                 List<ModelClip> ordered = clips.OrderBy(clip =>
                     clip.clipNumber).ToList();
                 selected = previous == null
-                    ? ordered[0]
+                    ? ordered[Random.Shared.Next(ordered.Count)]
                     : ordered.FirstOrDefault(clip =>
                         clip.clipNumber > previous.clipNumber) ?? ordered[0];
             }

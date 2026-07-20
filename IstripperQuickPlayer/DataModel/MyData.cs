@@ -30,10 +30,7 @@ namespace IStripperQuickPlayer.DataModel
 
         internal decimal GetCardRating(string tag)
         {
-            if (CardRating.ContainsKey(tag))
-                return CardRating[tag];
-            else
-                return 0;
+            return CardRating.TryGetValue(tag, out decimal rating) ? rating : 0;
         }
 
         internal void AddClipRating(string tag, decimal rating)
@@ -63,10 +60,7 @@ namespace IStripperQuickPlayer.DataModel
         internal bool GetCardFavourite(string tag)
         {
             if (CardFavourite == null) return false;
-            if (CardFavourite.ContainsKey(tag))
-                return CardFavourite[tag];
-            else
-                return false;
+            return CardFavourite.TryGetValue(tag, out bool favourite) && favourite;
         }
 
         internal void AddCardTags(string tag, List<string> tags)

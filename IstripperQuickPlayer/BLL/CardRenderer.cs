@@ -31,6 +31,27 @@ namespace IStripperQuickPlayer.BLL
         public Color backgroundColour = Color.WhiteSmoke;
         private readonly ConcurrentDictionary<int, Rectangle> _boundsByIndex = new();
         private readonly ConcurrentDictionary<int, Rectangle> _starBoundsByIndex = new();
+        private readonly SolidBrush labelBrush = new(Color.Black);
+        private readonly Dictionary<(string Family, int Size, FontStyle Style),
+            Font> fonts = [];
+        private readonly StringFormat centeredText = new()
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center
+        };
+        private readonly StringFormat leftCenteredText = new()
+        {
+            Alignment = StringAlignment.Near,
+            LineAlignment = StringAlignment.Center
+        };
+        private readonly FontFamily fluentIcons =
+            new("Segoe Fluent Icons");
+        private readonly FontFamily verdana = new("Verdana");
+        private Font? starFont;
+        private SizeF starTextSize;
+        private int starImageWidth = -1;
+        private float starScale = -1;
+        private float starDpi = -1;
 
         internal CardRenderer(MyData? myData, string sortBy, float cardScale, CultureInfo culture, bool fontInstalled, NumberStyles style)
         {
@@ -49,15 +70,53 @@ namespace IStripperQuickPlayer.BLL
             if (Properties.Settings.Default.DarkMode)
             {
                 labelColor = Color.AntiqueWhite;
-                highlightBrush = new SolidBrush(Color.FromArgb(40, 80, 100));
+                highlightBrush.Color = Color.FromArgb(40, 80, 100);
                 backgroundColour = Color.FromArgb(40, 40, 40);
             }
             else
             {
                 labelColor = Color.Black;
-                highlightBrush = new SolidBrush(Color.PaleGreen);
+                highlightBrush.Color = Color.PaleGreen;
                 backgroundColour = Color.WhiteSmoke;
             }
+            labelBrush.Color = labelColor;
+        }
+
+        private Font GetFont(string family, int size,
+            FontStyle style = FontStyle.Regular)
+        {
+            var key = (Family: family, Size: Math.Max(1, size), Style: style);
+            if (!fonts.TryGetValue(key, out Font? font))
+            {
+                font = new Font(key.Family, key.Size, key.Style);
+                fonts.Add(key, font);
+            }
+            return font;
+        }
+
+        private void EnsureStarMetrics(Graphics graphics, int imageWidth)
+        {
+            if (starFont != null && starImageWidth == imageWidth &&
+                starScale == cardScale && starDpi == graphics.DpiY)
+                return;
+
+            int size = Math.Max(1, (int)(14 * cardScale));
+            Font font;
+            SizeF measured;
+            do
+            {
+                font = GetFont("Segoe Fluent Icons", size, FontStyle.Bold);
+                measured = graphics.MeasureString("\uE0B4\uE0B4\uE0B4\uE0B4\uE0B4",
+                    font);
+                size--;
+            }
+            while (measured.Width > imageWidth && size > 0);
+
+            starFont = font;
+            starTextSize = measured;
+            starImageWidth = imageWidth;
+            starScale = cardScale;
+            starDpi = graphics.DpiY;
         }
 
         public bool TryGetItemBounds(int itemIndex, out Rectangle bounds)
@@ -158,13 +217,6 @@ namespace IStripperQuickPlayer.BLL
                 }
                 decimal myrating=0M;
                 if (myData != null) myrating = myData.GetCardRating(card.name);
-                StringFormat stringFormat = new StringFormat();
-                stringFormat.Alignment = StringAlignment.Center;
-                stringFormat.LineAlignment = StringAlignment.Center;
-
-                StringFormat stringFormatStars = new StringFormat();
-                stringFormatStars.Alignment = StringAlignment.Near;
-                stringFormatStars.LineAlignment = StringAlignment.Center;
 
                 if (drawText)
                 {
@@ -219,27 +271,31 @@ namespace IStripperQuickPlayer.BLL
 
                     Rectangle rectName = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*52), bounds.Width, (int)((g.DpiY/192)*30));
                     int sztitle=10;
-                    Font fontName = new Font("Segoe UI", sztitle);
-                    string[] nameoutfit = item.Text.Split("\r\n");
-                    var textSizeName = g.MeasureString(nameoutfit[0], fontName);
-                    while (textSizeName.Width > rectName.Width)
-                    { 
-                        fontName = new Font("Segoe UI", sztitle--);
-                        textSizeName = g.MeasureString(nameoutfit[0], fontName);
+                    Font fontName = GetFont("Segoe UI", sztitle);
+                    string name = card.modelName ?? "";
+                    var textSizeName = g.MeasureString(name, fontName);
+                    while (textSizeName.Width > rectName.Width && sztitle > 1)
+                    {
+                        fontName = GetFont("Segoe UI", --sztitle);
+                        textSizeName = g.MeasureString(name, fontName);
                     }
-                    g.DrawString(nameoutfit[0], fontName, new SolidBrush(labelColor), rectName, stringFormat);
+                    g.DrawString(name, fontName, labelBrush, rectName,
+                        centeredText);
 
 
                     Rectangle rectOutfit = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*27), bounds.Width, (int)((g.DpiY/192)*30));
                     int szoutfit=9;
-                    Font fontOutfit = new Font("Segoe UI", szoutfit);
-                    var textSizeOutfit = g.MeasureString(nameoutfit[1], fontOutfit);
-                    while (textSizeOutfit.Width > rectOutfit.Width)
-                    { 
-                        fontOutfit = new Font("Segoe UI", szoutfit--);
-                        textSizeOutfit = g.MeasureString(nameoutfit[1], fontOutfit);
+                    Font fontOutfit = GetFont("Segoe UI", szoutfit);
+                    string outfit = card.outfit ?? "";
+                    var textSizeOutfit = g.MeasureString(outfit, fontOutfit);
+                    while (textSizeOutfit.Width > rectOutfit.Width &&
+                        szoutfit > 1)
+                    {
+                        fontOutfit = GetFont("Segoe UI", --szoutfit);
+                        textSizeOutfit = g.MeasureString(outfit, fontOutfit);
                     }
-                    g.DrawString(nameoutfit[1], fontOutfit, new SolidBrush(labelColor), rectOutfit, stringFormat);
+                    g.DrawString(outfit, fontOutfit, labelBrush, rectOutfit,
+                        centeredText);
                 }
 
                 if (card.exclusive != null && (bool)card.exclusive)
@@ -249,28 +305,29 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
                                
-                    GraphicsPath p = new GraphicsPath(); 
-                    p.AddString(
+                    using GraphicsPath exclusivePath = new();
+                    exclusivePath.AddString(
                         "\uEC19",            
-                        new FontFamily("Segoe Fluent Icons"), 
+                        fluentIcons,
                         (int) FontStyle.Bold,     
                         g.DpiY * cardScale *10 / 72,      
                         new Point(imgrect2.Left, bounds.Top +(int)((g.DpiY/192)*4) ),            
-                        new StringFormat());         
-                    g.DrawPath(new Pen(Color.Black, 1), p);
-                    g.FillPath(Brushes.Yellow, p);     
+                        StringFormat.GenericDefault);
+                    using Pen iconOutline = new(Color.Black, 1);
+                    g.DrawPath(iconOutline, exclusivePath);
+                    g.FillPath(Brushes.Yellow, exclusivePath);
                     if (card.hotnessLevel == "5")
                     {
-                        p = new GraphicsPath(); 
-                        p.AddString(
+                        using GraphicsPath hotnessPath = new();
+                        hotnessPath.AddString(
                             "\uEC8A",            
-                            new FontFamily("Segoe Fluent Icons"), 
+                            fluentIcons,
                             (int) FontStyle.Bold,     
                             g.DpiY * cardScale * 10 / 72,      
                             new Point(imgrect2.Left + (int)((g.DpiY/192)*30*cardScale), bounds.Top +(int)((g.DpiY/192)*4)),            
-                            new StringFormat());         
-                        g.DrawPath(new Pen(Color.Black, 1), p);
-                        g.FillPath(Brushes.Yellow, p);     
+                            StringFormat.GenericDefault);
+                        g.DrawPath(iconOutline, hotnessPath);
+                        g.FillPath(Brushes.Yellow, hotnessPath);
                     }
                 }
 
@@ -281,17 +338,18 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
                                
-                    GraphicsPath p = new GraphicsPath(); 
+                    using GraphicsPath hotnessPath = new();
                     float fntSize = g.DpiY * cardScale * 10 / 72;
-                    p.AddString(
+                    hotnessPath.AddString(
                         "\uEC8A",            
-                        new FontFamily("Segoe Fluent Icons"), 
+                        fluentIcons,
                         (int) FontStyle.Bold,     
                         fntSize,      
                         new Point(imgrect2.Left, bounds.Top +(int)((g.DpiY/192)*4*cardScale)),            
-                        new StringFormat());         
-                    g.DrawPath(new Pen(Color.Black, 1), p);
-                    g.FillPath(Brushes.Yellow, p);     
+                        StringFormat.GenericDefault);
+                    using Pen hotnessOutline = new(Color.Black, 1);
+                    g.DrawPath(hotnessOutline, hotnessPath);
+                    g.FillPath(Brushes.Yellow, hotnessPath);
                 }
 
                 if (myData != null && myData.GetCardFavourite(card.name))
@@ -301,30 +359,27 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    GraphicsPath p = new GraphicsPath(); 
+                    using GraphicsPath favouritePath = new();
                     if (fontInstalled)
-                         p.AddString(
+                         favouritePath.AddString(
                             "\uE00B",            
-                            new FontFamily("Segoe Fluent Icons"), 
+                            fluentIcons,
                             (int) FontStyle.Bold,     
                             g.DpiY * cardScale * 14 / 72,      
                             new Point(imgrect2.Right - (int)((g.DpiY/192)*52*cardScale), bounds.Top +(int)((g.DpiY/192)*4) ),            
-                            new StringFormat());  
+                            StringFormat.GenericDefault);
                     else
-                        p.AddString(
+                        favouritePath.AddString(
                             "+",            
-                            new FontFamily("Verdana"), 
+                            verdana,
                             (int) FontStyle.Bold,     
                             g.DpiY * cardScale * 16 / 72,      
                             new Point(bounds.Right - (int)((g.DpiY/192)*80), bounds.Top -(int)((g.DpiY/192)*2)),            
-                            new StringFormat());         
-                    g.DrawPath(new Pen(Color.Black, 3), p);
-                    g.FillPath(Brushes.LightGreen, p);     
+                            StringFormat.GenericDefault);
+                    using Pen favouriteOutline = new(Color.Black, 3);
+                    g.DrawPath(favouriteOutline, favouritePath);
+                    g.FillPath(Brushes.LightGreen, favouritePath);
                 }
-                int szstar=(int)(14* cardScale);
-                
-                string ratingstrBlank = "".PadLeft(5,'\uE0B4');
-
                 if (fontInstalled && Properties.Settings.Default.ShowRatingStars)
                 {
                     g.InterpolationMode = InterpolationMode.High;
@@ -332,27 +387,22 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    //Rectangle rect = new Rectangle(bounds.Left+52, bounds.Top + 10, bounds.Width - (int)(52*cardScale), 40);
-
-                    Font font = new Font("Segoe Fluent Icons", 14 * cardScale);
-                    var textSize = g.MeasureString(ratingstrBlank, font);
-                    while (textSize.Width > imgrect2.Width)
-                    { 
-                       font = new Font("Verdana", szstar--);
-                       textSize = g.MeasureString(ratingstrBlank, font);
-                    }
-                    font = new Font("Segoe Fluent Icons", szstar, FontStyle.Bold);
-                    var bsize = g.MeasureString(ratingstrBlank,font);
-                    GraphicsPath p = new GraphicsPath(); 
+                    const string ratingstrBlank =
+                        "\uE0B4\uE0B4\uE0B4\uE0B4\uE0B4";
+                    EnsureStarMetrics(g, imgrect2.Width);
+                    Font font = starFont!;
+                    SizeF bsize = starTextSize;
+                    using GraphicsPath p = new();
                     p.AddString(
                         ratingstrBlank,            
-                        new FontFamily("Segoe Fluent Icons"), 
+                        font.FontFamily,
                         (int) FontStyle.Bold,     
-                        g.DpiY * szstar / 72,      
+                        g.DpiY * font.SizeInPoints / 72,
                         new PointF(imgrect2.Left + (imgrect2.Width - bsize.Width)/2.0f, imgrect2.Top + (imgrect2.Height/2.0f)+(bsize.Height*1.0f)),            
-                        stringFormatStars);         
-                    //g.DrawPath(new Pen(Color.Black, 3), p);
-                    g.FillPath(new SolidBrush(Color.FromArgb(180, Color.Black)), p);
+                        leftCenteredText);
+                    using SolidBrush blankStarBrush =
+                        new(Color.FromArgb(180, Color.Black));
+                    g.FillPath(blankStarBrush, p);
 
                     Rectangle starbounds = new Rectangle((int)(imgrect2.Left + (imgrect2.Width - bsize.Width) / 2.0f), (int)(imgrect2.Top + (imgrect2.Height / 2.0f) + (bsize.Height * 0.5f)), (int)bsize.Width, (int)bsize.Height);
                     _starBoundsByIndex[item.Index] = starbounds;
@@ -368,19 +418,20 @@ namespace IStripperQuickPlayer.BLL
                         string ratingstr = "".PadLeft((int)myrating/2,'\uE0B4');
                         if (myrating%2 > 0)
                             ratingstr += '\uE7C6';
-                        p = new GraphicsPath(); 
-                        p.AddString(
+                        using GraphicsPath ratingPath = new();
+                        ratingPath.AddString(
                             ratingstr,            
-                            new FontFamily("Segoe Fluent Icons"), 
+                            font.FontFamily,
                             (int) FontStyle.Bold,     
-                            g.DpiY * szstar / 72 ,      
+                            g.DpiY * font.SizeInPoints / 72,
                             new PointF(imgrect2.Left + (imgrect2.Width - bsize.Width)/2.0f, imgrect2.Top + (imgrect2.Height/2.0f)+(bsize.Height*1.0f)),           
-                            stringFormatStars);         
-                        g.DrawPath(new Pen(Color.Black, 3), p);
-                        g.FillPath(Brushes.Yellow, p);
+                            leftCenteredText);
+                        using Pen ratingOutline = new(Color.Black, 3);
+                        g.DrawPath(ratingOutline, ratingPath);
+                        g.FillPath(Brushes.Yellow, ratingPath);
 
                     }
-                    }
+                }
                 if (text != "" )
                 {                         
                     g.InterpolationMode = InterpolationMode.High;
@@ -390,22 +441,23 @@ namespace IStripperQuickPlayer.BLL
 
                     Rectangle rect = new Rectangle(bounds.Left+(int)((g.DpiY/192)*48), bounds.Top + (int)((g.DpiY/192)*6), bounds.Width - (int)((g.DpiY/192)*58), (int)((g.DpiY/192)*40));
                     int sz =(int)(13* cardScale);
-                    Font font = new Font("Verdana", sz);
+                    Font font = GetFont("Verdana", sz);
                     var textSize = g.MeasureString(text, font);
-                    while (textSize.Width > rect.Width)
-                    { 
-                       font = new Font("Verdana", sz--);
+                    while (textSize.Width > rect.Width && sz > 1)
+                    {
+                       font = GetFont("Verdana", --sz);
                        textSize = g.MeasureString(text, font);
                     }
-                    GraphicsPath p = new GraphicsPath(); 
+                    using GraphicsPath p = new();
                     p.AddString(
                         text,            
-                        new FontFamily("Verdana"), 
+                        font.FontFamily,
                         (int) FontStyle.Regular,     
-                        g.DpiY * sz / 72,      
+                        g.DpiY * font.SizeInPoints / 72,
                         new Point(imgrect2.Left + (int)((g.DpiY/192)*18*cardScale), imgrect2.Top + (int)((g.DpiY/192)*6)),            
-                        new StringFormat());         
-                    g.DrawPath(new Pen(Color.Black, 3), p);
+                        StringFormat.GenericDefault);
+                    using Pen textOutline = new(Color.Black, 3);
+                    g.DrawPath(textOutline, p);
                     g.FillPath(Brushes.White, p);            
 
              
@@ -420,23 +472,24 @@ namespace IStripperQuickPlayer.BLL
 
                     Rectangle rect = new Rectangle(imgrect.Left+18, bounds.Top + 10, (int)(imgrect.Width*0.6), 40);  
                     int szname =(int)(14 * cardScale);
-                    Font font = new Font("Verdana", szname);
+                    Font font = GetFont("Verdana", szname);
                     var textSize = g.MeasureString("Playing", font);                
-                    while (textSize.Width > rect.Width)
-                    { 
-                       font = new Font("Verdana", szname--);
+                    while (textSize.Width > rect.Width && szname > 1)
+                    {
+                       font = GetFont("Verdana", --szname);
                        textSize = g.MeasureString("Playing", font);
                     }
-                    GraphicsPath p = new GraphicsPath(); 
+                    using GraphicsPath p = new();
                     p.AddString(
                         "Playing",            
-                        new FontFamily("Verdana"), 
+                        font.FontFamily,
                         (int) FontStyle.Bold,     
-                        g.DpiY * szname / 72,      
+                        g.DpiY * font.SizeInPoints / 72,
                         new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height),            
-                        stringFormat);         
+                        centeredText);
                     g.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height));
-                    g.DrawRectangle(new Pen(Color.Black,2), new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height));
+                    using Pen playingOutline = new(Color.Black, 2);
+                    g.DrawRectangle(playingOutline, new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height));
                     g.FillPath(Brushes.White, p);       
                 }
             }

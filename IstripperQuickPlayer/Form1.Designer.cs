@@ -109,7 +109,7 @@
             cmdFastForward = new Button();
             lblPlaybackSpeed = new Label();
             cmbPlaybackSpeed = new ComboBox();
-            trkPlaybackPosition = new TrackBar();
+            trkPlaybackPosition = new Controls.PlaybackSeekBar();
             lblPlaybackTime = new Label();
             lblFilterClip = new Label();
             cmdWallpaper = new Button();
@@ -943,7 +943,6 @@
             trkPlaybackPosition.Name = "trkPlaybackPosition";
             trkPlaybackPosition.Size = new Size(1081, 56);
             trkPlaybackPosition.TabIndex = 60;
-            trkPlaybackPosition.TickStyle = TickStyle.None;
             trkPlaybackPosition.Scroll += trkPlaybackPosition_Scroll;
             trkPlaybackPosition.KeyDown += trkPlaybackPosition_KeyDown;
             trkPlaybackPosition.KeyUp += trkPlaybackPosition_KeyUp;
@@ -992,7 +991,7 @@
             // numMinSizeMB
             // 
             numMinSizeMB.Increment = new decimal(new int[] { 10, 0, 0, 0 });
-            numMinSizeMB.Location = new Point(935, 131);
+            numMinSizeMB.Location = new Point(935, 133);
             numMinSizeMB.Margin = new Padding(6, 5, 6, 5);
             numMinSizeMB.Maximum = new decimal(new int[] { 9999, 0, 0, 0 });
             numMinSizeMB.Name = "numMinSizeMB";
@@ -1003,7 +1002,7 @@
             // lblMinSize
             // 
             lblMinSize.AutoSize = true;
-            lblMinSize.Location = new Point(804, 133);
+            lblMinSize.Location = new Point(804, 135);
             lblMinSize.Margin = new Padding(6, 0, 6, 0);
             lblMinSize.Name = "lblMinSize";
             lblMinSize.Size = new Size(119, 25);
@@ -1317,7 +1316,7 @@
         private Button cmdFastForward;
         private Label lblPlaybackSpeed;
         private ComboBox cmbPlaybackSpeed;
-        private TrackBar trkPlaybackPosition;
+        private Controls.PlaybackSeekBar trkPlaybackPosition;
         private Label lblPlaybackTime;
         private Label lblFilterClip;
         private TextBox txtClipType;

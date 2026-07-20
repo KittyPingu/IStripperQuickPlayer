@@ -11,16 +11,28 @@ namespace IStripperQuickPlayer.DataModel
         static internal Int32 versionnumber = 0;
         static internal List<ModelCard>? modelcards = new List<ModelCard>{ };
         internal static int numberOfCards = 0;
+        private static List<ModelCard>? indexedCards;
+        private static int indexedCardCount = -1;
+        private static readonly Dictionary<string, ModelCard> cardsByTag = [];
 
         internal static ModelCard? findCardByTag(string tag)
         {
             if (modelcards == null) return null;
-            foreach(ModelCard card in modelcards)
+            if (!ReferenceEquals(indexedCards, modelcards) ||
+                indexedCardCount != modelcards.Count)
             {
-                if (card.name.Split("-")[0] == tag)
-                    return card;
+                cardsByTag.Clear();
+                foreach (ModelCard card in modelcards)
+                {
+                    int separator = card.name.IndexOf('-');
+                    string cardTag = separator < 0
+                        ? card.name : card.name[..separator];
+                    cardsByTag.TryAdd(cardTag, card);
+                }
+                indexedCards = modelcards;
+                indexedCardCount = modelcards.Count;
             }
-            return null;
+            return cardsByTag.GetValueOrDefault(tag);
         }
 
         internal static ModelCard? findCardByText(string text)
