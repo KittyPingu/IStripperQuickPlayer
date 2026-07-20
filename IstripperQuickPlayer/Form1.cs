@@ -137,7 +137,8 @@ namespace IStripperQuickPlayer
 
         private void actNextClip()
         {
-            if (Properties.Settings.Default.NextClipEnabled) GetNextClip();
+            if (Properties.Settings.Default.NextClipEnabled)
+                GetNextClip(useQueue: false);
         }
 
         private void actNextCard()
@@ -254,6 +255,8 @@ namespace IStripperQuickPlayer
                 kittySearchCheck));
 #endif
             InitializeComponent();
+            lblMinSize.BringToFront();
+            numMinSizeMB.BringToFront();
             alphaCheckpointCacheToolStripMenuItem.Text =
                 "Enable alpha checkpoint cache";
             alphaCheckpointCacheToolStripMenuItem.CheckOnClick = true;
@@ -312,6 +315,7 @@ namespace IStripperQuickPlayer
             fileToolStripMenuItem.DropDownItems.Insert(
                 fileToolStripMenuItem.DropDownItems.Count - 1,
                 updateToolStripMenuItem);
+            SetupPlayQueue();
             RefreshPlaybackControlVisibility();
             playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
             if (Properties.Settings.Default.EnablePlaybackControl)
@@ -328,6 +332,7 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
             materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
             if (cardRenderer != null) cardRenderer.SetColours();
+            SetPlayQueueColours();
         }
 
         private void cmdLoadModels_Click(object sender, EventArgs e)
@@ -484,6 +489,7 @@ namespace IStripperQuickPlayer
                 idx++;
             }
             SetModelNewImageList();
+            RebuildAutomaticQueue();
 
             lblModelsLoaded.Text = "Cards Shown: " + listModelsNew.Items.Count + "/" + Datastore.modelcards.Where(c => c.clips != null && c.clips.Count > 0).Count();
 
@@ -1016,24 +1022,30 @@ namespace IStripperQuickPlayer
                 clickingNowPlaying = false;
                 return;
             }
-            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
+            if (DeferClipSelectionPlaybackWhileMouseIsDown())
+                return;
+            PlaySelectedClip();
+        }
 
+        private void PlaySelectedClip()
+        {
+            if (listClips.SelectedItems.Count == 0)
+                return;
             string r = listClips.SelectedItems[0].SubItems[1].Text;
             string p = r.Split("_")[0];
             string full = p + "\\" + r;
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\parameters", true);
             if (key != null)
             {
                 var currentkey = key.GetValue("CurrentAnim");
-                string? currentkeystring = "";
-                if (currentkey != null) currentkeystring = currentkey.ToString();
-                if (currentkey != null && currentkeystring != full)
+                if (currentkey != null && currentkey.ToString() != full)
                 {
                     BeginAnimationReplacement(full);
                     key.SetValue("ForceAnim", full);
-                    key.Close();
                 }
             }
-            lastchosen = listClips.SelectedItems[0].SubItems[1].Text;
+            lastchosen = r;
         }
 
 
@@ -1100,6 +1112,11 @@ namespace IStripperQuickPlayer
             trackBarZoomOnHover.Value = (decimal)(Properties.Settings.Default.ZoomOnHover);
             blurImageToolStripMenuItem.Checked = Properties.Settings.Default.BlurWallpaper;
             randomPlayOrderToolStripMenuItem.Checked = Properties.Settings.Default.Randomize;
+            enforceCardFilterToolStripMenuItem.Checked =
+                Properties.Settings.Default.EnforceCardFilter;
+            enablePlayQueueToolStripMenuItem.Checked =
+                Properties.Settings.Default.EnablePlayQueue;
+            RefreshPlayQueueVisibility();
             if (Properties.Settings.Default.MinSizeMB != 0)
             {
                 numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
@@ -1632,6 +1649,8 @@ namespace IStripperQuickPlayer
                 playbackMovieCaptureFallbackAt = DateTime.MinValue;
                 playbackCompletedAnimationPath = "";
                 playbackRequestedAnimationPath = "";
+                queuedAnimationPendingPath = "";
+                queuedAnimationProtectedUntil = DateTime.MinValue;
                 playbackNextClipRetryAt = DateTime.MinValue;
                 playbackReplacementStableAt = DateTime.MinValue;
             }
@@ -2891,8 +2910,19 @@ namespace IStripperQuickPlayer
                 //check if this propsed card is in the filterd list
                 string newcardstring = str ?? "";
                 bool found = true;
-                if (Properties.Settings.Default.EnforceCardFilter ||
+                bool queuedSelection = false;
+                bool forceQueuedAnimation = false;
+                if (!string.IsNullOrEmpty(newcardstring))
+                {
+                    this.Invoke((Action)(() =>
+                        queuedSelection = TryApplyQueueToAnimationProposal(
+                            newcardstring, out newcardstring,
+                            out forceQueuedAnimation)));
+                }
+                if (!queuedSelection &&
+                    (Properties.Settings.Default.EnforceCardFilter ||
                     Properties.Settings.Default.AvoidRecentRepeats)
+                    )
                 {
                     if (string.IsNullOrEmpty(newcardstring) && !isAutoSelecting)
                     {
@@ -2953,15 +2983,15 @@ namespace IStripperQuickPlayer
 
                 isAutoSelecting = false;
                 ShowNowPlaying(newcardstring, found);
-                if (str != newcardstring && newcardstring != wallpaperTag)
+                if (!string.Equals(str, newcardstring,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    (forceQueuedAnimation || newcardstring != wallpaperTag))
                 {
                     RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
 
-                    string r = nowPlayingTag;
-                    string pp = r.Split("_")[0];
-                    string full = pp + "\\" + r;
                     if (keynew != null)
                     {
+                        BeginAnimationReplacement(newcardstring);
                         keynew.SetValue("ForceAnim", newcardstring);
                         keynew.Close();
                         wallpaperTag = newcardstring;
@@ -3252,6 +3282,8 @@ namespace IStripperQuickPlayer
             {
                 bool isPlaying = item.SubItems.Count > 1 &&
                     IsPlayingClip(item.SubItems[1].Text, nowPlayingPath);
+                if (isPlaying)
+                    item.Selected = false;
                 item.BackColor = isPlaying ? playingBackColor : listClips.BackColor;
                 item.ForeColor = isPlaying ? playingForeColor : listClips.ForeColor;
             }
@@ -3415,12 +3447,16 @@ namespace IStripperQuickPlayer
 
         private void cmdNextClip_Click(object sender, EventArgs e)
         {
-            this.BeginInvoke((Action)(() => GetNextClip()));
+            this.BeginInvoke((Action)(() =>
+                GetNextClip(useQueue: false)));
         }
 
         private void GetNextClip(ModelCard? model = null,
-            string? completedAnimation = null)
+            string? completedAnimation = null, bool useQueue = true)
         {
+            if (useQueue && model == null && TryPlayNextQueuedAnimation())
+                return;
+
             RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
             string path = completedAnimation ?? "";
             bool chooseRandom = false;
@@ -3498,6 +3534,9 @@ namespace IStripperQuickPlayer
 
         private void GetNextCard()
         {
+            if (TryPlayNextQueuedAnimation())
+                return;
+
             //find a new model from the filtered cards
             if (items == null || items.Length < 1) return;
             Random r = Random.Shared;
@@ -3637,6 +3676,8 @@ namespace IStripperQuickPlayer
         private void enforceCardFilterToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.EnforceCardFilter = enforceCardFilterToolStripMenuItem.Checked;
+            RefreshPlayQueueVisibility();
+            RebuildAutomaticQueue();
         }
 
 
@@ -3825,7 +3866,8 @@ namespace IStripperQuickPlayer
 
         private void nextclipButton_click(object? sender, ThumbnailButtonClickedEventArgs e)
         {
-            this.BeginInvoke((Action)(() => GetNextClip()));
+            this.BeginInvoke((Action)(() =>
+                GetNextClip(useQueue: false)));
         }
 
         private void nextclipModel_click(object? sender, ThumbnailButtonClickedEventArgs e)
@@ -4055,6 +4097,7 @@ namespace IStripperQuickPlayer
 
         private void listModelsNew_MouseDown(object sender, MouseEventArgs e)
         {
+            RememberPlayQueueCardDrag(e);
             if (e.Button == MouseButtons.Right)
             {
                 ImageListView.HitInfo hit;
@@ -4100,9 +4143,22 @@ namespace IStripperQuickPlayer
                 g.Dispose();
             }
 
-            listModelsNew.Height = this.Height - listModelsNew.Top - (int)(92 * dx / 120);
+            listModelsNew.Height = Math.Max(0,
+                splitContainer1.Panel1.ClientSize.Height -
+                listModelsNew.Top - (int)(18 * dx / 120));
             listClips.Top = txtClipType.Bottom + 10;
-            listClips.Height = this.Height - panelModelDetails.Height - (int)(72.0 * dx / 96.0) - listClips.Top;
+            int minimumClipListHeight = Math.Max(100,
+                (int)(150 * dx / 144));
+            int preferredClipListHeight =
+                splitContainer1.Panel2.ClientSize.Height -
+                panelModelDetails.Height - (int)(18.0 * dx / 96.0) -
+                listClips.Top;
+            int maximumClipListHeight = Math.Max(0,
+                splitContainer1.Panel2.ClientSize.Height -
+                listClips.Top - 8);
+            listClips.Height = Math.Min(maximumClipListHeight,
+                Math.Max(minimumClipListHeight,
+                    preferredClipListHeight));
             panelModelDetails.Top = listClips.Bottom + 8;
             listModelsNew.Width = splitContainer1.Panel1.Width - 24;
             panelClip.Width = splitContainer1.Panel2.Width;
@@ -4116,8 +4172,10 @@ namespace IStripperQuickPlayer
             cmdPhotos.Top = listClips.Top;
             cmdPhotos.Left = listClips.Right - cmdPhotos.Width;// - System.Windows.Forms.SystemInformation.VerticalScrollBarWidth;
             panelModelDetails.Width = listClips.Width;
-            txtDescription.Width = listClips.Right - txtDescription.Left - 11;
-            txtUserTags.Width = listClips.Right - txtUserTags.Left;
+            txtDescription.Width =
+                panelModelDetails.ClientSize.Width - txtDescription.Left - 2;
+            txtUserTags.Width =
+                panelModelDetails.ClientSize.Width - txtUserTags.Left - 2;
             this.BeginInvoke(new Action(() => listModelsNew.Refresh()));
         }
 
@@ -4439,6 +4497,7 @@ namespace IStripperQuickPlayer
         private void randomPlayOrderToolStripMenuItem_Click(object sender, EventArgs e)
         {
             Properties.Settings.Default.Randomize = randomPlayOrderToolStripMenuItem.Checked;
+            RebuildAutomaticQueue();
         }
 
         private void darkModeToolStripMenuItem_CheckedChanged(object sender, EventArgs e)

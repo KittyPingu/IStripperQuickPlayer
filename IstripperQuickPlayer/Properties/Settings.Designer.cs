@@ -553,6 +553,42 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool EnablePlayQueue {
+            get {
+                return ((bool)(this["EnablePlayQueue"]));
+            }
+            set {
+                this["EnablePlayQueue"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("10")]
+        public int AutoQueueLength {
+            get {
+                return ((int)(this["AutoQueueLength"]));
+            }
+            set {
+                this["AutoQueueLength"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("330")]
+        public int PlayQueueHeight {
+            get {
+                return ((int)(this["PlayQueueHeight"]));
+            }
+            set {
+                this["PlayQueueHeight"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool DarkMode {
             get {

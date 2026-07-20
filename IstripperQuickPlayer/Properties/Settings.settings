@@ -134,6 +134,15 @@
     <Setting Name="AvoidRecentRepeats" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>
+    <Setting Name="EnablePlayQueue" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="AutoQueueLength" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">10</Value>
+    </Setting>
+    <Setting Name="PlayQueueHeight" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">330</Value>
+    </Setting>
     <Setting Name="DarkMode" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
     </Setting>

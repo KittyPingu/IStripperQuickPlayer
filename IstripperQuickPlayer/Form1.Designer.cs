@@ -99,7 +99,7 @@
             lblStats = new Label();
             lblTags = new Label();
             lblResolution = new Label();
-            txtDescription = new TextBox();
+            txtDescription = new RichTextBox();
             lblRatingScore = new Label();
             lblCollection = new Label();
             lblAge = new Label();
@@ -743,7 +743,7 @@
             panelModelDetails.Location = new Point(13, 1094);
             panelModelDetails.Margin = new Padding(4, 5, 4, 5);
             panelModelDetails.Name = "panelModelDetails";
-            panelModelDetails.Size = new Size(1223, 437);
+            panelModelDetails.Size = new Size(1223, 337);
             panelModelDetails.TabIndex = 39;
             // 
             // txtUserTags
@@ -809,8 +809,8 @@
             txtDescription.Multiline = true;
             txtDescription.Name = "txtDescription";
             txtDescription.ReadOnly = true;
-            txtDescription.ScrollBars = ScrollBars.Vertical;
-            txtDescription.Size = new Size(1204, 250);
+            txtDescription.ScrollBars = RichTextBoxScrollBars.Vertical;
+            txtDescription.Size = new Size(1204, 150);
             txtDescription.TabIndex = 38;
             // 
             // lblRatingScore
@@ -1307,7 +1307,7 @@
         private Label lblStats;
         private Label lblTags;
         private Label lblResolution;
-        private TextBox txtDescription;
+        private RichTextBox txtDescription;
         private Label lblRatingScore;
         private Label lblCollection;
         private Label lblAge;

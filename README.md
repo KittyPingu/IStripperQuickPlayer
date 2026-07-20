@@ -35,6 +35,28 @@ or include shows.
 - See the active clip highlighted in green when it is visible in the list.
 - Randomize playback and optionally avoid recently played clips.
 
+### Plan what plays next
+
+The collapsible strip at the bottom of QuickPlayer shows two queues:
+
+- drag a card into **Manual** to queue a clip from that card, or drag a clip
+  row to queue that exact clip;
+- drag queue entries to reorder them, or drag an entry out of the strip to
+  remove it;
+- drag the strip's top edge to resize it, and drag the centre divider to give
+  either queue more room;
+- save or load the manual queue as an `.iqpq` file from **File > Queue**;
+- manual entries play first and are not changed when the library filter
+  changes;
+- **Automatic** is rebuilt from the cards currently visible after filtering.
+
+![Manual and automatic play-next queues](docs/images/quickplayer-queue.jpg)
+
+Automatic queuing is disabled when **Enforce Card Filter** is off, while the
+manual queue remains available. Queue support and automatic queue length are
+configured under **Settings > Playback queue**. The queue's height and
+manual/automatic split are remembered for the next launch.
+
 ### Control desktop playback
 
 For eligible iStripper accounts, QuickPlayer can attach controls to the active
@@ -72,7 +94,8 @@ favourites and playback history.
 ### Playback history
 
 QuickPlayer records a local playback history and can avoid the 100 most recent
-clips when alternatives are available.
+clips when alternatives are available. View it from
+**Settings > Playback queue > Playback History**.
 
 ![Playback history](docs/images/quickplayer-history.jpg)
 
@@ -80,14 +103,14 @@ clips when alternatives are available.
 
 QuickPlayer requires 64-bit Windows and an existing iStripper installation.
 
-1. Download the latest `IStripperQuickPlayer-…-Setup.exe` from
+1. Download the latest `IStripperQuickPlayer-*-Setup.exe` from
    [GitHub Releases](https://github.com/KittyPingu/IStripperQuickPlayer/releases/latest).
 2. Run the installer, then start iStripper and QuickPlayer.
 3. Select a card to see its clips.
 4. Select a clip to play it, or use **Show Model**.
 5. Use **File > Reload Models** after adding cards to iStripper.
 
-The File menu also contains playlist/filter import, playback history, backup,
+The File menu also contains playlist/filter import, queue save/load, backup,
 restore and update commands.
 
 <img src="docs/images/quickplayer-file-menu.jpg" alt="QuickPlayer File menu" width="190">
@@ -114,7 +137,7 @@ work. Use explicit `AND` between separate requirements.
 
 Playback controls appear when:
 
-- **Settings > Enable playback control** is selected;
+- **Settings > Playback queue > Enable playback control** is selected;
 - iStripper reports a Platinum-or-higher account level; and
 - QuickPlayer safely recognizes the decoder used by the active desktop clip.
 
@@ -130,14 +153,22 @@ The default hotkeys are:
 | Restart clip | `Ctrl+Alt+Home` |
 | Toggle player lock | `Ctrl+Alt+L` |
 
-Change or disable any shortcut from **Settings > Hotkeys**. These are global
-Windows hotkeys, so they continue to work while another application has focus.
+Change or disable any shortcut from
+**Settings > Hotkeys**. These are global Windows hotkeys, so they continue to
+work while another application has focus.
 
-<img src="docs/images/quickplayer-settings-menu.jpg" alt="QuickPlayer Settings menu" width="204">
+Settings are grouped into **Playback queue**, **Library search** and
+**Appearance desktop**, with frequently used **Hotkeys** and **Lock Player**
+kept at the top level.
+
+<img src="docs/images/quickplayer-settings-menu.jpg" alt="QuickPlayer Settings menu" width="161">
+<img src="docs/images/quickplayer-playback-queue-menu.jpg" alt="QuickPlayer Playback queue settings" width="201">
 
 ## Settings worth knowing
 
 - **Avoid recently played clips** is enabled by default.
+- **Enable play next queue** shows the collapsible manual and automatic queue
+  strip; **Automatic queue length** controls how far it looks ahead.
 - **Enable alpha checkpoint cache** speeds up repeated long seeks in modern
   clips and is enabled by default.
 - **Alpha checkpoint cache size** defaults to 256 MB. Reducing the limit

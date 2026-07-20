@@ -362,6 +362,7 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /IstripperQuickPlayer/*
+!/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/DataModel/
 /IstripperQuickPlayer/DataModel/*
 !/IstripperQuickPlayer/DataModel/Persistence.cs
