@@ -180,6 +180,19 @@ namespace IStripperQuickPlayer
 #if DEBUG
             System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
             System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
+            DateTime queueCheck = DateTime.UtcNow;
+            System.Diagnostics.Debug.Assert(ShouldKeepQueuedAnimationPending(
+                false, DateTime.MinValue, queueCheck, true));
+            System.Diagnostics.Debug.Assert(ShouldKeepQueuedAnimationPending(
+                true, queueCheck.AddSeconds(1), queueCheck, true));
+            System.Diagnostics.Debug.Assert(ShouldKeepQueuedAnimationPending(
+                true, DateTime.MinValue, queueCheck, false));
+            System.Diagnostics.Debug.Assert(!ShouldKeepQueuedAnimationPending(
+                true, DateTime.MinValue, queueCheck, true));
+            System.Diagnostics.Debug.Assert(ShouldContinueQueuedCard(
+                1_000, 61_000, 1));
+            System.Diagnostics.Debug.Assert(!ShouldContinueQueuedCard(
+                1_000, 61_001, 1));
             DateTime stallCheck = DateTime.UtcNow;
             System.Diagnostics.Debug.Assert(LegacyPlaybackStalledNearEnd(
                 96_000, 100_000, stallCheck.AddSeconds(-3), stallCheck, 3));
@@ -1031,6 +1044,7 @@ namespace IStripperQuickPlayer
         {
             if (listClips.SelectedItems.Count == 0)
                 return;
+            ClearQueuedCardSession();
             string r = listClips.SelectedItems[0].SubItems[1].Text;
             string p = r.Split("_")[0];
             string full = p + "\\" + r;
@@ -1650,7 +1664,9 @@ namespace IStripperQuickPlayer
                 playbackCompletedAnimationPath = "";
                 playbackRequestedAnimationPath = "";
                 queuedAnimationPendingPath = "";
+                queuedAnimationPendingConfirmed = false;
                 queuedAnimationProtectedUntil = DateTime.MinValue;
+                ClearQueuedCardSession();
                 playbackNextClipRetryAt = DateTime.MinValue;
                 playbackReplacementStableAt = DateTime.MinValue;
             }
@@ -3454,6 +3470,8 @@ namespace IStripperQuickPlayer
         private void GetNextClip(ModelCard? model = null,
             string? completedAnimation = null, bool useQueue = true)
         {
+            if (!useQueue || model != null)
+                ClearQueuedCardSession();
             if (useQueue && model == null && TryPlayNextQueuedAnimation())
                 return;
 

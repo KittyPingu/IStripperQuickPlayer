@@ -56,7 +56,11 @@ namespace IStripperQuickPlayer
         private Point libraryQueueDragStart;
         private PlayQueueEntry? libraryQueueDragEntry;
         private string queuedAnimationPendingPath = "";
+        private bool queuedAnimationPendingConfirmed;
         private DateTime queuedAnimationProtectedUntil = DateTime.MinValue;
+        private PlayQueueEntry? activeQueuedCard;
+        private long activeQueuedCardStartedAt = -1;
+        private string activeQueuedCardLastAnimationPath = "";
         private readonly System.Windows.Forms.Timer clipSelectionPlaybackTimer =
             new() { Interval = 15 };
         private bool clipSelectionPlaybackPending;
@@ -74,7 +78,9 @@ namespace IStripperQuickPlayer
                 if (!enablePlayQueueToolStripMenuItem.Checked)
                 {
                     queuedAnimationPendingPath = "";
+                    queuedAnimationPendingConfirmed = false;
                     queuedAnimationProtectedUntil = DateTime.MinValue;
+                    ClearQueuedCardSession();
                 }
                 RefreshPlayQueueVisibility();
                 if (enablePlayQueueToolStripMenuItem.Checked)
@@ -451,6 +457,12 @@ namespace IStripperQuickPlayer
 
         private void RenderPlayQueues()
         {
+            if (InvokeRequired)
+            {
+                BeginInvoke((Action)RenderPlayQueues);
+                return;
+            }
+
             if (manualQueueFlow == null)
                 return;
 
@@ -471,17 +483,23 @@ namespace IStripperQuickPlayer
         {
             ClearPlayQueueCardHighlight();
             flow.SuspendLayout();
-            while (flow.Controls.Count > 0)
-                flow.Controls[0].Dispose();
-            System.Drawing.Size cardSize =
-                PlayQueueCardSize(flow, entries.Count);
-            for (int index = 0; index < entries.Count; index++)
+            try
             {
-                PlayQueueEntry entry = entries[index];
-                flow.Controls.Add(CreatePlayQueueCard(
-                    new PlayQueueDrag(source, index, entry), cardSize));
+                while (flow.Controls.Count > 0)
+                    flow.Controls[0].Dispose();
+                System.Drawing.Size cardSize =
+                    PlayQueueCardSize(flow, entries.Count);
+                for (int index = 0; index < entries.Count; index++)
+                {
+                    PlayQueueEntry entry = entries[index];
+                    flow.Controls.Add(CreatePlayQueueCard(
+                        new PlayQueueDrag(source, index, entry), cardSize));
+                }
             }
-            flow.ResumeLayout(true);
+            finally
+            {
+                flow.ResumeLayout(true);
+            }
             flow.PerformLayout();
         }
 
@@ -1001,7 +1019,13 @@ namespace IStripperQuickPlayer
             animationPath = "";
             cardTag = "";
             if (!Properties.Settings.Default.EnablePlayQueue)
+            {
+                ClearQueuedCardSession();
                 return false;
+            }
+
+            if (TryContinueQueuedCard(out animationPath, out cardTag))
+                return true;
 
             while (manualPlayQueue.Count > 0)
             {
@@ -1010,6 +1034,7 @@ namespace IStripperQuickPlayer
                 if (TryResolveQueueEntry(entry, out animationPath))
                 {
                     cardTag = entry.CardTag;
+                    StartQueuedCardSession(entry, animationPath);
                     RenderPlayQueues();
                     return true;
                 }
@@ -1020,10 +1045,11 @@ namespace IStripperQuickPlayer
             {
                 PlayQueueEntry entry = automaticPlayQueue[0];
                 automaticPlayQueue.RemoveAt(0);
-                FillAutomaticQueue();
+                FillAutomaticQueue(entry.CardTag);
                 if (TryResolveQueueEntry(entry, out animationPath))
                 {
                     cardTag = entry.CardTag;
+                    StartQueuedCardSession(entry, animationPath);
                     RenderPlayQueues();
                     return true;
                 }
@@ -1034,7 +1060,7 @@ namespace IStripperQuickPlayer
         }
 
         private bool TryResolveQueueEntry(PlayQueueEntry entry,
-            out string animationPath)
+            out string animationPath, string previousAnimationPath = "")
         {
             animationPath = "";
             ModelCard? card = Datastore.findCardByTag(entry.CardTag);
@@ -1055,14 +1081,100 @@ namespace IStripperQuickPlayer
             List<ModelClip> clips = FilterClipList(card.clips);
             if (clips.Count == 0)
                 return false;
-            List<ModelClip> fresh = ExcludeRecentClips(clips,
-                GetRecentPlaybackPaths());
-            if (fresh.Count > 0)
-                clips = fresh;
-            ModelClip selected = Properties.Settings.Default.Randomize
-                ? clips[Random.Shared.Next(clips.Count)] : clips[0];
+            bool progressive = IsProgressiveHotnessEnabled();
+            ModelClip? previous = clips.FirstOrDefault(clip =>
+                string.Equals(GetAnimationPath(clip), previousAnimationPath,
+                    StringComparison.OrdinalIgnoreCase));
+            ModelClip selected;
+            if (progressive)
+            {
+                List<ModelClip> ordered = clips.OrderBy(clip =>
+                    clip.clipNumber).ToList();
+                selected = previous == null
+                    ? ordered[0]
+                    : ordered.FirstOrDefault(clip =>
+                        clip.clipNumber > previous.clipNumber) ?? ordered[0];
+            }
+            else
+            {
+                List<ModelClip> alternatives = clips.Where(clip =>
+                    !string.Equals(GetAnimationPath(clip),
+                        previousAnimationPath,
+                        StringComparison.OrdinalIgnoreCase)).ToList();
+                if (alternatives.Count > 0)
+                    clips = alternatives;
+                List<ModelClip> fresh = ExcludeRecentClips(clips,
+                    GetRecentPlaybackPaths());
+                if (fresh.Count > 0)
+                    clips = fresh;
+                selected = clips[Random.Shared.Next(clips.Count)];
+            }
             animationPath = GetAnimationPath(selected);
             return !string.IsNullOrEmpty(animationPath);
+        }
+
+        private bool TryContinueQueuedCard(out string animationPath,
+            out string cardTag)
+        {
+            animationPath = "";
+            cardTag = "";
+            if (activeQueuedCard == null)
+                return false;
+
+            if (!ShouldContinueQueuedCard(activeQueuedCardStartedAt,
+                    Environment.TickCount64, ReadShowDurationMinutes()) ||
+                !TryResolveQueueEntry(activeQueuedCard, out animationPath,
+                    activeQueuedCardLastAnimationPath))
+            {
+                ClearQueuedCardSession();
+                return false;
+            }
+
+            cardTag = activeQueuedCard.CardTag;
+            activeQueuedCardLastAnimationPath = animationPath;
+            return true;
+        }
+
+        private void StartQueuedCardSession(PlayQueueEntry entry,
+            string animationPath)
+        {
+            if (!string.IsNullOrEmpty(entry.ClipName))
+            {
+                ClearQueuedCardSession();
+                return;
+            }
+
+            activeQueuedCard = entry;
+            activeQueuedCardStartedAt = Environment.TickCount64;
+            activeQueuedCardLastAnimationPath = animationPath;
+        }
+
+        private void ClearQueuedCardSession()
+        {
+            activeQueuedCard = null;
+            activeQueuedCardStartedAt = -1;
+            activeQueuedCardLastAnimationPath = "";
+        }
+
+        private static bool ShouldContinueQueuedCard(long startedAt,
+            long now, int durationMinutes) =>
+            startedAt >= 0 && durationMinutes > 0 &&
+            now - startedAt <= durationMinutes * 60_000L;
+
+        private static int ReadShowDurationMinutes() =>
+            ReadRegistryInteger(@"Software\Totem\vghd\player", "duration");
+
+        private static bool IsProgressiveHotnessEnabled() =>
+            ReadRegistryInteger(@"Software\Totem\vghd\parameters",
+                "EroRandom") == 1;
+
+        private static int ReadRegistryInteger(string keyPath,
+            string valueName)
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                keyPath, false);
+            return int.TryParse(key?.GetValue(valueName)?.ToString(),
+                out int value) ? value : 0;
         }
 
         private bool TryPlayNextQueuedAnimation()
@@ -1074,8 +1186,8 @@ namespace IStripperQuickPlayer
                 return false;
 
             queuedAnimationPendingPath = animationPath;
-            queuedAnimationProtectedUntil = DateTime.UtcNow.AddMilliseconds(
-                QueueStartProtectionMilliseconds);
+            queuedAnimationPendingConfirmed = false;
+            queuedAnimationProtectedUntil = DateTime.MinValue;
             BeginAnimationReplacement(animationPath);
             key.SetValue("ForceAnim", animationPath);
             SelectQueuedCard(cardTag, animationPath);
@@ -1098,7 +1210,9 @@ namespace IStripperQuickPlayer
                     StringComparison.OrdinalIgnoreCase))
             {
                 queuedAnimationPendingPath = "";
+                queuedAnimationPendingConfirmed = false;
                 queuedAnimationProtectedUntil = DateTime.MinValue;
+                ClearQueuedCardSession();
                 return false;
             }
 
@@ -1108,16 +1222,34 @@ namespace IStripperQuickPlayer
                 if (string.Equals(proposed, queuedAnimationPendingPath,
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    if (DateTime.UtcNow >= queuedAnimationProtectedUntil)
-                        queuedAnimationPendingPath = "";
+                    if (!queuedAnimationPendingConfirmed)
+                    {
+                        queuedAnimationPendingConfirmed = true;
+                        queuedAnimationProtectedUntil =
+                            DateTime.UtcNow.AddMilliseconds(
+                                QueueStartProtectionMilliseconds);
+                    }
                 }
-                else if (DateTime.UtcNow < queuedAnimationProtectedUntil)
+                else if (IsForcedAnimationProposal(proposed))
+                {
+                    queuedAnimationPendingPath = "";
+                    queuedAnimationPendingConfirmed = false;
+                    queuedAnimationProtectedUntil = DateTime.MinValue;
+                    ClearQueuedCardSession();
+                    return false;
+                }
+                else if (ShouldKeepQueuedAnimationPending(
+                    queuedAnimationPendingConfirmed,
+                    queuedAnimationProtectedUntil, DateTime.UtcNow,
+                    CurrentAnimationReachedQueueAdvancePoint()))
                 {
                     forceAnimation = true;
                 }
                 else
                 {
                     queuedAnimationPendingPath = "";
+                    queuedAnimationPendingConfirmed = false;
+                    queuedAnimationProtectedUntil = DateTime.MinValue;
                 }
                 if (!string.IsNullOrEmpty(queuedAnimationPendingPath) ||
                     string.Equals(proposed, selected,
@@ -1129,17 +1261,14 @@ namespace IStripperQuickPlayer
                     StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Totem\vghd\parameters", false))
-            {
-                string forced = key?.GetValue("ForceAnim", "")?.ToString() ?? "";
-                if (string.Equals(proposed, forced,
-                        StringComparison.OrdinalIgnoreCase))
-                    return false;
-            }
+            if (IsForcedAnimationProposal(proposed))
+                return false;
 
             if (string.Equals(proposed, nowPlayingPath,
                     StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!CurrentAnimationReachedQueueAdvancePoint())
                 return false;
 
             if (!TryTakeQueuedAnimation(out selected, out string cardTag))
@@ -1147,10 +1276,35 @@ namespace IStripperQuickPlayer
             forceAnimation = !string.Equals(proposed, selected,
                 StringComparison.OrdinalIgnoreCase);
             queuedAnimationPendingPath = selected;
-            queuedAnimationProtectedUntil = DateTime.UtcNow.AddMilliseconds(
-                QueueStartProtectionMilliseconds);
+            queuedAnimationPendingConfirmed = false;
+            queuedAnimationProtectedUntil = DateTime.MinValue;
             SelectQueuedCard(cardTag, selected);
             return true;
+        }
+
+        private bool CurrentAnimationReachedQueueAdvancePoint()
+        {
+            if (!string.IsNullOrEmpty(playbackCompletedAnimationPath))
+                return true;
+
+            return !string.IsNullOrEmpty(playbackTimelineAnimationPath) &&
+                string.Equals(playbackTimelineAnimationPath, nowPlayingPath,
+                    StringComparison.OrdinalIgnoreCase) &&
+                PlaybackReachedEnd(playbackLastKnownElapsedMilliseconds,
+                    playbackTimelineDurationMilliseconds);
+        }
+
+        private static bool ShouldKeepQueuedAnimationPending(bool confirmed,
+            DateTime protectedUntil, DateTime now, bool currentReachedEnd) =>
+            !confirmed || now < protectedUntil || !currentReachedEnd;
+
+        private static bool IsForcedAnimationProposal(string proposed)
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\parameters", false);
+            string forced = key?.GetValue("ForceAnim", "")?.ToString() ?? "";
+            return string.Equals(proposed, forced,
+                StringComparison.OrdinalIgnoreCase);
         }
 
         private void SelectQueuedCard(string cardTag, string animationPath)
