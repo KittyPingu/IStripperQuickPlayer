@@ -39,6 +39,8 @@ namespace IStripperQuickPlayer
             chkRewind.Checked = Properties.Settings.Default.RewindHotkeyEnabled;
             chkFastForward.Checked = Properties.Settings.Default.FastForwardHotkeyEnabled;
             chkRestartClip.Checked = Properties.Settings.Default.RestartClipHotkeyEnabled;
+            chkLargePlayer.Checked = Properties.Settings.Default.LargePlayerHotkeyEnabled;
+            chkSmallPlayer.Checked = Properties.Settings.Default.SmallPlayerHotkeyEnabled;
             txtNextClip.Text = Properties.Settings.Default.NextClipString;
             txtNextCard.Text = Properties.Settings.Default.NextCardString;
             txtToggleLock.Text = Properties.Settings.Default.ToggleLockString;
@@ -46,6 +48,8 @@ namespace IStripperQuickPlayer
             txtRewind.Text = Properties.Settings.Default.RewindHotkeyString;
             txtFastForward.Text = Properties.Settings.Default.FastForwardHotkeyString;
             txtRestartClip.Text = Properties.Settings.Default.RestartClipHotkeyString;
+            txtLargePlayer.Text = Properties.Settings.Default.LargePlayerHotkeyString;
+            txtSmallPlayer.Text = Properties.Settings.Default.SmallPlayerHotkeyString;
         }
 
         private void cmdOK_Click(object sender, EventArgs e)
@@ -57,6 +61,8 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.RewindHotkeyEnabled = chkRewind.Checked;
             Properties.Settings.Default.FastForwardHotkeyEnabled = chkFastForward.Checked;
             Properties.Settings.Default.RestartClipHotkeyEnabled = chkRestartClip.Checked;
+            Properties.Settings.Default.LargePlayerHotkeyEnabled = chkLargePlayer.Checked;
+            Properties.Settings.Default.SmallPlayerHotkeyEnabled = chkSmallPlayer.Checked;
             Properties.Settings.Default.NextClipString = txtNextClip.Text;
             Properties.Settings.Default.NextCardString = txtNextCard.Text;
             Properties.Settings.Default.ToggleLockString = txtToggleLock.Text;
@@ -64,6 +70,8 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.RewindHotkeyString = txtRewind.Text;
             Properties.Settings.Default.FastForwardHotkeyString = txtFastForward.Text;
             Properties.Settings.Default.RestartClipHotkeyString = txtRestartClip.Text;
+            Properties.Settings.Default.LargePlayerHotkeyString = txtLargePlayer.Text;
+            Properties.Settings.Default.SmallPlayerHotkeyString = txtSmallPlayer.Text;
             this.Close();
         }
     }

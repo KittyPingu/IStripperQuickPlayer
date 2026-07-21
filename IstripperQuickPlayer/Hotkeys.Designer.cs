@@ -43,6 +43,10 @@
             chkFastForward = new CheckBox();
             txtRestartClip = new TextBox();
             chkRestartClip = new CheckBox();
+            txtLargePlayer = new TextBox();
+            chkLargePlayer = new CheckBox();
+            txtSmallPlayer = new TextBox();
+            chkSmallPlayer = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -85,7 +89,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 477);
+            cmdOK.Location = new Point(229, 570);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -180,12 +184,50 @@
             chkRestartClip.TabIndex = 13;
             chkRestartClip.Text = "Restart Clip";
             chkRestartClip.UseVisualStyleBackColor = true;
+            //
+            // txtLargePlayer
+            //
+            txtLargePlayer.Location = new Point(229, 451);
+            txtLargePlayer.Name = "txtLargePlayer";
+            txtLargePlayer.Size = new Size(263, 31);
+            txtLargePlayer.TabIndex = 16;
+            //
+            // chkLargePlayer
+            //
+            chkLargePlayer.AutoSize = true;
+            chkLargePlayer.Location = new Point(70, 455);
+            chkLargePlayer.Name = "chkLargePlayer";
+            chkLargePlayer.Size = new Size(165, 29);
+            chkLargePlayer.TabIndex = 15;
+            chkLargePlayer.Text = "Large animation";
+            chkLargePlayer.UseVisualStyleBackColor = true;
+            //
+            // txtSmallPlayer
+            //
+            txtSmallPlayer.Location = new Point(229, 504);
+            txtSmallPlayer.Name = "txtSmallPlayer";
+            txtSmallPlayer.Size = new Size(263, 31);
+            txtSmallPlayer.TabIndex = 18;
+            //
+            // chkSmallPlayer
+            //
+            chkSmallPlayer.AutoSize = true;
+            chkSmallPlayer.Location = new Point(70, 508);
+            chkSmallPlayer.Name = "chkSmallPlayer";
+            chkSmallPlayer.Size = new Size(165, 29);
+            chkSmallPlayer.TabIndex = 17;
+            chkSmallPlayer.Text = "Small animation";
+            chkSmallPlayer.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(10F, 25F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(578, 553);
+            ClientSize = new Size(578, 645);
+            Controls.Add(txtSmallPlayer);
+            Controls.Add(chkSmallPlayer);
+            Controls.Add(txtLargePlayer);
+            Controls.Add(chkLargePlayer);
             Controls.Add(txtRestartClip);
             Controls.Add(chkRestartClip);
             Controls.Add(txtFastForward);
@@ -231,5 +273,9 @@
         private CheckBox chkFastForward;
         private TextBox txtRestartClip;
         private CheckBox chkRestartClip;
+        private TextBox txtLargePlayer;
+        private CheckBox chkLargePlayer;
+        private TextBox txtSmallPlayer;
+        private CheckBox chkSmallPlayer;
     }
 }

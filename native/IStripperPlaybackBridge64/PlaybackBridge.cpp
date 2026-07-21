@@ -394,6 +394,49 @@ namespace
             std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") != nullptr;
     }
 
+    constexpr bool IsLargeMovieWindow(LONG windowHeight, LONG workAreaHeight)
+    {
+        return windowHeight > workAreaHeight / 2;
+    }
+
+    static_assert(!IsLargeMovieWindow(300, 1000));
+    static_assert(IsLargeMovieWindow(600, 1000));
+
+    struct MovieWindowSizes
+    {
+        HWND small = nullptr;
+        HWND large = nullptr;
+    };
+
+    BOOL CALLBACK FindMovieWindowSizes(HWND window, LPARAM parameter)
+    {
+        if (!IsMovieWindow(window))
+        {
+            return TRUE;
+        }
+
+        RECT windowRect = {};
+        MONITORINFO monitor = { sizeof(monitor) };
+        if (!GetWindowRect(window, &windowRect) ||
+            !GetMonitorInfoW(MonitorFromWindow(window,
+                MONITOR_DEFAULTTONEAREST), &monitor))
+        {
+            return TRUE;
+        }
+
+        auto& sizes = *reinterpret_cast<MovieWindowSizes*>(parameter);
+        if (IsLargeMovieWindow(windowRect.bottom - windowRect.top,
+                monitor.rcWork.bottom - monitor.rcWork.top))
+        {
+            sizes.large = window;
+        }
+        else if (sizes.small == nullptr)
+        {
+            sizes.small = window;
+        }
+        return TRUE;
+    }
+
     void SetMovieWindowClickThrough(HWND window, bool enabled)
     {
         const LONG_PTR style = GetWindowLongPtrW(window, GWL_EXSTYLE);
@@ -720,6 +763,35 @@ namespace
         else if (!enabled)
         {
             EnumWindows(&UnlockMovieWindow, 0);
+        }
+        return BridgeSuccess;
+    }
+
+    HRESULT SetPlayerLarge(bool large)
+    {
+        MovieWindowSizes sizes;
+        EnumWindows(&FindMovieWindowSizes,
+            reinterpret_cast<LPARAM>(&sizes));
+        HWND window = large
+            ? (sizes.large == nullptr ? sizes.small : nullptr)
+            : sizes.large;
+        if (window == nullptr)
+        {
+            return BridgeSuccess;
+        }
+
+        RECT client = {};
+        if (!GetClientRect(window, &client))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+        const LPARAM point = MAKELPARAM(
+            (client.right - client.left) / 2,
+            (client.bottom - client.top) / 2);
+        if (!PostMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, point) ||
+            !PostMessageW(window, WM_LBUTTONUP, 0, point))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
         }
         return BridgeSuccess;
     }
@@ -6457,11 +6529,24 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerClickThrough(
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerLarge(
+    SIZE_T large)
+{
+    __try
+    {
+        return SetPlayerLarge(large != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 61;
+    return 62;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

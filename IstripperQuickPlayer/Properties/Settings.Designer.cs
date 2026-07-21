@@ -178,6 +178,54 @@ namespace IStripperQuickPlayer.Properties {
                 this["RestartClipHotkeyString"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool LargePlayerHotkeyEnabled {
+            get {
+                return ((bool)(this["LargePlayerHotkeyEnabled"]));
+            }
+            set {
+                this["LargePlayerHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+Up")]
+        public string LargePlayerHotkeyString {
+            get {
+                return ((string)(this["LargePlayerHotkeyString"]));
+            }
+            set {
+                this["LargePlayerHotkeyString"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool SmallPlayerHotkeyEnabled {
+            get {
+                return ((bool)(this["SmallPlayerHotkeyEnabled"]));
+            }
+            set {
+                this["SmallPlayerHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+Down")]
+        public string SmallPlayerHotkeyString {
+            get {
+                return ((string)(this["SmallPlayerHotkeyString"]));
+            }
+            set {
+                this["SmallPlayerHotkeyString"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

@@ -41,6 +41,18 @@
     <Setting Name="RestartClipHotkeyString" Type="System.String" Scope="User">
       <Value Profile="(Default)">Control+Alt+Home</Value>
     </Setting>
+    <Setting Name="LargePlayerHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="LargePlayerHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+Up</Value>
+    </Setting>
+    <Setting Name="SmallPlayerHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="SmallPlayerHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+Down</Value>
+    </Setting>
     <Setting Name="MinSizeMB" Type="System.Int64" Scope="User">
       <Value Profile="(Default)">25</Value>
     </Setting>

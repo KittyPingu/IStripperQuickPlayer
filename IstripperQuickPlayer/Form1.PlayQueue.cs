@@ -21,6 +21,9 @@ namespace IStripperQuickPlayer
 
         private readonly List<PlayQueueEntry> manualPlayQueue = [];
         private readonly List<PlayQueueEntry> automaticPlayQueue = [];
+        private static string PreviousQueuePath => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "IStripperQuickPlayer", "previous-queue.iqpq");
         private readonly ToolStripMenuItem enablePlayQueueToolStripMenuItem =
             new("Enable play next queue") { CheckOnClick = true };
         private readonly ToolStripMenuItem autoQueueLengthToolStripMenuItem =
@@ -325,18 +328,7 @@ namespace IStripperQuickPlayer
 
             try
             {
-                if (new FileInfo(dialog.FileName).Length > 4 * 1024 * 1024)
-                    throw new InvalidDataException("The queue file is too large.");
-
-                List<PlayQueueEntry?> loaded =
-                    Persistence.Load<List<PlayQueueEntry?>>(dialog.FileName);
-                List<PlayQueueEntry> valid = loaded.Take(1_000)
-                    .Where(entry => entry != null &&
-                        IsAvailableQueueEntry(entry))
-                    .Select(entry => entry!).ToList();
-                manualPlayQueue.Clear();
-                manualPlayQueue.AddRange(valid);
-                RebuildAutomaticQueue();
+                LoadManualQueue(dialog.FileName);
             }
             catch (Exception ex)
             {
@@ -344,6 +336,36 @@ namespace IStripperQuickPlayer
                     ex.Message, "Load Queue Failed", MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+
+        private void LoadManualQueue(string path)
+        {
+            if (new FileInfo(path).Length > 4 * 1024 * 1024)
+                throw new InvalidDataException("The queue file is too large.");
+
+            List<PlayQueueEntry?> loaded =
+                Persistence.Load<List<PlayQueueEntry?>>(path);
+            List<PlayQueueEntry> valid = loaded.Take(1_000)
+                .Where(entry => entry != null && IsAvailableQueueEntry(entry))
+                .Select(entry => entry!).ToList();
+            manualPlayQueue.Clear();
+            manualPlayQueue.AddRange(valid);
+            RebuildAutomaticQueue();
+        }
+
+        private void RestorePreviousQueue()
+        {
+            if (!File.Exists(PreviousQueuePath))
+                return;
+
+            try { LoadManualQueue(PreviousQueuePath); }
+            catch { }
+        }
+
+        private void SavePreviousQueue()
+        {
+            try { Persistence.Save(PreviousQueuePath, manualPlayQueue); }
+            catch { }
         }
 
         private static bool IsAvailableQueueEntry(PlayQueueEntry entry)

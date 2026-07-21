@@ -39,7 +39,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 61;
+        private const int PlaybackBridgeVersion = 62;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -73,6 +73,8 @@ namespace IStripperQuickPlayer
         private const int RewindHotkeyId = 5;
         private const int FastForwardHotkeyId = 6;
         private const int RestartClipHotkeyId = 7;
+        private const int LargePlayerHotkeyId = 8;
+        private const int SmallPlayerHotkeyId = 9;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -175,6 +177,19 @@ namespace IStripperQuickPlayer
         {
             if (Properties.Settings.Default.RestartClipHotkeyEnabled)
                 await RunPlaybackOperationAsync(token => SeekAbsoluteAsync(0, token));
+        }
+
+        private void actSetPlayerLarge(bool large)
+        {
+            if (!playerLockBridgeLoaded)
+                return;
+
+            int result = SetVghdPlayerLarge(large);
+            if (result < 0)
+            {
+                SetPlaybackStatus(
+                    $"Player size update failed (0x{result:X8}).");
+            }
         }
 
         public Form1()
@@ -1199,6 +1214,7 @@ namespace IStripperQuickPlayer
             clickingNowPlaying = true;
 
             RetrieveModels();
+            RestorePreviousQueue();
             GetNowPlaying();
             clickingNowPlaying = false;
             SetupKeyHooks();
@@ -1491,6 +1507,10 @@ namespace IStripperQuickPlayer
                 RegisterConfiguredHotKey(FastForwardHotkeyId, Properties.Settings.Default.FastForwardHotkeyString);
             if (Properties.Settings.Default.RestartClipHotkeyEnabled)
                 RegisterConfiguredHotKey(RestartClipHotkeyId, Properties.Settings.Default.RestartClipHotkeyString);
+            if (Properties.Settings.Default.LargePlayerHotkeyEnabled)
+                RegisterConfiguredHotKey(LargePlayerHotkeyId, Properties.Settings.Default.LargePlayerHotkeyString);
+            if (Properties.Settings.Default.SmallPlayerHotkeyEnabled)
+                RegisterConfiguredHotKey(SmallPlayerHotkeyId, Properties.Settings.Default.SmallPlayerHotkeyString);
         }
 
         private void RegisterConfiguredHotKey(int id, string shortcut)
@@ -1508,6 +1528,8 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, RewindHotkeyId);
             UnregisterHotKey(Handle, FastForwardHotkeyId);
             UnregisterHotKey(Handle, RestartClipHotkeyId);
+            UnregisterHotKey(Handle, LargePlayerHotkeyId);
+            UnregisterHotKey(Handle, SmallPlayerHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -1558,6 +1580,12 @@ namespace IStripperQuickPlayer
                         return;
                     case RestartClipHotkeyId:
                         actRestartClip();
+                        return;
+                    case LargePlayerHotkeyId:
+                        actSetPlayerLarge(true);
+                        return;
+                    case SmallPlayerHotkeyId:
+                        actSetPlayerLarge(false);
                         return;
                 }
             }
@@ -2841,6 +2869,21 @@ namespace IStripperQuickPlayer
             }
         }
 
+        private int SetVghdPlayerLarge(bool large)
+        {
+            if (!playerLockBridgeLoaded || vghd_procID == 0)
+            {
+                return unchecked((int)0x80070015);
+            }
+
+            object parameter = large ? 1UL : 0UL;
+            lock (playbackApiLock)
+            {
+                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
+                    "IStripperSetPlayerLarge", ref parameter, true);
+            }
+        }
+
         private HashSet<string> GetRecentPlaybackPaths()
         {
             if (!Properties.Settings.Default.AvoidRecentRepeats ||
@@ -3460,6 +3503,7 @@ namespace IStripperQuickPlayer
                 // selected rate before the Deviare agent and bridge are released.
                 try { SetPlaybackRate(requestedPlaybackSpeed); } catch { }
             }
+            SavePreviousQueue();
             SaveMyData();
             Wallpaper.RestoreWallpaper();
             if (Utils.DefaultIconsVisible != Utils.DesktopIconsVisible())
