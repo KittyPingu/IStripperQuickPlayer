@@ -2234,7 +2234,12 @@ namespace IStripperQuickPlayer
                     {
                         if (string.IsNullOrEmpty(playbackRequestedAnimationPath) &&
                             string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
-                            previousAnimationReachedEnd)
+                            (previousAnimationReachedEnd ||
+                             Properties.Settings.Default.EnablePlayQueue &&
+                             (activeQueuedCard != null ||
+                              activeManualQueueEntry != null ||
+                              manualPlayQueue.Count > 0 ||
+                              automaticPlayQueue.Count > 0)))
                         {
                             playbackCompletedAnimationPath = previousAnimationPath;
                             playbackNextClipRetryAt =
