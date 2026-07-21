@@ -247,6 +247,7 @@ namespace
     LONG volatile g_fastDecodeResolverMask = 0;
     LONG volatile g_fastDecodeInstallStage = 0;
     LONG volatile g_playerLocked = 0;
+    LONG volatile g_playerClickThrough = 0;
     LONG volatile g_bridgePinned = 0;
     PVOID volatile g_audioSeekMovie = nullptr;
     LONGLONG volatile g_audioPlaybackRateBits =
@@ -300,6 +301,8 @@ namespace
     // this only if vghd ever creates more than 64 movie windows.
     constexpr int MaximumMovieWindows = 64;
     constexpr LRESULT MovieWindowProbeResult = 0x514C4F43;
+    constexpr wchar_t MovieWindowClickThroughProperty[] =
+        L"IStripperQuickPlayer.ClickThrough.v61";
     MovieWindowSubclass g_movieWindows[MaximumMovieWindows] = {};
 
     struct AlphaCheckpoint
@@ -391,6 +394,31 @@ namespace
             std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") != nullptr;
     }
 
+    void SetMovieWindowClickThrough(HWND window, bool enabled)
+    {
+        const LONG_PTR style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        if (enabled)
+        {
+            if ((style & WS_EX_TRANSPARENT) != 0)
+            {
+                return;
+            }
+            SetWindowLongPtrW(window, GWL_EXSTYLE,
+                style | WS_EX_TRANSPARENT);
+            if (!SetPropW(window, MovieWindowClickThroughProperty,
+                    reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1))))
+            {
+                SetWindowLongPtrW(window, GWL_EXSTYLE, style);
+            }
+        }
+        else if (RemovePropW(window,
+            MovieWindowClickThroughProperty) != nullptr)
+        {
+            SetWindowLongPtrW(window, GWL_EXSTYLE,
+                style & ~WS_EX_TRANSPARENT);
+        }
+    }
+
     WNDPROC OriginalMovieWindowProc(HWND window)
     {
         WNDPROC original = nullptr;
@@ -422,9 +450,18 @@ namespace
         }
 
         WNDPROC original = OriginalMovieWindowProc(window);
-        return original == nullptr
+        const LRESULT result = original == nullptr
             ? DefWindowProcW(window, message, wParam, lParam)
             : CallWindowProcW(original, window, message, wParam, lParam);
+        if (message == WM_STYLECHANGING &&
+            static_cast<int>(wParam) == GWL_EXSTYLE && lParam != 0 &&
+            InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+            InterlockedCompareExchange(&g_playerClickThrough, 0, 0) != 0)
+        {
+            reinterpret_cast<STYLESTRUCT*>(lParam)->styleNew |=
+                WS_EX_TRANSPARENT;
+        }
+        return result;
     }
 
     bool TryHasMovieWindowProc(HWND window, bool& active)
@@ -446,6 +483,20 @@ namespace
             !IsMovieWindow(window))
         {
             return false;
+        }
+
+        if (InterlockedCompareExchange(&g_playerClickThrough, 0, 0) != 0)
+        {
+            SetMovieWindowClickThrough(window, true);
+        }
+        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) == 0)
+        {
+            SetMovieWindowClickThrough(window, false);
+            return false;
+        }
+        if (InterlockedCompareExchange(&g_playerClickThrough, 0, 0) == 0)
+        {
+            SetMovieWindowClickThrough(window, false);
         }
 
         bool alreadySubclassed = false;
@@ -514,6 +565,15 @@ namespace
     BOOL CALLBACK FindMovieWindow(HWND window, LPARAM)
     {
         SubclassMovieWindow(window);
+        return TRUE;
+    }
+
+    BOOL CALLBACK UnlockMovieWindow(HWND window, LPARAM)
+    {
+        if (IsMovieWindow(window))
+        {
+            SetMovieWindowClickThrough(window, false);
+        }
         return TRUE;
     }
 
@@ -646,6 +706,21 @@ namespace
         }
 
         InterlockedExchange(&g_playerLocked, 0);
+        EnumWindows(&UnlockMovieWindow, 0);
+        return BridgeSuccess;
+    }
+
+    HRESULT SetPlayerClickThrough(bool enabled)
+    {
+        InterlockedExchange(&g_playerClickThrough, enabled ? 1 : 0);
+        if (enabled && InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
+        {
+            EnumWindows(&FindMovieWindow, 0);
+        }
+        else if (!enabled)
+        {
+            EnumWindows(&UnlockMovieWindow, 0);
+        }
         return BridgeSuccess;
     }
 
@@ -6369,11 +6444,24 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerLocked(
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerClickThrough(
+    SIZE_T enabled)
+{
+    __try
+    {
+        return SetPlayerClickThrough(enabled != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 58;
+    return 61;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

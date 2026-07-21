@@ -425,6 +425,7 @@ namespace IStripperQuickPlayer
             [
                 hotkeysToolStripMenuItem,
                 lockPlayerToolStripMenuItem,
+                clickThroughLockedPlayerToolStripMenuItem,
                 new ToolStripSeparator(),
                 playbackSettingsToolStripMenuItem,
                 librarySettingsToolStripMenuItem,
@@ -1366,6 +1367,7 @@ namespace IStripperQuickPlayer
 
             if (!TryTakeQueuedAnimation(out selected, out string cardTag))
                 return false;
+            BeginAnimationReplacement(selected);
             forceAnimation = !string.Equals(proposed, selected,
                 StringComparison.OrdinalIgnoreCase);
             queuedAnimationPendingPath = selected;

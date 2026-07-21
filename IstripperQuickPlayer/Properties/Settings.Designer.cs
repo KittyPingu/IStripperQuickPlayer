@@ -622,5 +622,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["DarkMode"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool ClickThroughLockedPlayer {
+            get {
+                return ((bool)(this["ClickThroughLockedPlayer"]));
+            }
+            set {
+                this["ClickThroughLockedPlayer"] = value;
+            }
+        }
     }
 }

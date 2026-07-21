@@ -39,7 +39,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 58;
+        private const int PlaybackBridgeVersion = 61;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -106,6 +106,8 @@ namespace IStripperQuickPlayer
             new("Alpha checkpoint cache size");
         private readonly ToolStripMenuItem avoidRecentRepeatsToolStripMenuItem =
             new("Avoid recently played clips");
+        private readonly ToolStripMenuItem clickThroughLockedPlayerToolStripMenuItem =
+            new("Click through locked player") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
             new("Playback History...");
         private readonly ToolStripMenuItem backupToolStripMenuItem =
@@ -312,6 +314,14 @@ namespace IStripperQuickPlayer
             avoidRecentRepeatsToolStripMenuItem.CheckedChanged += (_, _) =>
                 Properties.Settings.Default.AvoidRecentRepeats =
                     avoidRecentRepeatsToolStripMenuItem.Checked;
+            clickThroughLockedPlayerToolStripMenuItem.Checked =
+                Properties.Settings.Default.ClickThroughLockedPlayer;
+            clickThroughLockedPlayerToolStripMenuItem.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.ClickThroughLockedPlayer =
+                    clickThroughLockedPlayerToolStripMenuItem.Checked;
+                ChangePlayerClickThrough();
+            };
             settingsToolStripMenuItem.DropDownItems.Insert(
                 settingsToolStripMenuItem.DropDownItems.IndexOf(
                     randomPlayOrderToolStripMenuItem) + 1,
@@ -1745,6 +1755,14 @@ namespace IStripperQuickPlayer
                         $"Player lock setup failed (0x{lockResult:X8}).",
                         lockResult);
                 }
+                int clickThroughResult = SetVghdPlayerClickThrough(
+                    Properties.Settings.Default.ClickThroughLockedPlayer);
+                if (clickThroughResult < 0)
+                {
+                    throw new COMException(
+                        $"Player click-through setup failed (0x{clickThroughResult:X8}).",
+                        clickThroughResult);
+                }
 
                 if (!Properties.Settings.Default.EnablePlaybackControl)
                 {
@@ -2806,6 +2824,21 @@ namespace IStripperQuickPlayer
             playbackCompletedAnimationPath = "";
             playbackNextClipRetryAt = DateTime.MinValue;
             playbackReplacementStableAt = DateTime.MinValue;
+        }
+
+        private int SetVghdPlayerClickThrough(bool enabled)
+        {
+            if (!playerLockBridgeLoaded || vghd_procID == 0)
+            {
+                return unchecked((int)0x80070015);
+            }
+
+            object parameter = enabled ? 1UL : 0UL;
+            lock (playbackApiLock)
+            {
+                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
+                    "IStripperSetPlayerClickThrough", ref parameter, true);
+            }
         }
 
         private HashSet<string> GetRecentPlaybackPaths()
@@ -4350,6 +4383,20 @@ namespace IStripperQuickPlayer
                 notifyIcon1.Icon = Properties.Resources.locked;
             }
             doTaskbarPadlock();
+        }
+
+        private void ChangePlayerClickThrough()
+        {
+            if (!playerLockBridgeLoaded)
+                return;
+
+            int result = SetVghdPlayerClickThrough(
+                Properties.Settings.Default.ClickThroughLockedPlayer);
+            if (result < 0)
+            {
+                SetPlaybackStatus(
+                    $"Player click-through update failed (0x{result:X8}).");
+            }
         }
 
         private void notifyIcon1_DoubleClick(object sender, EventArgs e)
