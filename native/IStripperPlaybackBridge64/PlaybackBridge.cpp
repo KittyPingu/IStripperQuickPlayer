@@ -163,7 +163,7 @@ namespace
     };
 
     constexpr std::size_t DecodeScaleCallLength = 6;
-    constexpr std::size_t DecoderWorkerTargetLoadLength = 8;
+    std::size_t DecoderWorkerTargetLoadLength = 0;
 
     using ManagerAction = void(__fastcall*)(void* manager);
     using ManagerSetPlayRate = void(__fastcall*)(void* manager, double playRate);
@@ -1993,7 +1993,7 @@ namespace
                 if (write == nullptr ||
                     !IsReadable(write, sizeof(BpkSoundRawWriteSignature)) ||
                     std::memcmp(write, BpkSoundRawWriteSignature,
-                        sizeof(BpkSoundRawWriteSignature)) != 0)
+                        sizeof(BpkSoundRawWriteSignature) - 1) != 0)
                 {
                     continue;
                 }
@@ -2005,10 +2005,59 @@ namespace
         mask |= IsRvaInImage(BpkSoundRawWriteRva,
             sizeof(BpkSoundRawWriteSignature)) ? 64 : 0;
         mask |= IsRvaInImage(WmvAudioWriteCallRva, 5) ? 128 : 0;
-        const bool resolved = mask == 0xFF;
-        mask |= resolved ? 256 : 0;
+        const bool wmvResolved = mask == 0xFF &&
+            IsRvaInImage(BpkSoundRawWriteRva,
+                sizeof(BpkSoundRawWriteSignature)) &&
+            std::memcmp(ImageBase() + BpkSoundRawWriteRva,
+                BpkSoundRawWriteSignature,
+                sizeof(BpkSoundRawWriteSignature)) == 0;
+        mask |= wmvResolved ? 256 : 0;
         InterlockedExchange(&g_audioResolverMask, mask);
-        return resolved;
+        return (mask & 0x3F) == 0x3F;
+    }
+
+    bool DecodeWorkerTargetLoads(const unsigned char* load,
+        std::size_t& length, std::size_t& frameOffset,
+        std::size_t& mutexOffset)
+    {
+        if (!IsReadable(load, 14))
+        {
+            return false;
+        }
+
+        std::size_t frameLoadLength = 0;
+        if (load[0] == 0x41 && load[1] == 0x8B && load[2] == 0x6E)
+        {
+            frameOffset = load[3];
+            frameLoadLength = 4;
+        }
+        else if (load[0] == 0x41 && load[1] == 0x8B && load[2] == 0xAE)
+        {
+            frameOffset = *reinterpret_cast<const std::uint32_t*>(load + 3);
+            frameLoadLength = 7;
+        }
+        else
+        {
+            return false;
+        }
+
+        const auto queueLoad = load + frameLoadLength;
+        if (queueLoad[0] == 0x49 && queueLoad[1] == 0x8B &&
+            queueLoad[2] == 0x4E)
+        {
+            mutexOffset = queueLoad[3];
+            length = frameLoadLength + 4;
+            return true;
+        }
+        if (queueLoad[0] == 0x49 && queueLoad[1] == 0x8B &&
+            queueLoad[2] == 0x8E)
+        {
+            mutexOffset =
+                *reinterpret_cast<const std::uint32_t*>(queueLoad + 3);
+            length = frameLoadLength + 7;
+            return true;
+        }
+        return false;
     }
 
     bool ResolveVideoOffsets()
@@ -2040,19 +2089,16 @@ namespace
         }
         VideoSeekRva = RvaFromAddress(seek);
 
-        const unsigned char workerLoadPrefix[] =
-            { 0x41, 0x8B, 0x6E };
-        const unsigned char queuePrefix[] =
-            { 0x49, 0x8B, 0x4E };
         const unsigned char* targetLoad = nullptr;
-        for (std::size_t offset = 0; offset < 512; offset++)
+        for (std::size_t offset = 0; offset + 14 <= 512; offset++)
         {
-            if (std::memcmp(worker + offset, workerLoadPrefix,
-                    sizeof(workerLoadPrefix)) == 0 &&
-                std::memcmp(worker + offset + 4, queuePrefix,
-                    sizeof(queuePrefix)) == 0)
+            const auto candidate = worker + offset;
+            if (DecodeWorkerTargetLoads(candidate,
+                    DecoderWorkerTargetLoadLength,
+                    VideoCurrentFrameOffset,
+                    VideoFrameQueueMutexOffset))
             {
-                targetLoad = worker + offset;
+                targetLoad = candidate;
                 break;
             }
         }
@@ -2061,13 +2107,13 @@ namespace
             return false;
         }
         DecoderWorkerTargetLoadRva = RvaFromAddress(targetLoad);
-        VideoCurrentFrameOffset = targetLoad[3];
-        VideoFrameQueueMutexOffset = targetLoad[7];
 
         VideoFrameQueueOffset = 0;
         QueueBeginOffset = 0;
         QueueEndOffset = 0;
-        for (std::size_t offset = 8; offset + 10 <= 128; offset++)
+        const unsigned char queuePrefix[] = { 0x49, 0x8B, 0x4E };
+        for (std::size_t offset = DecoderWorkerTargetLoadLength;
+            offset + 10 <= 128; offset++)
         {
             if (std::memcmp(targetLoad + offset, queuePrefix,
                     sizeof(queuePrefix)) == 0 &&
@@ -2132,15 +2178,32 @@ namespace
             slotInstruction + 7 + slotDisplacement);
         VideoFormatContextOffset = suffix[16];
 
-        const unsigned char clearCurrent[] = { 0xC7, 0x43 };
-        const auto currentClear = FindSequence(suffix, 96,
-            clearCurrent, sizeof(clearCurrent));
-        if (currentClear == nullptr ||
-            *reinterpret_cast<const std::uint32_t*>(currentClear + 3) != 0)
+        const unsigned char* currentClear = nullptr;
+        std::size_t clearedFrameOffset = 0;
+        for (std::size_t offset = 0; offset + 10 <= 96; offset++)
+        {
+            const auto candidate = suffix + offset;
+            if (candidate[0] == 0xC7 && candidate[1] == 0x43 &&
+                *reinterpret_cast<const std::uint32_t*>(candidate + 3) == 0)
+            {
+                currentClear = candidate;
+                clearedFrameOffset = candidate[2];
+                break;
+            }
+            if (candidate[0] == 0xC7 && candidate[1] == 0x83 &&
+                *reinterpret_cast<const std::uint32_t*>(candidate + 6) == 0)
+            {
+                currentClear = candidate;
+                clearedFrameOffset =
+                    *reinterpret_cast<const std::uint32_t*>(candidate + 2);
+                break;
+            }
+        }
+        if (currentClear == nullptr)
         {
             return false;
         }
-        if (VideoCurrentFrameOffset != currentClear[2])
+        if (VideoCurrentFrameOffset != clearedFrameOffset)
         {
             return false;
         }
@@ -2750,25 +2813,25 @@ namespace
     {
         if (!IsRvaInImage(DecoderWorkerTargetLoadRva,
                 DecoderWorkerTargetLoadLength) ||
-            VideoCurrentFrameOffset > 0x7F ||
-            VideoFrameQueueMutexOffset > 0x7F)
+            DecoderWorkerTargetLoadLength < 8)
         {
             return false;
         }
         const auto load = ImageBase() + DecoderWorkerTargetLoadRva;
-        return load[0] == 0x41 && load[1] == 0x8B &&
-            load[2] == 0x6E &&
-            load[3] == static_cast<unsigned char>(
-                VideoCurrentFrameOffset) &&
-            load[4] == 0x49 && load[5] == 0x8B &&
-            load[6] == 0x4E &&
-            load[7] == static_cast<unsigned char>(
-                VideoFrameQueueMutexOffset);
+        std::size_t length = 0;
+        std::size_t frameOffset = 0;
+        std::size_t mutexOffset = 0;
+        return DecodeWorkerTargetLoads(load, length, frameOffset,
+                mutexOffset) &&
+            length == DecoderWorkerTargetLoadLength &&
+            frameOffset == VideoCurrentFrameOffset &&
+            mutexOffset == VideoFrameQueueMutexOffset;
     }
 
     int CompatibilityMask()
     {
-        if (!EnsureEngineOffsets())
+        if (!EnsureEngineOffsets() &&
+            (InterlockedCompareExchange(&g_offsetResolverMask, 0, 0) & 0x7) != 0x7)
         {
             return 0;
         }
@@ -6168,7 +6231,7 @@ namespace
         const unsigned char code[] = {
             0x9C,                                     // pushfq
             0x50,                                     // push rax
-            0x41, 0x8B, 0x6E, 0x78,                   // mov ebp,[r14+78h]
+            0x41, 0x8B, 0xAE, 0, 0, 0, 0,             // mov ebp,[r14+frame]
             0x48, 0xB8,                               // mov rax,video address
             0, 0, 0, 0, 0, 0, 0, 0,
             0x4C, 0x3B, 0x30,                         // cmp r14,[rax]
@@ -6182,13 +6245,14 @@ namespace
             0x3B, 0xE9,                               // cmp ebp,ecx
             0x7D, 0x02,                               // jge done
             0x8B, 0xE9,                               // mov ebp,ecx
-            0x49, 0x8B, 0x4E, 0x60,                   // mov rcx,[r14+60h]
+            0x49, 0x8B, 0x8E, 0, 0, 0, 0,             // mov rcx,[r14+mutex]
             0x58,                                     // pop rax
             0x9D,                                     // popfq
             0xC3                                      // done: ret
         };
 
-        unsigned char* thunk = AllocateNear(load + 8, 64);
+        unsigned char* thunk = AllocateNear(
+            load + DecoderWorkerTargetLoadLength, 64);
         if (thunk == nullptr)
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
@@ -6200,11 +6264,14 @@ namespace
             reinterpret_cast<std::uintptr_t>(&g_decoderCatchupVideo);
         const std::uintptr_t targetAddress =
             reinterpret_cast<std::uintptr_t>(&g_decoderCatchupTargetFrame);
-        std::memcpy(thunk + 8, &videoAddress, sizeof(videoAddress));
-        std::memcpy(thunk + 23, &targetAddress, sizeof(targetAddress));
-        thunk[5] = static_cast<unsigned char>(VideoCurrentFrameOffset);
-        thunk[51] = static_cast<unsigned char>(
+        std::memcpy(thunk + 11, &videoAddress, sizeof(videoAddress));
+        std::memcpy(thunk + 26, &targetAddress, sizeof(targetAddress));
+        const auto frameOffset = static_cast<std::uint32_t>(
+            VideoCurrentFrameOffset);
+        const auto mutexOffset = static_cast<std::uint32_t>(
             VideoFrameQueueMutexOffset);
+        std::memcpy(thunk + 5, &frameOffset, sizeof(frameOffset));
+        std::memcpy(thunk + 54, &mutexOffset, sizeof(mutexOffset));
         FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
 
         const std::intptr_t relative =
@@ -6354,6 +6421,10 @@ namespace
 
     HRESULT InstallWmvAudioWritePatch()
     {
+        if ((InterlockedCompareExchange(&g_audioResolverMask, 0, 0) & 256) == 0)
+        {
+            return BridgeSuccess;
+        }
         return InstallDirectCallPatch(
             WmvAudioWriteCallRva, BpkSoundRawWriteRva,
             reinterpret_cast<void*>(&GuardedBpkSoundRawWrite),
@@ -6546,7 +6617,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 62;
+    return 64;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

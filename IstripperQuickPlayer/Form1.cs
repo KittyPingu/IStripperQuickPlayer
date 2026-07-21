@@ -39,7 +39,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
-        private const int PlaybackBridgeVersion = 62;
+        private const int PlaybackBridgeVersion = 64;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
