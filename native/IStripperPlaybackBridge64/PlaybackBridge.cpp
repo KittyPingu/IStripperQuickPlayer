@@ -410,7 +410,7 @@ namespace
 
     BOOL CALLBACK FindMovieWindowSizes(HWND window, LPARAM parameter)
     {
-        if (!IsMovieWindow(window))
+        if (!IsWindowVisible(window) || !IsMovieWindow(window))
         {
             return TRUE;
         }

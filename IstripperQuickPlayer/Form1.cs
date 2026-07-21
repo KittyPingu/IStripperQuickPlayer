@@ -3998,9 +3998,14 @@ namespace IStripperQuickPlayer
 
         private void lblNowPlaying_TextChanged(object sender, EventArgs e)
         {
-            string t = "iStripper QuickPlayer";
-            if (lblNowPlaying.Text.Length > 14) t = lblNowPlaying.Text.Substring(13);
-            this.Text = t;
+            UpdateWindowTitle();
+        }
+
+        private void UpdateWindowTitle()
+        {
+            string title = lblNowPlaying.Text.Length > 14
+                ? lblNowPlaying.Text.Substring(13) : "iStripper QuickPlayer";
+            Text = playerlocked ? "🔒 " + title : title;
         }
 
         private void lblNowPlaying_MouseEnter(object sender, EventArgs e)
@@ -4455,6 +4460,7 @@ namespace IStripperQuickPlayer
                 notifyIcon1.Icon = Properties.Resources.locked;
             }
             doTaskbarPadlock();
+            UpdateWindowTitle();
         }
 
         private void ChangePlayerClickThrough()
