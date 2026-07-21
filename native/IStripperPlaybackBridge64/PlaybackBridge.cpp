@@ -1051,6 +1051,40 @@ namespace
         return nullptr;
     }
 
+    bool IsCompatibleBpkSoundRawWrite(const unsigned char* call,
+        const unsigned char* write)
+    {
+        if (!IsReadable(write, 64) ||
+            std::memcmp(write, BpkSoundRawWriteSignature,
+                sizeof(BpkSoundRawWriteSignature) - 1) != 0)
+        {
+            return false;
+        }
+        if (std::memcmp(write, BpkSoundRawWriteSignature,
+                sizeof(BpkSoundRawWriteSignature)) == 0)
+        {
+            return true;
+        }
+
+        const unsigned char arguments[] = {
+            0x49, 0x63, 0xF0, // movsxd rsi,r8d
+            0x4C, 0x8B, 0xFA, // mov r15,rdx
+            0x48, 0x8B, 0xF9  // mov rdi,rcx
+        };
+        return write[18] >= 0x20 && write[18] <= 0x80 &&
+            (write[18] & 0x0F) == 0 &&
+            call[-14] == 0x44 && call[-13] == 0x8B &&
+            call[-12] == 0x44 && call[-11] == 0x24 &&
+            call[-9] == 0x48 && call[-8] == 0x8B &&
+            call[-7] == 0x54 && call[-6] == 0x24 &&
+            call[-4] == 0x48 && call[-3] == 0x8B &&
+            call[-2] == 0x48 &&
+            call[-1] == static_cast<unsigned char>(VideoSoundOffset) &&
+            FindSequence(write + sizeof(BpkSoundRawWriteSignature),
+                64 - sizeof(BpkSoundRawWriteSignature),
+                arguments, sizeof(arguments)) != nullptr;
+    }
+
     bool ValidFunctionCandidate(const unsigned char* candidate, int kind)
     {
         if (!IsReadable(candidate, 128))
@@ -1979,7 +2013,7 @@ namespace
         auto onSample = reinterpret_cast<unsigned char*>(readerVtable[4]);
         if (IsExecutableAddress(onSample) && IsReadable(onSample, 512))
         {
-            for (std::size_t offset = 4; offset + 5 <= 512; offset++)
+            for (std::size_t offset = 14; offset + 5 <= 512; offset++)
             {
                 auto call = onSample + offset;
                 if (call[0] != 0xE8 ||
@@ -1991,9 +2025,7 @@ namespace
                 }
                 auto write = DirectCallTarget(call);
                 if (write == nullptr ||
-                    !IsReadable(write, sizeof(BpkSoundRawWriteSignature)) ||
-                    std::memcmp(write, BpkSoundRawWriteSignature,
-                        sizeof(BpkSoundRawWriteSignature) - 1) != 0)
+                    !IsCompatibleBpkSoundRawWrite(call, write))
                 {
                     continue;
                 }
@@ -2005,12 +2037,7 @@ namespace
         mask |= IsRvaInImage(BpkSoundRawWriteRva,
             sizeof(BpkSoundRawWriteSignature)) ? 64 : 0;
         mask |= IsRvaInImage(WmvAudioWriteCallRva, 5) ? 128 : 0;
-        const bool wmvResolved = mask == 0xFF &&
-            IsRvaInImage(BpkSoundRawWriteRva,
-                sizeof(BpkSoundRawWriteSignature)) &&
-            std::memcmp(ImageBase() + BpkSoundRawWriteRva,
-                BpkSoundRawWriteSignature,
-                sizeof(BpkSoundRawWriteSignature)) == 0;
+        const bool wmvResolved = mask == 0xFF;
         mask |= wmvResolved ? 256 : 0;
         InterlockedExchange(&g_audioResolverMask, mask);
         return (mask & 0x3F) == 0x3F;
@@ -5159,6 +5186,31 @@ namespace
                     __leave;
                 }
 
+                auto videoBytes = reinterpret_cast<unsigned char*>(video);
+                void* ssvReader = IsReadable(videoBytes +
+                        WmvReaderObjectOffset, sizeof(void*))
+                    ? *reinterpret_cast<void**>(
+                        videoBytes + WmvReaderObjectOffset)
+                    : nullptr;
+                auto readerResult = IsReadable(ssvReader,
+                        WmvLastResultOffset + sizeof(HRESULT))
+                    ? reinterpret_cast<volatile HRESULT*>(
+                        reinterpret_cast<unsigned char*>(ssvReader) +
+                            WmvLastResultOffset)
+                    : nullptr;
+                if (readerResult == nullptr)
+                {
+                    InterlockedExchange(
+                        &g_wmvClockResult, ManagerError());
+                    __leave;
+                }
+                const HRESULT readerStatus = *readerResult;
+                if (readerStatus != E_PENDING && FAILED(readerStatus))
+                {
+                    InterlockedExchange(&g_wmvClockResult, readerStatus);
+                    __leave;
+                }
+
                 const int currentFrame = *currentAddress;
                 if (!g_wmvUserClock &&
                     InterlockedCompareExchange(
@@ -5201,13 +5253,6 @@ namespace
                             &g_wmvClockResult, BridgeSuccess);
                         __leave;
                     }
-                    auto videoBytes =
-                        reinterpret_cast<unsigned char*>(video);
-                    void* ssvReader = IsReadable(videoBytes +
-                            WmvReaderObjectOffset, sizeof(void*))
-                        ? *reinterpret_cast<void**>(
-                            videoBytes + WmvReaderObjectOffset)
-                        : nullptr;
                     auto frameHeld =
                         videoBytes + WmvFrameHeldOffset;
                     if (!IsReadable(ssvReader, sizeof(void*)) ||
@@ -6617,7 +6662,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 64;
+    return 65;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
