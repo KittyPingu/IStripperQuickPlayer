@@ -3071,7 +3071,6 @@ namespace IStripperQuickPlayer
                 }
 
                 isAutoSelecting = false;
-                ShowNowPlaying(newcardstring, found);
                 if (!string.Equals(str, newcardstring,
                         StringComparison.OrdinalIgnoreCase) &&
                     (forceQueuedAnimation || newcardstring != wallpaperTag))
