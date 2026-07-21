@@ -39,11 +39,15 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr window, int id);
 
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int virtualKey);
+
         private const int PlaybackBridgeVersion = 65;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
         private const int PlaybackForcedReadyMilliseconds = 5_000;
+        private const int VirtualKeyLeftButton = 0x01;
         private const string LatestReleaseApiUrl =
             "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
 
@@ -131,6 +135,7 @@ namespace IStripperQuickPlayer
         private DateTime playbackReplacementStableAt = DateTime.MinValue;
         private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
         private DateTime playbackLastProgressAt = DateTime.UtcNow;
+        private long playbackInputQuietUntilTicks;
         private bool formIsClosing;
         private bool restoringBackup;
         private ControlScrollListener? _processListViewScrollListener;
@@ -1713,6 +1718,7 @@ namespace IStripperQuickPlayer
                 ClearQueuedCardSession();
                 playbackNextClipRetryAt = DateTime.MinValue;
                 playbackReplacementStableAt = DateTime.MinValue;
+                Volatile.Write(ref playbackInputQuietUntilTicks, 0);
             }
             SetPlaybackStatus(string.Empty);
         }
@@ -2188,6 +2194,16 @@ namespace IStripperQuickPlayer
                 return;
             }
 
+            DateTime now = DateTime.UtcNow;
+            if ((GetAsyncKeyState(VirtualKeyLeftButton) & 0x8000) != 0)
+            {
+                Volatile.Write(ref playbackInputQuietUntilTicks,
+                    now.AddSeconds(1).Ticks);
+                return;
+            }
+            if (now.Ticks < Volatile.Read(ref playbackInputQuietUntilTicks))
+                return;
+
             playbackTimelinePolling = true;
             try
             {
@@ -2341,7 +2357,7 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                DateTime now = DateTime.UtcNow;
+                now = DateTime.UtcNow;
                 int elapsed = await Task.Run(() =>
                     RequirePlaybackResult("IStripperGetElapsedMilliseconds"));
                 int total = playbackTimelineDurationMilliseconds;
@@ -2987,6 +3003,13 @@ namespace IStripperQuickPlayer
                 }
                 if (param.Name == "lpValueName")
                     keyname = param.Value?.ToString() ?? "";
+            }
+            if (keyname == "CurrentAnim" &&
+                (GetAsyncKeyState(VirtualKeyLeftButton) & 0x8000) != 0)
+            {
+                Volatile.Write(ref playbackInputQuietUntilTicks,
+                    DateTime.UtcNow.AddSeconds(1).Ticks);
+                return;
             }
             if (length < 1) return;
             string str = GetStringFromPointer(pointer, length);
