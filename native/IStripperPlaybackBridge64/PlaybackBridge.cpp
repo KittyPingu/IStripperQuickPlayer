@@ -394,47 +394,14 @@ namespace
             std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") != nullptr;
     }
 
-    constexpr bool IsLargeMovieWindow(LONG windowHeight, LONG workAreaHeight)
-    {
-        return windowHeight > workAreaHeight / 2;
-    }
-
-    static_assert(!IsLargeMovieWindow(300, 1000));
-    static_assert(IsLargeMovieWindow(600, 1000));
-
-    struct MovieWindowSizes
-    {
-        HWND small = nullptr;
-        HWND large = nullptr;
-    };
-
-    BOOL CALLBACK FindMovieWindowSizes(HWND window, LPARAM parameter)
+    BOOL CALLBACK FindVisibleMovieWindow(HWND window, LPARAM parameter)
     {
         if (!IsWindowVisible(window) || !IsMovieWindow(window))
         {
             return TRUE;
         }
-
-        RECT windowRect = {};
-        MONITORINFO monitor = { sizeof(monitor) };
-        if (!GetWindowRect(window, &windowRect) ||
-            !GetMonitorInfoW(MonitorFromWindow(window,
-                MONITOR_DEFAULTTONEAREST), &monitor))
-        {
-            return TRUE;
-        }
-
-        auto& sizes = *reinterpret_cast<MovieWindowSizes*>(parameter);
-        if (IsLargeMovieWindow(windowRect.bottom - windowRect.top,
-                monitor.rcWork.bottom - monitor.rcWork.top))
-        {
-            sizes.large = window;
-        }
-        else if (sizes.small == nullptr)
-        {
-            sizes.small = window;
-        }
-        return TRUE;
+        *reinterpret_cast<HWND*>(parameter) = window;
+        return FALSE;
     }
 
     void SetMovieWindowClickThrough(HWND window, bool enabled)
@@ -769,12 +736,23 @@ namespace
 
     HRESULT SetPlayerLarge(bool large)
     {
-        MovieWindowSizes sizes;
-        EnumWindows(&FindMovieWindowSizes,
-            reinterpret_cast<LPARAM>(&sizes));
-        HWND window = large
-            ? (sizes.large == nullptr ? sizes.small : nullptr)
-            : sizes.large;
+        DWORD mode = 0;
+        DWORD modeSize = sizeof(mode);
+        const LSTATUS modeResult = RegGetValueW(HKEY_CURRENT_USER,
+            L"Software\\Totem\\vghd\\player", L"playingMode",
+            RRF_RT_REG_DWORD, nullptr, &mode, &modeSize);
+        if (modeResult != ERROR_SUCCESS)
+        {
+            return HRESULT_FROM_WIN32(modeResult);
+        }
+        if (mode == (large ? 1u : 2u))
+        {
+            return BridgeSuccess;
+        }
+
+        HWND window = nullptr;
+        EnumWindows(&FindVisibleMovieWindow,
+            reinterpret_cast<LPARAM>(&window));
         if (window == nullptr)
         {
             return BridgeSuccess;
