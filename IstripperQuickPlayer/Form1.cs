@@ -3654,6 +3654,7 @@ namespace IStripperQuickPlayer
 
         private void GetNextCard()
         {
+            ClearQueuedCardSession(clearManualQueueEntry: false);
             if (TryPlayNextQueuedAnimation())
                 return;
 
