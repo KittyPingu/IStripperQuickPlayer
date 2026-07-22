@@ -4446,6 +4446,7 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.LockPlayer = lockPlayerToolStripMenuItem.Checked;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
             ChangePlayerLocked();
+            LockStateOverlay.ShowForProcess(vghd_procID, playerlocked);
         }
 
         private void doTaskbarPadlock()
