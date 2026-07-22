@@ -42,7 +42,10 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int virtualKey);
 
-        private const int PlaybackBridgeVersion = 65;
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint RegisterWindowMessage(string message);
+
+        private const int PlaybackBridgeVersion = 67;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -71,6 +74,8 @@ namespace IStripperQuickPlayer
         private CultureInfo culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
         //global hotkeys
         private const int WmHotkey = 0x0312;
+        private static readonly int WheelResizeMessage = (int)
+            RegisterWindowMessage("IStripperQuickPlayer.WheelResize.v1");
         private const int NextClipHotkeyId = 1;
         private const int NextCardHotkeyId = 2;
         private const int ToggleLockHotkeyId = 3;
@@ -94,6 +99,7 @@ namespace IStripperQuickPlayer
         private bool movieCaptureHookInstalled;
         private string playbackBridgePath = "";
         private int vghdInjectionInProgress;
+        private int playerMode = 2;
         private volatile bool playerLockBridgeLoaded;
         private volatile bool playbackBridgeLoaded;
         private volatile bool playbackMovieRegistered;
@@ -116,6 +122,8 @@ namespace IStripperQuickPlayer
             new("Avoid recently played clips");
         private readonly ToolStripMenuItem clickThroughLockedPlayerToolStripMenuItem =
             new("Click through locked player") { CheckOnClick = true };
+        private readonly ToolStripMenuItem wheelResizePlayerToolStripMenuItem =
+            new("Resize player with mouse wheel") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
             new("Playback History...");
         private readonly ToolStripMenuItem backupToolStripMenuItem =
@@ -364,6 +372,14 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.ClickThroughLockedPlayer =
                     clickThroughLockedPlayerToolStripMenuItem.Checked;
                 ChangePlayerClickThrough();
+            };
+            wheelResizePlayerToolStripMenuItem.Checked =
+                Properties.Settings.Default.EnablePlayerWheelResize;
+            wheelResizePlayerToolStripMenuItem.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.EnablePlayerWheelResize =
+                    wheelResizePlayerToolStripMenuItem.Checked;
+                ChangePlayerWheelResize();
             };
             settingsToolStripMenuItem.DropDownItems.Insert(
                 settingsToolStripMenuItem.DropDownItems.IndexOf(
@@ -1587,6 +1603,17 @@ namespace IStripperQuickPlayer
 
         protected override void WndProc(ref System.Windows.Forms.Message message)
         {
+            if (message.Msg == WheelResizeMessage)
+            {
+                int percent = message.WParam.ToInt32();
+                if (Properties.Settings.Default.EnablePlayerWheelResize &&
+                    percent is >= 10 and <= 100)
+                {
+                    LockStateOverlay.ShowTextForProcess(
+                        vghd_procID, $"{percent}%");
+                }
+                return;
+            }
             if (message.Msg == WmHotkey)
             {
                 switch (message.WParam.ToInt32())
@@ -1748,6 +1775,7 @@ namespace IStripperQuickPlayer
                 ClearQueuedCardSession();
                 playbackNextClipRetryAt = DateTime.MinValue;
                 playbackReplacementStableAt = DateTime.MinValue;
+                Volatile.Write(ref playerMode, 2);
                 Volatile.Write(ref playbackInputQuietUntilTicks, 0);
             }
             SetPlaybackStatus(string.Empty);
@@ -1827,7 +1855,22 @@ namespace IStripperQuickPlayer
                         $"Player click-through setup failed (0x{clickThroughResult:X8}).",
                         clickThroughResult);
                 }
-
+                int playerModeResult = SetVghdPlayerMode(
+                    Volatile.Read(ref playerMode));
+                if (playerModeResult < 0)
+                {
+                    throw new COMException(
+                        $"Player mode setup failed (0x{playerModeResult:X8}).",
+                        playerModeResult);
+                }
+                int wheelResizeResult = SetVghdPlayerWheelResize(
+                    Properties.Settings.Default.EnablePlayerWheelResize);
+                if (wheelResizeResult < 0)
+                {
+                    throw new COMException(
+                        $"Player wheel resize setup failed (0x{wheelResizeResult:X8}).",
+                        wheelResizeResult);
+                }
                 if (!Properties.Settings.Default.EnablePlaybackControl)
                 {
                     return;
@@ -2947,6 +2990,36 @@ namespace IStripperQuickPlayer
             }
         }
 
+        private int SetVghdPlayerWheelResize(bool enabled)
+        {
+            if (!playerLockBridgeLoaded || vghd_procID == 0)
+            {
+                return unchecked((int)0x80070015);
+            }
+
+            object parameter = enabled ? 1UL : 0UL;
+            lock (playbackApiLock)
+            {
+                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
+                    "IStripperSetPlayerWheelResize", ref parameter, true);
+            }
+        }
+
+        private int SetVghdPlayerMode(int mode)
+        {
+            if (!playerLockBridgeLoaded || vghd_procID == 0)
+            {
+                return unchecked((int)0x80070015);
+            }
+
+            object parameter = (ulong)mode;
+            lock (playbackApiLock)
+            {
+                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
+                    "IStripperSetPlayerMode", ref parameter, true);
+            }
+        }
+
         private int SetVghdPlayerLarge(bool large)
         {
             if (!playerLockBridgeLoaded || vghd_procID == 0)
@@ -3060,6 +3133,26 @@ namespace IStripperQuickPlayer
                 }
                 if (param.Name == "lpValueName")
                     keyname = param.Value?.ToString() ?? "";
+            }
+            if (keyname == "playingMode" && length >= sizeof(uint))
+            {
+                try
+                {
+                    uint mode = Convert.ToUInt32(_spyMgr
+                        .ProcessMemoryFromPID(process.Id)
+                        .Read(pointer,
+                            eNktDboFundamentalType.ftUnsignedDoubleWord));
+                    if (mode is 1 or 2)
+                    {
+                        Volatile.Write(ref playerMode, (int)mode);
+                        ThreadPool.QueueUserWorkItem(_ =>
+                        {
+                            try { SetVghdPlayerMode((int)mode); } catch { }
+                        });
+                    }
+                }
+                catch { }
+                return;
             }
             if (keyname == "CurrentAnim" &&
                 (GetAsyncKeyState(VirtualKeyLeftButton) & 0x8000) != 0)
@@ -3582,6 +3675,7 @@ namespace IStripperQuickPlayer
             DisableMovieCapture();
             if (playerLockBridgeLoaded)
             {
+                try { SetVghdPlayerWheelResize(false); } catch { }
                 try { SetVghdPlayerLocked(false); } catch { }
                 playerLockBridgeLoaded = false;
             }
@@ -4536,6 +4630,20 @@ namespace IStripperQuickPlayer
             {
                 SetPlaybackStatus(
                     $"Player click-through update failed (0x{result:X8}).");
+            }
+        }
+
+        private void ChangePlayerWheelResize()
+        {
+            if (!playerLockBridgeLoaded)
+                return;
+
+            int result = SetVghdPlayerWheelResize(
+                Properties.Settings.Default.EnablePlayerWheelResize);
+            if (result < 0)
+            {
+                SetPlaybackStatus(
+                    $"Player wheel resize update failed (0x{result:X8}).");
             }
         }
 

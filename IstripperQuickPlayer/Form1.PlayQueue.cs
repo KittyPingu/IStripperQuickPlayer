@@ -464,6 +464,7 @@ namespace IStripperQuickPlayer
                 hotkeysToolStripMenuItem,
                 lockPlayerToolStripMenuItem,
                 clickThroughLockedPlayerToolStripMenuItem,
+                wheelResizePlayerToolStripMenuItem,
                 new ToolStripSeparator(),
                 playbackSettingsToolStripMenuItem,
                 librarySettingsToolStripMenuItem,

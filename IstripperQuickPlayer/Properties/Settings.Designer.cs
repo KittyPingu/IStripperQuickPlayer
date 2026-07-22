@@ -706,5 +706,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["ClickThroughLockedPlayer"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool EnablePlayerWheelResize {
+            get {
+                return ((bool)(this["EnablePlayerWheelResize"]));
+            }
+            set {
+                this["EnablePlayerWheelResize"] = value;
+            }
+        }
     }
 }

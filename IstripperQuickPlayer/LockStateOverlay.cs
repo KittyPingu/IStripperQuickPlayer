@@ -15,20 +15,24 @@ internal sealed class LockStateOverlay : Form
 
     private readonly bool locked;
     private readonly Image? image;
+    private readonly string? text;
     private readonly System.Windows.Forms.Timer closeTimer = new() { Interval = 900 };
 
-    private LockStateOverlay(Rectangle bounds, bool locked, Image? image = null)
+    private LockStateOverlay(Rectangle bounds, bool locked, Image? image = null,
+        string? text = null)
     {
         this.locked = locked;
         this.image = image;
+        this.text = text;
         if (image != null) closeTimer.Interval = 4_000;
         AutoScaleMode = AutoScaleMode.None;
-        BackColor = image != null ? Color.Black : locked
-            ? Color.FromArgb(145, 25, 40)
+        BackColor = image != null ? Color.Black : text != null
+            ? Color.FromArgb(45, 45, 45)
+            : locked ? Color.FromArgb(145, 25, 40)
             : Color.FromArgb(15, 115, 75);
         DoubleBuffered = true;
         FormBorderStyle = FormBorderStyle.None;
-        Opacity = 0.88;
+        Opacity = 0;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
@@ -38,6 +42,8 @@ internal sealed class LockStateOverlay : Form
         Shown += (_, _) =>
         {
             ApplyRoundedRegion();
+            Refresh();
+            Opacity = 0.88;
             closeTimer.Start();
         };
         FormClosed += (_, _) =>
@@ -109,6 +115,18 @@ internal sealed class LockStateOverlay : Form
         return true;
     }
 
+    internal static void ShowTextForProcess(int processId, string text)
+    {
+        if (processId == 0 || !TryGetMovieWindowBounds(processId,
+            out Rectangle movieBounds, out int movieDpi))
+            return;
+
+        current?.Close();
+        current = new LockStateOverlay(
+            CalculateTextBounds(movieBounds, movieDpi), false, text: text);
+        current.Show();
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -118,6 +136,21 @@ internal sealed class LockStateOverlay : Form
         {
             e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
             e.Graphics.DrawImage(image, ClientRectangle);
+            return;
+        }
+
+        if (text != null)
+        {
+            float badgeSize = Math.Min(ClientSize.Width, ClientSize.Height);
+            using Font font = new(FontFamily.GenericSansSerif,
+                badgeSize * 0.26f, FontStyle.Bold, GraphicsUnit.Pixel);
+            using SolidBrush textBrush = new(Color.White);
+            using StringFormat centered = new()
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center
+            };
+            e.Graphics.DrawString(text, font, textBrush, ClientRectangle, centered);
             return;
         }
 
@@ -172,6 +205,16 @@ internal sealed class LockStateOverlay : Form
             movieBounds.Left + (movieBounds.Width - bounds.Width) / 2,
             movieBounds.Top + (movieBounds.Height - height) / 2,
             bounds.Width, height);
+    }
+
+    private static Rectangle CalculateTextBounds(Rectangle movieBounds, int movieDpi)
+    {
+        Rectangle lockBounds = CalculateBounds(movieBounds, movieDpi);
+        int size = lockBounds.Width / 2;
+        return new Rectangle(
+            movieBounds.Left + (movieBounds.Width - size) / 2,
+            movieBounds.Top + (movieBounds.Height - size) / 2,
+            size, size);
     }
 
     private static void FillRoundedRectangle(Graphics graphics, Brush brush,
@@ -229,6 +272,9 @@ internal sealed class LockStateOverlay : Form
             new Rectangle(100, 200, 300, 600), (int)GetDpiForSystem(),
             new Size(100, 150));
         Debug.Assert(imageBounds == new Rectangle(205, 432, 90, 135));
+        Rectangle textBounds = CalculateTextBounds(
+            new Rectangle(100, 200, 300, 600), (int)GetDpiForSystem());
+        Debug.Assert(textBounds == new Rectangle(227, 477, 45, 45));
     }
 #endif
 

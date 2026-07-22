@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <dwmapi.h>
 #include <compressapi.h>
 #include <algorithm>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <winver.h>
 
 #pragma comment(lib, "Cabinet.lib")
+#pragma comment(lib, "Dwmapi.lib")
 #pragma comment(lib, "Version.lib")
 
 // This bridge discovers private vghd functions, vtables, hook sites, and object
@@ -248,6 +250,11 @@ namespace
     LONG volatile g_fastDecodeInstallStage = 0;
     LONG volatile g_playerLocked = 0;
     LONG volatile g_playerClickThrough = 0;
+    LONG volatile g_playerWheelResize = 0;
+    LONG volatile g_playerWheelDelta = 0;
+    LONG volatile g_playerMode = 2;
+    std::uintptr_t g_liveVtableRva = 0;
+    PVOID volatile g_liveObject = nullptr;
     LONG volatile g_bridgePinned = 0;
     PVOID volatile g_audioSeekMovie = nullptr;
     LONGLONG volatile g_audioPlaybackRateBits =
@@ -272,6 +279,8 @@ namespace
     INIT_ONCE g_wmvClockWorkerOnce = INIT_ONCE_STATIC_INIT;
     HMODULE g_bridgeModule = nullptr;
     HWINEVENTHOOK g_movieWindowEventHook = nullptr;
+    HHOOK g_movieMouseHook = nullptr;
+    UINT g_wheelResizeMessage = 0;
     LONG volatile g_movieWindowWatcherResult = E_PENDING;
     UINT g_movieWindowProbeMessage = 0;
     PVOID volatile g_fastForwardMovie = nullptr;
@@ -402,6 +411,261 @@ namespace
         }
         *reinterpret_cast<HWND*>(parameter) = window;
         return FALSE;
+    }
+
+    struct MovieWindowAtPoint
+    {
+        POINT point = {};
+        HWND window = nullptr;
+    };
+
+    BOOL CALLBACK FindVisibleMovieWindowAtPoint(HWND window, LPARAM parameter)
+    {
+        auto search = reinterpret_cast<MovieWindowAtPoint*>(parameter);
+        RECT bounds = {};
+        if (!IsWindowVisible(window) || !IsMovieWindow(window) ||
+            FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS,
+                &bounds, sizeof(bounds))) ||
+            !PtInRect(&bounds, search->point))
+        {
+            return TRUE;
+        }
+        search->window = window;
+        return FALSE;
+    }
+
+    struct QtGenericArgument
+    {
+        const void* data = nullptr;
+        const char* name = nullptr;
+    };
+
+    using QObjectInherits = bool(__cdecl*)(const void* object,
+        const char* className);
+    using QMetaInvoke = bool(__cdecl*)(void* object, const char* member,
+        QtGenericArgument, QtGenericArgument, QtGenericArgument,
+        QtGenericArgument, QtGenericArgument, QtGenericArgument,
+        QtGenericArgument, QtGenericArgument, QtGenericArgument,
+        QtGenericArgument);
+
+    struct QtObjectFunctions
+    {
+        QObjectInherits inherits = nullptr;
+        QMetaInvoke invoke = nullptr;
+    };
+
+    unsigned char* ImageBase();
+    const IMAGE_NT_HEADERS64* ImageHeaders();
+    std::uintptr_t FindVtableRva(const char* decoratedClassName);
+
+    bool IsQtObject(const QtObjectFunctions& qt, void* object,
+        const void* expectedVtable, const char* className)
+    {
+        if (object == nullptr)
+        {
+            return false;
+        }
+        MEMORY_BASIC_INFORMATION objectMemory = {};
+        if (VirtualQuery(object, &objectMemory, sizeof(objectMemory)) !=
+                sizeof(objectMemory) || objectMemory.State != MEM_COMMIT ||
+            (objectMemory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0 ||
+            reinterpret_cast<std::uintptr_t>(object) + sizeof(void*) * 2 >
+                reinterpret_cast<std::uintptr_t>(objectMemory.BaseAddress) +
+                    objectMemory.RegionSize)
+        {
+            return false;
+        }
+        __try
+        {
+            if (*reinterpret_cast<void**>(object) != expectedVtable)
+            {
+                return false;
+            }
+            void* privateData = *(reinterpret_cast<void**>(object) + 1);
+            MEMORY_BASIC_INFORMATION privateMemory = {};
+            if (privateData == nullptr ||
+                VirtualQuery(privateData, &privateMemory,
+                    sizeof(privateMemory)) != sizeof(privateMemory) ||
+                privateMemory.State != MEM_COMMIT ||
+                (privateMemory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0 ||
+                reinterpret_cast<std::uintptr_t>(privateData) +
+                    sizeof(void*) * 2 >
+                    reinterpret_cast<std::uintptr_t>(
+                        privateMemory.BaseAddress) + privateMemory.RegionSize)
+            {
+                return false;
+            }
+            return (*reinterpret_cast<void**>(privateData) == object ||
+                    *(reinterpret_cast<void**>(privateData) + 1) == object) &&
+                qt.inherits(object, className);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    void* FindLiveObject(const QtObjectFunctions& qt)
+    {
+        const auto headers = ImageHeaders();
+        auto base = ImageBase();
+        if (g_liveVtableRva == 0)
+        {
+            g_liveVtableRva = FindVtableRva(".?AVLive@@");
+        }
+        if (headers == nullptr || base == nullptr || g_liveVtableRva == 0)
+        {
+            return nullptr;
+        }
+
+        const void* expectedVtable = base + g_liveVtableRva;
+        void* cached = InterlockedCompareExchangePointer(
+            &g_liveObject, nullptr, nullptr);
+        if (IsQtObject(qt, cached, expectedVtable, "Live"))
+        {
+            return cached;
+        }
+        InterlockedExchangePointer(&g_liveObject, nullptr);
+
+        const auto sections = IMAGE_FIRST_SECTION(headers);
+        for (unsigned index = 0; index < headers->FileHeader.NumberOfSections;
+            ++index)
+        {
+            if ((sections[index].Characteristics & IMAGE_SCN_MEM_WRITE) == 0)
+            {
+                continue;
+            }
+            auto start = base + sections[index].VirtualAddress;
+            const std::size_t size = sections[index].Misc.VirtualSize;
+            for (std::size_t offset = 0;
+                offset + sizeof(void*) <= size; offset += sizeof(void*))
+            {
+                auto slot = reinterpret_cast<void**>(start + offset);
+                if (IsQtObject(qt, slot, expectedVtable, "Live"))
+                {
+                    InterlockedExchangePointer(&g_liveObject, slot);
+                    return slot;
+                }
+                if (IsQtObject(qt, *slot, expectedVtable, "Live"))
+                {
+                    InterlockedExchangePointer(&g_liveObject, *slot);
+                    return *slot;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    bool ResizeMovieWindow(HWND, int steps)
+    {
+        if (steps == 0)
+        {
+            return false;
+        }
+
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        if (core == nullptr)
+        {
+            return false;
+        }
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(GetProcAddress(core,
+                "?inherits@QObject@@QEBA_NPEBD@Z")),
+            reinterpret_cast<QMetaInvoke>(GetProcAddress(core,
+                "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+                "VQGenericArgument@@222222222@Z"))
+        };
+        if (qt.inherits == nullptr || qt.invoke == nullptr)
+        {
+            return false;
+        }
+        void* live = FindLiveObject(qt);
+        if (live == nullptr)
+        {
+            return false;
+        }
+
+        const LONG mode = InterlockedCompareExchange(&g_playerMode, 0, 0);
+        if (mode != 1 && mode != 2)
+        {
+            return false;
+        }
+        const bool large = mode == 1;
+        const wchar_t* valueName = large
+            ? L"expectedLargeHeightPercent" : L"expectedHeightPercent";
+        DWORD currentPercent = large ? 100 : 30;
+        DWORD valueSize = sizeof(currentPercent);
+        const LSTATUS readResult = RegGetValueW(HKEY_CURRENT_USER,
+            L"Software\\Totem\\vghd\\player", valueName,
+            RRF_RT_REG_DWORD, nullptr, &currentPercent, &valueSize);
+        if (readResult != ERROR_SUCCESS && readResult != ERROR_FILE_NOT_FOUND)
+        {
+            return false;
+        }
+
+        const DWORD newPercent = static_cast<DWORD>(std::clamp(
+            static_cast<int>(currentPercent) + steps * 2,
+            large ? 60 : 10, large ? 100 : 60));
+        if (newPercent == currentPercent)
+        {
+            return true;
+        }
+
+        const int percent = static_cast<int>(newPercent);
+        const QtGenericArgument argument = { &percent, "int" };
+        const QtGenericArgument empty = {};
+        bool invoked = false;
+        __try
+        {
+            invoked = qt.invoke(live,
+                large ? "setExpectedLargeHeightPercent" :
+                    "setExpectedHeightPercent",
+                argument, empty, empty, empty, empty,
+                empty, empty, empty, empty, empty);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+        if (invoked)
+        {
+            if (g_wheelResizeMessage != 0)
+            {
+                PostMessageW(HWND_BROADCAST, g_wheelResizeMessage,
+                    newPercent, 0);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    LRESULT CALLBACK MovieMouseHook(int code, WPARAM wParam, LPARAM lParam)
+    {
+        if (code == HC_ACTION && wParam == WM_MOUSEWHEEL &&
+            InterlockedCompareExchange(&g_playerWheelResize, 0, 0) != 0)
+        {
+            const auto mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+            MovieWindowAtPoint search = { mouse->pt, nullptr };
+            EnumWindows(&FindVisibleMovieWindowAtPoint,
+                reinterpret_cast<LPARAM>(&search));
+            if (search.window != nullptr)
+            {
+                const int delta = GET_WHEEL_DELTA_WPARAM(mouse->mouseData);
+                const LONG accumulated = InterlockedExchangeAdd(
+                    &g_playerWheelDelta, delta) + delta;
+                const int steps = accumulated / WHEEL_DELTA;
+                if (steps == 0 || ResizeMovieWindow(search.window, steps))
+                {
+                    if (steps != 0)
+                    {
+                        InterlockedExchangeAdd(&g_playerWheelDelta,
+                            -steps * WHEEL_DELTA);
+                    }
+                    return 1;
+                }
+            }
+        }
+        return CallNextHookEx(g_movieMouseHook, code, wParam, lParam);
     }
 
     void SetMovieWindowClickThrough(HWND window, bool enabled)
@@ -613,6 +877,8 @@ namespace
             EVENT_OBJECT_CREATE, EVENT_OBJECT_LOCATIONCHANGE,
             g_bridgeModule, &MovieWindowEvent,
             GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
+        g_movieMouseHook = SetWindowsHookExW(
+            WH_MOUSE_LL, &MovieMouseHook, g_bridgeModule, 0);
         const HRESULT result = g_movieWindowEventHook == nullptr
             ? HRESULT_FROM_WIN32(
                 GetLastError() == ERROR_SUCCESS
@@ -623,6 +889,11 @@ namespace
         SetEvent(readyEvent);
         if (result < 0)
         {
+            if (g_movieMouseHook != nullptr)
+            {
+                UnhookWindowsHookEx(g_movieMouseHook);
+                g_movieMouseHook = nullptr;
+            }
             return 0;
         }
 
@@ -631,6 +902,10 @@ namespace
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        UnhookWindowsHookEx(g_movieMouseHook);
+        UnhookWinEvent(g_movieWindowEventHook);
+        g_movieMouseHook = nullptr;
+        g_movieWindowEventHook = nullptr;
         return 0;
     }
 
@@ -731,6 +1006,52 @@ namespace
         {
             EnumWindows(&UnlockMovieWindow, 0);
         }
+        return BridgeSuccess;
+    }
+
+    HRESULT SetPlayerWheelResize(bool enabled)
+    {
+        InterlockedExchange(&g_playerWheelResize, enabled ? 1 : 0);
+        InterlockedExchange(&g_playerWheelDelta, 0);
+        if (!enabled)
+        {
+            return BridgeSuccess;
+        }
+
+        if (g_wheelResizeMessage == 0)
+        {
+            g_wheelResizeMessage = RegisterWindowMessageW(
+                L"IStripperQuickPlayer.WheelResize.v1");
+            if (g_wheelResizeMessage == 0)
+            {
+                InterlockedExchange(&g_playerWheelResize, 0);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+        }
+
+        const HRESULT pinResult = PinBridge();
+        if (pinResult < 0)
+        {
+            InterlockedExchange(&g_playerWheelResize, 0);
+            return pinResult;
+        }
+        const HRESULT watcherResult = EnsureMovieWindowWatcher();
+        if (watcherResult < 0 || g_movieMouseHook == nullptr)
+        {
+            InterlockedExchange(&g_playerWheelResize, 0);
+            return watcherResult < 0 ? watcherResult :
+                HRESULT_FROM_WIN32(ERROR_HOOK_NOT_INSTALLED);
+        }
+        return BridgeSuccess;
+    }
+
+    HRESULT SetPlayerMode(SIZE_T mode)
+    {
+        if (mode != 1 && mode != 2)
+        {
+            return E_INVALIDARG;
+        }
+        InterlockedExchange(&g_playerMode, static_cast<LONG>(mode));
         return BridgeSuccess;
     }
 
@@ -6612,6 +6933,25 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerClickThrough(
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerWheelResize(
+    SIZE_T enabled)
+{
+    __try
+    {
+        return SetPlayerWheelResize(enabled != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
+    SIZE_T mode)
+{
+    return SetPlayerMode(mode);
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerLarge(
     SIZE_T large)
 {
@@ -6629,7 +6969,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 65;
+    return 67;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
