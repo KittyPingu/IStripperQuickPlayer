@@ -5243,9 +5243,10 @@ namespace
                     justReleased = true;
                 }
 
+                const bool normalPlayback = IsNormalPlaybackRate(g_wmvRate);
                 const double bufferedSeconds = std::max(
                     0.25, std::min(g_wmvRate, 4.0) / 4.0);
-                const int bufferFrames = std::max(1,
+                const int bufferFrames = normalPlayback ? 1 : std::max(1,
                     static_cast<int>(
                         framesPerSecond * bufferedSeconds + 0.999));
                 const int finalUntilFrame = totalFrames <=
@@ -5258,8 +5259,8 @@ namespace
                     : currentFrame + bufferFrames + 1;
                 const int deliveredUntilFrame = InterlockedCompareExchange(
                     &g_wmvClockDeliveredUntilFrame, 0, 0);
-                const int deliveryStep =
-                    framesPerSecond > 4 ? framesPerSecond / 4 : 1;
+                const int deliveryStep = normalPlayback ? 1 :
+                    (framesPerSecond > 4 ? framesPerSecond / 4 : 1);
                 if ((desiredUntilFrame == finalUntilFrame &&
                         deliveredUntilFrame < finalUntilFrame) ||
                     desiredUntilFrame >=
