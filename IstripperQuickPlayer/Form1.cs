@@ -3146,12 +3146,13 @@ namespace IStripperQuickPlayer
                         keynew.SetValue("ForceAnim", newcardstring);
                         keynew.Close();
                         wallpaperTag = newcardstring;
-                    }
 
-                    hookCallInfo.Result().LongLongVal = -1;
-                    hookCallInfo.Result().LongVal = -1;
-                    hookCallInfo.Result().Value = -1;
-                    hookCallInfo.LastError = 5;
+                        hookCallInfo.SkipCall();
+                        hookCallInfo.Result().LongLongVal = 0;
+                        hookCallInfo.Result().LongVal = 0;
+                        hookCallInfo.Result().Value = 0;
+                        hookCallInfo.LastError = 0;
+                    }
                 }
                 //if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
                 isAutoSelecting = true;
