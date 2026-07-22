@@ -47,6 +47,7 @@ namespace IStripperQuickPlayer
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
         private const int PlaybackForcedReadyMilliseconds = 5_000;
+        private const int PlaybackReplacementTimeoutMilliseconds = 15_000;
         private const int VirtualKeyLeftButton = 0x01;
         private const string LatestReleaseApiUrl =
             "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
@@ -129,6 +130,7 @@ namespace IStripperQuickPlayer
         private string playbackTimelineAnimationPath = "";
         private string playbackCompletedAnimationPath = "";
         private string playbackRequestedAnimationPath = "";
+        private DateTime playbackRequestedAnimationAt = DateTime.MinValue;
         private DateTime playbackNextMovieDiscoveryAt = DateTime.MinValue;
         private DateTime playbackMovieCaptureFallbackAt = DateTime.MinValue;
         private DateTime playbackNextClipRetryAt = DateTime.MinValue;
@@ -202,6 +204,11 @@ namespace IStripperQuickPlayer
 #if DEBUG
             System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
             System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
+            DateTime replacementCheck = DateTime.UtcNow;
+            System.Diagnostics.Debug.Assert(!PlaybackReplacementExpired("clip",
+                replacementCheck, replacementCheck.AddMilliseconds(14_999)));
+            System.Diagnostics.Debug.Assert(PlaybackReplacementExpired("clip",
+                replacementCheck, replacementCheck.AddMilliseconds(15_000)));
             DateTime queueCheck = DateTime.UtcNow;
             System.Diagnostics.Debug.Assert(ShouldKeepQueuedAnimationPending(
                 false, DateTime.MinValue, queueCheck, true));
@@ -1712,6 +1719,7 @@ namespace IStripperQuickPlayer
                 playbackMovieCaptureFallbackAt = DateTime.MinValue;
                 playbackCompletedAnimationPath = "";
                 playbackRequestedAnimationPath = "";
+                playbackRequestedAnimationAt = DateTime.MinValue;
                 queuedAnimationPendingPath = "";
                 queuedAnimationPendingConfirmed = false;
                 queuedAnimationProtectedUntil = DateTime.MinValue;
@@ -2208,6 +2216,24 @@ namespace IStripperQuickPlayer
             try
             {
                 string animationPath = GetCurrentAnimationPath();
+                if (string.IsNullOrEmpty(animationPath) &&
+                    PlaybackReplacementExpired(playbackRequestedAnimationPath,
+                        playbackRequestedAnimationAt, now))
+                {
+                    playbackRequestedAnimationPath = "";
+                    playbackRequestedAnimationAt = DateTime.MinValue;
+                    queuedAnimationPendingPath = "";
+                    queuedAnimationPendingConfirmed = false;
+                    queuedAnimationProtectedUntil = DateTime.MinValue;
+                    if (activeQueuedCard == null &&
+                        activeManualQueueEntry != null)
+                    {
+                        manualPlayQueue.Add(activeManualQueueEntry);
+                        activeManualQueueEntry = null;
+                    }
+                    GetNextClip();
+                    return;
+                }
                 if (!string.Equals(animationPath, playbackTimelineAnimationPath,
                         StringComparison.Ordinal))
                 {
@@ -2275,6 +2301,7 @@ namespace IStripperQuickPlayer
                             StringComparison.OrdinalIgnoreCase))
                     {
                         playbackRequestedAnimationPath = "";
+                        playbackRequestedAnimationAt = DateTime.MinValue;
                         playbackCompletedAnimationPath = "";
                         playbackReplacementStableAt = DateTime.MinValue;
                     }
@@ -2870,10 +2897,18 @@ namespace IStripperQuickPlayer
         private void BeginAnimationReplacement(string animationPath)
         {
             playbackRequestedAnimationPath = animationPath;
+            playbackRequestedAnimationAt = DateTime.UtcNow;
             playbackCompletedAnimationPath = "";
             playbackNextClipRetryAt = DateTime.MinValue;
             playbackReplacementStableAt = DateTime.MinValue;
         }
+
+        private static bool PlaybackReplacementExpired(string requestedPath,
+            DateTime requestedAt, DateTime now) =>
+            !string.IsNullOrEmpty(requestedPath) &&
+            requestedAt != DateTime.MinValue &&
+            now - requestedAt >= TimeSpan.FromMilliseconds(
+                PlaybackReplacementTimeoutMilliseconds);
 
         private int SetVghdPlayerClickThrough(bool enabled)
         {
