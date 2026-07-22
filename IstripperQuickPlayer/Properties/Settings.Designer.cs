@@ -226,6 +226,30 @@ namespace IStripperQuickPlayer.Properties {
                 this["SmallPlayerHotkeyString"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool NowPlayingInfoHotkeyEnabled {
+            get {
+                return ((bool)(this["NowPlayingInfoHotkeyEnabled"]));
+            }
+            set {
+                this["NowPlayingInfoHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+I")]
+        public string NowPlayingInfoHotkeyString {
+            get {
+                return ((string)(this["NowPlayingInfoHotkeyString"]));
+            }
+            set {
+                this["NowPlayingInfoHotkeyString"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

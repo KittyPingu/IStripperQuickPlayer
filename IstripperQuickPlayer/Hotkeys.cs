@@ -41,6 +41,7 @@ namespace IStripperQuickPlayer
             chkRestartClip.Checked = Properties.Settings.Default.RestartClipHotkeyEnabled;
             chkLargePlayer.Checked = Properties.Settings.Default.LargePlayerHotkeyEnabled;
             chkSmallPlayer.Checked = Properties.Settings.Default.SmallPlayerHotkeyEnabled;
+            chkNowPlayingInfo.Checked = Properties.Settings.Default.NowPlayingInfoHotkeyEnabled;
             txtNextClip.Text = Properties.Settings.Default.NextClipString;
             txtNextCard.Text = Properties.Settings.Default.NextCardString;
             txtToggleLock.Text = Properties.Settings.Default.ToggleLockString;
@@ -50,6 +51,7 @@ namespace IStripperQuickPlayer
             txtRestartClip.Text = Properties.Settings.Default.RestartClipHotkeyString;
             txtLargePlayer.Text = Properties.Settings.Default.LargePlayerHotkeyString;
             txtSmallPlayer.Text = Properties.Settings.Default.SmallPlayerHotkeyString;
+            txtNowPlayingInfo.Text = Properties.Settings.Default.NowPlayingInfoHotkeyString;
         }
 
         private void cmdOK_Click(object sender, EventArgs e)
@@ -63,6 +65,7 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.RestartClipHotkeyEnabled = chkRestartClip.Checked;
             Properties.Settings.Default.LargePlayerHotkeyEnabled = chkLargePlayer.Checked;
             Properties.Settings.Default.SmallPlayerHotkeyEnabled = chkSmallPlayer.Checked;
+            Properties.Settings.Default.NowPlayingInfoHotkeyEnabled = chkNowPlayingInfo.Checked;
             Properties.Settings.Default.NextClipString = txtNextClip.Text;
             Properties.Settings.Default.NextCardString = txtNextCard.Text;
             Properties.Settings.Default.ToggleLockString = txtToggleLock.Text;
@@ -72,6 +75,7 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.RestartClipHotkeyString = txtRestartClip.Text;
             Properties.Settings.Default.LargePlayerHotkeyString = txtLargePlayer.Text;
             Properties.Settings.Default.SmallPlayerHotkeyString = txtSmallPlayer.Text;
+            Properties.Settings.Default.NowPlayingInfoHotkeyString = txtNowPlayingInfo.Text;
             this.Close();
         }
     }

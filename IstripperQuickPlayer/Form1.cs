@@ -80,6 +80,7 @@ namespace IStripperQuickPlayer
         private const int RestartClipHotkeyId = 7;
         private const int LargePlayerHotkeyId = 8;
         private const int SmallPlayerHotkeyId = 9;
+        private const int NowPlayingInfoHotkeyId = 10;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -199,6 +200,17 @@ namespace IStripperQuickPlayer
             }
         }
 
+        private void actNowPlayingInfo()
+        {
+            string cardTag = nowPlayingPath.Split('\\')[0].Split('-')[0];
+            ModelCard? card = Datastore.findCardByTag(cardTag);
+            if (card == null)
+                return;
+            card.image ??= ModelsLstLoader.LoadCardImage(card);
+            if (card.image != null)
+                LockStateOverlay.ShowImageForProcess(vghd_procID, card.image);
+        }
+
         public Form1()
         {
 #if DEBUG
@@ -254,6 +266,10 @@ namespace IStripperQuickPlayer
                 "Control+Alt+Left", out _, out _));
             System.Diagnostics.Debug.Assert(TryParseHotKey(
                 "Control+Alt+Home", out _, out _));
+            System.Diagnostics.Debug.Assert(TryParseHotKey(
+                "Control+Alt+I", out uint infoModifiers, out uint infoKey) &&
+                infoModifiers == (ModNoRepeat | ModControl | ModAlt) &&
+                infoKey == (uint)Keys.I);
             MyData historyCheck = new();
             historyCheck.AddPlayback(@"c0001\c0001_1.vghd",
                 DateTime.UtcNow);
@@ -1523,6 +1539,8 @@ namespace IStripperQuickPlayer
                 RegisterConfiguredHotKey(LargePlayerHotkeyId, Properties.Settings.Default.LargePlayerHotkeyString);
             if (Properties.Settings.Default.SmallPlayerHotkeyEnabled)
                 RegisterConfiguredHotKey(SmallPlayerHotkeyId, Properties.Settings.Default.SmallPlayerHotkeyString);
+            if (Properties.Settings.Default.NowPlayingInfoHotkeyEnabled)
+                RegisterConfiguredHotKey(NowPlayingInfoHotkeyId, Properties.Settings.Default.NowPlayingInfoHotkeyString);
         }
 
         private void RegisterConfiguredHotKey(int id, string shortcut)
@@ -1542,6 +1560,7 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, RestartClipHotkeyId);
             UnregisterHotKey(Handle, LargePlayerHotkeyId);
             UnregisterHotKey(Handle, SmallPlayerHotkeyId);
+            UnregisterHotKey(Handle, NowPlayingInfoHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -1598,6 +1617,9 @@ namespace IStripperQuickPlayer
                         return;
                     case SmallPlayerHotkeyId:
                         actSetPlayerLarge(false);
+                        return;
+                    case NowPlayingInfoHotkeyId:
+                        actNowPlayingInfo();
                         return;
                 }
             }

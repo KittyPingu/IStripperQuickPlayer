@@ -47,6 +47,8 @@
             chkLargePlayer = new CheckBox();
             txtSmallPlayer = new TextBox();
             chkSmallPlayer = new CheckBox();
+            txtNowPlayingInfo = new TextBox();
+            chkNowPlayingInfo = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -89,7 +91,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 570);
+            cmdOK.Location = new Point(229, 623);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -218,12 +220,31 @@
             chkSmallPlayer.TabIndex = 17;
             chkSmallPlayer.Text = "Small animation";
             chkSmallPlayer.UseVisualStyleBackColor = true;
+            //
+            // txtNowPlayingInfo
+            //
+            txtNowPlayingInfo.Location = new Point(229, 557);
+            txtNowPlayingInfo.Name = "txtNowPlayingInfo";
+            txtNowPlayingInfo.Size = new Size(263, 31);
+            txtNowPlayingInfo.TabIndex = 20;
+            //
+            // chkNowPlayingInfo
+            //
+            chkNowPlayingInfo.AutoSize = true;
+            chkNowPlayingInfo.Location = new Point(70, 561);
+            chkNowPlayingInfo.Name = "chkNowPlayingInfo";
+            chkNowPlayingInfo.Size = new Size(181, 29);
+            chkNowPlayingInfo.TabIndex = 19;
+            chkNowPlayingInfo.Text = "Now Playing Info";
+            chkNowPlayingInfo.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(10F, 25F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(578, 645);
+            ClientSize = new Size(578, 698);
+            Controls.Add(txtNowPlayingInfo);
+            Controls.Add(chkNowPlayingInfo);
             Controls.Add(txtSmallPlayer);
             Controls.Add(chkSmallPlayer);
             Controls.Add(txtLargePlayer);
@@ -277,5 +298,7 @@
         private CheckBox chkLargePlayer;
         private TextBox txtSmallPlayer;
         private CheckBox chkSmallPlayer;
+        private TextBox txtNowPlayingInfo;
+        private CheckBox chkNowPlayingInfo;
     }
 }

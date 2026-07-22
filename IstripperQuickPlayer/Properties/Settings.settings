@@ -53,6 +53,12 @@
     <Setting Name="SmallPlayerHotkeyString" Type="System.String" Scope="User">
       <Value Profile="(Default)">Control+Alt+Down</Value>
     </Setting>
+    <Setting Name="NowPlayingInfoHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="NowPlayingInfoHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+I</Value>
+    </Setting>
     <Setting Name="MinSizeMB" Type="System.Int64" Scope="User">
       <Value Profile="(Default)">25</Value>
     </Setting>

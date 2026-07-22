@@ -14,13 +14,16 @@ internal sealed class LockStateOverlay : Form
     private static LockStateOverlay? current;
 
     private readonly bool locked;
+    private readonly Image? image;
     private readonly System.Windows.Forms.Timer closeTimer = new() { Interval = 900 };
 
-    private LockStateOverlay(Rectangle bounds, bool locked)
+    private LockStateOverlay(Rectangle bounds, bool locked, Image? image = null)
     {
         this.locked = locked;
+        this.image = image;
+        if (image != null) closeTimer.Interval = 4_000;
         AutoScaleMode = AutoScaleMode.None;
-        BackColor = locked
+        BackColor = image != null ? Color.Black : locked
             ? Color.FromArgb(145, 25, 40)
             : Color.FromArgb(15, 115, 75);
         DoubleBuffered = true;
@@ -92,10 +95,31 @@ internal sealed class LockStateOverlay : Form
         current.Show();
     }
 
+    internal static bool ShowImageForProcess(int processId, Image image)
+    {
+        if (processId == 0 || !TryGetMovieWindowBounds(processId,
+            out Rectangle movieBounds, out int movieDpi))
+            return false;
+
+        Rectangle bounds = CalculateImageBounds(movieBounds, movieDpi,
+            image.Size);
+        current?.Close();
+        current = new LockStateOverlay(bounds, false, image);
+        current.Show();
+        return true;
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        if (image != null)
+        {
+            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            e.Graphics.DrawImage(image, ClientRectangle);
+            return;
+        }
 
         float size = Math.Min(ClientSize.Width, ClientSize.Height);
         float verticalOffset = size * 0.06f;
@@ -137,6 +161,17 @@ internal sealed class LockStateOverlay : Form
             movieBounds.Left + (movieBounds.Width - size) / 2,
             movieBounds.Top + (movieBounds.Height - size) / 2,
             size, size);
+    }
+
+    private static Rectangle CalculateImageBounds(Rectangle movieBounds,
+        int movieDpi, Size imageSize)
+    {
+        Rectangle bounds = CalculateBounds(movieBounds, movieDpi);
+        int height = bounds.Width * imageSize.Height / imageSize.Width;
+        return new Rectangle(
+            movieBounds.Left + (movieBounds.Width - bounds.Width) / 2,
+            movieBounds.Top + (movieBounds.Height - height) / 2,
+            bounds.Width, height);
     }
 
     private static void FillRoundedRectangle(Graphics graphics, Brush brush,
@@ -190,6 +225,10 @@ internal sealed class LockStateOverlay : Form
         Rectangle bounds = CalculateBounds(new Rectangle(100, 200, 300, 600),
             (int)GetDpiForSystem());
         Debug.Assert(bounds == new Rectangle(205, 455, 90, 90));
+        Rectangle imageBounds = CalculateImageBounds(
+            new Rectangle(100, 200, 300, 600), (int)GetDpiForSystem(),
+            new Size(100, 150));
+        Debug.Assert(imageBounds == new Rectangle(205, 432, 90, 135));
     }
 #endif
 
