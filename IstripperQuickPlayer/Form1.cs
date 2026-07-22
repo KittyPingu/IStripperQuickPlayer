@@ -258,6 +258,7 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(SeekTargetReachesEnd(99_000, 100_000));
             System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("platinum"));
             System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("doubleDiamond"));
+            System.Diagnostics.Debug.Assert(HasPlatinumPlaybackEntitlement("qa"));
             System.Diagnostics.Debug.Assert(!HasPlatinumPlaybackEntitlement("gold"));
             System.Diagnostics.Debug.Assert(IsPlayingClip(
                 "f0636_6144401.vghd", @"f0636\f0636_6144401.vghd"));
@@ -2035,7 +2036,7 @@ namespace IStripperQuickPlayer
         {
             return userLevel?.Trim().ToLowerInvariant() is
                 "platinum" or "diamond" or "doublediamond" or
-                "triplediamond" or "elite" or "master";
+                "triplediamond" or "elite" or "master" or "qa";
         }
 
         private void RefreshPlaybackControlVisibility(string? userLevel = null)
