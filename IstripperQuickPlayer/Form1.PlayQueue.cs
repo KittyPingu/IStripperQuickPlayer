@@ -47,6 +47,8 @@ namespace IStripperQuickPlayer
             new("Save Queue...");
         private readonly ToolStripMenuItem loadQueueToolStripMenuItem =
             new("Load Queue...");
+        private readonly ToolStripMenuItem clearQueueToolStripMenuItem =
+            new("Clear Queue");
 
         private Panel playQueuePanel = null!;
         private Panel playQueueResizeGrip = null!;
@@ -145,10 +147,13 @@ namespace IStripperQuickPlayer
 
             saveQueueToolStripMenuItem.Click += (_, _) => SaveManualQueue();
             loadQueueToolStripMenuItem.Click += (_, _) => LoadManualQueue();
+            clearQueueToolStripMenuItem.Click += (_, _) => ClearManualQueue();
             queueFileToolStripMenuItem.DropDownItems.AddRange(
             [
                 saveQueueToolStripMenuItem,
-                loadQueueToolStripMenuItem
+                loadQueueToolStripMenuItem,
+                new ToolStripSeparator(),
+                clearQueueToolStripMenuItem
             ]);
             fileToolStripMenuItem.DropDownItems.Insert(
                 fileToolStripMenuItem.DropDownItems.IndexOf(
@@ -314,6 +319,17 @@ namespace IStripperQuickPlayer
                     ex.Message, "Save Queue Failed", MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+
+        private void ClearManualQueue()
+        {
+            manualPlayQueue.Clear();
+            queuedAnimationPendingPath = "";
+            queuedAnimationPendingConfirmed = false;
+            queuedAnimationProtectedUntil = DateTime.MinValue;
+            ClearQueuedCardSession();
+            RebuildAutomaticQueue();
+            SavePreviousQueue();
         }
 
         private void LoadManualQueue()
@@ -557,6 +573,8 @@ namespace IStripperQuickPlayer
             {
                 flow.ResumeLayout(true);
             }
+            if (entries.Count == 0)
+                flow.AutoScrollMinSize = new System.Drawing.Size(1, 1);
         }
 
         private static System.Drawing.Size PlayQueueCardSize(
