@@ -3094,6 +3094,9 @@ namespace IStripperQuickPlayer
                             out forceQueuedAnimation)));
                 }
                 if (!queuedSelection &&
+                    !string.Equals(newcardstring,
+                        playbackRequestedAnimationPath,
+                        StringComparison.OrdinalIgnoreCase) &&
                     (Properties.Settings.Default.EnforceCardFilter ||
                     Properties.Settings.Default.AvoidRecentRepeats)
                     )

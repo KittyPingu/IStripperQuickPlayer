@@ -5209,23 +5209,11 @@ namespace
                     }
                     if (IsNormalPlaybackRate(g_wmvRate))
                     {
-                        const int firstFrame = currentFrame + 1 <
-                            totalFrames ? currentFrame + 1 : totalFrames - 1;
-                        const int deliveredUntilFrame =
-                            firstFrame + 1 <= totalFrames
-                                ? firstFrame + 1 : totalFrames;
-                        const HRESULT restartResult = RestartWmvReader(
-                            video, firstFrame, deliveredUntilFrame,
-                            framesPerSecond, totalFrames, false);
-                        if (FAILED(restartResult) ||
-                            !ReleaseWmvClockAudio(video))
+                        if (!ReleaseWmvClockAudio(video))
                         {
-                            InterlockedExchange(&g_wmvClockResult,
-                                FAILED(restartResult)
-                                    ? restartResult : E_FAIL);
+                            InterlockedExchange(&g_wmvClockResult, E_FAIL);
                             __leave;
                         }
-                        g_wmvUserClock = false;
                         InterlockedExchange(&g_wmvClockStreaming, 1);
                         InterlockedExchange(
                             &g_wmvClockResult, BridgeSuccess);
@@ -5279,12 +5267,12 @@ namespace
                 {
                     const HRESULT result = DeliverWmvUntil(advanced,
                         desiredUntilFrame, framesPerSecond, totalFrames);
-                    if (FAILED(result))
+                    if (FAILED(result) && result != WmvInvalidRequest)
                     {
                         InterlockedExchange(&g_wmvClockResult, result);
                         InterlockedExchange(&g_wmvClockStreaming, 0);
                     }
-                    else
+                    else if (SUCCEEDED(result))
                     {
                         InterlockedExchange(
                             &g_wmvClockDeliveredUntilFrame,
@@ -6950,7 +6938,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayRate(SIZE_T rate
                     g_wmvRate = playRate;
                     g_wmvUserClock = previousUserClock;
                     if (previousUserClock &&
-                        IsNormalPlaybackRate(playRate))
+                        IsNormalPlaybackRate(playRate) &&
+                        !IsNormalPlaybackRate(previousRate))
                     {
                         auto currentAddress = reinterpret_cast<const int*>(
                             reinterpret_cast<unsigned char*>(movie) +
