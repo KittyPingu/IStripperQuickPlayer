@@ -83,11 +83,12 @@ internal sealed class LockStateOverlay : Form
 
     internal static void ShowForProcess(int processId, bool locked)
     {
-        if (processId == 0 || !TryGetMovieWindowBounds(processId, out Rectangle movieBounds))
+        if (processId == 0 || !TryGetMovieWindowBounds(processId,
+            out Rectangle movieBounds, out int movieDpi))
             return;
 
         current?.Close();
-        current = new LockStateOverlay(CalculateBounds(movieBounds), locked);
+        current = new LockStateOverlay(CalculateBounds(movieBounds, movieDpi), locked);
         current.Show();
     }
 
@@ -128,10 +129,10 @@ internal sealed class LockStateOverlay : Form
             size * 0.04f, size * 0.10f);
     }
 
-    private static Rectangle CalculateBounds(Rectangle movieBounds)
+    private static Rectangle CalculateBounds(Rectangle movieBounds, int movieDpi)
     {
         int available = Math.Min(movieBounds.Width, movieBounds.Height);
-        int size = Math.Clamp(available / 2, 240, 320);
+        int size = available * 3 * movieDpi / (10 * (int)GetDpiForSystem());
         return new Rectangle(
             movieBounds.Left + (movieBounds.Width - size) / 2,
             movieBounds.Top + (movieBounds.Height - size) / 2,
@@ -152,9 +153,11 @@ internal sealed class LockStateOverlay : Form
         graphics.FillEllipse(brush, rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter);
     }
 
-    private static bool TryGetMovieWindowBounds(int processId, out Rectangle bounds)
+    private static bool TryGetMovieWindowBounds(int processId, out Rectangle bounds,
+        out int dpi)
     {
         Rectangle foundBounds = Rectangle.Empty;
+        int foundDpi = 96;
         EnumWindows((window, _) =>
         {
             GetWindowThreadProcessId(window, out int ownerProcessId);
@@ -171,19 +174,22 @@ internal sealed class LockStateOverlay : Form
             {
                 foundBounds = Rectangle.FromLTRB(rectangle.Left, rectangle.Top,
                     rectangle.Right, rectangle.Bottom);
+                foundDpi = (int)GetDpiForWindow(window);
                 return false;
             }
             return true;
         }, IntPtr.Zero);
         bounds = foundBounds;
+        dpi = foundDpi;
         return bounds.Width > 0 && bounds.Height > 0;
     }
 
 #if DEBUG
     static LockStateOverlay()
     {
-        Rectangle bounds = CalculateBounds(new Rectangle(100, 200, 300, 600));
-        Debug.Assert(bounds == new Rectangle(130, 380, 240, 240));
+        Rectangle bounds = CalculateBounds(new Rectangle(100, 200, 300, 600),
+            (int)GetDpiForSystem());
+        Debug.Assert(bounds == new Rectangle(205, 455, 90, 90));
     }
 #endif
 
@@ -212,4 +218,10 @@ internal sealed class LockStateOverlay : Form
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr window, out NativeRectangle rectangle);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForSystem();
 }
