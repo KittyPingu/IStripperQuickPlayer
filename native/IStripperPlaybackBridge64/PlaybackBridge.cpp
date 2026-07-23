@@ -123,16 +123,6 @@ namespace
     constexpr int RequiredAlphaProgressObservations = 4;
     static_assert(RequiredAlphaProgressObservations > 1);
 
-    constexpr unsigned char AnimationFrameSignature[] = {
-        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74,
-        0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x40, 0x41
-    };
-
-    constexpr unsigned char MovieAdvanceSignature[] = {
-        0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57,
-        0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57
-    };
-
     constexpr unsigned char MoviePauseSignature[] = {
         0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B
     };
@@ -1410,36 +1400,6 @@ namespace
                 stateLoad != nullptr && stateLoad[3] == 0x83 &&
                 stateLoad[4] == 0xF8;
         }
-        if (kind == 3)
-        {
-            const unsigned char mutex[] = { 0x48, 0x81, 0xC1 };
-            const unsigned char current[] = { 0x44, 0x8B, 0xBB };
-            if (AnimationFrameRva == 0 ||
-                FindSequence(candidate, 64, mutex, sizeof(mutex)) == nullptr ||
-                FindSequence(candidate, 128, current, sizeof(current)) == nullptr)
-            {
-                return false;
-            }
-            const auto animationFrame = ImageBase() + AnimationFrameRva;
-            for (std::size_t offset = 0; offset + 12 <= 224; offset++)
-            {
-                if (candidate[offset] != 0x48 ||
-                    candidate[offset + 1] != 0x8B ||
-                    candidate[offset + 2] != 0x8B ||
-                    candidate[offset + 7] != 0xE8)
-                {
-                    continue;
-                }
-                const auto displacement =
-                    *reinterpret_cast<const std::int32_t*>(
-                        candidate + offset + 8);
-                if (candidate + offset + 12 + displacement == animationFrame)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
         if (kind == 4)
         {
             if (WmvQueueMutexOffset == 0 ||
@@ -1662,6 +1622,211 @@ namespace
         auto target = const_cast<unsigned char*>(
             instruction + 5 + displacement);
         return IsExecutableAddress(target) ? target : nullptr;
+    }
+
+    bool HasAnimationRenderCall(const unsigned char* wrapper)
+    {
+        if (!IsReadable(wrapper, 96))
+        {
+            return false;
+        }
+
+        for (std::size_t callOffset = 0; callOffset + 5 <= 96; callOffset++)
+        {
+            const auto target = DirectCallTarget(wrapper + callOffset);
+            if (target == nullptr || !IsReadable(target, 512))
+            {
+                continue;
+            }
+            for (std::size_t offset = 0; offset + 12 <= 480; offset++)
+            {
+                const auto candidate = target + offset;
+                if (candidate[0] == 0x44 && candidate[1] == 0x8B &&
+                    candidate[2] == 0x4E &&
+                    candidate[4] == 0x44 && candidate[5] == 0x8B &&
+                    candidate[6] == 0x46 &&
+                    candidate[8] == 0x48 && candidate[9] == 0x8B &&
+                    candidate[10] == 0x56)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    struct AnimationCallPath
+    {
+        unsigned char* Wrapper = nullptr;
+        unsigned char* MemberFunction = nullptr;
+        const unsigned char* Call = nullptr;
+    };
+
+    bool FindDirectAnimationCall(unsigned char* function,
+        std::size_t scanLength, AnimationCallPath& path)
+    {
+        if (!IsReadable(function, scanLength))
+        {
+            return false;
+        }
+        for (std::size_t offset = 0; offset + 5 <= scanLength; offset++)
+        {
+            auto target = DirectCallTarget(function + offset);
+            if (target != nullptr && HasAnimationRenderCall(target))
+            {
+                path.Wrapper = target;
+                path.MemberFunction = function;
+                path.Call = function + offset;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool FindAnimationCallPath(unsigned char* advance,
+        AnimationCallPath& path)
+    {
+        if (FindDirectAnimationCall(advance, 1024, path))
+        {
+            return true;
+        }
+        if (!IsReadable(advance, 1024))
+        {
+            return false;
+        }
+        for (std::size_t offset = 0; offset + 5 <= 1024; offset++)
+        {
+            auto helper = DirectCallTarget(advance + offset);
+            if (helper != nullptr &&
+                FindDirectAnimationCall(helper, 384, path))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool DecodeMemberMove(const unsigned char* instruction,
+        unsigned char opcode, bool qword, unsigned& baseRegister,
+        unsigned& valueRegister, std::size_t& field)
+    {
+        if (!IsReadable(instruction, 7))
+        {
+            return false;
+        }
+        std::size_t offset = 0;
+        unsigned char rex = 0;
+        if (instruction[offset] >= 0x40 && instruction[offset] <= 0x4F)
+        {
+            rex = instruction[offset++];
+        }
+        if (instruction[offset++] != opcode || ((rex & 0x08) != 0) != qword)
+        {
+            return false;
+        }
+        const unsigned char modrm = instruction[offset++];
+        const unsigned mode = modrm >> 6;
+        const unsigned base = modrm & 7;
+        if ((mode != 1 && mode != 2) || base == 4)
+        {
+            return false;
+        }
+        baseRegister = base | ((rex & 0x01) != 0 ? 8 : 0);
+        valueRegister = ((modrm >> 3) & 7) |
+            ((rex & 0x04) != 0 ? 8 : 0);
+        if (mode == 1)
+        {
+            const auto displacement =
+                static_cast<std::int8_t>(instruction[offset]);
+            if (displacement <= 0)
+            {
+                return false;
+            }
+            field = static_cast<std::size_t>(displacement);
+        }
+        else
+        {
+            field = *reinterpret_cast<const std::uint32_t*>(
+                instruction + offset);
+        }
+        return field > 0;
+    }
+
+    bool ResolveMovieMemberLayout(const AnimationCallPath& path,
+        std::size_t& animationOffset, std::size_t& currentFrameOffset)
+    {
+        if (path.MemberFunction == nullptr || path.Call == nullptr ||
+            path.Call < path.MemberFunction ||
+            !IsReadable(path.MemberFunction,
+                static_cast<std::size_t>(path.Call - path.MemberFunction) + 101))
+        {
+            return false;
+        }
+
+        unsigned movieRegister = 0;
+        animationOffset = 0;
+        const std::size_t callOffset =
+            static_cast<std::size_t>(path.Call - path.MemberFunction);
+        const std::size_t animationStart = callOffset > 32
+            ? callOffset - 32
+            : 0;
+        for (std::size_t offset = animationStart;
+            offset < callOffset; offset++)
+        {
+            unsigned base = 0;
+            unsigned value = 0;
+            std::size_t field = 0;
+            if (DecodeMemberMove(path.MemberFunction + offset,
+                    0x8B, true, base, value, field) &&
+                value == 1 && field > MovieStateOffset &&
+                field < MovieMutexOffset && (field & 7) == 0)
+            {
+                movieRegister = base;
+                animationOffset = field;
+            }
+        }
+        if (animationOffset == 0)
+        {
+            return false;
+        }
+
+        currentFrameOffset = 0;
+        for (std::size_t loadOffset = 0;
+            loadOffset < callOffset; loadOffset++)
+        {
+            unsigned loadBase = 0;
+            unsigned loadValue = 0;
+            std::size_t loadField = 0;
+            if (!DecodeMemberMove(path.MemberFunction + loadOffset,
+                    0x8B, false, loadBase, loadValue, loadField) ||
+                loadBase != movieRegister ||
+                loadField <= animationOffset ||
+                loadField >= MovieMutexOffset || (loadField & 3) != 0)
+            {
+                continue;
+            }
+
+            for (std::size_t storeOffset = callOffset + 5;
+                storeOffset < callOffset + 101; storeOffset++)
+            {
+                unsigned storeBase = 0;
+                unsigned storeValue = 0;
+                std::size_t storeField = 0;
+                if (DecodeMemberMove(path.MemberFunction + storeOffset,
+                        0x89, false, storeBase, storeValue, storeField) &&
+                    storeBase == loadBase && storeValue == loadValue &&
+                    storeField == loadField)
+                {
+                    if (currentFrameOffset != 0 &&
+                        currentFrameOffset != loadField)
+                    {
+                        return false;
+                    }
+                    currentFrameOffset = loadField;
+                }
+            }
+        }
+        return currentFrameOffset > animationOffset;
     }
 
     bool ReadAlphaStateLayout(const unsigned char* function,
@@ -2052,12 +2217,6 @@ namespace
     bool ResolveMovieOffsets()
     {
         LONG mask = 0;
-        auto animationFrame = FindUniqueFunction(AnimationFrameSignature,
-            sizeof(AnimationFrameSignature), -1);
-        mask |= animationFrame != nullptr ? 16 : 0;
-        AnimationFrameRva = animationFrame == nullptr
-            ? 0
-            : RvaFromAddress(animationFrame);
         auto pause = FindUniqueFunction(MoviePauseSignature,
             sizeof(MoviePauseSignature), 0);
         mask |= pause != nullptr ? 1 : 0;
@@ -2067,11 +2226,10 @@ namespace
         auto setRate = FindUniqueFunction(MovieSetPlayRateSignature,
             sizeof(MovieSetPlayRateSignature), 2);
         mask |= setRate != nullptr ? 4 : 0;
-        auto advance = FindUniqueFunction(MovieAdvanceSignature,
-            sizeof(MovieAdvanceSignature), 3);
-        mask |= advance != nullptr ? 8 : 0;
+        MovieVtableRva = FindVtableRva(".?AVMovie@@");
+        mask |= MovieVtableRva > 0 ? 256 : 0;
         if (pause == nullptr || resume == nullptr || setRate == nullptr ||
-            advance == nullptr || animationFrame == nullptr)
+            MovieVtableRva == 0)
         {
             InterlockedExchange(&g_movieResolverMask, mask);
             return false;
@@ -2097,50 +2255,32 @@ namespace
         MoviePauseRva = RvaFromAddress(pause);
         MovieResumeRva = RvaFromAddress(resume);
         MovieSetPlayRateRva = RvaFromAddress(setRate);
-        MovieAdvanceRva = RvaFromAddress(advance);
         MovieMutexOffset = *reinterpret_cast<const std::uint32_t*>(
             pauseMutex + 3);
         MovieStateOffset = pauseState[2];
 
-        const unsigned char loadCurrent[] = { 0x44, 0x8B, 0xBB };
-        const auto currentLoad = FindSequence(advance, 128,
-            loadCurrent, sizeof(loadCurrent));
-        const auto advanceMutex = FindSequence(advance, 64,
-            addMutex, sizeof(addMutex));
-        if (currentLoad == nullptr || advanceMutex == nullptr ||
-            *reinterpret_cast<const std::uint32_t*>(advanceMutex + 3) !=
-                MovieMutexOffset)
+        auto movieVtable = reinterpret_cast<void**>(
+            ImageBase() + MovieVtableRva);
+        auto advance = reinterpret_cast<unsigned char*>(movieVtable[11]);
+        AnimationCallPath animationPath = {};
+        if (!IsExecutableAddress(advance) ||
+            !FindAnimationCallPath(advance, animationPath))
+        {
+            InterlockedExchange(&g_movieResolverMask, mask);
+            return false;
+        }
+        MovieAdvanceRva = RvaFromAddress(advance);
+        AnimationFrameRva = RvaFromAddress(animationPath.Wrapper);
+        mask |= 8 | 16;
+
+        if (!ResolveMovieMemberLayout(animationPath,
+                MovieAnimationOffset, MovieCurrentFrameOffset))
         {
             InterlockedExchange(&g_movieResolverMask, mask);
             return false;
         }
         mask |= 64;
-        MovieCurrentFrameOffset =
-            *reinterpret_cast<const std::uint32_t*>(currentLoad + 3);
-
-        MovieAnimationOffset = 0;
-        for (std::size_t offset = 0; offset < 224; offset++)
-        {
-            if (advance[offset] == 0x48 && advance[offset + 1] == 0x8B &&
-                advance[offset + 2] == 0x8B &&
-                advance[offset + 7] == 0xE8)
-            {
-                const std::int32_t displacement =
-                    *reinterpret_cast<const std::int32_t*>(
-                        advance + offset + 8);
-                const auto target = advance + offset + 12 + displacement;
-                if (target == animationFrame)
-                {
-                    MovieAnimationOffset =
-                        *reinterpret_cast<const std::uint32_t*>(
-                            advance + offset + 3);
-                    break;
-                }
-            }
-        }
-        mask |= MovieAnimationOffset > 0 ? 128 : 0;
-        MovieVtableRva = FindVtableRva(".?AVMovie@@");
-        mask |= MovieVtableRva > 0 ? 256 : 0;
+        mask |= 128;
         const bool resolved =
             MovieAnimationOffset > 0 && MovieCurrentFrameOffset > 0 &&
             MovieMutexOffset > 0 && MovieStateOffset > 0 &&
@@ -3170,8 +3310,16 @@ namespace
             sizeof(MovieSetPlayRateSignature)) ? 4 : 0;
         mask |= IsRvaInImage(MovieVtableRva, sizeof(void*)) ? 8 : 0;
         mask |= IsRvaInImage(VideoFfmpegVtableRva, sizeof(void*)) ? 16 : 0;
-        mask |= HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
-            sizeof(MovieAdvanceSignature)) ? 32 : 0;
+        AnimationCallPath path = {};
+        std::size_t animationOffset = 0;
+        std::size_t currentFrameOffset = 0;
+        mask |= IsRvaInImage(MovieAdvanceRva, 1024) &&
+            FindAnimationCallPath(ImageBase() + MovieAdvanceRva, path) &&
+            RvaFromAddress(path.Wrapper) == AnimationFrameRva &&
+            ResolveMovieMemberLayout(path,
+                animationOffset, currentFrameOffset) &&
+            animationOffset == MovieAnimationOffset &&
+            currentFrameOffset == MovieCurrentFrameOffset ? 32 : 0;
         return mask;
     }
 
@@ -3197,11 +3345,12 @@ namespace
             &g_fastForwardCompatibility, -1, -1);
         if (cached < 0)
         {
+            AnimationCallPath path = {};
             const LONG detected =
-                HasSignature(AnimationFrameRva, AnimationFrameSignature,
-                    sizeof(AnimationFrameSignature)) &&
-                HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
-                    sizeof(MovieAdvanceSignature));
+                IsRvaInImage(MovieAdvanceRva, 1024) &&
+                FindAnimationCallPath(
+                    ImageBase() + MovieAdvanceRva, path) &&
+                RvaFromAddress(path.Wrapper) == AnimationFrameRva;
             InterlockedCompareExchange(
                 &g_fastForwardCompatibility, detected, -1);
             cached = InterlockedCompareExchange(
@@ -6312,105 +6461,57 @@ namespace
             ReleaseSRWLockExclusive(&g_decodePatchLock);
             return BridgeSuccess;
         }
-        if (!HasCompatibleEngine() ||
-            !HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
-                sizeof(MovieAdvanceSignature)))
+        if (!HasCompatibleEngine())
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
             return EngineError();
         }
 
-        unsigned char* target = ImageBase() + MovieAdvanceRva;
-        unsigned char* thunk = AllocateNear(target + 5, 64);
-        if (thunk == nullptr)
+        void* target = ImageBase() + MovieAdvanceRva;
+        auto slot = reinterpret_cast<PVOID*>(
+            ImageBase() + MovieVtableRva) + 11;
+        if (*slot != target)
         {
-            const HRESULT result = HRESULT_FROM_WIN32(GetLastError());
             ReleaseSRWLockExclusive(&g_decodePatchLock);
-            return result;
+            return EngineError();
         }
-
-        const unsigned char absoluteJump[] = {
-            0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
-            0xFF, 0xE0
-        };
-        std::memcpy(thunk, absoluteJump, sizeof(absoluteJump));
-        const std::uintptr_t hook =
-            reinterpret_cast<std::uintptr_t>(&CapturingMovieAdvance);
-        std::memcpy(thunk + 2, &hook, sizeof(hook));
-
-        constexpr std::size_t prologueSize =
-            sizeof(MovieAdvanceSignature);
-        unsigned char* trampoline = thunk + 16;
-        std::memcpy(trampoline, target, prologueSize);
-        std::memcpy(trampoline + prologueSize,
-            absoluteJump, sizeof(absoluteJump));
-        const std::uintptr_t continuation =
-            reinterpret_cast<std::uintptr_t>(target + prologueSize);
-        std::memcpy(trampoline + prologueSize + 2,
-            &continuation, sizeof(continuation));
 
         const HRESULT pinResult = PinBridge();
         if (pinResult < 0)
         {
-            VirtualFree(thunk, 0, MEM_RELEASE);
             ReleaseSRWLockExclusive(&g_decodePatchLock);
             return pinResult;
         }
 
-        SuspendedThreads suspended = {};
-        if (!SuspendOtherThreads(suspended))
-        {
-            ResumeThreads(suspended);
-            VirtualFree(thunk, 0, MEM_RELEASE);
-            ReleaseSRWLockExclusive(&g_decodePatchLock);
-            return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY);
-        }
-
         HRESULT result = BridgeSuccess;
         DWORD oldProtection = 0;
-        if (!HasSignature(MovieAdvanceRva, MovieAdvanceSignature,
-                sizeof(MovieAdvanceSignature)))
-        {
-            result = EngineError();
-        }
-        else if (!VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE,
-                &oldProtection))
+        if (!VirtualProtect(const_cast<PVOID*>(slot), sizeof(void*),
+                PAGE_READWRITE, &oldProtection))
         {
             result = HRESULT_FROM_WIN32(GetLastError());
         }
         else
         {
-            const std::intptr_t relative =
-                reinterpret_cast<std::intptr_t>(thunk) -
-                reinterpret_cast<std::intptr_t>(target + 5);
-            if (relative < INT_MIN || relative > INT_MAX)
-            {
-                result = HRESULT_FROM_WIN32(
-                    ERROR_INVALID_ADDRESS);
-            }
-            else
+            InterlockedExchangePointer(&g_originalMovieAdvance, target);
+            if (InterlockedCompareExchangePointer(
+                    reinterpret_cast<PVOID volatile*>(slot),
+                    reinterpret_cast<PVOID>(&CapturingMovieAdvance),
+                    target) != target)
             {
                 InterlockedExchangePointer(
-                    &g_originalMovieAdvance, trampoline);
-                target[0] = 0xE9;
-                const std::int32_t displacement =
-                    static_cast<std::int32_t>(relative);
-                std::memcpy(target + 1,
-                    &displacement, sizeof(displacement));
-                FlushInstructionCache(
-                    GetCurrentProcess(), target, 5);
+                    &g_originalMovieAdvance, nullptr);
+                result = EngineError();
             }
             DWORD ignoredProtection = 0;
-            VirtualProtect(target, 5, oldProtection,
+            VirtualProtect(const_cast<PVOID*>(slot), sizeof(void*),
+                oldProtection,
                 &ignoredProtection);
         }
 
-        ResumeThreads(suspended);
         if (result < 0)
         {
             InterlockedExchangePointer(
                 &g_originalMovieAdvance, nullptr);
-            VirtualFree(thunk, 0, MEM_RELEASE);
         }
         ReleaseSRWLockExclusive(&g_decodePatchLock);
         return result;
