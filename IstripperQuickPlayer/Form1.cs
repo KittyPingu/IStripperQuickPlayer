@@ -154,7 +154,7 @@ namespace IStripperQuickPlayer
         private ControlScrollListener? _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
-        bool playerlocked;
+        volatile bool playerlocked;
         //private WebView2DevToolsContext devtoolsContext = null;
 
         private void actNextClip()
@@ -1872,7 +1872,8 @@ namespace IStripperQuickPlayer
                 using Process process = Process.GetProcessById(processId);
                 return !process.HasExited &&
                     process.ProcessName.Equals("vghd",
-                        StringComparison.OrdinalIgnoreCase);
+                        StringComparison.OrdinalIgnoreCase) &&
+                    playerLockBridgeLoaded;
             }
             catch
             {
@@ -1973,7 +1974,7 @@ namespace IStripperQuickPlayer
                 }
 
                 playerLockBridgeLoaded = true;
-                int lockResult = SetVghdPlayerLocked(playerlocked);
+                int lockResult = SetVghdPlayerLocked();
                 if (lockResult < 0)
                 {
                     throw new COMException(
@@ -2193,16 +2194,16 @@ namespace IStripperQuickPlayer
             UpdatePlaybackControlsEnabled();
         }
 
-        private int SetVghdPlayerLocked(bool locked)
+        private int SetVghdPlayerLocked(bool? locked = null)
         {
             if (!playerLockBridgeLoaded || vghd_procID == 0)
             {
                 return unchecked((int)0x80070015);
             }
 
-            object parameter = locked ? 1UL : 0UL;
             lock (playbackApiLock)
             {
+                object parameter = (locked ?? playerlocked) ? 1UL : 0UL;
                 return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
                     "IStripperSetPlayerLocked", ref parameter, true);
             }
@@ -4783,7 +4784,7 @@ namespace IStripperQuickPlayer
         {
             if (playerLockBridgeLoaded)
             {
-                int result = SetVghdPlayerLocked(playerlocked);
+                int result = SetVghdPlayerLocked();
                 if (result < 0)
                 {
                     SetPlaybackStatus(
