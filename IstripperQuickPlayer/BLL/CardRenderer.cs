@@ -166,7 +166,6 @@ namespace IStripperQuickPlayer.BLL
                     if (bounds.Left < controlBounds.Left)
                         bounds.X = controlBounds.Left;
                     drawText = false;
-                    g.FillRectangle(Brushes.White, new Rectangle(bounds.Left-3,bounds.Top-3,bounds.Width+6,bounds.Height-34+6));
                 }
 
                 ModelCard? card = Datastore.findCardByTag(item.Tag.ToString());
