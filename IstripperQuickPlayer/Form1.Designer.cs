@@ -44,7 +44,6 @@
             hairToolStripMenuItem = new ToolStripMenuItem();
             purchasedToolStripMenuItem = new ToolStripMenuItem();
             toolStripSeparator2 = new ToolStripSeparator();
-            showInBrowserToolStripMenuItem = new ToolStripMenuItem();
             deleteFromDiskToolStripMenuItem = new ToolStripMenuItem();
             cmbMenuCardRating = new ToolStripComboBox();
             listClips = new ListView();
@@ -158,7 +157,7 @@
             // menuCardList
             // 
             menuCardList.ImageScalingSize = new Size(20, 20);
-            menuCardList.Items.AddRange(new ToolStripItem[] { menuCardFavourite, ratingSlider, toolStripSeparator1, nameToolStripMenuItem, outfitToolStripMenuItem, ratingToolStripMenuItem, hotnessToolStripMenuItem, statsToolStripMenuItem, ageToolStripMenuItem, hairToolStripMenuItem, purchasedToolStripMenuItem, toolStripSeparator2, showInBrowserToolStripMenuItem, deleteFromDiskToolStripMenuItem });
+            menuCardList.Items.AddRange(new ToolStripItem[] { menuCardFavourite, ratingSlider, toolStripSeparator1, nameToolStripMenuItem, outfitToolStripMenuItem, ratingToolStripMenuItem, hotnessToolStripMenuItem, statsToolStripMenuItem, ageToolStripMenuItem, hairToolStripMenuItem, purchasedToolStripMenuItem, toolStripSeparator2, deleteFromDiskToolStripMenuItem });
             menuCardList.Name = "menuCardList";
             menuCardList.Size = new Size(218, 451);
             menuCardList.Closing += menuCardList_Closing;
@@ -258,13 +257,6 @@
             // 
             toolStripSeparator2.Name = "toolStripSeparator2";
             toolStripSeparator2.Size = new Size(214, 6);
-            // 
-            // showInBrowserToolStripMenuItem
-            // 
-            showInBrowserToolStripMenuItem.Name = "showInBrowserToolStripMenuItem";
-            showInBrowserToolStripMenuItem.Size = new Size(217, 34);
-            showInBrowserToolStripMenuItem.Text = "Show in Browser";
-            showInBrowserToolStripMenuItem.Click += showInBrowserToolStripMenuItem_Click;
             // 
             // deleteFromDiskToolStripMenuItem
             // 
@@ -1345,7 +1337,6 @@
         private TrackBarMenuItem trackBarZoomOnHover;
         private SplitContainer splitContainer1;
         private ToolStripSeparator toolStripSeparator2;
-        private ToolStripMenuItem showInBrowserToolStripMenuItem;
         private ToolStripMenuItem lockPlayerToolStripMenuItem;
         private ToolStripMenuItem enablePlaybackControlToolStripMenuItem;
         private NotifyIcon notifyIcon1;

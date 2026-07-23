@@ -329,6 +329,12 @@ namespace IStripperQuickPlayer
                 kittySearchCheck));
 #endif
             InitializeComponent();
+            nameToolStripMenuItem.Click += nameToolStripMenuItem_Click;
+            nameToolStripMenuItem.Font = new Font(nameToolStripMenuItem.Font,
+                nameToolStripMenuItem.Font.Style | FontStyle.Underline);
+            outfitToolStripMenuItem.Click += outfitToolStripMenuItem_Click;
+            outfitToolStripMenuItem.Font = new Font(outfitToolStripMenuItem.Font,
+                outfitToolStripMenuItem.Font.Style | FontStyle.Underline);
             lblMinSize.BringToFront();
             numMinSizeMB.BringToFront();
             alphaCheckpointCacheToolStripMenuItem.Text =
@@ -421,6 +427,17 @@ namespace IStripperQuickPlayer
             materialSkinManager.Theme = MaterialSkinManager.Themes.LIGHT;
             if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
             materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
+            menuCardList.Renderer = menuStrip1.Renderer;
+            menuCardList.ShowImageMargin = false;
+            menuCardList.BackColor = menuStrip1.BackColor;
+            menuCardList.ForeColor = fileToolStripMenuItem.ForeColor;
+            foreach (ToolStripItem item in menuCardList.Items)
+                item.ForeColor = menuCardList.ForeColor;
+            nameToolStripMenuItem.ForeColor =
+                Properties.Settings.Default.DarkMode
+                    ? Color.LightSkyBlue : Color.Blue;
+            outfitToolStripMenuItem.ForeColor =
+                nameToolStripMenuItem.ForeColor;
             if (cardRenderer != null) cardRenderer.SetColours();
             SetPlayQueueColours();
         }
@@ -1263,6 +1280,10 @@ namespace IStripperQuickPlayer
             GetNowPlaying();
             clickingNowPlaying = false;
             SetupKeyHooks();
+            await Task.Delay(1000);
+            if (!formIsClosing && string.IsNullOrEmpty(
+                    GetCurrentAnimationPath()))
+                TryPlayNextQueuedAnimation();
             if (!Application.ProductVersion.Contains(
                     "-dev", StringComparison.OrdinalIgnoreCase))
                 _ = CheckForUpdatesAsync(false);
@@ -3641,7 +3662,7 @@ namespace IStripperQuickPlayer
 
         private void cmdShowModel_click(object sender, EventArgs e)
         {
-            txtSearch.Text = nowPlayingTag.Split("\r\n")[0];
+            txtSearch.Text = "model:" + nowPlayingTag.Split("\r\n")[0];
             PopulateModelListview();
             string[] p = nowPlayingTag.Split("\r\n");
             if (p.Length < 2) return;
@@ -4460,26 +4481,37 @@ namespace IStripperQuickPlayer
             cardRenderer.MouseIsOnList = true;
         }
 
-        private void showInBrowserToolStripMenuItem_Click(object sender, EventArgs e)
+        private void nameToolStripMenuItem_Click(object? sender, EventArgs e)
         {
-            if (mousedownCard == null)
-            {
+            if (currentMenuCard == null)
                 return;
-            }
-            ModelCard? c = Datastore.findCardByTag(mousedownCard.Tag.ToString());
-            if (c != null)
-            {
-                try
-                {
-                    string url = @"https://www.istripper.com/models/" + (c.modelName + "/" + c.outfit + " " + c.name).Replace(" ", "-");
+            ModelCard? card = Datastore.findCardByTag(
+                currentMenuCard.Tag.ToString());
+            if (!string.IsNullOrEmpty(card?.modelName))
+                OpenBrowser(@"https://www.istripper.com/models/" +
+                    card.modelName.Replace(" ", "-"));
+        }
 
-                    var psi = new System.Diagnostics.ProcessStartInfo();
-                    psi.UseShellExecute = true;
-                    psi.FileName = url;
-                    System.Diagnostics.Process.Start(psi);
-                }
-                catch (Exception) { }
+        private void outfitToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            if (currentMenuCard == null)
+                return;
+            ModelCard? card = Datastore.findCardByTag(
+                currentMenuCard.Tag.ToString());
+            if (!string.IsNullOrEmpty(card?.modelName))
+                OpenBrowser(@"https://www.istripper.com/models/" +
+                    (card.modelName + "/" + card.outfit + " " + card.name)
+                        .Replace(" ", "-"));
+        }
+
+        private static void OpenBrowser(string url)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(url)
+                    { UseShellExecute = true });
             }
+            catch { }
         }
 
         private void lockPlayerToolStripMenuItem_Click(object sender, EventArgs e)
