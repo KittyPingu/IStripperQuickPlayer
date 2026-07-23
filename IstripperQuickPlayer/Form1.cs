@@ -4024,8 +4024,7 @@ namespace IStripperQuickPlayer
             statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
             nameToolStripMenuItem.Text = c.modelName;
             outfitToolStripMenuItem.Text = c.outfit;
-            addModelToFilterToolStripMenuItem.Text =
-                $"Add model:{c.modelName} to filter";
+            addModelToFilterToolStripMenuItem.Text = "Filter to Model";
             CultureInfo cultureInfo = Thread.CurrentThread.CurrentCulture;
             TextInfo textInfo = cultureInfo.TextInfo;
             if (c.hair != null) hairToolStripMenuItem.Text = "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
