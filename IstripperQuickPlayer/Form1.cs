@@ -126,6 +126,8 @@ namespace IStripperQuickPlayer
             new("Resize player with mouse wheel") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
             new("Playback History...");
+        private readonly ToolStripMenuItem addModelToFilterToolStripMenuItem =
+            new();
         private readonly ToolStripMenuItem backupToolStripMenuItem =
             new("Backup QuickPlayer Data...");
         private readonly ToolStripMenuItem restoreToolStripMenuItem =
@@ -280,8 +282,11 @@ namespace IStripperQuickPlayer
                 infoModifiers == (ModNoRepeat | ModControl | ModAlt) &&
                 infoKey == (uint)Keys.I);
             MyData historyCheck = new();
+            int metadataChangeCount = 0;
+            historyCheck.Changed += () => metadataChangeCount++;
             historyCheck.AddPlayback(@"c0001\c0001_1.vghd",
                 DateTime.UtcNow);
+            System.Diagnostics.Debug.Assert(metadataChangeCount == 1);
             System.Diagnostics.Debug.Assert(historyCheck
                 .RecentPlaybackPaths(100).Contains(
                     @"C0001\C0001_1.VGHD"));
@@ -317,6 +322,11 @@ namespace IStripperQuickPlayer
                     .Matches(searchCheck));
             System.Diagnostics.Debug.Assert(
                 !TextQuery.Parse("anna AND tag:blue").Matches(searchCheck));
+            System.Diagnostics.Debug.Assert(SnapHalfStar(3.24M) == 3M &&
+                SnapHalfStar(3.25M) == 3.5M);
+            System.Diagnostics.Debug.Assert(AddModelFilter(
+                "tag:duo OR tag:pole", "Georgia") ==
+                "(tag:duo OR tag:pole) AND model:Georgia");
             TextSearchDocument raeSearchCheck = new(
                 "Asia Rae pole", "Asia Rae", "", "", "", "pole");
             TextSearchDocument kittySearchCheck = new(
@@ -335,6 +345,11 @@ namespace IStripperQuickPlayer
             outfitToolStripMenuItem.Click += outfitToolStripMenuItem_Click;
             outfitToolStripMenuItem.Font = new Font(outfitToolStripMenuItem.Font,
                 outfitToolStripMenuItem.Font.Style | FontStyle.Underline);
+            addModelToFilterToolStripMenuItem.Click +=
+                addModelToFilterToolStripMenuItem_Click;
+            menuCardList.Items.Insert(
+                menuCardList.Items.IndexOf(ratingSlider) + 1,
+                addModelToFilterToolStripMenuItem);
             lblMinSize.BringToFront();
             numMinSizeMB.BringToFront();
             alphaCheckpointCacheToolStripMenuItem.Text =
@@ -433,6 +448,7 @@ namespace IStripperQuickPlayer
             menuCardList.ForeColor = fileToolStripMenuItem.ForeColor;
             foreach (ToolStripItem item in menuCardList.Items)
                 item.ForeColor = menuCardList.ForeColor;
+            UpdateFavouriteMenuItem();
             nameToolStripMenuItem.ForeColor =
                 Properties.Settings.Default.DarkMode
                     ? Color.LightSkyBlue : Color.Blue;
@@ -493,6 +509,8 @@ namespace IStripperQuickPlayer
         ListViewItem[]? items; //stores the list of virtualized cards for modelList operations
         internal void PopulateModelListview()
         {
+            if (cardRenderer == null)
+                return;
             //save the selected card, we can reselect it at the end if it's still valid
             string currentText = "";
             if (listModelsNew.SelectedItems.Count > 0)
@@ -884,6 +902,7 @@ namespace IStripperQuickPlayer
 
                 backup.UserData.Normalize();
                 myData = backup.UserData;
+                myData.Changed += SaveMyData;
                 FilterSettingsList.filters = backup.Filters;
                 foreach (KeyValuePair<string, string?> setting in backup.Settings)
                 {
@@ -1164,6 +1183,8 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.UpdateSettings = false;
                 Properties.Settings.Default.Save();
             }
+            Properties.Settings.Default.PropertyChanged += (_, _) =>
+                Properties.Settings.Default.Save();
             spaceBelowClipList = this.Height - listClips.Bottom;
             spaceRightOfListModel = this.Width - listModelsNew.Right;
             if (Properties.Settings.Default.Maximised)
@@ -1256,6 +1277,7 @@ namespace IStripperQuickPlayer
             darkModeToolStripMenuItem.Checked = Properties.Settings.Default.DarkMode;
             SetSkin();
             myData = RetrieveMyData();
+            myData.Changed += SaveMyData;
             FilterSettingsList.Load();
             PopulateFilterList();
             if (cardRenderer == null)
@@ -3992,7 +4014,8 @@ namespace IStripperQuickPlayer
             cardRenderer.CardMenuText = mousedownCard.Tag.ToString();
             if (c == null) return;
             if (myData != null && myData.GetCardRating(c.name.ToString()) > 0)
-                ratingSlider.Value = myData.GetCardRating(c.name.ToString());
+                ratingSlider.Value =
+                    myData.GetCardRating(c.name.ToString()) / 2;
             else
                 ratingSlider.Value = 0;
             if (myData != null) menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
@@ -4001,6 +4024,8 @@ namespace IStripperQuickPlayer
             statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
             nameToolStripMenuItem.Text = c.modelName;
             outfitToolStripMenuItem.Text = c.outfit;
+            addModelToFilterToolStripMenuItem.Text =
+                $"Add model:{c.modelName} to filter";
             CultureInfo cultureInfo = Thread.CurrentThread.CurrentCulture;
             TextInfo textInfo = cultureInfo.TextInfo;
             if (c.hair != null) hairToolStripMenuItem.Text = "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
@@ -4014,6 +4039,7 @@ namespace IStripperQuickPlayer
         private ImageListViewItem? currentMenuCard = null;
         private void menuCardFavourite_CheckedChanged(object sender, EventArgs e)
         {
+            UpdateFavouriteMenuItem();
             if (myData == null || currentMenuCard == null) return;
             if (myData.GetCardFavourite(currentMenuCard.Tag.ToString()) != menuCardFavourite.Checked)
             {
@@ -4038,13 +4064,50 @@ namespace IStripperQuickPlayer
         private void RatingSlider_ValueChanged(object sender, EventArgs e)
         {
             if (myData == null || currentMenuCard == null) return;
-            if (myData.GetCardRating(currentMenuCard.Tag.ToString()) == ratingSlider.Value) return;
-            myData.AddCardRating(currentMenuCard.Tag.ToString(), ratingSlider.Value);
+            decimal rating = SnapHalfStar(ratingSlider.Value);
+            if (ratingSlider.Value != rating)
+            {
+                ratingSlider.Value = rating;
+                return;
+            }
+            if (myData.GetCardRating(currentMenuCard.Tag.ToString()) ==
+                rating * 2) return;
+            myData.AddCardRating(currentMenuCard.Tag.ToString(), rating * 2);
             if (menuShowRatingsStars.Checked)
             {
                 currentMenuCard.Update();
             }
         }
+
+        private void UpdateFavouriteMenuItem()
+        {
+            menuCardFavourite.Text =
+                menuCardFavourite.Checked ? "♥ Favourite" : "♡ Favourite";
+            menuCardFavourite.ForeColor = menuCardFavourite.Checked
+                ? Color.LightGreen : menuCardList.ForeColor;
+        }
+
+        private void addModelToFilterToolStripMenuItem_Click(
+            object? sender, EventArgs e)
+        {
+            if (currentMenuCard == null)
+                return;
+            ModelCard? card = Datastore.findCardByTag(
+                currentMenuCard.Tag.ToString());
+            if (string.IsNullOrEmpty(card?.modelName))
+                return;
+            txtSearch.Text = AddModelFilter(txtSearch.Text, card.modelName);
+            cmdClearSearch.Visible = true;
+            PopulateModelListview();
+        }
+
+        private static string AddModelFilter(string filter, string model) =>
+            string.IsNullOrWhiteSpace(filter)
+                ? $"model:{model}"
+                : $"({filter}) AND model:{model}";
+
+        private static decimal SnapHalfStar(decimal rating) =>
+            Math.Round(rating * 2, MidpointRounding.AwayFromZero) / 2;
 
         private void chkShowRatingStars_CheckedChanged(object sender, EventArgs e)
         {

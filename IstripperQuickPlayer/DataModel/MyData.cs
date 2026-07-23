@@ -19,6 +19,8 @@ namespace IStripperQuickPlayer.DataModel
         internal Dictionary<string, bool> CardFavourite = new Dictionary<string, bool>();
         internal Dictionary<string, bool> ClipFavourite = new Dictionary<string, bool>();
         internal List<PlaybackHistoryEntry> PlaybackHistory = new();
+        [field: NonSerialized]
+        internal event Action? Changed;
 
         internal void AddCardRating(string tag, decimal rating)
         {
@@ -26,6 +28,7 @@ namespace IStripperQuickPlayer.DataModel
                 CardRating[tag] = rating;
             else
                 CardRating.Add(tag, rating);
+            Changed?.Invoke();
         }
 
         internal decimal GetCardRating(string tag)
@@ -39,6 +42,7 @@ namespace IStripperQuickPlayer.DataModel
                 ClipRating[tag] = rating;
             else
                 ClipRating.Add(tag, rating);
+            Changed?.Invoke();
         }
 
         internal decimal GetClipRating(string tag)
@@ -55,6 +59,7 @@ namespace IStripperQuickPlayer.DataModel
                 CardFavourite[tag] = favourite;
             else
                 CardFavourite.Add(tag, favourite);
+            Changed?.Invoke();
         }
 
         internal bool GetCardFavourite(string tag)
@@ -71,6 +76,7 @@ namespace IStripperQuickPlayer.DataModel
             }
             else
                 CardTags.Add(tag, tags);
+            Changed?.Invoke();
         }
 
         internal List<string> GetCardTags(string tag)
@@ -93,6 +99,7 @@ namespace IStripperQuickPlayer.DataModel
             });
             if (PlaybackHistory.Count > 1000)
                 PlaybackHistory.RemoveRange(0, PlaybackHistory.Count - 1000);
+            Changed?.Invoke();
         }
 
         internal HashSet<string> RecentPlaybackPaths(int count)

@@ -174,19 +174,19 @@
             // ratingSlider
             // 
             ratingSlider.BackColor = Color.White;
-            ratingSlider.ClientSize = new Size(108, 56);
+            ratingSlider.ClientSize = new Size(220, 32);
             ratingSlider.Font = new Font("Microsoft Sans Serif", 6F, FontStyle.Regular, GraphicsUnit.Point);
             ratingSlider.ForeColor = Color.White;
             ratingSlider.Has2Values = false;
-            ratingSlider.LargeChange = new decimal(new int[] { 5, 0, 0, 0 });
-            ratingSlider.Maximum = new decimal(new int[] { 10, 0, 0, 0 });
+            ratingSlider.LargeChange = 0.5M;
+            ratingSlider.Maximum = new decimal(new int[] { 5, 0, 0, 0 });
             ratingSlider.Minimum = new decimal(new int[] { 0, 0, 0, 0 });
             ratingSlider.Name = "ratingSlider";
-            ratingSlider.ScaleDivisions = new decimal(new int[] { 5, 0, 0, 0 });
-            ratingSlider.Size = new Size(108, 56);
-            ratingSlider.SmallChange = new decimal(new int[] { 1, 0, 0, 0 });
+            ratingSlider.ScaleDivisions = new decimal(new int[] { 10, 0, 0, 0 });
+            ratingSlider.Size = new Size(220, 32);
+            ratingSlider.SmallChange = 0.5M;
             ratingSlider.TickColor = Color.Black;
-            ratingSlider.TickStyle = TickStyle.Both;
+            ratingSlider.TickStyle = TickStyle.None;
             ratingSlider.TrackbarColor = Color.White;
             ratingSlider.Value = new decimal(new int[] { 0, 0, 0, 0 });
             ratingSlider.Value2 = new decimal(new int[] { 0, 0, 0, 0 });
