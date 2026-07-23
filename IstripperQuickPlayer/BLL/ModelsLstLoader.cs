@@ -33,16 +33,18 @@ namespace IStripperQuickPlayer.BLL
                 Form1? frm = Utils.GetMainForm();
                 using (var stream = File.Open(file.FullName, FileMode.Open))
                 {
-                    using (var reader = new BinaryReader(stream, Encoding.UTF8, false))
+                    try
                     {
-                        Datastore.versionnumber = getInt32(reader);
-                        Datastore.numberOfCards = getInt32(reader);
-
-                        char fc = '\u0092';  
-                        char nc = '\'';
-
-                        for (int c = 0; c < Datastore.numberOfCards; c++)
+                        using (var reader = new BinaryReader(stream, Encoding.UTF8, false))
                         {
+                            Datastore.versionnumber = getInt32(reader);
+                            Datastore.numberOfCards = getInt32(reader);
+
+                            char fc = '\u0092';
+                            char nc = '\'';
+
+                            for (int c = 0; c < Datastore.numberOfCards; c++)
+                            {
                             ModelCard card = new ModelCard();
                             int cardTextLen = getInt32(reader);
                             card.name = getString(reader, cardTextLen).Replace(fc,nc);
@@ -440,7 +442,14 @@ namespace IStripperQuickPlayer.BLL
                                     Debug.WriteLine(card.name);
                                 }
                             }
+                            }
                         }
+                    }
+                    catch (Exception exception)
+                    {
+                        exception.Data["ModelsLstPosition"] = stream.Position;
+                        exception.Data["ModelsLstLength"] = stream.Length;
+                        throw;
                     }
                 }
             }

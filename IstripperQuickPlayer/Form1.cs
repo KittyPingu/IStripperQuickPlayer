@@ -467,14 +467,103 @@ namespace IStripperQuickPlayer
 
         private void ReloadModels()
         {
-            RefreshPlaybackControlVisibility();
-            ReloadStaticProperties();
-            ModelsLstLoader lstLoader = new ModelsLstLoader();
-            listModelsNew.Items.Clear();
-            Datastore.modelcards = [];
-            lstLoader.LoadModels();
-            this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
-            PersistModels();
+            string diagnosticsFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "IStripperQuickPlayer");
+            string diagnosticsPath = Path.Combine(
+                diagnosticsFolder, "model-reload-diagnostic.txt");
+            StringBuilder diagnostics = new();
+            diagnostics.AppendLine($"Reload started: {DateTimeOffset.Now:O}");
+            diagnostics.AppendLine($"QuickPlayer version: {Application.ProductVersion}");
+
+            using RegistryKey? systemKey = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\System", false);
+            string dataPath = systemKey?.GetValue("DataPath", "")?.ToString() ?? "";
+            string modelsPath = systemKey?.GetValue("ModelsPath", "")?.ToString() ?? "";
+            string[] multiPaths = systemKey?.GetValue(
+                "ModelsMultiPath", Array.Empty<string>()) as string[]
+                ?? Array.Empty<string>();
+            diagnostics.AppendLine($"DataPath: {dataPath}");
+            diagnostics.AppendLine($"ModelsPath: {modelsPath}");
+            diagnostics.AppendLine(
+                $"ModelsMultiPath: {string.Join(" | ", multiPaths)}");
+
+            string cataloguePath = Path.Combine(dataPath, "models.lst");
+            FileInfo catalogue = new(cataloguePath);
+            diagnostics.AppendLine($"models.lst: {cataloguePath}");
+            diagnostics.AppendLine($"models.lst exists: {catalogue.Exists}");
+            if (catalogue.Exists)
+            {
+                diagnostics.AppendLine($"models.lst size: {catalogue.Length}");
+                diagnostics.AppendLine(
+                    $"models.lst modified: {catalogue.LastWriteTimeUtc:O}");
+            }
+            foreach (string root in new[] { modelsPath }.Concat(multiPaths)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                bool exists = Directory.Exists(root);
+                try
+                {
+                    int folders = exists
+                        ? Directory.EnumerateDirectories(root).Count()
+                        : 0;
+                    diagnostics.AppendLine(
+                        $"Model root: {root} | exists={exists} | folders={folders}");
+                }
+                catch (Exception exception)
+                {
+                    diagnostics.AppendLine(
+                        $"Model root: {root} | exists={exists} | error={exception.Message}");
+                }
+            }
+
+            try
+            {
+                RefreshPlaybackControlVisibility();
+                ReloadStaticProperties();
+                ModelsLstLoader lstLoader = new ModelsLstLoader();
+                listModelsNew.Items.Clear();
+                Datastore.modelcards = [];
+                lstLoader.LoadModels();
+                BeginInvoke((Action)(() => { PopulateModelListview(); }));
+                PersistModels();
+                diagnostics.AppendLine("Result: success");
+            }
+            catch (Exception exception)
+            {
+                diagnostics.AppendLine("Result: failed");
+                diagnostics.AppendLine(
+                    $"Parse offset: {exception.Data["ModelsLstPosition"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Catalogue length: {exception.Data["ModelsLstLength"] ?? "unknown"}");
+                diagnostics.AppendLine(exception.ToString());
+                throw;
+            }
+            finally
+            {
+                int loadedCards = Datastore.modelcards?.Count ?? 0;
+                diagnostics.AppendLine(
+                    $"Declared cards: {Datastore.numberOfCards}");
+                diagnostics.AppendLine(
+                    $"Loaded cards with clips: {loadedCards}");
+                diagnostics.AppendLine(
+                    $"Entries without clips/not loaded: {Math.Max(0,
+                        Datastore.numberOfCards - loadedCards)}");
+                diagnostics.AppendLine($"Parser version: {Datastore.versionnumber}");
+                diagnostics.AppendLine($"Reload finished: {DateTimeOffset.Now:O}");
+                try
+                {
+                    Directory.CreateDirectory(diagnosticsFolder);
+                    File.WriteAllText(diagnosticsPath, diagnostics.ToString());
+                }
+                catch (Exception exception)
+                {
+                    Debug.WriteLine(
+                        "Could not write model reload diagnostics: " +
+                        exception.Message);
+                }
+            }
         }
 
         private void PersistModels()
