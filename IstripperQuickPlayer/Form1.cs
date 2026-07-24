@@ -254,7 +254,7 @@ namespace IStripperQuickPlayer
         {
             if (panicActive)
             {
-                panicResumeButton.PerformClick();
+                panicResumeButton_Click(null, EventArgs.Empty);
                 return;
             }
 
