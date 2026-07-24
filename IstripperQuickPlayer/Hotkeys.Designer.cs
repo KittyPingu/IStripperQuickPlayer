@@ -49,6 +49,8 @@
             chkSmallPlayer = new CheckBox();
             txtNowPlayingInfo = new TextBox();
             chkNowPlayingInfo = new CheckBox();
+            txtPanic = new TextBox();
+            chkPanic = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -91,7 +93,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 623);
+            cmdOK.Location = new Point(229, 676);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -237,12 +239,31 @@
             chkNowPlayingInfo.TabIndex = 19;
             chkNowPlayingInfo.Text = "Now Playing Info";
             chkNowPlayingInfo.UseVisualStyleBackColor = true;
+            //
+            // txtPanic
+            //
+            txtPanic.Location = new Point(229, 610);
+            txtPanic.Name = "txtPanic";
+            txtPanic.Size = new Size(263, 31);
+            txtPanic.TabIndex = 22;
+            //
+            // chkPanic
+            //
+            chkPanic.AutoSize = true;
+            chkPanic.Location = new Point(70, 614);
+            chkPanic.Name = "chkPanic";
+            chkPanic.Size = new Size(78, 29);
+            chkPanic.TabIndex = 21;
+            chkPanic.Text = "Panic";
+            chkPanic.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(10F, 25F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(578, 698);
+            ClientSize = new Size(578, 751);
+            Controls.Add(txtPanic);
+            Controls.Add(chkPanic);
             Controls.Add(txtNowPlayingInfo);
             Controls.Add(chkNowPlayingInfo);
             Controls.Add(txtSmallPlayer);
@@ -300,5 +321,7 @@
         private CheckBox chkSmallPlayer;
         private TextBox txtNowPlayingInfo;
         private CheckBox chkNowPlayingInfo;
+        private TextBox txtPanic;
+        private CheckBox chkPanic;
     }
 }

@@ -250,7 +250,31 @@ namespace IStripperQuickPlayer.Properties {
                 this["NowPlayingInfoHotkeyString"] = value;
             }
         }
-        
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool PanicHotkeyEnabled {
+            get {
+                return ((bool)(this["PanicHotkeyEnabled"]));
+            }
+            set {
+                this["PanicHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+X")]
+        public string PanicHotkeyString {
+            get {
+                return ((string)(this["PanicHotkeyString"]));
+            }
+            set {
+                this["PanicHotkeyString"] = value;
+            }
+        }
+
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("25")]
@@ -505,6 +529,30 @@ namespace IStripperQuickPlayer.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("40")]
+        public decimal WallpaperTextSize {
+            get {
+                return ((decimal)(this["WallpaperTextSize"]));
+            }
+            set {
+                this["WallpaperTextSize"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("100")]
+        public decimal WallpaperLabelOpacity {
+            get {
+                return ((decimal)(this["WallpaperLabelOpacity"]));
+            }
+            set {
+                this["WallpaperLabelOpacity"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+L")]
         public string ToggleLockString {
             get {
@@ -565,7 +613,7 @@ namespace IStripperQuickPlayer.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool HideDesktopIcons {
             get {
                 return ((bool)(this["HideDesktopIcons"]));

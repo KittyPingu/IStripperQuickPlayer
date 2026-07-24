@@ -77,6 +77,10 @@
             automaticWallpaperToolStripMenuItem = new ToolStripMenuItem();
             trackbarWallpaperBrightness = new TrackBarMenuItem();
             showTextToolStripMenuItem = new ToolStripMenuItem();
+            wallpaperTextSizeToolStripMenuItem = new ToolStripMenuItem();
+            trackBarWallpaperTextSize = new TrackBarMenuItem();
+            wallpaperLabelOpacityToolStripMenuItem = new ToolStripMenuItem();
+            trackBarWallpaperLabelOpacity = new TrackBarMenuItem();
             blurImageToolStripMenuItem = new ToolStripMenuItem();
             trackBarBlur = new TrackBarMenuItem();
             hideDesktopIconsToolStripMenuItem = new ToolStripMenuItem();
@@ -555,11 +559,70 @@
             // showTextToolStripMenuItem
             // 
             showTextToolStripMenuItem.CheckOnClick = true;
+            showTextToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { wallpaperTextSizeToolStripMenuItem, wallpaperLabelOpacityToolStripMenuItem });
             showTextToolStripMenuItem.Name = "showTextToolStripMenuItem";
             showTextToolStripMenuItem.Size = new Size(290, 34);
             showTextToolStripMenuItem.Text = "Show Text";
             showTextToolStripMenuItem.Click += showTextToolStripMenuItem_Click;
-            // 
+            //
+            // wallpaperTextSizeToolStripMenuItem
+            //
+            wallpaperTextSizeToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { trackBarWallpaperTextSize });
+            wallpaperTextSizeToolStripMenuItem.Name = "wallpaperTextSizeToolStripMenuItem";
+            wallpaperTextSizeToolStripMenuItem.Size = new Size(240, 34);
+            wallpaperTextSizeToolStripMenuItem.Text = "Text Size";
+            //
+            // trackBarWallpaperTextSize
+            //
+            trackBarWallpaperTextSize.BackColor = Color.Transparent;
+            trackBarWallpaperTextSize.ClientSize = new Size(200, 48);
+            trackBarWallpaperTextSize.Font = new Font("Microsoft Sans Serif", 6F, FontStyle.Regular, GraphicsUnit.Point);
+            trackBarWallpaperTextSize.ForeColor = Color.White;
+            trackBarWallpaperTextSize.Has2Values = false;
+            trackBarWallpaperTextSize.LargeChange = new decimal(new int[] { 10, 0, 0, 0 });
+            trackBarWallpaperTextSize.Maximum = new decimal(new int[] { 70, 0, 0, 0 });
+            trackBarWallpaperTextSize.Minimum = new decimal(new int[] { 10, 0, 0, 0 });
+            trackBarWallpaperTextSize.Name = "trackBarWallpaperTextSize";
+            trackBarWallpaperTextSize.ScaleDivisions = new decimal(new int[] { 6, 0, 0, 0 });
+            trackBarWallpaperTextSize.Size = new Size(200, 48);
+            trackBarWallpaperTextSize.SmallChange = new decimal(new int[] { 1, 0, 0, 0 });
+            trackBarWallpaperTextSize.Text = "Wallpaper Text Size";
+            trackBarWallpaperTextSize.TickColor = Color.White;
+            trackBarWallpaperTextSize.TickStyle = TickStyle.TopLeft;
+            trackBarWallpaperTextSize.TrackbarColor = Color.Transparent;
+            trackBarWallpaperTextSize.Value = new decimal(new int[] { 40, 0, 0, 0 });
+            trackBarWallpaperTextSize.Value2 = new decimal(new int[] { 40, 0, 0, 0 });
+            trackBarWallpaperTextSize.ValueChanged += trackBarWallpaperTextSize_ValueChanged;
+            //
+            // wallpaperLabelOpacityToolStripMenuItem
+            //
+            wallpaperLabelOpacityToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { trackBarWallpaperLabelOpacity });
+            wallpaperLabelOpacityToolStripMenuItem.Name = "wallpaperLabelOpacityToolStripMenuItem";
+            wallpaperLabelOpacityToolStripMenuItem.Size = new Size(240, 34);
+            wallpaperLabelOpacityToolStripMenuItem.Text = "Label Opacity";
+            //
+            // trackBarWallpaperLabelOpacity
+            //
+            trackBarWallpaperLabelOpacity.BackColor = Color.Transparent;
+            trackBarWallpaperLabelOpacity.ClientSize = new Size(200, 48);
+            trackBarWallpaperLabelOpacity.Font = new Font("Microsoft Sans Serif", 6F, FontStyle.Regular, GraphicsUnit.Point);
+            trackBarWallpaperLabelOpacity.ForeColor = Color.White;
+            trackBarWallpaperLabelOpacity.Has2Values = false;
+            trackBarWallpaperLabelOpacity.LargeChange = new decimal(new int[] { 10, 0, 0, 0 });
+            trackBarWallpaperLabelOpacity.Maximum = new decimal(new int[] { 100, 0, 0, 0 });
+            trackBarWallpaperLabelOpacity.Minimum = new decimal(new int[] { 0, 0, 0, 0 });
+            trackBarWallpaperLabelOpacity.Name = "trackBarWallpaperLabelOpacity";
+            trackBarWallpaperLabelOpacity.ScaleDivisions = new decimal(new int[] { 10, 0, 0, 0 });
+            trackBarWallpaperLabelOpacity.Size = new Size(200, 48);
+            trackBarWallpaperLabelOpacity.SmallChange = new decimal(new int[] { 5, 0, 0, 0 });
+            trackBarWallpaperLabelOpacity.Text = "Wallpaper Label Opacity";
+            trackBarWallpaperLabelOpacity.TickColor = Color.White;
+            trackBarWallpaperLabelOpacity.TickStyle = TickStyle.TopLeft;
+            trackBarWallpaperLabelOpacity.TrackbarColor = Color.Transparent;
+            trackBarWallpaperLabelOpacity.Value = new decimal(new int[] { 100, 0, 0, 0 });
+            trackBarWallpaperLabelOpacity.Value2 = new decimal(new int[] { 100, 0, 0, 0 });
+            trackBarWallpaperLabelOpacity.ValueChanged += trackBarWallpaperLabelOpacity_ValueChanged;
+            //
             // blurImageToolStripMenuItem
             // 
             blurImageToolStripMenuItem.CheckOnClick = true;
@@ -1298,6 +1361,10 @@
         private ToolStripMenuItem automaticWallpaperToolStripMenuItem;
         private TrackBarMenuItem trackbarWallpaperBrightness;
         private ToolStripMenuItem showTextToolStripMenuItem;
+        private ToolStripMenuItem wallpaperTextSizeToolStripMenuItem;
+        private TrackBarMenuItem trackBarWallpaperTextSize;
+        private ToolStripMenuItem wallpaperLabelOpacityToolStripMenuItem;
+        private TrackBarMenuItem trackBarWallpaperLabelOpacity;
         private ToolStripMenuItem showKittyToolStripMenuItem;
         private Manina.Windows.Forms.ImageListView listModelsNew;
         private ToolStripMenuItem zoomOnHoverToolStripMenuItem;

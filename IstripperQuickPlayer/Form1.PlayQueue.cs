@@ -1313,6 +1313,9 @@ namespace IStripperQuickPlayer
 
         private bool TryPlayNextQueuedAnimation()
         {
+            if (panicActive)
+                return false;
+
             using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
                 @"Software\Totem\vghd\parameters", true);
             if (key == null || !TryTakeQueuedAnimation(
@@ -1334,7 +1337,8 @@ namespace IStripperQuickPlayer
         {
             selected = proposed;
             forceAnimation = false;
-            if (!Properties.Settings.Default.EnablePlayQueue)
+            if (panicActive ||
+                !Properties.Settings.Default.EnablePlayQueue)
                 return false;
 
             if (!string.IsNullOrEmpty(playbackRequestedAnimationPath) &&

@@ -59,6 +59,12 @@
     <Setting Name="NowPlayingInfoHotkeyString" Type="System.String" Scope="User">
       <Value Profile="(Default)">Control+Alt+I</Value>
     </Setting>
+    <Setting Name="PanicHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="PanicHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+X</Value>
+    </Setting>
     <Setting Name="MinSizeMB" Type="System.Int64" Scope="User">
       <Value Profile="(Default)">25</Value>
     </Setting>
@@ -85,6 +91,12 @@
     </Setting>
     <Setting Name="WallpaperBrightness" Type="System.Decimal" Scope="User">
       <Value Profile="(Default)">60</Value>
+    </Setting>
+    <Setting Name="WallpaperTextSize" Type="System.Decimal" Scope="User">
+      <Value Profile="(Default)">40</Value>
+    </Setting>
+    <Setting Name="WallpaperLabelOpacity" Type="System.Decimal" Scope="User">
+      <Value Profile="(Default)">100</Value>
     </Setting>
     <Setting Name="WallpaperDetails" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
@@ -138,7 +150,7 @@
       <Value Profile="(Default)">15</Value>
     </Setting>
     <Setting Name="HideDesktopIcons" Type="System.Boolean" Scope="User">
-      <Value Profile="(Default)">True</Value>
+      <Value Profile="(Default)">False</Value>
     </Setting>
     <Setting Name="SortDirection" Type="System.String" Scope="User">
       <Value Profile="(Default)">Ascending</Value>

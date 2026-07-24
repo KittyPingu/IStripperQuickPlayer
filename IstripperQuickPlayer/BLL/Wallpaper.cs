@@ -20,8 +20,27 @@ namespace IStripperQuickPlayer.BLL
         public static Dictionary<uint, Bitmap> initialImages = new Dictionary<uint, Bitmap>();
         public static string _modelname = "";
         public static string _outfit = "";
+        private static volatile bool suspended;
+
+        public static void CaptureOriginalDesktopState()
+        {
+            Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
+            try
+            {
+                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());
+                originalWallpaper.Clear();
+                for (uint i = 0; i < wallpaper.GetMonitorDevicePathCount(); i++)
+                {
+                    string monitorId = wallpaper.GetMonitorDevicePathAt(i);
+                    originalWallpaper[i] = wallpaper.GetWallpaper(monitorId);
+                }
+            }
+            catch { }
+        }
+
         public static async Task ChangeWallpaper(uint monitorNumber, string? url, string modelname, string outfit)
         {
+            if (suspended) return;
             if (Properties.Settings.Default.HideDesktopIcons)
                 hideIcons();
             else
@@ -60,7 +79,8 @@ namespace IStripperQuickPlayer.BLL
                     if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
                     m.Save(wpfilepath, ImageFormat.Jpeg);
                     direct.Dispose();
-                    wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
+                    if (!suspended)
+                        wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
                     m.Dispose();
                 }).ConfigureAwait(false);
             }
@@ -255,33 +275,77 @@ namespace IStripperQuickPlayer.BLL
         {
             return FastGaussianBlur(b, Convert.ToInt32(Properties.Settings.Default.BlurRadius));
         }
-        private static Bitmap AddDetails(Bitmap b, Rect l, int sz = 36)
+        private static Bitmap AddDetails(Bitmap b, Rect l)
         {
-            var str = _modelname + ", " + _outfit;
-            StringFormat stringFormat = new StringFormat();
-            stringFormat.Alignment = StringAlignment.Near;
-            stringFormat.LineAlignment = StringAlignment.Near;
-            Graphics g = Graphics.FromImage(b);
-            g.InterpolationMode = InterpolationMode.High;
-            g.SmoothingMode = SmoothingMode.HighQuality;
+            string text = _modelname + ", " + _outfit;
+            float opacity = Math.Clamp(
+                (float)Properties.Settings.Default.WallpaperLabelOpacity,
+                0, 100) / 100;
+            if (opacity == 0)
+                return b;
+            int Alpha(int value) => (int)Math.Round(value * opacity);
+
+            using Graphics g = Graphics.FromImage(b);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             g.CompositingQuality = CompositingQuality.HighQuality;
-            var p = new GraphicsPath(); 
-            p.AddString(
-                str.ToString(),            
-                new FontFamily("Microsoft Sans Serif"), 
-                (int) FontStyle.Regular,     
-                sz,      
-                new Point(sz, sz),            
-                new StringFormat());         
-            g.DrawPath(new Pen(Color.Gray, 1), p);
-            g.FillPath(Brushes.Black, p);   
-            g.Dispose();
+
+            float fontSize = Math.Clamp(
+                (float)Properties.Settings.Default.WallpaperTextSize,
+                10, 70);
+            using Font font = new(FontFamily.GenericSansSerif, fontSize,
+                FontStyle.Bold, GraphicsUnit.Pixel);
+            using StringFormat format =
+                (StringFormat)StringFormat.GenericTypographic.Clone();
+            SizeF textSize = g.MeasureString(text, font, int.MaxValue, format);
+            float margin = fontSize;
+            float paddingX = fontSize * .55f;
+            float paddingY = fontSize * .35f;
+            RectangleF panel = new(margin, margin,
+                textSize.Width + paddingX * 2,
+                textSize.Height + paddingY * 2);
+            float diameter = fontSize * .9f;
+            using GraphicsPath path = new();
+            path.AddArc(panel.Left, panel.Top, diameter, diameter, 180, 90);
+            path.AddArc(panel.Right - diameter, panel.Top,
+                diameter, diameter, 270, 90);
+            path.AddArc(panel.Right - diameter, panel.Bottom - diameter,
+                diameter, diameter, 0, 90);
+            path.AddArc(panel.Left, panel.Bottom - diameter,
+                diameter, diameter, 90, 90);
+            path.CloseFigure();
+
+            GraphicsState state = g.Save();
+            g.TranslateTransform(fontSize * .1f, fontSize * .1f);
+            using (SolidBrush shadow =
+                new(Color.FromArgb(Alpha(75), 0, 0, 0)))
+                g.FillPath(shadow, path);
+            g.Restore(state);
+
+            using (SolidBrush background =
+                new(Color.FromArgb(Alpha(175), 18, 18, 18)))
+                g.FillPath(background, path);
+            using (Pen border = new(Color.FromArgb(
+                Alpha(70), 255, 255, 255),
+                Math.Max(1, fontSize * .025f)))
+                g.DrawPath(border, path);
+
+            PointF textPoint = new(panel.Left + paddingX,
+                panel.Top + paddingY);
+            using (SolidBrush textShadow =
+                new(Color.FromArgb(Alpha(130), 0, 0, 0)))
+                g.DrawString(text, font, textShadow,
+                    new PointF(textPoint.X + fontSize * .04f,
+                        textPoint.Y + fontSize * .04f), format);
+            using (SolidBrush white = new(Color.FromArgb(
+                Alpha(255), 255, 255, 255)))
+                g.DrawString(text, font, white, textPoint, format);
             return b;
         }
 
         public static void RedrawImage()
         {
+            if (suspended) return;
             try
             {
                 var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
@@ -379,6 +443,41 @@ namespace IStripperQuickPlayer.BLL
             catch(Exception){}
         }
 
+        public static void SuspendAndRestoreOriginalDesktop()
+        {
+            suspended = true;
+            RestoreWallpaper();
+            if (Utils.DefaultIconsVisible != Utils.DesktopIconsVisible())
+                Utils.ToggleDesktopIcons();
+        }
+
+        public static void ResumeQuickPlayerDesktop()
+        {
+            suspended = false;
+            try
+            {
+                var wallpaper =
+                    (IDesktopWallpaper)(new DesktopWallpaperClass());
+                foreach (uint monitorNumber in initialImages.Keys)
+                {
+                    string path = Path.Join(
+                        Environment.GetFolderPath(
+                            Environment.SpecialFolder.LocalApplicationData),
+                        "IStripperQuickPlayer",
+                        $"wallpaper{monitorNumber}.jpg");
+                    if (File.Exists(path))
+                        wallpaper.SetWallpaper(
+                            wallpaper.GetMonitorDevicePathAt(monitorNumber),
+                            path);
+                }
+                if (Properties.Settings.Default.HideDesktopIcons)
+                    hideIcons();
+                else
+                    showIcons();
+            }
+            catch { }
+        }
+
         internal static void RestoreWallpaperByID(uint monitorNumber)
         {
             try
@@ -389,7 +488,6 @@ namespace IStripperQuickPlayer.BLL
                 {
                     var monitorId = wallpaper.GetMonitorDevicePathAt(monitorNumber);
                     wallpaper.SetWallpaper(monitorId.ToString(), originalWallpaper[monitorNumber]);
-                    originalWallpaper.Remove(monitorNumber);
                     initialImages.Remove(monitorNumber);
                 }
             }

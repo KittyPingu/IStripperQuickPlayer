@@ -127,6 +127,20 @@ internal sealed class LockStateOverlay : Form
         current.Show();
     }
 
+    internal static IntPtr HideMovieWindowForProcess(int processId)
+    {
+        IntPtr window = FindMovieWindow(processId, visibleOnly: true);
+        if (window != IntPtr.Zero)
+            ShowWindowAsync(window, 0);
+        return window;
+    }
+
+    internal static void ShowMovieWindow(IntPtr window)
+    {
+        if (window != IntPtr.Zero && IsWindow(window))
+            ShowWindowAsync(window, 4);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -234,12 +248,28 @@ internal sealed class LockStateOverlay : Form
     private static bool TryGetMovieWindowBounds(int processId, out Rectangle bounds,
         out int dpi)
     {
-        Rectangle foundBounds = Rectangle.Empty;
-        int foundDpi = 96;
+        IntPtr movieWindow = FindMovieWindow(processId, visibleOnly: true);
+        if (movieWindow != IntPtr.Zero &&
+            GetWindowRect(movieWindow, out NativeRectangle rectangle))
+        {
+            bounds = Rectangle.FromLTRB(rectangle.Left, rectangle.Top,
+                rectangle.Right, rectangle.Bottom);
+            dpi = (int)GetDpiForWindow(movieWindow);
+            return bounds.Width > 0 && bounds.Height > 0;
+        }
+        bounds = Rectangle.Empty;
+        dpi = 96;
+        return false;
+    }
+
+    private static IntPtr FindMovieWindow(int processId, bool visibleOnly)
+    {
+        IntPtr found = IntPtr.Zero;
         EnumWindows((window, _) =>
         {
             GetWindowThreadProcessId(window, out int ownerProcessId);
-            if (ownerProcessId != processId || !IsWindowVisible(window))
+            if (ownerProcessId != processId ||
+                visibleOnly && !IsWindowVisible(window))
                 return true;
 
             StringBuilder className = new(128);
@@ -248,18 +278,10 @@ internal sealed class LockStateOverlay : Form
                     StringComparison.Ordinal))
                 return true;
 
-            if (GetWindowRect(window, out NativeRectangle rectangle))
-            {
-                foundBounds = Rectangle.FromLTRB(rectangle.Left, rectangle.Top,
-                    rectangle.Right, rectangle.Bottom);
-                foundDpi = (int)GetDpiForWindow(window);
-                return false;
-            }
-            return true;
+            found = window;
+            return false;
         }, IntPtr.Zero);
-        bounds = foundBounds;
-        dpi = foundDpi;
-        return bounds.Width > 0 && bounds.Height > 0;
+        return found;
     }
 
 #if DEBUG
@@ -294,6 +316,12 @@ internal sealed class LockStateOverlay : Form
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr window, int command);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, StringBuilder className, int maximumCount);

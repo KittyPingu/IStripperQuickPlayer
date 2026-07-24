@@ -99,6 +99,7 @@ namespace IStripperQuickPlayer
         private const int LargePlayerHotkeyId = 8;
         private const int SmallPlayerHotkeyId = 9;
         private const int NowPlayingInfoHotkeyId = 10;
+        private const int PanicHotkeyId = 11;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -141,6 +142,15 @@ namespace IStripperQuickPlayer
             new("Playback History...");
         private readonly ToolStripMenuItem addModelToFilterToolStripMenuItem =
             new();
+        private readonly Button panicResumeButton = new()
+        {
+            Text = "Resume",
+            BackColor = Color.FromArgb(22, 145, 70),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Visible = false,
+            UseVisualStyleBackColor = false
+        };
         private readonly ToolStripMenuItem backupToolStripMenuItem =
             new("Backup QuickPlayer Data...");
         private readonly ToolStripMenuItem restoreToolStripMenuItem =
@@ -164,6 +174,8 @@ namespace IStripperQuickPlayer
         private long playbackInputQuietUntilTicks;
         private bool formIsClosing;
         private bool restoringBackup;
+        private volatile bool panicActive;
+        private IntPtr panicMovieWindow;
         private ControlScrollListener? _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
@@ -234,6 +246,61 @@ namespace IStripperQuickPlayer
                 LockStateOverlay.ShowImageForProcess(vghd_procID, card.image);
         }
 
+        private async void actPanic()
+        {
+            if (panicActive)
+            {
+                panicResumeButton.PerformClick();
+                return;
+            }
+
+            panicActive = true;
+            playbackCompletedAnimationPath = "";
+            playbackRequestedAnimationPath = "";
+            playbackRequestedAnimationAt = DateTime.MinValue;
+            playbackNextClipRetryAt = DateTime.MinValue;
+            queuedAnimationPendingPath = "";
+            queuedAnimationPendingConfirmed = false;
+            queuedAnimationProtectedUntil = DateTime.MinValue;
+            panicResumeButton.Visible = true;
+            panicResumeButton.BringToFront();
+            panicMovieWindow =
+                LockStateOverlay.HideMovieWindowForProcess(vghd_procID);
+            Wallpaper.SuspendAndRestoreOriginalDesktop();
+            WindowState = FormWindowState.Minimized;
+
+            if (playbackBridgeLoaded && playbackMovieRegistered)
+            {
+                await RunPlaybackOperationAsync(_ =>
+                {
+                    if (RequirePlaybackResult("IStripperGetState") == 3)
+                        RequirePlaybackResult("IStripperPause");
+                    return Task.CompletedTask;
+                }, prepareFastDecode: false);
+            }
+        }
+
+        private async void panicResumeButton_Click(object? sender, EventArgs e)
+        {
+            if (!panicActive)
+                return;
+
+            if (playbackBridgeLoaded && playbackMovieRegistered)
+            {
+                await RunPlaybackOperationAsync(_ =>
+                {
+                    if (RequirePlaybackResult("IStripperGetState") == 4)
+                        RequirePlaybackResult("IStripperResume");
+                    return Task.CompletedTask;
+                }, prepareFastDecode: false);
+            }
+            LockStateOverlay.ShowMovieWindow(panicMovieWindow);
+            Wallpaper.ResumeQuickPlayerDesktop();
+            panicMovieWindow = IntPtr.Zero;
+            panicActive = false;
+            panicResumeButton.Visible = false;
+        }
+
         public Form1()
         {
 #if DEBUG
@@ -294,6 +361,8 @@ namespace IStripperQuickPlayer
                 "Control+Alt+I", out uint infoModifiers, out uint infoKey) &&
                 infoModifiers == (ModNoRepeat | ModControl | ModAlt) &&
                 infoKey == (uint)Keys.I);
+            System.Diagnostics.Debug.Assert(TryParseHotKey(
+                "Control+Alt+X", out _, out _));
             MyData historyCheck = new();
             int metadataChangeCount = 0;
             historyCheck.Changed += () => metadataChangeCount++;
@@ -360,6 +429,8 @@ namespace IStripperQuickPlayer
                 kittySearchCheck));
 #endif
             InitializeComponent();
+            panicResumeButton.Click += panicResumeButton_Click;
+            panelClip.Controls.Add(panicResumeButton);
             cardScaleSeekBar.Scroll += cardScaleSeekBar_Scroll;
             splitContainer1.Panel1.Controls.Add(cardScaleSeekBar);
             splitContainer1.Panel1.Controls.Add(cardScaleLabel);
@@ -483,6 +554,10 @@ namespace IStripperQuickPlayer
                 splitContainer1.Panel1.BackColor;
             if (cardRenderer != null) cardRenderer.SetColours();
             SetPlayQueueColours();
+            panicResumeButton.FlatStyle = FlatStyle.Flat;
+            panicResumeButton.UseVisualStyleBackColor = false;
+            panicResumeButton.BackColor = Color.FromArgb(22, 145, 70);
+            panicResumeButton.ForeColor = Color.White;
         }
 
         private void cmdLoadModels_Click(object sender, EventArgs e)
@@ -1584,7 +1659,7 @@ namespace IStripperQuickPlayer
 
         private void PlaySelectedClip()
         {
-            if (listClips.SelectedItems.Count == 0)
+            if (panicActive || listClips.SelectedItems.Count == 0)
                 return;
             ClearQueuedCardSession();
             string r = listClips.SelectedItems[0].SubItems[1].Text;
@@ -1643,7 +1718,7 @@ namespace IStripperQuickPlayer
             culture.NumberFormat.NumberDecimalSeparator = ".";
             //await webModels.EnsureCoreWebView2Async();
             //devtoolsContext = await webModels.CoreWebView2.CreateDevToolsContextAsync();
-            Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
+            Wallpaper.CaptureOriginalDesktopState();
             lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
             enablePlaybackControlToolStripMenuItem.Checked =
@@ -1694,6 +1769,10 @@ namespace IStripperQuickPlayer
             }
             catch { }
             trackbarWallpaperBrightness.Value = Properties.Settings.Default.WallpaperBrightness;
+            trackBarWallpaperTextSize.Value =
+                Properties.Settings.Default.WallpaperTextSize;
+            trackBarWallpaperLabelOpacity.Value =
+                Properties.Settings.Default.WallpaperLabelOpacity;
             trackBarBlur.Value = Properties.Settings.Default.BlurRadius;
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
@@ -2028,6 +2107,8 @@ namespace IStripperQuickPlayer
                 RegisterConfiguredHotKey(SmallPlayerHotkeyId, Properties.Settings.Default.SmallPlayerHotkeyString);
             if (Properties.Settings.Default.NowPlayingInfoHotkeyEnabled)
                 RegisterConfiguredHotKey(NowPlayingInfoHotkeyId, Properties.Settings.Default.NowPlayingInfoHotkeyString);
+            if (Properties.Settings.Default.PanicHotkeyEnabled)
+                RegisterConfiguredHotKey(PanicHotkeyId, Properties.Settings.Default.PanicHotkeyString);
         }
 
         private void RegisterConfiguredHotKey(int id, string shortcut)
@@ -2048,6 +2129,7 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, LargePlayerHotkeyId);
             UnregisterHotKey(Handle, SmallPlayerHotkeyId);
             UnregisterHotKey(Handle, NowPlayingInfoHotkeyId);
+            UnregisterHotKey(Handle, PanicHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -2118,6 +2200,9 @@ namespace IStripperQuickPlayer
                         return;
                     case NowPlayingInfoHotkeyId:
                         actNowPlayingInfo();
+                        return;
+                    case PanicHotkeyId:
+                        actPanic();
                         return;
                 }
             }
@@ -2732,7 +2817,8 @@ namespace IStripperQuickPlayer
 
         private async void playbackTimelineTimer_Tick(object? sender, EventArgs e)
         {
-            if (formIsClosing || playbackTimelinePolling || playbackBusy ||
+            if (formIsClosing || panicActive || playbackTimelinePolling ||
+                playbackBusy ||
                 !Properties.Settings.Default.EnablePlaybackControl ||
                 !playbackControlsAvailableForAccount || !playbackBridgeLoaded)
             {
@@ -2774,7 +2860,7 @@ namespace IStripperQuickPlayer
                 if (!string.Equals(animationPath, playbackTimelineAnimationPath,
                         StringComparison.Ordinal))
                 {
-                    ShowNowPlaying(animationPath);
+                    ShowNowPlaying(animationPath, doWallpaper: true);
                     ArmMovieCapture();
                     string previousAnimationPath = playbackTimelineAnimationPath;
                     bool previousAnimationReachedEnd = PlaybackReachedEnd(
@@ -3643,7 +3729,7 @@ namespace IStripperQuickPlayer
                 }
                 return;
             }
-            if (keyname != "CurrentAnim") return;
+            if (keyname != "CurrentAnim" || panicActive) return;
             System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
 
                 //check if this propsed card is in the filterd list
@@ -3941,7 +4027,7 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.AutoWallpaper && doWallpaper &&
                 nowPlaying != "")
                 BeginInvoke((Action)(() => _ = ChangeWallpaper(
-                    onlyWhenCardChanges: true)));
+                    NotFromCheck: false, onlyWhenCardChanges: true)));
         }
 
         private bool LegacyPlaybackStalledNearEnd(int elapsed, int total,
@@ -4140,6 +4226,18 @@ namespace IStripperQuickPlayer
         {
             formIsClosing = true;
             playbackTimelineTimer.Stop();
+            if (panicActive)
+            {
+                try
+                {
+                    if (playbackBridgeLoaded && playbackMovieRegistered &&
+                        RequirePlaybackResult("IStripperGetState") == 4)
+                        RequirePlaybackResult("IStripperResume");
+                }
+                catch { }
+                LockStateOverlay.ShowMovieWindow(panicMovieWindow);
+                panicActive = false;
+            }
             playbackTimelineTimer.Dispose();
             playbackLifetime.Cancel();
             UnregisterHotKeys();
@@ -4199,6 +4297,9 @@ namespace IStripperQuickPlayer
         private void GetNextClip(ModelCard? model = null,
             string? completedAnimation = null, bool useQueue = true)
         {
+            if (panicActive)
+                return;
+
             if (!useQueue || model != null)
                 ClearQueuedCardSession();
             if (useQueue && model == null && TryPlayNextQueuedAnimation())
@@ -4281,6 +4382,9 @@ namespace IStripperQuickPlayer
 
         private void GetNextCard()
         {
+            if (panicActive)
+                return;
+
             ClearQueuedCardSession(clearManualQueueEntry: false);
             if (TryPlayNextQueuedAnimation())
                 return;
@@ -4743,7 +4847,9 @@ namespace IStripperQuickPlayer
                     {
                         CardPhotos photos = new CardPhotos();
                         await photos.LoadCardPhotos(client, nowPlayingTagShort);
-                        if (res2 != null)
+                        if (res2 != null &&
+                            (NotFromCheck ||
+                             Properties.Settings.Default.AutoWallpaper))
                         {
                             await Wallpaper.ChangeWallpaper(monitorNumber,
                                 photos.getRandomWidescreenURL(), modelname,
@@ -4814,6 +4920,62 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.WallpaperDetails = showTextToolStripMenuItem.Checked;
             lastWallpaperShortTag = "";
             await ChangeWallpaper();
+        }
+
+        private void trackBarWallpaperTextSize_ValueChanged(
+            object? sender, EventArgs e)
+        {
+            Properties.Settings.Default.WallpaperTextSize =
+                trackBarWallpaperTextSize.Value;
+            if (Control.MouseButtons != MouseButtons.Left)
+            {
+                if (Properties.Settings.Default.WallpaperDetails)
+                    BeginInvoke((Action)Wallpaper.RedrawImage);
+                return;
+            }
+            trackBarWallpaperTextSize.MouseUp +=
+                trackBarWallpaperTextSize_MouseUp;
+            trackBarWallpaperTextSize.ValueChanged -=
+                trackBarWallpaperTextSize_ValueChanged;
+        }
+
+        private void trackBarWallpaperTextSize_MouseUp(
+            object? sender, EventArgs e)
+        {
+            trackBarWallpaperTextSize.MouseUp -=
+                trackBarWallpaperTextSize_MouseUp;
+            trackBarWallpaperTextSize.ValueChanged +=
+                trackBarWallpaperTextSize_ValueChanged;
+            if (Properties.Settings.Default.WallpaperDetails)
+                BeginInvoke((Action)Wallpaper.RedrawImage);
+        }
+
+        private void trackBarWallpaperLabelOpacity_ValueChanged(
+            object? sender, EventArgs e)
+        {
+            Properties.Settings.Default.WallpaperLabelOpacity =
+                trackBarWallpaperLabelOpacity.Value;
+            if (Control.MouseButtons != MouseButtons.Left)
+            {
+                if (Properties.Settings.Default.WallpaperDetails)
+                    BeginInvoke((Action)Wallpaper.RedrawImage);
+                return;
+            }
+            trackBarWallpaperLabelOpacity.MouseUp +=
+                trackBarWallpaperLabelOpacity_MouseUp;
+            trackBarWallpaperLabelOpacity.ValueChanged -=
+                trackBarWallpaperLabelOpacity_ValueChanged;
+        }
+
+        private void trackBarWallpaperLabelOpacity_MouseUp(
+            object? sender, EventArgs e)
+        {
+            trackBarWallpaperLabelOpacity.MouseUp -=
+                trackBarWallpaperLabelOpacity_MouseUp;
+            trackBarWallpaperLabelOpacity.ValueChanged +=
+                trackBarWallpaperLabelOpacity_ValueChanged;
+            if (Properties.Settings.Default.WallpaperDetails)
+                BeginInvoke((Action)Wallpaper.RedrawImage);
         }
 
         private void showKittyToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
@@ -4961,6 +5123,8 @@ namespace IStripperQuickPlayer
             cmdShowModel.Left = listClips.Right - cmdShowModel.Width;
             cmdNextClip.Left = cmdShowModel.Left - cmdNextClip.Width - 5;
             cmdWallpaper.Left = cmdNextClip.Left - cmdWallpaper.Width - 5;
+            panicResumeButton.SetBounds(cmdNextClip.Left, cmdNextClip.Top,
+                listClips.Right - cmdNextClip.Left, cmdNextClip.Height);
             cmdPhotos.Location = new Point(
                 listClips.Right - cmdPhotos.Width, listClips.Top);
             txtDescription.Width = panelModelDetails.ClientSize.Width -
