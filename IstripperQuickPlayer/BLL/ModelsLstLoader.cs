@@ -16,6 +16,11 @@ namespace IStripperQuickPlayer.BLL
 {
     internal class ModelsLstLoader
     {
+        internal readonly record struct ZeroClipCard(
+            string Tag, string Section, int Index, long CardOffset,
+            long ClipCountOffset, bool InCollection, bool Downloaded,
+            bool Enabled, bool Hidden);
+
         internal int LibraryDeclaredCards { get; private set; }
         internal int MarketDeclaredCards { get; private set; }
         internal int LibraryParsedCards { get; private set; }
@@ -24,6 +29,7 @@ namespace IStripperQuickPlayer.BLL
         internal int MarketCardsWithClips { get; private set; }
         internal long BytesRead { get; private set; }
         internal long CatalogueLength { get; private set; }
+        internal List<ZeroClipCard> ZeroClipCards { get; } = [];
 
         //load the models.lst file
         internal Int16 LoadModels()
@@ -193,6 +199,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.modelAge = (int)period.Years;
                             }
                             //loop through clips
+                            long clipCountOffset = stream.Position;
                             int clipCount = getInt32(reader);
                             parseClipCount = clipCount;
                             for (int i = 0; i < clipCount; i++)
@@ -262,6 +269,13 @@ namespace IStripperQuickPlayer.BLL
                             }
                             else
                             {
+                                ZeroClipCards.Add(new(
+                                    card.name, "library", c, parseCardOffset,
+                                    clipCountOffset, card.inCollection == true,
+                                    card.cardDownloaded == true ||
+                                        card.cardDownloaded2 == true,
+                                    card.cardEnabled == true,
+                                    card.cardHidden == true));
                                 Debug.WriteLine(card.name);
                             }
                             LibraryParsedCards++;
@@ -407,6 +421,7 @@ namespace IStripperQuickPlayer.BLL
                                     card.modelAge = (int)period.Years;
                                 }
                                 //loop through clips
+                                long clipCountOffset = stream.Position;
                                 int clipCount = getInt32(reader);
                                 parseClipCount = clipCount;
                                 for (int i = 0; i < clipCount; i++)
@@ -477,6 +492,14 @@ namespace IStripperQuickPlayer.BLL
                                 }
                                 else
                                 {
+                                    ZeroClipCards.Add(new(
+                                        card.name, "market", c - readCards,
+                                        parseCardOffset, clipCountOffset,
+                                        card.inCollection == true,
+                                        card.cardDownloaded == true ||
+                                            card.cardDownloaded2 == true,
+                                        card.cardEnabled == true,
+                                        card.cardHidden == true));
                                     Debug.WriteLine(card.name);
                                 }
                                 MarketParsedCards++;

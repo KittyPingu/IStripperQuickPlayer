@@ -669,6 +669,8 @@ namespace IStripperQuickPlayer
                         $"length={lstLoader.CatalogueLength} | " +
                         $"remaining={Math.Max(0,
                             lstLoader.CatalogueLength - lstLoader.BytesRead)}");
+                    AppendZeroClipDiagnostics(
+                        diagnostics, lstLoader, rootFolders);
                 }
 
                 diagnostics.AppendLine(
@@ -707,7 +709,8 @@ namespace IStripperQuickPlayer
                 try
                 {
                     Directory.CreateDirectory(diagnosticsFolder);
-                    File.WriteAllText(diagnosticsPath, diagnostics.ToString());
+                    File.WriteAllText(diagnosticsPath,
+                        RedactUsernamesFromPaths(diagnostics.ToString()));
                 }
                 catch (Exception exception)
                 {
@@ -716,6 +719,167 @@ namespace IStripperQuickPlayer
                         exception.Message);
                 }
             }
+        }
+
+        private static string RedactUsernamesFromPaths(string text)
+        {
+            string profile = Environment.GetFolderPath(
+                Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrWhiteSpace(profile))
+            {
+                text = text.Replace(
+                    profile, "%USERPROFILE%",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            return System.Text.RegularExpressions.Regex.Replace(
+                text, @"(?i)\b[A-Z]:\\Users\\[^\\\r\n]+",
+                "%USERPROFILE%");
+        }
+
+        private static void AppendZeroClipDiagnostics(
+            StringBuilder diagnostics, ModelsLstLoader loader,
+            IReadOnlyDictionary<string, HashSet<string>> rootFolders)
+        {
+            var cards = loader.ZeroClipCards;
+            diagnostics.AppendLine(
+                $"Zero-clip catalogue records: {cards.Count}");
+            if (cards.Count == 0)
+                return;
+
+            diagnostics.AppendLine(
+                $"Zero-clip flags: inCollection={cards.Count(card =>
+                    card.InCollection)} | downloaded={cards.Count(card =>
+                    card.Downloaded)} | enabled={cards.Count(card =>
+                    card.Enabled)} | hidden={cards.Count(card =>
+                    card.Hidden)}");
+
+            int foldersFound = 0;
+            int cardsWithFiles = 0;
+            int foldersWithoutFiles = 0;
+            int cardsWithoutFolders = 0;
+            int fileReadErrors = 0;
+            int totalFiles = 0;
+            int matchingFiles = 0;
+            int markerFiles = 0;
+            Dictionary<string, int> cardsByRoot = rootFolders.Keys
+                .ToDictionary(root => root, _ => 0,
+                    StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, int> filesByRoot = rootFolders.Keys
+                .ToDictionary(root => root, _ => 0,
+                    StringComparer.OrdinalIgnoreCase);
+            List<string> fileSamples = [];
+            List<string> missingSamples = [];
+
+            foreach (var card in cards)
+            {
+                string physicalTag = card.Section == "market"
+                    ? card.Tag.Split('-')[0]
+                    : card.Tag;
+                bool folderFound = false;
+                bool markerFound = false;
+                int cardFiles = 0;
+                int cardMatchingFiles = 0;
+                List<string> locations = [];
+                List<string> examples = [];
+
+                foreach (var root in rootFolders)
+                {
+                    if (!root.Value.Contains(physicalTag))
+                        continue;
+
+                    folderFound = true;
+                    string folder = Path.Combine(root.Key, physicalTag);
+                    try
+                    {
+                        string[] files = Directory.GetFiles(
+                            folder, "*.vghd", SearchOption.TopDirectoryOnly);
+                        int matching = files.Count(file =>
+                            Path.GetFileName(file).StartsWith(
+                                physicalTag + "_",
+                                StringComparison.OrdinalIgnoreCase));
+                        bool marker = File.Exists(Path.Combine(
+                            folder, physicalTag + ".vhdshows"));
+                        cardFiles += files.Length;
+                        cardMatchingFiles += matching;
+                        markerFound |= marker;
+                        if (files.Length > 0)
+                        {
+                            cardsByRoot[root.Key]++;
+                            filesByRoot[root.Key] += files.Length;
+                            examples.AddRange(files.Take(2)
+                                .Select(Path.GetFileName)
+                                .OfType<string>());
+                        }
+                        locations.Add(
+                            $"{root.Key} files={files.Length} " +
+                            $"matching={matching} marker={marker}");
+                    }
+                    catch (Exception exception)
+                    {
+                        fileReadErrors++;
+                        locations.Add(
+                            $"{root.Key} error={exception.GetType().Name}: " +
+                            exception.Message);
+                    }
+                }
+
+                if (folderFound)
+                    foldersFound++;
+                else
+                    cardsWithoutFolders++;
+                if (cardFiles > 0)
+                    cardsWithFiles++;
+                else if (folderFound)
+                    foldersWithoutFiles++;
+                totalFiles += cardFiles;
+                matchingFiles += cardMatchingFiles;
+                if (markerFound)
+                    markerFiles++;
+
+                string sample =
+                    $"{card.Section}[{card.Index}] tag={card.Tag} " +
+                    $"cardOffset={card.CardOffset} " +
+                    $"clipCountOffset={card.ClipCountOffset} " +
+                    $"flags=collection:{card.InCollection}," +
+                    $"downloaded:{card.Downloaded},enabled:{card.Enabled}," +
+                    $"hidden:{card.Hidden} | " +
+                    (locations.Count == 0
+                        ? "no physical folder"
+                        : string.Join(" | ", locations)) +
+                    (examples.Count == 0
+                        ? ""
+                        : $" | examples={string.Join(",", examples)}");
+                if (cardFiles > 0 && fileSamples.Count < 25)
+                    fileSamples.Add(sample);
+                else if (cardFiles == 0 && missingSamples.Count < 10)
+                    missingSamples.Add(sample);
+            }
+
+            diagnostics.AppendLine(
+                $"Zero-clip physical check: folders found={foldersFound} | " +
+                $"cards with .vghd={cardsWithFiles} | " +
+                $"folders without .vghd={foldersWithoutFiles} | " +
+                $"no folder={cardsWithoutFolders} | read errors={fileReadErrors}");
+            diagnostics.AppendLine(
+                $"Zero-clip files: total .vghd={totalFiles} | " +
+                $"matching card tag={matchingFiles} | " +
+                $"cards with .vhdshows marker={markerFiles}");
+            foreach (string root in rootFolders.Keys)
+            {
+                diagnostics.AppendLine(
+                    $"Zero-clip files in {root}: cards={cardsByRoot[root]} | " +
+                    $"files={filesByRoot[root]}");
+            }
+            diagnostics.AppendLine(
+                "Zero-clip samples with physical files " +
+                $"(first {fileSamples.Count}):");
+            foreach (string sample in fileSamples)
+                diagnostics.AppendLine("  " + sample);
+            diagnostics.AppendLine(
+                "Zero-clip samples without physical files " +
+                $"(first {missingSamples.Count}):");
+            foreach (string sample in missingSamples)
+                diagnostics.AppendLine("  " + sample);
         }
 
         private void PersistModels()
