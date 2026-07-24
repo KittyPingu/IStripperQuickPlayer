@@ -475,6 +475,23 @@ namespace IStripperQuickPlayer
             StringBuilder diagnostics = new();
             diagnostics.AppendLine($"Reload started: {DateTimeOffset.Now:O}");
             diagnostics.AppendLine($"QuickPlayer version: {Application.ProductVersion}");
+            diagnostics.AppendLine($"OS: {RuntimeInformation.OSDescription}");
+            diagnostics.AppendLine(
+                $"Process: {(Environment.Is64BitProcess ? "64-bit" : "32-bit")} | " +
+                $".NET {Environment.Version} | culture={CultureInfo.CurrentCulture.Name}");
+            try
+            {
+                using Process? vghd = Process.GetProcessesByName("vghd")
+                    .FirstOrDefault();
+                diagnostics.AppendLine(vghd == null
+                    ? "iStripper: not running"
+                    : $"iStripper: {vghd.MainModule?.FileVersionInfo.FileVersion} | " +
+                        $"{vghd.MainModule?.FileName}");
+            }
+            catch (Exception exception)
+            {
+                diagnostics.AppendLine($"iStripper details error: {exception.Message}");
+            }
 
             using RegistryKey? systemKey = Registry.CurrentUser.OpenSubKey(
                 @"Software\Totem\vghd\System", false);
@@ -498,31 +515,42 @@ namespace IStripperQuickPlayer
                 diagnostics.AppendLine(
                     $"models.lst modified: {catalogue.LastWriteTimeUtc:O}");
             }
-            foreach (string root in new[] { modelsPath }.Concat(multiPaths)
+            string[] modelRoots = new[] { modelsPath }.Concat(multiPaths)
                 .Where(path => !string.IsNullOrWhiteSpace(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase))
+                .Select(path => Path.TrimEndingDirectorySeparator(path.Trim()))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            Dictionary<string, HashSet<string>> rootFolders =
+                new(StringComparer.OrdinalIgnoreCase);
+            foreach (string root in modelRoots)
             {
                 bool exists = Directory.Exists(root);
                 try
                 {
-                    int folders = exists
-                        ? Directory.EnumerateDirectories(root).Count()
-                        : 0;
+                    HashSet<string> folders = exists
+                        ? Directory.EnumerateDirectories(root)
+                            .Select(Path.GetFileName)
+                            .OfType<string>()
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                        : new(StringComparer.OrdinalIgnoreCase);
+                    rootFolders[root] = folders;
                     diagnostics.AppendLine(
-                        $"Model root: {root} | exists={exists} | folders={folders}");
+                        $"Model root: {root} | exists={exists} | folders={folders.Count}");
                 }
                 catch (Exception exception)
                 {
+                    rootFolders[root] = new(StringComparer.OrdinalIgnoreCase);
                     diagnostics.AppendLine(
                         $"Model root: {root} | exists={exists} | error={exception.Message}");
                 }
             }
 
+            ModelsLstLoader? lstLoader = null;
             try
             {
                 RefreshPlaybackControlVisibility();
                 ReloadStaticProperties();
-                ModelsLstLoader lstLoader = new ModelsLstLoader();
+                lstLoader = new ModelsLstLoader();
                 listModelsNew.Items.Clear();
                 Datastore.modelcards = [];
                 lstLoader.LoadModels();
@@ -537,12 +565,54 @@ namespace IStripperQuickPlayer
                     $"Parse offset: {exception.Data["ModelsLstPosition"] ?? "unknown"}");
                 diagnostics.AppendLine(
                     $"Catalogue length: {exception.Data["ModelsLstLength"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Parse section: {exception.Data["ModelsLstSection"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Card index: {exception.Data["ModelsLstCardIndex"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Card tag: {exception.Data["ModelsLstCard"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Card start offset: {exception.Data["ModelsLstCardOffset"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Clip index: {exception.Data["ModelsLstClipIndex"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Declared clip count: {exception.Data["ModelsLstClipCount"] ?? "unknown"}");
+                diagnostics.AppendLine(
+                    $"Raw capture start: {exception.Data["ModelsLstRawStart"] ?? "unavailable"}");
+                diagnostics.AppendLine(
+                    $"Raw capture length: {exception.Data["ModelsLstRawLength"] ?? "unavailable"}");
+                diagnostics.AppendLine(
+                    $"Raw includes card start: {exception.Data["ModelsLstRawIncludesCardStart"] ?? "unavailable"}");
+                diagnostics.AppendLine(
+                    $"Failure hex start: {exception.Data["ModelsLstHexStart"] ?? "unavailable"}");
+                diagnostics.AppendLine(
+                    $"Failure hex: {exception.Data["ModelsLstFailureHex"] ?? "unavailable"}");
+                if (exception.Data["ModelsLstRawCaptureError"] is object rawCaptureError)
+                {
+                    diagnostics.AppendLine(
+                        $"Raw capture error: {rawCaptureError}");
+                }
+                diagnostics.AppendLine(
+                    $"Failing record data (Base64): " +
+                    $"{exception.Data["ModelsLstRawBase64"] ?? "unavailable"}");
+                if (long.TryParse(
+                        exception.Data["ModelsLstPosition"]?.ToString(),
+                        out long failureOffset) &&
+                    long.TryParse(
+                        exception.Data["ModelsLstLength"]?.ToString(),
+                        out long failureLength) &&
+                    failureLength > 0)
+                {
+                    diagnostics.AppendLine(
+                        $"Parse progress: {100d * failureOffset / failureLength:F2}%");
+                }
                 diagnostics.AppendLine(exception.ToString());
                 throw;
             }
             finally
             {
-                int loadedCards = Datastore.modelcards?.Count ?? 0;
+                List<ModelCard> cards = Datastore.modelcards ?? [];
+                int loadedCards = cards.Count;
                 diagnostics.AppendLine(
                     $"Declared cards: {Datastore.numberOfCards}");
                 diagnostics.AppendLine(
@@ -551,6 +621,59 @@ namespace IStripperQuickPlayer
                     $"Entries without clips/not loaded: {Math.Max(0,
                         Datastore.numberOfCards - loadedCards)}");
                 diagnostics.AppendLine($"Parser version: {Datastore.versionnumber}");
+                if (lstLoader != null)
+                {
+                    diagnostics.AppendLine(
+                        $"Library: declared={lstLoader.LibraryDeclaredCards} | " +
+                        $"parsed={lstLoader.LibraryParsedCards} | " +
+                        $"with clips={lstLoader.LibraryCardsWithClips} | " +
+                        $"without clips={lstLoader.LibraryParsedCards -
+                            lstLoader.LibraryCardsWithClips}");
+                    diagnostics.AppendLine(
+                        $"Market: declared={lstLoader.MarketDeclaredCards} | " +
+                        $"parsed={lstLoader.MarketParsedCards} | " +
+                        $"with clips={lstLoader.MarketCardsWithClips} | " +
+                        $"without clips={lstLoader.MarketParsedCards -
+                            lstLoader.MarketCardsWithClips}");
+                    diagnostics.AppendLine(
+                        $"Catalogue bytes: read={lstLoader.BytesRead} | " +
+                        $"length={lstLoader.CatalogueLength} | " +
+                        $"remaining={Math.Max(0,
+                            lstLoader.CatalogueLength - lstLoader.BytesRead)}");
+                }
+
+                diagnostics.AppendLine(
+                    $"Clips: total={cards.Sum(card => card.clips?.Count ?? 0)} | " +
+                    $"enabled={cards.Sum(card =>
+                        card.clips?.Count(clip => clip.isEnabled == true) ?? 0)}");
+                diagnostics.AppendLine(
+                    $"Duplicate loaded card tags: {cards
+                        .GroupBy(card => card.name, StringComparer.OrdinalIgnoreCase)
+                        .Count(group => group.Count() > 1)}");
+                foreach (var collection in cards
+                    .GroupBy(card => card.collection)
+                    .OrderBy(group => group.Key))
+                {
+                    diagnostics.AppendLine(
+                        $"Collection {collection.Key}: {collection.Count()}");
+                }
+
+                HashSet<string> uniquePhysicalFolders =
+                    rootFolders.Values.SelectMany(folders => folders)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                diagnostics.AppendLine(
+                    $"Physical model folders: total across roots=" +
+                    $"{rootFolders.Values.Sum(folders => folders.Count)} | " +
+                    $"unique names={uniquePhysicalFolders.Count}");
+                foreach (var root in rootFolders)
+                {
+                    diagnostics.AppendLine(
+                        $"Loaded cards found in {root.Key}: " +
+                        cards.Count(card => root.Value.Contains(card.name)));
+                }
+                diagnostics.AppendLine(
+                    $"Loaded cards missing from all model roots: " +
+                    cards.Count(card => !uniquePhysicalFolders.Contains(card.name)));
                 diagnostics.AppendLine($"Reload finished: {DateTimeOffset.Now:O}");
                 try
                 {

@@ -16,10 +16,25 @@ namespace IStripperQuickPlayer.BLL
 {
     internal class ModelsLstLoader
     {
+        internal int LibraryDeclaredCards { get; private set; }
+        internal int MarketDeclaredCards { get; private set; }
+        internal int LibraryParsedCards { get; private set; }
+        internal int MarketParsedCards { get; private set; }
+        internal int LibraryCardsWithClips { get; private set; }
+        internal int MarketCardsWithClips { get; private set; }
+        internal long BytesRead { get; private set; }
+        internal long CatalogueLength { get; private set; }
+
         //load the models.lst file
         internal Int16 LoadModels()
         {
-            Int16 modelsLoaded = -1;            
+            Int16 modelsLoaded = -1;
+            string parseSection = "header";
+            int parseIndex = -1;
+            string parseCard = "";
+            long parseCardOffset = 0;
+            int parseClipIndex = -1;
+            int parseClipCount = -1;
             //ImageList largeimagelist = new ImageList();
             //largeimagelist.ImageSize = new Size(130,180);
             //largeimagelist.ColorDepth = ColorDepth.Depth32Bit;
@@ -35,19 +50,27 @@ namespace IStripperQuickPlayer.BLL
                 {
                     try
                     {
-                        using (var reader = new BinaryReader(stream, Encoding.UTF8, false))
+                        using (var reader = new BinaryReader(stream, Encoding.UTF8, true))
                         {
                             Datastore.versionnumber = getInt32(reader);
                             Datastore.numberOfCards = getInt32(reader);
+                            LibraryDeclaredCards = Datastore.numberOfCards;
 
                             char fc = '\u0092';
                             char nc = '\'';
 
                             for (int c = 0; c < Datastore.numberOfCards; c++)
                             {
+                            parseSection = "library";
+                            parseIndex = c;
+                            parseCard = "";
+                            parseCardOffset = stream.Position;
+                            parseClipIndex = -1;
+                            parseClipCount = -1;
                             ModelCard card = new ModelCard();
                             int cardTextLen = getInt32(reader);
                             card.name = getString(reader, cardTextLen).Replace(fc,nc);
+                            parseCard = card.name;
                             Debug.WriteLine(">" + card.name);
                             card.datePurchased = getDate(reader);
                             card.collection = getCollectionType(card.name);
@@ -171,8 +194,10 @@ namespace IStripperQuickPlayer.BLL
                             }
                             //loop through clips
                             int clipCount = getInt32(reader);
+                            parseClipCount = clipCount;
                             for (int i = 0; i < clipCount; i++)
                             {
+                                parseClipIndex = i;
                                 ModelClip clip = new ModelClip();
                                 int s = getInt32(reader);
                                 clip.clipNumber = i;
@@ -227,6 +252,7 @@ namespace IStripperQuickPlayer.BLL
                             }
                             if (card.clips != null && card.clips.Count > 0) 
                             {
+                                LibraryCardsWithClips++;
                                 if (Datastore.modelcards != null)
                                 { 
                                     Datastore.modelcards.Add(card);                            
@@ -238,18 +264,27 @@ namespace IStripperQuickPlayer.BLL
                             {
                                 Debug.WriteLine(card.name);
                             }
+                            LibraryParsedCards++;
                         }
 
                         int readCards = Datastore.numberOfCards;
                         int numberofmarketcards = getInt32(reader);
+                        MarketDeclaredCards = numberofmarketcards;
                         if (numberofmarketcards > 0)
                         {
                             Datastore.numberOfCards += numberofmarketcards;
                             for (int c = readCards; c < Datastore.numberOfCards; c++)
                             {
+                                parseSection = "market";
+                                parseIndex = c - readCards;
+                                parseCard = "";
+                                parseCardOffset = stream.Position;
+                                parseClipIndex = -1;
+                                parseClipCount = -1;
                                 ModelCard card = new ModelCard();
                                 int cardTextLen = getInt32(reader);
                                 card.name = getString(reader, cardTextLen).Replace(fc, nc);
+                                parseCard = card.name;
                                 Debug.WriteLine(">" + card.name);
                                 card.datePurchased = getDate(reader);
                                 card.collection = getCollectionType(card.name);
@@ -373,8 +408,10 @@ namespace IStripperQuickPlayer.BLL
                                 }
                                 //loop through clips
                                 int clipCount = getInt32(reader);
+                                parseClipCount = clipCount;
                                 for (int i = 0; i < clipCount; i++)
                                 {
+                                    parseClipIndex = i;
                                     ModelClip clip = new ModelClip();
                                     int s = getInt32(reader);
                                     clip.clipNumber = i;
@@ -429,6 +466,7 @@ namespace IStripperQuickPlayer.BLL
                                 }
                                 if (card.clips != null && card.clips.Count > 0)
                                 {
+                                    MarketCardsWithClips++;
                                     if (Datastore.modelcards != null)
                                     {
                                         card.name = card.name.Split("-")[0];
@@ -441,6 +479,7 @@ namespace IStripperQuickPlayer.BLL
                                 {
                                     Debug.WriteLine(card.name);
                                 }
+                                MarketParsedCards++;
                             }
                             }
                         }
@@ -449,12 +488,80 @@ namespace IStripperQuickPlayer.BLL
                     {
                         exception.Data["ModelsLstPosition"] = stream.Position;
                         exception.Data["ModelsLstLength"] = stream.Length;
+                        exception.Data["ModelsLstSection"] = parseSection;
+                        exception.Data["ModelsLstCardIndex"] = parseIndex;
+                        exception.Data["ModelsLstCard"] = parseCard;
+                        exception.Data["ModelsLstCardOffset"] = parseCardOffset;
+                        exception.Data["ModelsLstClipIndex"] = parseClipIndex;
+                        exception.Data["ModelsLstClipCount"] = parseClipCount;
+                        CaptureFailureBytes(
+                            exception, stream, parseCardOffset);
                         throw;
+                    }
+                    finally
+                    {
+                        BytesRead = stream.Position;
+                        CatalogueLength = stream.Length;
                     }
                 }
             }
             
             return modelsLoaded;
+        }
+
+        private static void CaptureFailureBytes(
+            Exception exception, Stream stream, long cardOffset)
+        {
+            if (!stream.CanRead || !stream.CanSeek)
+                return;
+
+            long failureOffset = stream.Position;
+            try
+            {
+                const int MaxRecordBytes = 512 * 1024;
+                long recordStart = Math.Clamp(cardOffset, 0, failureOffset);
+                long recordEnd = Math.Min(stream.Length, failureOffset + 4096);
+                long captureStart = Math.Max(
+                    recordStart, recordEnd - MaxRecordBytes);
+                int captureLength = checked((int)(recordEnd - captureStart));
+                byte[] record = new byte[captureLength];
+                stream.Position = captureStart;
+                stream.ReadExactly(record);
+                exception.Data["ModelsLstRawStart"] = captureStart;
+                exception.Data["ModelsLstRawLength"] = captureLength;
+                exception.Data["ModelsLstRawIncludesCardStart"] =
+                    captureStart == recordStart;
+                exception.Data["ModelsLstRawBase64"] =
+                    Convert.ToBase64String(record);
+
+                // ponytail: 512 bytes is enough to inspect the failing field;
+                // request models.lst if corruption began outside this window.
+                long hexStart = Math.Max(0, failureOffset - 256);
+                int hexLength = checked((int)Math.Min(
+                    stream.Length - hexStart, 512));
+                byte[] context = new byte[hexLength];
+                stream.Position = hexStart;
+                stream.ReadExactly(context);
+                exception.Data["ModelsLstHexStart"] = hexStart;
+                exception.Data["ModelsLstFailureHex"] =
+                    Convert.ToHexString(context);
+            }
+            catch (Exception captureException)
+            {
+                exception.Data["ModelsLstRawCaptureError"] =
+                    captureException.Message;
+            }
+            finally
+            {
+                try
+                {
+                    stream.Position = failureOffset;
+                }
+                catch
+                {
+                    // Preserve the original parse failure.
+                }
+            }
         }
 
         private string GetModelsString(string? card_modelId)
