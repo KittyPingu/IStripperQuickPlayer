@@ -68,8 +68,6 @@
             hotkeysToolStripMenuItem = new ToolStripMenuItem();
             enforceCardFilterToolStripMenuItem = new ToolStripMenuItem();
             randomPlayOrderToolStripMenuItem = new ToolStripMenuItem();
-            cardScaleToolStripMenuItem = new ToolStripMenuItem();
-            trackBarCardScale = new TrackBarMenuItem();
             zoomOnHoverToolStripMenuItem = new ToolStripMenuItem();
             trackBarZoomOnHover = new TrackBarMenuItem();
             menuShowRatingsStars = new ToolStripMenuItem();
@@ -432,7 +430,7 @@
             // 
             // settingsToolStripMenuItem
             // 
-            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, cardScaleToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, enablePlaybackControlToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
+            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, enablePlaybackControlToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
             settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
             settingsToolStripMenuItem.Size = new Size(92, 29);
             settingsToolStripMenuItem.Text = "Settings";
@@ -463,35 +461,6 @@
             randomPlayOrderToolStripMenuItem.Size = new Size(342, 34);
             randomPlayOrderToolStripMenuItem.Text = "Random Play Order";
             randomPlayOrderToolStripMenuItem.Click += randomPlayOrderToolStripMenuItem_Click;
-            // 
-            // cardScaleToolStripMenuItem
-            // 
-            cardScaleToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { trackBarCardScale });
-            cardScaleToolStripMenuItem.Name = "cardScaleToolStripMenuItem";
-            cardScaleToolStripMenuItem.Size = new Size(342, 34);
-            cardScaleToolStripMenuItem.Text = "Card Scale";
-            // 
-            // trackBarCardScale
-            // 
-            trackBarCardScale.BackColor = Color.Transparent;
-            trackBarCardScale.ClientSize = new Size(200, 48);
-            trackBarCardScale.Font = new Font("Microsoft Sans Serif", 6F, FontStyle.Regular, GraphicsUnit.Point);
-            trackBarCardScale.ForeColor = Color.White;
-            trackBarCardScale.Has2Values = false;
-            trackBarCardScale.LargeChange = new decimal(new int[] { 25, 0, 0, 131072 });
-            trackBarCardScale.Maximum = new decimal(new int[] { 2, 0, 0, 0 });
-            trackBarCardScale.Minimum = new decimal(new int[] { 5, 0, 0, 65536 });
-            trackBarCardScale.Name = "trackBarCardScale";
-            trackBarCardScale.ScaleDivisions = new decimal(new int[] { 10, 0, 0, 0 });
-            trackBarCardScale.Size = new Size(200, 48);
-            trackBarCardScale.SmallChange = new decimal(new int[] { 5, 0, 0, 131072 });
-            trackBarCardScale.Text = "trackBarMenuItem1";
-            trackBarCardScale.TickColor = Color.White;
-            trackBarCardScale.TickStyle = TickStyle.TopLeft;
-            trackBarCardScale.TrackbarColor = Color.Transparent;
-            trackBarCardScale.Value = new decimal(new int[] { 1, 0, 0, 0 });
-            trackBarCardScale.Value2 = new decimal(new int[] { 1, 0, 0, 0 });
-            trackBarCardScale.ValueChanged += trackBarCardScale_ValueChanged;
             // 
             // zoomOnHoverToolStripMenuItem
             // 
@@ -1330,8 +1299,6 @@
         private TrackBarMenuItem trackbarWallpaperBrightness;
         private ToolStripMenuItem showTextToolStripMenuItem;
         private ToolStripMenuItem showKittyToolStripMenuItem;
-        private ToolStripMenuItem cardScaleToolStripMenuItem;
-        private TrackBarMenuItem trackBarCardScale;
         private Manina.Windows.Forms.ImageListView listModelsNew;
         private ToolStripMenuItem zoomOnHoverToolStripMenuItem;
         private TrackBarMenuItem trackBarZoomOnHover;

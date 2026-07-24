@@ -56,6 +56,21 @@ namespace IStripperQuickPlayer
             "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
 
         private float cardScale = 1.0f;
+        private readonly Controls.PlaybackSeekBar cardScaleSeekBar = new()
+        {
+            AccessibleName = "Card size",
+            Minimum = 10,
+            Maximum = 40,
+            SmallChange = 1,
+            LargeChange = 5,
+            Visible = false
+        };
+        private readonly Label cardScaleLabel = new()
+        {
+            AutoSize = true,
+            Text = "Card size: 100%",
+            Visible = false
+        };
         private bool isAutoSelecting = false;
         private string nowPlayingPath = "";
         private string nowPlayingTag = "";
@@ -347,6 +362,9 @@ namespace IStripperQuickPlayer
                 kittySearchCheck));
 #endif
             InitializeComponent();
+            cardScaleSeekBar.Scroll += cardScaleSeekBar_Scroll;
+            splitContainer1.Panel1.Controls.Add(cardScaleSeekBar);
+            splitContainer1.Panel1.Controls.Add(cardScaleLabel);
             nameToolStripMenuItem.Click += nameToolStripMenuItem_Click;
             nameToolStripMenuItem.Font = new Font(nameToolStripMenuItem.Font,
                 nameToolStripMenuItem.Font.Style | FontStyle.Underline);
@@ -462,6 +480,9 @@ namespace IStripperQuickPlayer
                     ? Color.LightSkyBlue : Color.Blue;
             outfitToolStripMenuItem.ForeColor =
                 nameToolStripMenuItem.ForeColor;
+            cardScaleLabel.ForeColor = label1.ForeColor;
+            cardScaleSeekBar.BackColor =
+                splitContainer1.Panel1.BackColor;
             if (cardRenderer != null) cardRenderer.SetColours();
             SetPlayQueueColours();
         }
@@ -1483,7 +1504,10 @@ namespace IStripperQuickPlayer
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
             includeDescriptionInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowDescInSearch;
             includeShowTitleInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowOutfitInSearch;
-            trackBarCardScale.Value = (decimal)(Properties.Settings.Default.CardScale);
+            cardScaleSeekBar.Value = Math.Clamp(
+                (int)Math.Round(Properties.Settings.Default.CardScale * 20),
+                cardScaleSeekBar.Minimum, cardScaleSeekBar.Maximum);
+            ApplyCardScale();
             trackBarZoomOnHover.Value = (decimal)(Properties.Settings.Default.ZoomOnHover);
             blurImageToolStripMenuItem.Checked = Properties.Settings.Default.BlurWallpaper;
             randomPlayOrderToolStripMenuItem.Checked = Properties.Settings.Default.Randomize;
@@ -4642,9 +4666,15 @@ namespace IStripperQuickPlayer
             this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
         }
 
-        private void trackBarCardScale_ValueChanged(object sender, EventArgs e)
+        private void cardScaleSeekBar_Scroll(object? sender, EventArgs e)
         {
-            cardScale = (float)(trackBarCardScale.Value);
+            ApplyCardScale();
+        }
+
+        private void ApplyCardScale()
+        {
+            cardScale = cardScaleSeekBar.Value / 20f;
+            cardScaleLabel.Text = $"Card size: {cardScale:P0}";
             if (listModelsNew.Items.Count > 0)
             {
                 if (cardRenderer != null)
@@ -4652,7 +4682,8 @@ namespace IStripperQuickPlayer
                 listModelsNew.ThumbnailSize = new Size((int)(cardScale * 162), (int)(242 * cardScale));
                 listModelsNew.Invalidate();
             }
-            Properties.Settings.Default.CardScale = (float)(trackBarCardScale.Value);
+            Properties.Settings.Default.CardScale = cardScale;
+            PositionCardScaleControls();
         }
 
         private void listModelsNew_ItemDoubleClick(object sender, ItemClickEventArgs e)
@@ -4762,6 +4793,7 @@ namespace IStripperQuickPlayer
 
             listModelsNew.Size = new Size(
                 splitContainer1.Panel1.Width - 24, modelListHeight);
+            PositionCardScaleControls();
             panelClip.Width = splitContainer1.Panel2.Width;
             listClips.SetBounds(listClips.Left, clipTop,
                 clipWidth, clipHeight);
@@ -4777,6 +4809,30 @@ namespace IStripperQuickPlayer
                 txtDescription.Left - 2;
             txtUserTags.Width = panelModelDetails.ClientSize.Width -
                 txtUserTags.Left - 2;
+        }
+
+        private void PositionCardScaleControls()
+        {
+            if (listModelsNew.Right <= 0)
+                return;
+
+            float scale = DeviceDpi / 96f;
+            int gap = (int)Math.Round(8 * scale);
+            int height = (int)Math.Round(40 * scale);
+            int width = (int)Math.Round(240 * scale);
+            cardScaleSeekBar.SetBounds(
+                listModelsNew.Right - width,
+                listModelsNew.Top - height - gap / 2,
+                width,
+                height);
+            cardScaleLabel.Location = new Point(
+                cardScaleSeekBar.Left -
+                    cardScaleLabel.PreferredWidth - gap,
+                cardScaleSeekBar.Top +
+                    (cardScaleSeekBar.Height -
+                        cardScaleLabel.PreferredHeight) / 2);
+            cardScaleSeekBar.Visible = true;
+            cardScaleLabel.Visible = true;
         }
 
         private void listModelsNew_MouseLeave(object sender, EventArgs e)

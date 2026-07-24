@@ -445,7 +445,6 @@ namespace IStripperQuickPlayer
             ]);
             librarySettingsToolStripMenuItem.DropDownItems.AddRange(
             [
-                cardScaleToolStripMenuItem,
                 zoomOnHoverToolStripMenuItem,
                 menuShowRatingsStars,
                 new ToolStripSeparator(),
