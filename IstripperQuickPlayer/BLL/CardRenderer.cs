@@ -19,7 +19,6 @@ namespace IStripperQuickPlayer.BLL
         internal float cardScale = 1.0f;
         internal string sortBy = "";
         internal CultureInfo culture = CultureInfo.CurrentCulture;
-        internal bool fontInstalled = true;
         internal string nowPlayingTag = "";
         internal NumberStyles style = NumberStyles.AllowDecimalPoint;
         internal bool updating = false;
@@ -44,14 +43,8 @@ namespace IStripperQuickPlayer.BLL
             Alignment = StringAlignment.Near,
             LineAlignment = StringAlignment.Center
         };
-        private readonly FontFamily fluentIcons =
-            new("Segoe Fluent Icons");
+        private readonly FontFamily? fluentIcons;
         private readonly FontFamily verdana = new("Verdana");
-        private Font? starFont;
-        private SizeF starTextSize;
-        private int starImageWidth = -1;
-        private float starScale = -1;
-        private float starDpi = -1;
 
         internal CardRenderer(MyData? myData, string sortBy, float cardScale, CultureInfo culture, bool fontInstalled, NumberStyles style)
         {
@@ -59,7 +52,8 @@ namespace IStripperQuickPlayer.BLL
             this.myData = myData;
             this.sortBy = sortBy;
             this.culture = culture;
-            this.fontInstalled = fontInstalled;
+            if (fontInstalled)
+                fluentIcons = new("Segoe Fluent Icons");
             this.style = style;
             this.Clip = false;
             SetColours();
@@ -94,29 +88,72 @@ namespace IStripperQuickPlayer.BLL
             return font;
         }
 
-        private void EnsureStarMetrics(Graphics graphics, int imageWidth)
+        private static PointF[] StarPoints(RectangleF bounds)
         {
-            if (starFont != null && starImageWidth == imageWidth &&
-                starScale == cardScale && starDpi == graphics.DpiY)
-                return;
-
-            int size = Math.Max(1, (int)(14 * cardScale));
-            Font font;
-            SizeF measured;
-            do
+            PointF[] points = new PointF[10];
+            float centerX = bounds.Left + bounds.Width / 2;
+            float centerY = bounds.Top + bounds.Height / 2;
+            float outerRadius = Math.Max(1,
+                Math.Min(bounds.Width, bounds.Height) / 2);
+            float innerRadius = outerRadius * 0.48f;
+            for (int i = 0; i < points.Length; i++)
             {
-                font = GetFont("Segoe Fluent Icons", size, FontStyle.Bold);
-                measured = graphics.MeasureString("\uE0B4\uE0B4\uE0B4\uE0B4\uE0B4",
-                    font);
-                size--;
+                double angle = -Math.PI / 2 + i * Math.PI / 5;
+                float radius = i % 2 == 0 ? outerRadius : innerRadius;
+                points[i] = new PointF(
+                    centerX + radius * (float)Math.Cos(angle),
+                    centerY + radius * (float)Math.Sin(angle));
             }
-            while (measured.Width > imageWidth && size > 0);
+            return points;
+        }
 
-            starFont = font;
-            starTextSize = measured;
-            starImageWidth = imageWidth;
-            starScale = cardScale;
-            starDpi = graphics.DpiY;
+        private void DrawRatingStars(Graphics graphics, Rectangle imageBounds,
+            int rating, int itemIndex)
+        {
+            float size = Math.Min(
+                graphics.DpiY * cardScale * 14 / 72,
+                imageBounds.Width / 5f);
+            float rowWidth = size * 5;
+            float left = imageBounds.Left +
+                (imageBounds.Width - rowWidth) / 2;
+            float top = imageBounds.Top + imageBounds.Height / 2 +
+                size / 2;
+            _starBoundsByIndex[itemIndex] = Rectangle.Round(
+                new RectangleF(left, top, rowWidth, size));
+
+            using SolidBrush blankBrush =
+                new(Color.FromArgb(180, Color.Black));
+            using Pen outline = new(Color.Black, 3);
+            int halfStars = Math.Clamp(rating, 0, 10);
+            for (int i = 0; i < 5; i++)
+            {
+                RectangleF starBounds = new(
+                    left + i * size + 1.5f, top + 1.5f,
+                    Math.Max(1, size - 3), Math.Max(1, size - 3));
+                using GraphicsPath star = new();
+                star.AddPolygon(StarPoints(starBounds));
+                graphics.FillPath(blankBrush, star);
+
+                int fill = halfStars - i * 2;
+                if (fill <= 0)
+                    continue;
+
+                graphics.DrawPath(outline, star);
+                if (fill == 1)
+                {
+                    GraphicsState state = graphics.Save();
+                    graphics.SetClip(new RectangleF(
+                        starBounds.Left - 2, starBounds.Top - 2,
+                        starBounds.Width / 2 + 2,
+                        starBounds.Height + 4));
+                    graphics.FillPath(Brushes.Yellow, star);
+                    graphics.Restore(state);
+                }
+                else
+                {
+                    graphics.FillPath(Brushes.Yellow, star);
+                }
+            }
         }
 
         public bool TryGetItemBounds(int itemIndex, out Rectangle bounds)
@@ -297,7 +334,8 @@ namespace IStripperQuickPlayer.BLL
                         centeredText);
                 }
 
-                if (card.exclusive != null && (bool)card.exclusive)
+                if (fluentIcons != null &&
+                    card.exclusive != null && (bool)card.exclusive)
                 {
                     g.InterpolationMode = InterpolationMode.High;
                     g.SmoothingMode = SmoothingMode.HighQuality;
@@ -330,7 +368,7 @@ namespace IStripperQuickPlayer.BLL
                     }
                 }
 
-                else if (card.hotnessLevel == "5")
+                else if (fluentIcons != null && card.hotnessLevel == "5")
                 {
                      g.InterpolationMode = InterpolationMode.High;
                     g.SmoothingMode = SmoothingMode.HighQuality;
@@ -359,7 +397,7 @@ namespace IStripperQuickPlayer.BLL
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
                     using GraphicsPath favouritePath = new();
-                    if (fontInstalled)
+                    if (fluentIcons != null)
                          favouritePath.AddString(
                             "\uE00B",            
                             fluentIcons,
@@ -379,57 +417,15 @@ namespace IStripperQuickPlayer.BLL
                     g.DrawPath(favouriteOutline, favouritePath);
                     g.FillPath(Brushes.LightGreen, favouritePath);
                 }
-                if (fontInstalled && Properties.Settings.Default.ShowRatingStars)
+                if (Properties.Settings.Default.ShowRatingStars)
                 {
                     g.InterpolationMode = InterpolationMode.High;
                     g.SmoothingMode = SmoothingMode.HighQuality;
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    const string ratingstrBlank =
-                        "\uE0B4\uE0B4\uE0B4\uE0B4\uE0B4";
-                    EnsureStarMetrics(g, imgrect2.Width);
-                    Font font = starFont!;
-                    SizeF bsize = starTextSize;
-                    using GraphicsPath p = new();
-                    p.AddString(
-                        ratingstrBlank,            
-                        font.FontFamily,
-                        (int) FontStyle.Bold,     
-                        g.DpiY * font.SizeInPoints / 72,
-                        new PointF(imgrect2.Left + (imgrect2.Width - bsize.Width)/2.0f, imgrect2.Top + (imgrect2.Height/2.0f)+(bsize.Height*1.0f)),            
-                        leftCenteredText);
-                    using SolidBrush blankStarBrush =
-                        new(Color.FromArgb(180, Color.Black));
-                    g.FillPath(blankStarBrush, p);
-
-                    Rectangle starbounds = new Rectangle((int)(imgrect2.Left + (imgrect2.Width - bsize.Width) / 2.0f), (int)(imgrect2.Top + (imgrect2.Height / 2.0f) + (bsize.Height * 0.5f)), (int)bsize.Width, (int)bsize.Height);
-                    _starBoundsByIndex[item.Index] = starbounds;
-
-                    //g.DrawRectangle(new Pen(Color.Red, 2), starbounds);
-                    if (myrating > 0)
-                    {
-                        g.InterpolationMode = InterpolationMode.High;
-                        g.SmoothingMode = SmoothingMode.HighQuality;
-                        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                        g.CompositingQuality = CompositingQuality.HighQuality;
-
-                        string ratingstr = "".PadLeft((int)myrating/2,'\uE0B4');
-                        if (myrating%2 > 0)
-                            ratingstr += '\uE7C6';
-                        using GraphicsPath ratingPath = new();
-                        ratingPath.AddString(
-                            ratingstr,            
-                            font.FontFamily,
-                            (int) FontStyle.Bold,     
-                            g.DpiY * font.SizeInPoints / 72,
-                            new PointF(imgrect2.Left + (imgrect2.Width - bsize.Width)/2.0f, imgrect2.Top + (imgrect2.Height/2.0f)+(bsize.Height*1.0f)),           
-                            leftCenteredText);
-                        using Pen ratingOutline = new(Color.Black, 3);
-                        g.DrawPath(ratingOutline, ratingPath);
-                        g.FillPath(Brushes.Yellow, ratingPath);
-
-                    }
+                    DrawRatingStars(
+                        g, imgrect2, (int)myrating, item.Index);
                 }
                 if (text != "" )
                 {                         

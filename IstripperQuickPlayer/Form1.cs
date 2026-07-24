@@ -897,7 +897,7 @@ namespace IStripperQuickPlayer
             if (System.IO.File.Exists(modelfilepath))
             {
                 List<ModelCard>? models = Deserialize(modelfilepath);
-                if (models is null)
+                if (models is null || models.Count == 0)
                     this.BeginInvoke((Action)(() => { ReloadModels(); }));
                 else
                 {
@@ -4924,7 +4924,9 @@ namespace IStripperQuickPlayer
 
         private void listModelsNew_ItemHover(object sender, ItemHoverEventArgs e)
         {
-            if (e.Item != null && cardRenderer.mZoomRatio > 0.0f) e.Item.Update();
+            if (e.Item != null && cardRenderer != null &&
+                cardRenderer.mZoomRatio > 0.0f)
+                e.Item.Update();
         }
 
         private void splitContainer1_SplitterMoved(object sender, SplitterEventArgs e)
@@ -5002,13 +5004,15 @@ namespace IStripperQuickPlayer
         private void listModelsNew_MouseLeave(object sender, EventArgs e)
         {
             if (menuCardList.Visible) return;
+            if (cardRenderer == null) return;
             cardRenderer.MouseIsOnList = false;
             listModelsNew.Refresh();
         }
 
         private void listModelsNew_MouseEnter(object sender, EventArgs e)
         {
-            cardRenderer.MouseIsOnList = true;
+            if (cardRenderer != null)
+                cardRenderer.MouseIsOnList = true;
         }
 
         private void nameToolStripMenuItem_Click(object? sender, EventArgs e)
