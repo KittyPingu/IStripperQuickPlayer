@@ -21,6 +21,8 @@ namespace IStripperQuickPlayer
         ColorSlider.ColorSlider? rangeRating;
         ColorSlider.ColorSlider? rangeAge;
         ColorSlider.ColorSlider? rangeBreastSize;
+        ColorSlider.ColorSlider? rangeWaist;
+        ColorSlider.ColorSlider? rangeHips;
         ColorSlider.ColorSlider? rangeMyRating;
         bool isLoaded = false;
         bool ok = false;
@@ -51,6 +53,8 @@ namespace IStripperQuickPlayer
             this.Controls.Add(rangeRating);
             this.Controls.Add(rangeMyRating);
             this.Controls.Add(rangeBreastSize);
+            this.Controls.Add(rangeWaist);
+            this.Controls.Add(rangeHips);
             this.Controls.Add(rangeAge);
             isLoaded = true;
             if (string.IsNullOrEmpty(_filterName) || _filterName == "Default") button1.Enabled = false;
@@ -89,32 +93,19 @@ namespace IStripperQuickPlayer
             rangeRating.ValueChanged += Range_ValueChanged;
 
 
-            rangeBreastSize = new ColorSlider.ColorSlider();
-            rangeBreastSize.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(226 * dx / 120));
-            rangeBreastSize.Height = Convert.ToInt32(70 * dx / 120);
-            rangeBreastSize.Width = Convert.ToInt32(650 * dx / 120);
-            rangeBreastSize.ForeColor = Color.Black;
-            rangeBreastSize.Minimum = 0;
-            var dmin = Datastore.modelcards.Min(x => x.bust);
-            if (dmin != null)
-                rangeBreastSize.Minimum = Math.Floor((decimal)dmin);
-            rangeBreastSize.Maximum = 99;
-            var dmax = Datastore.modelcards.Max(x => x.bust);
-            if (dmax != null)
-                rangeBreastSize.Maximum = Math.Min(125, Math.Ceiling((decimal)dmax));
-            rangeBreastSize.SmallChange = 1M;
-            rangeBreastSize.LargeChange = 2M;
-            rangeBreastSize.Value = Math.Min(Math.Max(filterSettings.minBust, rangeBreastSize.Minimum), rangeBreastSize.Maximum);
-            rangeBreastSize.Value2 = Math.Max(Math.Min(filterSettings.maxBust, rangeBreastSize.Maximum), rangeBreastSize.Minimum);
-            rangeBreastSize.ScaleDivisions = rangeBreastSize.Maximum - rangeBreastSize.Minimum;
-            rangeBreastSize.BackColor = Color.Transparent;
-            rangeBreastSize.TickColor = Color.Black;
-            rangeBreastSize.ElapsedInnerColor = Color.Green;
-            rangeBreastSize.ValueChanged += Range_ValueChanged;
+            rangeBreastSize = CreateMeasurementRange(
+                dx, 226, card => card.bust,
+                filterSettings.minBust, filterSettings.maxBust);
+            rangeWaist = CreateMeasurementRange(
+                dx, 302, card => card.waist,
+                filterSettings.minWaist, filterSettings.maxWaist);
+            rangeHips = CreateMeasurementRange(
+                dx, 378, card => card.hips,
+                filterSettings.minHips, filterSettings.maxHips);
 
 
             rangeAge = new ColorSlider.ColorSlider();
-            rangeAge.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(302 * dx / 120));
+            rangeAge.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(454 * dx / 120));
             rangeAge.Height = Convert.ToInt32(70 * dx / 120);
             rangeAge.Width = Convert.ToInt32(650 * dx / 120);
             rangeAge.ForeColor = Color.Black;
@@ -136,7 +127,7 @@ namespace IStripperQuickPlayer
 
 
             rangeMyRating = new ColorSlider.ColorSlider();
-            rangeMyRating.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(386 * dx / 120));
+            rangeMyRating.Location = new Point(Convert.ToInt32(110 * dx / 120), Convert.ToInt32(538 * dx / 120));
             rangeMyRating.Height = Convert.ToInt32(70 * dx / 120);
             rangeMyRating.Width = Convert.ToInt32(650 * dx / 120);
             rangeMyRating.ForeColor = Color.Black;
@@ -167,6 +158,37 @@ namespace IStripperQuickPlayer
             dateTimePickerMin.ValueChanged += Range_ValueChanged;
             dateTimePickerMax.ValueChanged += Range_ValueChanged;
             txtTags.Text = filterSettings.tags;
+        }
+
+        private ColorSlider.ColorSlider CreateMeasurementRange(
+            float scale, int y, Func<ModelCard, decimal?> selector,
+            decimal minimum, decimal maximum)
+        {
+            var bounds = Form1.MeasurementBounds(
+                Datastore.modelcards.Select(selector));
+            ColorSlider.ColorSlider range = new()
+            {
+                Location = new Point(
+                    Convert.ToInt32(110 * scale / 120),
+                    Convert.ToInt32(y * scale / 120)),
+                Height = Convert.ToInt32(70 * scale / 120),
+                Width = Convert.ToInt32(650 * scale / 120),
+                ForeColor = Color.Black,
+                Minimum = bounds.Minimum,
+                Maximum = bounds.Maximum,
+                SmallChange = 1M,
+                LargeChange = 2M,
+                BackColor = Color.Transparent,
+                TickColor = Color.Black,
+                ElapsedInnerColor = Color.Green
+            };
+            range.Value = Math.Clamp(
+                minimum, range.Minimum, range.Maximum);
+            range.Value2 = Math.Clamp(
+                maximum, range.Minimum, range.Maximum);
+            range.ScaleDivisions = range.Maximum - range.Minimum;
+            range.ValueChanged += Range_ValueChanged;
+            return range;
         }
 
         private void Range_ValueChanged(object? sender, EventArgs e)
@@ -211,6 +233,16 @@ namespace IStripperQuickPlayer
             {
                 filterSettings.minBust = rangeBreastSize.Value;
                 filterSettings.maxBust = rangeBreastSize.Value2;
+            }
+            if (rangeWaist != null)
+            {
+                filterSettings.minWaist = rangeWaist.Value;
+                filterSettings.maxWaist = rangeWaist.Value2;
+            }
+            if (rangeHips != null)
+            {
+                filterSettings.minHips = rangeHips.Value;
+                filterSettings.maxHips = rangeHips.Value2;
             }
             if (rangeRating != null)
             {
@@ -303,10 +335,14 @@ namespace IStripperQuickPlayer
             this.Controls.RemoveAt(this.Controls.Count - 1);
             this.Controls.RemoveAt(this.Controls.Count - 1);
             this.Controls.RemoveAt(this.Controls.Count - 1);
+            this.Controls.RemoveAt(this.Controls.Count - 1);
+            this.Controls.RemoveAt(this.Controls.Count - 1);
 
             this.Controls.Add(rangeRating);
             this.Controls.Add(rangeMyRating);
             this.Controls.Add(rangeBreastSize);
+            this.Controls.Add(rangeWaist);
+            this.Controls.Add(rangeHips);
             this.Controls.Add(rangeAge);
             isLoaded = true;
             ApplySettings();

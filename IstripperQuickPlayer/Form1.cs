@@ -312,6 +312,14 @@ namespace IStripperQuickPlayer
             {
                 File.Delete(backupCheckPath);
             }
+            System.Diagnostics.Debug.Assert(
+                MatchesMeasurement(32, 30, 35, 30) &&
+                !MatchesMeasurement(40, 30, 35, 30) &&
+                MatchesMeasurement(null, 30, 35, 30) &&
+                !MatchesMeasurement(null, 31, 35, 30));
+            System.Diagnostics.Debug.Assert(
+                MeasurementBounds([null, 0, 24.2M, 39.7M, 105]) ==
+                (24M, 40M));
             TextSearchDocument searchCheck = new(
                 "Anna Delos c1001 Pool Side duo red table",
                 "Anna Delos", "c1001", "Pool Side", "", "duo red table");
@@ -897,9 +905,17 @@ namespace IStripperQuickPlayer
             if ((filterSettings.minMyRating > 0 || filterSettings.maxMyRating < 10) && myData != null)
                 currentCards = currentCards.Where(c => myData.GetCardRating(c.name) >= filterSettings.minMyRating
                 && myData.GetCardRating(c.name) <= filterSettings.maxMyRating).ToList();
+            decimal bustMinimum = MeasurementBounds(
+                Datastore.modelcards.Select(card => card.bust)).Minimum;
+            decimal waistMinimum = MeasurementBounds(
+                Datastore.modelcards.Select(card => card.waist)).Minimum;
+            decimal hipsMinimum = MeasurementBounds(
+                Datastore.modelcards.Select(card => card.hips)).Minimum;
             currentCards = currentCards.Where(c => ((c.modelAge >= filterSettings.minAge && c.modelAge <= filterSettings.maxAge) || c.modelAge == 0 || c.modelAge > 99)
-                && (c.bust == null || (c.bust >= filterSettings.minBust && c.bust <= filterSettings.maxBust) || c.bust == 0 || c.bust > 99)
-                && (c.rating - 5M >= filterSettings.minRating && c.rating - 5M <= filterSettings.maxRating) || c.rating == 0
+                && MatchesMeasurement(c.bust, filterSettings.minBust, filterSettings.maxBust, bustMinimum)
+                && MatchesMeasurement(c.waist, filterSettings.minWaist, filterSettings.maxWaist, waistMinimum)
+                && MatchesMeasurement(c.hips, filterSettings.minHips, filterSettings.maxHips, hipsMinimum)
+                && ((c.rating - 5M >= filterSettings.minRating && c.rating - 5M <= filterSettings.maxRating) || c.rating == 0)
                 ).ToList();
 
             if (!String.IsNullOrEmpty(filterSettings.tags))
@@ -966,6 +982,25 @@ namespace IStripperQuickPlayer
             catch (Exception) { }
 
             return currentCards;
+        }
+
+        internal static bool MatchesMeasurement(
+            decimal? value, decimal minimum, decimal maximum,
+            decimal availableMinimum) =>
+            value is null or 0 || value > 99
+                ? minimum <= availableMinimum
+                : value >= minimum && value <= maximum;
+
+        internal static (decimal Minimum, decimal Maximum)
+            MeasurementBounds(IEnumerable<decimal?> values)
+        {
+            decimal[] known = values
+                .Where(value => value is > 0 and <= 99)
+                .Select(value => value!.Value)
+                .ToArray();
+            return known.Length == 0
+                ? (0, 99)
+                : (Math.Floor(known.Min()), Math.Ceiling(known.Max()));
         }
 
         internal void setFilter(string v)

@@ -55,12 +55,14 @@
             button1 = new Button();
             chkVirtuaGuy = new CheckBox();
             chkTradingCard = new CheckBox();
+            label5 = new Label();
+            label6 = new Label();
             ((System.ComponentModel.ISupportInitialize)bindingSource1).BeginInit();
             SuspendLayout();
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(672, 653);
+            cmdOK.Location = new Point(672, 805);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(106, 45);
             cmdOK.TabIndex = 0;
@@ -113,7 +115,7 @@
             // 
             label3.AutoSize = true;
             label3.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            label3.Location = new Point(12, 317);
+            label3.Location = new Point(12, 469);
             label3.Name = "label3";
             label3.Size = new Size(52, 30);
             label3.TabIndex = 5;
@@ -132,7 +134,7 @@
             // chkIStripperXXX
             // 
             chkIStripperXXX.AutoSize = true;
-            chkIStripperXXX.Location = new Point(602, 555);
+            chkIStripperXXX.Location = new Point(602, 707);
             chkIStripperXXX.Name = "chkIStripperXXX";
             chkIStripperXXX.Size = new Size(142, 29);
             chkIStripperXXX.TabIndex = 7;
@@ -143,7 +145,7 @@
             // chkIStripper
             // 
             chkIStripper.AutoSize = true;
-            chkIStripper.Location = new Point(477, 555);
+            chkIStripper.Location = new Point(477, 707);
             chkIStripper.Name = "chkIStripper";
             chkIStripper.Size = new Size(104, 29);
             chkIStripper.TabIndex = 8;
@@ -154,7 +156,7 @@
             // chkVGClassic
             // 
             chkVGClassic.AutoSize = true;
-            chkVGClassic.Location = new Point(336, 555);
+            chkVGClassic.Location = new Point(336, 707);
             chkVGClassic.Name = "chkVGClassic";
             chkVGClassic.Size = new Size(118, 29);
             chkVGClassic.TabIndex = 9;
@@ -165,7 +167,7 @@
             // chkDeskBabes
             // 
             chkDeskBabes.AutoSize = true;
-            chkDeskBabes.Location = new Point(195, 555);
+            chkDeskBabes.Location = new Point(195, 707);
             chkDeskBabes.Name = "chkDeskBabes";
             chkDeskBabes.Size = new Size(129, 29);
             chkDeskBabes.TabIndex = 10;
@@ -176,7 +178,7 @@
             // chkIStripperClassic
             // 
             chkIStripperClassic.AutoSize = true;
-            chkIStripperClassic.Location = new Point(21, 555);
+            chkIStripperClassic.Location = new Point(21, 707);
             chkIStripperClassic.Name = "chkIStripperClassic";
             chkIStripperClassic.Size = new Size(161, 29);
             chkIStripperClassic.TabIndex = 11;
@@ -187,7 +189,7 @@
             // chkNormal
             // 
             chkNormal.AutoSize = true;
-            chkNormal.Location = new Point(21, 596);
+            chkNormal.Location = new Point(21, 748);
             chkNormal.Name = "chkNormal";
             chkNormal.Size = new Size(97, 29);
             chkNormal.TabIndex = 12;
@@ -198,7 +200,7 @@
             // chkSpecial
             // 
             chkSpecial.AutoSize = true;
-            chkSpecial.Location = new Point(195, 596);
+            chkSpecial.Location = new Point(195, 748);
             chkSpecial.Name = "chkSpecial";
             chkSpecial.Size = new Size(93, 29);
             chkSpecial.TabIndex = 13;
@@ -210,7 +212,7 @@
             // 
             label4.AutoSize = true;
             label4.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            label4.Location = new Point(12, 402);
+            label4.Location = new Point(12, 554);
             label4.Name = "label4";
             label4.Size = new Size(105, 30);
             label4.TabIndex = 14;
@@ -218,7 +220,7 @@
             // 
             // cmdRevert
             // 
-            cmdRevert.Location = new Point(532, 653);
+            cmdRevert.Location = new Point(532, 805);
             cmdRevert.Name = "cmdRevert";
             cmdRevert.Size = new Size(106, 45);
             cmdRevert.TabIndex = 15;
@@ -228,7 +230,7 @@
             // 
             // cmdSaveDefault
             // 
-            cmdSaveDefault.Location = new Point(21, 653);
+            cmdSaveDefault.Location = new Point(21, 805);
             cmdSaveDefault.Name = "cmdSaveDefault";
             cmdSaveDefault.Size = new Size(106, 45);
             cmdSaveDefault.TabIndex = 16;
@@ -240,7 +242,7 @@
             // 
             lblShowDate.AutoSize = true;
             lblShowDate.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
-            lblShowDate.Location = new Point(12, 483);
+            lblShowDate.Location = new Point(12, 635);
             lblShowDate.Name = "lblShowDate";
             lblShowDate.Size = new Size(117, 30);
             lblShowDate.TabIndex = 17;
@@ -248,7 +250,7 @@
             // 
             // cmdSaveAs
             // 
-            cmdSaveAs.Location = new Point(390, 653);
+            cmdSaveAs.Location = new Point(390, 805);
             cmdSaveAs.Name = "cmdSaveAs";
             cmdSaveAs.Size = new Size(106, 45);
             cmdSaveAs.TabIndex = 18;
@@ -259,7 +261,7 @@
             // dateTimePickerMin
             // 
             dateTimePickerMin.Format = DateTimePickerFormat.Custom;
-            dateTimePickerMin.Location = new Point(120, 480);
+            dateTimePickerMin.Location = new Point(120, 632);
             dateTimePickerMin.MinDate = new DateTime(2000, 1, 1, 0, 0, 0, 0);
             dateTimePickerMin.Name = "dateTimePickerMin";
             dateTimePickerMin.Size = new Size(104, 31);
@@ -268,7 +270,7 @@
             // dateTimePickerMax
             // 
             dateTimePickerMax.Format = DateTimePickerFormat.Custom;
-            dateTimePickerMax.Location = new Point(270, 480);
+            dateTimePickerMax.Location = new Point(270, 632);
             dateTimePickerMax.MinDate = new DateTime(2000, 1, 1, 0, 0, 0, 0);
             dateTimePickerMax.Name = "dateTimePickerMax";
             dateTimePickerMax.Size = new Size(104, 31);
@@ -277,7 +279,7 @@
             // label1
             // 
             label1.AutoSize = true;
-            label1.Location = new Point(238, 483);
+            label1.Location = new Point(238, 635);
             label1.Name = "label1";
             label1.Size = new Size(29, 25);
             label1.TabIndex = 21;
@@ -285,7 +287,7 @@
             // 
             // button1
             // 
-            button1.Location = new Point(205, 661);
+            button1.Location = new Point(205, 813);
             button1.Name = "button1";
             button1.Size = new Size(106, 28);
             button1.TabIndex = 22;
@@ -296,7 +298,7 @@
             // chkVirtuaGuy
             // 
             chkVirtuaGuy.AutoSize = true;
-            chkVirtuaGuy.Location = new Point(336, 596);
+            chkVirtuaGuy.Location = new Point(336, 748);
             chkVirtuaGuy.Name = "chkVirtuaGuy";
             chkVirtuaGuy.Size = new Size(115, 29);
             chkVirtuaGuy.TabIndex = 23;
@@ -306,17 +308,39 @@
             // chkTradingCard
             // 
             chkTradingCard.AutoSize = true;
-            chkTradingCard.Location = new Point(477, 596);
+            chkTradingCard.Location = new Point(477, 748);
             chkTradingCard.Name = "chkTradingCard";
             chkTradingCard.Size = new Size(138, 29);
             chkTradingCard.TabIndex = 24;
             chkTradingCard.Text = "Trading Card";
             chkTradingCard.UseVisualStyleBackColor = true;
+            //
+            // label5
+            //
+            label5.AutoSize = true;
+            label5.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            label5.Location = new Point(12, 317);
+            label5.Name = "label5";
+            label5.Size = new Size(64, 30);
+            label5.TabIndex = 25;
+            label5.Text = "Waist";
+            //
+            // label6
+            //
+            label6.AutoSize = true;
+            label6.Font = new Font("Segoe UI", 10.8F, FontStyle.Regular, GraphicsUnit.Point);
+            label6.Location = new Point(12, 393);
+            label6.Name = "label6";
+            label6.Size = new Size(55, 30);
+            label6.TabIndex = 26;
+            label6.Text = "Hips";
             // 
             // Filter
             // 
             AutoScaleMode = AutoScaleMode.Inherit;
-            ClientSize = new Size(866, 830);
+            ClientSize = new Size(866, 982);
+            Controls.Add(label6);
+            Controls.Add(label5);
             Controls.Add(chkTradingCard);
             Controls.Add(chkVirtuaGuy);
             Controls.Add(button1);
@@ -386,5 +410,7 @@
         private Button button1;
         private CheckBox chkVirtuaGuy;
         private CheckBox chkTradingCard;
+        private Label label5;
+        private Label label6;
     }
 }

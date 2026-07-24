@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Runtime.Serialization;
 
 namespace IStripperQuickPlayer.DataModel
 {
@@ -10,6 +11,10 @@ namespace IStripperQuickPlayer.DataModel
         internal decimal maxAge=43;
         internal decimal minBust=0;
         internal decimal maxBust=99;
+        internal decimal minWaist=0;
+        internal decimal maxWaist=99;
+        internal decimal minHips=0;
+        internal decimal maxHips=99;
         internal decimal minRating=0;
         internal string tags="";
         internal decimal maxRating=5;
@@ -24,8 +29,15 @@ namespace IStripperQuickPlayer.DataModel
         internal bool TradingCard = true;
         internal decimal minMyRating=0;
         internal decimal maxMyRating=10;
-        internal DateTime minDate=new DateTime(2007,1,1);
-        internal DateTime maxDate=DateTime.Now;
+        internal DateTime minDate=new DateTime(2000,1,1);
+        internal DateTime maxDate=new DateTime(2099,1,1);
+
+        [OnDeserializing]
+        internal void SetNewFieldDefaults(StreamingContext context)
+        {
+            maxWaist = 99;
+            maxHips = 99;
+        }
 
         public object Clone()
         {
