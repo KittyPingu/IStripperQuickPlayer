@@ -271,27 +271,144 @@ public sealed partial class CardGrid : UserControl
         y = Math.Max(0, Math.Min(y, Math.Max(0, ScrollHost.ViewportHeight - height)));
     }
 
+    private static System.Drawing.PointF[] StarPoints(
+        System.Drawing.RectangleF bounds)
+    {
+        System.Drawing.PointF[] points = new System.Drawing.PointF[10];
+        float centerX = bounds.Left + bounds.Width / 2;
+        float centerY = bounds.Top + bounds.Height / 2;
+        float outerRadius = Math.Max(1,
+            Math.Min(bounds.Width, bounds.Height) / 2);
+        float innerRadius = outerRadius * 0.48f;
+        for (int i = 0; i < points.Length; i++)
+        {
+            double angle = -Math.PI / 2 + i * Math.PI / 5;
+            float radius = i % 2 == 0 ? outerRadius : innerRadius;
+            points[i] = new(
+                centerX + radius * (float)Math.Cos(angle),
+                centerY + radius * (float)Math.Sin(angle));
+        }
+        return points;
+    }
+
+    private static GraphicsPath CreateHeartPath(
+        System.Drawing.RectangleF bounds)
+    {
+        GraphicsPath heart = new();
+        System.Drawing.PointF Point(float x, float y) => new(
+            bounds.Left + bounds.Width * x,
+            bounds.Top + bounds.Height * y);
+        heart.StartFigure();
+        heart.AddBezier(
+            Point(0.50f, 0.95f), Point(0.44f, 0.86f),
+            Point(0.05f, 0.62f), Point(0.05f, 0.34f));
+        heart.AddBezier(
+            Point(0.05f, 0.34f), Point(0.05f, 0.10f),
+            Point(0.34f, -0.02f), Point(0.50f, 0.20f));
+        heart.AddBezier(
+            Point(0.50f, 0.20f), Point(0.66f, -0.02f),
+            Point(0.95f, 0.10f), Point(0.95f, 0.34f));
+        heart.AddBezier(
+            Point(0.95f, 0.34f), Point(0.95f, 0.62f),
+            Point(0.56f, 0.86f), Point(0.50f, 0.95f));
+        heart.CloseFigure();
+        return heart;
+    }
+
+    private static void DrawSun(
+        System.Drawing.Graphics graphics, System.Drawing.RectangleF bounds)
+    {
+        float size = Math.Min(bounds.Width, bounds.Height);
+        System.Drawing.PointF center = new(
+            bounds.Left + bounds.Width / 2,
+            bounds.Top + bounds.Height / 2);
+        using System.Drawing.Pen black = new(
+            System.Drawing.Color.Black, Math.Max(1, size * 0.13f))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+        using System.Drawing.Pen yellow = new(
+            System.Drawing.Color.Yellow, Math.Max(1, size * 0.06f))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+        for (int i = 0; i < 8; i++)
+        {
+            double angle = i * Math.PI / 4;
+            System.Drawing.PointF start = new(
+                center.X + size * 0.34f * (float)Math.Cos(angle),
+                center.Y + size * 0.34f * (float)Math.Sin(angle));
+            System.Drawing.PointF end = new(
+                center.X + size * 0.47f * (float)Math.Cos(angle),
+                center.Y + size * 0.47f * (float)Math.Sin(angle));
+            graphics.DrawLine(black, start, end);
+            graphics.DrawLine(yellow, start, end);
+        }
+        System.Drawing.RectangleF sun = new(
+            center.X - size * 0.22f, center.Y - size * 0.22f,
+            size * 0.44f, size * 0.44f);
+        graphics.DrawEllipse(black, sun);
+        graphics.DrawEllipse(yellow, sun);
+    }
+
+    private static void DrawCrown(
+        System.Drawing.Graphics graphics, System.Drawing.RectangleF bounds)
+    {
+        float size = Math.Min(bounds.Width, bounds.Height);
+        System.Drawing.PointF Point(float x, float y) => new(
+            bounds.Left + size * x,
+            bounds.Top + size * y);
+        using GraphicsPath crown = new();
+        crown.AddPolygon(
+        [
+            Point(0.12f, 0.28f),
+            Point(0.34f, 0.50f),
+            Point(0.50f, 0.16f),
+            Point(0.66f, 0.50f),
+            Point(0.88f, 0.28f),
+            Point(0.82f, 0.78f),
+            Point(0.18f, 0.78f)
+        ]);
+        crown.CloseFigure();
+        using System.Drawing.Pen outline = new(
+            System.Drawing.Color.Black, Math.Max(1, size * 0.06f))
+        {
+            LineJoin = LineJoin.Round
+        };
+        graphics.FillPath(System.Drawing.Brushes.Yellow, crown);
+        graphics.DrawPath(outline, crown);
+    }
+
     private void DrawOverlays(System.Drawing.Graphics graphics, CardTileViewModel tile, System.Drawing.RectangleF cardRect, System.Drawing.RectangleF imageRect, double scale)
     {
-        float iconSize = (float)(14 * CardScale * scale);
-        using System.Drawing.Font iconFont = new("Segoe Fluent Icons", iconSize, System.Drawing.FontStyle.Bold);
-        using System.Drawing.Brush yellow = new System.Drawing.SolidBrush(System.Drawing.Color.Yellow);
-        using System.Drawing.Brush green = new System.Drawing.SolidBrush(System.Drawing.Color.LightGreen);
-        float x = imageRect.X + 4;
+        float iconSize = (float)(10 * CardScale * scale);
+        float iconTop = imageRect.Y + 4;
         if (tile.IsExclusive)
         {
-            graphics.DrawString("\uEC19", iconFont, yellow, x, imageRect.Y + 4);
-            x += iconSize + 3;
+            DrawCrown(graphics, new(
+                imageRect.X + 4, iconTop, iconSize, iconSize));
         }
 
         if (tile.IsHotnessMax)
         {
-            graphics.DrawString("\uEC8A", iconFont, yellow, x, imageRect.Y + 4);
+            DrawSun(graphics, new(
+                imageRect.X + 4,
+                iconTop + (tile.IsExclusive ? iconSize * 1.12f : 0),
+                iconSize, iconSize));
         }
 
         if (tile.IsFavourite)
         {
-            graphics.DrawString("\uE00B", iconFont, green, imageRect.Right - iconSize - 5, imageRect.Y + 4);
+            float heartSize = (float)(14 * CardScale * scale);
+            using GraphicsPath heart = CreateHeartPath(new(
+                imageRect.Right - heartSize - 5, imageRect.Y + 4,
+                heartSize, heartSize));
+            using System.Drawing.Pen outline =
+                new(System.Drawing.Color.Black, 3);
+            graphics.DrawPath(outline, heart);
+            graphics.FillPath(System.Drawing.Brushes.LightGreen, heart);
         }
 
         if (tile.IsNowPlaying)
@@ -319,20 +436,44 @@ public sealed partial class CardGrid : UserControl
 
     private void DrawStars(System.Drawing.Graphics graphics, decimal rating, System.Drawing.RectangleF imageRect, double scale)
     {
-        float starSize = Math.Max(10, (float)(14 * CardScale * scale));
-        string emptyStars = "\uE0B4\uE0B4\uE0B4\uE0B4\uE0B4";
+        float starSize = Math.Min(
+            Math.Max(10, (float)(14 * CardScale * scale)),
+            imageRect.Width / 5);
         int halfSteps = (int)Math.Clamp(rating, 0, 10);
-        int wholeStars = halfSteps / 2;
-        bool hasHalfStar = halfSteps % 2 > 0;
-        string filledStars = new string('\uE0B4', wholeStars) + (hasHalfStar ? "\uE7C6" : string.Empty);
-        using System.Drawing.Font font = new("Segoe Fluent Icons", starSize, System.Drawing.FontStyle.Bold);
-        using System.Drawing.Brush emptyBrush = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(180, 0, 0, 0));
-        using System.Drawing.Brush fillBrush = new System.Drawing.SolidBrush(System.Drawing.Color.Yellow);
-        System.Drawing.SizeF size = graphics.MeasureString(emptyStars, font);
-        float x = imageRect.X + ((imageRect.Width - size.Width) / 2);
-        float y = imageRect.Y + ((imageRect.Height - size.Height) / 2);
-        graphics.DrawString(emptyStars, font, emptyBrush, x, y);
-        graphics.DrawString(filledStars, font, fillBrush, x, y);
+        float rowWidth = starSize * 5;
+        float x = imageRect.X + (imageRect.Width - rowWidth) / 2;
+        float y = imageRect.Y + (imageRect.Height - starSize) / 2;
+        using System.Drawing.Brush emptyBrush =
+            new System.Drawing.SolidBrush(
+                System.Drawing.Color.FromArgb(180, 0, 0, 0));
+        using System.Drawing.Pen outline =
+            new(System.Drawing.Color.Black, 3);
+        for (int i = 0; i < 5; i++)
+        {
+            System.Drawing.RectangleF bounds = new(
+                x + i * starSize + 1.5f, y + 1.5f,
+                Math.Max(1, starSize - 3), Math.Max(1, starSize - 3));
+            using GraphicsPath star = new();
+            star.AddPolygon(StarPoints(bounds));
+            graphics.FillPath(emptyBrush, star);
+            int fill = halfSteps - i * 2;
+            if (fill <= 0)
+                continue;
+            graphics.DrawPath(outline, star);
+            if (fill == 1)
+            {
+                GraphicsState state = graphics.Save();
+                graphics.SetClip(new System.Drawing.RectangleF(
+                    bounds.Left - 2, bounds.Top - 2,
+                    bounds.Width / 2 + 2, bounds.Height + 4));
+                graphics.FillPath(System.Drawing.Brushes.Yellow, star);
+                graphics.Restore(state);
+            }
+            else
+            {
+                graphics.FillPath(System.Drawing.Brushes.Yellow, star);
+            }
+        }
     }
 
     private void DrawLabels(System.Drawing.Graphics graphics, CardTileViewModel tile, System.Drawing.RectangleF labelRect, double scale)

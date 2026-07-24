@@ -36,14 +36,14 @@ This document captures the current `ImageListView`/`CardRenderer` behavior that 
   - Also stays zoomed while the card context menu is open.
 - Favorite overlay:
   - Drawn near top-right of image.
-  - Uses Segoe Fluent Icons glyph `\uE00B` when available.
-  - Falls back to a bold `+` when the font is not available.
+  - Uses QuickPlayer's custom light-green heart.
 - Exclusive overlay:
-  - Drawn near top-left using Segoe Fluent Icons glyph `\uEC19`.
+  - Drawn near top-left using QuickPlayer's custom yellow crown.
 - Hotness overlay:
-  - Drawn near top-left or next to exclusive using Segoe Fluent Icons glyph `\uEC8A` when `hotnessLevel == "5"`.
+  - Uses QuickPlayer's custom sun when `hotnessLevel == "5"`.
+  - Stacks below the exclusive marker when both are present.
 - User rating stars:
-  - Drawn only when `ShowRatingStars` is enabled and the Segoe Fluent Icons font is available.
+  - Drawn only when `ShowRatingStars` is enabled.
   - Empty stars are black with alpha.
   - Filled rating is yellow with black outline.
   - Supports half-star increments from 0 to 10 internal rating units.

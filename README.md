@@ -236,10 +236,10 @@ running, and allow its decoders time to synchronize.
 Leave the alpha checkpoint cache enabled. QuickPlayer builds checkpoints while
 modern clips play and reuses them on later seeks.
 
-**Rating stars are missing on older Windows versions**
+**Card overlay icons**
 
-Install Microsoft's
-[Segoe Fluent Icons font](https://learn.microsoft.com/windows/apps/design/style/segoe-fluent-icons-font).
+Rating stars, favourites, hotness, and special-card markers are drawn by
+QuickPlayer and do not require an icon font.
 
 ## Building from source
 
