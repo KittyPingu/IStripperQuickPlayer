@@ -25,11 +25,31 @@ namespace IStripperQuickPlayer
                     Environment.ExitCode = 1;
                     return;
                 }
+                if (Form1.RestoreRequiresLayout(
+                        new System.Drawing.Size(100, 100),
+                        new System.Drawing.Size(100, 100),
+                        96, 96, "DISPLAY1", "DISPLAY1") ||
+                    !Form1.RestoreRequiresLayout(
+                        new System.Drawing.Size(100, 100),
+                        new System.Drawing.Size(101, 100),
+                        96, 96, "DISPLAY1", "DISPLAY1"))
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
                 ApplicationConfiguration.Initialize();
                 using Form1 mainWindow = new();
                 using ImageView imageView = new();
                 using System.Drawing.Bitmap image = new(1, 1);
                 imageView.LoadImage(image);
+                using Manina.Windows.Forms.ImageListView cardList = new();
+                cardList.Size = new System.Drawing.Size(320, 240);
+                using System.Drawing.Bitmap cardListImage =
+                    new(cardList.Width, cardList.Height);
+                cardList.DrawToBitmap(cardListImage,
+                    cardList.ClientRectangle);
+                cardList.DrawToBitmap(cardListImage,
+                    cardList.ClientRectangle);
                 return;
             }
             if (Environment.OSVersion.Version.Major >= 6)

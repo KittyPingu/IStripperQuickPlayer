@@ -179,6 +179,10 @@ namespace IStripperQuickPlayer
         private ControlScrollListener? _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
+        private Size lastAdjustedClientSize;
+        private bool layoutSuspendedForMinimize;
+        private int dpiBeforeMinimize;
+        private string screenBeforeMinimize = "";
         volatile bool playerlocked;
         //private WebView2DevToolsContext devtoolsContext = null;
 
@@ -429,6 +433,8 @@ namespace IStripperQuickPlayer
                 kittySearchCheck));
 #endif
             InitializeComponent();
+            DoubleBuffered = true;
+            listClips.SetDoubleBuffered();
             panicResumeButton.Click += panicResumeButton_Click;
             panelClip.Controls.Add(panicResumeButton);
             cardScaleSeekBar.Scroll += cardScaleSeekBar_Scroll;
@@ -1692,6 +1698,7 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.Save();
             spaceBelowClipList = this.Height - listClips.Bottom;
             spaceRightOfListModel = this.Width - listModelsNew.Right;
+            lastAdjustedClientSize = ClientSize;
             if (Properties.Settings.Default.Maximised)
             {
                 Location = Properties.Settings.Default.Location;
@@ -4799,9 +4806,54 @@ namespace IStripperQuickPlayer
                     notifyIcon1.Visible = true;
                 }
             }
-            else
+            else if (!layoutSuspendedForMinimize &&
+                spaceRightOfListModel != 0 &&
+                ClientSize != lastAdjustedClientSize)
+            {
                 AdjustControls();
+                lastAdjustedClientSize = ClientSize;
+            }
         }
+
+        protected override void OnResize(EventArgs e)
+        {
+            if (Visible && WindowState == FormWindowState.Minimized &&
+                !layoutSuspendedForMinimize)
+            {
+                layoutSuspendedForMinimize = true;
+                dpiBeforeMinimize = DeviceDpi;
+                screenBeforeMinimize = Screen.FromHandle(Handle).DeviceName;
+                SuspendLayout();
+            }
+
+            base.OnResize(e);
+
+            if (!layoutSuspendedForMinimize ||
+                WindowState == FormWindowState.Minimized)
+                return;
+
+            bool layoutRequired = RestoreRequiresLayout(
+                lastAdjustedClientSize, ClientSize,
+                dpiBeforeMinimize, DeviceDpi,
+                screenBeforeMinimize,
+                Screen.FromHandle(Handle).DeviceName);
+            layoutSuspendedForMinimize = false;
+            ResumeLayout(layoutRequired);
+            if (layoutRequired)
+            {
+                AdjustControls();
+                lastAdjustedClientSize = ClientSize;
+            }
+        }
+
+        internal static bool RestoreRequiresLayout(
+            Size previousSize, Size currentSize,
+            int previousDpi, int currentDpi,
+            string previousScreen, string currentScreen) =>
+            previousSize != currentSize ||
+            previousDpi != currentDpi ||
+            !string.Equals(previousScreen, currentScreen,
+                StringComparison.Ordinal);
 
         private async void cmdWallpaper_click(object sender, EventArgs e)
         {

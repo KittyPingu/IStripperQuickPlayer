@@ -717,9 +717,15 @@ namespace Manina.Windows.Forms
             /// Renders the control.
             /// </summary>
             /// <param name="graphics">The graphics to draw on.</param>
-            internal void Render(Graphics graphics)
+            internal void Render(Graphics graphics, bool redraw)
             {
                 if (disposed) return;
+
+                if (!redraw && bufferGraphics != null)
+                {
+                    bufferGraphics.Render(graphics);
+                    return;
+                }
 
                 if (bufferGraphics == null)
                 {

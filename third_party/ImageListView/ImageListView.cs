@@ -1637,6 +1637,7 @@ namespace Manina.Windows.Forms
         /// has passed since the last refresh.</param>
         internal void Refresh(bool force, bool lazy)
         {
+            rendererNeedsPaint = true;
             if (force)
                 base.Refresh();
             else if (lazy)
@@ -1661,7 +1662,7 @@ namespace Manina.Windows.Forms
         /// <summary>
         /// Redraws the owner control.
         /// </summary>
-        private new void Refresh()
+        public new void Refresh()
         {
             Refresh(false, false);
         }
@@ -1863,7 +1864,7 @@ namespace Manina.Windows.Forms
         protected override void OnPaint(PaintEventArgs e)
         {
             if (!disposed && mRenderer != null)
-                mRenderer.Render(e.Graphics);
+                mRenderer.Render(e.Graphics, rendererNeedsPaint);
             rendererNeedsPaint = false;
         }
         /// <summary>
