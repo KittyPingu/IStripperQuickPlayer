@@ -11,7 +11,6 @@ using Microsoft.WindowsAPICodePack.Taskbar;
 using Nektra.Deviare2;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
-using System.Drawing.Text;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -81,7 +80,6 @@ namespace IStripperQuickPlayer
         private int nowPlayingClipNumber;
         private string clipListTag = "";
         private MyData? myData = null;
-        private bool fontInstalled = false;
         public CardRenderer cardRenderer = null!;
         internal FilterSettings filterSettings = new FilterSettings();
         static readonly HttpClient client = new HttpClient();
@@ -1645,13 +1643,6 @@ namespace IStripperQuickPlayer
             culture.NumberFormat.NumberDecimalSeparator = ".";
             //await webModels.EnsureCoreWebView2Async();
             //devtoolsContext = await webModels.CoreWebView2.CreateDevToolsContextAsync();
-            //check if we Segoe Fluent Icons font - this comes with windows 11
-            var fontsCollection = new InstalledFontCollection();
-            foreach (var fontFamily in fontsCollection.Families)
-            {
-                if (fontFamily.Name == "Segoe Fluent Icons")
-                    fontInstalled = true;
-            }
             Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
             lockPlayerToolStripMenuItem.Checked = Properties.Settings.Default.LockPlayer;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
@@ -1717,7 +1708,8 @@ namespace IStripperQuickPlayer
             PopulateFilterList();
             if (cardRenderer == null)
             {
-                cardRenderer = new CardRenderer(myData, cmbSortBy.Text, cardScale, culture, fontInstalled, style);
+                cardRenderer = new CardRenderer(
+                    myData, cmbSortBy.Text, cardScale, culture, style);
                 cardRenderer.mZoomRatio = (float)Properties.Settings.Default.ZoomOnHover;
                 listModelsNew.SetRenderer(cardRenderer);
                 cardRenderer.SetColours();

@@ -43,17 +43,13 @@ namespace IStripperQuickPlayer.BLL
             Alignment = StringAlignment.Near,
             LineAlignment = StringAlignment.Center
         };
-        private readonly FontFamily? fluentIcons;
-        private readonly FontFamily verdana = new("Verdana");
-
-        internal CardRenderer(MyData? myData, string sortBy, float cardScale, CultureInfo culture, bool fontInstalled, NumberStyles style)
+        internal CardRenderer(MyData? myData, string sortBy, float cardScale,
+            CultureInfo culture, NumberStyles style)
         {
             this.cardScale = cardScale;
             this.myData = myData;
             this.sortBy = sortBy;
             this.culture = culture;
-            if (fontInstalled)
-                fluentIcons = new("Segoe Fluent Icons");
             this.style = style;
             this.Clip = false;
             SetColours();
@@ -105,6 +101,95 @@ namespace IStripperQuickPlayer.BLL
                     centerY + radius * (float)Math.Sin(angle));
             }
             return points;
+        }
+
+        private static GraphicsPath CreateHeartPath(RectangleF bounds)
+        {
+            GraphicsPath heart = new();
+            PointF Point(float x, float y) => new(
+                bounds.Left + bounds.Width * x,
+                bounds.Top + bounds.Height * y);
+            heart.StartFigure();
+            heart.AddBezier(
+                Point(0.50f, 0.95f), Point(0.44f, 0.86f),
+                Point(0.05f, 0.62f), Point(0.05f, 0.34f));
+            heart.AddBezier(
+                Point(0.05f, 0.34f), Point(0.05f, 0.10f),
+                Point(0.34f, -0.02f), Point(0.50f, 0.20f));
+            heart.AddBezier(
+                Point(0.50f, 0.20f), Point(0.66f, -0.02f),
+                Point(0.95f, 0.10f), Point(0.95f, 0.34f));
+            heart.AddBezier(
+                Point(0.95f, 0.34f), Point(0.95f, 0.62f),
+                Point(0.56f, 0.86f), Point(0.50f, 0.95f));
+            heart.CloseFigure();
+            return heart;
+        }
+
+        private static void DrawHotnessIcon(
+            Graphics graphics, RectangleF bounds)
+        {
+            float size = Math.Min(bounds.Width, bounds.Height);
+            PointF center = new(
+                bounds.Left + bounds.Width / 2,
+                bounds.Top + bounds.Height / 2);
+            using Pen black = new(Color.Black, Math.Max(1, size * 0.13f))
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round
+            };
+            using Pen yellow = new(Color.Yellow, Math.Max(1, size * 0.06f))
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round
+            };
+            for (int i = 0; i < 8; i++)
+            {
+                double angle = i * Math.PI / 4;
+                PointF start = new(
+                    center.X + size * 0.34f * (float)Math.Cos(angle),
+                    center.Y + size * 0.34f * (float)Math.Sin(angle));
+                PointF end = new(
+                    center.X + size * 0.47f * (float)Math.Cos(angle),
+                    center.Y + size * 0.47f * (float)Math.Sin(angle));
+                graphics.DrawLine(black, start, end);
+                graphics.DrawLine(yellow, start, end);
+            }
+            RectangleF sun = new(
+                center.X - size * 0.22f, center.Y - size * 0.22f,
+                size * 0.44f, size * 0.44f);
+            graphics.DrawEllipse(black, sun);
+            graphics.DrawEllipse(yellow, sun);
+        }
+
+        private static void DrawSpecialIcon(
+            Graphics graphics, RectangleF bounds)
+        {
+            float size = Math.Min(bounds.Width, bounds.Height);
+            PointF Point(float x, float y) => new(
+                bounds.Left + size * x,
+                bounds.Top + size * y);
+
+            using GraphicsPath crown = new();
+            crown.StartFigure();
+            crown.AddPolygon(
+            [
+                Point(0.12f, 0.28f),
+                Point(0.34f, 0.50f),
+                Point(0.50f, 0.16f),
+                Point(0.66f, 0.50f),
+                Point(0.88f, 0.28f),
+                Point(0.82f, 0.78f),
+                Point(0.18f, 0.78f)
+            ]);
+            crown.CloseFigure();
+            using Pen outline = new(
+                Color.Black, Math.Max(1, size * 0.06f))
+            {
+                LineJoin = LineJoin.Round
+            };
+            graphics.FillPath(Brushes.Yellow, crown);
+            graphics.DrawPath(outline, crown);
         }
 
         private void DrawRatingStars(Graphics graphics, Rectangle imageBounds,
@@ -334,59 +419,38 @@ namespace IStripperQuickPlayer.BLL
                         centeredText);
                 }
 
-                if (fluentIcons != null &&
-                    card.exclusive != null && (bool)card.exclusive)
+                float statusIconSize = g.DpiY * cardScale * 10 / 72;
+                float statusIconTop =
+                    bounds.Top + (g.DpiY / 192) * 4 * cardScale;
+                if (card.exclusive == true)
                 {
                     g.InterpolationMode = InterpolationMode.High;
                     g.SmoothingMode = SmoothingMode.HighQuality;
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
-                               
-                    using GraphicsPath exclusivePath = new();
-                    exclusivePath.AddString(
-                        "\uEC19",            
-                        fluentIcons,
-                        (int) FontStyle.Bold,     
-                        g.DpiY * cardScale *10 / 72,      
-                        new Point(imgrect2.Left, bounds.Top +(int)((g.DpiY/192)*4) ),            
-                        StringFormat.GenericDefault);
-                    using Pen iconOutline = new(Color.Black, 1);
-                    g.DrawPath(iconOutline, exclusivePath);
-                    g.FillPath(Brushes.Yellow, exclusivePath);
+
+                    DrawSpecialIcon(g, new(
+                        imgrect2.Left, statusIconTop,
+                        statusIconSize, statusIconSize));
                     if (card.hotnessLevel == "5")
                     {
-                        using GraphicsPath hotnessPath = new();
-                        hotnessPath.AddString(
-                            "\uEC8A",            
-                            fluentIcons,
-                            (int) FontStyle.Bold,     
-                            g.DpiY * cardScale * 10 / 72,      
-                            new Point(imgrect2.Left + (int)((g.DpiY/192)*30*cardScale), bounds.Top +(int)((g.DpiY/192)*4)),            
-                            StringFormat.GenericDefault);
-                        g.DrawPath(iconOutline, hotnessPath);
-                        g.FillPath(Brushes.Yellow, hotnessPath);
+                        DrawHotnessIcon(g, new(
+                            imgrect2.Left,
+                            statusIconTop + statusIconSize * 1.12f,
+                            statusIconSize, statusIconSize));
                     }
                 }
 
-                else if (fluentIcons != null && card.hotnessLevel == "5")
+                else if (card.hotnessLevel == "5")
                 {
-                     g.InterpolationMode = InterpolationMode.High;
+                    g.InterpolationMode = InterpolationMode.High;
                     g.SmoothingMode = SmoothingMode.HighQuality;
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
-                               
-                    using GraphicsPath hotnessPath = new();
-                    float fntSize = g.DpiY * cardScale * 10 / 72;
-                    hotnessPath.AddString(
-                        "\uEC8A",            
-                        fluentIcons,
-                        (int) FontStyle.Bold,     
-                        fntSize,      
-                        new Point(imgrect2.Left, bounds.Top +(int)((g.DpiY/192)*4*cardScale)),            
-                        StringFormat.GenericDefault);
-                    using Pen hotnessOutline = new(Color.Black, 1);
-                    g.DrawPath(hotnessOutline, hotnessPath);
-                    g.FillPath(Brushes.Yellow, hotnessPath);
+
+                    DrawHotnessIcon(g, new(
+                        imgrect2.Left, statusIconTop,
+                        statusIconSize, statusIconSize));
                 }
 
                 if (myData != null && myData.GetCardFavourite(card.name))
@@ -396,23 +460,12 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    using GraphicsPath favouritePath = new();
-                    if (fluentIcons != null)
-                         favouritePath.AddString(
-                            "\uE00B",            
-                            fluentIcons,
-                            (int) FontStyle.Bold,     
-                            g.DpiY * cardScale * 14 / 72,      
-                            new Point(imgrect2.Right - (int)((g.DpiY/192)*52*cardScale), bounds.Top +(int)((g.DpiY/192)*4) ),            
-                            StringFormat.GenericDefault);
-                    else
-                        favouritePath.AddString(
-                            "+",            
-                            verdana,
-                            (int) FontStyle.Bold,     
-                            g.DpiY * cardScale * 16 / 72,      
-                            new Point(bounds.Right - (int)((g.DpiY/192)*80), bounds.Top -(int)((g.DpiY/192)*2)),            
-                            StringFormat.GenericDefault);
+                    float heartSize = g.DpiY * cardScale * 14 / 72;
+                    float heartMargin = g.DpiY * cardScale * 7 / 96;
+                    using GraphicsPath favouritePath = CreateHeartPath(new(
+                        imgrect2.Right - heartSize - heartMargin,
+                        bounds.Top + g.DpiY * 2 / 96,
+                        heartSize, heartSize));
                     using Pen favouriteOutline = new(Color.Black, 3);
                     g.DrawPath(favouriteOutline, favouritePath);
                     g.FillPath(Brushes.LightGreen, favouritePath);
