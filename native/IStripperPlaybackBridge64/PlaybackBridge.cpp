@@ -160,6 +160,7 @@ namespace
     using ManagerAction = void(__fastcall*)(void* manager);
     using ManagerSetPlayRate = void(__fastcall*)(void* manager, double playRate);
     using MutexAction = void(__fastcall*)(void* mutex);
+    using MutexTryLock = bool(__fastcall*)(void* mutex, int timeoutMilliseconds);
     using AvcodecOpen2 = int(__cdecl*)(void* codecContext, const void* codec, void* options);
     using AvcodecFlushBuffers = void(__cdecl*)(void* codecContext);
     using AvSeekFrame = int(__cdecl*)(void* formatContext, int streamIndex,
@@ -198,9 +199,6 @@ namespace
     PVOID volatile g_consumedSsv = nullptr;
     PVOID volatile g_consumedInfo = nullptr;
     PVOID volatile g_originalMovieAdvance = nullptr;
-    // ponytail: process-wide count; use per-Movie counters only if several
-    // simultaneous windows prevent a 250 ms checkpoint gap.
-    LONG volatile g_movieAdvancesInFlight = 0;
     LONG volatile g_movieCaptureArmed = 0;
     LONG volatile g_movieCaptureArmedFrame = -1;
     LONG volatile g_movieCaptureReady = 0;
@@ -3463,45 +3461,14 @@ namespace
                 &g_originalMovieAdvance, nullptr, nullptr));
         if (original != nullptr)
         {
-            InterlockedIncrement(&g_movieAdvancesInFlight);
-            __try
-            {
-                original(movie);
-            }
-            __finally
-            {
-                InterlockedDecrement(&g_movieAdvancesInFlight);
-            }
+            original(movie);
         }
     }
 
-    bool TryLockMovieMutexWhenIdle(void* mutex, MutexAction lockMutex,
-        MutexAction unlockMutex, ULONGLONG timeoutMilliseconds)
+    bool TryLockMovieMutex(void* mutex, MutexTryLock tryLockMutex,
+        int timeoutMilliseconds)
     {
-        const ULONGLONG deadline =
-            GetTickCount64() + timeoutMilliseconds;
-        while (GetTickCount64() < deadline)
-        {
-            while (InterlockedCompareExchange(
-                    &g_movieAdvancesInFlight, 0, 0) != 0)
-            {
-                if (GetTickCount64() >= deadline)
-                {
-                    return false;
-                }
-                Sleep(0);
-            }
-
-            lockMutex(mutex);
-            if (InterlockedCompareExchange(
-                    &g_movieAdvancesInFlight, 0, 0) == 0)
-            {
-                return true;
-            }
-            unlockMutex(mutex);
-            Sleep(0);
-        }
-        return false;
+        return tryLockMutex(mutex, timeoutMilliseconds);
     }
 
     void* AnimationVideoDecoder(void* animation)
@@ -7070,7 +7037,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 67;
+    return 68;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -7693,15 +7660,16 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperCaptureAlphaCheckpoint(
 
         void* movie = ActiveMovie();
         const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
-        const auto lockMutex = qtCore == nullptr
+        const auto tryLockMutex = qtCore == nullptr
             ? nullptr
-            : reinterpret_cast<MutexAction>(GetProcAddress(
-                qtCore, "?lock@QMutex@@QEAAXXZ"));
+            : reinterpret_cast<MutexTryLock>(GetProcAddress(
+                qtCore, "?tryLock@QMutex@@QEAA_NH@Z"));
         const auto unlockMutex = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<MutexAction>(GetProcAddress(
                 qtCore, "?unlock@QMutex@@QEAAXXZ"));
-        if (movie == nullptr || lockMutex == nullptr || unlockMutex == nullptr)
+        if (movie == nullptr || tryLockMutex == nullptr ||
+            unlockMutex == nullptr)
         {
             return ManagerError();
         }
@@ -7715,8 +7683,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperCaptureAlphaCheckpoint(
         HRESULT result = E_FAIL;
         __try
         {
-            if (!TryLockMovieMutexWhenIdle(
-                    mutex, lockMutex, unlockMutex, 250))
+            if (!TryLockMovieMutex(mutex, tryLockMutex, 250))
             {
                 result = HRESULT_FROM_WIN32(ERROR_BUSY);
                 __leave;
@@ -7942,9 +7909,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
 
         const auto lockMutex = reinterpret_cast<MutexAction>(GetProcAddress(
             qtCore, "?lock@QMutex@@QEAAXXZ"));
+        const auto tryLockMutex = reinterpret_cast<MutexTryLock>(GetProcAddress(
+            qtCore, "?tryLock@QMutex@@QEAA_NH@Z"));
         const auto unlockMutex = reinterpret_cast<MutexAction>(GetProcAddress(
             qtCore, "?unlock@QMutex@@QEAAXXZ"));
-        if (lockMutex == nullptr || unlockMutex == nullptr)
+        if (lockMutex == nullptr || tryLockMutex == nullptr ||
+            unlockMutex == nullptr)
         {
             return EngineError();
         }
@@ -7954,8 +7924,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
         HRESULT result = E_FAIL;
         __try
         {
-            if (!TryLockMovieMutexWhenIdle(
-                    mutex, lockMutex, unlockMutex, 10'000))
+            if (!TryLockMovieMutex(mutex, tryLockMutex, 10'000))
             {
                 result = HRESULT_FROM_WIN32(ERROR_BUSY);
                 __leave;
