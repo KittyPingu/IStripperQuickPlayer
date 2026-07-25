@@ -562,6 +562,9 @@ namespace IStripperQuickPlayer
             cardScaleLabel.ForeColor = label1.ForeColor;
             cardScaleSeekBar.BackColor =
                 splitContainer1.Panel1.BackColor;
+            listClips.BackColor = splitContainer1.Panel2.BackColor;
+            listClips.ForeColor = label1.ForeColor;
+            RefreshPlayingClipHighlight();
             if (cardRenderer != null) cardRenderer.SetColours();
             SetPlayQueueColours();
             panicResumeButton.FlatStyle = FlatStyle.Flat;
