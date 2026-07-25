@@ -554,6 +554,10 @@ namespace IStripperQuickPlayer
         private void RenderPlayQueue(FlowLayoutPanel flow,
             List<PlayQueueEntry> entries, string source)
         {
+            bool dark = Properties.Settings.Default.DarkMode;
+            if (QueueRenderIsCurrent(flow, entries, source, dark))
+                return;
+
             ClearPlayQueueCardHighlight();
             flow.SuspendLayout();
             try
@@ -568,6 +572,7 @@ namespace IStripperQuickPlayer
                     flow.Controls.Add(CreatePlayQueueCard(
                         new PlayQueueDrag(source, index, entry), cardSize));
                 }
+                flow.Tag = dark;
             }
             finally
             {
@@ -575,6 +580,32 @@ namespace IStripperQuickPlayer
             }
             if (entries.Count == 0)
                 flow.AutoScrollMinSize = new System.Drawing.Size(1, 1);
+        }
+
+        private static bool QueueRenderIsCurrent(FlowLayoutPanel flow,
+            List<PlayQueueEntry> entries, string source, bool dark)
+        {
+            if (flow.Controls.Count != entries.Count ||
+                flow.Tag is not bool renderedDark || renderedDark != dark)
+                return false;
+
+            for (int index = 0; index < entries.Count; index++)
+            {
+                if (flow.Controls[index] is not Panel panel ||
+                    panel.Tag is not PlayQueueDrag drag ||
+                    drag.Source != source || drag.Index != index ||
+                    drag.Entry != entries[index])
+                    return false;
+
+                PictureBox? picture = panel.Controls.OfType<PictureBox>()
+                    .FirstOrDefault();
+                Image? expected = Datastore.findCardByTag(
+                    entries[index].CardTag)?.image;
+                if (picture == null ||
+                    !ReferenceEquals(picture.Image, expected))
+                    return false;
+            }
+            return true;
         }
 
         private static System.Drawing.Size PlayQueueCardSize(
@@ -1439,9 +1470,7 @@ namespace IStripperQuickPlayer
 
         private static bool IsForcedAnimationProposal(string proposed)
         {
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Totem\vghd\parameters", false);
-            string forced = key?.GetValue("ForceAnim", "")?.ToString() ?? "";
+            string forced = GetPlaybackRegistryValue("ForceAnim");
             return string.Equals(proposed, forced,
                 StringComparison.OrdinalIgnoreCase);
         }

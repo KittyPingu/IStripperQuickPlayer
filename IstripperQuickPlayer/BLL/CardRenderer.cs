@@ -1,14 +1,11 @@
 ﻿using IStripperQuickPlayer.DataModel;
 using Manina.Windows.Forms;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Globalization;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using View = Manina.Windows.Forms.View;
 
 namespace IStripperQuickPlayer.BLL
@@ -28,19 +25,25 @@ namespace IStripperQuickPlayer.BLL
         public Color labelColor = Color.Black;
         public SolidBrush highlightBrush = new SolidBrush(Color.PaleGreen);
         public Color backgroundColour = Color.WhiteSmoke;
-        private readonly ConcurrentDictionary<int, Rectangle> _boundsByIndex = new();
-        private readonly ConcurrentDictionary<int, Rectangle> _starBoundsByIndex = new();
+        private readonly Dictionary<int, Rectangle> _boundsByIndex = [];
+        private readonly Dictionary<int, Rectangle> _starBoundsByIndex = [];
         private readonly SolidBrush labelBrush = new(Color.Black);
+        private readonly SolidBrush overlayShadowBrush =
+            new(Color.FromArgb(75, Color.Black));
+        private readonly SolidBrush overlayBackgroundBrush =
+            new(Color.FromArgb(175, 18, 18, 18));
+        private readonly Pen overlayBorderPen =
+            new(Color.FromArgb(70, Color.White), 1);
         private readonly Dictionary<(string Family, int Size, FontStyle Style),
             Font> fonts = [];
+        private readonly Dictionary<(string Text, string Family, int MaxSize,
+            int Width, FontStyle Style), Font> fittedFonts = [];
+        private readonly Dictionary<(string Kind, int Size, int Value),
+            Bitmap> iconBitmaps = [];
+        private bool disposed;
         private readonly StringFormat centeredText = new()
         {
             Alignment = StringAlignment.Center,
-            LineAlignment = StringAlignment.Center
-        };
-        private readonly StringFormat leftCenteredText = new()
-        {
-            Alignment = StringAlignment.Near,
             LineAlignment = StringAlignment.Center
         };
         internal CardRenderer(MyData? myData, string sortBy, float cardScale,
@@ -72,6 +75,15 @@ namespace IStripperQuickPlayer.BLL
             labelBrush.Color = labelColor;
         }
 
+        internal void SetCardScale(float scale)
+        {
+            if (Math.Abs(cardScale - scale) < 0.001f)
+                return;
+            cardScale = scale;
+            fittedFonts.Clear();
+            ClearIconBitmaps();
+        }
+
         private Font GetFont(string family, int size,
             FontStyle style = FontStyle.Regular)
         {
@@ -82,6 +94,72 @@ namespace IStripperQuickPlayer.BLL
                 fonts.Add(key, font);
             }
             return font;
+        }
+
+        private Font GetFittedFont(Graphics graphics, string text,
+            string family, int maximumSize, int width,
+            FontStyle style = FontStyle.Regular)
+        {
+            var key = (text, family, maximumSize, Math.Max(1, width), style);
+            if (fittedFonts.TryGetValue(key, out Font? fitted))
+                return fitted;
+
+            int size = Math.Max(1, maximumSize);
+            fitted = GetFont(family, size, style);
+            while (size > 1 &&
+                graphics.MeasureString(text, fitted).Width > width)
+            {
+                fitted = GetFont(family, --size, style);
+            }
+            fittedFonts[key] = fitted;
+            return fitted;
+        }
+
+        private void ClearIconBitmaps()
+        {
+            foreach (Bitmap bitmap in iconBitmaps.Values)
+                bitmap.Dispose();
+            iconBitmaps.Clear();
+        }
+
+        private Bitmap GetIconBitmap(string kind, int size, int value = 0)
+        {
+            size = Math.Max(1, size);
+            var key = (kind, size, value);
+            if (iconBitmaps.TryGetValue(key, out Bitmap? bitmap))
+                return bitmap;
+
+            int width = kind == "rating" ? size * 5 : size;
+            bitmap = new Bitmap(width, size, PixelFormat.Format32bppPArgb);
+            using Graphics graphics = Graphics.FromImage(bitmap);
+            graphics.SmoothingMode = SmoothingMode.HighQuality;
+            graphics.CompositingQuality = CompositingQuality.HighQuality;
+            switch (kind)
+            {
+                case "rating":
+                    DrawRatingStarsBitmap(graphics, size, value);
+                    break;
+                case "heart":
+                    using (GraphicsPath path = CreateHeartPath(
+                        new RectangleF(1.5f, 1.5f,
+                            Math.Max(1, size - 3), Math.Max(1, size - 3))))
+                    using (Pen outline = new(Color.Black, 3))
+                    {
+                        graphics.DrawPath(outline, path);
+                        graphics.FillPath(Brushes.LightGreen, path);
+                    }
+                    break;
+                case "special":
+                    DrawSpecialIcon(graphics,
+                        new RectangleF(0, 0, size, size));
+                    break;
+                case "hotness":
+                    DrawHotnessIcon(graphics,
+                        new RectangleF(0, 0, size, size));
+                    break;
+            }
+            iconBitmaps[key] = bitmap;
+            return bitmap;
         }
 
         private static PointF[] StarPoints(RectangleF bounds)
@@ -207,18 +285,14 @@ namespace IStripperQuickPlayer.BLL
             int radius = Math.Max(2, panel.Height / 4);
             int shadowOffset = Math.Max(1, panel.Height / 12);
 
-            using SolidBrush shadow = new(Color.FromArgb(75, Color.Black));
-            Utility.FillRoundedRectangle(graphics, shadow,
+            Utility.FillRoundedRectangle(graphics, overlayShadowBrush,
                 new Rectangle(panel.X + shadowOffset,
                     panel.Y + shadowOffset, panel.Width, panel.Height),
                 radius);
-            using SolidBrush background =
-                new(Color.FromArgb(175, 18, 18, 18));
             Utility.FillRoundedRectangle(
-                graphics, background, panel, radius);
-            using Pen border =
-                new(Color.FromArgb(70, Color.White), 1);
-            Utility.DrawRoundedRectangle(graphics, border, panel, radius);
+                graphics, overlayBackgroundBrush, panel, radius);
+            Utility.DrawRoundedRectangle(
+                graphics, overlayBorderPen, panel, radius);
             graphics.DrawString(text, font, Brushes.White, panel,
                 centeredText);
         }
@@ -226,9 +300,9 @@ namespace IStripperQuickPlayer.BLL
         private void DrawRatingStars(Graphics graphics, Rectangle imageBounds,
             int rating, int itemIndex)
         {
-            float size = Math.Min(
+            int size = Math.Max(1, (int)Math.Round(Math.Min(
                 graphics.DpiY * cardScale * 14 / 72,
-                imageBounds.Width / 5f);
+                imageBounds.Width / 5f)));
             float rowWidth = size * 5;
             float left = imageBounds.Left +
                 (imageBounds.Width - rowWidth) / 2;
@@ -237,6 +311,14 @@ namespace IStripperQuickPlayer.BLL
             _starBoundsByIndex[itemIndex] = Rectangle.Round(
                 new RectangleF(left, top, rowWidth, size));
 
+            graphics.DrawImageUnscaled(
+                GetIconBitmap("rating", size, Math.Clamp(rating, 0, 10)),
+                (int)Math.Round(left), (int)Math.Round(top));
+        }
+
+        private static void DrawRatingStarsBitmap(
+            Graphics graphics, int size, int rating)
+        {
             using SolidBrush blankBrush =
                 new(Color.FromArgb(180, Color.Black));
             using Pen outline = new(Color.Black, 3);
@@ -244,7 +326,7 @@ namespace IStripperQuickPlayer.BLL
             for (int i = 0; i < 5; i++)
             {
                 RectangleF starBounds = new(
-                    left + i * size + 1.5f, top + 1.5f,
+                    i * size + 1.5f, 1.5f,
                     Math.Max(1, size - 3), Math.Max(1, size - 3));
                 using GraphicsPath star = new();
                 star.AddPolygon(StarPoints(starBounds));
@@ -430,30 +512,17 @@ namespace IStripperQuickPlayer.BLL
 
 
                     Rectangle rectName = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*52), bounds.Width, (int)((g.DpiY/192)*30));
-                    int sztitle=10;
-                    Font fontName = GetFont("Segoe UI", sztitle);
                     string name = card.modelName ?? "";
-                    var textSizeName = g.MeasureString(name, fontName);
-                    while (textSizeName.Width > rectName.Width && sztitle > 1)
-                    {
-                        fontName = GetFont("Segoe UI", --sztitle);
-                        textSizeName = g.MeasureString(name, fontName);
-                    }
+                    Font fontName = GetFittedFont(
+                        g, name, "Segoe UI", 10, rectName.Width);
                     g.DrawString(name, fontName, labelBrush, rectName,
                         centeredText);
 
 
                     Rectangle rectOutfit = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*27), bounds.Width, (int)((g.DpiY/192)*30));
-                    int szoutfit=9;
-                    Font fontOutfit = GetFont("Segoe UI", szoutfit);
                     string outfit = card.outfit ?? "";
-                    var textSizeOutfit = g.MeasureString(outfit, fontOutfit);
-                    while (textSizeOutfit.Width > rectOutfit.Width &&
-                        szoutfit > 1)
-                    {
-                        fontOutfit = GetFont("Segoe UI", --szoutfit);
-                        textSizeOutfit = g.MeasureString(outfit, fontOutfit);
-                    }
+                    Font fontOutfit = GetFittedFont(
+                        g, outfit, "Segoe UI", 9, rectOutfit.Width);
                     g.DrawString(outfit, fontOutfit, labelBrush, rectOutfit,
                         centeredText);
                 }
@@ -468,15 +537,16 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    DrawSpecialIcon(g, new(
-                        imgrect2.Left, statusIconTop,
-                        statusIconSize, statusIconSize));
+                    int iconSize = Math.Max(1,
+                        (int)Math.Round(statusIconSize));
+                    g.DrawImageUnscaled(GetIconBitmap("special", iconSize),
+                        imgrect2.Left, (int)Math.Round(statusIconTop));
                     if (card.hotnessLevel == "5")
                     {
-                        DrawHotnessIcon(g, new(
-                            imgrect2.Left,
-                            statusIconTop + statusIconSize * 1.12f,
-                            statusIconSize, statusIconSize));
+                        g.DrawImageUnscaled(
+                            GetIconBitmap("hotness", iconSize),
+                            imgrect2.Left, (int)Math.Round(
+                                statusIconTop + statusIconSize * 1.12f));
                     }
                 }
 
@@ -487,9 +557,10 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    DrawHotnessIcon(g, new(
-                        imgrect2.Left, statusIconTop,
-                        statusIconSize, statusIconSize));
+                    int iconSize = Math.Max(1,
+                        (int)Math.Round(statusIconSize));
+                    g.DrawImageUnscaled(GetIconBitmap("hotness", iconSize),
+                        imgrect2.Left, (int)Math.Round(statusIconTop));
                 }
 
                 if (myData != null && myData.GetCardFavourite(card.name))
@@ -501,13 +572,11 @@ namespace IStripperQuickPlayer.BLL
 
                     float heartSize = g.DpiY * cardScale * 14 / 72;
                     float heartMargin = g.DpiY * cardScale * 7 / 96;
-                    using GraphicsPath favouritePath = CreateHeartPath(new(
-                        imgrect2.Right - heartSize - heartMargin,
-                        bounds.Top + g.DpiY * 2 / 96,
-                        heartSize, heartSize));
-                    using Pen favouriteOutline = new(Color.Black, 3);
-                    g.DrawPath(favouriteOutline, favouritePath);
-                    g.FillPath(Brushes.LightGreen, favouritePath);
+                    int iconSize = Math.Max(1, (int)Math.Round(heartSize));
+                    g.DrawImageUnscaled(GetIconBitmap("heart", iconSize),
+                        (int)Math.Round(
+                            imgrect2.Right - heartSize - heartMargin),
+                        (int)Math.Round(bounds.Top + g.DpiY * 2 / 96));
                 }
                 if (Properties.Settings.Default.ShowRatingStars)
                 {
@@ -527,14 +596,8 @@ namespace IStripperQuickPlayer.BLL
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
                     Rectangle rect = new Rectangle(bounds.Left+(int)((g.DpiY/192)*48), bounds.Top + (int)((g.DpiY/192)*6), bounds.Width - (int)((g.DpiY/192)*58), (int)((g.DpiY/192)*40));
-                    int sz =(int)(13* cardScale);
-                    Font font = GetFont("Verdana", sz);
-                    var textSize = g.MeasureString(text, font);
-                    while (textSize.Width > rect.Width && sz > 1)
-                    {
-                       font = GetFont("Verdana", --sz);
-                       textSize = g.MeasureString(text, font);
-                    }
+                    Font font = GetFittedFont(g, text, "Verdana",
+                        (int)(13 * cardScale), rect.Width);
                     DrawOverlayLabel(g, text, font, rect);
                 }
 
@@ -546,14 +609,9 @@ namespace IStripperQuickPlayer.BLL
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
                     Rectangle rect = new Rectangle(imgrect.Left+18, bounds.Top + 10, (int)(imgrect.Width*0.6), 40);  
-                    int szname =(int)(14 * cardScale);
-                    Font font = GetFont("Verdana", szname);
-                    var textSize = g.MeasureString("Playing", font);                
-                    while (textSize.Width > rect.Width && szname > 1)
-                    {
-                       font = GetFont("Verdana", --szname);
-                       textSize = g.MeasureString("Playing", font);
-                    }
+                    Font font = GetFittedFont(g, "Playing", "Verdana",
+                        (int)(14 * cardScale), rect.Width);
+                    SizeF textSize = g.MeasureString("Playing", font);
                     using GraphicsPath p = new();
                     p.AddString(
                         "Playing",            
@@ -573,6 +631,25 @@ namespace IStripperQuickPlayer.BLL
                 // Revert to base class
                 base.DrawItem(g, item, state, bounds);
             }
+        }
+
+        public override void Dispose()
+        {
+            if (disposed)
+                return;
+            disposed = true;
+            ClearIconBitmaps();
+            foreach (Font font in fonts.Values)
+                font.Dispose();
+            fonts.Clear();
+            fittedFonts.Clear();
+            highlightBrush.Dispose();
+            labelBrush.Dispose();
+            overlayShadowBrush.Dispose();
+            overlayBackgroundBrush.Dispose();
+            overlayBorderPen.Dispose();
+            centeredText.Dispose();
+            base.Dispose();
         }
     }
 }

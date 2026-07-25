@@ -10,6 +10,7 @@ using System.Net.Http;
 using System.Drawing.Imaging;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.Threading;
 
 namespace IStripperQuickPlayer.BLL
 {
@@ -21,13 +22,17 @@ namespace IStripperQuickPlayer.BLL
         public static string _modelname = "";
         public static string _outfit = "";
         private static volatile bool suspended;
+        private static readonly SemaphoreSlim renderGate = new(1, 1);
+        private static readonly object initialImagesLock = new();
+        private static int redrawVersion;
 
         public static void CaptureOriginalDesktopState()
         {
             Utils.DefaultIconsVisible = Utils.DesktopIconsVisible();
+            IDesktopWallpaper? wallpaper = null;
             try
             {
-                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());
+                wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());
                 originalWallpaper.Clear();
                 for (uint i = 0; i < wallpaper.GetMonitorDevicePathCount(); i++)
                 {
@@ -36,6 +41,7 @@ namespace IStripperQuickPlayer.BLL
                 }
             }
             catch { }
+            finally { ReleaseDesktopWallpaper(wallpaper); }
         }
 
         public static async Task ChangeWallpaper(uint monitorNumber, string? url, string modelname, string outfit)
@@ -52,39 +58,95 @@ namespace IStripperQuickPlayer.BLL
             if (form == null) return;
             var str = form.lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
             if (string.IsNullOrEmpty(str)) return;
+            using Bitmap? downloaded =
+                await GetImageBitmapFromUrl(url).ConfigureAwait(false);
+            if (downloaded == null) return;
+
+            int version = Interlocked.Increment(ref redrawVersion);
+            await renderGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
-                var monitorId = wallpaper.GetMonitorDevicePathAt(monitorNumber);
-               
-                if (!originalWallpaper.ContainsKey(monitorNumber)) originalWallpaper.Add(monitorNumber, wallpaper.GetWallpaper(monitorId.ToString()));
-
-                string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + monitorNumber.ToString() + ".jpg");
-                Bitmap? downloaded = await GetImageBitmapFromUrl(url).ConfigureAwait(false);
-                if (downloaded == null) return;
                 await Task.Run(() =>
                 {
-                    Bitmap m = downloaded;
-                    m = ResizeBitmap(m, wallpaper.GetMonitorRECT(monitorId));
-                    DirectBitmap direct = new DirectBitmap(m.Width, m.Height);
-                    Graphics g = Graphics.FromImage(direct.Bitmap);
-                    g.DrawImageUnscaled(m, 0,0);
-                    g.Dispose();
-                    if (initialImages.ContainsKey(monitorNumber))
-                        initialImages[monitorNumber] = m;
-                    else
-                        initialImages.Add(monitorNumber, m);
-                    if (Properties.Settings.Default.BlurWallpaper) direct = AddBlur(direct);
-                    if (Properties.Settings.Default.WallpaperBrightness != 100m) m = AdjustBrightness(direct.Bitmap, (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));
-                    if (Properties.Settings.Default.WallpaperDetails) m = AddDetails(m, wallpaper.GetMonitorRECT(monitorId));
-                    m.Save(wpfilepath, ImageFormat.Jpeg);
-                    direct.Dispose();
-                    if (!suspended)
-                        wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
-                    m.Dispose();
+                    IDesktopWallpaper? wallpaper = null;
+                    try
+                    {
+                        wallpaper =
+                            (IDesktopWallpaper)(new DesktopWallpaperClass());
+                        string monitorId =
+                            wallpaper.GetMonitorDevicePathAt(monitorNumber);
+                        Rect monitorRect = wallpaper.GetMonitorRECT(monitorId);
+                        if (!originalWallpaper.ContainsKey(monitorNumber))
+                        {
+                            originalWallpaper.Add(monitorNumber,
+                                wallpaper.GetWallpaper(monitorId));
+                        }
+
+                        string wpfilepath = WallpaperPath(monitorNumber);
+                        using Bitmap resized =
+                            ResizeBitmap(downloaded, monitorRect);
+                        using Bitmap rendered = CreateRenderedWallpaper(
+                            resized, monitorRect, modelname, outfit);
+                        rendered.Save(wpfilepath, ImageFormat.Jpeg);
+
+                        lock (initialImagesLock)
+                        {
+                            if (initialImages.Remove(monitorNumber,
+                                    out Bitmap? previous))
+                                previous.Dispose();
+                            initialImages.Add(
+                                monitorNumber, new Bitmap(resized));
+                        }
+                        if (!suspended &&
+                            version == Volatile.Read(ref redrawVersion))
+                            wallpaper.SetWallpaper(monitorId, wpfilepath);
+                    }
+                    finally { ReleaseDesktopWallpaper(wallpaper); }
                 }).ConfigureAwait(false);
             }
-            catch (Exception){}
+            catch (Exception) { }
+            finally
+            {
+                renderGate.Release();
+            }
+        }
+
+        private static string WallpaperPath(uint monitorNumber) => Path.Join(
+            Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+            "IStripperQuickPlayer", $"wallpaper{monitorNumber}.jpg");
+
+        private static Bitmap CreateRenderedWallpaper(Bitmap source, Rect rect,
+            string modelname, string outfit)
+        {
+            Bitmap rendered;
+            float brightness = (float)(
+                (double)Properties.Settings.Default.WallpaperBrightness / 100);
+            if (Properties.Settings.Default.BlurWallpaper)
+            {
+                using DirectBitmap input = CopyToDirectBitmap(source);
+                using DirectBitmap blurred = AddBlur(input);
+                rendered = AdjustBrightness(blurred.Bitmap, brightness);
+            }
+            else
+            {
+                rendered = AdjustBrightness(source, brightness);
+            }
+
+            if (Properties.Settings.Default.WallpaperDetails)
+                AddDetails(rendered, rect, modelname, outfit);
+            return rendered;
+        }
+
+        private static DirectBitmap CopyToDirectBitmap(Bitmap source)
+        {
+            DirectBitmap direct = new(source.Width, source.Height);
+            using Graphics graphics = Graphics.FromImage(direct.Bitmap);
+            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            graphics.CompositingMode = CompositingMode.SourceCopy;
+            graphics.SmoothingMode = SmoothingMode.None;
+            graphics.DrawImageUnscaled(source, 0, 0);
+            return direct;
         }
 
         private static void showIcons()
@@ -275,9 +337,10 @@ namespace IStripperQuickPlayer.BLL
         {
             return FastGaussianBlur(b, Convert.ToInt32(Properties.Settings.Default.BlurRadius));
         }
-        private static Bitmap AddDetails(Bitmap b, Rect l)
+        private static Bitmap AddDetails(Bitmap b, Rect l,
+            string modelname, string outfit)
         {
-            string text = _modelname + ", " + _outfit;
+            string text = modelname + ", " + outfit;
             float opacity = Math.Clamp(
                 (float)Properties.Settings.Default.WallpaperLabelOpacity,
                 0, 100) / 100;
@@ -346,36 +409,69 @@ namespace IStripperQuickPlayer.BLL
         public static void RedrawImage()
         {
             if (suspended) return;
+            int version = Interlocked.Increment(ref redrawVersion);
+            _ = RedrawImageAsync(version);
+        }
+
+        private static async Task RedrawImageAsync(int version)
+        {
+            await renderGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
-
-                foreach(var kvp in initialImages)
+                if (suspended || version != Volatile.Read(ref redrawVersion))
+                    return;
+                await Task.Run(() =>
                 {
-                    var monitorId = wallpaper.GetMonitorDevicePathAt(kvp.Key);
-                   
-                    Bitmap o = AdjustBrightness(initialImages[kvp.Key], (float)((double)Properties.Settings.Default.WallpaperBrightness/100.0));    
-                    string wpfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "wallpaper" + kvp.Key.ToString() + ".jpg");
-                    if (Properties.Settings.Default.BlurWallpaper)
+                    IDesktopWallpaper? wallpaper = null;
+                    try
                     {
-                         DirectBitmap b = new DirectBitmap(o.Width, o.Height);
-                         Graphics g = Graphics.FromImage(b.Bitmap);
-                         g.InterpolationMode = InterpolationMode.NearestNeighbor;
-                         g.CompositingMode = CompositingMode.SourceCopy; 
-                         g.SmoothingMode = SmoothingMode.None;
-                         g.DrawImageUnscaled(o, 0,0);
-                         g.Dispose();
-                         o = AddBlur(b).Bitmap;
-                         b.Dispose();
-                    }
-                    if (Properties.Settings.Default.WallpaperDetails) o = AddDetails(o, wallpaper.GetMonitorRECT(monitorId));
-                    o.Save(wpfilepath, ImageFormat.Jpeg);
-                    o.Dispose();
+                        wallpaper =
+                            (IDesktopWallpaper)(new DesktopWallpaperClass());
+                        KeyValuePair<uint, Bitmap>[] sources;
+                        lock (initialImagesLock)
+                        {
+                            sources = initialImages.Select(pair =>
+                                new KeyValuePair<uint, Bitmap>(
+                                    pair.Key,
+                                    new Bitmap(pair.Value))).ToArray();
+                        }
 
-                    wallpaper.SetWallpaper(monitorId.ToString(), wpfilepath);
-                }        
+                        try
+                        {
+                            foreach (KeyValuePair<uint, Bitmap> source in sources)
+                            {
+                                if (suspended ||
+                                    version != Volatile.Read(ref redrawVersion))
+                                    break;
+                                string monitorId = wallpaper
+                                    .GetMonitorDevicePathAt(source.Key);
+                                Rect monitorRect =
+                                    wallpaper.GetMonitorRECT(monitorId);
+                                using Bitmap rendered =
+                                    CreateRenderedWallpaper(
+                                        source.Value, monitorRect,
+                                        _modelname, _outfit);
+                                string path = WallpaperPath(source.Key);
+                                rendered.Save(path, ImageFormat.Jpeg);
+                                if (!suspended &&
+                                    version == Volatile.Read(ref redrawVersion))
+                                    wallpaper.SetWallpaper(monitorId, path);
+                            }
+                        }
+                        finally
+                        {
+                            foreach (KeyValuePair<uint, Bitmap> source in sources)
+                                source.Value.Dispose();
+                        }
+                    }
+                    finally { ReleaseDesktopWallpaper(wallpaper); }
+                }).ConfigureAwait(false);
             }
-            catch (Exception){}
+            catch (Exception) { }
+            finally
+            {
+                renderGate.Release();
+            }
         }
 
 
@@ -405,7 +501,7 @@ namespace IStripperQuickPlayer.BLL
                     new float[] {0, 0, 0, 1, 0},
                     new float[] {0, 0, 0, 0, 1},
                 });
-            ImageAttributes attributes = new ImageAttributes();
+            using ImageAttributes attributes = new ImageAttributes();
             attributes.SetColorMatrix(cm);
 
             // Draw the image onto the new bitmap while applying
@@ -431,9 +527,11 @@ namespace IStripperQuickPlayer.BLL
         }
         public static void RestoreWallpaper()
         {
+            IDesktopWallpaper? wallpaper = null;
             try
             {
-                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
+                wallpaper =
+                    (IDesktopWallpaper)(new DesktopWallpaperClass());
                 foreach(KeyValuePair<uint,string> paper in originalWallpaper)
                 {
                         var monitorId = wallpaper.GetMonitorDevicePathAt(paper.Key);
@@ -441,6 +539,7 @@ namespace IStripperQuickPlayer.BLL
                 }
             }
             catch(Exception){}
+            finally { ReleaseDesktopWallpaper(wallpaper); }
         }
 
         public static void SuspendAndRestoreOriginalDesktop()
@@ -454,17 +553,17 @@ namespace IStripperQuickPlayer.BLL
         public static void ResumeQuickPlayerDesktop()
         {
             suspended = false;
+            IDesktopWallpaper? wallpaper = null;
             try
             {
-                var wallpaper =
+                wallpaper =
                     (IDesktopWallpaper)(new DesktopWallpaperClass());
-                foreach (uint monitorNumber in initialImages.Keys)
+                uint[] monitorNumbers;
+                lock (initialImagesLock)
+                    monitorNumbers = initialImages.Keys.ToArray();
+                foreach (uint monitorNumber in monitorNumbers)
                 {
-                    string path = Path.Join(
-                        Environment.GetFolderPath(
-                            Environment.SpecialFolder.LocalApplicationData),
-                        "IStripperQuickPlayer",
-                        $"wallpaper{monitorNumber}.jpg");
+                    string path = WallpaperPath(monitorNumber);
                     if (File.Exists(path))
                         wallpaper.SetWallpaper(
                             wallpaper.GetMonitorDevicePathAt(monitorNumber),
@@ -476,22 +575,38 @@ namespace IStripperQuickPlayer.BLL
                     showIcons();
             }
             catch { }
+            finally { ReleaseDesktopWallpaper(wallpaper); }
         }
 
         internal static void RestoreWallpaperByID(uint monitorNumber)
         {
+            IDesktopWallpaper? wallpaper = null;
             try
             {
-                var wallpaper = (IDesktopWallpaper)(new DesktopWallpaperClass());  
+                wallpaper =
+                    (IDesktopWallpaper)(new DesktopWallpaperClass());
              
                 if (originalWallpaper.ContainsKey(monitorNumber))
                 {
                     var monitorId = wallpaper.GetMonitorDevicePathAt(monitorNumber);
                     wallpaper.SetWallpaper(monitorId.ToString(), originalWallpaper[monitorNumber]);
-                    initialImages.Remove(monitorNumber);
+                    lock (initialImagesLock)
+                    {
+                        if (initialImages.Remove(monitorNumber,
+                                out Bitmap? removed))
+                            removed.Dispose();
+                    }
                 }
             }
             catch (Exception){}
+            finally { ReleaseDesktopWallpaper(wallpaper); }
+        }
+
+        private static void ReleaseDesktopWallpaper(
+            IDesktopWallpaper? wallpaper)
+        {
+            if (wallpaper != null && Marshal.IsComObject(wallpaper))
+                Marshal.FinalReleaseComObject(wallpaper);
         }
     }
 }

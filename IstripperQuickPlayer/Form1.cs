@@ -125,6 +125,8 @@ namespace IStripperQuickPlayer
         private volatile bool playbackControlsAvailableForAccount;
         private bool suppressPlaybackSpeedSelection;
         private double requestedPlaybackSpeed = 1.0;
+        private (bool Rewind, bool PlayPause, bool FastForward,
+            bool Speed, bool Position)? playbackControlEnabledState;
         private readonly System.Windows.Forms.Timer playbackTimelineTimer =
             new() { Interval = PlaybackTimelineIntervalMilliseconds };
         private readonly ToolStripMenuItem updateToolStripMenuItem = new();
@@ -156,6 +158,8 @@ namespace IStripperQuickPlayer
         private readonly ToolStripMenuItem restoreToolStripMenuItem =
             new("Restore QuickPlayer Data...");
         private readonly object playbackHistoryLock = new();
+        private static readonly object playbackRegistryLock = new();
+        private static RegistryKey? playbackParametersKey;
         private bool playbackTimelinePolling;
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
@@ -176,7 +180,6 @@ namespace IStripperQuickPlayer
         private bool restoringBackup;
         private volatile bool panicActive;
         private IntPtr panicMovieWindow;
-        private ControlScrollListener? _processListViewScrollListener;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
         private Size lastAdjustedClientSize;
@@ -435,6 +438,7 @@ namespace IStripperQuickPlayer
             InitializeComponent();
             DoubleBuffered = true;
             listClips.SetDoubleBuffered();
+            listModelsNew.RefreshOnFocusChanged = false;
             panicResumeButton.Click += panicResumeButton_Click;
             panelClip.Controls.Add(panicResumeButton);
             cardScaleSeekBar.Scroll += cardScaleSeekBar_Scroll;
@@ -1001,9 +1005,9 @@ namespace IStripperQuickPlayer
             {
                 currentText = listModelsNew.SelectedItems[0].Text;
             }
-            listModelsNew.Items.Clear();
             if (Datastore.modelcards == null)
             {
+                listModelsNew.Items.Clear();
                 return;
             }
 
@@ -1117,13 +1121,13 @@ namespace IStripperQuickPlayer
             if (currentText != "")
             {
                 listModelsNew.ClearSelection();
-                int? index = items.ToList().FindIndex(x => x.Text == currentText);
-                if (index != null && index > 0)
+                int index = Array.FindIndex(
+                    items, item => item.Text == currentText);
+                if (index >= 0)
                 {
                     listModelsNew.SelectWhere(x => x.Text == currentText);
-                    listModelsNew.EnsureVisible((int)index);
+                    listModelsNew.EnsureVisible(index);
                 }
-                listModelsNew.Refresh();
             }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
@@ -1150,7 +1154,9 @@ namespace IStripperQuickPlayer
 
         private void SetModelNewImageList()
         {
-            var itemsNew = new ImageListViewItem[items.Count()];
+            if (items == null)
+                return;
+            var itemsNew = new ImageListViewItem[items.Length];
             int idx = 0;
 
             cardRenderer.updating = true;
@@ -1168,7 +1174,7 @@ namespace IStripperQuickPlayer
             }
 
             listModelsNew.Items.AddRange(itemsNew);
-            listModelsNew.ResumeLayout();
+            listModelsNew.ResumeLayout(false);
             cardRenderer.updating = false;
             listModelsNew.Refresh();
         }
@@ -1818,8 +1824,6 @@ namespace IStripperQuickPlayer
             //string REG_KEY = @"HKEY_CURRENT_USER\Software\Totem\vghd\parameters";
             //watcher = new RegistryWatcher(new Tuple<string, string>(REG_KEY, "CurrentAnim"));
             //watcher.RegistryChange += RegistryChanged;
-            _processListViewScrollListener = new ControlScrollListener(listModelsNew);
-            _processListViewScrollListener.ControlScrolled += ProcessListViewScrollListener_ControlScrolled;
             clickingNowPlaying = true;
 
             RetrieveModels();
@@ -2067,12 +2071,6 @@ namespace IStripperQuickPlayer
             return Version.TryParse(version, out Version? parsed) ? parsed : null;
         }
 
-        private void ProcessListViewScrollListener_ControlScrolled(object sender, EventArgs e)
-        {
-            listModelsNew.Refresh();
-            //this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-        }
-
         private void PopulateFilterList()
         {
             cmbFilter.Items.Clear();
@@ -2242,7 +2240,8 @@ namespace IStripperQuickPlayer
                     return;
                 }
                 _spyMgr.OnFunctionCalled += new DNktSpyMgrEvents_OnFunctionCalledEventHandler(OnFunctionCalled);
-                timerhook = new System.Threading.Timer(waitForIStripper, null, 100, 250);
+                timerhook = new System.Threading.Timer(
+                    waitForIStripper, null, 100, Timeout.Infinite);
             }
             catch (Exception exception)
             {
@@ -2277,6 +2276,7 @@ namespace IStripperQuickPlayer
 
         private void waitForIStripper(object? state)
         {
+            int nextCheckMilliseconds = 250;
             if (Interlocked.Exchange(ref vghdInjectionInProgress, 1) != 0)
             {
                 return;
@@ -2285,10 +2285,14 @@ namespace IStripperQuickPlayer
             try
             {
                 if (AttachedVghdIsRunning())
+                {
+                    nextCheckMilliseconds = 1_000;
                     return;
+                }
                 if (Volatile.Read(ref vghd_procID) != 0)
                     ResetVghdAttachment();
-                InjectVGHDProcess();
+                if (InjectVGHDProcess())
+                    nextCheckMilliseconds = 1_000;
             }
             catch (Exception exception)
             {
@@ -2300,6 +2304,12 @@ namespace IStripperQuickPlayer
             finally
             {
                 Interlocked.Exchange(ref vghdInjectionInProgress, 0);
+                try
+                {
+                    timerhook?.Change(
+                        nextCheckMilliseconds, Timeout.Infinite);
+                }
+                catch (ObjectDisposedException) { }
             }
         }
 
@@ -2599,12 +2609,21 @@ namespace IStripperQuickPlayer
                 playbackBridgeLoaded && !playbackBusy && !formIsClosing;
             bool seekEnabled = enabled && playbackMovieRegistered &&
                 playbackSeekingSupported && playbackSeekReady;
-            cmdRewind.Enabled = seekEnabled;
-            cmdPlayPause.Enabled = enabled;
-            cmdFastForward.Enabled = seekEnabled;
-            cmbPlaybackSpeed.Enabled = enabled && playbackSeekingSupported &&
-                (playbackDecoderKind != 2 || playbackSeekReady);
-            trkPlaybackPosition.Enabled = seekEnabled;
+            var state = (
+                Rewind: seekEnabled,
+                PlayPause: enabled,
+                FastForward: seekEnabled,
+                Speed: enabled && playbackSeekingSupported &&
+                    (playbackDecoderKind != 2 || playbackSeekReady),
+                Position: seekEnabled);
+            if (playbackControlEnabledState == state)
+                return;
+            playbackControlEnabledState = state;
+            cmdRewind.Enabled = state.Rewind;
+            cmdPlayPause.Enabled = state.PlayPause;
+            cmdFastForward.Enabled = state.FastForward;
+            cmbPlaybackSpeed.Enabled = state.Speed;
+            trkPlaybackPosition.Enabled = state.Position;
         }
 
         private static bool HasPlatinumPlaybackEntitlement(string? userLevel)
@@ -3160,8 +3179,10 @@ namespace IStripperQuickPlayer
 
         private void UpdatePlaybackTime(int elapsedMilliseconds, int totalMilliseconds)
         {
-            lblPlaybackTime.Text =
+            string text =
                 $"{FormatPlaybackTime(elapsedMilliseconds)} / {FormatPlaybackTime(totalMilliseconds)}";
+            if (lblPlaybackTime.Text != text)
+                lblPlaybackTime.Text = text;
         }
 
         private void trkPlaybackPosition_MouseDown(object sender, MouseEventArgs e)
@@ -3504,9 +3525,35 @@ namespace IStripperQuickPlayer
         }
 
         private static string GetCurrentAnimationPath()
+            => GetPlaybackRegistryValue("CurrentAnim");
+
+        private static string GetPlaybackRegistryValue(string valueName)
         {
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
-            return key?.GetValue("CurrentAnim", "")?.ToString() ?? "";
+            lock (playbackRegistryLock)
+            {
+                try
+                {
+                    playbackParametersKey ??= Registry.CurrentUser.OpenSubKey(
+                        @"Software\Totem\vghd\parameters", false);
+                    return playbackParametersKey?.GetValue(
+                        valueName, "")?.ToString() ?? "";
+                }
+                catch
+                {
+                    playbackParametersKey?.Dispose();
+                    playbackParametersKey = null;
+                    return "";
+                }
+            }
+        }
+
+        private static void DisposePlaybackRegistryCache()
+        {
+            lock (playbackRegistryLock)
+            {
+                playbackParametersKey?.Dispose();
+                playbackParametersKey = null;
+            }
         }
 
         private static ulong AlphaCheckpointClipKey(string animationPath)
@@ -3967,17 +4014,8 @@ namespace IStripperQuickPlayer
 
         private void GetNowPlaying()
         {
-            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
-            if (key != null)
-            {
-                var a = key.GetValue("CurrentAnim", "");
-                if (a != null)
-                {
-                    string nowp = a.ToString() ?? "";
-                    ShowNowPlaying(nowp, !string.IsNullOrEmpty(nowp));
-                    key.Close();
-                }
-            }
+            string nowp = GetCurrentAnimationPath();
+            ShowNowPlaying(nowp, !string.IsNullOrEmpty(nowp));
         }
 
         private bool EnforceNowPlaying(string nowplaying)
@@ -4245,6 +4283,7 @@ namespace IStripperQuickPlayer
         {
             formIsClosing = true;
             playbackTimelineTimer.Stop();
+            DisposePlaybackRegistryCache();
             if (panicActive)
             {
                 try
@@ -4276,7 +4315,7 @@ namespace IStripperQuickPlayer
             }
             SavePreviousQueue();
             SaveMyData();
-            Wallpaper.RestoreWallpaper();
+            Wallpaper.SuspendAndRestoreOriginalDesktop();
             if (Utils.DefaultIconsVisible != Utils.DesktopIconsVisible())
             {
                 Utils.ToggleDesktopIcons();
@@ -4324,7 +4363,6 @@ namespace IStripperQuickPlayer
             if (useQueue && model == null && TryPlayNextQueuedAnimation())
                 return;
 
-            RegistryKey? key = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", false);
             string path = completedAnimation ?? "";
             bool chooseRandom = false;
             if (model != null)
@@ -4333,11 +4371,7 @@ namespace IStripperQuickPlayer
             }
             else if (string.IsNullOrEmpty(path))
             {
-                if (key == null) return;
-                var a = key.GetValue("CurrentAnim", "");
-                if (a == null) return;
-                path = a.ToString() ?? "";
-                key.Close();
+                path = GetCurrentAnimationPath();
                 if (path == "") return;
             }
 
@@ -4887,9 +4921,9 @@ namespace IStripperQuickPlayer
             lastWallpaperShortTag = nowPlayingTagShort;
             //check that this wallpaper really matches filters
             ModelCard? model = Datastore.findCardByTag(nowPlayingTagShort.Split("\\")[0]);
-            ListViewItem? res = null;
             if (model == null) return;
-            this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
+            ListViewItem? res = items.FirstOrDefault(x =>
+                x.Text == model.modelName + "\r\n" + model.outfit);
 
             //does the new clip match the clip filter?
             ModelClip? res2 = null;
@@ -4901,25 +4935,27 @@ namespace IStripperQuickPlayer
 
             string modelname = GetModelsString(model);
 
-            foreach (ToolStripMenuItem item in
-                wallpaperToolStripMenuItem.DropDownItems.OfType<ToolStripMenuItem>())
+            ToolStripMenuItem[] monitorItems = wallpaperToolStripMenuItem
+                .DropDownItems.OfType<ToolStripMenuItem>()
+                .Where(item => item.Tag is uint).ToArray();
+            bool canChange = res2 != null &&
+                (NotFromCheck || Properties.Settings.Default.AutoWallpaper);
+            CardPhotos? photos = null;
+            if (canChange && monitorItems.Any(item => item.Checked))
             {
-                if (item.Tag is not uint monitorNumber) continue;
+                photos = new CardPhotos();
+                await photos.LoadCardPhotos(client, nowPlayingTagShort);
+            }
+
+            foreach (ToolStripMenuItem item in monitorItems)
+            {
+                uint monitorNumber = (uint)item.Tag!;
                 if (item.Checked)
                 {
-                    if (NotFromCheck || Properties.Settings.Default.AutoWallpaper)
-                    {
-                        CardPhotos photos = new CardPhotos();
-                        await photos.LoadCardPhotos(client, nowPlayingTagShort);
-                        if (res2 != null &&
-                            (NotFromCheck ||
-                             Properties.Settings.Default.AutoWallpaper))
-                        {
-                            await Wallpaper.ChangeWallpaper(monitorNumber,
-                                photos.getRandomWidescreenURL(), modelname,
-                                model.outfit);
-                        }
-                    }
+                    if (canChange)
+                        await Wallpaper.ChangeWallpaper(monitorNumber,
+                            photos?.getRandomWidescreenURL(), modelname,
+                            model.outfit);
                 }
                 else
                 {
@@ -5060,7 +5096,7 @@ namespace IStripperQuickPlayer
             if (listModelsNew.Items.Count > 0)
             {
                 if (cardRenderer != null)
-                    cardRenderer.cardScale = cardScale;
+                    cardRenderer.SetCardScale(cardScale);
                 listModelsNew.ThumbnailSize = new Size((int)(cardScale * 162), (int)(242 * cardScale));
                 listModelsNew.Invalidate();
             }
@@ -5071,8 +5107,7 @@ namespace IStripperQuickPlayer
         private void listModelsNew_ItemDoubleClick(object sender, ItemClickEventArgs e)
         {
             FilterClips();
-            if (listModelsNew.SelectedItems.Count > 0)
-                GetNextClip(Datastore.findCardByText(listModelsNew.SelectedItems[0].Text));
+            GetNextClip(Datastore.findCardByTag(e.Item.Tag?.ToString() ?? ""));
         }
 
         private void listModelsNew_ItemClick(object sender, ItemClickEventArgs e)

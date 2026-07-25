@@ -29,24 +29,14 @@ namespace IStripperQuickPlayer
         public FilterSettings? filterSettings;
         FilterSettings? savedSettings;
         bool deleting = false;
-        private void SetSkin()
-        {
-            var materialSkinManager = MaterialSkinManager.Instance;
-            materialSkinManager.RemoveFormToManage(this);
-            materialSkinManager.AddFormToManage(this);
-            materialSkinManager.Theme = MaterialSkinManager.Themes.LIGHT;
-            if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
-            materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
-        }
-
         internal Filter(FilterSettings filter, string filterName)
         {
-            SetSkin();
             filterSettings = (FilterSettings)filter.Clone();
             _filterName = filterName;
 
             Save();
             InitializeComponent();
+            MaterialSkinManager.Instance.AddFormToManage(this);
             this.dateTimePickerMin.CustomFormat = Application.CurrentCulture.DateTimeFormat.ShortDatePattern;
             this.dateTimePickerMax.CustomFormat = Application.CurrentCulture.DateTimeFormat.ShortDatePattern;
             ReadValues();
@@ -226,23 +216,37 @@ namespace IStripperQuickPlayer
             if (filterSettings == null) return;
             if (rangeAge != null)
             {
-                filterSettings.minAge = rangeAge.Value;
-                filterSettings.maxAge = rangeAge.Value2;
+                filterSettings.minAge = PreserveOriginalOutsideRange(
+                    rangeAge.Value, rangeAge, savedSettings?.minAge);
+                filterSettings.maxAge = PreserveOriginalOutsideRange(
+                    rangeAge.Value2, rangeAge, savedSettings?.maxAge);
             }
             if (rangeBreastSize != null)
             {
-                filterSettings.minBust = rangeBreastSize.Value;
-                filterSettings.maxBust = rangeBreastSize.Value2;
+                filterSettings.minBust = PreserveOriginalOutsideRange(
+                    rangeBreastSize.Value, rangeBreastSize,
+                    savedSettings?.minBust);
+                filterSettings.maxBust = PreserveOriginalOutsideRange(
+                    rangeBreastSize.Value2, rangeBreastSize,
+                    savedSettings?.maxBust);
             }
             if (rangeWaist != null)
             {
-                filterSettings.minWaist = rangeWaist.Value;
-                filterSettings.maxWaist = rangeWaist.Value2;
+                filterSettings.minWaist = PreserveOriginalOutsideRange(
+                    rangeWaist.Value, rangeWaist,
+                    savedSettings?.minWaist);
+                filterSettings.maxWaist = PreserveOriginalOutsideRange(
+                    rangeWaist.Value2, rangeWaist,
+                    savedSettings?.maxWaist);
             }
             if (rangeHips != null)
             {
-                filterSettings.minHips = rangeHips.Value;
-                filterSettings.maxHips = rangeHips.Value2;
+                filterSettings.minHips = PreserveOriginalOutsideRange(
+                    rangeHips.Value, rangeHips,
+                    savedSettings?.minHips);
+                filterSettings.maxHips = PreserveOriginalOutsideRange(
+                    rangeHips.Value2, rangeHips,
+                    savedSettings?.maxHips);
             }
             if (rangeRating != null)
             {
@@ -275,9 +279,26 @@ namespace IStripperQuickPlayer
             Form1? frm = Utils.GetMainForm();
             if (frm != null)
             {
-                frm.filterSettings = filterSettings;
-                frm.PopulateModelListview();
+                FilterSettings applied =
+                    (FilterSettings)filterSettings.Clone();
+                if (!applied.HasSameValues(frm.filterSettings))
+                {
+                    frm.filterSettings = applied;
+                    frm.PopulateModelListview();
+                }
             }
+        }
+
+        private static decimal PreserveOriginalOutsideRange(decimal value,
+            ColorSlider.ColorSlider range, decimal? original)
+        {
+            if (!original.HasValue)
+                return value;
+            if (value == range.Minimum && original.Value < range.Minimum)
+                return original.Value;
+            if (value == range.Maximum && original.Value > range.Maximum)
+                return original.Value;
+            return value;
         }
 
         private void cmdApply_Click(object sender, EventArgs e)
@@ -320,8 +341,13 @@ namespace IStripperQuickPlayer
             Form1? frm = Utils.GetMainForm();
             if (frm != null)
             {
-                frm.filterSettings = filterSettings;
-                frm.PopulateModelListview();
+                FilterSettings restored =
+                    (FilterSettings)filterSettings.Clone();
+                if (!restored.HasSameValues(frm.filterSettings))
+                {
+                    frm.filterSettings = restored;
+                    frm.PopulateModelListview();
+                }
             }
         }
 

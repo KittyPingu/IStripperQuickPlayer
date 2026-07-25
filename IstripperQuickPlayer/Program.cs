@@ -37,6 +37,20 @@ namespace IStripperQuickPlayer
                     Environment.ExitCode = 1;
                     return;
                 }
+                FilterSettings filter = new();
+                FilterSettings sameFilter =
+                    (FilterSettings)filter.Clone();
+                if (!filter.HasSameValues(sameFilter))
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
+                sameFilter.minWaist++;
+                if (filter.HasSameValues(sameFilter))
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
                 ApplicationConfiguration.Initialize();
                 using Form1 mainWindow = new();
                 using ImageView imageView = new();

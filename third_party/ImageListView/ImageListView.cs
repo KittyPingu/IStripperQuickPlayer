@@ -575,6 +575,11 @@ namespace Manina.Windows.Forms
             }
         }
         /// <summary>
+        /// Gets or sets whether focus changes invalidate the rendered item buffer.
+        /// </summary>
+        [Category("Behavior"), Description("Gets or sets whether focus changes invalidate the rendered item buffer."), DefaultValue(true)]
+        public bool RefreshOnFocusChanged { get; set; } = true;
+        /// <summary>
         /// Gets or sets whether the scrollbars should be shown.
         /// </summary>
         [Category("Appearance"), Description("Gets or sets whether the scrollbars should be shown."), DefaultValue(true)]
@@ -1998,7 +2003,8 @@ namespace Manina.Windows.Forms
         protected override void OnGotFocus(EventArgs e)
         {
             base.OnGotFocus(e);
-            Refresh();
+            if (RefreshOnFocusChanged)
+                Refresh();
         }
         /// <summary>
         /// Handles the LostFocus event.
@@ -2007,7 +2013,8 @@ namespace Manina.Windows.Forms
         protected override void OnLostFocus(EventArgs e)
         {
             base.OnLostFocus(e);
-            Refresh();
+            if (RefreshOnFocusChanged)
+                Refresh();
         }
         /// <summary>
         /// Releases the unmanaged resources used by the control and its child controls

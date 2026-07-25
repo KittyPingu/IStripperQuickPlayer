@@ -43,6 +43,34 @@ namespace IStripperQuickPlayer.DataModel
         {
             return this.MemberwiseClone();
         }
+
+        internal bool HasSameValues(FilterSettings? other) =>
+            other != null &&
+            minAge == other.minAge &&
+            maxAge == other.maxAge &&
+            minBust == other.minBust &&
+            maxBust == other.maxBust &&
+            minWaist == other.minWaist &&
+            maxWaist == other.maxWaist &&
+            minHips == other.minHips &&
+            maxHips == other.maxHips &&
+            minRating == other.minRating &&
+            maxRating == other.maxRating &&
+            minMyRating == other.minMyRating &&
+            maxMyRating == other.maxMyRating &&
+            minDate == other.minDate &&
+            maxDate == other.maxDate &&
+            string.Equals(tags, other.tags,
+                StringComparison.Ordinal) &&
+            IStripper == other.IStripper &&
+            IStripperClassic == other.IStripperClassic &&
+            IStripperXXX == other.IStripperXXX &&
+            VGClassic == other.VGClassic &&
+            DeskBabes == other.DeskBabes &&
+            Special == other.Special &&
+            Normal == other.Normal &&
+            VirtuaGuy == other.VirtuaGuy &&
+            TradingCard == other.TradingCard;
     }
 
     [Serializable]
@@ -60,6 +88,9 @@ namespace IStripperQuickPlayer.DataModel
             if (filterSettings is null)
                 return;
 
+            if (filters.TryGetValue(settingsName, out FilterSettings? existing) &&
+                existing.HasSameValues(filterSettings))
+                return;
             filters[settingsName] = (FilterSettings)filterSettings.Clone();
             Persist();
         }
