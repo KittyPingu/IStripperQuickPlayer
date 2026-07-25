@@ -49,6 +49,8 @@ namespace IStripperQuickPlayer
             isLoaded = true;
             if (string.IsNullOrEmpty(_filterName) || _filterName == "Default") button1.Enabled = false;
             else button1.Enabled = true;
+            _ = TooltipManager.Attach(this, components,
+                Properties.Settings.Default.TooltipInitialDelay);
         }
 
         private void ReadValues()
@@ -80,6 +82,9 @@ namespace IStripperQuickPlayer
             rangeRating.BackColor = Color.Transparent;
             rangeRating.TickColor = Color.Black;
             rangeRating.ElapsedInnerColor = Color.Green;
+            rangeRating.AccessibleName = "Official rating range";
+            rangeRating.AccessibleDescription =
+                "Include cards whose official rating is within this range.";
             rangeRating.ValueChanged += Range_ValueChanged;
 
 
@@ -92,6 +97,15 @@ namespace IStripperQuickPlayer
             rangeHips = CreateMeasurementRange(
                 dx, 378, card => card.hips,
                 filterSettings.minHips, filterSettings.maxHips);
+            rangeBreastSize.AccessibleName = "Bust measurement range";
+            rangeWaist.AccessibleName = "Waist measurement range";
+            rangeHips.AccessibleName = "Hip measurement range";
+            rangeBreastSize.AccessibleDescription =
+                "Include cards whose model bust measurement is within this range.";
+            rangeWaist.AccessibleDescription =
+                "Include cards whose model waist measurement is within this range.";
+            rangeHips.AccessibleDescription =
+                "Include cards whose model hip measurement is within this range.";
 
 
             rangeAge = new ColorSlider.ColorSlider();
@@ -113,6 +127,9 @@ namespace IStripperQuickPlayer
             rangeAge.BackColor = Color.Transparent;
             rangeAge.TickColor = Color.Black;
             rangeAge.ElapsedInnerColor = Color.Green;
+            rangeAge.AccessibleName = "Model age range";
+            rangeAge.AccessibleDescription =
+                "Include cards whose model age is within this range.";
             rangeAge.ValueChanged += Range_ValueChanged;
 
 
@@ -132,6 +149,9 @@ namespace IStripperQuickPlayer
             rangeMyRating.BackColor = Color.Transparent;
             rangeMyRating.TickColor = Color.Black;
             rangeMyRating.ElapsedInnerColor = Color.Green;
+            rangeMyRating.AccessibleName = "Personal rating range";
+            rangeMyRating.AccessibleDescription =
+                "Include cards whose personal rating is within this range.";
             rangeMyRating.ValueChanged += Range_ValueChanged;
 
             chkDeskBabes.Checked = filterSettings.DeskBabes;

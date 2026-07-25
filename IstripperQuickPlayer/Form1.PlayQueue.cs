@@ -63,6 +63,8 @@ namespace IStripperQuickPlayer
             smartQueueIgnoreScoresTrackBar = new()
         {
             AccessibleName = "Chance of random queue choice",
+            AccessibleDescription =
+                "Set the chance of ignoring favour scores and choosing randomly.",
             Minimum = 0,
             Maximum = 100,
             SmallChange = 1,
@@ -83,6 +85,9 @@ namespace IStripperQuickPlayer
             new("Library & search");
         private readonly ToolStripMenuItem appearanceSettingsToolStripMenuItem =
             new("Appearance & desktop");
+        private readonly ToolStripMenuItem tooltipDelayToolStripMenuItem =
+            new("Tooltip delay");
+        private ToolTip? applicationToolTip;
         private readonly ToolStripMenuItem queueFileToolStripMenuItem =
             new("Queue");
         private readonly ToolStripMenuItem saveQueueToolStripMenuItem =
@@ -228,6 +233,9 @@ namespace IStripperQuickPlayer
                 ToolStripMenuItem item = new(label)
                 {
                     Tag = hours,
+                    ToolTipText = hours == 0
+                        ? "Do not exclude recently played cards."
+                        : $"Exclude cards played within the last {label}.",
                     Checked = hours == Properties.Settings.Default
                         .SmartQueueCooldownHours
                 };
@@ -270,7 +278,9 @@ namespace IStripperQuickPlayer
                 new ToolStripMenuItem(
                     "Favour rules normally pick the highest score")
                 {
-                    Enabled = false
+                    Enabled = false,
+                    ToolTipText =
+                        "Enabled favour rules combine into a score; the highest score normally wins."
                 },
                 smartQueueIgnoreScoresLabel,
                 smartQueueIgnoreScoresHost,
@@ -284,6 +294,8 @@ namespace IStripperQuickPlayer
                 ToolStripMenuItem item = new(length.ToString())
                 {
                     Tag = length,
+                    ToolTipText =
+                        $"Keep {length} filtered cards ready in the automatic queue.",
                     Checked = length ==
                         Properties.Settings.Default.AutoQueueLength
                 };
@@ -323,6 +335,8 @@ namespace IStripperQuickPlayer
             };
             playQueueHeader = new Button
             {
+                AccessibleDescription =
+                    "Expand or collapse the manual and automatic play-next queues.",
                 Dock = DockStyle.Top,
                 Height = PlayQueueCollapsedHeight,
                 FlatStyle = FlatStyle.Flat,
@@ -346,6 +360,10 @@ namespace IStripperQuickPlayer
 
             manualQueueFlow = CreateQueueFlowPanel();
             automaticQueueFlow = CreateQueueFlowPanel();
+            manualQueueFlow.AccessibleDescription =
+                "Drop cards or clips here and drag entries to reorder them.";
+            automaticQueueFlow.AccessibleDescription =
+                "Automatic queue generated from the current filters and smart rules.";
             manualQueueLabel = CreateQueueLabel();
             automaticQueueLabel = CreateQueueLabel();
             automaticQueueRefreshButton = new Button
@@ -368,15 +386,14 @@ namespace IStripperQuickPlayer
                 PositionAutomaticQueueRefreshButton();
             automaticQueueLabel.SizeChanged += (_, _) =>
                 PositionAutomaticQueueRefreshButton();
-            new ToolTip(components).SetToolTip(automaticQueueRefreshButton,
-                "Generate a new automatic queue");
-
             Panel manualSection = CreateQueueSection(
                 manualQueueLabel, manualQueueFlow);
             Panel automaticSection = CreateQueueSection(
                 automaticQueueLabel, automaticQueueFlow);
             playQueueSections = new SplitContainer
             {
+                AccessibleDescription =
+                    "Drag the divider to resize the manual and automatic queues.",
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 6,
@@ -411,6 +428,8 @@ namespace IStripperQuickPlayer
             playQueueBody.Controls.Add(playQueueSections);
             playQueueResizeGrip = new Panel
             {
+                AccessibleDescription =
+                    "Drag to change the height of the play-next queue.",
                 Dock = DockStyle.Top,
                 Height = 7,
                 Cursor = Cursors.SizeNS
@@ -467,6 +486,8 @@ namespace IStripperQuickPlayer
                 clipSelectionPlaybackPending = false;
                 PlaySelectedClip();
             };
+            SetupTooltipDelayMenu();
+            SetupPlaybackQueueTooltips();
             GroupSettingsMenu();
             SetPlayQueueColours();
             RefreshPlayQueueVisibility();
@@ -617,6 +638,91 @@ namespace IStripperQuickPlayer
             return panel;
         }
 
+        private void SetupTooltipDelayMenu()
+        {
+            foreach (int delay in new[] { -1, 0, 100, 200, 500, 1_000, 2_000 })
+            {
+                ToolStripMenuItem item = new(
+                    delay < 0 ? "Disabled" :
+                    delay == 0 ? "Immediate" : $"{delay:N0} ms")
+                {
+                    Tag = delay,
+                    ToolTipText = delay < 0
+                        ? "Do not show tooltips."
+                        : $"Wait {delay:N0} milliseconds before showing a tooltip."
+                };
+                item.Click += (_, _) =>
+                {
+                    Properties.Settings.Default.TooltipInitialDelay = delay;
+                    Properties.Settings.Default.Save();
+                    RefreshTooltipDelay();
+                };
+                tooltipDelayToolStripMenuItem.DropDownItems.Add(item);
+            }
+            tooltipDelayToolStripMenuItem.ToolTipText =
+                "Choose how long the pointer waits before showing help.";
+            RefreshTooltipDelay();
+        }
+
+        private void SetupPlaybackQueueTooltips()
+        {
+            playbackSettingsToolStripMenuItem.ToolTipText =
+                "Configure what plays next and QuickPlayer's playback controls.";
+            enablePlayQueueToolStripMenuItem.ToolTipText =
+                "Show and use the manual and automatic play-next queues.";
+            autoQueueLengthToolStripMenuItem.ToolTipText =
+                "Choose how many filtered cards are prepared automatically.";
+            smartQueueToolStripMenuItem.ToolTipText =
+                "Configure filtering, scoring and ordering for the automatic queue.";
+            requeueCompletedManualItemsToolStripMenuItem.ToolTipText =
+                "Move a finished manual item to the end instead of removing it.";
+            randomManualQueueSelectionToolStripMenuItem.ToolTipText =
+                "Choose the next manual item randomly instead of from the front.";
+            enforceCardFilterToolStripMenuItem.ToolTipText =
+                "Limit automatic playback to cards allowed by the current search and filter.";
+            randomPlayOrderToolStripMenuItem.ToolTipText =
+                "Randomize choices when smart-queue scoring does not determine the order.";
+            avoidRecentRepeatsToolStripMenuItem.ToolTipText =
+                "Skip recently played clips when another eligible clip is available.";
+            enablePlaybackControlToolStripMenuItem.ToolTipText =
+                "Attach pause, seek, speed and timeline controls to the desktop animation.";
+            alphaCheckpointCacheToolStripMenuItem.ToolTipText =
+                "Cache modern-clip transparency checkpoints to speed up repeated seeks.";
+            alphaCheckpointCacheSizeToolStripMenuItem.ToolTipText =
+                "Set the maximum space used by the alpha checkpoint cache.";
+            playbackHistoryToolStripMenuItem.ToolTipText =
+                "View or clear the local history used by repeat avoidance and cooldowns.";
+
+            smartQueueFavouritesToolStripMenuItem.ToolTipText =
+                "Allow only favourite cards in the automatic queue.";
+            smartQueueCooldownToolStripMenuItem.ToolTipText =
+                "Temporarily exclude cards that played within the selected period.";
+            smartQueueCooldownByModelToolStripMenuItem.ToolTipText =
+                "Apply the cooldown to every card featuring the same model.";
+            smartQueueLeastRecentToolStripMenuItem.ToolTipText =
+                "Give higher scores to cards that have gone longest without playing.";
+            smartQueueWeightedToolStripMenuItem.ToolTipText =
+                "Give higher scores to favourites and cards with higher personal ratings.";
+            smartQueueNewestToolStripMenuItem.ToolTipText =
+                "Give higher scores to the most recently purchased cards.";
+            smartQueueUnplayedClipsToolStripMenuItem.ToolTipText =
+                "When a card is chosen, prefer one of its clips that has never played.";
+            smartQueueRotateModelsToolStripMenuItem.ToolTipText =
+                "Avoid placing cards from the same model next to each other.";
+        }
+
+        private void RefreshTooltipDelay()
+        {
+            int delay = TooltipManager.NormalizeDelay(
+                Properties.Settings.Default.TooltipInitialDelay);
+            foreach (ToolStripMenuItem item in
+                     tooltipDelayToolStripMenuItem.DropDownItems)
+                item.Checked = item.Tag is int value && value == delay;
+            if (applicationToolTip != null)
+                TooltipManager.SetDelay(applicationToolTip, delay);
+            TooltipManager.SetToolStripTips(this, delay >= 0);
+        }
+
         private void GroupSettingsMenu()
         {
             settingsToolStripMenuItem.DropDownItems.Clear();
@@ -651,6 +757,7 @@ namespace IStripperQuickPlayer
                 wallpaperToolStripMenuItem,
                 showKittyToolStripMenuItem,
                 minimizeToTrayToolStripMenuItem,
+                tooltipDelayToolStripMenuItem,
                 darkModeToolStripMenuItem
             ]);
             settingsToolStripMenuItem.DropDownItems.AddRange(
@@ -982,6 +1089,8 @@ namespace IStripperQuickPlayer
 
             Panel panel = new()
             {
+                AccessibleDescription =
+                    "Click to select, double-click to play, or drag to move this queue item.",
                 Size = cardSize,
                 Margin = new Padding(3),
                 Padding = new Padding(2),
@@ -993,6 +1102,7 @@ namespace IStripperQuickPlayer
             };
             PictureBox image = new()
             {
+                AccessibleDescription = panel.AccessibleDescription,
                 Dock = DockStyle.Top,
                 Height = Math.Max(25, cardSize.Height - 27),
                 BackColor = dark ? Color.FromArgb(32, 32, 32) : Color.Gainsboro,
@@ -1002,6 +1112,7 @@ namespace IStripperQuickPlayer
             };
             Label label = new()
             {
+                AccessibleDescription = panel.AccessibleDescription,
                 Dock = DockStyle.Fill,
                 AutoEllipsis = true,
                 Text = title.Replace("\r\n", " · "),

@@ -874,5 +874,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["EnablePlayerWheelResize"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("-1")]
+        public int TooltipInitialDelay {
+            get {
+                return ((int)(this["TooltipInitialDelay"]));
+            }
+            set {
+                this["TooltipInitialDelay"] = value;
+            }
+        }
     }
 }

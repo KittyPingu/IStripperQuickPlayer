@@ -58,6 +58,8 @@ namespace IStripperQuickPlayer
         private readonly Controls.PlaybackSeekBar cardScaleSeekBar = new()
         {
             AccessibleName = "Card size",
+            AccessibleDescription =
+                "Drag to change the size of cards in the library.",
             Minimum = 10,
             Maximum = 40,
             SmallChange = 1,
@@ -103,6 +105,7 @@ namespace IStripperQuickPlayer
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
+        private const uint ModWin = 0x0008;
         private const uint ModNoRepeat = 0x4000;
         //deviare2 hooking
         private NktSpyMgr _spyMgr = null!;
@@ -148,6 +151,8 @@ namespace IStripperQuickPlayer
             new();
         private readonly Button panicResumeButton = new()
         {
+            AccessibleDescription =
+                "Resume animation playback, queues and QuickPlayer desktop changes.",
             Text = "Resume",
             BackColor = Color.FromArgb(22, 145, 70),
             ForeColor = Color.White,
@@ -481,6 +486,10 @@ namespace IStripperQuickPlayer
                 TextQuery.Parse("(beth OR model:anna) AND \"pool side\"")
                     .Matches(searchCheck));
             System.Diagnostics.Debug.Assert(
+                TooltipManager.NormalizeDelay(-1) == -1 &&
+                TooltipManager.NormalizeDelay(200) == 200 &&
+                TooltipManager.NormalizeDelay(6_000) == 5_000);
+            System.Diagnostics.Debug.Assert(
                 !TextQuery.Parse("anna AND tag:blue").Matches(searchCheck));
             System.Diagnostics.Debug.Assert(SnapHalfStar(3.24M) == 3M &&
                 SnapHalfStar(3.25M) == 3.5M);
@@ -500,6 +509,8 @@ namespace IStripperQuickPlayer
 #endif
             InitializeComponent();
             DoubleBuffered = true;
+            trkPlaybackPosition.AccessibleDescription =
+                "Click or drag to seek within the current clip.";
             listClips.SetDoubleBuffered();
             listModelsNew.RefreshOnFocusChanged = false;
             panicResumeButton.Click += panicResumeButton_Click;
@@ -537,6 +548,9 @@ namespace IStripperQuickPlayer
                     size < 1024 ? $"{size} MB" : $"{size / 1024} GB")
                 {
                     Tag = size,
+                    ToolTipText =
+                        $"Limit the alpha checkpoint cache to " +
+                        $"{(size < 1024 ? $"{size} MB" : $"{size / 1024} GB")}.",
                     Checked = size ==
                         Properties.Settings.Default.AlphaCheckpointCacheSizeMB
                 };
@@ -601,6 +615,8 @@ namespace IStripperQuickPlayer
                 fileToolStripMenuItem.DropDownItems.Count - 1,
                 updateToolStripMenuItem);
             SetupPlayQueue();
+            applicationToolTip = TooltipManager.Attach(this, components,
+                Properties.Settings.Default.TooltipInitialDelay);
             RefreshPlaybackControlVisibility();
             playbackTimelineTimer.Tick += playbackTimelineTimer_Tick;
             if (Properties.Settings.Default.EnablePlaybackControl)
@@ -905,6 +921,8 @@ namespace IStripperQuickPlayer
             };
             ProgressBar progressBar = new()
             {
+                AccessibleDescription =
+                    "Shows progress through the installed clip library.",
                 Left = 16,
                 Top = 48,
                 Width = 428,
@@ -914,6 +932,8 @@ namespace IStripperQuickPlayer
             };
             progressDialog.Controls.Add(statusLabel);
             progressDialog.Controls.Add(progressBar);
+            _ = TooltipManager.Attach(progressDialog,
+                Properties.Settings.Default.TooltipInitialDelay);
             progressDialog.Show(this);
             IProgress<(int Checked, int Total, string Status)> progress =
                 new Progress<(int Checked, int Total, string Status)>(value =>
@@ -1769,6 +1789,8 @@ namespace IStripperQuickPlayer
             };
             DataGridView grid = new()
             {
+                AccessibleDescription =
+                    "View the most recently played cards and clips.",
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 AllowUserToAddRows = false,
@@ -1833,6 +1855,8 @@ namespace IStripperQuickPlayer
             buttons.Controls.Add(clear);
             dialog.Controls.Add(grid);
             dialog.Controls.Add(buttons);
+            _ = TooltipManager.Attach(dialog,
+                Properties.Settings.Default.TooltipInitialDelay);
             RefreshRows();
             dialog.ShowDialog(this);
         }
@@ -2008,6 +2032,7 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.UpdateSettings = false;
                 Properties.Settings.Default.Save();
             }
+            RefreshTooltipDelay();
             Properties.Settings.Default.PropertyChanged += (_, _) =>
                 Properties.Settings.Default.Save();
             spaceBelowClipList = this.Height - listClips.Bottom;
@@ -2083,6 +2108,8 @@ namespace IStripperQuickPlayer
                     ToolStripMenuItem newitem = new ToolStripMenuItem("Monitor " + (i + 1).ToString());
                     newitem.CheckOnClick = true;
                     newitem.Tag = i;
+                    newitem.ToolTipText =
+                        $"Generate QuickPlayer wallpaper on monitor {i + 1}.";
                     if (monitorsChecked.Contains((i + 1).ToString())) newitem.Checked = true;
                     this.wallpaperToolStripMenuItem.DropDownItems.Add(newitem);
                     newitem.CheckedChanged += WallpaperMonitor_CheckedChanged;
@@ -2264,6 +2291,8 @@ namespace IStripperQuickPlayer
             prompt.Controls.AddRange(new Control[] { message, update, later });
             prompt.AcceptButton = update;
             prompt.CancelButton = later;
+            _ = TooltipManager.Attach(prompt,
+                Properties.Settings.Default.TooltipInitialDelay);
             return prompt.ShowDialog(this) == DialogResult.OK;
         }
 
@@ -2451,12 +2480,23 @@ namespace IStripperQuickPlayer
             key = 0;
             try
             {
-                if (new KeysConverter().ConvertFromInvariantString(shortcut) is not Keys keys)
+                static bool IsWindowsModifier(string part) =>
+                    part.Equals("Win", StringComparison.OrdinalIgnoreCase) ||
+                    part.Equals("Windows", StringComparison.OrdinalIgnoreCase);
+
+                string[] parts = shortcut.Split('+',
+                    StringSplitOptions.RemoveEmptyEntries |
+                    StringSplitOptions.TrimEntries);
+                bool hasWindowsModifier = parts.Any(IsWindowsModifier);
+                string keysText = string.Join('+',
+                    parts.Where(part => !IsWindowsModifier(part)));
+                if (new KeysConverter().ConvertFromInvariantString(keysText) is not Keys keys)
                     return false;
 
                 if (keys.HasFlag(Keys.Alt)) modifiers |= ModAlt;
                 if (keys.HasFlag(Keys.Control)) modifiers |= ModControl;
                 if (keys.HasFlag(Keys.Shift)) modifiers |= ModShift;
+                if (hasWindowsModifier) modifiers |= ModWin;
                 key = (uint)(keys & Keys.KeyCode);
                 return key != 0;
             }

@@ -20,7 +20,8 @@ namespace IStripperQuickPlayer
         {
             InitializeComponent();
             SetSkin();
-
+            _ = TooltipManager.Attach(this, components,
+                Properties.Settings.Default.TooltipInitialDelay);
         }
         private void SetSkin()
         {
@@ -45,6 +46,8 @@ namespace IStripperQuickPlayer
             if (image == null) return;
             viewer = new Cyotek.Windows.Forms.ImageBox();
             viewer.Dock = DockStyle.Fill;
+            viewer.AccessibleDescription =
+                "View the card image; right-click to copy or save it.";
             viewer.Image = new Bitmap(image);
             viewer.ContextMenuStrip = contextMenuStrip1;
             viewer.Refresh();

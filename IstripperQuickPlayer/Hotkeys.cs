@@ -18,6 +18,8 @@ namespace IStripperQuickPlayer
         {
             InitializeComponent();
             SetSkin();
+            _ = TooltipManager.Attach(this,
+                Properties.Settings.Default.TooltipInitialDelay);
         }
 
         private void SetSkin()

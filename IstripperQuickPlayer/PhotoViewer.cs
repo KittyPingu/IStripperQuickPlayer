@@ -33,6 +33,8 @@ namespace IStripperQuickPlayer
         {
             InitializeComponent();
             SetSkin();
+            _ = TooltipManager.Attach(this, components,
+                Properties.Settings.Default.TooltipInitialDelay);
         }
 
         internal PhotoViewer(CardPhotos photos) : this()
