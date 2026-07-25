@@ -142,6 +142,8 @@ namespace IStripperQuickPlayer
             new("Resize player with mouse wheel") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
             new("Playback History...");
+        private readonly ToolStripMenuItem libraryHealthCheckToolStripMenuItem =
+            new("Library Health Check...");
         private readonly ToolStripMenuItem addModelToFilterToolStripMenuItem =
             new();
         private readonly Button panicResumeButton = new()
@@ -338,6 +340,67 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(completedQueueCheck == null &&
                 requeueCheck.Select(entry => entry.CardTag)
                     .SequenceEqual(["second", "first"]));
+            System.Diagnostics.Debug.Assert(QueueForPersistence(
+                [new("second")], new("first"), true)
+                .Select(entry => entry.CardTag)
+                .SequenceEqual(["second", "first"]));
+            List<PlayQueueEntry> clickedQueueCheck =
+                [new("first"), new("second")];
+            System.Diagnostics.Debug.Assert(TryRemoveQueueEntry(
+                clickedQueueCheck,
+                new PlayQueueDrag("manual", 1, new("second"))) &&
+                clickedQueueCheck.Select(entry => entry.CardTag)
+                    .SequenceEqual(["first"]));
+            System.Diagnostics.Debug.Assert(
+                RatingFavouritePreference(false, 0) == 0 &&
+                RatingFavouritePreference(true, 10) == 1);
+            Dictionary<string, double> rankCheck = new()
+            {
+                ["first"] = 0,
+                ["last"] = 0
+            };
+            AddRankScores(rankCheck, [new("first"), new("last")]);
+            System.Diagnostics.Debug.Assert(
+                rankCheck["first"] == 1 && rankCheck["last"] == 0);
+            System.Diagnostics.Debug.Assert(
+                HighestScoreIndex([new("low"), new("high")],
+                    new Dictionary<string, double>
+                    {
+                        ["low"] = 0,
+                        ["high"] = 1
+                    }) == 1);
+            System.Diagnostics.Debug.Assert(OrderBySmartQueueScores(
+                [new("first"), new("second")],
+                new Dictionary<string, double>
+                {
+                    ["first"] = 1,
+                    ["second"] = 1
+                }, 0).Select(entry => entry.CardTag)
+                .SequenceEqual(["first", "second"]));
+            System.Diagnostics.Debug.Assert(RotateQueueModels(
+                [new("a1"), new("a2"), new("b1")],
+                new Dictionary<string, string>
+                {
+                    ["a1"] = "A",
+                    ["a2"] = "A",
+                    ["b1"] = "B"
+                }, "").Select(entry => entry.CardTag)
+                .SequenceEqual(["a1", "b1", "a2"]));
+            DateTime cooldownCheck = DateTime.UtcNow;
+            System.Diagnostics.Debug.Assert(CooldownCardTags(
+                [
+                    new PlaybackHistoryEntry
+                    {
+                        AnimationPath = @"recent\recent_1.vghd",
+                        PlayedUtc = cooldownCheck
+                    },
+                    new PlaybackHistoryEntry
+                    {
+                        AnimationPath = @"old\old_1.vghd",
+                        PlayedUtc = cooldownCheck.AddHours(-2)
+                    }
+                ], cooldownCheck.AddHours(-1))
+                .SetEquals(["recent"]));
             DateTime stallCheck = DateTime.UtcNow;
             System.Diagnostics.Debug.Assert(LegacyPlaybackStalledNearEnd(
                 96_000, 100_000, stallCheck.AddSeconds(-3), stallCheck, 3));
@@ -514,6 +577,12 @@ namespace IStripperQuickPlayer
                 avoidRecentRepeatsToolStripMenuItem);
             playbackHistoryToolStripMenuItem.Click += (_, _) =>
                 ShowPlaybackHistory();
+            libraryHealthCheckToolStripMenuItem.Click += async (_, _) =>
+                await RunLibraryHealthCheckAsync();
+            fileToolStripMenuItem.DropDownItems.Insert(
+                fileToolStripMenuItem.DropDownItems.IndexOf(
+                    reloadModelslstToolStripMenuItem) + 1,
+                libraryHealthCheckToolStripMenuItem);
             backupToolStripMenuItem.Click += (_, _) => BackupQuickPlayerData();
             restoreToolStripMenuItem.Click += (_, _) => RestoreQuickPlayerData();
             fileToolStripMenuItem.DropDownItems.Insert(
@@ -551,6 +620,7 @@ namespace IStripperQuickPlayer
             menuCardList.ShowImageMargin = false;
             menuCardList.BackColor = menuStrip1.BackColor;
             menuCardList.ForeColor = fileToolStripMenuItem.ForeColor;
+            ApplySmartQueueSliderTheme();
             foreach (ToolStripItem item in menuCardList.Items)
                 item.ForeColor = menuCardList.ForeColor;
             UpdateFavouriteMenuItem();
@@ -805,6 +875,229 @@ namespace IStripperQuickPlayer
                         exception.Message);
                 }
             }
+        }
+
+        private async Task RunLibraryHealthCheckAsync()
+        {
+            libraryHealthCheckToolStripMenuItem.Enabled = false;
+            Cursor previousCursor = Cursor;
+            Cursor = Cursors.WaitCursor;
+            List<ModelCard> cards = (Datastore.modelcards ?? []).ToList();
+            int totalClips = cards.Sum(card => card.clips?.Count ?? 0);
+            using Form progressDialog = new()
+            {
+                Text = "Library Health Check",
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                ControlBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(460, 92),
+                AutoScaleMode = AutoScaleMode.Dpi
+            };
+            Label statusLabel = new()
+            {
+                AutoSize = false,
+                Left = 16,
+                Top = 14,
+                Width = 428,
+                Height = 24,
+                Text = "Starting library health check..."
+            };
+            ProgressBar progressBar = new()
+            {
+                Left = 16,
+                Top = 48,
+                Width = 428,
+                Height = 22,
+                Minimum = 0,
+                Maximum = Math.Max(1, totalClips)
+            };
+            progressDialog.Controls.Add(statusLabel);
+            progressDialog.Controls.Add(progressBar);
+            progressDialog.Show(this);
+            IProgress<(int Checked, int Total, string Status)> progress =
+                new Progress<(int Checked, int Total, string Status)>(value =>
+                {
+                    progressBar.Maximum = Math.Max(1, value.Total);
+                    progressBar.Value = Math.Clamp(
+                        value.Checked, 0, progressBar.Maximum);
+                    statusLabel.Text = value.Status;
+                });
+            try
+            {
+                (string report, int problems) = await Task.Run(() =>
+                    BuildLibraryHealthReport(cards, progress));
+                progress.Report((totalClips, totalClips, "Writing report..."));
+                string folder = Path.Combine(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData),
+                    "IStripperQuickPlayer");
+                string path = Path.Combine(folder,
+                    "library-health-check.txt");
+                Directory.CreateDirectory(folder);
+                File.WriteAllText(path, RedactUsernamesFromPaths(report));
+                progressDialog.Close();
+
+                DialogResult open = MessageBox.Show(this,
+                    problems == 0
+                        ? "Library health check passed.\r\n\r\nOpen the report?"
+                        : $"Library health check found {problems:N0} " +
+                          "problem(s).\r\n\r\nOpen the report?",
+                    "Library Health Check", MessageBoxButtons.YesNo,
+                    problems == 0 ? MessageBoxIcon.Information :
+                        MessageBoxIcon.Warning);
+                if (open == DialogResult.Yes)
+                {
+                    Process.Start(new ProcessStartInfo(path)
+                    {
+                        UseShellExecute = true
+                    });
+                }
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(this,
+                    "The library health check could not complete.\r\n" +
+                    exception.Message, "Library Health Check",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                if (!progressDialog.IsDisposed)
+                    progressDialog.Close();
+                Cursor = previousCursor;
+                libraryHealthCheckToolStripMenuItem.Enabled = true;
+            }
+        }
+
+        private static (string Report, int Problems) BuildLibraryHealthReport(
+            IReadOnlyCollection<ModelCard> cards,
+            IProgress<(int Checked, int Total, string Status)>? progress = null)
+        {
+            List<ModelClip> clips = cards.SelectMany(card =>
+                card.clips ?? []).ToList();
+            progress?.Report((0, clips.Count, "Checking model drives..."));
+            using RegistryKey? systemKey = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\System", false);
+            string primary = systemKey?.GetValue(
+                "ModelsPath", "")?.ToString() ?? "";
+            string[] additional = systemKey?.GetValue(
+                "ModelsMultiPath", Array.Empty<string>()) as string[]
+                ?? Array.Empty<string>();
+            string[] roots = new[] { primary }.Concat(additional)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => Path.TrimEndingDirectorySeparator(path.Trim()))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            string[] availableRoots = roots.Where(Directory.Exists).ToArray();
+            string[] unavailableRoots = roots.Except(availableRoots,
+                StringComparer.OrdinalIgnoreCase).ToArray();
+
+            int indexedClips = 0;
+            int disabledClips = 0;
+            int missingFiles = 0;
+            int emptyFiles = 0;
+            int unreadableFiles = 0;
+            int duplicateFiles = 0;
+            List<string> samples = [];
+
+            for (int index = 0; index < clips.Count; index++)
+            {
+                ModelClip clip = clips[index];
+                int checkedCount = index + 1;
+                if (checkedCount == 1 || checkedCount % 25 == 0 ||
+                    checkedCount == clips.Count)
+                {
+                    progress?.Report((checkedCount, clips.Count,
+                        $"Checking clips: {checkedCount:N0} / " +
+                        $"{clips.Count:N0}"));
+                }
+                string fileName = Path.GetFileName(clip.clipName ?? "");
+                if (string.IsNullOrWhiteSpace(fileName))
+                    continue;
+                indexedClips++;
+                if (clip.isEnabled != true)
+                    disabledClips++;
+
+                string cardTag = fileName.Split('_')[0];
+                string[] locations = availableRoots.Select(root =>
+                        Path.Combine(root, cardTag, fileName))
+                    .Where(File.Exists).ToArray();
+                if (locations.Length == 0)
+                {
+                    missingFiles++;
+                    if (samples.Count < 200)
+                        samples.Add($"Missing: {cardTag}\\{fileName}");
+                    continue;
+                }
+                if (locations.Length > 1)
+                {
+                    duplicateFiles++;
+                    if (samples.Count < 200)
+                        samples.Add("Duplicate: " +
+                            string.Join(" | ", locations));
+                }
+
+                try
+                {
+                    FileInfo file = new(locations[0]);
+                    if (file.Length == 0)
+                    {
+                        emptyFiles++;
+                        if (samples.Count < 200)
+                            samples.Add($"Empty: {locations[0]}");
+                        continue;
+                    }
+                    using FileStream stream = new(locations[0],
+                        FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    _ = stream.ReadByte();
+                }
+                catch (Exception exception)
+                {
+                    unreadableFiles++;
+                    if (samples.Count < 200)
+                    {
+                        samples.Add($"Unreadable: {locations[0]} | " +
+                            $"{exception.GetType().Name}: " +
+                            exception.Message);
+                    }
+                }
+            }
+
+            int cardsWithoutClips = cards.Count(card =>
+                card.clips == null || card.clips.Count == 0);
+            progress?.Report((clips.Count, clips.Count,
+                "Preparing results..."));
+            int problems = unavailableRoots.Length + missingFiles +
+                emptyFiles + unreadableFiles + duplicateFiles +
+                cardsWithoutClips;
+            StringBuilder report = new();
+            report.AppendLine(
+                $"Library health check: {DateTimeOffset.Now:O}");
+            report.AppendLine(
+                $"QuickPlayer version: {Application.ProductVersion}");
+            report.AppendLine($"Configured roots: {roots.Length}");
+            foreach (string root in roots)
+            {
+                report.AppendLine($"  {root} | available=" +
+                    Directory.Exists(root));
+            }
+            report.AppendLine($"Indexed cards: {cards.Count}");
+            report.AppendLine($"Indexed clips: {indexedClips}");
+            report.AppendLine($"Disabled clips: {disabledClips}");
+            report.AppendLine($"Cards without clips: {cardsWithoutClips}");
+            report.AppendLine($"Unavailable roots: {unavailableRoots.Length}");
+            report.AppendLine($"Missing clip files: {missingFiles}");
+            report.AppendLine($"Zero-byte clip files: {emptyFiles}");
+            report.AppendLine($"Unreadable clip files: {unreadableFiles}");
+            report.AppendLine(
+                $"Clips duplicated across roots: {duplicateFiles}");
+            report.AppendLine($"Problems: {problems}");
+            report.AppendLine(
+                $"Problem samples (first {samples.Count}, maximum 200):");
+            foreach (string sample in samples)
+                report.AppendLine("  " + sample);
+            return (report.ToString(), problems);
         }
 
         private static string RedactUsernamesFromPaths(string text)
@@ -2894,6 +3187,7 @@ namespace IStripperQuickPlayer
                     {
                         manualPlayQueue.Add(activeManualQueueEntry);
                         activeManualQueueEntry = null;
+                        SavePreviousQueue();
                     }
                     GetNextClip();
                     return;

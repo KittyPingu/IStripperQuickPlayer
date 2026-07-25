@@ -721,6 +721,114 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SmartQueueFavouritesOnly {
+            get {
+                return ((bool)(this["SmartQueueFavouritesOnly"]));
+            }
+            set {
+                this["SmartQueueFavouritesOnly"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SmartQueueLeastRecentlyPlayed {
+            get {
+                return ((bool)(this["SmartQueueLeastRecentlyPlayed"]));
+            }
+            set {
+                this["SmartQueueLeastRecentlyPlayed"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SmartQueueRotateModels {
+            get {
+                return ((bool)(this["SmartQueueRotateModels"]));
+            }
+            set {
+                this["SmartQueueRotateModels"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SmartQueueUnplayedClipsFirst {
+            get {
+                return ((bool)(this["SmartQueueUnplayedClipsFirst"]));
+            }
+            set {
+                this["SmartQueueUnplayedClipsFirst"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SmartQueueWeightedPreferences {
+            get {
+                return ((bool)(this["SmartQueueWeightedPreferences"]));
+            }
+            set {
+                this["SmartQueueWeightedPreferences"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SmartQueueNewestPurchasesFirst {
+            get {
+                return ((bool)(this["SmartQueueNewestPurchasesFirst"]));
+            }
+            set {
+                this["SmartQueueNewestPurchasesFirst"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0")]
+        public int SmartQueueCooldownHours {
+            get {
+                return ((int)(this["SmartQueueCooldownHours"]));
+            }
+            set {
+                this["SmartQueueCooldownHours"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool SmartQueueCooldownByModel {
+            get {
+                return ((bool)(this["SmartQueueCooldownByModel"]));
+            }
+            set {
+                this["SmartQueueCooldownByModel"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("0")]
+        public int SmartQueueIgnoreScoresPercent {
+            get {
+                return ((int)(this["SmartQueueIgnoreScoresPercent"]));
+            }
+            set {
+                this["SmartQueueIgnoreScoresPercent"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("330")]
         public int PlayQueueHeight {
             get {

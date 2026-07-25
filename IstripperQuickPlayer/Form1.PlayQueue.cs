@@ -28,6 +28,48 @@ namespace IStripperQuickPlayer
             new("Enable play next queue") { CheckOnClick = true };
         private readonly ToolStripMenuItem autoQueueLengthToolStripMenuItem =
             new("Automatic queue length");
+        private readonly ToolStripMenuItem smartQueueToolStripMenuItem =
+            new("Smart automatic queue");
+        private readonly ToolStripMenuItem smartQueueFavouritesToolStripMenuItem =
+            new("Favourites only") { CheckOnClick = true };
+        private readonly ToolStripMenuItem smartQueueLeastRecentToolStripMenuItem =
+            new("Favour cards played least recently")
+            {
+                CheckOnClick = true
+            };
+        private readonly ToolStripMenuItem smartQueueRotateModelsToolStripMenuItem =
+            new("Avoid adjacent cards from same model")
+            {
+                CheckOnClick = true
+            };
+        private readonly ToolStripMenuItem smartQueueUnplayedClipsToolStripMenuItem =
+            new("Prefer never-played clips") { CheckOnClick = true };
+        private readonly ToolStripMenuItem smartQueueWeightedToolStripMenuItem =
+            new("Favour favourites and higher ratings")
+            {
+                CheckOnClick = true
+            };
+        private readonly ToolStripMenuItem smartQueueNewestToolStripMenuItem =
+            new("Favour newer purchases") { CheckOnClick = true };
+        private readonly ToolStripMenuItem smartQueueCooldownToolStripMenuItem =
+            new("Cooldown");
+        private readonly ToolStripMenuItem smartQueueCooldownByModelToolStripMenuItem =
+            new("Apply cooldown across whole model")
+            {
+                CheckOnClick = true
+            };
+        private readonly ToolStripLabel smartQueueIgnoreScoresLabel = new();
+        private readonly Controls.PlaybackSeekBar
+            smartQueueIgnoreScoresTrackBar = new()
+        {
+            AccessibleName = "Chance of random queue choice",
+            Minimum = 0,
+            Maximum = 100,
+            SmallChange = 1,
+            LargeChange = 10,
+            Size = new System.Drawing.Size(230, 42)
+        };
+        private ToolStripControlHost? smartQueueIgnoreScoresHost;
         private readonly ToolStripMenuItem requeueCompletedManualItemsToolStripMenuItem =
             new("Return completed manual items to end")
             {
@@ -56,6 +98,7 @@ namespace IStripperQuickPlayer
         private Button playQueueHeader = null!;
         private Label manualQueueLabel = null!;
         private Label automaticQueueLabel = null!;
+        private Button automaticQueueRefreshButton = null!;
         private FlowLayoutPanel manualQueueFlow = null!;
         private FlowLayoutPanel automaticQueueFlow = null!;
         private SplitContainer playQueueSections = null!;
@@ -75,6 +118,7 @@ namespace IStripperQuickPlayer
         private PlayQueueEntry? activeManualQueueEntry;
         private long activeQueuedCardStartedAt = -1;
         private string activeQueuedCardLastAnimationPath = "";
+        private bool activeQueuedCardUsesSmartRules;
         private readonly System.Windows.Forms.Timer clipSelectionPlaybackTimer =
             new() { Interval = 15 };
         private readonly System.Windows.Forms.Timer playQueueResizeTimer =
@@ -113,15 +157,127 @@ namespace IStripperQuickPlayer
             requeueCompletedManualItemsToolStripMenuItem.Checked =
                 Properties.Settings.Default.RequeueCompletedManualItems;
             requeueCompletedManualItemsToolStripMenuItem.CheckedChanged +=
-                (_, _) => Properties.Settings.Default
-                    .RequeueCompletedManualItems =
+                (_, _) =>
+                {
+                    Properties.Settings.Default.RequeueCompletedManualItems =
                         requeueCompletedManualItemsToolStripMenuItem.Checked;
+                    SavePreviousQueue();
+                };
             randomManualQueueSelectionToolStripMenuItem.Checked =
                 Properties.Settings.Default.RandomManualQueueSelection;
             randomManualQueueSelectionToolStripMenuItem.CheckedChanged +=
                 (_, _) => Properties.Settings.Default
                     .RandomManualQueueSelection =
                         randomManualQueueSelectionToolStripMenuItem.Checked;
+            smartQueueFavouritesToolStripMenuItem.Checked =
+                Properties.Settings.Default.SmartQueueFavouritesOnly;
+            smartQueueLeastRecentToolStripMenuItem.Checked =
+                Properties.Settings.Default.SmartQueueLeastRecentlyPlayed;
+            smartQueueRotateModelsToolStripMenuItem.Checked =
+                Properties.Settings.Default.SmartQueueRotateModels;
+            smartQueueUnplayedClipsToolStripMenuItem.Checked =
+                Properties.Settings.Default.SmartQueueUnplayedClipsFirst;
+            smartQueueWeightedToolStripMenuItem.Checked =
+                Properties.Settings.Default.SmartQueueWeightedPreferences;
+            smartQueueNewestToolStripMenuItem.Checked =
+                Properties.Settings.Default.SmartQueueNewestPurchasesFirst;
+            smartQueueCooldownByModelToolStripMenuItem.Checked =
+                Properties.Settings.Default.SmartQueueCooldownByModel;
+            smartQueueCooldownByModelToolStripMenuItem.Enabled =
+                Properties.Settings.Default.SmartQueueCooldownHours > 0;
+            smartQueueIgnoreScoresTrackBar.Value = Math.Clamp(
+                Properties.Settings.Default.SmartQueueIgnoreScoresPercent,
+                smartQueueIgnoreScoresTrackBar.Minimum,
+                smartQueueIgnoreScoresTrackBar.Maximum);
+            UpdateSmartQueueIgnoreScoresLabel();
+            smartQueueIgnoreScoresTrackBar.Scroll += (_, _) =>
+            {
+                Properties.Settings.Default.SmartQueueIgnoreScoresPercent =
+                    smartQueueIgnoreScoresTrackBar.Value;
+                UpdateSmartQueueIgnoreScoresLabel();
+            };
+            smartQueueIgnoreScoresTrackBar.MouseUp += (_, _) =>
+                CommitSmartQueueSettings();
+            smartQueueIgnoreScoresTrackBar.KeyUp += (_, _) =>
+                CommitSmartQueueSettings();
+            smartQueueFavouritesToolStripMenuItem.CheckedChanged +=
+                SmartQueueRuleChanged;
+            smartQueueLeastRecentToolStripMenuItem.CheckedChanged +=
+                SmartQueueRuleChanged;
+            smartQueueRotateModelsToolStripMenuItem.CheckedChanged +=
+                SmartQueueRuleChanged;
+            smartQueueUnplayedClipsToolStripMenuItem.CheckedChanged +=
+                SmartQueueRuleChanged;
+            smartQueueWeightedToolStripMenuItem.CheckedChanged +=
+                SmartQueueRuleChanged;
+            smartQueueNewestToolStripMenuItem.CheckedChanged +=
+                SmartQueueRuleChanged;
+            smartQueueCooldownByModelToolStripMenuItem.CheckedChanged +=
+                SmartQueueRuleChanged;
+            foreach ((int hours, string label) in new[]
+            {
+                (0, "Off"),
+                (1, "1 hour"),
+                (6, "6 hours"),
+                (12, "12 hours"),
+                (24, "1 day"),
+                (72, "3 days"),
+                (168, "7 days")
+            })
+            {
+                ToolStripMenuItem item = new(label)
+                {
+                    Tag = hours,
+                    Checked = hours == Properties.Settings.Default
+                        .SmartQueueCooldownHours
+                };
+                item.Click += (_, _) =>
+                {
+                    Properties.Settings.Default.SmartQueueCooldownHours =
+                        hours;
+                    foreach (ToolStripMenuItem cooldownItem in
+                        smartQueueCooldownToolStripMenuItem.DropDownItems)
+                    {
+                        cooldownItem.Checked =
+                            cooldownItem.Tag is int value && value == hours;
+                    }
+                    smartQueueCooldownByModelToolStripMenuItem.Enabled =
+                        hours > 0;
+                    Properties.Settings.Default.Save();
+                    RebuildAutomaticQueue();
+                };
+                smartQueueCooldownToolStripMenuItem.DropDownItems.Add(item);
+            }
+            smartQueueIgnoreScoresHost =
+                new ToolStripControlHost(smartQueueIgnoreScoresTrackBar)
+                {
+                    AutoSize = false,
+                    Size = new System.Drawing.Size(240, 46)
+                };
+            smartQueueToolStripMenuItem.DropDownOpening += (_, _) =>
+                ApplySmartQueueSliderTheme();
+            smartQueueToolStripMenuItem.DropDownOpened += (_, _) =>
+                ApplySmartQueueSliderTheme();
+            smartQueueToolStripMenuItem.DropDownItems.AddRange(
+            [
+                smartQueueFavouritesToolStripMenuItem,
+                smartQueueCooldownToolStripMenuItem,
+                smartQueueCooldownByModelToolStripMenuItem,
+                new ToolStripSeparator(),
+                smartQueueLeastRecentToolStripMenuItem,
+                smartQueueWeightedToolStripMenuItem,
+                smartQueueNewestToolStripMenuItem,
+                new ToolStripMenuItem(
+                    "Favour rules normally pick the highest score")
+                {
+                    Enabled = false
+                },
+                smartQueueIgnoreScoresLabel,
+                smartQueueIgnoreScoresHost,
+                new ToolStripSeparator(),
+                smartQueueUnplayedClipsToolStripMenuItem,
+                smartQueueRotateModelsToolStripMenuItem
+            ]);
 
             foreach (int length in new[] { 5, 10, 15, 20, 30, 50 })
             {
@@ -192,6 +348,28 @@ namespace IStripperQuickPlayer
             automaticQueueFlow = CreateQueueFlowPanel();
             manualQueueLabel = CreateQueueLabel();
             automaticQueueLabel = CreateQueueLabel();
+            automaticQueueRefreshButton = new Button
+            {
+                AccessibleName = "Generate a new automatic queue",
+                Cursor = Cursors.Hand,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI Symbol", 20, FontStyle.Regular),
+                Size = new System.Drawing.Size(21, 21),
+                TabStop = true,
+                UseVisualStyleBackColor = false
+            };
+            automaticQueueRefreshButton.FlatAppearance.BorderSize = 0;
+            automaticQueueRefreshButton.Click += (_, _) =>
+                RebuildAutomaticQueue();
+            automaticQueueRefreshButton.Paint +=
+                automaticQueueRefreshButton_Paint;
+            automaticQueueLabel.Controls.Add(automaticQueueRefreshButton);
+            automaticQueueLabel.TextChanged += (_, _) =>
+                PositionAutomaticQueueRefreshButton();
+            automaticQueueLabel.SizeChanged += (_, _) =>
+                PositionAutomaticQueueRefreshButton();
+            new ToolTip(components).SetToolTip(automaticQueueRefreshButton,
+                "Generate a new automatic queue");
 
             Panel manualSection = CreateQueueSection(
                 manualQueueLabel, manualQueueFlow);
@@ -327,7 +505,7 @@ namespace IStripperQuickPlayer
             queuedAnimationPendingPath = "";
             queuedAnimationPendingConfirmed = false;
             queuedAnimationProtectedUntil = DateTime.MinValue;
-            ClearQueuedCardSession();
+            ClearQueuedCardSession(discardManualQueueEntry: true);
             RebuildAutomaticQueue();
             SavePreviousQueue();
         }
@@ -366,6 +544,7 @@ namespace IStripperQuickPlayer
                 .Select(entry => entry!).ToList();
             manualPlayQueue.Clear();
             manualPlayQueue.AddRange(valid);
+            SavePreviousQueue();
             RebuildAutomaticQueue();
         }
 
@@ -380,8 +559,23 @@ namespace IStripperQuickPlayer
 
         private void SavePreviousQueue()
         {
-            try { Persistence.Save(PreviousQueuePath, manualPlayQueue); }
+            try
+            {
+                Persistence.Save(PreviousQueuePath, QueueForPersistence(
+                    manualPlayQueue, activeManualQueueEntry,
+                    Properties.Settings.Default.RequeueCompletedManualItems));
+            }
             catch { }
+        }
+
+        private static List<PlayQueueEntry> QueueForPersistence(
+            IEnumerable<PlayQueueEntry> queue, PlayQueueEntry? active,
+            bool requeueActive)
+        {
+            List<PlayQueueEntry> saved = queue.ToList();
+            if (requeueActive && active != null)
+                saved.Add(active);
+            return saved;
         }
 
         private static bool IsAvailableQueueEntry(PlayQueueEntry entry)
@@ -430,6 +624,7 @@ namespace IStripperQuickPlayer
             [
                 enablePlayQueueToolStripMenuItem,
                 autoQueueLengthToolStripMenuItem,
+                smartQueueToolStripMenuItem,
                 requeueCompletedManualItemsToolStripMenuItem,
                 randomManualQueueSelectionToolStripMenuItem,
                 new ToolStripSeparator(),
@@ -483,6 +678,8 @@ namespace IStripperQuickPlayer
                 enabled && Properties.Settings.Default.EnforceCardFilter;
             automaticQueueFlow.Enabled =
                 enabled && Properties.Settings.Default.EnforceCardFilter;
+            automaticQueueRefreshButton.Enabled =
+                automaticQueueFlow.Enabled;
             if (!Properties.Settings.Default.EnforceCardFilter)
                 automaticPlayQueue.Clear();
             RenderPlayQueues();
@@ -517,6 +714,13 @@ namespace IStripperQuickPlayer
             automaticQueueLabel.BackColor = background;
             manualQueueLabel.ForeColor = foreground;
             automaticQueueLabel.ForeColor = foreground;
+            automaticQueueRefreshButton.BackColor = background;
+            automaticQueueRefreshButton.ForeColor = foreground;
+            automaticQueueRefreshButton.FlatAppearance.MouseOverBackColor =
+                secondary;
+            automaticQueueRefreshButton.FlatAppearance.MouseDownBackColor =
+                secondary;
+            automaticQueueRefreshButton.Invalidate();
             RenderPlayQueues();
         }
 
@@ -549,6 +753,38 @@ namespace IStripperQuickPlayer
                     ? $"Automatic ({automaticPlayQueue.Count}) — filtered cards"
                     : "Automatic — disabled while card filter enforcement is off";
             UpdatePlayQueueHeader();
+        }
+
+        private void PositionAutomaticQueueRefreshButton()
+        {
+            if (automaticQueueRefreshButton == null ||
+                automaticQueueLabel.Width <= 0)
+                return;
+
+            int textWidth = TextRenderer.MeasureText(
+                automaticQueueLabel.Text,
+                automaticQueueLabel.Font).Width;
+            automaticQueueRefreshButton.Location = new Point(
+                Math.Min(automaticQueueLabel.Width -
+                    automaticQueueRefreshButton.Width,
+                    automaticQueueLabel.Padding.Left + textWidth + 3),
+                1);
+        }
+
+        private void automaticQueueRefreshButton_Paint(
+            object? sender, PaintEventArgs e)
+        {
+            e.Graphics.TextRenderingHint =
+                System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using SolidBrush brush = new(
+                automaticQueueRefreshButton.ForeColor);
+            using StringFormat format = new()
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center
+            };
+            e.Graphics.DrawString("⟳", automaticQueueRefreshButton.Font,
+                brush, automaticQueueRefreshButton.ClientRectangle, format);
         }
 
         private void RenderPlayQueue(FlowLayoutPanel flow,
@@ -786,12 +1022,28 @@ namespace IStripperQuickPlayer
                     return;
                 StartPlayQueueDrag(panel, drag);
             };
+            MouseEventHandler click = (_, e) =>
+            {
+                if (e.Button == MouseButtons.Left && e.Clicks == 1)
+                    SelectCardInModelList(drag.Entry.CardTag);
+            };
+            MouseEventHandler doubleClick = (_, e) =>
+            {
+                if (e.Button == MouseButtons.Left)
+                    PlayQueueEntryImmediately(drag);
+            };
             panel.MouseDown += down;
             panel.MouseMove += move;
+            panel.MouseClick += click;
+            panel.MouseDoubleClick += doubleClick;
             image.MouseDown += down;
             image.MouseMove += move;
+            image.MouseClick += click;
+            image.MouseDoubleClick += doubleClick;
             label.MouseDown += down;
             label.MouseMove += move;
+            label.MouseClick += click;
+            label.MouseDoubleClick += doubleClick;
             EventHandler enter = (_, _) => HighlightPlayQueueCard(panel);
             EventHandler leave = (_, _) =>
                 QueuePlayQueueCardHighlightClear(panel);
@@ -806,6 +1058,63 @@ namespace IStripperQuickPlayer
             image.Tag = drag;
             label.Tag = drag;
             return panel;
+        }
+
+        private void PlayQueueEntryImmediately(PlayQueueDrag drag)
+        {
+            if (panicActive)
+                return;
+
+            PlayQueueEntry entry = drag.Entry;
+            SelectCardInModelList(entry.CardTag);
+            bool manual = drag.Source == "manual";
+            List<PlayQueueEntry> queue = manual
+                ? manualPlayQueue : automaticPlayQueue;
+            if (!TryResolveQueueEntry(entry, out string animationPath,
+                    useSmartRules: manual) ||
+                !TryRemoveQueueEntry(queue, drag))
+                return;
+
+            ClearQueuedCardSession();
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\parameters", true);
+            if (key == null)
+            {
+                queue.Insert(Math.Min(drag.Index, queue.Count), entry);
+                return;
+            }
+
+            StartQueuedCardSession(entry, animationPath,
+                useSmartRules: manual);
+            if (manual)
+            {
+                activeManualQueueEntry = entry;
+                SavePreviousQueue();
+            }
+            else
+            {
+                FillAutomaticQueue(entry.CardTag);
+            }
+            RenderPlayQueues();
+            queuedAnimationPendingPath = animationPath;
+            queuedAnimationPendingConfirmed = false;
+            queuedAnimationProtectedUntil = DateTime.MinValue;
+            BeginAnimationReplacement(animationPath);
+            key.SetValue("ForceAnim", animationPath);
+            SelectQueuedCard(entry.CardTag, animationPath);
+            BeginInvoke((Action)TaskbarThumbnail);
+        }
+
+        private static bool TryRemoveQueueEntry(List<PlayQueueEntry> queue,
+            PlayQueueDrag drag)
+        {
+            int index = drag.Index < queue.Count &&
+                queue[drag.Index] == drag.Entry
+                    ? drag.Index : queue.IndexOf(drag.Entry);
+            if (index < 0)
+                return false;
+            queue.RemoveAt(index);
+            return true;
         }
 
         private void HighlightPlayQueueCard(Panel panel)
@@ -875,6 +1184,8 @@ namespace IStripperQuickPlayer
             {
                 queue.Remove(drag.Entry);
             }
+            if (drag.Source == "manual")
+                SavePreviousQueue();
             if (drag.Source == "automatic")
                 FillAutomaticQueue(drag.Entry.CardTag);
             RenderPlayQueues();
@@ -1014,6 +1325,7 @@ namespace IStripperQuickPlayer
             automaticPlayQueue.RemoveAll(entry => string.Equals(
                 entry.CardTag, drag.Entry.CardTag,
                 StringComparison.OrdinalIgnoreCase));
+            SavePreviousQueue();
             FillAutomaticQueue();
             BeginInvoke((Action)RenderPlayQueues);
             e.Effect = drag.Source is "library" or "clip"
@@ -1076,8 +1388,8 @@ namespace IStripperQuickPlayer
             }
 
             List<PlayQueueEntry> candidates = EligibleAutomaticQueueEntries();
-            if (Properties.Settings.Default.Randomize)
-                Shuffle(candidates);
+            candidates = ApplySmartQueueRules(
+                candidates, nowPlayingTagShort);
             automaticPlayQueue.AddRange(candidates.Take(
                 Math.Max(0, Properties.Settings.Default.AutoQueueLength)));
             RenderPlayQueues();
@@ -1093,12 +1405,20 @@ namespace IStripperQuickPlayer
             HashSet<string> manualCards = manualPlayQueue
                 .Select(entry => entry.CardTag)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            (HashSet<string> cooldownCards,
+                HashSet<string> cooldownModels) = SmartQueueCooldown();
             foreach (ListViewItem item in items)
             {
                 string tag = item.Tag?.ToString() ?? "";
                 ModelCard? card = Datastore.findCardByTag(tag);
                 if (string.IsNullOrEmpty(tag) || manualCards.Contains(tag) ||
                     !seen.Add(tag) ||
+                    cooldownCards.Contains(tag) ||
+                    Properties.Settings.Default.SmartQueueCooldownByModel &&
+                    !string.IsNullOrEmpty(card?.modelName) &&
+                    cooldownModels.Contains(card.modelName) ||
+                    Properties.Settings.Default.SmartQueueFavouritesOnly &&
+                    myData?.GetCardFavourite(tag) != true ||
                     card?.clips == null || FilterClipList(card.clips).Count == 0)
                     continue;
                 candidates.Add(new PlayQueueEntry(tag));
@@ -1124,11 +1444,244 @@ namespace IStripperQuickPlayer
             List<PlayQueueEntry> candidates = EligibleAutomaticQueueEntries()
                 .Where(entry => !queued.Contains(entry.CardTag) &&
                     !string.Equals(entry.CardTag, excludedCardTag,
-                        StringComparison.OrdinalIgnoreCase)).ToList();
-            if (Properties.Settings.Default.Randomize)
-                Shuffle(candidates);
+                    StringComparison.OrdinalIgnoreCase)).ToList();
+            string previousCardTag =
+                automaticPlayQueue.LastOrDefault()?.CardTag ??
+                excludedCardTag ?? nowPlayingTagShort;
+            candidates = ApplySmartQueueRules(candidates, previousCardTag);
             automaticPlayQueue.AddRange(candidates.Take(
                 Math.Max(0, target - automaticPlayQueue.Count)));
+        }
+
+        private void SmartQueueRuleChanged(object? sender, EventArgs e)
+        {
+            Properties.Settings.Default.SmartQueueFavouritesOnly =
+                smartQueueFavouritesToolStripMenuItem.Checked;
+            Properties.Settings.Default.SmartQueueLeastRecentlyPlayed =
+                smartQueueLeastRecentToolStripMenuItem.Checked;
+            Properties.Settings.Default.SmartQueueRotateModels =
+                smartQueueRotateModelsToolStripMenuItem.Checked;
+            Properties.Settings.Default.SmartQueueUnplayedClipsFirst =
+                smartQueueUnplayedClipsToolStripMenuItem.Checked;
+            Properties.Settings.Default.SmartQueueWeightedPreferences =
+                smartQueueWeightedToolStripMenuItem.Checked;
+            Properties.Settings.Default.SmartQueueNewestPurchasesFirst =
+                smartQueueNewestToolStripMenuItem.Checked;
+            Properties.Settings.Default.SmartQueueCooldownByModel =
+                smartQueueCooldownByModelToolStripMenuItem.Checked;
+            Properties.Settings.Default.Save();
+            RebuildAutomaticQueue();
+        }
+
+        private void UpdateSmartQueueIgnoreScoresLabel()
+        {
+            smartQueueIgnoreScoresLabel.Text =
+                "Chance of random choice: " +
+                $"{smartQueueIgnoreScoresTrackBar.Value}%";
+            smartQueueIgnoreScoresLabel.ToolTipText =
+                "Chance each queued card is picked randomly instead of " +
+                "using the favour scores.";
+        }
+
+        private void ApplySmartQueueSliderTheme()
+        {
+            Color background =
+                smartQueueToolStripMenuItem.DropDown.BackColor;
+            if (smartQueueIgnoreScoresHost != null)
+                smartQueueIgnoreScoresHost.BackColor = background;
+            smartQueueIgnoreScoresTrackBar.BackColor = background;
+            smartQueueIgnoreScoresTrackBar.Invalidate();
+        }
+
+        private void CommitSmartQueueSettings()
+        {
+            Properties.Settings.Default.Save();
+            RebuildAutomaticQueue();
+        }
+
+        private (HashSet<string> Cards, HashSet<string> Models)
+            SmartQueueCooldown()
+        {
+            int hours = Properties.Settings.Default.SmartQueueCooldownHours;
+            if (hours <= 0 || myData == null)
+            {
+                return (new(StringComparer.OrdinalIgnoreCase),
+                    new(StringComparer.OrdinalIgnoreCase));
+            }
+
+            HashSet<string> cards;
+            lock (playbackHistoryLock)
+            {
+                cards = CooldownCardTags(myData.PlaybackHistory,
+                    DateTime.UtcNow.AddHours(-hours));
+            }
+            HashSet<string> models = cards.Select(tag =>
+                    Datastore.findCardByTag(tag)?.modelName)
+                .Where(model => !string.IsNullOrEmpty(model))
+                .Select(model => model!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return (cards, models);
+        }
+
+        private static HashSet<string> CooldownCardTags(
+            IEnumerable<PlaybackHistoryEntry> history, DateTime cutoffUtc) =>
+            history.Where(entry => entry.PlayedUtc >= cutoffUtc &&
+                    !string.IsNullOrWhiteSpace(entry.AnimationPath))
+                .Select(entry => entry.AnimationPath
+                    .Replace('/', '\\').Split('\\')[0])
+                .Where(tag => !string.IsNullOrWhiteSpace(tag))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        private List<PlayQueueEntry> ApplySmartQueueRules(
+            List<PlayQueueEntry> candidates, string previousCardTag)
+        {
+            Dictionary<string, double> scores = candidates.ToDictionary(
+                entry => entry.CardTag, _ => 0d,
+                StringComparer.OrdinalIgnoreCase);
+            bool hasCardPreference = false;
+
+            if (Properties.Settings.Default.SmartQueueWeightedPreferences &&
+                myData != null)
+            {
+                hasCardPreference = true;
+                foreach (PlayQueueEntry entry in candidates)
+                {
+                    scores[entry.CardTag] += RatingFavouritePreference(
+                        myData.GetCardFavourite(entry.CardTag),
+                        myData.GetCardRating(entry.CardTag));
+                }
+            }
+
+            if (Properties.Settings.Default.SmartQueueNewestPurchasesFirst)
+            {
+                hasCardPreference = true;
+                AddRankScores(scores,
+                    candidates.OrderByDescending(entry =>
+                        Datastore.findCardByTag(entry.CardTag)?.datePurchased ??
+                        DateTime.MinValue));
+            }
+
+            if (Properties.Settings.Default.SmartQueueLeastRecentlyPlayed &&
+                myData != null)
+            {
+                hasCardPreference = true;
+                Dictionary<string, DateTime> lastPlayed;
+                lock (playbackHistoryLock)
+                {
+                    lastPlayed = myData.PlaybackHistory
+                        .Where(entry => !string.IsNullOrWhiteSpace(
+                            entry.AnimationPath))
+                        .GroupBy(entry => entry.AnimationPath.Split('\\')[0],
+                            StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(group => group.Key,
+                            group => group.Max(entry => entry.PlayedUtc),
+                            StringComparer.OrdinalIgnoreCase);
+                }
+                AddRankScores(scores,
+                    candidates.OrderBy(entry =>
+                        lastPlayed.TryGetValue(entry.CardTag,
+                            out DateTime played)
+                                ? played : DateTime.MinValue),
+                    1);
+            }
+
+            if (hasCardPreference)
+            {
+                candidates = OrderBySmartQueueScores(candidates, scores,
+                    Properties.Settings.Default
+                        .SmartQueueIgnoreScoresPercent);
+            }
+            else if (Properties.Settings.Default.Randomize)
+            {
+                Shuffle(candidates);
+            }
+
+            if (Properties.Settings.Default.SmartQueueRotateModels)
+            {
+                Dictionary<string, string> models = candidates.ToDictionary(
+                    entry => entry.CardTag,
+                    entry => Datastore.findCardByTag(entry.CardTag)
+                        ?.modelName ?? "",
+                    StringComparer.OrdinalIgnoreCase);
+                string previousModel = Datastore.findCardByTag(
+                    previousCardTag)?.modelName ?? "";
+                candidates = RotateQueueModels(
+                    candidates, models, previousModel);
+            }
+            return candidates;
+        }
+
+        private static double RatingFavouritePreference(bool favourite,
+            decimal rating) => (favourite ? 0.5 : 0) +
+                (double)Math.Clamp(rating, 0, 10) / 20;
+
+        private static List<PlayQueueEntry> OrderBySmartQueueScores(
+            IEnumerable<PlayQueueEntry> candidates,
+            IReadOnlyDictionary<string, double> scores,
+            int ignoreScoresPercent)
+        {
+            List<PlayQueueEntry> remaining = candidates.ToList();
+            List<PlayQueueEntry> ordered = new(remaining.Count);
+            int randomPercent = Math.Clamp(ignoreScoresPercent, 0, 100);
+            while (remaining.Count > 0)
+            {
+                int index = Random.Shared.Next(100) < randomPercent
+                    ? Random.Shared.Next(remaining.Count)
+                    : HighestScoreIndex(remaining, scores);
+                ordered.Add(remaining[index]);
+                remaining.RemoveAt(index);
+            }
+            return ordered;
+        }
+
+        private static int HighestScoreIndex(
+            IReadOnlyList<PlayQueueEntry> candidates,
+            IReadOnlyDictionary<string, double> scores)
+        {
+            int best = 0;
+            for (int index = 1; index < candidates.Count; index++)
+            {
+                if (scores[candidates[index].CardTag] >
+                    scores[candidates[best].CardTag])
+                    best = index;
+            }
+            return best;
+        }
+
+        private static void AddRankScores(
+            IDictionary<string, double> scores,
+            IEnumerable<PlayQueueEntry> orderedCandidates,
+            double maximumScore = 1)
+        {
+            List<PlayQueueEntry> ordered = orderedCandidates.ToList();
+            for (int index = 0; index < ordered.Count; index++)
+                scores[ordered[index].CardTag] += maximumScore *
+                    (ordered.Count <= 1
+                        ? 1 : 1d - (double)index / (ordered.Count - 1));
+        }
+
+        private static List<PlayQueueEntry> RotateQueueModels(
+            IEnumerable<PlayQueueEntry> candidates,
+            IReadOnlyDictionary<string, string> models,
+            string previousModel)
+        {
+            List<PlayQueueEntry> remaining = candidates.ToList();
+            List<PlayQueueEntry> ordered = [];
+            // ponytail: O(n²) is simpler and bounded by the library size;
+            // bucket models only if this becomes measurable.
+            while (remaining.Count > 0)
+            {
+                int index = remaining.FindIndex(entry =>
+                    !string.Equals(models[entry.CardTag], previousModel,
+                        StringComparison.OrdinalIgnoreCase));
+                if (index < 0)
+                    index = 0;
+                PlayQueueEntry selected = remaining[index];
+                remaining.RemoveAt(index);
+                ordered.Add(selected);
+                previousModel = models[selected.CardTag];
+            }
+            return ordered;
         }
 
         private static void Shuffle<T>(IList<T> values)
@@ -1170,11 +1723,14 @@ namespace IStripperQuickPlayer
                         ? Random.Shared.Next(selectableCount) : 0;
                 PlayQueueEntry entry = manualPlayQueue[index];
                 manualPlayQueue.RemoveAt(index);
-                if (TryResolveQueueEntry(entry, out animationPath))
+                if (TryResolveQueueEntry(entry, out animationPath,
+                        useSmartRules: true))
                 {
                     cardTag = entry.CardTag;
-                    StartQueuedCardSession(entry, animationPath);
+                    StartQueuedCardSession(
+                        entry, animationPath, useSmartRules: true);
                     activeManualQueueEntry = entry;
+                    SavePreviousQueue();
                     RenderPlayQueues();
                     return true;
                 }
@@ -1200,7 +1756,8 @@ namespace IStripperQuickPlayer
         }
 
         private bool TryResolveQueueEntry(PlayQueueEntry entry,
-            out string animationPath, string previousAnimationPath = "")
+            out string animationPath, string previousAnimationPath = "",
+            bool useSmartRules = false)
         {
             animationPath = "";
             ModelCard? card = Datastore.findCardByTag(entry.CardTag);
@@ -1221,6 +1778,21 @@ namespace IStripperQuickPlayer
             List<ModelClip> clips = FilterClipList(card.clips);
             if (clips.Count == 0)
                 return false;
+            if (useSmartRules &&
+                Properties.Settings.Default.SmartQueueUnplayedClipsFirst &&
+                myData != null)
+            {
+                HashSet<string> played;
+                lock (playbackHistoryLock)
+                {
+                    played = myData.PlaybackHistory.Select(history =>
+                            history.AnimationPath)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                }
+                List<ModelClip> unplayed = ExcludeRecentClips(clips, played);
+                if (unplayed.Count > 0)
+                    clips = unplayed;
+            }
             bool progressive = IsProgressiveHotnessEnabled();
             ModelClip? previous = clips.FirstOrDefault(clip =>
                 string.Equals(GetAnimationPath(clip), previousAnimationPath,
@@ -1264,7 +1836,8 @@ namespace IStripperQuickPlayer
             if (!ShouldContinueQueuedCard(activeQueuedCardStartedAt,
                     Environment.TickCount64, ReadShowDurationMinutes()) ||
                 !TryResolveQueueEntry(activeQueuedCard, out animationPath,
-                    activeQueuedCardLastAnimationPath))
+                    activeQueuedCardLastAnimationPath,
+                    activeQueuedCardUsesSmartRules))
             {
                 ClearQueuedCardSession(clearManualQueueEntry: false);
                 return false;
@@ -1276,7 +1849,7 @@ namespace IStripperQuickPlayer
         }
 
         private void StartQueuedCardSession(PlayQueueEntry entry,
-            string animationPath)
+            string animationPath, bool useSmartRules = false)
         {
             if (!string.IsNullOrEmpty(entry.ClipName))
             {
@@ -1287,6 +1860,7 @@ namespace IStripperQuickPlayer
             activeQueuedCard = entry;
             activeQueuedCardStartedAt = Environment.TickCount64;
             activeQueuedCardLastAnimationPath = animationPath;
+            activeQueuedCardUsesSmartRules = useSmartRules;
         }
 
         private bool CompleteActiveManualQueueEntry()
@@ -1297,6 +1871,7 @@ namespace IStripperQuickPlayer
                 IsAvailableQueueEntry(activeManualQueueEntry);
             FinishManualQueueEntry(manualPlayQueue,
                 ref activeManualQueueEntry, requeue);
+            SavePreviousQueue();
             return requeue;
         }
 
@@ -1312,13 +1887,23 @@ namespace IStripperQuickPlayer
         }
 
         private void ClearQueuedCardSession(
-            bool clearManualQueueEntry = true)
+            bool clearManualQueueEntry = true,
+            bool discardManualQueueEntry = false)
         {
             activeQueuedCard = null;
             activeQueuedCardStartedAt = -1;
             activeQueuedCardLastAnimationPath = "";
+            activeQueuedCardUsesSmartRules = false;
             if (clearManualQueueEntry)
-                activeManualQueueEntry = null;
+            {
+                bool requeue = !discardManualQueueEntry &&
+                    Properties.Settings.Default.RequeueCompletedManualItems &&
+                    activeManualQueueEntry != null &&
+                    IsAvailableQueueEntry(activeManualQueueEntry);
+                FinishManualQueueEntry(manualPlayQueue,
+                    ref activeManualQueueEntry, requeue);
+                SavePreviousQueue();
+            }
         }
 
         private static bool ShouldContinueQueuedCard(long startedAt,
@@ -1477,15 +2062,7 @@ namespace IStripperQuickPlayer
 
         private void SelectQueuedCard(string cardTag, string animationPath)
         {
-            bool cardIsVisible = listModelsNew.Items.Any(item =>
-                string.Equals(item.Tag?.ToString(), cardTag,
-                    StringComparison.OrdinalIgnoreCase));
-            listModelsNew.ClearSelection();
-            listModelsNew.SelectWhere(item => string.Equals(
-                item.Tag?.ToString(), cardTag,
-                StringComparison.OrdinalIgnoreCase));
-            if (!cardIsVisible)
-                loadListClips(cardTag);
+            SelectCardInModelList(cardTag);
             string clipName = animationPath.Split('\\').LastOrDefault() ?? "";
             ListViewItem? clipItem = listClips.Items.Cast<ListViewItem>()
                 .FirstOrDefault(item => item.SubItems.Count > 1 &&
@@ -1505,6 +2082,30 @@ namespace IStripperQuickPlayer
                     clickingNowPlaying = false;
                 }
             }
+        }
+
+        private void SelectCardInModelList(string cardTag)
+        {
+            int index = -1;
+            for (int current = 0;
+                 current < listModelsNew.Items.Count; current++)
+            {
+                if (string.Equals(
+                        listModelsNew.Items[current].Tag?.ToString(), cardTag,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    index = current;
+                    break;
+                }
+            }
+            listModelsNew.ClearSelection();
+            listModelsNew.SelectWhere(item => string.Equals(
+                item.Tag?.ToString(), cardTag,
+                StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+                listModelsNew.EnsureVisible(index);
+            else
+                loadListClips(cardTag);
         }
     }
 }

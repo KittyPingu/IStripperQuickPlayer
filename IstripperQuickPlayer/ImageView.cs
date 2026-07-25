@@ -30,6 +30,15 @@ namespace IStripperQuickPlayer
             materialSkinManager.Theme = MaterialSkinManager.Themes.LIGHT;
             if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
             materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
+            contextMenuStrip1.ShowImageMargin = false;
+            contextMenuStrip1.BackColor = Properties.Settings.Default.DarkMode
+                ? Color.FromArgb(48, 48, 48)
+                : SystemColors.Menu;
+            contextMenuStrip1.ForeColor =
+                Properties.Settings.Default.DarkMode
+                    ? Color.White : SystemColors.MenuText;
+            foreach (ToolStripItem item in contextMenuStrip1.Items)
+                item.ForeColor = contextMenuStrip1.ForeColor;
         }
         internal void LoadImage(Image? image)
         {
