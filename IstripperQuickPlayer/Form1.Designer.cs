@@ -320,7 +320,7 @@
             // cmbSortBy
             // 
             cmbSortBy.FormattingEnabled = true;
-            cmbSortBy.Items.AddRange(new object[] { "My Rating", "Model Name", "Rating", "Age", "Breast Size", "Height", "Release Date", "Date Purchased" });
+            cmbSortBy.Items.AddRange(new object[] { "My Rating", "Model Name", "Rating", "Age", "Breast Size", "Waist", "Hips", "Height", "Release Date", "Date Purchased" });
             cmbSortBy.Location = new Point(85, 101);
             cmbSortBy.Margin = new Padding(6, 5, 6, 5);
             cmbSortBy.Name = "cmbSortBy";

@@ -1057,6 +1057,18 @@ namespace IStripperQuickPlayer
                 case "Breast Size (Descending)":
                     currentCards = currentCards.OrderByDescending(i => i.bust).ToList();
                     break;
+                case "Waist":
+                    currentCards = currentCards.OrderBy(i => i.waist).ToList();
+                    break;
+                case "Waist (Descending)":
+                    currentCards = currentCards.OrderByDescending(i => i.waist).ToList();
+                    break;
+                case "Hips":
+                    currentCards = currentCards.OrderBy(i => i.hips).ToList();
+                    break;
+                case "Hips (Descending)":
+                    currentCards = currentCards.OrderByDescending(i => i.hips).ToList();
+                    break;
                 case "Ethnicity":
                     currentCards = currentCards.OrderBy(i => i.ethnicity).ToList();
                     break;

@@ -42,6 +42,7 @@ namespace IStripperQuickPlayer.BLL
         internal static CardProperties2? getCardByID(string ID)
         {
             if (cnode == null) return null;
+            ID = ID.Split('-')[0];
             foreach(XmlNode n in cnode)
             {
                 if (n.Attributes != null)

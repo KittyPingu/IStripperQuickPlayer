@@ -65,9 +65,23 @@ namespace IStripperQuickPlayer.BLL
            
         }
 
+        internal static ModelProperties? getModelByName(string? name)
+        {
+            if (mnode == null || string.IsNullOrWhiteSpace(name))
+                return null;
+            foreach (XmlNode node in mnode)
+            {
+                if (string.Equals(node.Attributes?["na"]?.Value, name,
+                    StringComparison.OrdinalIgnoreCase))
+                    return new ModelProperties(node);
+            }
+            return null;
+        }
+
         internal static CardProperties? getCardByID(string ID)
         {
             if (cnode == null) return null;
+            ID = ID.Split('-')[0];
             foreach(XmlNode n in cnode)
             {
                 if (n.Attributes != null)

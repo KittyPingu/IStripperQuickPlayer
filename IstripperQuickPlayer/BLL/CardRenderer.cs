@@ -192,6 +192,37 @@ namespace IStripperQuickPlayer.BLL
             graphics.DrawPath(outline, crown);
         }
 
+        private void DrawOverlayLabel(Graphics graphics, string text,
+            Font font, Rectangle bounds)
+        {
+            SizeF textSize = graphics.MeasureString(text, font);
+            int padding = Math.Max(2, (int)(font.GetHeight(graphics) * .25f));
+            int width = Math.Min(bounds.Width,
+                (int)Math.Ceiling(textSize.Width) + padding * 2);
+            int height = Math.Min(bounds.Height,
+                (int)Math.Ceiling(textSize.Height) + padding);
+            Rectangle panel = new(
+                bounds.Left + (bounds.Width - width) / 2,
+                bounds.Top, width, height);
+            int radius = Math.Max(2, panel.Height / 4);
+            int shadowOffset = Math.Max(1, panel.Height / 12);
+
+            using SolidBrush shadow = new(Color.FromArgb(75, Color.Black));
+            Utility.FillRoundedRectangle(graphics, shadow,
+                new Rectangle(panel.X + shadowOffset,
+                    panel.Y + shadowOffset, panel.Width, panel.Height),
+                radius);
+            using SolidBrush background =
+                new(Color.FromArgb(175, 18, 18, 18));
+            Utility.FillRoundedRectangle(
+                graphics, background, panel, radius);
+            using Pen border =
+                new(Color.FromArgb(70, Color.White), 1);
+            Utility.DrawRoundedRectangle(graphics, border, panel, radius);
+            graphics.DrawString(text, font, Brushes.White, panel,
+                centeredText);
+        }
+
         private void DrawRatingStars(Graphics graphics, Rectangle imageBounds,
             int rating, int itemIndex)
         {
@@ -374,6 +405,14 @@ namespace IStripperQuickPlayer.BLL
                         case "Breast Size (Descending)":
                             text = (card.bust ?? 0).ToString();
                             break;
+                        case "Waist":
+                        case "Waist (Descending)":
+                            text = (card.waist ?? 0).ToString();
+                            break;
+                        case "Hips":
+                        case "Hips (Descending)":
+                            text = (card.hips ?? 0).ToString();
+                            break;
                         case "Date Purchased":
                         case "Date Purchased (Descending)":
                             if (card.datePurchased != null)
@@ -496,19 +535,7 @@ namespace IStripperQuickPlayer.BLL
                        font = GetFont("Verdana", --sz);
                        textSize = g.MeasureString(text, font);
                     }
-                    using GraphicsPath p = new();
-                    p.AddString(
-                        text,            
-                        font.FontFamily,
-                        (int) FontStyle.Regular,     
-                        g.DpiY * font.SizeInPoints / 72,
-                        new Point(imgrect2.Left + (int)((g.DpiY/192)*18*cardScale), imgrect2.Top + (int)((g.DpiY/192)*6)),            
-                        StringFormat.GenericDefault);
-                    using Pen textOutline = new(Color.Black, 3);
-                    g.DrawPath(textOutline, p);
-                    g.FillPath(Brushes.White, p);            
-
-             
+                    DrawOverlayLabel(g, text, font, rect);
                 }
 
                 if (nowPlayingTag == card.modelName + "\r\n" + card.outfit)

@@ -151,35 +151,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.image = LoadCardImage(card);
                             }
 
-                            //read static properties for model
-                            var cardProp = StaticPropertiesLoader.getCardByID(card.name);
-                            if (cardProp != null)
-                            {
-                                card.tags = cardProp.tags;
-                                card.ethnicity = cardProp.ethnicity;
-                                card.exclusive = cardProp.exclusive;
-                                card.numgirls = cardProp.numgirls;
-                                card.modelId = cardProp.modelID;
-                                card.modelName = GetModelsString(card.modelId);
-                                DateTime tempdate = new DateTime(2000,1,1);
-                                DateTime.TryParse(cardProp.datesh, out tempdate);
-                                card.dateShow = tempdate;
-                                string modelID = cardProp.modelID;
-                                if (cardProp.modelID.Contains(","))
-                                    modelID = cardProp.modelID.Split(",")[0];
-
-                                var mProp = StaticPropertiesLoader.getModelByID(modelID);
-                                if (mProp != null)
-                                {
-                                    card.bust = mProp.Bust;
-                                    card.waist = mProp.Waist;
-                                    card.hips = mProp.Hips;
-                                    card.height = mProp.Height;
-                                    card.city = mProp.City;
-                                    card.country = mProp.Country;
-                                    card.birthdate = mProp.Birthdate;
-                                }
-                            }
+                            ApplyStaticProperties(card);
                             //read properties to model
                             var cardProp2 = PropertiesLoader.getCardByID(card.name);
                             if (cardProp2 != null)
@@ -373,35 +345,7 @@ namespace IStripperQuickPlayer.BLL
                                     card.image = LoadCardImage(card);
                                 }
 
-                                //read static properties for model
-                                var cardProp = StaticPropertiesLoader.getCardByID(card.name);
-                                if (cardProp != null)
-                                {
-                                    card.tags = cardProp.tags;
-                                    card.ethnicity = cardProp.ethnicity;
-                                    card.exclusive = cardProp.exclusive;
-                                    card.numgirls = cardProp.numgirls;
-                                    card.modelId = cardProp.modelID;
-                                    card.modelName = GetModelsString(card.modelId);
-                                    DateTime tempdate = new DateTime(2000, 1, 1);
-                                    DateTime.TryParse(cardProp.datesh, out tempdate);
-                                    card.dateShow = tempdate;
-                                    string modelID = cardProp.modelID;
-                                    if (cardProp.modelID.Contains(","))
-                                        modelID = cardProp.modelID.Split(",")[0];
-
-                                    var mProp = StaticPropertiesLoader.getModelByID(modelID);
-                                    if (mProp != null)
-                                    {
-                                        card.bust = mProp.Bust;
-                                        card.waist = mProp.Waist;
-                                        card.hips = mProp.Hips;
-                                        card.height = mProp.Height;
-                                        card.city = mProp.City;
-                                        card.country = mProp.Country;
-                                        card.birthdate = mProp.Birthdate;
-                                    }
-                                }
+                                ApplyStaticProperties(card);
                                 //read properties to model
                                 var cardProp2 = PropertiesLoader.getCardByID(card.name);
                                 if (cardProp2 != null)
@@ -585,6 +529,41 @@ namespace IStripperQuickPlayer.BLL
                     // Preserve the original parse failure.
                 }
             }
+        }
+
+        private void ApplyStaticProperties(ModelCard card)
+        {
+            CardProperties? cardProperties =
+                StaticPropertiesLoader.getCardByID(card.name);
+            ModelProperties? modelProperties;
+            if (cardProperties != null)
+            {
+                card.tags = cardProperties.tags;
+                card.ethnicity = cardProperties.ethnicity;
+                card.exclusive = cardProperties.exclusive;
+                card.numgirls = cardProperties.numgirls;
+                card.modelId = cardProperties.modelID;
+                card.modelName = GetModelsString(card.modelId);
+                DateTime.TryParse(cardProperties.datesh, out card.dateShow);
+                modelProperties = StaticPropertiesLoader.getModelByID(
+                    cardProperties.modelID.Split(',')[0]);
+            }
+            else
+            {
+                modelProperties =
+                    StaticPropertiesLoader.getModelByName(card.modelName);
+                card.modelId = modelProperties?.Name;
+            }
+
+            if (modelProperties == null)
+                return;
+            card.bust = modelProperties.Bust;
+            card.waist = modelProperties.Waist;
+            card.hips = modelProperties.Hips;
+            card.height = modelProperties.Height;
+            card.city = modelProperties.City;
+            card.country = modelProperties.Country;
+            card.birthdate = modelProperties.Birthdate;
         }
 
         private string GetModelsString(string? card_modelId)
