@@ -531,27 +531,34 @@ namespace IStripperQuickPlayer
             DoubleBuffered = true;
             cardOverlayTimer.Tick += (_, _) =>
             {
-                if (Properties.Settings.Default.DrawCardOverlays &&
+                if (!listModelsNew.Visible ||
+                    WindowState == FormWindowState.Minimized)
+                    return;
+                bool animationChanged =
+                    Properties.Settings.Default.DrawCardOverlays &&
                     CardOverlayLoader.HasAnimatedOverlays &&
-                    listModelsNew.Visible &&
-                    WindowState != FormWindowState.Minimized &&
-                    CardOverlayLoader.AnimationFrameChanged())
+                    CardOverlayLoader.AnimationFrameChanged();
+                if (directCompositionCardOverlays != null)
                 {
-                    if (directCompositionCardOverlays != null)
+                    bool staticChanged =
+                        directCompositionCardOverlays
+                            .HasPendingStaticChanges;
+                    if (animationChanged || staticChanged)
                     {
-                        if (!directCompositionCardOverlays.Render())
+                        if (!directCompositionCardOverlays.Render(
+                                true, animationChanged && !staticChanged))
                             DisableDirectCompositionCardOverlays();
                     }
-                    else
-                    {
-                        listModelsNew.RefreshItems(
-                            listModelsNew.Items.Cast<
-                                Manina.Windows.Forms.ImageListViewItem>()
-                            .Where(item =>
-                                CardOverlayLoader.HasAnimatedOverlay(
-                                    item.Tag?.ToString() ?? "")));
-                        RefreshPlayQueueCardOverlays();
-                    }
+                }
+                else if (animationChanged)
+                {
+                    listModelsNew.RefreshItems(
+                        listModelsNew.Items.Cast<
+                            Manina.Windows.Forms.ImageListViewItem>()
+                        .Where(item =>
+                            CardOverlayLoader.HasAnimatedOverlay(
+                                item.Tag?.ToString() ?? "")));
+                    RefreshPlayQueueCardOverlays();
                 }
             };
             cardOverlayTimer.Start();

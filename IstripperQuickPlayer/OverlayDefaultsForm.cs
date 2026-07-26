@@ -370,7 +370,7 @@ internal sealed class OverlayDefaultsForm : Form
             previewTimer.Start();
         }
         previewSurface.Invalidate();
-        composition?.Render();
+        composition?.Render(true);
     }
 
     private void AdvancePreview()
@@ -387,7 +387,7 @@ internal sealed class OverlayDefaultsForm : Form
             if (composition == null)
                 previewSurface.Invalidate();
             else
-                composition.Render();
+                composition.Render(true);
         }
         previewTimer.Interval = currentPreview.NextFrameDelay;
     }

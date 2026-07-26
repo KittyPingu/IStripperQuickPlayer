@@ -32,6 +32,13 @@ namespace IStripperQuickPlayer
                 return;
             }
             if (args.Length == 1 &&
+                args[0] == "--verify-all-overlays-machine")
+            {
+                Environment.ExitCode =
+                    CardOverlayLoader.VerifyAllOverlaysMachine() ? 0 : 1;
+                return;
+            }
+            if (args.Length == 1 &&
                 args[0] == "--verify-overlay-defaults-layout")
             {
                 Environment.ExitCode =

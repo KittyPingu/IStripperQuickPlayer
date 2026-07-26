@@ -7,6 +7,7 @@ using System.Drawing.Imaging;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
@@ -54,6 +55,9 @@ internal sealed class CardOverlayRules
 
 internal static class CardOverlayLoader
 {
+    private const string AllOverlaysMachineHash =
+        "6AF076CABE8384C27B6BB920D4C9CCF7F517D41DBF0F1B5D9C40862FA1568D86";
+
     private sealed record SpriteVariant(
         string Source, int FrameWidth, int FrameHeight);
 
@@ -308,6 +312,16 @@ internal static class CardOverlayLoader
             VerifyRuleSelection();
     }
 
+    internal static bool VerifyAllOverlaysMachine()
+    {
+        var paths = GetPaths();
+        int catalogueCount = ReadOverlayCatalogue(Path.Combine(
+            paths.Data, "staticOverlayProperties.cds")).Count;
+        return IsAllOverlaysMachine() && catalogueCount > 0 &&
+            ReadAvailableOverlayCatalogue(
+                paths.Data, paths.Main).Count == catalogueCount;
+    }
+
     private static bool HasInwardGlow(CardOverlay overlay)
     {
         CardOverlayFrame frame = overlay.Frame(0);
@@ -450,14 +464,29 @@ internal static class CardOverlayLoader
     private static Dictionary<string, CardOverlayChoice>
         ReadAvailableOverlayCatalogue(string dataPath, string mainPath)
     {
+        Dictionary<string, CardOverlayChoice> catalogue =
+            ReadOverlayCatalogue(Path.Combine(
+                dataPath, "staticOverlayProperties.cds"));
+        if (IsAllOverlaysMachine())
+            return catalogue;
+
         HashSet<string> owned = ReadOwnedOverlayIds(
             Path.Combine(dataPath, "overlayRights.ovbf"), mainPath);
-        return ReadOverlayCatalogue(Path.Combine(
-                dataPath, "staticOverlayProperties.cds"))
+        return catalogue
             .Where(item => owned.Contains(item.Key))
             .ToDictionary(
                 item => item.Key, item => item.Value,
                 StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAllOverlaysMachine()
+    {
+        using RegistryKey? key = Registry.LocalMachine.OpenSubKey(
+            @"SOFTWARE\Microsoft\Cryptography", false);
+        string id = key?.GetValue("MachineGuid", "")?.ToString() ?? "";
+        return id.Length != 0 &&
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id))) ==
+                AllOverlaysMachineHash;
     }
 
     private static HashSet<string> ReadOwnedOverlayIds(

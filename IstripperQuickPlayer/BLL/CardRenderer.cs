@@ -48,6 +48,7 @@ namespace IStripperQuickPlayer.BLL
         private readonly Dictionary<int, Rectangle> _imageBoundsByIndex = [];
         private readonly Dictionary<int, Rectangle> _starBoundsByIndex = [];
         private readonly Dictionary<int, GpuCardVisual> gpuCards = [];
+        internal int GpuSceneVersion { get; private set; }
         private readonly SolidBrush labelBrush = new(Color.Black);
         private readonly SolidBrush overlayShadowBrush =
             new(Color.FromArgb(75, Color.Black));
@@ -95,6 +96,7 @@ namespace IStripperQuickPlayer.BLL
                 backgroundColour = Color.WhiteSmoke;
             }
             labelBrush.Color = labelColor;
+            GpuSceneVersion++;
         }
 
         internal void SetCardScale(float scale)
@@ -104,6 +106,7 @@ namespace IStripperQuickPlayer.BLL
             cardScale = scale;
             fittedFonts.Clear();
             ClearIconBitmaps();
+            GpuSceneVersion++;
         }
 
         internal static float CardPixels(
@@ -642,6 +645,7 @@ namespace IStripperQuickPlayer.BLL
                     playingFontSize * g.DpiY / 72f,
                     nameBounds, outfitBounds,
                     sortBounds, playingBounds);
+                GpuSceneVersion++;
                 if (DrawWithDirectComposition)
                     return;
 

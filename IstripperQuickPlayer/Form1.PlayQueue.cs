@@ -532,7 +532,7 @@ namespace IStripperQuickPlayer
         private void QueueFlow_Scroll(object? sender, ScrollEventArgs e)
         {
             if (directCompositionCardOverlays != null &&
-                !directCompositionCardOverlays.Render())
+                !directCompositionCardOverlays.Render(true))
                 DisableDirectCompositionCardOverlays();
         }
 

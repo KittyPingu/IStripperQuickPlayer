@@ -15,6 +15,7 @@ using D2DColor = Vortice.Mathematics.Color4;
 using D2DPixelFormat = Vortice.DCommon.PixelFormat;
 using DrawingBitmap = System.Drawing.Bitmap;
 using DrawingRectangle = System.Drawing.Rectangle;
+using Int2 = Vortice.Mathematics.Int2;
 using DxgiAlphaMode = Vortice.DXGI.AlphaMode;
 using DxgiFormat = Vortice.DXGI.Format;
 
@@ -22,6 +23,224 @@ namespace IStripperQuickPlayer;
 
 internal sealed class DirectCompositionCardOverlayControl : IDisposable
 {
+    private sealed class SharedOverlaySurface(
+        DrawingBitmap image,
+        Size size,
+        IDCompositionSurface surface) : IDisposable
+    {
+        internal DrawingBitmap Image { get; } = image;
+        internal Size Size { get; } = size;
+        internal IDCompositionSurface Surface { get; } = surface;
+        internal DrawingRectangle Source { get; set; }
+        internal bool Rendered { get; set; }
+
+        public void Dispose() => Surface.Dispose();
+    }
+
+    private sealed class CardOverlayVisual(
+        IDCompositionVisual visual,
+        IDCompositionRectangleClip clip) : IDisposable
+    {
+        internal IDCompositionVisual Visual { get; } = visual;
+        internal IDCompositionRectangleClip Clip { get; } = clip;
+        internal SharedOverlaySurface? Surface { get; set; }
+        internal DrawingRectangle Bounds { get; set; }
+        internal bool Rounded { get; set; }
+
+        public void Dispose()
+        {
+            Clip.Dispose();
+            Visual.Dispose();
+        }
+    }
+
+    private void UpdateCardOverlayVisuals()
+    {
+        DrawingRectangle viewport = new(Point.Empty, list.ClientSize);
+        List<(int Index, CardRenderer.GpuCardVisual Visual,
+            CardOverlayFrame Frame)> cards = [];
+        if (Properties.Settings.Default.DrawCardOverlays)
+        {
+            foreach (ImageListViewItem item in list.Items)
+            {
+                if (list.IsItemVisible(item) ==
+                        ItemVisibility.NotVisible ||
+                    !renderer.TryGetGpuCard(
+                        item.Index, out CardRenderer.GpuCardVisual visual) ||
+                    visual.Card.image == null ||
+                    !visual.Bounds.IntersectsWith(viewport) ||
+                    !CardOverlayLoader.TryGetFrame(
+                        visual.Card.name, out CardOverlayFrame frame) ||
+                    frame.Source.Width <= 0 || frame.Source.Height <= 0)
+                    continue;
+                cards.Add((item.Index, visual, frame));
+            }
+        }
+
+        DrawingRectangle[] zoomed = cards
+            .Where(card => !card.Visual.DrawText)
+            .Select(card => card.Visual.ImageBounds)
+            .ToArray();
+        if (zoomed.Length != 0)
+            cards.RemoveAll(card => card.Visual.DrawText &&
+                zoomed.Any(bounds =>
+                    bounds.IntersectsWith(card.Visual.ImageBounds)));
+
+        HashSet<int> active = cards.Select(card => card.Index).ToHashSet();
+        foreach (int removed in cardOverlayVisuals.Keys
+            .Where(index => !active.Contains(index)).ToArray())
+        {
+            CardOverlayVisual visual = cardOverlayVisuals[removed];
+            compositionVisual!.RemoveVisual(visual.Visual);
+            visual.Dispose();
+            cardOverlayVisuals.Remove(removed);
+        }
+
+        HashSet<SharedOverlaySurface> updated = [];
+        foreach (var card in cards.OrderBy(card => card.Visual.DrawText))
+        {
+            SharedOverlaySurface surface =
+                GetSharedOverlaySurface(card.Frame);
+            if (updated.Add(surface))
+                UpdateSharedOverlaySurface(surface, card.Frame);
+
+            if (!cardOverlayVisuals.TryGetValue(
+                    card.Index, out CardOverlayVisual? overlayVisual))
+            {
+                IDCompositionVisual visual =
+                    compositionDevice!.CreateVisual();
+                IDCompositionRectangleClip clip =
+                    compositionDevice.CreateRectangleClip();
+                overlayVisual = new CardOverlayVisual(visual, clip);
+                visual.SetClip(clip);
+                compositionVisual!.AddVisual(visual, true, null);
+                cardOverlayVisuals.Add(card.Index, overlayVisual);
+            }
+            if (!ReferenceEquals(overlayVisual.Surface, surface))
+            {
+                overlayVisual.Visual.SetContent(surface.Surface);
+                overlayVisual.Surface = surface;
+            }
+
+            DrawingRectangle bounds = card.Visual.ImageBounds;
+            bool rounded = Properties.Settings.Default.RoundCardCorners;
+            if (overlayVisual.Bounds != bounds ||
+                overlayVisual.Rounded != rounded)
+            {
+                float scaleX = bounds.Width / (float)surface.Size.Width;
+                float scaleY = bounds.Height / (float)surface.Size.Height;
+                Matrix3x2 scale = Matrix3x2.CreateScale(scaleX, scaleY);
+                overlayVisual.Visual.SetTransform(scale);
+                overlayVisual.Visual.SetOffsetX(bounds.Left);
+                overlayVisual.Visual.SetOffsetY(bounds.Top);
+                SetOverlayClip(
+                    overlayVisual.Clip, surface.Size, rounded);
+                overlayVisual.Bounds = bounds;
+                overlayVisual.Rounded = rounded;
+            }
+        }
+    }
+
+    private void UpdateCardOverlayFrames()
+    {
+        HashSet<SharedOverlaySurface> updated = [];
+        foreach ((int index, CardOverlayVisual visual) in cardOverlayVisuals)
+        {
+            if (visual.Surface == null ||
+                !renderer.TryGetGpuCard(
+                    index, out CardRenderer.GpuCardVisual card) ||
+                !CardOverlayLoader.TryGetFrame(
+                    card.Card.name, out CardOverlayFrame frame) ||
+                !updated.Add(visual.Surface))
+                continue;
+            UpdateSharedOverlaySurface(visual.Surface, frame);
+        }
+    }
+
+    private SharedOverlaySurface GetSharedOverlaySurface(
+        CardOverlayFrame frame)
+    {
+        if (sharedOverlaySurfaces.TryGetValue(
+                frame.Image, out SharedOverlaySurface? surface))
+            return surface;
+        Size size = frame.Source.Size;
+        compositionDevice!.CreateSurface(
+            (uint)size.Width, (uint)size.Height,
+            DxgiFormat.B8G8R8A8_UNorm,
+            DxgiAlphaMode.Premultiplied,
+            out IDCompositionSurface compositionSurface);
+        surface = new SharedOverlaySurface(
+            frame.Image, size, compositionSurface);
+        sharedOverlaySurfaces.Add(frame.Image, surface);
+        return surface;
+    }
+
+    private void UpdateSharedOverlaySurface(
+        SharedOverlaySurface surface, CardOverlayFrame frame)
+    {
+        if (surface.Rendered && surface.Source == frame.Source)
+            return;
+
+        IDXGISurface updateSurface =
+            surface.Surface.BeginDraw<IDXGISurface>(
+                null, out Int2 offset);
+        try
+        {
+            using (updateSurface)
+            using (ID2D1Bitmap1 target =
+                d2dContext!.CreateBitmapFromDxgiSurface(
+                    updateSurface,
+                    new BitmapProperties1(
+                        new D2DPixelFormat(
+                            DxgiFormat.B8G8R8A8_UNorm,
+                            D2DAlphaMode.Premultiplied),
+                        96, 96,
+                        BitmapOptions.Target |
+                        BitmapOptions.CannotDraw)))
+            {
+                d2dContext.Target = target;
+                d2dContext.Transform =
+                    Matrix3x2.CreateTranslation(offset.X, offset.Y);
+                d2dContext.BeginDraw();
+                d2dContext.Clear(new D2DColor(0, 0, 0, 0));
+                d2dContext.DrawBitmap(
+                    GetBitmap(frame.Image),
+                    ToRaw(new DrawingRectangle(
+                        Point.Empty, surface.Size)),
+                    1, Vortice.Direct2D1.InterpolationMode.Linear,
+                    frame.Source, Matrix4x4.Identity);
+                d2dContext.EndDraw();
+                d2dContext.Target = null;
+                d2dContext.Transform = Matrix3x2.Identity;
+            }
+        }
+        finally
+        {
+            surface.Surface.EndDraw();
+        }
+        surface.Source = frame.Source;
+        surface.Rendered = true;
+        sharedOverlayDrawCount++;
+    }
+
+    private static void SetOverlayClip(
+        IDCompositionRectangleClip clip, Size size, bool rounded)
+    {
+        clip.SetLeft(0);
+        clip.SetTop(0);
+        clip.SetRight(size.Width);
+        clip.SetBottom(size.Height);
+        float radius = rounded ? size.Width * 9f / 162f : 0;
+        clip.SetTopLeftRadiusX(radius);
+        clip.SetTopLeftRadiusY(radius);
+        clip.SetTopRightRadiusX(radius);
+        clip.SetTopRightRadiusY(radius);
+        clip.SetBottomLeftRadiusX(radius);
+        clip.SetBottomLeftRadiusY(radius);
+        clip.SetBottomRightRadiusX(radius);
+        clip.SetBottomRightRadiusY(radius);
+    }
+
     private sealed class QueueSurface(
         Control host,
         IDXGISwapChain1 swapChain,
@@ -57,6 +276,10 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     private readonly Dictionary<(
         string Family, float Size, FontWeight Weight),
         IDWriteTextFormat> textFormats = [];
+    private readonly Dictionary<DrawingBitmap, SharedOverlaySurface>
+        sharedOverlaySurfaces =
+            new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<int, CardOverlayVisual> cardOverlayVisuals = [];
     private readonly Dictionary<Control, QueueSurface> queueSurfaces = [];
     private QueueSurface? previewSurface;
     private Func<CardOverlayFrame?>? previewFrame;
@@ -77,7 +300,10 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     private IDCompositionVisual? compositionVisual;
     private Size surfaceSize;
     private int overlayGeneration = -1;
+    private int renderedGpuSceneVersion = -1;
     private int renderedCardCount;
+    private int staticSurfaceDrawCount;
+    private int sharedOverlayDrawCount;
     private bool disposed;
 
     internal DirectCompositionCardOverlayControl(
@@ -176,7 +402,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                     (entry.Picture, entry.CardTag)));
             }
             compositionDevice!.Commit();
-            Render();
+            Render(true);
         }
         catch (Exception exception)
         {
@@ -197,7 +423,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             previewSurface = CreateQueueSurface(host);
             previewFrame = frame;
             compositionDevice!.Commit();
-            return Render();
+            return Render(true);
         }
         catch (Exception exception)
         {
@@ -219,45 +445,62 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             compositionDevice?.Commit();
     }
 
-    internal bool Render()
+    internal bool Render(
+        bool overlaysOnly = false, bool animationOnly = false)
     {
         if (disposed || d2dContext == null || swapChain == null)
             return false;
         try
         {
-            ResizeIfNeeded();
-            if (overlayGeneration != CardOverlayLoader.Generation)
+            bool resized = ResizeIfNeeded();
+            bool overlayReloaded =
+                overlayGeneration != CardOverlayLoader.Generation;
+            if (overlayReloaded)
             {
+                ClearSharedOverlays();
                 ClearBitmaps();
                 overlayGeneration = CardOverlayLoader.Generation;
             }
 
-            d2dContext.Target = targetBitmap;
-            d2dContext.BeginDraw();
-            d2dContext.Clear(new D2DColor(0, 0, 0, 0));
-            DrawingRectangle viewport =
-                new(Point.Empty, list.ClientSize);
-            renderedCardCount = 0;
-            for (int layer = 0; layer < 2; layer++)
+            bool staticChanged =
+                !overlaysOnly || resized || HasPendingStaticChanges;
+            if (staticChanged)
             {
-                foreach (ImageListViewItem item in list.Items)
+                d2dContext.Target = targetBitmap;
+                d2dContext.BeginDraw();
+                d2dContext.Clear(new D2DColor(0, 0, 0, 0));
+                DrawingRectangle viewport =
+                    new(Point.Empty, list.ClientSize);
+                renderedCardCount = 0;
+                for (int layer = 0; layer < 2; layer++)
                 {
-                    if (list.IsItemVisible(item) ==
-                            ItemVisibility.NotVisible ||
-                        !renderer.TryGetGpuCard(
-                            item.Index, out CardRenderer.GpuCardVisual card) ||
-                        !card.Bounds.IntersectsWith(viewport) ||
-                        card.DrawText != (layer == 0))
-                        continue;
-                    DrawCard(item.Index, card);
+                    foreach (ImageListViewItem item in list.Items)
+                    {
+                        if (list.IsItemVisible(item) ==
+                                ItemVisibility.NotVisible ||
+                            !renderer.TryGetGpuCard(
+                                item.Index,
+                                out CardRenderer.GpuCardVisual card) ||
+                            !card.Bounds.IntersectsWith(viewport) ||
+                            card.DrawText != (layer == 0))
+                            continue;
+                        DrawCard(item.Index, card);
+                    }
                 }
+                d2dContext.EndDraw();
+                swapChain.Present(0, PresentFlags.None);
+                renderedGpuSceneVersion = renderer.GpuSceneVersion;
+                staticSurfaceDrawCount++;
             }
-            d2dContext.EndDraw();
-            swapChain.Present(0, PresentFlags.None);
+            if (animationOnly && !staticChanged && !overlayReloaded)
+                UpdateCardOverlayFrames();
+            else
+                UpdateCardOverlayVisuals();
             foreach (QueueSurface surface in queueSurfaces.Values)
                 RenderQueueSurface(surface);
             if (previewSurface != null)
                 RenderPreviewSurface(previewSurface);
+            compositionDevice!.Commit();
             return true;
         }
         catch (Exception exception)
@@ -317,15 +560,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 cardBitmap, ToRaw(imageBounds), 1,
                 Vortice.Direct2D1.InterpolationMode.Linear,
                 null, null);
-            if (Properties.Settings.Default.DrawCardOverlays &&
-                CardOverlayLoader.TryGetFrame(
-                    card.name, out CardOverlayFrame frame))
-            {
-                d2dContext.DrawBitmap(
-                    GetBitmap(frame.Image), imageBounds, 1,
-                    Vortice.Direct2D1.InterpolationMode.Linear,
-                    frame.Source, Matrix4x4.Identity);
-            }
             if (mask != null)
                 d2dContext.PopLayer();
         }
@@ -435,6 +669,42 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         d2dContext.EndDraw();
         swapChain!.Present(0, PresentFlags.None);
         return renderedCardCount == 1;
+    }
+
+    internal bool HasPendingStaticChanges =>
+        renderer.GpuSceneVersion != renderedGpuSceneVersion;
+
+    private bool VerifySharedOverlaySurface(DrawingBitmap sheet)
+    {
+        CardOverlayFrame first = new(
+            sheet, new DrawingRectangle(0, 0, 162, 242));
+        CardOverlayFrame second = new(
+            sheet, new DrawingRectangle(162, 0, 162, 242));
+        int before = sharedOverlayDrawCount;
+        SharedOverlaySurface shared = GetSharedOverlaySurface(first);
+        UpdateSharedOverlaySurface(shared, first);
+        UpdateSharedOverlaySurface(shared, first);
+        if (!ReferenceEquals(
+                shared, GetSharedOverlaySurface(first)) ||
+            sharedOverlayDrawCount != before + 1)
+            return false;
+        UpdateSharedOverlaySurface(shared, second);
+        if (sharedOverlayDrawCount != before + 2)
+            return false;
+
+        using IDCompositionVisual firstVisual =
+            compositionDevice!.CreateVisual();
+        using IDCompositionVisual secondVisual =
+            compositionDevice.CreateVisual();
+        firstVisual.SetContent(shared.Surface);
+        secondVisual.SetContent(shared.Surface);
+        compositionVisual!.AddVisual(firstVisual, true, null);
+        compositionVisual.AddVisual(secondVisual, true, null);
+        compositionDevice.Commit();
+        compositionVisual.RemoveVisual(firstVisual);
+        compositionVisual.RemoveVisual(secondVisual);
+        compositionDevice.Commit();
+        return true;
     }
 
     private Color ReadBitmapPixel(ID2D1Bitmap1 source, int x, int y)
@@ -715,11 +985,11 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         }
     }
 
-    private void ResizeIfNeeded()
+    private bool ResizeIfNeeded()
     {
         Size size = ValidSize(list.ClientSize);
         if (size == surfaceSize)
-            return;
+            return false;
         d2dContext!.Target = null;
         targetBitmap?.Dispose();
         targetBitmap = null;
@@ -728,6 +998,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             DxgiFormat.B8G8R8A8_UNorm);
         surfaceSize = size;
         CreateTargetBitmap();
+        return true;
     }
 
     private void CreateTargetBitmap()
@@ -759,6 +1030,20 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         bitmaps.Clear();
     }
 
+    private void ClearSharedOverlays()
+    {
+        foreach (CardOverlayVisual visual in cardOverlayVisuals.Values)
+        {
+            compositionVisual?.RemoveVisual(visual.Visual);
+            visual.Dispose();
+        }
+        cardOverlayVisuals.Clear();
+        foreach (SharedOverlaySurface surface in
+            sharedOverlaySurfaces.Values)
+            surface.Dispose();
+        sharedOverlaySurfaces.Clear();
+    }
+
     public void Dispose()
     {
         if (disposed)
@@ -767,6 +1052,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         list.Paint -= list_Paint;
         renderer.DrawWithDirectComposition = false;
         CardOverlayLoader.DrawWithDirectComposition = false;
+        ClearSharedOverlays();
         ClearBitmaps();
         foreach (ID2D1SolidColorBrush brush in brushes.Values)
             brush.Dispose();
@@ -806,6 +1092,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
         using DrawingBitmap image = new(
             162, 242, PixelFormat.Format24bppRgb);
+        using DrawingBitmap overlaySheet = new(
+            324, 242, PixelFormat.Format32bppPArgb);
         image.SetResolution(72, 72);
         using (Graphics graphics = Graphics.FromImage(image))
         {
@@ -879,9 +1167,29 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             Console.Error.WriteLine("GPU verify: card draw failed");
             return false;
         }
+        if (!control.VerifySharedOverlaySurface(overlaySheet))
+        {
+            Console.Error.WriteLine(
+                "GPU verify: shared overlay surface failed");
+            return false;
+        }
+        int staticDraws = control.staticSurfaceDrawCount;
+        if (!control.Render(true) ||
+            control.staticSurfaceDrawCount != staticDraws)
+            return false;
+        cardRenderer.SetCardScale(1.1f);
+        if (!control.HasPendingStaticChanges ||
+            !control.Render(true) ||
+            control.staticSurfaceDrawCount != staticDraws + 1 ||
+            control.HasPendingStaticChanges)
+        {
+            Console.Error.WriteLine(
+                "GPU verify: static invalidation failed");
+            return false;
+        }
         control.SetQueueCards([(queue, queueCard, "missing")]);
         bool rendered = control.SetPreview(preview, () => null) &&
-            control.Render();
+            control.Render(true);
         control.ClearPreview();
         return rendered;
     }
