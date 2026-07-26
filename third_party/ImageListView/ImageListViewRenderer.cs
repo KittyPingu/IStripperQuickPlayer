@@ -529,8 +529,16 @@ namespace Manina.Windows.Forms
                 if (ImageListView.View == View.Details && ImageListView.Columns.GetDisplayedColumns().Count == 0)
                     return;
 
-                List<DrawItemParams> drawItemParams = new List<DrawItemParams>();
+                List<int> itemIndexes = new List<int>();
                 for (int i = ImageListView.layoutManager.FirstPartiallyVisible; i <= ImageListView.layoutManager.LastPartiallyVisible; i++)
+                    itemIndexes.Add(i);
+                RenderItems(g, itemIndexes);
+            }
+
+            private void RenderItems(Graphics g, IEnumerable<int> itemIndexes)
+            {
+                List<DrawItemParams> drawItemParams = new List<DrawItemParams>();
+                foreach (int i in itemIndexes)
                 {
                     ImageListViewItem item = ImageListView.Items[i];
 
@@ -628,6 +636,16 @@ namespace Manina.Windows.Forms
                         DrawFileIcon(g, param.Item, cBounds);
                     }
                 }
+            }
+
+            internal bool RedrawItems(IReadOnlyCollection<int> itemIndexes)
+            {
+                if (disposed || bufferGraphics == null ||
+                    itemIndexes.Count == 0)
+                    return false;
+                ImageListView.layoutManager.Update();
+                RenderItems(bufferGraphics.Graphics, itemIndexes);
+                return true;
             }
             /// <summary>
             /// Renders the overlay.

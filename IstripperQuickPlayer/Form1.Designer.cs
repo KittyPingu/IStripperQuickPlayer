@@ -71,6 +71,7 @@
             zoomOnHoverToolStripMenuItem = new ToolStripMenuItem();
             trackBarZoomOnHover = new TrackBarMenuItem();
             menuShowRatingsStars = new ToolStripMenuItem();
+            menuShowCardSortLabels = new ToolStripMenuItem();
             includeDescriptionInSearchToolStripMenuItem = new ToolStripMenuItem();
             includeShowTitleInSearchToolStripMenuItem = new ToolStripMenuItem();
             wallpaperToolStripMenuItem = new ToolStripMenuItem();
@@ -434,7 +435,7 @@
             // 
             // settingsToolStripMenuItem
             // 
-            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, enablePlaybackControlToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
+            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, menuShowCardSortLabels, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, enablePlaybackControlToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
             settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
             settingsToolStripMenuItem.Size = new Size(92, 29);
             settingsToolStripMenuItem.Text = "Settings";
@@ -502,7 +503,15 @@
             menuShowRatingsStars.Size = new Size(342, 34);
             menuShowRatingsStars.Text = "Show MyRating Stars";
             menuShowRatingsStars.CheckedChanged += chkShowRatingStars_CheckedChanged;
-            // 
+            //
+            // menuShowCardSortLabels
+            //
+            menuShowCardSortLabels.CheckOnClick = true;
+            menuShowCardSortLabels.Name = "menuShowCardSortLabels";
+            menuShowCardSortLabels.Size = new Size(342, 34);
+            menuShowCardSortLabels.Text = "Show Card Sort Labels";
+            menuShowCardSortLabels.CheckedChanged += menuShowCardSortLabels_CheckedChanged;
+            //
             // includeDescriptionInSearchToolStripMenuItem
             // 
             includeDescriptionInSearchToolStripMenuItem.CheckOnClick = true;
@@ -1313,6 +1322,7 @@
         private ToolStripMenuItem statsToolStripMenuItem;
         private CheckBox chkFavourite;
         private ToolStripMenuItem menuShowRatingsStars;
+        private ToolStripMenuItem menuShowCardSortLabels;
         private TrackBarMenuItem ratingSlider;
         private ToolStripMenuItem nameToolStripMenuItem;
         private ToolStripMenuItem outfitToolStripMenuItem;

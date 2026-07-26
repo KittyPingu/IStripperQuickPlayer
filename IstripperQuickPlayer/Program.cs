@@ -14,6 +14,71 @@ namespace IStripperQuickPlayer
         [STAThread]
         static void Main(string[] args)
         {      // ***this line is added***
+            if (args.Length == 2 && args[0] == "--verify-card-overlay")
+            {
+                Environment.ExitCode =
+                    CardOverlayLoader.Verify(args[1]) ? 0 : 1;
+                return;
+            }
+            if (args.Length == 2 &&
+                args[0] == "--verify-card-overlay-id")
+            {
+                bool valid = CardOverlayLoader.VerifyOverlayId(args[1]);
+                if (!valid && GlslOverlayRenderer.LastError != null)
+                    Console.Error.WriteLine(GlslOverlayRenderer.LastError);
+                Environment.ExitCode = valid ? 0 : 1;
+                return;
+            }
+            if (args.Length == 1 &&
+                args[0] == "--verify-overlay-defaults-layout")
+            {
+                ApplicationConfiguration.Initialize();
+                Environment.ExitCode =
+                    OverlayDefaultsForm.VerifyLayout() ? 0 : 1;
+                return;
+            }
+            if (args.Length == 1 &&
+                args[0] == "--verify-partial-card-refresh")
+            {
+                ApplicationConfiguration.Initialize();
+                using Manina.Windows.Forms.ImageListView list = new()
+                {
+                    Size = new System.Drawing.Size(400, 300),
+                    ThumbnailSize = new System.Drawing.Size(100, 150)
+                };
+                PartialRefreshRenderer renderer = new();
+                list.SetRenderer(renderer);
+                list.Items.Add(
+                    new Manina.Windows.Forms.ImageListViewItem(
+                        new object(), "first"));
+                list.Items.Add(
+                    new Manina.Windows.Forms.ImageListViewItem(
+                        new object(), "second"));
+                using System.Drawing.Bitmap bitmap =
+                    new(list.Width, list.Height);
+                list.DrawToBitmap(bitmap, list.ClientRectangle);
+                renderer.DrawnItems.Clear();
+                list.RefreshItems([list.Items[0]]);
+                Environment.ExitCode =
+                    renderer.DrawnItems.SequenceEqual([0]) ? 0 : 1;
+                return;
+            }
+            if (args.Length == 1 &&
+                args[0] == "--verify-rounded-card-corners")
+            {
+                ApplicationConfiguration.Initialize();
+                Environment.ExitCode =
+                    CardRenderer.VerifyRoundedCorners() ? 0 : 1;
+                return;
+            }
+            if (args.Length == 1 &&
+                args[0] == "--verify-direct-composition-overlays")
+            {
+                ApplicationConfiguration.Initialize();
+                Environment.ExitCode =
+                    DirectCompositionCardOverlayControl.Verify() ? 0 : 1;
+                return;
+            }
             if (args.Length == 2 && args[0] == "--verify-persistence")
             {
                 Environment.ExitCode = Persistence.VerifyMigration(args[1]) ? 0 : 1;
@@ -120,6 +185,22 @@ namespace IStripperQuickPlayer
         // ***also dllimport of that function***
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
+
+        private sealed class PartialRefreshRenderer :
+            Manina.Windows.Forms.ImageListView.ImageListViewRenderer
+        {
+            internal List<int> DrawnItems { get; } = [];
+
+            public override void DrawItem(
+                Graphics graphics,
+                Manina.Windows.Forms.ImageListViewItem item,
+                Manina.Windows.Forms.ItemState state,
+                Rectangle bounds)
+            {
+                DrawnItems.Add(item.Index);
+                graphics.FillRectangle(Brushes.Black, bounds);
+            }
+        }
     }
 
     internal static partial class TooltipManager

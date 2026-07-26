@@ -16,6 +16,9 @@ namespace IStripperQuickPlayer
         private sealed record PlayQueueEntry(string CardTag,
             string? ClipName = null);
 
+        private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
+            int Relaxation);
+
         private sealed record PlayQueueDrag(string Source, int Index,
             PlayQueueEntry Entry);
 
@@ -452,6 +455,8 @@ namespace IStripperQuickPlayer
             automaticQueueFlow.DragEnter += AutomaticQueueFlow_DragEnter;
             automaticQueueFlow.DragOver += AutomaticQueueFlow_DragEnter;
             automaticQueueFlow.DragDrop += AutomaticQueueFlow_DragDrop;
+            manualQueueFlow.Scroll += QueueFlow_Scroll;
+            automaticQueueFlow.Scroll += QueueFlow_Scroll;
             manualQueueFlow.SizeChanged += (_, _) =>
             {
                 ClearPlayQueueCardHighlight();
@@ -491,6 +496,13 @@ namespace IStripperQuickPlayer
             GroupSettingsMenu();
             SetPlayQueueColours();
             RefreshPlayQueueVisibility();
+        }
+
+        private void QueueFlow_Scroll(object? sender, ScrollEventArgs e)
+        {
+            if (directCompositionCardOverlays != null &&
+                !directCompositionCardOverlays.Render())
+                DisableDirectCompositionCardOverlays();
         }
 
         private void SaveManualQueue()
@@ -748,6 +760,10 @@ namespace IStripperQuickPlayer
             [
                 zoomOnHoverToolStripMenuItem,
                 menuShowRatingsStars,
+                menuShowCardSortLabels,
+                drawCardOverlaysToolStripMenuItem,
+                directCompositionOverlaysToolStripMenuItem,
+                overlayDefaultsToolStripMenuItem,
                 new ToolStripSeparator(),
                 includeDescriptionInSearchToolStripMenuItem,
                 includeShowTitleInSearchToolStripMenuItem
@@ -860,6 +876,7 @@ namespace IStripperQuickPlayer
                     ? $"Automatic ({automaticPlayQueue.Count}) — filtered cards"
                     : "Automatic — disabled while card filter enforcement is off";
             UpdatePlayQueueHeader();
+            UpdatePlayQueueCardOverlays();
         }
 
         private void PositionAutomaticQueueRefreshButton()
@@ -1023,6 +1040,7 @@ namespace IStripperQuickPlayer
             {
                 resizingPlayQueueFlows = false;
             }
+            UpdatePlayQueueCardOverlays();
         }
 
         private void playQueueResizeGrip_MouseDown(object? sender,
@@ -1110,6 +1128,9 @@ namespace IStripperQuickPlayer
                 SizeMode = PictureBoxSizeMode.Zoom,
                 Cursor = Cursors.SizeAll
             };
+            image.Paint += (_, e) =>
+                DrawPlayQueueCardOverlay(
+                    image, drag.Entry.CardTag, e.Graphics);
             Label label = new()
             {
                 AccessibleDescription = panel.AccessibleDescription,
@@ -1169,6 +1190,59 @@ namespace IStripperQuickPlayer
             image.Tag = drag;
             label.Tag = drag;
             return panel;
+        }
+
+        private static void DrawPlayQueueCardOverlay(
+            PictureBox picture, string cardTag, Graphics graphics)
+        {
+            if (!Properties.Settings.Default.DrawCardOverlays ||
+                CardOverlayLoader.DrawWithDirectComposition ||
+                !CardOverlayLoader.TryGetFrame(
+                    cardTag, out CardOverlayFrame frame))
+                return;
+            graphics.DrawImage(
+                frame.Image,
+                DirectCompositionCardOverlayControl.GetZoomBounds(picture),
+                frame.Source,
+                GraphicsUnit.Pixel);
+        }
+
+        private void UpdatePlayQueueCardOverlays()
+        {
+            if (directCompositionCardOverlays == null ||
+                manualQueueFlow == null)
+                return;
+            directCompositionCardOverlays.SetQueueCards(
+                QueueOverlayCards(manualQueueFlow)
+                    .Concat(QueueOverlayCards(automaticQueueFlow)));
+        }
+
+        private static IEnumerable<(
+            Control Host, PictureBox Picture, string CardTag)>
+            QueueOverlayCards(FlowLayoutPanel flow)
+        {
+            foreach (Panel panel in flow.Controls.OfType<Panel>())
+            {
+                if (panel.Tag is not PlayQueueDrag drag)
+                    continue;
+                PictureBox? picture =
+                    panel.Controls.OfType<PictureBox>().FirstOrDefault();
+                if (picture != null)
+                    yield return (flow, picture, drag.Entry.CardTag);
+            }
+        }
+
+        private void RefreshPlayQueueCardOverlays()
+        {
+            if (manualQueueFlow == null)
+                return;
+            foreach (PictureBox picture in
+                QueueOverlayCards(manualQueueFlow)
+                    .Concat(QueueOverlayCards(automaticQueueFlow))
+                    .Where(card => CardOverlayLoader.HasAnimatedOverlay(
+                        card.CardTag))
+                    .Select(card => card.Picture))
+                picture.Invalidate();
         }
 
         private void PlayQueueEntryImmediately(PlayQueueDrag drag)
@@ -1498,20 +1572,19 @@ namespace IStripperQuickPlayer
                 return;
             }
 
-            List<PlayQueueEntry> candidates = EligibleAutomaticQueueEntries();
-            candidates = ApplySmartQueueRules(
-                candidates, nowPlayingTagShort);
-            automaticPlayQueue.AddRange(candidates.Take(
-                Math.Max(0, Properties.Settings.Default.AutoQueueLength)));
+            int target = Math.Max(0,
+                Properties.Settings.Default.AutoQueueLength);
+            automaticPlayQueue.AddRange(SelectAutomaticQueueEntries(
+                target, [], nowPlayingTagShort));
             RenderPlayQueues();
         }
 
-        private List<PlayQueueEntry> EligibleAutomaticQueueEntries()
+        private List<SmartQueueCandidate> EligibleAutomaticQueueEntries()
         {
             if (items == null)
                 return [];
 
-            List<PlayQueueEntry> candidates = [];
+            List<SmartQueueCandidate> candidates = [];
             HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
             HashSet<string> manualCards = manualPlayQueue
                 .Select(entry => entry.CardTag)
@@ -1524,20 +1597,22 @@ namespace IStripperQuickPlayer
                 ModelCard? card = Datastore.findCardByTag(tag);
                 if (string.IsNullOrEmpty(tag) || manualCards.Contains(tag) ||
                     !seen.Add(tag) ||
-                    cooldownCards.Contains(tag) ||
-                    Properties.Settings.Default.SmartQueueCooldownByModel &&
-                    !string.IsNullOrEmpty(card?.modelName) &&
-                    cooldownModels.Contains(card.modelName) ||
-                    Properties.Settings.Default.SmartQueueFavouritesOnly &&
-                    myData?.GetCardFavourite(tag) != true ||
                     card?.clips == null || FilterClipList(card.clips).Count == 0)
                     continue;
-                candidates.Add(new PlayQueueEntry(tag));
+                int relaxation = SmartQueueRelaxation(
+                    cooldownCards.Contains(tag),
+                    Properties.Settings.Default.SmartQueueCooldownByModel &&
+                    !string.IsNullOrEmpty(card.modelName) &&
+                    cooldownModels.Contains(card.modelName),
+                    myData?.GetCardFavourite(tag) == true,
+                    Properties.Settings.Default.SmartQueueFavouritesOnly);
+                candidates.Add(new(new(tag), relaxation));
             }
 
             if (candidates.Count > 1)
-                candidates.RemoveAll(entry => string.Equals(entry.CardTag,
-                    nowPlayingTagShort, StringComparison.OrdinalIgnoreCase));
+                candidates.RemoveAll(candidate => string.Equals(
+                    candidate.Entry.CardTag, nowPlayingTagShort,
+                    StringComparison.OrdinalIgnoreCase));
             return candidates;
         }
 
@@ -1549,19 +1624,51 @@ namespace IStripperQuickPlayer
 
             int target = Math.Max(0,
                 Properties.Settings.Default.AutoQueueLength);
-            HashSet<string> queued = automaticPlayQueue
+            HashSet<string> excluded = automaticPlayQueue
                 .Select(entry => entry.CardTag)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            List<PlayQueueEntry> candidates = EligibleAutomaticQueueEntries()
-                .Where(entry => !queued.Contains(entry.CardTag) &&
-                    !string.Equals(entry.CardTag, excludedCardTag,
-                    StringComparison.OrdinalIgnoreCase)).ToList();
+            if (!string.IsNullOrEmpty(excludedCardTag))
+                excluded.Add(excludedCardTag);
             string previousCardTag =
                 automaticPlayQueue.LastOrDefault()?.CardTag ??
                 excludedCardTag ?? nowPlayingTagShort;
-            candidates = ApplySmartQueueRules(candidates, previousCardTag);
-            automaticPlayQueue.AddRange(candidates.Take(
-                Math.Max(0, target - automaticPlayQueue.Count)));
+            automaticPlayQueue.AddRange(SelectAutomaticQueueEntries(
+                Math.Max(0, target - automaticPlayQueue.Count),
+                excluded, previousCardTag));
+        }
+
+        private List<PlayQueueEntry> SelectAutomaticQueueEntries(
+            int count, IEnumerable<string> excludedCardTags,
+            string previousCardTag)
+        {
+            HashSet<string> excluded = excludedCardTags.ToHashSet(
+                StringComparer.OrdinalIgnoreCase);
+            List<PlayQueueEntry> selected = [];
+            foreach (IGrouping<int, SmartQueueCandidate> tier in
+                EligibleAutomaticQueueEntries()
+                    .Where(candidate =>
+                        !excluded.Contains(candidate.Entry.CardTag))
+                    .GroupBy(candidate => candidate.Relaxation)
+                    .OrderBy(group => group.Key))
+            {
+                List<PlayQueueEntry> ordered = ApplySmartQueueRules(
+                    tier.Select(candidate => candidate.Entry).ToList(),
+                    selected.LastOrDefault()?.CardTag ?? previousCardTag);
+                selected.AddRange(ordered.Take(count - selected.Count));
+                if (selected.Count >= count)
+                    break;
+            }
+            return selected;
+        }
+
+        private static int SmartQueueRelaxation(bool cardOnCooldown,
+            bool modelOnCooldown, bool favourite, bool favouritesOnly)
+        {
+            if (cardOnCooldown)
+                return 3;
+            if (favouritesOnly && !favourite)
+                return 2;
+            return modelOnCooldown ? 1 : 0;
         }
 
         private void SmartQueueRuleChanged(object? sender, EventArgs e)

@@ -322,6 +322,54 @@ namespace IStripperQuickPlayer.Properties {
                 this["ShowRatingStars"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ShowCardSortLabels {
+            get {
+                return ((bool)(this["ShowCardSortLabels"]));
+            }
+            set {
+                this["ShowCardSortLabels"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool DrawCardOverlays {
+            get {
+                return ((bool)(this["DrawCardOverlays"]));
+            }
+            set {
+                this["DrawCardOverlays"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool DirectCompositionOverlays {
+            get {
+                return ((bool)(this["DirectCompositionOverlays"]));
+            }
+            set {
+                this["DirectCompositionOverlays"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("{}")]
+        public string CardOverlayDefaults {
+            get {
+                return ((string)(this["CardOverlayDefaults"]));
+            }
+            set {
+                this["CardOverlayDefaults"] = value;
+            }
+        }
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]

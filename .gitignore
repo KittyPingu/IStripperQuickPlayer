@@ -362,6 +362,12 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /IstripperQuickPlayer/*
+!/IstripperQuickPlayer/BLL/
+/IstripperQuickPlayer/BLL/*
+!/IstripperQuickPlayer/BLL/CardOverlayLoader.cs
+!/IstripperQuickPlayer/BLL/GlslOverlayRenderer.cs
+!/IstripperQuickPlayer/OverlayDefaultsForm.cs
+!/IstripperQuickPlayer/DirectCompositionCardOverlayControl.cs
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/LockStateOverlay.cs
 !/IstripperQuickPlayer/Controls/

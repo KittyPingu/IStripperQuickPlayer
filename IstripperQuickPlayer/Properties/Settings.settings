@@ -77,6 +77,18 @@
     <Setting Name="ShowRatingStars" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>
+    <Setting Name="ShowCardSortLabels" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="DrawCardOverlays" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="DirectCompositionOverlays" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="CardOverlayDefaults" Type="System.String" Scope="User">
+      <Value Profile="(Default)">{}</Value>
+    </Setting>
     <Setting Name="ShowDescInSearch" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
     </Setting>

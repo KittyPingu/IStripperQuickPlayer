@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
 	  <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
@@ -54,6 +54,9 @@
     <PackageReference Include="Microsoft-WindowsAPICodePack-Shell" Version="1.1.4" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
     <PackageReference Include="NodaTime" Version="3.0.10" />
+    <PackageReference Include="OpenTK" Version="4.9.4" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DirectComposition" Version="3.8.3" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\third_party\ImageListView\ImageListView.csproj" />

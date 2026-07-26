@@ -12,6 +12,23 @@ namespace IStripperQuickPlayer.BLL
 {
     public class CardRenderer : ImageListView.ImageListViewRenderer
     {
+        internal readonly record struct GpuCardVisual(
+            ModelCard Card,
+            Rectangle Bounds,
+            Rectangle ImageBounds,
+            bool DrawText,
+            bool Selected,
+            string SortText,
+            decimal MyRating,
+            float NameFontSize,
+            float OutfitFontSize,
+            float SortFontSize,
+            float PlayingFontSize,
+            Rectangle NameBounds,
+            Rectangle OutfitBounds,
+            Rectangle SortBounds,
+            Rectangle PlayingBounds);
+
         internal MyData? myData = null;
         internal float cardScale = 1.0f;
         internal string sortBy = "";
@@ -26,7 +43,9 @@ namespace IStripperQuickPlayer.BLL
         public SolidBrush highlightBrush = new SolidBrush(Color.PaleGreen);
         public Color backgroundColour = Color.WhiteSmoke;
         private readonly Dictionary<int, Rectangle> _boundsByIndex = [];
+        private readonly Dictionary<int, Rectangle> _imageBoundsByIndex = [];
         private readonly Dictionary<int, Rectangle> _starBoundsByIndex = [];
+        private readonly Dictionary<int, GpuCardVisual> gpuCards = [];
         private readonly SolidBrush labelBrush = new(Color.Black);
         private readonly SolidBrush overlayShadowBrush =
             new(Color.FromArgb(75, Color.Black));
@@ -41,6 +60,7 @@ namespace IStripperQuickPlayer.BLL
         private readonly Dictionary<(string Kind, int Size, int Value),
             Bitmap> iconBitmaps = [];
         private bool disposed;
+        internal bool DrawWithDirectComposition { get; set; }
         private readonly StringFormat centeredText = new()
         {
             Alignment = StringAlignment.Center,
@@ -122,7 +142,7 @@ namespace IStripperQuickPlayer.BLL
             iconBitmaps.Clear();
         }
 
-        private Bitmap GetIconBitmap(string kind, int size, int value = 0)
+        internal Bitmap GetIconBitmap(string kind, int size, int value = 0)
         {
             size = Math.Max(1, size);
             var key = (kind, size, value);
@@ -202,6 +222,24 @@ namespace IStripperQuickPlayer.BLL
                 Point(0.56f, 0.86f), Point(0.50f, 0.95f));
             heart.CloseFigure();
             return heart;
+        }
+
+        private static GraphicsPath CreateRoundedCardPath(
+            Rectangle bounds, int radius)
+        {
+            GraphicsPath path = new();
+            int diameter = radius * 2;
+            path.AddArc(bounds.Left, bounds.Top,
+                diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Top,
+                diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter,
+                bounds.Bottom - diameter,
+                diameter, diameter, 0, 90);
+            path.AddArc(bounds.Left, bounds.Bottom - diameter,
+                diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         private static void DrawHotnessIcon(
@@ -357,8 +395,18 @@ namespace IStripperQuickPlayer.BLL
         public bool TryGetItemBounds(int itemIndex, out Rectangle bounds)
             => _boundsByIndex.TryGetValue(itemIndex, out bounds);
 
+        public bool TryGetImageBounds(int itemIndex, out Rectangle bounds)
+            => _imageBoundsByIndex.TryGetValue(itemIndex, out bounds);
+
         public bool TryGetStarItemBounds(int itemIndex, out Rectangle bounds)
              => _starBoundsByIndex.TryGetValue(itemIndex, out bounds);
+
+        internal bool TryGetGpuCard(
+            int itemIndex, out GpuCardVisual visual)
+            => gpuCards.TryGetValue(itemIndex, out visual);
+
+        internal void SetGpuStarBounds(int itemIndex, Rectangle bounds)
+            => _starBoundsByIndex[itemIndex] = bounds;
 
         //public override void DrawBackground(Graphics g, Rectangle bounds)
         //{
@@ -375,6 +423,55 @@ namespace IStripperQuickPlayer.BLL
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             g.CompositingQuality = CompositingQuality.HighQuality;
         }
+
+        private string GetSortText(ModelCard card, decimal myrating)
+        {
+            switch (sortBy)
+            {
+                case "My Rating":
+                    return !Properties.Settings.Default.ShowRatingStars &&
+                        myrating > 0 ? myrating.ToString() : "";
+                case "Height":
+                    decimal height;
+                    decimal.TryParse(
+                        card.height, style, culture, out height);
+                    return RegionInfo.CurrentRegion.IsMetric &&
+                        CultureInfo.CurrentCulture.Name != "en-GB"
+                        ? (((Math.Floor(height) * 12) +
+                            (height - Math.Floor(height)) * 10) *
+                            2.54M).ToString("N1") + "cm"
+                        : Math.Floor(height) + "'" +
+                            (int)(24 * (height - Math.Floor(height))) /
+                            2.0M + "''";
+                case "":
+                case "Model Name":
+                    return "";
+                case "Rating":
+                    return (Convert.ToDecimal(card.rating) - 5m).ToString();
+                case "Age":
+                    return card.modelAge.ToString() ?? "";
+                case "Ethnicity":
+                    return card.ethnicity ?? "";
+                case "Breast Size":
+                case "Breast Size (Descending)":
+                    return (card.bust ?? 0).ToString();
+                case "Waist":
+                case "Waist (Descending)":
+                    return (card.waist ?? 0).ToString();
+                case "Hips":
+                case "Hips (Descending)":
+                    return (card.hips ?? 0).ToString();
+                case "Date Purchased":
+                case "Date Purchased (Descending)":
+                    return card.datePurchased?.ToShortDateString() ?? "";
+                case "Release Date":
+                case "Release Date (Descending)":
+                    return card.dateReleased.ToShortDateString();
+                default:
+                    return "";
+            }
+        }
+
         public override void DrawItem(Graphics g, ImageListViewItem item, ItemState state, Rectangle bounds)
         {
             _boundsByIndex[item.Index] = bounds;
@@ -386,7 +483,6 @@ namespace IStripperQuickPlayer.BLL
             if (ImageListView.View == View.Thumbnails)
             {
                 Rectangle controlBounds = ClientBounds;
-                
                 bool drawText = true;
                 // Zoom on mouse over
                 if (((MouseIsOnList && (state & ItemState.Hovered) != ItemState.None) || CardMenuText == item.Tag.ToString()) && mZoomRatio != 0.0f)
@@ -404,6 +500,72 @@ namespace IStripperQuickPlayer.BLL
                 }
 
                 ModelCard? card = Datastore.findCardByTag(item.Tag.ToString());
+                if (card == null) return;
+                decimal myrating = myData?.GetCardRating(card.name) ?? 0M;
+                string text = drawText &&
+                    Properties.Settings.Default.ShowCardSortLabels
+                    ? GetSortText(card, myrating) : "";
+                Rectangle imgrect = bounds;
+                Rectangle imgrect2 = bounds;
+                if (card.image != null)
+                {
+                    double ratio =
+                        (1.0 * card.image.Width) / card.image.Height;
+                    int dy = (int)(34 * g.DpiX / 120.0);
+                    int dx = (int)(bounds.Width -
+                        ((bounds.Height - 34) * ratio)) / 2;
+                    imgrect2 = new Rectangle(
+                        bounds.Left + dx, bounds.Top,
+                        bounds.Width - dx * 2, bounds.Height - dy);
+                    _imageBoundsByIndex[item.Index] = imgrect2;
+                }
+                float nameFontSize = drawText
+                    ? GetFittedFont(g, card.modelName ?? "", "Segoe UI",
+                        10, bounds.Width).SizeInPoints : 10;
+                float outfitFontSize = drawText
+                    ? GetFittedFont(g, card.outfit ?? "", "Segoe UI",
+                        9, bounds.Width).SizeInPoints : 9;
+                int sortWidth = bounds.Width -
+                    (int)((g.DpiY / 192) * 58);
+                float sortFontSize = text.Length == 0 ? 13 * cardScale :
+                    GetFittedFont(g, text, "Verdana",
+                        (int)(13 * cardScale),
+                        sortWidth).SizeInPoints;
+                float playingFontSize = GetFittedFont(
+                    g, "Playing", "Verdana",
+                    (int)(14 * cardScale),
+                    Math.Max(1, (int)(imgrect.Width * .7f)))
+                    .SizeInPoints;
+                Rectangle nameBounds = new(
+                    bounds.Left,
+                    bounds.Bottom - (int)((g.DpiY / 192) * 52),
+                    bounds.Width, (int)((g.DpiY / 192) * 30));
+                Rectangle outfitBounds = new(
+                    bounds.Left,
+                    bounds.Bottom - (int)((g.DpiY / 192) * 27),
+                    bounds.Width, (int)((g.DpiY / 192) * 30));
+                Rectangle sortBounds = new(
+                    bounds.Left + (int)((g.DpiY / 192) * 48),
+                    bounds.Top + (int)((g.DpiY / 192) * 6),
+                    sortWidth, (int)((g.DpiY / 192) * 40));
+                Font playingFont = GetFont(
+                    "Verdana", (int)Math.Round(playingFontSize));
+                Rectangle playingBounds = new(
+                    imgrect.Left,
+                    bounds.Top + (int)(60 * cardScale),
+                    (int)(imgrect.Width * .7),
+                    (int)Math.Ceiling(
+                        g.MeasureString("Playing", playingFont).Height));
+                gpuCards[item.Index] = new GpuCardVisual(
+                    card, bounds, imgrect2, drawText,
+                    (state & ItemState.Selected) != ItemState.None,
+                    text, myrating, nameFontSize,
+                    outfitFontSize, sortFontSize,
+                    playingFontSize, nameBounds, outfitBounds,
+                    sortBounds, playingBounds);
+                if (DrawWithDirectComposition)
+                    return;
+
                 if((state & ItemState.Selected) != ItemState.None)
                 {
                   if (drawText)
@@ -411,19 +573,16 @@ namespace IStripperQuickPlayer.BLL
                   else
                     g.FillRectangle(highlightBrush, new Rectangle(bounds.Left-3,bounds.Top-3,bounds.Width+6,bounds.Height-34+6));
                 }
-                string text = "";
-                if (card == null) return;
-                Rectangle imgrect = bounds;
-                Rectangle imgrect2 = bounds;
                 if (card.image != null)
                 {
-                    double ratio = (1.0*card.image.Width)/card.image.Height;
-                    int dy = (int)(34*g.DpiX/120.0);
-                    int dx = (int)(bounds.Width-((bounds.Height-34)*ratio))/2;
+                    GraphicsState cardState = g.Save();
                     g.CompositingMode = CompositingMode.SourceCopy;
                     if (cardScale == 1) g.InterpolationMode = InterpolationMode.NearestNeighbor;
                     if (cardScale > 1 || !drawText) g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    imgrect2 = new Rectangle(bounds.Left+dx,bounds.Top,bounds.Width-(dx*2),bounds.Height-dy);                   
+                    using GraphicsPath cardPath = CreateRoundedCardPath(
+                        imgrect2,
+                        Math.Max(4, (int)Math.Round(6 * g.DpiX / 96)));
+                    g.SetClip(cardPath, CombineMode.Intersect);
                     g.DrawImage(card.image, imgrect2);
 
                    
@@ -448,69 +607,12 @@ namespace IStripperQuickPlayer.BLL
                     //    {
                     //        g.FillRectangle(brush,imgrect2.Left, imgrect2.Top, imgrect2.Width, imgrect2.Height);
                     //    }
+                    CardOverlayLoader.Draw(g, card, imgrect2);
+                    g.Restore(cardState);
                 }
-                decimal myrating=0M;
-                if (myData != null) myrating = myData.GetCardRating(card.name);
 
                 if (drawText)
                 {
-                    switch (sortBy)
-                    {
-                        case "My Rating":
-                            if (!Properties.Settings.Default.ShowRatingStars)
-                            {
-                                if (myrating > 0) text = myrating.ToString();
-                            }
-                            break;
-                        case "Height":
-                            decimal decheight = 0;
-                            decimal.TryParse(card.height, style, culture, out decheight);
-                            if (RegionInfo.CurrentRegion.IsMetric && CultureInfo.CurrentCulture.Name != "en-GB")
-                               text = (((Math.Floor(decheight)*12) + (decheight-Math.Floor(decheight))*10) * 2.54M).ToString("N1") + "cm";
-                            else
-                               text = Math.Floor(decheight) + "'" + (int)(24*(decheight-Math.Floor(decheight)))/2.0M + "''";
-                            break;
-                        case "":
-                        case "Model Name":
-                            text = "";
-                            break;
-                        case "Rating":
-                            text = (Convert.ToDecimal(card.rating)-5m).ToString();
-                            break;
-                        case "Age":
-                            text = (card.modelAge.ToString() ?? "");    
-                            break;
-                        case "Ethnicity":
-                            text = (card.ethnicity ?? "");        
-                            break;
-                        case "Breast Size":
-                        case "Breast Size (Descending)":
-                            text = (card.bust ?? 0).ToString();
-                            break;
-                        case "Waist":
-                        case "Waist (Descending)":
-                            text = (card.waist ?? 0).ToString();
-                            break;
-                        case "Hips":
-                        case "Hips (Descending)":
-                            text = (card.hips ?? 0).ToString();
-                            break;
-                        case "Date Purchased":
-                        case "Date Purchased (Descending)":
-                            if (card.datePurchased != null)
-                                text = ((DateTime)card.datePurchased).ToShortDateString();
-                            break;
-                        case "Release Date":
-                        case "Release Date (Descending)":
-                            text = card.dateReleased.ToShortDateString();
-                            break;
-                        default:
-                            break;
-                    }
-
-
-
-
                     Rectangle rectName = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*52), bounds.Width, (int)((g.DpiY/192)*30));
                     string name = card.modelName ?? "";
                     Font fontName = GetFittedFont(
@@ -630,6 +732,67 @@ namespace IStripperQuickPlayer.BLL
             {
                 // Revert to base class
                 base.DrawItem(g, item, state, bounds);
+            }
+        }
+
+        internal static bool VerifyRoundedCorners()
+        {
+            List<ModelCard>? previous = Datastore.modelcards;
+            using Bitmap cardImage = new(
+                162, 242, PixelFormat.Format32bppPArgb);
+            using (Graphics cardGraphics = Graphics.FromImage(cardImage))
+                cardGraphics.Clear(Color.Red);
+            ModelCard card = new()
+            {
+                name = "roundedtest",
+                modelName = "Rounded test",
+                outfit = "Paint state",
+                image = cardImage
+            };
+            Datastore.modelcards = [card];
+            try
+            {
+                using Manina.Windows.Forms.ImageListView list = new()
+                {
+                    Size = new System.Drawing.Size(300, 400)
+                };
+                using CardRenderer renderer = new(
+                    null, "", 1, CultureInfo.InvariantCulture,
+                    NumberStyles.AllowDecimalPoint);
+                list.SetRenderer(renderer);
+                ImageListViewItem item = new()
+                {
+                    Tag = card.name,
+                    Text = card.modelName
+                };
+                list.Items.Add(item);
+                using Bitmap output = new(
+                    162, 276, PixelFormat.Format32bppPArgb);
+                using Graphics graphics = Graphics.FromImage(output);
+                renderer.DrawItem(graphics, item, ItemState.None,
+                    new Rectangle(Point.Empty, output.Size));
+                Color corner = output.GetPixel(0, 0);
+                Color center = output.GetPixel(
+                    output.Width / 2, output.Height / 3);
+                bool valid = graphics.CompositingMode ==
+                        CompositingMode.SourceOver &&
+                    corner.A == 0 && center.R == 255;
+                if (!valid)
+                {
+                    renderer.TryGetImageBounds(
+                        item.Index, out Rectangle imageBounds);
+                    Console.Error.WriteLine(
+                        $"Mode={graphics.CompositingMode}; " +
+                        $"Corner={corner}; Center={center}; " +
+                        $"View={list.View}; Index={item.Index}; " +
+                        $"CardFound={Datastore.findCardByTag(card.name) != null}; " +
+                        $"ImageBounds={imageBounds}");
+                }
+                return valid;
+            }
+            finally
+            {
+                Datastore.modelcards = previous;
             }
         }
 

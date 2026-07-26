@@ -132,6 +132,18 @@ namespace IStripperQuickPlayer
             bool Speed, bool Position)? playbackControlEnabledState;
         private readonly System.Windows.Forms.Timer playbackTimelineTimer =
             new() { Interval = PlaybackTimelineIntervalMilliseconds };
+        private readonly System.Windows.Forms.Timer cardOverlayTimer =
+            new() { Interval = 40 };
+        private readonly ToolStripMenuItem drawCardOverlaysToolStripMenuItem =
+            new("Draw Card Overlays") { CheckOnClick = true };
+        private readonly ToolStripMenuItem overlayDefaultsToolStripMenuItem =
+            new("Overlay defaults...");
+        private readonly ToolStripMenuItem
+            directCompositionOverlaysToolStripMenuItem =
+            new("DirectComposition overlays (GPU)")
+            { CheckOnClick = true };
+        private DirectCompositionCardOverlayControl?
+            directCompositionCardOverlays;
         private readonly ToolStripMenuItem updateToolStripMenuItem = new();
         private readonly ToolStripMenuItem alphaCheckpointCacheToolStripMenuItem =
             new();
@@ -406,6 +418,11 @@ namespace IStripperQuickPlayer
                     }
                 ], cooldownCheck.AddHours(-1))
                 .SetEquals(["recent"]));
+            System.Diagnostics.Debug.Assert(
+                SmartQueueRelaxation(false, false, true, true) == 0 &&
+                SmartQueueRelaxation(false, true, true, true) == 1 &&
+                SmartQueueRelaxation(false, false, false, true) == 2 &&
+                SmartQueueRelaxation(true, false, true, true) == 3);
             DateTime stallCheck = DateTime.UtcNow;
             System.Diagnostics.Debug.Assert(LegacyPlaybackStalledNearEnd(
                 96_000, 100_000, stallCheck.AddSeconds(-3), stallCheck, 3));
@@ -509,6 +526,32 @@ namespace IStripperQuickPlayer
 #endif
             InitializeComponent();
             DoubleBuffered = true;
+            cardOverlayTimer.Tick += (_, _) =>
+            {
+                if (Properties.Settings.Default.DrawCardOverlays &&
+                    CardOverlayLoader.HasAnimatedOverlays &&
+                    listModelsNew.Visible &&
+                    WindowState != FormWindowState.Minimized &&
+                    CardOverlayLoader.AnimationFrameChanged())
+                {
+                    if (directCompositionCardOverlays != null)
+                    {
+                        if (!directCompositionCardOverlays.Render())
+                            DisableDirectCompositionCardOverlays();
+                    }
+                    else
+                    {
+                        listModelsNew.RefreshItems(
+                            listModelsNew.Items.Cast<
+                                Manina.Windows.Forms.ImageListViewItem>()
+                            .Where(item =>
+                                CardOverlayLoader.HasAnimatedOverlay(
+                                    item.Tag?.ToString() ?? "")));
+                        RefreshPlayQueueCardOverlays();
+                    }
+                }
+            };
+            cardOverlayTimer.Start();
             trkPlaybackPosition.AccessibleDescription =
                 "Click or drag to seek within the current clip.";
             listClips.SetDoubleBuffered();
@@ -589,6 +632,30 @@ namespace IStripperQuickPlayer
                 settingsToolStripMenuItem.DropDownItems.IndexOf(
                     randomPlayOrderToolStripMenuItem) + 1,
                 avoidRecentRepeatsToolStripMenuItem);
+            drawCardOverlaysToolStripMenuItem.Checked =
+                Properties.Settings.Default.DrawCardOverlays;
+            drawCardOverlaysToolStripMenuItem.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.DrawCardOverlays =
+                    drawCardOverlaysToolStripMenuItem.Checked;
+                UpdateCardOverlayRenderingPath();
+                listModelsNew.Refresh();
+            };
+            directCompositionOverlaysToolStripMenuItem.Checked =
+                Properties.Settings.Default
+                    .DirectCompositionOverlays;
+            directCompositionOverlaysToolStripMenuItem
+                .CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default
+                    .DirectCompositionOverlays =
+                    directCompositionOverlaysToolStripMenuItem
+                        .Checked;
+                UpdateCardOverlayRenderingPath();
+                listModelsNew.Refresh();
+            };
+            overlayDefaultsToolStripMenuItem.Click += (_, _) =>
+                EditOverlayDefaults();
             playbackHistoryToolStripMenuItem.Click += (_, _) =>
                 ShowPlaybackHistory();
             libraryHealthCheckToolStripMenuItem.Click += async (_, _) =>
@@ -755,6 +822,8 @@ namespace IStripperQuickPlayer
                 listModelsNew.Items.Clear();
                 Datastore.modelcards = [];
                 lstLoader.LoadModels();
+                CardOverlayLoader.Reload(
+                    Datastore.modelcards ?? [], myData);
                 BeginInvoke((Action)(() => { PopulateModelListview(); }));
                 PersistModels();
                 diagnostics.AppendLine("Result: success");
@@ -1301,6 +1370,7 @@ namespace IStripperQuickPlayer
                 else
                 {
                     Datastore.modelcards = models;
+                    CardOverlayLoader.Reload(models, myData);
                     this.BeginInvoke((Action)(() => { PopulateModelListview(); }));
                 }
             }
@@ -2078,6 +2148,8 @@ namespace IStripperQuickPlayer
             cmbSortDirection.Text = Properties.Settings.Default.SortDirection;
             chkFavourite.Checked = Properties.Settings.Default.FavouritesFilter;
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
+            menuShowCardSortLabels.Checked =
+                Properties.Settings.Default.ShowCardSortLabels;
             includeDescriptionInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowDescInSearch;
             includeShowTitleInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowOutfitInSearch;
             cardScaleSeekBar.Value = Math.Clamp(
@@ -2141,6 +2213,7 @@ namespace IStripperQuickPlayer
                 listModelsNew.SetRenderer(cardRenderer);
                 cardRenderer.SetColours();
             }
+            UpdateCardOverlayRenderingPath();
 
             if (FilterSettingsList.filters.ContainsKey("Default"))
                 cmbFilter.SelectedItem = "Default";
@@ -4619,6 +4692,9 @@ namespace IStripperQuickPlayer
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             formIsClosing = true;
+            cardOverlayTimer.Stop();
+            directCompositionCardOverlays?.Dispose();
+            directCompositionCardOverlays = null;
             playbackTimelineTimer.Stop();
             DisposePlaybackRegistryCache();
             if (panicActive)
@@ -4634,6 +4710,7 @@ namespace IStripperQuickPlayer
                 panicActive = false;
             }
             playbackTimelineTimer.Dispose();
+            cardOverlayTimer.Dispose();
             playbackLifetime.Cancel();
             UnregisterHotKeys();
             timerhook?.Dispose();
@@ -5038,6 +5115,62 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.ShowRatingStars = menuShowRatingsStars.Checked;
                 listModelsNew.Refresh();
             }
+        }
+
+        private void menuShowCardSortLabels_CheckedChanged(
+            object sender, EventArgs e)
+        {
+            if (Properties.Settings.Default.ShowCardSortLabels ==
+                menuShowCardSortLabels.Checked)
+                return;
+            Properties.Settings.Default.ShowCardSortLabels =
+                menuShowCardSortLabels.Checked;
+            listModelsNew.Refresh();
+        }
+
+        private void EditOverlayDefaults()
+        {
+            using OverlayDefaultsForm dialog = new(
+                CardOverlayLoader.GetChoices(),
+                CardOverlayLoader.GetRules(),
+                directCompositionCardOverlays);
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+            CardOverlayLoader.SaveRules(dialog.Rules);
+            drawCardOverlaysToolStripMenuItem.Checked =
+                Properties.Settings.Default.DrawCardOverlays;
+            CardOverlayLoader.Reload(
+                Datastore.modelcards ?? [], myData);
+            listModelsNew.Refresh();
+        }
+
+        private void UpdateCardOverlayRenderingPath()
+        {
+            DisableDirectCompositionCardOverlays();
+            if (!Properties.Settings.Default
+                    .DirectCompositionOverlays ||
+                cardRenderer == null)
+                return;
+
+            DirectCompositionCardOverlayControl overlays =
+                new(listModelsNew, cardRenderer);
+            if (!overlays.Initialize())
+                return;
+            directCompositionCardOverlays = overlays;
+            cardRenderer.DrawWithDirectComposition = true;
+            CardOverlayLoader.DrawWithDirectComposition = true;
+            UpdatePlayQueueCardOverlays();
+            listModelsNew.Refresh();
+        }
+
+        private void DisableDirectCompositionCardOverlays()
+        {
+            if (cardRenderer != null)
+                cardRenderer.DrawWithDirectComposition = false;
+            directCompositionCardOverlays?.Dispose();
+            directCompositionCardOverlays = null;
+            CardOverlayLoader.DrawWithDirectComposition = false;
+            listModelsNew.Refresh();
         }
 
         private void menuCardList_Closing(object sender, ToolStripDropDownClosingEventArgs e)

@@ -1671,6 +1671,45 @@ namespace Manina.Windows.Forms
         {
             Refresh(false, false);
         }
+
+        /// <summary>
+        /// Redraws only the supplied visible items in the existing back buffer.
+        /// </summary>
+        public void RefreshItems(IEnumerable<ImageListViewItem> items)
+        {
+            if (items == null)
+                throw new ArgumentNullException(nameof(items));
+            if (!CanPaint())
+            {
+                rendererNeedsPaint = true;
+                return;
+            }
+
+            List<int> indexes = new List<int>();
+            Rectangle invalidBounds = Rectangle.Empty;
+            foreach (ImageListViewItem item in items)
+            {
+                if (item == null ||
+                    IsItemVisible(item) == ItemVisibility.NotVisible)
+                    continue;
+                indexes.Add(item.Index);
+                Rectangle bounds =
+                    layoutManager.GetItemBoundsWithMargin(item.Index);
+                invalidBounds = invalidBounds.IsEmpty
+                    ? bounds : Rectangle.Union(invalidBounds, bounds);
+            }
+            if (indexes.Count == 0)
+                return;
+            if (!mRenderer.RedrawItems(indexes))
+            {
+                Refresh();
+                return;
+            }
+
+            rendererNeedsPaint = false;
+            base.Invalidate(invalidBounds);
+            base.Update();
+        }
         /// <summary>
         /// Suspends painting until a matching ResumePaint call is made.
         /// </summary>
