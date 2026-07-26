@@ -12,6 +12,8 @@ namespace IStripperQuickPlayer.BLL
 {
     public class CardRenderer : ImageListView.ImageListViewRenderer
     {
+        private const float DesignCardWidth = 162f;
+
         internal readonly record struct GpuCardVisual(
             ModelCard Card,
             Rectangle Bounds,
@@ -102,6 +104,55 @@ namespace IStripperQuickPlayer.BLL
             cardScale = scale;
             fittedFonts.Clear();
             ClearIconBitmaps();
+        }
+
+        internal static float CardPixels(
+            Rectangle imageBounds, float pixelsAtDesignSize) =>
+            imageBounds.Width * pixelsAtDesignSize / DesignCardWidth;
+
+        internal static float CardFontPoints(
+            Rectangle cardBounds, float pixelsAtDesignSize, float dpi) =>
+            CardPixels(cardBounds, pixelsAtDesignSize) * 72f /
+            Math.Max(1, dpi);
+
+        internal static int CardImageBottomInset(Rectangle bounds) =>
+            (int)Math.Round(CardPixels(bounds, 40));
+
+        internal static int CardHorizontalMargin(int cardWidth) =>
+            Math.Max(5, (int)Math.Round(
+                cardWidth * 6f / DesignCardWidth));
+
+        internal static bool VerifyRelativeMetrics()
+        {
+            Rectangle at100 = new(0, 0, 108, 161);
+            Rectangle at150 = new(0, 0, 162, 242);
+            Rectangle at200 = new(0, 0, 216, 323);
+            float ratio = CardPixels(at150, 28) / at150.Width;
+            float fontRatio =
+                CardFontPoints(at150, 20, 144) * 144 / 72 / at150.Width;
+            return Math.Abs(CardPixels(at100, 28) / at100.Width - ratio)
+                    < 0.0001f &&
+                Math.Abs(CardPixels(at200, 28) / at200.Width - ratio)
+                    < 0.0001f &&
+                Math.Abs(CardFontPoints(at100, 20, 96) * 96 / 72 /
+                    at100.Width - fontRatio) < 0.0001f &&
+                Math.Abs(CardFontPoints(at200, 20, 192) * 192 / 72 /
+                    at200.Width - fontRatio) < 0.0001f &&
+                Math.Abs(CardFontPoints(at100, 20, 96) - 10)
+                    < 0.0001f &&
+                Math.Abs(CardFontPoints(at150, 20, 144) - 10)
+                    < 0.0001f &&
+                Math.Abs(CardFontPoints(at200, 20, 192) - 10)
+                    < 0.0001f &&
+                CardImageBottomInset(at100) -
+                    (int)Math.Round(CardPixels(at100, 39)) == 1 &&
+                CardImageBottomInset(at150) -
+                    (int)Math.Round(CardPixels(at150, 39)) == 1 &&
+                CardImageBottomInset(at200) -
+                    (int)Math.Round(CardPixels(at200, 39)) == 1 &&
+                CardHorizontalMargin(at100.Width) == 5 &&
+                CardHorizontalMargin(at150.Width) == 6 &&
+                CardHorizontalMargin(at200.Width) == 8;
         }
 
         private Font GetFont(string family, int size,
@@ -339,8 +390,7 @@ namespace IStripperQuickPlayer.BLL
             int rating, int itemIndex)
         {
             int size = Math.Max(1, (int)Math.Round(Math.Min(
-                graphics.DpiY * cardScale * 14 / 72,
-                imageBounds.Width / 5f)));
+                CardPixels(imageBounds, 28), imageBounds.Width / 5f)));
             float rowWidth = size * 5;
             float left = imageBounds.Left +
                 (imageBounds.Width - rowWidth) / 2;
@@ -422,6 +472,15 @@ namespace IStripperQuickPlayer.BLL
             g.SmoothingMode = SmoothingMode.None;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             g.CompositingQuality = CompositingQuality.HighQuality;
+        }
+
+        public override System.Drawing.Size MeasureItemMargin(View view)
+        {
+            System.Drawing.Size margin = base.MeasureItemMargin(view);
+            if (view == View.Thumbnails)
+                margin.Width = CardHorizontalMargin(
+                    ImageListView.ThumbnailSize.Width);
+            return margin;
         }
 
         private string GetSortText(ModelCard card, decimal myrating)
@@ -511,7 +570,7 @@ namespace IStripperQuickPlayer.BLL
                 {
                     double ratio =
                         (1.0 * card.image.Width) / card.image.Height;
-                    int dy = (int)(34 * g.DpiX / 120.0);
+                    int dy = CardImageBottomInset(bounds);
                     int dx = (int)(bounds.Width -
                         ((bounds.Height - 34) * ratio)) / 2;
                     imgrect2 = new Rectangle(
@@ -519,49 +578,69 @@ namespace IStripperQuickPlayer.BLL
                         bounds.Width - dx * 2, bounds.Height - dy);
                     _imageBoundsByIndex[item.Index] = imgrect2;
                 }
+                float namePoints = CardFontPoints(bounds, 20, g.DpiY);
+                float outfitPoints = CardFontPoints(bounds, 18, g.DpiY);
+                float sortPoints = CardFontPoints(
+                    imgrect2, 26, g.DpiY);
+                float playingPoints = CardFontPoints(
+                    imgrect2, 28, g.DpiY);
                 float nameFontSize = drawText
                     ? GetFittedFont(g, card.modelName ?? "", "Segoe UI",
-                        10, bounds.Width).SizeInPoints : 10;
+                        (int)Math.Round(namePoints),
+                        bounds.Width).SizeInPoints : namePoints;
                 float outfitFontSize = drawText
                     ? GetFittedFont(g, card.outfit ?? "", "Segoe UI",
-                        9, bounds.Width).SizeInPoints : 9;
-                int sortWidth = bounds.Width -
-                    (int)((g.DpiY / 192) * 58);
-                float sortFontSize = text.Length == 0 ? 13 * cardScale :
+                        (int)Math.Round(outfitPoints),
+                        bounds.Width).SizeInPoints : outfitPoints;
+                int sortLeft = (int)Math.Round(
+                    CardPixels(imgrect2, 36));
+                int sortWidth = Math.Max(1, bounds.Width -
+                    (int)Math.Round(CardPixels(imgrect2, 43.5f)));
+                float sortFontSize = text.Length == 0 ? sortPoints :
                     GetFittedFont(g, text, "Verdana",
-                        (int)(13 * cardScale),
+                        (int)Math.Round(sortPoints),
                         sortWidth).SizeInPoints;
                 float playingFontSize = GetFittedFont(
                     g, "Playing", "Verdana",
-                    (int)(14 * cardScale),
+                    (int)Math.Round(playingPoints),
                     Math.Max(1, (int)(imgrect.Width * .7f)))
                     .SizeInPoints;
                 Rectangle nameBounds = new(
                     bounds.Left,
-                    bounds.Bottom - (int)((g.DpiY / 192) * 52),
-                    bounds.Width, (int)((g.DpiY / 192) * 30));
+                    bounds.Bottom - (int)Math.Round(
+                        CardPixels(bounds, 39)),
+                    bounds.Width, (int)Math.Round(
+                        CardPixels(bounds, 22.5f)));
                 Rectangle outfitBounds = new(
                     bounds.Left,
-                    bounds.Bottom - (int)((g.DpiY / 192) * 27),
-                    bounds.Width, (int)((g.DpiY / 192) * 30));
+                    bounds.Bottom - (int)Math.Round(
+                        CardPixels(bounds, 20.25f)),
+                    bounds.Width, (int)Math.Round(
+                        CardPixels(bounds, 22.5f)));
                 Rectangle sortBounds = new(
-                    bounds.Left + (int)((g.DpiY / 192) * 48),
-                    bounds.Top + (int)((g.DpiY / 192) * 6),
-                    sortWidth, (int)((g.DpiY / 192) * 40));
+                    bounds.Left + sortLeft,
+                    bounds.Top + (int)Math.Round(
+                        CardPixels(imgrect2, 4.5f)),
+                    sortWidth, (int)Math.Round(
+                        CardPixels(imgrect2, 30)));
                 Font playingFont = GetFont(
                     "Verdana", (int)Math.Round(playingFontSize));
                 Rectangle playingBounds = new(
                     imgrect.Left,
-                    bounds.Top + (int)(60 * cardScale),
+                    bounds.Top + (int)Math.Round(
+                        CardPixels(imgrect2, 60)),
                     (int)(imgrect.Width * .7),
                     (int)Math.Ceiling(
                         g.MeasureString("Playing", playingFont).Height));
                 gpuCards[item.Index] = new GpuCardVisual(
                     card, bounds, imgrect2, drawText,
                     (state & ItemState.Selected) != ItemState.None,
-                    text, myrating, nameFontSize,
-                    outfitFontSize, sortFontSize,
-                    playingFontSize, nameBounds, outfitBounds,
+                    text, myrating,
+                    nameFontSize * g.DpiY / 72f,
+                    outfitFontSize * g.DpiY / 72f,
+                    sortFontSize * g.DpiY / 72f,
+                    playingFontSize * g.DpiY / 72f,
+                    nameBounds, outfitBounds,
                     sortBounds, playingBounds);
                 if (DrawWithDirectComposition)
                     return;
@@ -579,10 +658,15 @@ namespace IStripperQuickPlayer.BLL
                     g.CompositingMode = CompositingMode.SourceCopy;
                     if (cardScale == 1) g.InterpolationMode = InterpolationMode.NearestNeighbor;
                     if (cardScale > 1 || !drawText) g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                    using GraphicsPath cardPath = CreateRoundedCardPath(
-                        imgrect2,
-                        Math.Max(4, (int)Math.Round(6 * g.DpiX / 96)));
-                    g.SetClip(cardPath, CombineMode.Intersect);
+                    using GraphicsPath? cardPath =
+                        Properties.Settings.Default.RoundCardCorners
+                            ? CreateRoundedCardPath(
+                                imgrect2,
+                                Math.Max(2, (int)Math.Round(
+                                    CardPixels(imgrect2, 9))))
+                            : null;
+                    if (cardPath != null)
+                        g.SetClip(cardPath, CombineMode.Intersect);
                     g.DrawImage(card.image, imgrect2);
 
                    
@@ -613,25 +697,29 @@ namespace IStripperQuickPlayer.BLL
 
                 if (drawText)
                 {
-                    Rectangle rectName = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*52), bounds.Width, (int)((g.DpiY/192)*30));
+                    Rectangle rectName = nameBounds;
                     string name = card.modelName ?? "";
                     Font fontName = GetFittedFont(
-                        g, name, "Segoe UI", 10, rectName.Width);
+                        g, name, "Segoe UI",
+                        (int)Math.Round(namePoints),
+                        rectName.Width);
                     g.DrawString(name, fontName, labelBrush, rectName,
                         centeredText);
 
 
-                    Rectangle rectOutfit = new Rectangle(bounds.Left, bounds.Bottom-(int)((g.DpiY/192)*27), bounds.Width, (int)((g.DpiY/192)*30));
+                    Rectangle rectOutfit = outfitBounds;
                     string outfit = card.outfit ?? "";
                     Font fontOutfit = GetFittedFont(
-                        g, outfit, "Segoe UI", 9, rectOutfit.Width);
+                        g, outfit, "Segoe UI",
+                        (int)Math.Round(outfitPoints),
+                        rectOutfit.Width);
                     g.DrawString(outfit, fontOutfit, labelBrush, rectOutfit,
                         centeredText);
                 }
 
-                float statusIconSize = g.DpiY * cardScale * 10 / 72;
+                float statusIconSize = CardPixels(imgrect2, 20);
                 float statusIconTop =
-                    bounds.Top + (g.DpiY / 192) * 4 * cardScale;
+                    bounds.Top + CardPixels(imgrect2, 3);
                 if (card.exclusive == true)
                 {
                     g.InterpolationMode = InterpolationMode.High;
@@ -672,13 +760,14 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    float heartSize = g.DpiY * cardScale * 14 / 72;
-                    float heartMargin = g.DpiY * cardScale * 7 / 96;
+                    float heartSize = CardPixels(imgrect2, 28);
+                    float heartMargin = CardPixels(imgrect2, 10.5f);
                     int iconSize = Math.Max(1, (int)Math.Round(heartSize));
                     g.DrawImageUnscaled(GetIconBitmap("heart", iconSize),
                         (int)Math.Round(
                             imgrect2.Right - heartSize - heartMargin),
-                        (int)Math.Round(bounds.Top + g.DpiY * 2 / 96));
+                        (int)Math.Round(
+                            bounds.Top + CardPixels(imgrect2, 3)));
                 }
                 if (Properties.Settings.Default.ShowRatingStars)
                 {
@@ -697,9 +786,9 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    Rectangle rect = new Rectangle(bounds.Left+(int)((g.DpiY/192)*48), bounds.Top + (int)((g.DpiY/192)*6), bounds.Width - (int)((g.DpiY/192)*58), (int)((g.DpiY/192)*40));
+                    Rectangle rect = sortBounds;
                     Font font = GetFittedFont(g, text, "Verdana",
-                        (int)(13 * cardScale), rect.Width);
+                        (int)Math.Round(sortPoints), rect.Width);
                     DrawOverlayLabel(g, text, font, rect);
                 }
 
@@ -710,21 +799,20 @@ namespace IStripperQuickPlayer.BLL
                     g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                     g.CompositingQuality = CompositingQuality.HighQuality;
 
-                    Rectangle rect = new Rectangle(imgrect.Left+18, bounds.Top + 10, (int)(imgrect.Width*0.6), 40);  
+                    Rectangle rect = playingBounds;
                     Font font = GetFittedFont(g, "Playing", "Verdana",
-                        (int)(14 * cardScale), rect.Width);
-                    SizeF textSize = g.MeasureString("Playing", font);
+                        (int)Math.Round(playingPoints), rect.Width);
                     using GraphicsPath p = new();
                     p.AddString(
                         "Playing",            
                         font.FontFamily,
                         (int) FontStyle.Bold,     
                         g.DpiY * font.SizeInPoints / 72,
-                        new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height),            
+                        playingBounds,
                         centeredText);
-                    g.FillRectangle(Brushes.Green, new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height));
+                    g.FillRectangle(Brushes.Green, playingBounds);
                     using Pen playingOutline = new(Color.Black, 2);
-                    g.DrawRectangle(playingOutline, new Rectangle(imgrect.Left, bounds.Top+(int)(60*cardScale),(int)(imgrect.Width*0.7), (int)textSize.Height));
+                    g.DrawRectangle(playingOutline, playingBounds);
                     g.FillPath(Brushes.White, p);       
                 }
             }
@@ -738,6 +826,8 @@ namespace IStripperQuickPlayer.BLL
         internal static bool VerifyRoundedCorners()
         {
             List<ModelCard>? previous = Datastore.modelcards;
+            bool previousSetting =
+                Properties.Settings.Default.RoundCardCorners;
             using Bitmap cardImage = new(
                 162, 242, PixelFormat.Format32bppPArgb);
             using (Graphics cardGraphics = Graphics.FromImage(cardImage))
@@ -769,21 +859,29 @@ namespace IStripperQuickPlayer.BLL
                 using Bitmap output = new(
                     162, 276, PixelFormat.Format32bppPArgb);
                 using Graphics graphics = Graphics.FromImage(output);
+                Properties.Settings.Default.RoundCardCorners = true;
                 renderer.DrawItem(graphics, item, ItemState.None,
                     new Rectangle(Point.Empty, output.Size));
-                Color corner = output.GetPixel(0, 0);
+                Color roundedCorner = output.GetPixel(0, 0);
                 Color center = output.GetPixel(
                     output.Width / 2, output.Height / 3);
+                graphics.Clear(Color.Transparent);
+                Properties.Settings.Default.RoundCardCorners = false;
+                renderer.DrawItem(graphics, item, ItemState.None,
+                    new Rectangle(Point.Empty, output.Size));
+                Color squareCorner = output.GetPixel(0, 0);
                 bool valid = graphics.CompositingMode ==
                         CompositingMode.SourceOver &&
-                    corner.A == 0 && center.R == 255;
+                    roundedCorner.A == 0 && center.R == 255 &&
+                    squareCorner.R == 255;
                 if (!valid)
                 {
                     renderer.TryGetImageBounds(
                         item.Index, out Rectangle imageBounds);
                     Console.Error.WriteLine(
                         $"Mode={graphics.CompositingMode}; " +
-                        $"Corner={corner}; Center={center}; " +
+                        $"RoundedCorner={roundedCorner}; " +
+                        $"SquareCorner={squareCorner}; Center={center}; " +
                         $"View={list.View}; Index={item.Index}; " +
                         $"CardFound={Datastore.findCardByTag(card.name) != null}; " +
                         $"ImageBounds={imageBounds}");
@@ -792,6 +890,8 @@ namespace IStripperQuickPlayer.BLL
             }
             finally
             {
+                Properties.Settings.Default.RoundCardCorners =
+                    previousSetting;
                 Datastore.modelcards = previous;
             }
         }

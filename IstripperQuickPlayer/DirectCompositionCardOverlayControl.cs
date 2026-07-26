@@ -55,7 +55,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, ID2D1SolidColorBrush> brushes = [];
     private readonly Dictionary<(
-        string Family, float Size, FontWeight Weight, int Dpi),
+        string Family, float Size, FontWeight Weight),
         IDWriteTextFormat> textFormats = [];
     private readonly Dictionary<Control, QueueSurface> queueSurfaces = [];
     private QueueSurface? previewSurface;
@@ -276,8 +276,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         ModelCard card = visual.Card;
         DrawingRectangle bounds = visual.Bounds;
         DrawingRectangle imageBounds = visual.ImageBounds;
-        float dpi = list.DeviceDpi;
-
         if (visual.Selected)
         {
             DrawingRectangle selected = visual.DrawText
@@ -292,24 +290,30 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
         if (card.image != null)
         {
-            float radius = Math.Max(4, 6 * dpi / 96f);
+            float radius = Math.Max(
+                2, CardRenderer.CardPixels(imageBounds, 9));
             RoundedRectangle rounded = new(
                 imageBounds, radius, radius);
-            using ID2D1RoundedRectangleGeometry mask =
-                d2dFactory!.CreateRoundedRectangleGeometry(rounded);
-            LayerParameters1 layer = new()
+            using ID2D1RoundedRectangleGeometry? mask =
+                Properties.Settings.Default.RoundCardCorners
+                    ? d2dFactory!.CreateRoundedRectangleGeometry(rounded)
+                    : null;
+            if (mask != null)
             {
-                ContentBounds = ToRaw(imageBounds),
-                GeometricMask = mask,
-                MaskAntialiasMode = AntialiasMode.PerPrimitive,
-                MaskTransform = Matrix3x2.Identity,
-                Opacity = 1,
-                LayerOptions = LayerOptions1.None
-            };
-            d2dContext!.PushLayer(ref layer, null);
+                LayerParameters1 layer = new()
+                {
+                    ContentBounds = ToRaw(imageBounds),
+                    GeometricMask = mask,
+                    MaskAntialiasMode = AntialiasMode.PerPrimitive,
+                    MaskTransform = Matrix3x2.Identity,
+                    Opacity = 1,
+                    LayerOptions = LayerOptions1.None
+                };
+                d2dContext!.PushLayer(ref layer, null);
+            }
             ID2D1Bitmap1 cardBitmap =
                 GetBitmap((DrawingBitmap)card.image);
-            d2dContext.DrawBitmap(
+            d2dContext!.DrawBitmap(
                 cardBitmap, ToRaw(imageBounds), 1,
                 Vortice.Direct2D1.InterpolationMode.Linear,
                 null, null);
@@ -322,7 +326,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                     Vortice.Direct2D1.InterpolationMode.Linear,
                     frame.Source, Matrix4x4.Identity);
             }
-            d2dContext.PopLayer();
+            if (mask != null)
+                d2dContext.PopLayer();
         }
 
         if (visual.DrawText)
@@ -339,9 +344,9 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 renderer.labelColor);
         }
 
-        float statusSize = dpi * renderer.cardScale * 10 / 72;
+        float statusSize = CardRenderer.CardPixels(imageBounds, 20);
         float statusTop =
-            bounds.Top + dpi / 192 * 4 * renderer.cardScale;
+            bounds.Top + CardRenderer.CardPixels(imageBounds, 3);
         int statusPixels = Math.Max(1, (int)Math.Round(statusSize));
         if (card.exclusive == true)
         {
@@ -362,19 +367,20 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
         if (renderer.myData?.GetCardFavourite(card.name) == true)
         {
-            float heartSize = dpi * renderer.cardScale * 14 / 72;
-            float heartMargin = dpi * renderer.cardScale * 7 / 96;
+            float heartSize = CardRenderer.CardPixels(imageBounds, 28);
+            float heartMargin = CardRenderer.CardPixels(
+                imageBounds, 10.5f);
             int heartPixels = Math.Max(1, (int)Math.Round(heartSize));
             DrawBitmap(
                 renderer.GetIconBitmap("heart", heartPixels),
                 imageBounds.Right - heartSize - heartMargin,
-                bounds.Top + dpi * 2 / 96);
+                bounds.Top + CardRenderer.CardPixels(imageBounds, 3));
         }
 
         if (Properties.Settings.Default.ShowRatingStars)
         {
             int size = Math.Max(1, (int)Math.Round(Math.Min(
-                dpi * renderer.cardScale * 14 / 72,
+                CardRenderer.CardPixels(imageBounds, 28),
                 imageBounds.Width / 5f)));
             DrawingRectangle stars = new(
                 imageBounds.Left + (imageBounds.Width - size * 5) / 2,
@@ -474,27 +480,27 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
     private void DrawText(
         string text, DrawingRectangle bounds, string family,
-        float points, Color color,
+        float pixels, Color color,
         FontWeight weight = FontWeight.Normal)
     {
         if (text.Length == 0 || bounds.Width <= 0 || bounds.Height <= 0)
             return;
         d2dContext!.DrawText(
-            text, GetTextFormat(family, points, weight),
+            text, GetTextFormat(family, pixels, weight),
             ToRect(bounds),
             GetBrush(color), DrawTextOptions.Clip);
     }
 
     private IDWriteTextFormat GetTextFormat(
-        string family, float points, FontWeight weight)
+        string family, float pixels, FontWeight weight)
     {
-        var key = (family, points, weight, list.DeviceDpi);
+        var key = (family, pixels, weight);
         if (textFormats.TryGetValue(
                 key, out IDWriteTextFormat? format))
             return format;
         format = dwriteFactory!.CreateTextFormat(
             family, null, weight, Vortice.DirectWrite.FontStyle.Normal,
-            FontStretch.Normal, points * list.DeviceDpi / 72,
+            FontStretch.Normal, pixels,
             CultureInfo.CurrentUICulture.Name);
         format.TextAlignment = TextAlignment.Center;
         format.ParagraphAlignment = ParagraphAlignment.Center;

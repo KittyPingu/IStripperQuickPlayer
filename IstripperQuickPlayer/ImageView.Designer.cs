@@ -61,12 +61,12 @@
             // 
             // ImageView
             // 
-            AutoScaleDimensions = new SizeF(10F, 25F);
-            AutoScaleMode = AutoScaleMode.Font;
+            AutoScaleDimensions = new SizeF(144F, 144F);
+            AutoScaleMode = AutoScaleMode.Dpi;
             ClientSize = new Size(1978, 1191);
             Margin = new Padding(4);
             Name = "ImageView";
-            Padding = new Padding(4, 80, 4, 4);
+            Padding = new Padding(4);
             StartPosition = FormStartPosition.CenterParent;
             Text = "ImageView";
             contextMenuStrip1.ResumeLayout(false);

@@ -122,7 +122,7 @@ namespace IStripperQuickPlayer.BLL
             Bitmap rendered;
             float brightness = (float)(
                 (double)Properties.Settings.Default.WallpaperBrightness / 100);
-            if (Properties.Settings.Default.BlurWallpaper)
+            if (Properties.Settings.Default.BlurRadius > 0)
             {
                 using DirectBitmap input = CopyToDirectBitmap(source);
                 using DirectBitmap blurred = AddBlur(input);

@@ -4,8 +4,6 @@ using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
 using Manina.Windows.Forms;
 using Manina.Windows.Forms.ImageListViewRenderers;
-using MaterialSkin;
-using MaterialSkin.Controls;
 using Microsoft.Win32;
 using Microsoft.WindowsAPICodePack.Taskbar;
 using Nektra.Deviare2;
@@ -26,7 +24,7 @@ using Task = System.Threading.Tasks.Task;
 
 namespace IStripperQuickPlayer
 {
-    public partial class Form1 : MaterialForm
+    public partial class Form1 : Form
     {
 
         [DllImport("dwmapi.dll")]
@@ -50,11 +48,14 @@ namespace IStripperQuickPlayer
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
         private const int PlaybackForcedReadyMilliseconds = 5_000;
         private const int PlaybackReplacementTimeoutMilliseconds = 15_000;
+        private const float DesignDpi = 144f;
         private const int VirtualKeyLeftButton = 0x01;
         private const string LatestReleaseApiUrl =
             "https://api.github.com/repos/KittyPingu/IStripperQuickPlayer/releases/latest";
 
         private float cardScale = 1.0f;
+        private Panel clipListHost = null!;
+        private bool cardScaleInitialized;
         private readonly Controls.PlaybackSeekBar cardScaleSeekBar = new()
         {
             AccessibleName = "Card size",
@@ -136,6 +137,8 @@ namespace IStripperQuickPlayer
             new() { Interval = 40 };
         private readonly ToolStripMenuItem drawCardOverlaysToolStripMenuItem =
             new("Draw Card Overlays") { CheckOnClick = true };
+        private readonly ToolStripMenuItem roundCardCornersToolStripMenuItem =
+            new("Round Card Corners") { CheckOnClick = true };
         private readonly ToolStripMenuItem overlayDefaultsToolStripMenuItem =
             new("Overlay defaults...");
         private readonly ToolStripMenuItem
@@ -561,6 +564,7 @@ namespace IStripperQuickPlayer
             cardScaleSeekBar.Scroll += cardScaleSeekBar_Scroll;
             splitContainer1.Panel1.Controls.Add(cardScaleSeekBar);
             splitContainer1.Panel1.Controls.Add(cardScaleLabel);
+            ConfigureResponsiveLayouts();
             nameToolStripMenuItem.Click += nameToolStripMenuItem_Click;
             nameToolStripMenuItem.Font = new Font(nameToolStripMenuItem.Font,
                 nameToolStripMenuItem.Font.Style | FontStyle.Underline);
@@ -572,8 +576,6 @@ namespace IStripperQuickPlayer
             menuCardList.Items.Insert(
                 menuCardList.Items.IndexOf(ratingSlider) + 1,
                 addModelToFilterToolStripMenuItem);
-            lblMinSize.BringToFront();
-            numMinSizeMB.BringToFront();
             alphaCheckpointCacheToolStripMenuItem.Text =
                 "Enable alpha checkpoint cache";
             alphaCheckpointCacheToolStripMenuItem.CheckOnClick = true;
@@ -641,6 +643,14 @@ namespace IStripperQuickPlayer
                 UpdateCardOverlayRenderingPath();
                 listModelsNew.Refresh();
             };
+            roundCardCornersToolStripMenuItem.Checked =
+                Properties.Settings.Default.RoundCardCorners;
+            roundCardCornersToolStripMenuItem.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.RoundCardCorners =
+                    roundCardCornersToolStripMenuItem.Checked;
+                listModelsNew.Refresh();
+            };
             directCompositionOverlaysToolStripMenuItem.Checked =
                 Properties.Settings.Default
                     .DirectCompositionOverlays;
@@ -693,12 +703,7 @@ namespace IStripperQuickPlayer
 
         private void SetSkin()
         {
-            var materialSkinManager = MaterialSkinManager.Instance;
-            materialSkinManager.RemoveFormToManage(this);
-            materialSkinManager.AddFormToManage(this);
-            materialSkinManager.Theme = MaterialSkinManager.Themes.LIGHT;
-            if (Properties.Settings.Default.DarkMode) materialSkinManager.Theme = MaterialSkinManager.Themes.DARK;
-            materialSkinManager.ColorScheme = new ColorScheme(Primary.BlueGrey800, Primary.BlueGrey900, Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
+            AppTheme.Apply(this);
             menuCardList.Renderer = menuStrip1.Renderer;
             menuCardList.ShowImageMargin = false;
             menuCardList.BackColor = menuStrip1.BackColor;
@@ -1548,7 +1553,8 @@ namespace IStripperQuickPlayer
             cardRenderer.updating = true;
             listModelsNew.SuspendLayout();
             listModelsNew.Items.Clear();
-            listModelsNew.ThumbnailSize = new Size((int)(cardScale * 162), (int)(242 * cardScale));
+            listModelsNew.ThumbnailSize = CardThumbnailSize(
+                listModelsNew.DeviceDpi, cardScale);
             foreach (var i in items)
             {
                 var im = new ImageListViewItem();
@@ -2047,6 +2053,7 @@ namespace IStripperQuickPlayer
             }
             RefreshPlayingClipHighlight();
             listClips.EndUpdate();
+            PositionPhotosButton();
             txtDescription.Text = card.description;
             lblAge.Text = "Age: " + card.modelAge;
             lblStats.Text = "Stats: " + card.bust + "/" + card.waist + "/" + card.hips;
@@ -2156,18 +2163,14 @@ namespace IStripperQuickPlayer
                 (int)Math.Round(Properties.Settings.Default.CardScale * 20),
                 cardScaleSeekBar.Minimum, cardScaleSeekBar.Maximum);
             ApplyCardScale();
+            cardScaleInitialized = true;
             trackBarZoomOnHover.Value = (decimal)(Properties.Settings.Default.ZoomOnHover);
-            blurImageToolStripMenuItem.Checked = Properties.Settings.Default.BlurWallpaper;
             randomPlayOrderToolStripMenuItem.Checked = Properties.Settings.Default.Randomize;
             enforceCardFilterToolStripMenuItem.Checked =
                 Properties.Settings.Default.EnforceCardFilter;
             enablePlayQueueToolStripMenuItem.Checked =
                 Properties.Settings.Default.EnablePlayQueue;
             RefreshPlayQueueVisibility();
-            if (Properties.Settings.Default.MinSizeMB != 0)
-            {
-                numMinSizeMB.Value = Properties.Settings.Default.MinSizeMB;
-            }
             _ = Task.Run(SetupRegHooks);
 
             //get number of monitors for wallpaper
@@ -2193,6 +2196,8 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.WallpaperTextSize;
             trackBarWallpaperLabelOpacity.Value =
                 Properties.Settings.Default.WallpaperLabelOpacity;
+            if (!Properties.Settings.Default.BlurWallpaper)
+                Properties.Settings.Default.BlurRadius = 0;
             trackBarBlur.Value = Properties.Settings.Default.BlurRadius;
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
@@ -4976,20 +4981,8 @@ namespace IStripperQuickPlayer
 
         }
 
-        private void ValidateMinSizeMB()
-        {
-            Properties.Settings.Default.MinSizeMB = (long)numMinSizeMB.Value;
-            if (items != null && items.Length > 0 && listModelsNew.SelectedItems.Count > 0) loadListClips(listModelsNew.SelectedItems[0].Tag);
-
-        }
-
         private void txtSearch_Enter(object sender, EventArgs e)
         {
-        }
-
-        private void numMinSizeMB_ValueChanged(object sender, EventArgs e)
-        {
-            ValidateMinSizeMB();
         }
 
         private void enforceCardFilterToolStripMenuItem_Click(object sender, EventArgs e)
@@ -5559,7 +5552,7 @@ namespace IStripperQuickPlayer
             ApplyCardScale();
         }
 
-        private void ApplyCardScale()
+        private void ApplyCardScale(int? dpi = null)
         {
             cardScale = cardScaleSeekBar.Value / 20f;
             cardScaleLabel.Text = $"Card size: {cardScale:P0}";
@@ -5567,7 +5560,8 @@ namespace IStripperQuickPlayer
             {
                 if (cardRenderer != null)
                     cardRenderer.SetCardScale(cardScale);
-                listModelsNew.ThumbnailSize = new Size((int)(cardScale * 162), (int)(242 * cardScale));
+                listModelsNew.ThumbnailSize = CardThumbnailSize(
+                    dpi ?? listModelsNew.DeviceDpi, cardScale);
                 listModelsNew.Invalidate();
             }
             Properties.Settings.Default.CardScale = cardScale;
@@ -5657,73 +5651,313 @@ namespace IStripperQuickPlayer
             AdjustControls();
         }
 
+        private void ConfigureResponsiveLayouts()
+        {
+            FlowLayoutPanel searchRow = CreateFlowRow("librarySearchRow");
+            AddFlowControls(searchRow,
+                lblModelsLoaded, label2, txtSearch, cmdClearSearch);
+
+            FlowLayoutPanel sortRow = CreateFlowRow("librarySortRow");
+            cmbSortBy.Width = cmbSortBy.Items.Cast<string>()
+                .Max(item => TextRenderer.MeasureText(
+                    item, cmbSortBy.Font).Width) +
+                SystemInformation.VerticalScrollBarWidth + 8;
+            cardScaleSeekBar.Size = new Size(240, 40);
+            cmdFilter.AutoSize = true;
+            cmdFilter.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            cmdFilter.Padding = new Padding(6, 2, 6, 3);
+            AddFlowControls(sortRow,
+                label1, cmbSortBy, cmbSortDirection, chkFavourite,
+                cmdFilter, cmbFilter, cardScaleLabel, cardScaleSeekBar);
+
+            TableLayoutPanel libraryHeader = new()
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                Dock = DockStyle.Fill,
+                Name = "libraryHeaderLayout",
+                RowCount = 2
+            };
+            libraryHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            libraryHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            libraryHeader.Controls.Add(searchRow, 0, 0);
+            libraryHeader.Controls.Add(sortRow, 0, 1);
+
+            TableLayoutPanel libraryLayout = new()
+            {
+                ColumnCount = 1,
+                Dock = DockStyle.Fill,
+                Name = "libraryLayout",
+                RowCount = 2
+            };
+            libraryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            libraryLayout.RowStyles.Add(
+                new RowStyle(SizeType.Percent, 100));
+            listModelsNew.Dock = DockStyle.Fill;
+            libraryLayout.Controls.Add(libraryHeader, 0, 0);
+            libraryLayout.Controls.Add(listModelsNew, 0, 1);
+            splitContainer1.Panel1.Controls.Clear();
+            splitContainer1.Panel1.Controls.Add(libraryLayout);
+
+            TableLayoutPanel nowPlayingRow = new()
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                Dock = DockStyle.Fill,
+                Name = "nowPlayingRow",
+                Padding = new Padding(4),
+                RowCount = 1
+            };
+            nowPlayingRow.ColumnStyles.Add(
+                new ColumnStyle(SizeType.Percent, 100));
+            nowPlayingRow.ColumnStyles.Add(
+                new ColumnStyle(SizeType.AutoSize));
+            FlowLayoutPanel nowPlayingActions =
+                CreateFlowRow("nowPlayingActions");
+            nowPlayingActions.Padding = Padding.Empty;
+            nowPlayingActions.WrapContents = false;
+            AddFlowControls(nowPlayingActions,
+                cmdWallpaper, cmdNextClip, cmdShowModel,
+                panicResumeButton);
+            lblNowPlaying.AutoSize = false;
+            lblNowPlaying.AutoEllipsis = true;
+            lblNowPlaying.Dock = DockStyle.Fill;
+            lblNowPlaying.TextAlign = ContentAlignment.MiddleLeft;
+            lblNowPlaying.Margin = new Padding(4);
+            nowPlayingActions.Margin = Padding.Empty;
+            nowPlayingRow.Controls.Add(lblNowPlaying, 0, 0);
+            nowPlayingRow.Controls.Add(nowPlayingActions, 1, 0);
+
+            FlowLayoutPanel playbackRow = CreateFlowRow("playbackRow");
+            cmdPlayPause.AutoSize = true;
+            cmdPlayPause.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            cmdPlayPause.Padding = new Padding(8, 2, 8, 3);
+            AddFlowControls(playbackRow,
+                cmdRewind, cmdPlayPause, cmdFastForward,
+                lblPlaybackSpeed, cmbPlaybackSpeed);
+
+            TableLayoutPanel timelineRow = new()
+            {
+                AutoSize = true,
+                ColumnCount = 2,
+                Dock = DockStyle.Fill,
+                Name = "timelineRow",
+                RowCount = 1
+            };
+            timelineRow.ColumnStyles.Add(
+                new ColumnStyle(SizeType.AutoSize));
+            timelineRow.ColumnStyles.Add(
+                new ColumnStyle(SizeType.Percent, 100));
+            lblPlaybackTime.Dock = DockStyle.Fill;
+            trkPlaybackPosition.Dock = DockStyle.Fill;
+            timelineRow.Controls.Add(lblPlaybackTime, 0, 0);
+            timelineRow.Controls.Add(trkPlaybackPosition, 1, 0);
+
+            FlowLayoutPanel clipFilterRow =
+                CreateFlowRow("clipFilterRow");
+            AddFlowControls(clipFilterRow,
+                chkPublic, chkNoNudity, chkTopless, chkNudity,
+                chkFullNudity, chkXXX, lblFilterClip, txtClipType,
+                chkDemo);
+
+            TableLayoutPanel clipHeader = new()
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                Dock = DockStyle.Top,
+                Name = "clipHeaderLayout",
+                RowCount = 4
+            };
+            for (int row = 0; row < 4; row++)
+                clipHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            clipHeader.Controls.Add(nowPlayingRow, 0, 0);
+            clipHeader.Controls.Add(playbackRow, 0, 1);
+            clipHeader.Controls.Add(timelineRow, 0, 2);
+            clipHeader.Controls.Add(clipFilterRow, 0, 3);
+            panelClip.Controls.Clear();
+            panelClip.AutoSize = true;
+            panelClip.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            panelClip.Dock = DockStyle.Fill;
+            panelClip.Controls.Add(clipHeader);
+
+            int detailsHeight = panelModelDetails.Height +
+                txtDescription.Font.Height * 2;
+            TableLayoutPanel detailsLayout = new()
+            {
+                ColumnCount = 1,
+                Dock = DockStyle.Fill,
+                Name = "detailsLayout",
+                RowCount = 3
+            };
+            detailsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            detailsLayout.RowStyles.Add(
+                new RowStyle(SizeType.Percent, 100));
+            detailsLayout.RowStyles.Add(
+                new RowStyle(SizeType.Absolute, detailsHeight));
+
+            clipListHost = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Name = "clipListHost"
+            };
+            listClips.Dock = DockStyle.Fill;
+            System.Drawing.Size photosSize =
+                cmdPhotos.GetPreferredSize(System.Drawing.Size.Empty);
+            string photosText = cmdPhotos.Text;
+            cmdPhotos.AutoSize = false;
+            cmdPhotos.Size = new System.Drawing.Size(
+                photosSize.Width, listClips.Font.Height + 5);
+            cmdPhotos.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            cmdPhotos.AccessibleName = photosText;
+            cmdPhotos.Text = "";
+            cmdPhotos.Paint += (_, e) => TextRenderer.DrawText(
+                e.Graphics, photosText, cmdPhotos.Font,
+                cmdPhotos.ClientRectangle, cmdPhotos.ForeColor,
+                TextFormatFlags.HorizontalCenter |
+                TextFormatFlags.VerticalCenter |
+                TextFormatFlags.SingleLine |
+                TextFormatFlags.NoPadding |
+                TextFormatFlags.NoPrefix);
+            clipListHost.Controls.Add(listClips);
+            clipListHost.Controls.Add(cmdPhotos);
+            clipListHost.Layout += (_, _) => PositionPhotosButton();
+            listClips.FontChanged += (_, _) => PositionPhotosButton();
+            listClips.HandleCreated += (_, _) => PositionPhotosButton();
+            PositionPhotosButton();
+
+            FlowLayoutPanel modelMetricsRow =
+                CreateFlowRow("modelMetricsRow");
+            modelMetricsRow.Padding = Padding.Empty;
+            AddFlowControls(modelMetricsRow,
+                lblAge, lblStats, lblCollection,
+                lblRatingScore, lblResolution);
+
+            TableLayoutPanel userTagsRow = new()
+            {
+                AutoSize = true,
+                ColumnCount = 2,
+                Dock = DockStyle.Fill,
+                Name = "userTagsRow",
+                RowCount = 1
+            };
+            userTagsRow.ColumnStyles.Add(
+                new ColumnStyle(SizeType.AutoSize));
+            userTagsRow.ColumnStyles.Add(
+                new ColumnStyle(SizeType.Percent, 100));
+            lblUserTags.Anchor = AnchorStyles.Left;
+            txtUserTags.Dock = DockStyle.Fill;
+            userTagsRow.Controls.Add(lblUserTags, 0, 0);
+            userTagsRow.Controls.Add(txtUserTags, 1, 0);
+
+            TableLayoutPanel modelDetailsLayout = new()
+            {
+                ColumnCount = 1,
+                Dock = DockStyle.Fill,
+                Name = "modelDetailsLayout",
+                RowCount = 4
+            };
+            modelDetailsLayout.RowStyles.Add(
+                new RowStyle(SizeType.AutoSize));
+            modelDetailsLayout.RowStyles.Add(
+                new RowStyle(SizeType.AutoSize));
+            modelDetailsLayout.RowStyles.Add(
+                new RowStyle(SizeType.AutoSize));
+            modelDetailsLayout.RowStyles.Add(
+                new RowStyle(SizeType.Percent, 100));
+            lblTags.AutoSize = true;
+            lblTags.Dock = DockStyle.Fill;
+            lblTags.MaximumSize = System.Drawing.Size.Empty;
+            txtDescription.Dock = DockStyle.Fill;
+            modelDetailsLayout.Controls.Add(modelMetricsRow, 0, 0);
+            modelDetailsLayout.Controls.Add(lblTags, 0, 1);
+            modelDetailsLayout.Controls.Add(userTagsRow, 0, 2);
+            modelDetailsLayout.Controls.Add(txtDescription, 0, 3);
+            panelModelDetails.Controls.Clear();
+            panelModelDetails.Dock = DockStyle.Fill;
+            panelModelDetails.Controls.Add(modelDetailsLayout);
+            detailsLayout.Controls.Add(panelClip, 0, 0);
+            detailsLayout.Controls.Add(clipListHost, 0, 1);
+            detailsLayout.Controls.Add(panelModelDetails, 0, 2);
+            splitContainer1.Panel2.Controls.Clear();
+            splitContainer1.Panel2.Controls.Add(detailsLayout);
+        }
+
+        private void PositionPhotosButton()
+        {
+            if (clipListHost == null || cmdPhotos == null)
+                return;
+            int headerHeight = listClips.Font.Height + 7;
+            if (listClips.IsHandleCreated && listClips.Items.Count > 0)
+                headerHeight = listClips.GetItemRect(0).Top;
+            cmdPhotos.Height = Math.Max(1, headerHeight);
+            cmdPhotos.Location = new Point(
+                Math.Max(0, clipListHost.ClientSize.Width -
+                    cmdPhotos.Width), 0);
+            cmdPhotos.BringToFront();
+        }
+
+        private static FlowLayoutPanel CreateFlowRow(string name) => new()
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            Name = name,
+            Padding = new Padding(4),
+            WrapContents = true
+        };
+
+        private static void AddFlowControls(
+            FlowLayoutPanel row, params Control[] controls)
+        {
+            foreach (Control control in controls)
+            {
+                control.Margin = control is Label or CheckBox
+                    ? new Padding(4, 8, 4, 4)
+                    : new Padding(4);
+                row.Controls.Add(control);
+            }
+        }
+
         private void AdjustControls()
         {
             if (spaceRightOfListModel == 0) return;
-            float dpi = DeviceDpi;
-
-            int modelListHeight = Math.Max(0,
-                splitContainer1.Panel1.ClientSize.Height -
-                listModelsNew.Top - (int)(18 * dpi / 120));
-            int clipTop = txtClipType.Bottom + 10;
-            int clipWidth = splitContainer1.Panel2.Width - 28;
-            int minimumClipListHeight = Math.Max(100,
-                (int)(150 * dpi / 144));
-            int preferredClipListHeight =
-                splitContainer1.Panel2.ClientSize.Height -
-                panelModelDetails.Height - (int)(18.0 * dpi / 96.0) -
-                clipTop;
-            int maximumClipListHeight = Math.Max(0,
-                splitContainer1.Panel2.ClientSize.Height -
-                clipTop - 8);
-            int clipHeight = Math.Min(maximumClipListHeight,
-                Math.Max(minimumClipListHeight,
-                    preferredClipListHeight));
-
-            listModelsNew.Size = new Size(
-                splitContainer1.Panel1.Width - 24, modelListHeight);
-            PositionCardScaleControls();
-            panelClip.Width = splitContainer1.Panel2.Width;
-            listClips.SetBounds(listClips.Left, clipTop,
-                clipWidth, clipHeight);
-            panelModelDetails.SetBounds(panelModelDetails.Left,
-                listClips.Bottom + 8, clipWidth,
-                panelModelDetails.Height);
-            cmdShowModel.Left = listClips.Right - cmdShowModel.Width;
-            cmdNextClip.Left = cmdShowModel.Left - cmdNextClip.Width - 5;
-            cmdWallpaper.Left = cmdNextClip.Left - cmdWallpaper.Width - 5;
-            panicResumeButton.SetBounds(cmdNextClip.Left, cmdNextClip.Top,
-                listClips.Right - cmdNextClip.Left, cmdNextClip.Height);
-            cmdPhotos.Location = new Point(
-                listClips.Right - cmdPhotos.Width, listClips.Top);
-            txtDescription.Width = panelModelDetails.ClientSize.Width -
-                txtDescription.Left - 2;
-            txtUserTags.Width = panelModelDetails.ClientSize.Width -
-                txtUserTags.Left - 2;
+            splitContainer1.Panel1.PerformLayout();
+            splitContainer1.Panel2.PerformLayout();
         }
 
         private void PositionCardScaleControls()
         {
-            if (listModelsNew.Right <= 0)
-                return;
-
-            float scale = DeviceDpi / 96f;
-            int gap = (int)Math.Round(8 * scale);
-            int height = (int)Math.Round(40 * scale);
-            int width = (int)Math.Round(240 * scale);
-            cardScaleSeekBar.SetBounds(
-                listModelsNew.Right - width,
-                listModelsNew.Top - height - gap / 2,
-                width,
-                height);
-            cardScaleLabel.Location = new Point(
-                cardScaleSeekBar.Left -
-                    cardScaleLabel.PreferredWidth - gap,
-                cardScaleSeekBar.Top +
-                    (cardScaleSeekBar.Height -
-                        cardScaleLabel.PreferredHeight) / 2);
             cardScaleSeekBar.Visible = true;
             cardScaleLabel.Visible = true;
+            splitContainer1.Panel1.PerformLayout();
+        }
+
+        internal static Size CardThumbnailSize(int dpi, float scale) =>
+            new(
+                Math.Max(1, (int)Math.Round(
+                    162 * scale * dpi / DesignDpi)),
+                Math.Max(1, (int)Math.Round(
+                    242 * scale * dpi / DesignDpi)));
+
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            base.OnDpiChanged(e);
+            if (!cardScaleInitialized)
+                return;
+            ApplyCardScale(e.DeviceDpiNew);
+            if (IsHandleCreated && !IsDisposed)
+                BeginInvoke((Action)(() =>
+                {
+                    SetSkin();
+                    ApplyCardScale();
+                    UpdatePlayQueueHeader();
+                    PositionPhotosButton();
+                    AdjustControls();
+                }));
         }
 
         private void listModelsNew_MouseLeave(object sender, EventArgs e)
@@ -5952,12 +6186,6 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.MinimizeToTray = minimizeToTrayToolStripMenuItem.Checked;
         }
 
-        private void blurImageToolStripMenuItem_CheckStateChanged(object sender, EventArgs e)
-        {
-            Properties.Settings.Default.BlurWallpaper = blurImageToolStripMenuItem.Checked;
-            this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
-        }
-
         private void trackBarBlur_ValueChanged(object? sender, EventArgs e)
         {
             trackBarBlur.MouseUp += trackBarBlur_MouseUp;
@@ -5972,6 +6200,8 @@ namespace IStripperQuickPlayer
             trackBarBlur.ValueChanged += trackBarBlur_ValueChanged;
 
             Properties.Settings.Default.BlurRadius = trackBarBlur.Value;
+            Properties.Settings.Default.BlurWallpaper =
+                trackBarBlur.Value > 0;
             this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
         }
 

@@ -116,8 +116,6 @@
             lblFilterClip = new Label();
             cmdWallpaper = new Button();
             txtClipType = new TextBox();
-            numMinSizeMB = new NumericUpDown();
-            lblMinSize = new Label();
             cmdNextClip = new Button();
             cmdShowModel = new Button();
             lblNowPlaying = new Label();
@@ -138,7 +136,6 @@
             panelModelDetails.SuspendLayout();
             panelClip.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)trkPlaybackPosition).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)numMinSizeMB).BeginInit();
             ((System.ComponentModel.ISupportInitialize)splitContainer1).BeginInit();
             splitContainer1.Panel1.SuspendLayout();
             splitContainer1.Panel2.SuspendLayout();
@@ -485,11 +482,11 @@
             trackBarZoomOnHover.Maximum = new decimal(new int[] { 1, 0, 0, 0 });
             trackBarZoomOnHover.Minimum = new decimal(new int[] { 0, 0, 0, 65536 });
             trackBarZoomOnHover.Name = "trackBarZoomOnHover";
-            trackBarZoomOnHover.ScaleDivisions = new decimal(new int[] { 10, 0, 0, 0 });
+            trackBarZoomOnHover.ScaleDivisions = new decimal(new int[] { 1, 0, 0, 0 });
             trackBarZoomOnHover.Size = new Size(200, 48);
             trackBarZoomOnHover.SmallChange = new decimal(new int[] { 5, 0, 0, 131072 });
             trackBarZoomOnHover.Text = "trackBarMenuItem1";
-            trackBarZoomOnHover.TickColor = Color.White;
+            trackBarZoomOnHover.TickColor = Color.Transparent;
             trackBarZoomOnHover.TickStyle = TickStyle.TopLeft;
             trackBarZoomOnHover.TrackbarColor = Color.Transparent;
             trackBarZoomOnHover.Value = new decimal(new int[] { 1, 0, 0, 0 });
@@ -554,11 +551,11 @@
             trackbarWallpaperBrightness.Maximum = new decimal(new int[] { 100, 0, 0, 0 });
             trackbarWallpaperBrightness.Minimum = new decimal(new int[] { 0, 0, 0, 0 });
             trackbarWallpaperBrightness.Name = "trackbarWallpaperBrightness";
-            trackbarWallpaperBrightness.ScaleDivisions = new decimal(new int[] { 10, 0, 0, 0 });
+            trackbarWallpaperBrightness.ScaleDivisions = new decimal(new int[] { 1, 0, 0, 0 });
             trackbarWallpaperBrightness.Size = new Size(200, 48);
             trackbarWallpaperBrightness.SmallChange = new decimal(new int[] { 5, 0, 0, 0 });
             trackbarWallpaperBrightness.Text = "trackBarMenuItem1";
-            trackbarWallpaperBrightness.TickColor = Color.White;
+            trackbarWallpaperBrightness.TickColor = Color.Transparent;
             trackbarWallpaperBrightness.TickStyle = TickStyle.TopLeft;
             trackbarWallpaperBrightness.TrackbarColor = Color.Transparent;
             trackbarWallpaperBrightness.Value = new decimal(new int[] { 60, 0, 0, 0 });
@@ -634,12 +631,10 @@
             //
             // blurImageToolStripMenuItem
             // 
-            blurImageToolStripMenuItem.CheckOnClick = true;
             blurImageToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { trackBarBlur });
             blurImageToolStripMenuItem.Name = "blurImageToolStripMenuItem";
             blurImageToolStripMenuItem.Size = new Size(290, 34);
             blurImageToolStripMenuItem.Text = "Blur Image";
-            blurImageToolStripMenuItem.CheckStateChanged += blurImageToolStripMenuItem_CheckStateChanged;
             // 
             // trackBarBlur
             // 
@@ -652,11 +647,11 @@
             trackBarBlur.Maximum = new decimal(new int[] { 50, 0, 0, 0 });
             trackBarBlur.Minimum = new decimal(new int[] { 0, 0, 0, 0 });
             trackBarBlur.Name = "trackBarBlur";
-            trackBarBlur.ScaleDivisions = new decimal(new int[] { 10, 0, 0, 0 });
+            trackBarBlur.ScaleDivisions = new decimal(new int[] { 1, 0, 0, 0 });
             trackBarBlur.Size = new Size(200, 48);
             trackBarBlur.SmallChange = new decimal(new int[] { 1, 0, 0, 0 });
             trackBarBlur.Text = "trackBarMenuItem1";
-            trackBarBlur.TickColor = Color.White;
+            trackBarBlur.TickColor = Color.Transparent;
             trackBarBlur.TickStyle = TickStyle.TopLeft;
             trackBarBlur.TrackbarColor = Color.Transparent;
             trackBarBlur.Value = new decimal(new int[] { 50, 0, 0, 0 });
@@ -891,8 +886,6 @@
             panelClip.Controls.Add(lblFilterClip);
             panelClip.Controls.Add(cmdWallpaper);
             panelClip.Controls.Add(txtClipType);
-            panelClip.Controls.Add(numMinSizeMB);
-            panelClip.Controls.Add(lblMinSize);
             panelClip.Controls.Add(cmdNextClip);
             panelClip.Controls.Add(cmdShowModel);
             panelClip.Controls.Add(lblNowPlaying);
@@ -1020,27 +1013,6 @@
             txtClipType.Size = new Size(222, 31);
             txtClipType.TabIndex = 52;
             txtClipType.KeyDown += txtClipType_KeyDown;
-            // 
-            // numMinSizeMB
-            // 
-            numMinSizeMB.Increment = new decimal(new int[] { 10, 0, 0, 0 });
-            numMinSizeMB.Location = new Point(935, 135);
-            numMinSizeMB.Margin = new Padding(6, 5, 6, 5);
-            numMinSizeMB.Maximum = new decimal(new int[] { 9999, 0, 0, 0 });
-            numMinSizeMB.Name = "numMinSizeMB";
-            numMinSizeMB.Size = new Size(115, 31);
-            numMinSizeMB.TabIndex = 51;
-            numMinSizeMB.ValueChanged += numMinSizeMB_ValueChanged;
-            // 
-            // lblMinSize
-            // 
-            lblMinSize.AutoSize = true;
-            lblMinSize.Location = new Point(804, 137);
-            lblMinSize.Margin = new Padding(6, 0, 6, 0);
-            lblMinSize.Name = "lblMinSize";
-            lblMinSize.Size = new Size(119, 25);
-            lblMinSize.TabIndex = 50;
-            lblMinSize.Text = "Min Size (MB)";
             // 
             // cmdNextClip
             // 
@@ -1266,7 +1238,7 @@
             Margin = new Padding(6, 5, 6, 5);
             MinimumSize = new Size(2028, 950);
             Name = "Form1";
-            Padding = new Padding(4, 77, 4, 4);
+            Padding = new Padding(4);
             Text = "iStripper QuickPlayer";
             FormClosing += Form1_FormClosing;
             Load += Form1_Load;
@@ -1281,7 +1253,6 @@
             ((System.ComponentModel.ISupportInitialize)trkPlaybackPosition).EndInit();
             panelClip.ResumeLayout(false);
             panelClip.PerformLayout();
-            ((System.ComponentModel.ISupportInitialize)numMinSizeMB).EndInit();
             splitContainer1.Panel1.ResumeLayout(false);
             splitContainer1.Panel1.PerformLayout();
             splitContainer1.Panel2.ResumeLayout(false);
@@ -1354,8 +1325,6 @@
         private Label lblPlaybackTime;
         private Label lblFilterClip;
         private TextBox txtClipType;
-        private NumericUpDown numMinSizeMB;
-        private Label lblMinSize;
         private Button cmdNextClip;
         private Button cmdShowModel;
         internal Label lblNowPlaying;

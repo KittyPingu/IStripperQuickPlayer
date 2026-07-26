@@ -259,8 +259,8 @@
             // 
             // Hotkeys
             // 
-            AutoScaleDimensions = new SizeF(10F, 25F);
-            AutoScaleMode = AutoScaleMode.Font;
+            AutoScaleDimensions = new SizeF(144F, 144F);
+            AutoScaleMode = AutoScaleMode.Dpi;
             ClientSize = new Size(578, 751);
             Controls.Add(txtPanic);
             Controls.Add(chkPanic);
@@ -290,7 +290,7 @@
             MaximizeBox = false;
             MinimizeBox = false;
             Name = "Hotkeys";
-            Padding = new Padding(4, 80, 4, 4);
+            Padding = new Padding(4);
             StartPosition = FormStartPosition.CenterParent;
             Text = "Hotkeys";
             Load += Hotkeys_Load;

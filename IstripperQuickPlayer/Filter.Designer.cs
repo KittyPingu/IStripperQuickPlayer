@@ -337,7 +337,8 @@
             // 
             // Filter
             // 
-            AutoScaleMode = AutoScaleMode.Inherit;
+            AutoScaleDimensions = new SizeF(144F, 144F);
+            AutoScaleMode = AutoScaleMode.Dpi;
             ClientSize = new Size(866, 982);
             Controls.Add(label6);
             Controls.Add(label5);

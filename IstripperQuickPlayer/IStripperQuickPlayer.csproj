@@ -7,6 +7,7 @@
 	  <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ImplicitUsings>enable</ImplicitUsings>
     <DebugType>full</DebugType>
     <ApplicationIcon>df2284943cc77e7e1a5fa6a0da8ca265.ico</ApplicationIcon>
@@ -50,7 +51,6 @@
          exercised by our .NET 10 control smoke test. -->
     <PackageReference Include="CyotekImageBox" Version="1.5.0" NoWarn="NU1701" />
     <PackageReference Include="DG.EnhancedBoxHelpers" Version="1.0.25907.18" />
-    <PackageReference Include="MaterialSkin.2" Version="2.3.1" />
     <PackageReference Include="Microsoft-WindowsAPICodePack-Shell" Version="1.1.4" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
     <PackageReference Include="NodaTime" Version="3.0.10" />

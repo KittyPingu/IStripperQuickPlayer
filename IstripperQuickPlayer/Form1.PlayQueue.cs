@@ -31,6 +31,8 @@ namespace IStripperQuickPlayer
             new("Enable play next queue") { CheckOnClick = true };
         private readonly ToolStripMenuItem autoQueueLengthToolStripMenuItem =
             new("Automatic queue length");
+        private readonly ToolStripMenuItem minimumClipSizeToolStripMenuItem =
+            new("Minimum clip size");
         private readonly ToolStripMenuItem smartQueueToolStripMenuItem =
             new("Smart automatic queue");
         private readonly ToolStripMenuItem smartQueueFavouritesToolStripMenuItem =
@@ -101,6 +103,7 @@ namespace IStripperQuickPlayer
             new("Clear Queue");
 
         private Panel playQueuePanel = null!;
+        private TableLayoutPanel playQueueLayout = null!;
         private Panel playQueueResizeGrip = null!;
         private Panel playQueueBody = null!;
         private Button playQueueHeader = null!;
@@ -340,11 +343,14 @@ namespace IStripperQuickPlayer
             {
                 AccessibleDescription =
                     "Expand or collapse the manual and automatic play-next queues.",
-                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill,
                 Height = PlayQueueCollapsedHeight,
                 FlatStyle = FlatStyle.Flat,
+                Name = "playQueueHeader",
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 0, 0)
+                Padding = new Padding(8, 1, 0, 3)
             };
             playQueueHeader.FlatAppearance.BorderSize = 0;
             playQueueHeader.Click += (_, _) =>
@@ -354,7 +360,7 @@ namespace IStripperQuickPlayer
                 playQueueExpanded = !playQueueExpanded;
                 playQueueBody.Visible = playQueueExpanded;
                 playQueuePanel.Height = playQueueExpanded
-                    ? playQueueExpandedHeight : PlayQueueCollapsedHeight;
+                    ? playQueueExpandedHeight : playQueueHeader.Height;
                 playQueueResizeGrip.Visible = playQueueExpanded &&
                     Properties.Settings.Default.EnablePlayQueue;
                 UpdatePlayQueueHeader();
@@ -367,32 +373,31 @@ namespace IStripperQuickPlayer
                 "Drop cards or clips here and drag entries to reorder them.";
             automaticQueueFlow.AccessibleDescription =
                 "Automatic queue generated from the current filters and smart rules.";
-            manualQueueLabel = CreateQueueLabel();
-            automaticQueueLabel = CreateQueueLabel();
+            manualQueueLabel = CreateQueueLabel("manualQueueLabel");
+            automaticQueueLabel = CreateQueueLabel("automaticQueueLabel");
             automaticQueueRefreshButton = new Button
             {
                 AccessibleName = "Generate a new automatic queue",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Cursor = Cursors.Hand,
                 FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI Symbol", 20, FontStyle.Regular),
-                Size = new System.Drawing.Size(21, 21),
+                Font = new Font("Segoe MDL2 Assets", 9, FontStyle.Regular),
+                Name = "automaticQueueRefreshButton",
+                Padding = new Padding(3, 0, 3, 0),
                 TabStop = true,
+                Text = "\uE72C",
+                TextAlign = ContentAlignment.MiddleCenter,
                 UseVisualStyleBackColor = false
             };
             automaticQueueRefreshButton.FlatAppearance.BorderSize = 0;
             automaticQueueRefreshButton.Click += (_, _) =>
                 RebuildAutomaticQueue();
-            automaticQueueRefreshButton.Paint +=
-                automaticQueueRefreshButton_Paint;
-            automaticQueueLabel.Controls.Add(automaticQueueRefreshButton);
-            automaticQueueLabel.TextChanged += (_, _) =>
-                PositionAutomaticQueueRefreshButton();
-            automaticQueueLabel.SizeChanged += (_, _) =>
-                PositionAutomaticQueueRefreshButton();
             Panel manualSection = CreateQueueSection(
                 manualQueueLabel, manualQueueFlow);
             Panel automaticSection = CreateQueueSection(
-                automaticQueueLabel, automaticQueueFlow);
+                automaticQueueLabel, automaticQueueFlow,
+                automaticQueueRefreshButton);
             playQueueSections = new SplitContainer
             {
                 AccessibleDescription =
@@ -427,7 +432,11 @@ namespace IStripperQuickPlayer
                 ResizeBothPlayQueueFlows();
             };
 
-            playQueueBody = new Panel { Dock = DockStyle.Fill };
+            playQueueBody = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Name = "playQueueBody"
+            };
             playQueueBody.Controls.Add(playQueueSections);
             playQueueResizeGrip = new Panel
             {
@@ -435,6 +444,7 @@ namespace IStripperQuickPlayer
                     "Drag to change the height of the play-next queue.",
                 Dock = DockStyle.Top,
                 Height = 7,
+                Name = "playQueueResizeGrip",
                 Cursor = Cursors.SizeNS
             };
             playQueueResizeGrip.MouseDown += playQueueResizeGrip_MouseDown;
@@ -443,9 +453,28 @@ namespace IStripperQuickPlayer
             playQueueResizeGrip.Paint += playQueueResizeGrip_Paint;
             playQueueResizeGrip.SizeChanged += (_, _) =>
                 playQueueResizeGrip.Invalidate();
-            playQueuePanel.Controls.Add(playQueueBody);
-            playQueuePanel.Controls.Add(playQueueHeader);
-            playQueuePanel.Controls.Add(playQueueResizeGrip);
+            playQueueLayout = new TableLayoutPanel
+            {
+                ColumnCount = 1,
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                Name = "playQueueLayout",
+                Padding = Padding.Empty,
+                RowCount = 3
+            };
+            playQueueLayout.RowStyles.Add(
+                new RowStyle(SizeType.Absolute, playQueueResizeGrip.Height));
+            playQueueLayout.RowStyles.Add(
+                new RowStyle(SizeType.AutoSize));
+            playQueueLayout.RowStyles.Add(
+                new RowStyle(SizeType.Percent, 100));
+            playQueueBody.Margin = Padding.Empty;
+            playQueueHeader.Margin = Padding.Empty;
+            playQueueResizeGrip.Margin = Padding.Empty;
+            playQueueLayout.Controls.Add(playQueueResizeGrip, 0, 0);
+            playQueueLayout.Controls.Add(playQueueHeader, 0, 1);
+            playQueueLayout.Controls.Add(playQueueBody, 0, 2);
+            playQueuePanel.Controls.Add(playQueueLayout);
             Controls.Add(playQueuePanel);
             Controls.SetChildIndex(playQueuePanel, Controls.Count - 1);
 
@@ -493,6 +522,8 @@ namespace IStripperQuickPlayer
             };
             SetupTooltipDelayMenu();
             SetupPlaybackQueueTooltips();
+            SetupMinimumClipSizeMenu();
+            UpdateMinimumClipSizeMenuText();
             GroupSettingsMenu();
             SetPlayQueueColours();
             RefreshPlayQueueVisibility();
@@ -633,20 +664,42 @@ namespace IStripperQuickPlayer
             WrapContents = false
         };
 
-        private static Label CreateQueueLabel() => new()
+        private static Label CreateQueueLabel(string name)
         {
-            Dock = DockStyle.Top,
-            Height = 23,
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Padding = new Padding(4, 2, 0, 0)
-        };
+            Label label = new()
+            {
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                Name = name,
+                Padding = new Padding(4, 3, 0, 4)
+            };
+            label.MinimumSize = new System.Drawing.Size(
+                0, label.Font.Height + label.Padding.Vertical + 2);
+            return label;
+        }
 
         private static Panel CreateQueueSection(Label label,
-            FlowLayoutPanel flow)
+            FlowLayoutPanel flow, Button? action = null)
         {
+            FlowLayoutPanel header = new()
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Top,
+                FlowDirection = FlowDirection.LeftToRight,
+                Name = label.Name.Replace("Label", "Header"),
+                WrapContents = false
+            };
+            label.Margin = Padding.Empty;
+            header.Controls.Add(label);
+            if (action != null)
+            {
+                action.Margin = new Padding(4, 1, 0, 1);
+                header.Controls.Add(action);
+            }
             Panel panel = new() { Dock = DockStyle.Fill };
             panel.Controls.Add(flow);
-            panel.Controls.Add(label);
+            panel.Controls.Add(header);
             return panel;
         }
 
@@ -742,6 +795,7 @@ namespace IStripperQuickPlayer
             [
                 enablePlayQueueToolStripMenuItem,
                 autoQueueLengthToolStripMenuItem,
+                minimumClipSizeToolStripMenuItem,
                 smartQueueToolStripMenuItem,
                 requeueCompletedManualItemsToolStripMenuItem,
                 randomManualQueueSelectionToolStripMenuItem,
@@ -761,6 +815,7 @@ namespace IStripperQuickPlayer
                 zoomOnHoverToolStripMenuItem,
                 menuShowRatingsStars,
                 menuShowCardSortLabels,
+                roundCardCornersToolStripMenuItem,
                 drawCardOverlaysToolStripMenuItem,
                 directCompositionOverlaysToolStripMenuItem,
                 overlayDefaultsToolStripMenuItem,
@@ -853,6 +908,62 @@ namespace IStripperQuickPlayer
                 $"{(playQueueExpanded ? "▼" : "▶")}  Play next queue" +
                 $"  —  {manualPlayQueue.Count} manual · " +
                 $"{automaticPlayQueue.Count} automatic";
+            int headerHeight = playQueueHeader.Font.Height +
+                playQueueHeader.Padding.Vertical + 6;
+            playQueueHeader.MinimumSize =
+                new System.Drawing.Size(0, headerHeight);
+            if (playQueueLayout != null)
+                playQueueLayout.RowStyles[0].Height =
+                    playQueueResizeGrip.Visible
+                        ? playQueueResizeGrip.Height : 0;
+            if (!playQueueExpanded)
+                playQueuePanel.Height = headerHeight;
+        }
+
+        private void UpdateMinimumClipSizeMenuText()
+        {
+            minimumClipSizeToolStripMenuItem.Text =
+                Properties.Settings.Default.MinSizeMB == 0
+                    ? "Minimum clip size: none"
+                    : $"Minimum clip size: " +
+                      $"{Properties.Settings.Default.MinSizeMB:N0} MB";
+        }
+
+        private void SetupMinimumClipSizeMenu()
+        {
+            long current = Math.Clamp(
+                (long)Math.Round(
+                    Properties.Settings.Default.MinSizeMB / 5d,
+                    MidpointRounding.AwayFromZero) * 5,
+                0, 40);
+            if (current != Properties.Settings.Default.MinSizeMB)
+            {
+                Properties.Settings.Default.MinSizeMB = current;
+                Properties.Settings.Default.Save();
+            }
+            foreach (long size in Enumerable.Range(0, 9)
+                         .Select(value => (long)value * 5))
+            {
+                ToolStripMenuItem item = new(
+                    size == 0 ? "No minimum" : $"{size:N0} MB")
+                {
+                    Checked = size == current,
+                    Tag = size
+                };
+                item.Click += (_, _) =>
+                {
+                    Properties.Settings.Default.MinSizeMB = size;
+                    foreach (ToolStripMenuItem choice in
+                        minimumClipSizeToolStripMenuItem.DropDownItems)
+                        choice.Checked = (long)choice.Tag! == size;
+                    UpdateMinimumClipSizeMenuText();
+                    if (items is { Length: > 0 } &&
+                        listModelsNew.SelectedItems.Count > 0)
+                        loadListClips(
+                            listModelsNew.SelectedItems[0].Tag);
+                };
+                minimumClipSizeToolStripMenuItem.DropDownItems.Add(item);
+            }
         }
 
         private void RenderPlayQueues()
@@ -877,38 +988,6 @@ namespace IStripperQuickPlayer
                     : "Automatic — disabled while card filter enforcement is off";
             UpdatePlayQueueHeader();
             UpdatePlayQueueCardOverlays();
-        }
-
-        private void PositionAutomaticQueueRefreshButton()
-        {
-            if (automaticQueueRefreshButton == null ||
-                automaticQueueLabel.Width <= 0)
-                return;
-
-            int textWidth = TextRenderer.MeasureText(
-                automaticQueueLabel.Text,
-                automaticQueueLabel.Font).Width;
-            automaticQueueRefreshButton.Location = new Point(
-                Math.Min(automaticQueueLabel.Width -
-                    automaticQueueRefreshButton.Width,
-                    automaticQueueLabel.Padding.Left + textWidth + 3),
-                1);
-        }
-
-        private void automaticQueueRefreshButton_Paint(
-            object? sender, PaintEventArgs e)
-        {
-            e.Graphics.TextRenderingHint =
-                System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-            using SolidBrush brush = new(
-                automaticQueueRefreshButton.ForeColor);
-            using StringFormat format = new()
-            {
-                Alignment = StringAlignment.Center,
-                LineAlignment = StringAlignment.Center
-            };
-            e.Graphics.DrawString("⟳", automaticQueueRefreshButton.Font,
-                brush, automaticQueueRefreshButton.ClientRectangle, format);
         }
 
         private void RenderPlayQueue(FlowLayoutPanel flow,

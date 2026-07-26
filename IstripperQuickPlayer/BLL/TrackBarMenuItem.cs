@@ -111,6 +111,15 @@ public class TrackBarMenuItem : ToolStripControlHost
         public Color TickColor
         {get { if (trackBar == null) return Color.Black;return trackBar.TickColor; } set {if (trackBar!=null) trackBar.TickColor = value; } }
 
+        [Browsable(false)]
+        [DesignerSerializationVisibility(
+            DesignerSerializationVisibility.Hidden)]
+        public int SliderPadding
+        {
+            get => trackBar?.Padding ?? 0;
+            set { if (trackBar != null) trackBar.Padding = value; }
+        }
+
         #endregion Properties
 
         #region Events

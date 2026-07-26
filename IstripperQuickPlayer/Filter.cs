@@ -10,12 +10,10 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using IStripperQuickPlayer.BLL;
 using DG.UI.Helpers;
-using MaterialSkin;
-using MaterialSkin.Controls;
 
 namespace IStripperQuickPlayer
 {
-    public partial class Filter : MaterialForm
+    public partial class Filter : Form
     {
         private string _filterName = "";
         ColorSlider.ColorSlider? rangeRating;
@@ -36,7 +34,6 @@ namespace IStripperQuickPlayer
 
             Save();
             InitializeComponent();
-            MaterialSkinManager.Instance.AddFormToManage(this);
             this.dateTimePickerMin.CustomFormat = Application.CurrentCulture.DateTimeFormat.ShortDatePattern;
             this.dateTimePickerMax.CustomFormat = Application.CurrentCulture.DateTimeFormat.ShortDatePattern;
             ReadValues();
@@ -46,6 +43,7 @@ namespace IStripperQuickPlayer
             this.Controls.Add(rangeWaist);
             this.Controls.Add(rangeHips);
             this.Controls.Add(rangeAge);
+            AppTheme.Apply(this);
             isLoaded = true;
             if (string.IsNullOrEmpty(_filterName) || _filterName == "Default") button1.Enabled = false;
             else button1.Enabled = true;

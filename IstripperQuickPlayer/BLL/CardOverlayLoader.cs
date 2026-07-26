@@ -27,7 +27,6 @@ internal readonly record struct CardOverlayFrame(
 internal sealed class CardOverlayRules
 {
     public Dictionary<string, string> CardTypes { get; set; } = [];
-    public Dictionary<string, string> Hotness { get; set; } = [];
     public int RecentCount { get; set; }
     public string RecentOverlayId { get; set; } = "";
     public int RecentPurchaseCount { get; set; }
@@ -37,7 +36,7 @@ internal sealed class CardOverlayRules
     public List<string> Priority { get; set; } = [];
 
     internal IEnumerable<string> OverlayIds() =>
-        CardTypes.Values.Concat(Hotness.Values)
+        CardTypes.Values
             .Append(RecentOverlayId)
             .Append(RecentPurchaseOverlayId)
             .Append(RatingOverlayId)
@@ -46,7 +45,6 @@ internal sealed class CardOverlayRules
     internal void Normalize()
     {
         CardTypes ??= [];
-        Hotness ??= [];
         RecentOverlayId ??= "";
         RecentPurchaseOverlayId ??= "";
         RatingOverlayId ??= "";
@@ -540,9 +538,6 @@ internal static class CardOverlayLoader
                     myData?.GetCardRating(card.name) >=
                         rules.MinimumMyRating * 2 =>
                     rules.RatingOverlayId,
-                _ when key.StartsWith("hotness:") &&
-                    key[8..] == card.hotnessLevel =>
-                    rules.Hotness.GetValueOrDefault(key[8..]),
                 _ when key.StartsWith("type:") &&
                     key[5..] == card.collection.ToString() =>
                     rules.CardTypes.GetValueOrDefault(key[5..]),
@@ -562,8 +557,6 @@ internal static class CardOverlayLoader
             "recent",
             "purchase",
             "rating",
-            .. Enum.GetValues<Enums.HotnessCode>()
-                .Select(value => $"hotness:{(int)value}"),
             .. Enum.GetValues<Enums.CollectionType>()
                 .Where(value =>
                     value != Enums.CollectionType.Undefined)
@@ -609,24 +602,17 @@ internal static class CardOverlayLoader
             RecentPurchaseOverlayId = "purchase",
             MinimumMyRating = 4,
             RatingOverlayId = "rating",
-            Hotness = new() { ["5"] = "hotness" },
             CardTypes = new() { ["IStripper"] = "type" }
         };
         MyData data = new();
         ModelCard recent = new()
         {
             name = "recent", collection = Enums.CollectionType.IStripper,
-            hotnessLevel = "5", dateReleased = new(2026, 1, 2)
+            dateReleased = new(2026, 1, 2)
         };
         ModelCard rated = new()
         {
-            name = "rated", collection = Enums.CollectionType.IStripper,
-            hotnessLevel = "5"
-        };
-        ModelCard hot = new()
-        {
-            name = "hot", collection = Enums.CollectionType.IStripper,
-            hotnessLevel = "5"
+            name = "rated", collection = Enums.CollectionType.IStripper
         };
         ModelCard typed = new()
         {
@@ -652,9 +638,6 @@ internal static class CardOverlayLoader
             ResolveDefaultOverlayId(
                 rated, rules, new HashSet<string>(),
                 new HashSet<string>(), data) == "rating" &&
-            ResolveDefaultOverlayId(
-                hot, rules, new HashSet<string>(),
-                new HashSet<string>(), data) == "hotness" &&
             ResolveDefaultOverlayId(
                 typed, rules, new HashSet<string>(),
                 new HashSet<string>(), data) == "type" &&

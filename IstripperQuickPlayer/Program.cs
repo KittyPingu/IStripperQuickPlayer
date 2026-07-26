@@ -13,7 +13,9 @@ namespace IStripperQuickPlayer
         /// </summary>
         [STAThread]
         static void Main(string[] args)
-        {      // ***this line is added***
+        {
+            ApplicationConfiguration.Initialize();
+
             if (args.Length == 2 && args[0] == "--verify-card-overlay")
             {
                 Environment.ExitCode =
@@ -32,7 +34,6 @@ namespace IStripperQuickPlayer
             if (args.Length == 1 &&
                 args[0] == "--verify-overlay-defaults-layout")
             {
-                ApplicationConfiguration.Initialize();
                 Environment.ExitCode =
                     OverlayDefaultsForm.VerifyLayout() ? 0 : 1;
                 return;
@@ -40,7 +41,6 @@ namespace IStripperQuickPlayer
             if (args.Length == 1 &&
                 args[0] == "--verify-partial-card-refresh")
             {
-                ApplicationConfiguration.Initialize();
                 using Manina.Windows.Forms.ImageListView list = new()
                 {
                     Size = new System.Drawing.Size(400, 300),
@@ -66,7 +66,6 @@ namespace IStripperQuickPlayer
             if (args.Length == 1 &&
                 args[0] == "--verify-rounded-card-corners")
             {
-                ApplicationConfiguration.Initialize();
                 Environment.ExitCode =
                     CardRenderer.VerifyRoundedCorners() ? 0 : 1;
                 return;
@@ -74,7 +73,6 @@ namespace IStripperQuickPlayer
             if (args.Length == 1 &&
                 args[0] == "--verify-direct-composition-overlays")
             {
-                ApplicationConfiguration.Initialize();
                 Environment.ExitCode =
                     DirectCompositionCardOverlayControl.Verify() ? 0 : 1;
                 return;
@@ -86,7 +84,9 @@ namespace IStripperQuickPlayer
             }
             if (args.Length == 1 && args[0] == "--verify-controls")
             {
-                if (!Form1.TryParseHotKey("Control+Alt+N", out uint modifiers, out uint key) ||
+                if (!AreDpiAwarenessContextsEqual(
+                        GetThreadDpiAwarenessContext(), new IntPtr(-4)) ||
+                    !Form1.TryParseHotKey("Control+Alt+N", out uint modifiers, out uint key) ||
                     modifiers != 0x4003 || key != (uint)Keys.N ||
                     !Form1.TryParseHotKey("Ctrl+Alt+Shift+N",
                         out modifiers, out key) ||
@@ -112,6 +112,17 @@ namespace IStripperQuickPlayer
                     Environment.ExitCode = 1;
                     return;
                 }
+                if (Form1.CardThumbnailSize(96, 1) !=
+                        new System.Drawing.Size(108, 161) ||
+                    Form1.CardThumbnailSize(144, 1) !=
+                        new System.Drawing.Size(162, 242) ||
+                    Form1.CardThumbnailSize(192, 1) !=
+                        new System.Drawing.Size(216, 323) ||
+                    !CardRenderer.VerifyRelativeMetrics())
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
                 FilterSettings filter = new();
                 FilterSettings sameFilter =
                     (FilterSettings)filter.Clone();
@@ -126,7 +137,6 @@ namespace IStripperQuickPlayer
                     Environment.ExitCode = 1;
                     return;
                 }
-                ApplicationConfiguration.Initialize();
                 using System.ComponentModel.Container tooltipComponents = new();
                 using Panel tooltipPanel = new();
                 using Button tooltipButton = new() { Text = "Test action" };
@@ -157,6 +167,176 @@ namespace IStripperQuickPlayer
                 }
                 using Hotkeys hotkeys = new();
                 using Form1 mainWindow = new();
+                mainWindow.CreateControl();
+                mainWindow.PerformLayout();
+                string[] responsiveRows =
+                [
+                    "librarySearchRow", "librarySortRow",
+                    "nowPlayingActions", "playbackRow", "clipFilterRow"
+                ];
+                TableLayoutPanel nowPlayingRow =
+                    (TableLayoutPanel)mainWindow.Controls.Find(
+                        "nowPlayingRow", true).Single();
+                FlowLayoutPanel nowPlayingActions =
+                    (FlowLayoutPanel)mainWindow.Controls.Find(
+                        "nowPlayingActions", true).Single();
+                Label[] queueLabels =
+                [
+                    (Label)mainWindow.Controls.Find(
+                        "manualQueueLabel", true).Single(),
+                    (Label)mainWindow.Controls.Find(
+                        "automaticQueueLabel", true).Single()
+                ];
+                Button queueHeader = (Button)mainWindow.Controls.Find(
+                    "playQueueHeader", true).Single();
+                TableLayoutPanel queueLayout =
+                    (TableLayoutPanel)mainWindow.Controls.Find(
+                        "playQueueLayout", true).Single();
+                Control queueBody = mainWindow.Controls.Find(
+                    "playQueueBody", true).Single();
+                Button queueReload = (Button)mainWindow.Controls.Find(
+                    "automaticQueueRefreshButton", true).Single();
+                Control description = mainWindow.Controls.Find(
+                    "txtDescription", true).Single();
+                Control photos = mainWindow.Controls.Find(
+                    "cmdPhotos", true).Single();
+                Button filterButton = (Button)mainWindow.Controls.Find(
+                    "cmdFilter", true).Single();
+                Button playPause = (Button)mainWindow.Controls.Find(
+                    "cmdPlayPause", true).Single();
+                ComboBox sortBy = (ComboBox)mainWindow.Controls.Find(
+                    "cmbSortBy", true).Single();
+                MenuStrip mainMenu = mainWindow.MainMenuStrip!;
+                ToolStripItem[] menuItems = AllMenuItems(
+                    mainMenu.Items).ToArray();
+                int menuFontHeight =
+                    mainMenu.Font.Height;
+                TrackBarMenuItem[] endpointSliders = menuItems
+                    .OfType<TrackBarMenuItem>()
+                    .Where(item => item.Name is
+                        "trackBarZoomOnHover" or
+                        "trackbarWallpaperBrightness" or
+                        "trackBarBlur")
+                    .ToArray();
+                TrackBarMenuItem[] menuSliders = menuItems
+                    .OfType<TrackBarMenuItem>().ToArray();
+                ToolStripMenuItem minimumClipSize = menuItems
+                    .OfType<ToolStripMenuItem>()
+                    .Single(item => (item.Text ?? "").StartsWith(
+                        "Minimum clip size:", StringComparison.Ordinal));
+                ToolStripMenuItem blurImage = menuItems
+                    .OfType<ToolStripMenuItem>()
+                    .Single(item => item.Name ==
+                        "blurImageToolStripMenuItem");
+                foreach (ToolStripDropDownItem item in
+                    menuItems.OfType<ToolStripDropDownItem>())
+                    item.DropDown.CreateControl();
+                foreach (ToolStripControlHost host in
+                    menuItems.OfType<ToolStripControlHost>())
+                    host.Control.CreateControl();
+                bool monitorMenuFontsValid = true;
+                foreach (Screen screen in Screen.AllScreens)
+                {
+                    using Form1 probe = new()
+                    {
+                        StartPosition = FormStartPosition.Manual,
+                        Location = new System.Drawing.Point(
+                            screen.WorkingArea.Left + 20,
+                            screen.WorkingArea.Top + 20)
+                    };
+                    probe.CreateControl();
+                    MenuStrip probeMenu = probe.MainMenuStrip!;
+                    ToolStripItem[] probeItems = AllMenuItems(
+                        probeMenu.Items).ToArray();
+                    monitorMenuFontsValid &=
+                        probeItems
+                            .Where(item =>
+                                item is not ToolStripSeparator)
+                            .All(item => Math.Abs(
+                                item.Font.SizeInPoints -
+                                probeMenu.Font.SizeInPoints) < 0.01f);
+                }
+                if (mainWindow.AutoScaleMode != AutoScaleMode.Dpi ||
+                    mainWindow.Padding.Top <= 0 ||
+                    queueHeader.Height < queueHeader.Font.Height +
+                        queueHeader.Padding.Vertical + 2 ||
+                    queueLayout.GetRow(queueHeader) != 1 ||
+                    queueLayout.GetRow(queueBody) != 2 ||
+                    queueLabels.Any(label => label.Height <
+                        label.Font.Height + label.Padding.Vertical + 2) ||
+                    queueReload.Width <= 0 ||
+                    queueReload.Text != "\uE72C" ||
+                    queueReload.Parent?.Name != "automaticQueueHeader" ||
+                    queueReload.Parent.Controls.GetChildIndex(
+                        queueReload) <=
+                    queueReload.Parent.Controls.GetChildIndex(
+                        queueLabels[1]) ||
+                    nowPlayingRow.GetColumn(nowPlayingActions) != 1 ||
+                    nowPlayingRow.ColumnStyles[0].SizeType !=
+                        SizeType.Percent ||
+                    new[] { "cmdWallpaper", "cmdNextClip", "cmdShowModel" }
+                        .Any(name =>
+                            nowPlayingActions.Controls.Find(
+                                name, false).Length != 1) ||
+                    description.Height <= 0 ||
+                    description.Parent?.Name != "modelDetailsLayout" ||
+                    photos.Parent?.Name != "clipListHost" ||
+                    filterButton.Height < filterButton.Font.Height +
+                        filterButton.Padding.Vertical ||
+                    playPause.Width <
+                        playPause.GetPreferredSize(
+                            System.Drawing.Size.Empty).Width ||
+                    sortBy.Width < sortBy.Items.Cast<string>()
+                        .Max(item => TextRenderer.MeasureText(
+                            item, sortBy.Font).Width) +
+                        SystemInformation.VerticalScrollBarWidth ||
+                    menuItems
+                        .Where(item => item is not ToolStripSeparator)
+                        .Any(item => item.Font.Height != menuFontHeight) ||
+                    menuItems.OfType<ToolStripControlHost>()
+                        .Any(host =>
+                            host.Control.Font.Height != menuFontHeight) ||
+                    endpointSliders.Length != 3 ||
+                    endpointSliders.Any(slider =>
+                        slider.ScaleDivisions != 1 ||
+                        slider.TickColor.A != 0 ||
+                        slider.SliderPadding <
+                            TextRenderer.MeasureText(
+                                slider.Maximum.ToString(
+                                    CultureInfo.CurrentCulture),
+                                slider.Control.Font).Width / 2) ||
+                    blurImage.CheckOnClick ||
+                    menuSliders.Any(slider =>
+                        slider.Control.Height <
+                            slider.Control.Font.Height * 3 + 8) ||
+                    menuItems.OfType<ToolStripDropDownItem>()
+                        .Select(item => item.DropDown)
+                        .OfType<ToolStripDropDownMenu>()
+                        .Any(menu => menu.ShowImageMargin ||
+                            !menu.ShowCheckMargin) ||
+                    menuItems.OfType<ToolStripMenuItem>()
+                        .Any(item => item.Owner is ToolStripDropDown &&
+                            item.Padding != Padding.Empty) ||
+                    minimumClipSize.DropDownItems
+                        .OfType<ToolStripControlHost>().Any() ||
+                    !minimumClipSize.DropDownItems
+                        .Cast<ToolStripMenuItem>()
+                        .Select(item => (long)item.Tag!)
+                        .SequenceEqual(Enumerable.Range(0, 9)
+                            .Select(value => (long)value * 5)) ||
+                    !monitorMenuFontsValid ||
+                    (mainWindow.listClips.Items.Count > 0 &&
+                        photos.Height !=
+                        mainWindow.listClips.GetItemRect(0).Top) ||
+                    responsiveRows.Select(name =>
+                            mainWindow.Controls.Find(name, true)
+                                .SingleOrDefault())
+                        .Any(row => row is not FlowLayoutPanel flow ||
+                            FlowHasOverlaps(flow)))
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
                 using ImageView imageView = new();
                 using System.Drawing.Bitmap image = new(1, 1);
                 imageView.LoadImage(image);
@@ -170,21 +350,10 @@ namespace IStripperQuickPlayer
                     cardList.ClientRectangle);
                 return;
             }
-            if (Environment.OSVersion.Version.Major >= 6)
-                SetProcessDPIAware();
-
-            Application.EnableVisualStyles();
-            // To customize application configuration such as set high DPI settings or default font,
-            // see https://aka.ms/applicationconfiguration.
             //CultureInfo.CurrentCulture = new CultureInfo("en-GB", false);
-            ApplicationConfiguration.Initialize();
             Application.Run(new Form1());
             System.Diagnostics.Process.GetCurrentProcess().Kill();
         }
-
-        // ***also dllimport of that function***
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        private static extern bool SetProcessDPIAware();
 
         private sealed class PartialRefreshRenderer :
             Manina.Windows.Forms.ImageListView.ImageListViewRenderer
@@ -201,6 +370,47 @@ namespace IStripperQuickPlayer
                 graphics.FillRectangle(Brushes.Black, bounds);
             }
         }
+
+        private static bool FlowHasOverlaps(FlowLayoutPanel flow)
+        {
+            Control[] visible = flow.Controls.Cast<Control>()
+                .Where(control => control.Visible).ToArray();
+            for (int first = 0; first < visible.Length; first++)
+            {
+                for (int second = first + 1;
+                     second < visible.Length; second++)
+                {
+                    if (visible[first].Bounds.IntersectsWith(
+                            visible[second].Bounds))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        private static IEnumerable<ToolStripItem> AllMenuItems(
+            ToolStripItemCollection items)
+        {
+            foreach (ToolStripItem item in items)
+            {
+                yield return item;
+                if (item is ToolStripDropDownItem dropDown)
+                {
+                    foreach (ToolStripItem child in
+                        AllMenuItems(dropDown.DropDownItems))
+                        yield return child;
+                }
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetThreadDpiAwarenessContext();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        [return: System.Runtime.InteropServices.MarshalAs(
+            System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool AreDpiAwarenessContextsEqual(
+            IntPtr dpiContextA, IntPtr dpiContextB);
     }
 
     internal static partial class TooltipManager
@@ -355,9 +565,9 @@ namespace IStripperQuickPlayer
                 ["trackBarWallpaperLabelOpacity"] =
                     "Set wallpaper label opacity from transparent to opaque.",
                 ["blurImageToolStripMenuItem"] =
-                    "Blur generated wallpaper backgrounds.",
+                    "Set wallpaper blur; zero disables it.",
                 ["trackBarBlur"] =
-                    "Adjust the amount of wallpaper background blur.",
+                    "Set wallpaper blur from off to maximum.",
                 ["hideDesktopIconsToolStripMenuItem"] =
                     "Hide desktop icons while QuickPlayer wallpaper is active.",
                 ["showKittyToolStripMenuItem"] =
@@ -577,5 +787,211 @@ namespace IStripperQuickPlayer
 
         [GeneratedRegex("([a-z0-9])([A-Z])")]
         private static partial Regex WordRegex();
+    }
+
+    internal static class AppTheme
+    {
+        private static readonly Color DarkBackground =
+            Color.FromArgb(48, 48, 48);
+        private static readonly Color DarkSurface =
+            Color.FromArgb(58, 58, 58);
+        private static readonly Color DarkBorder =
+            Color.FromArgb(90, 90, 90);
+        private static readonly Color DarkText = Color.AntiqueWhite;
+
+        internal static void Apply(Form form)
+        {
+            form.HandleCreated -= Form_HandleCreated;
+            form.HandleCreated += Form_HandleCreated;
+            Apply((Control)form);
+            SetDarkTitleBar(form);
+        }
+
+        internal static void Apply(Control root)
+        {
+            ApplyControl(root, Properties.Settings.Default.DarkMode);
+        }
+
+        private static void ApplyControl(Control control, bool dark)
+        {
+            Color background = dark ? DarkBackground : SystemColors.Control;
+            Color surface = dark ? DarkSurface : SystemColors.Window;
+            Color foreground = dark ? DarkText : SystemColors.ControlText;
+
+            control.ForeColor = foreground;
+            switch (control)
+            {
+                case TextBoxBase:
+                case ComboBox:
+                case ListBox:
+                case ListView:
+                case NumericUpDown:
+                    control.BackColor = surface;
+                    break;
+                case Button button:
+                    button.FlatStyle =
+                        dark ? FlatStyle.Flat : FlatStyle.Standard;
+                    button.UseVisualStyleBackColor = !dark;
+                    button.BackColor = background;
+                    if (dark)
+                        button.FlatAppearance.BorderColor = DarkBorder;
+                    break;
+                case CheckBox checkBox:
+                    checkBox.UseVisualStyleBackColor = !dark;
+                    checkBox.BackColor = background;
+                    break;
+                case RadioButton radioButton:
+                    radioButton.UseVisualStyleBackColor = !dark;
+                    radioButton.BackColor = background;
+                    break;
+                case DataGridView grid:
+                    ApplyGrid(grid, dark);
+                    break;
+                case ToolStrip strip:
+                    ApplyToolStrip(strip, dark);
+                    break;
+                default:
+                    control.BackColor = background;
+                    break;
+            }
+
+            foreach (Control child in control.Controls)
+                ApplyControl(child, dark);
+            if (control.ContextMenuStrip != null)
+                ApplyToolStrip(control.ContextMenuStrip, dark);
+        }
+
+        private static void ApplyGrid(DataGridView grid, bool dark)
+        {
+            Color background =
+                dark ? DarkBackground : SystemColors.Window;
+            Color secondary = dark ? DarkSurface : SystemColors.Control;
+            Color foreground = dark ? DarkText : SystemColors.ControlText;
+            grid.BackgroundColor = background;
+            grid.GridColor = dark ? DarkBorder : SystemColors.ControlDark;
+            grid.EnableHeadersVisualStyles = false;
+            grid.DefaultCellStyle.BackColor = background;
+            grid.DefaultCellStyle.ForeColor = foreground;
+            grid.DefaultCellStyle.SelectionBackColor =
+                dark ? Color.FromArgb(55, 105, 135)
+                    : SystemColors.Highlight;
+            grid.DefaultCellStyle.SelectionForeColor =
+                dark ? Color.White : SystemColors.HighlightText;
+            grid.ColumnHeadersDefaultCellStyle.BackColor = secondary;
+            grid.ColumnHeadersDefaultCellStyle.ForeColor = foreground;
+            grid.RowsDefaultCellStyle.BackColor = background;
+            grid.RowsDefaultCellStyle.ForeColor = foreground;
+        }
+
+        private static void ApplyToolStrip(ToolStrip strip, bool dark)
+        {
+            Color background =
+                dark ? DarkBackground : SystemColors.Menu;
+            Color foreground = dark ? DarkText : SystemColors.MenuText;
+            strip.BackColor = background;
+            strip.ForeColor = foreground;
+            strip.Renderer = new ToolStripProfessionalRenderer(
+                dark ? new DarkColorTable() : new ProfessionalColorTable())
+                { RoundedEdges = false };
+            foreach (ToolStripItem item in strip.Items)
+                ApplyToolStripItem(
+                    item, background, foreground, dark);
+        }
+
+        private static void ApplyToolStripItem(
+            ToolStripItem item, Color background,
+            Color foreground, bool dark)
+        {
+            item.BackColor = background;
+            item.ForeColor = foreground;
+            if (item is ToolStripControlHost host)
+            {
+                host.Control.Font = item.Owner?.Font ?? item.Font;
+                ApplyControl(host.Control, dark);
+                if (host is TrackBarMenuItem)
+                {
+                    int height = host.Control.Font.Height * 3 + 8;
+                    host.Control.Height = height;
+                    host.Height = height;
+                    int endpointWidth = Math.Max(
+                        TextRenderer.MeasureText(
+                            ((TrackBarMenuItem)host).Minimum.ToString(
+                                CultureInfo.CurrentCulture),
+                            host.Control.Font).Width,
+                        TextRenderer.MeasureText(
+                            ((TrackBarMenuItem)host).Maximum.ToString(
+                                CultureInfo.CurrentCulture),
+                            host.Control.Font).Width);
+                    ((TrackBarMenuItem)host).SliderPadding =
+                        endpointWidth / 2 + 2;
+                }
+            }
+            if (item is not ToolStripDropDownItem dropDown)
+                return;
+            dropDown.DropDown.BackColor = background;
+            dropDown.DropDown.ForeColor = foreground;
+            dropDown.DropDown.Renderer = new ToolStripProfessionalRenderer(
+                dark ? new DarkColorTable() : new ProfessionalColorTable())
+                { RoundedEdges = false };
+            if (dropDown.DropDown is ToolStripDropDownMenu menu)
+            {
+                menu.ShowImageMargin = false;
+                menu.ShowCheckMargin = true;
+            }
+            foreach (ToolStripItem child in dropDown.DropDownItems)
+            {
+                if (child is ToolStripMenuItem menuItem)
+                    menuItem.Padding = Padding.Empty;
+                ApplyToolStripItem(
+                    child, background, foreground, dark);
+            }
+        }
+
+        private static void Form_HandleCreated(
+            object? sender, EventArgs e)
+        {
+            if (sender is Form form)
+                SetDarkTitleBar(form);
+        }
+
+        private static void SetDarkTitleBar(Form form)
+        {
+            if (!OperatingSystem.IsWindows() || !form.IsHandleCreated)
+                return;
+            int enabled = Properties.Settings.Default.DarkMode ? 1 : 0;
+            if (DwmSetWindowAttribute(
+                    form.Handle, 20, ref enabled, sizeof(int)) != 0)
+                DwmSetWindowAttribute(
+                    form.Handle, 19, ref enabled, sizeof(int));
+        }
+
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(
+            IntPtr window, int attribute, ref int value, int size);
+
+        private sealed class DarkColorTable : ProfessionalColorTable
+        {
+            public override Color MenuItemSelected => DarkSurface;
+            public override Color MenuItemBorder => DarkBorder;
+            public override Color MenuItemSelectedGradientBegin =>
+                DarkSurface;
+            public override Color MenuItemSelectedGradientEnd =>
+                DarkSurface;
+            public override Color MenuItemPressedGradientBegin =>
+                DarkSurface;
+            public override Color MenuItemPressedGradientEnd =>
+                DarkSurface;
+            public override Color ToolStripDropDownBackground =>
+                DarkBackground;
+            public override Color ImageMarginGradientBegin =>
+                DarkBackground;
+            public override Color ImageMarginGradientMiddle =>
+                DarkBackground;
+            public override Color ImageMarginGradientEnd =>
+                DarkBackground;
+            public override Color SeparatorDark => DarkBorder;
+            public override Color SeparatorLight => DarkSurface;
+        }
+
     }
 }

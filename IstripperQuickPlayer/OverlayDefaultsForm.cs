@@ -1,14 +1,12 @@
 using EnumDescription;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
-using MaterialSkin;
-using MaterialSkin.Controls;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 
 namespace IStripperQuickPlayer;
 
-internal sealed class OverlayDefaultsForm : MaterialForm
+internal sealed class OverlayDefaultsForm : Form
 {
     private sealed class PreviewPanel : Panel
     {
@@ -63,13 +61,13 @@ internal sealed class OverlayDefaultsForm : MaterialForm
         choices = [new("", "(None)", ""), .. availableChoices];
         Rules = rules;
         Text = "Overlay defaults";
+        AutoScaleDimensions = new SizeF(144, 144);
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new System.Drawing.Size(820, 560);
         Size = new System.Drawing.Size(1040, 700);
         ShowIcon = false;
         ShowInTaskbar = false;
-        ApplyTheme();
-
         Label explanation = new()
         {
             AutoSize = false,
@@ -187,6 +185,7 @@ internal sealed class OverlayDefaultsForm : MaterialForm
         layout.Controls.Add(content, 0, 1);
         layout.Controls.Add(buttons, 0, 2);
         Controls.Add(layout);
+        ApplyTheme();
 
         grid.CurrentCellDirtyStateChanged += (_, _) =>
         {
@@ -236,15 +235,6 @@ internal sealed class OverlayDefaultsForm : MaterialForm
                         "0.0", CultureInfo.CurrentCulture),
                     rules.RatingOverlayId, false)
             };
-        foreach (Enums.HotnessCode hotness in
-                 Enum.GetValues<Enums.HotnessCode>())
-        {
-            string value = ((int)hotness).ToString(
-                CultureInfo.InvariantCulture);
-            rows[$"hotness:{value}"] = (
-                $"Hotness - {hotness.GetDescription()}", "",
-                rules.Hotness.GetValueOrDefault(value), true);
-        }
         foreach (Enums.CollectionType type in
                  Enum.GetValues<Enums.CollectionType>()
                      .Where(type =>
@@ -277,6 +267,9 @@ internal sealed class OverlayDefaultsForm : MaterialForm
             form.grid.Rows[0].Tag?.ToString() == second &&
             form.grid.Rows.Cast<DataGridViewRow>()
                 .Any(row => row.Tag?.ToString() == "purchase") &&
+            !form.grid.Rows.Cast<DataGridViewRow>()
+                .Any(row => row.Tag?.ToString()
+                    ?.StartsWith("hotness:") == true) &&
             !form.previewTimer.Enabled &&
             form.previewSurface.Width > 0 &&
             save.Right <= save.Parent!.ClientSize.Width &&
@@ -287,15 +280,7 @@ internal sealed class OverlayDefaultsForm : MaterialForm
 
     private void ApplyTheme()
     {
-        MaterialSkinManager skin = MaterialSkinManager.Instance;
-        skin.RemoveFormToManage(this);
-        skin.AddFormToManage(this);
-        skin.Theme = Properties.Settings.Default.DarkMode
-            ? MaterialSkinManager.Themes.DARK
-            : MaterialSkinManager.Themes.LIGHT;
-        skin.ColorScheme = new(
-            Primary.BlueGrey800, Primary.BlueGrey900,
-            Primary.BlueGrey500, Accent.LightBlue200, TextShade.WHITE);
+        AppTheme.Apply(this);
 
         bool dark = Properties.Settings.Default.DarkMode;
         Color background = dark ? Color.FromArgb(48, 48, 48)
@@ -490,11 +475,6 @@ internal sealed class OverlayDefaultsForm : MaterialForm
             {
                 if (overlayId.Length > 0)
                     rules.CardTypes[key[5..]] = overlayId;
-            }
-            else if (key.StartsWith("hotness:"))
-            {
-                if (overlayId.Length > 0)
-                    rules.Hotness[key[8..]] = overlayId;
             }
             else if (key == "recent")
             {
