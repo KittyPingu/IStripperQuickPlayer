@@ -749,6 +749,19 @@ namespace IStripperQuickPlayer
 
         private void ReloadModels()
         {
+            List<ModelCard> previousCards =
+                (Datastore.modelcards ?? []).ToList();
+            int previousDeclaredCards = Datastore.numberOfCards;
+            int previousVersion = Datastore.versionnumber;
+            void RestorePreviousCatalogue()
+            {
+                Datastore.modelcards = previousCards;
+                Datastore.numberOfCards = previousDeclaredCards;
+                Datastore.versionnumber = previousVersion;
+                lblModelsLoaded.Text =
+                    "Models Loaded: " + previousCards.Count;
+            }
+
             string diagnosticsFolder = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "IStripperQuickPlayer");
@@ -833,9 +846,23 @@ namespace IStripperQuickPlayer
                 RefreshPlaybackControlVisibility();
                 ReloadStaticProperties();
                 lstLoader = new ModelsLstLoader();
-                listModelsNew.Items.Clear();
                 Datastore.modelcards = [];
                 lstLoader.LoadModels();
+                int loadedCards = Datastore.modelcards?.Count ?? 0;
+                int physicalFolders = rootFolders.Values
+                    .SelectMany(folders => folders)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count();
+                if (IsIncompleteCatalogueReload(
+                    previousCards.Count, loadedCards, physicalFolders))
+                {
+                    RestorePreviousCatalogue();
+                    diagnostics.AppendLine(
+                        "Result: incomplete catalogue ignored; " +
+                        "previous cards retained");
+                    return;
+                }
+                listModelsNew.Items.Clear();
                 CardOverlayLoader.Reload(
                     Datastore.modelcards ?? [], myData);
                 BeginInvoke((Action)(() => { PopulateModelListview(); }));
@@ -844,6 +871,7 @@ namespace IStripperQuickPlayer
             }
             catch (Exception exception)
             {
+                RestorePreviousCatalogue();
                 diagnostics.AppendLine("Result: failed");
                 diagnostics.AppendLine(
                     $"Parse offset: {exception.Data["ModelsLstPosition"] ?? "unknown"}");
@@ -5931,6 +5959,13 @@ namespace IStripperQuickPlayer
                 row.Controls.Add(control);
             }
         }
+
+        internal static bool IsIncompleteCatalogueReload(
+            int previousCards, int loadedCards, int physicalFolders) =>
+            previousCards > 0 &&
+            (loadedCards == 0 ||
+                loadedCards * 2 < previousCards &&
+                loadedCards * 2 < physicalFolders);
 
         private void AdjustControls()
         {

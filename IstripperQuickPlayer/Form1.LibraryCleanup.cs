@@ -47,23 +47,11 @@ public partial class Form1
             Files.RemoveWhere(file => IsInside(file, fullPath));
         }
 
-        internal (int Files, long Bytes) Measure()
-        {
-            HashSet<string> paths = new(Files,
-                StringComparer.OrdinalIgnoreCase);
-            foreach (string directory in Directories)
-            {
-                paths.UnionWith(Directory.EnumerateFiles(directory, "*",
-                    new EnumerationOptions
-                    {
-                        RecurseSubdirectories = true,
-                        IgnoreInaccessible = false,
-                        AttributesToSkip = FileAttributes.ReparsePoint
-                    }));
-            }
-            return (paths.Count, paths.Sum(path => new FileInfo(path).Length));
-        }
     }
+
+    private sealed record CleanupPreviewEntry(string Action, string Model,
+        string Card, string Tag, string File, string Location, long Size,
+        bool RemovesFile);
 
     private sealed record CleanupResult(
         int RemovedFiles, int RemovedDirectories, List<string> Errors);
@@ -139,16 +127,23 @@ public partial class Form1
                 return;
             }
 
-            (int fileCount, long bytes) = await Task.Run(plan.Measure);
-            DialogResult confirm = MessageBox.Show(this,
-                $"{title}?\r\n\r\n" +
-                $"{fileCount:N0} files ({FormatBytes(bytes)}) and " +
-                $"{plan.Directories.Count:N0} folders will be permanently " +
-                $"removed.\r\n\r\nThis cannot be undone.",
-                "Clean Library", MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            Dictionary<string, (string Model, string Card)> cardNames =
+                (DataModel.Datastore.modelcards ?? [])
+                .GroupBy(card => CardTag(card.name),
+                    StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key,
+                    group => (group.First().modelName ?? "",
+                        group.First().outfit),
+                    StringComparer.OrdinalIgnoreCase);
+            List<CleanupPreviewEntry> preview = await Task.Run(() =>
+                BuildCleanupPreview(plan, cardNames));
+            Cursor = previousCursor;
+            using CleanupPreviewForm previewForm =
+                new(title, preview, plan.Directories.Count);
+            DialogResult confirm = previewForm.ShowDialog(this);
             if (confirm != DialogResult.Yes)
                 return;
+            Cursor = Cursors.WaitCursor;
             if (IsIStripperRunning())
                 throw new InvalidOperationException(
                     "iStripper was started again. Exit it before cleaning.");
@@ -385,6 +380,169 @@ public partial class Form1
             Directory.EnumerateFiles(root, pattern, options));
     }
 
+    private static List<CleanupPreviewEntry> BuildCleanupPreview(
+        CleanupPlan plan,
+        IReadOnlyDictionary<string, (string Model, string Card)> cardNames)
+    {
+        List<CleanupPreviewEntry> entries = [];
+        foreach (string file in plan.Files.Order())
+            entries.Add(PreviewEntry(
+                plan.Backups.ContainsKey(file) ? "Back up, then delete"
+                    : "Delete file",
+                file, new FileInfo(file).Length, true, cardNames));
+
+        EnumerationOptions options = new()
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = false,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        };
+        foreach (string directory in plan.Directories.Order())
+        {
+            string[] files = Directory.EnumerateFiles(
+                directory, "*", options).ToArray();
+            if (files.Length == 0)
+                entries.Add(PreviewEntry("Delete empty card folder",
+                    directory, 0, false, cardNames));
+            else
+                foreach (string file in files.Order())
+                    entries.Add(PreviewEntry("Delete with card folder",
+                        file, new FileInfo(file).Length, true, cardNames));
+        }
+        foreach ((string source, string destination) in plan.Renames.OrderBy(
+            rename => rename.Source))
+            entries.Add(PreviewEntry("Rename to " +
+                Path.GetFileName(destination), source,
+                File.Exists(source) ? new FileInfo(source).Length : 0,
+                false, cardNames));
+        return entries;
+    }
+
+    private static CleanupPreviewEntry PreviewEntry(string action,
+        string path, long size, bool removesFile,
+        IReadOnlyDictionary<string, (string Model, string Card)> cardNames)
+    {
+        string tag = CardTag(path);
+        (string model, string card) = cardNames.GetValueOrDefault(tag);
+        return new CleanupPreviewEntry(action, model ?? "", card ?? "", tag,
+            Directory.Exists(path) ? "" : Path.GetFileName(path), path, size,
+            removesFile);
+    }
+
+    private static string CardTag(string path)
+    {
+        string name = Path.GetFileName(path);
+        if (name.Length >= 5 && IsCardTag(name[..5]))
+            return name[..5];
+        foreach (string part in Path.GetFullPath(path).Split(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            if (IsCardTag(part))
+                return part;
+        return "";
+    }
+
+    private sealed class CleanupPreviewForm : Form
+    {
+        internal CleanupPreviewForm(string title,
+            IReadOnlyList<CleanupPreviewEntry> entries, int folderCount)
+        {
+            Text = "Clean Library Preview";
+            StartPosition = FormStartPosition.CenterParent;
+            ShowInTaskbar = false;
+            MinimizeBox = false;
+            MaximizeBox = false;
+            AutoScaleMode = AutoScaleMode.Dpi;
+            MinimumSize = new Size(850, 450);
+            Size = new Size(1100, 650);
+
+            int fileCount = entries.Count(entry => entry.RemovesFile);
+            long bytes = entries.Where(entry => entry.RemovesFile)
+                .Sum(entry => entry.Size);
+            Label summary = new()
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                Padding = new Padding(8),
+                Text = $"{title}\r\n{fileCount:N0} files " +
+                    $"({FormatBytes(bytes)}) and {folderCount:N0} folders " +
+                    "will be permanently removed."
+            };
+            DataGridView grid = new()
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                VirtualMode = true,
+                RowHeadersVisible = false,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AllowUserToResizeRows = false,
+                MultiSelect = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None
+            };
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+                { HeaderText = "Action", Width = 155 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+                { HeaderText = "Model", Width = 130 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+                { HeaderText = "Card", Width = 170 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+                { HeaderText = "Tag", Width = 60 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+                { HeaderText = "File", Width = 170 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+                { HeaderText = "Location", AutoSizeMode =
+                    DataGridViewAutoSizeColumnMode.Fill,
+                    MinimumWidth = 200 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn
+                { HeaderText = "Size", Width = 75 });
+            grid.RowCount = entries.Count;
+            grid.CellValueNeeded += (_, e) =>
+            {
+                CleanupPreviewEntry entry = entries[e.RowIndex];
+                e.Value = e.ColumnIndex switch
+                {
+                    0 => entry.Action,
+                    1 => entry.Model,
+                    2 => entry.Card,
+                    3 => entry.Tag,
+                    4 => entry.File,
+                    5 => entry.Location,
+                    6 => FormatBytes(entry.Size),
+                    _ => ""
+                };
+            };
+
+            Button clean = new()
+            {
+                Text = "Clean",
+                AutoSize = true,
+                DialogResult = DialogResult.Yes
+            };
+            Button cancel = new()
+            {
+                Text = "Cancel",
+                AutoSize = true,
+                DialogResult = DialogResult.Cancel
+            };
+            FlowLayoutPanel buttons = new()
+            {
+                Dock = DockStyle.Bottom,
+                Height = 48,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(8),
+                WrapContents = false
+            };
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(clean);
+            Controls.Add(grid);
+            Controls.Add(summary);
+            Controls.Add(buttons);
+            CancelButton = cancel;
+            AppTheme.Apply(this);
+        }
+    }
+
     private static CleanupResult ExecuteCleanup(CleanupPlan plan)
     {
         int removedFiles = 0;
@@ -487,6 +645,24 @@ public partial class Form1
             CleanupPlan regular = BuildCleanupPlan(
                 new LibraryRoots(data, [models]),
                 LibraryCleanupKind.RegularDemos);
+            List<CleanupPreviewEntry> previewEntries =
+                BuildCleanupPreview(regular,
+                    new Dictionary<string, (string Model, string Card)>());
+            if (!previewEntries.Any(entry =>
+                    entry.File == "regular.demo") ||
+                previewEntries.Any(entry =>
+                    entry.File == "transitionit.demo"))
+                return false;
+            using (CleanupPreviewForm previewForm =
+                new("Preview check", previewEntries, 0))
+            {
+                DataGridView grid = previewForm.Controls
+                    .OfType<DataGridView>().Single();
+                if (grid.Columns.Count != 7 ||
+                    grid.Columns[0].HeaderText != "Action" ||
+                    grid.Columns[6].HeaderText != "Size")
+                    return false;
+            }
             CleanupResult result = ExecuteCleanup(regular);
             if (result.Errors.Count != 0 ||
                 File.Exists(Path.Combine(purchased, "regular.demo")) ||

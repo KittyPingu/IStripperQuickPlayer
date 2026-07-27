@@ -106,6 +106,9 @@ namespace IStripperQuickPlayer
                         "Qt51519QWindowToolSaveBitsOwnDC", 0x80, false) ||
                     LockStateOverlay.IsMovieWindowCandidate(
                         "Qt51519QWindowToolSaveBitsOwnDC", 0x80000, true) ||
+                    !Form1.IsIncompleteCatalogueReload(299, 1, 314) ||
+                    Form1.IsIncompleteCatalogueReload(299, 299, 314) ||
+                    Form1.IsIncompleteCatalogueReload(299, 1, 1) ||
                     !Form1.TryParseHotKey("Control+Alt+N", out uint modifiers, out uint key) ||
                     modifiers != 0x4003 || key != (uint)Keys.N ||
                     !Form1.TryParseHotKey("Ctrl+Alt+Shift+N",
