@@ -125,6 +125,15 @@ namespace IStripperQuickPlayer.BLL
             Math.Max(5, (int)Math.Round(
                 cardWidth * 6f / DesignCardWidth));
 
+        internal static bool RetainsExpandedHover(
+            Rectangle bounds, Point point) => bounds.Contains(point);
+
+        public override bool RetainsHover(
+            ImageListViewItem item, Point point) =>
+            mZoomRatio > 0 &&
+            _boundsByIndex.TryGetValue(item.Index, out Rectangle bounds) &&
+            RetainsExpandedHover(bounds, point);
+
         internal static bool VerifyRelativeMetrics()
         {
             Rectangle at100 = new(0, 0, 108, 161);
@@ -155,7 +164,13 @@ namespace IStripperQuickPlayer.BLL
                     (int)Math.Round(CardPixels(at200, 39)) == 1 &&
                 CardHorizontalMargin(at100.Width) == 5 &&
                 CardHorizontalMargin(at150.Width) == 6 &&
-                CardHorizontalMargin(at200.Width) == 8;
+                CardHorizontalMargin(at200.Width) == 8 &&
+                RetainsExpandedHover(
+                    new Rectangle(20, 20, 200, 300),
+                    new Point(21, 170)) &&
+                !RetainsExpandedHover(
+                    new Rectangle(20, 20, 200, 300),
+                    new Point(19, 170));
         }
 
         private Font GetFont(string family, int size,
@@ -536,7 +551,6 @@ namespace IStripperQuickPlayer.BLL
 
         public override void DrawItem(Graphics g, ImageListViewItem item, ItemState state, Rectangle bounds)
         {
-            _boundsByIndex[item.Index] = bounds;
             if (updating) return;
             g.InterpolationMode = InterpolationMode.Bilinear;
             g.SmoothingMode = SmoothingMode.None;
@@ -560,6 +574,7 @@ namespace IStripperQuickPlayer.BLL
                         bounds.X = controlBounds.Left;
                     drawText = false;
                 }
+                _boundsByIndex[item.Index] = bounds;
 
                 ModelCard? card = Datastore.findCardByTag(item.Tag.ToString());
                 if (card == null) return;

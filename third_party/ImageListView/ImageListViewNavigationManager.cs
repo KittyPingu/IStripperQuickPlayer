@@ -1016,7 +1016,12 @@ namespace Manina.Windows.Forms
             {
                 mImageListView.HitTest(pt, out HitInfo h);
 
-                if (h.ItemHit && mImageListView.Items[h.ItemIndex].Enabled)
+                if (HoveredItem != null && HoveredItem.Enabled &&
+                    mImageListView.mRenderer.RetainsHover(HoveredItem, pt))
+                {
+                    HoveredSubItem = -1;
+                }
+                else if (h.ItemHit && mImageListView.Items[h.ItemIndex].Enabled)
                 {
                     HoveredItem = mImageListView.Items[h.ItemIndex];
                     HoveredSubItem = h.SubItemIndex;

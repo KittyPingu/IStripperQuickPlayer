@@ -88,6 +88,15 @@ namespace Manina.Windows.Forms
             /// Gets a list of color themes preferred by this renderer.
             /// </summary>
             public virtual ImageListViewColor[] PreferredColors { get { return null; } }
+
+            /// <summary>
+            /// Returns true when a custom-drawn item should retain hover at
+            /// the specified client point.
+            /// </summary>
+            public virtual bool RetainsHover(ImageListViewItem item, Point point)
+            {
+                return false;
+            }
             #endregion
 
             #region Constructor
