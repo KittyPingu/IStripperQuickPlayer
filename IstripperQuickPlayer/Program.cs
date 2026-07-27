@@ -84,6 +84,13 @@ namespace IStripperQuickPlayer
                     DirectCompositionCardOverlayControl.Verify() ? 0 : 1;
                 return;
             }
+            if (args.Length == 1 &&
+                args[0] == "--verify-library-cleaner")
+            {
+                Environment.ExitCode =
+                    Form1.VerifyLibraryCleaner() ? 0 : 1;
+                return;
+            }
             if (args.Length == 2 && args[0] == "--verify-persistence")
             {
                 Environment.ExitCode = Persistence.VerifyMigration(args[1]) ? 0 : 1;

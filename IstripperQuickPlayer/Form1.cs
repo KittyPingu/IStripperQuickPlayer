@@ -681,6 +681,7 @@ namespace IStripperQuickPlayer
                 fileToolStripMenuItem.DropDownItems.IndexOf(
                     reloadModelslstToolStripMenuItem) + 1,
                 libraryHealthCheckToolStripMenuItem);
+            SetupLibraryCleaner();
             backupToolStripMenuItem.Click += (_, _) => BackupQuickPlayerData();
             restoreToolStripMenuItem.Click += (_, _) => RestoreQuickPlayerData();
             fileToolStripMenuItem.DropDownItems.Insert(
