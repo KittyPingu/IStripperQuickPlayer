@@ -24,8 +24,9 @@ namespace IStripperQuickPlayer.BLL
         private static volatile bool suspended;
         private static readonly SemaphoreSlim renderGate = new(1, 1);
         private static readonly object initialImagesLock = new();
-        private static readonly Dictionary<Size, (
-            DirectBitmap Image, DirectBitmap Scratch)> blurBuffers = [];
+        private static readonly object blurBuffersLock = new();
+        private static readonly Dictionary<Size, DirectBitmap> blurBuffers = [];
+        private static int[] blurScratch = [];
         private static int redrawVersion;
 
         public static void CaptureOriginalDesktopState()
@@ -126,14 +127,16 @@ namespace IStripperQuickPlayer.BLL
                 (double)Properties.Settings.Default.WallpaperBrightness / 100);
             if (Properties.Settings.Default.BlurRadius > 0)
             {
-                rendered = AdjustBrightness(
-                    AddBlur(source,
-                        Convert.ToInt32(
-                            Properties.Settings.Default.BlurRadius)),
-                    brightness);
+                lock (blurBuffersLock)
+                    rendered = AdjustBrightness(
+                        AddBlur(source,
+                            Convert.ToInt32(
+                                Properties.Settings.Default.BlurRadius)),
+                        brightness);
             }
             else
             {
+                ReleaseBlurCache();
                 rendered = AdjustBrightness(source, brightness);
             }
 
@@ -185,7 +188,7 @@ namespace IStripperQuickPlayer.BLL
         }
 
         private static void FastBoxBlur(
-            DirectBitmap image, DirectBitmap scratch, int radius)
+            DirectBitmap image, int[] scratch, int radius)
         {
             int kernelSize = radius % 2 == 0 ? radius + 1 : radius;
             float scale = 1f / kernelSize;
@@ -221,9 +224,9 @@ namespace IStripperQuickPlayer.BLL
                         for (int channel = 0; channel < 4; channel++)
                             average[channel] = sum[channel] * scale;
                     }
-                    scratch.SetPixel(x, y, Color.FromArgb(
+                    scratch[x + y * image.Width] = Color.FromArgb(
                         (int)average[0], (int)average[1],
-                        (int)average[2], (int)average[3]));
+                        (int)average[2], (int)average[3]).ToArgb();
                 }
             });
 
@@ -233,7 +236,8 @@ namespace IStripperQuickPlayer.BLL
                 float[] average = [0, 0, 0, 0];
                 for (int y = 0; y < kernelSize; y++)
                 {
-                    Color pixel = scratch.GetPixel(x, y);
+                    Color pixel = Color.FromArgb(
+                        scratch[x + y * image.Width]);
                     sum[0] += pixel.A;
                     sum[1] += pixel.R;
                     sum[2] += pixel.G;
@@ -246,10 +250,10 @@ namespace IStripperQuickPlayer.BLL
                     {
                         if (y != 0)
                         {
-                            Color previous = scratch.GetPixel(
-                                x, y - kernelSize / 2);
-                            Color next = scratch.GetPixel(
-                                x, y + 1 + kernelSize / 2);
+                            Color previous = Color.FromArgb(scratch[
+                                x + (y - kernelSize / 2) * image.Width]);
+                            Color next = Color.FromArgb(scratch[
+                                x + (y + 1 + kernelSize / 2) * image.Width]);
                             sum[0] += next.A - previous.A;
                             sum[1] += next.R - previous.R;
                             sum[2] += next.G - previous.G;
@@ -293,22 +297,34 @@ namespace IStripperQuickPlayer.BLL
             if (radius <= 1)
                 return source;
             if (!blurBuffers.TryGetValue(
-                    source.Size, out var buffers))
+                    source.Size, out DirectBitmap? image))
             {
-                buffers = (
-                    new DirectBitmap(source.Width, source.Height),
-                    new DirectBitmap(source.Width, source.Height));
-                blurBuffers.Add(source.Size, buffers);
+                image = new DirectBitmap(source.Width, source.Height);
+                blurBuffers.Add(source.Size, image);
             }
+            int required = source.Width * source.Height;
+            if (blurScratch.Length < required)
+                blurScratch = new int[required];
             using (Graphics graphics = Graphics.FromImage(
-                buffers.Image.Bitmap))
+                image.Bitmap))
             {
                 graphics.CompositingMode = CompositingMode.SourceCopy;
                 graphics.DrawImageUnscaled(source, 0, 0);
             }
             foreach (int size in boxesForGaussian(radius, 3))
-                FastBoxBlur(buffers.Image, buffers.Scratch, size);
-            return buffers.Image.Bitmap;
+                FastBoxBlur(image, blurScratch, size);
+            return image.Bitmap;
+        }
+
+        public static void ReleaseBlurCache()
+        {
+            lock (blurBuffersLock)
+            {
+                foreach (DirectBitmap image in blurBuffers.Values)
+                    image.Dispose();
+                blurBuffers.Clear();
+                blurScratch = [];
+            }
         }
 
         internal static bool VerifyBlurBufferReuse()
@@ -321,9 +337,12 @@ namespace IStripperQuickPlayer.BLL
                 return false;
             Bitmap first = AddBlur(source, 2);
             Bitmap second = AddBlur(source, 2);
-            return ReferenceEquals(first, second) &&
+            bool reused = ReferenceEquals(first, second) &&
                 first.GetPixel(4, 4).ToArgb() ==
                     Color.CornflowerBlue.ToArgb();
+            ReleaseBlurCache();
+            return reused && blurBuffers.Count == 0 &&
+                blurScratch.Length == 0;
         }
         private static Bitmap AddDetails(Bitmap b, Rect l,
             string modelname, string outfit)

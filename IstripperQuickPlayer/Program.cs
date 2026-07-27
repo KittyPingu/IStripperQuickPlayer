@@ -208,6 +208,22 @@ namespace IStripperQuickPlayer
                     "txtDescription", true).Single();
                 Control photos = mainWindow.Controls.Find(
                     "cmdPhotos", true).Single();
+                SplitContainer responsiveSplit = (SplitContainer)
+                    mainWindow.Controls.Find(
+                        "splitContainer1", true).Single();
+                Control responsiveCardList = mainWindow.Controls.Find(
+                    "listModelsNew", true).Single();
+                Control librarySortRow = mainWindow.Controls.Find(
+                    "librarySortRow", true).Single();
+                Control detailsLayout = mainWindow.Controls.Find(
+                    "detailsLayout", true).Single();
+                Control playbackTime = mainWindow.Controls.Find(
+                    "lblPlaybackTime", true).Single();
+                BufferedLabel bufferedPlaybackTime =
+                    (BufferedLabel)playbackTime;
+                bufferedPlaybackTime.SetDisplayText("1:23 / 4:56");
+                Control queueGrip = mainWindow.Controls.Find(
+                    "playQueueResizeGrip", true).Single();
                 Button filterButton = (Button)mainWindow.Controls.Find(
                     "cmdFilter", true).Single();
                 Button playPause = (Button)mainWindow.Controls.Find(
@@ -262,14 +278,37 @@ namespace IStripperQuickPlayer
                                 item is not ToolStripSeparator)
                             .All(item => Math.Abs(
                                 item.Font.SizeInPoints -
-                                probeMenu.Font.SizeInPoints) < 0.01f);
+                        probeMenu.Font.SizeInPoints) < 0.01f);
                 }
+                responsiveSplit.Dock = DockStyle.None;
+                responsiveSplit.Size =
+                    new System.Drawing.Size(1800, 800);
+                responsiveSplit.SplitterDistance = 900;
+                responsiveSplit.PerformLayout();
                 if (mainWindow.AutoScaleMode != AutoScaleMode.Dpi ||
                     mainWindow.Padding.Top <= 0 ||
                     queueHeader.Height < queueHeader.Font.Height +
                         queueHeader.Padding.Vertical + 2 ||
                     queueLayout.GetRow(queueHeader) != 1 ||
                     queueLayout.GetRow(queueBody) != 2 ||
+                    queueGrip.Height < 5 ||
+                    responsiveCardList.Width >
+                        responsiveSplit.Panel1.ClientSize.Width ||
+                    responsiveCardList.Parent != librarySortRow.Parent ||
+                    responsiveCardList.Top - librarySortRow.Bottom > 8 ||
+                    detailsLayout.Width >
+                        responsiveSplit.Panel2.ClientSize.Width ||
+                    playbackTime is not BufferedLabel ||
+                    bufferedPlaybackTime.BackColor != Color.Transparent ||
+                    bufferedPlaybackTime.TextAlign !=
+                        ContentAlignment.MiddleLeft ||
+                    bufferedPlaybackTime.Text.Length != 0 ||
+                    bufferedPlaybackTime.GetDisplayText() != "1:23 / 4:56" ||
+                    bufferedPlaybackTime.MinimumSize.Width !=
+                        TextRenderer.MeasureText(
+                            "1:23 / 4:56", bufferedPlaybackTime.Font,
+                            System.Drawing.Size.Empty,
+                            TextFormatFlags.NoPadding).Width + 2 ||
                     queueLabels.Any(label => label.Height <
                         label.Font.Height + label.Padding.Vertical + 2) ||
                     queueReload.Width <= 0 ||

@@ -112,7 +112,7 @@
             lblPlaybackSpeed = new Label();
             cmbPlaybackSpeed = new ComboBox();
             trkPlaybackPosition = new Controls.PlaybackSeekBar();
-            lblPlaybackTime = new Label();
+            lblPlaybackTime = new BufferedLabel();
             lblFilterClip = new Label();
             cmdWallpaper = new Button();
             txtClipType = new TextBox();
@@ -1322,7 +1322,7 @@
         private Label lblPlaybackSpeed;
         private ComboBox cmbPlaybackSpeed;
         private Controls.PlaybackSeekBar trkPlaybackPosition;
-        private Label lblPlaybackTime;
+        private BufferedLabel lblPlaybackTime;
         private Label lblFilterClip;
         private TextBox txtClipType;
         private Button cmdNextClip;

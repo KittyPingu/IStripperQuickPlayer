@@ -711,6 +711,7 @@ namespace IStripperQuickPlayer
         private void SetSkin()
         {
             AppTheme.Apply(this);
+            lblPlaybackTime.BackColor = Color.Transparent;
             menuCardList.Renderer = menuStrip1.Renderer;
             menuCardList.ShowImageMargin = false;
             menuCardList.BackColor = menuStrip1.BackColor;
@@ -3603,8 +3604,7 @@ namespace IStripperQuickPlayer
         {
             string text =
                 $"{FormatPlaybackTime(elapsedMilliseconds)} / {FormatPlaybackTime(totalMilliseconds)}";
-            if (lblPlaybackTime.Text != text)
-                lblPlaybackTime.Text = text;
+            lblPlaybackTime.SetDisplayText(text);
         }
 
         private void trkPlaybackPosition_MouseDown(object sender, MouseEventArgs e)
@@ -5468,6 +5468,8 @@ namespace IStripperQuickPlayer
         private void automaticWallpaperToolStripMenuItem_CheckedChanged(object sender, EventArgs e)
         {
             Properties.Settings.Default.AutoWallpaper = automaticWallpaperToolStripMenuItem.Checked;
+            if (!automaticWallpaperToolStripMenuItem.Checked)
+                Wallpaper.ReleaseBlurCache();
         }
 
         private void trackbarWallpaperBrightness_ValueChanged(object? sender, EventArgs e)
@@ -5677,33 +5679,23 @@ namespace IStripperQuickPlayer
                 label1, cmbSortBy, cmbSortDirection, chkFavourite,
                 cmdFilter, cmbFilter, cardScaleLabel, cardScaleSeekBar);
 
-            TableLayoutPanel libraryHeader = new()
-            {
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 1,
-                Dock = DockStyle.Fill,
-                Name = "libraryHeaderLayout",
-                RowCount = 2
-            };
-            libraryHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            libraryHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            libraryHeader.Controls.Add(searchRow, 0, 0);
-            libraryHeader.Controls.Add(sortRow, 0, 1);
-
             TableLayoutPanel libraryLayout = new()
             {
                 ColumnCount = 1,
                 Dock = DockStyle.Fill,
                 Name = "libraryLayout",
-                RowCount = 2
+                RowCount = 3
             };
+            libraryLayout.ColumnStyles.Add(
+                new ColumnStyle(SizeType.Percent, 100));
+            libraryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             libraryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             libraryLayout.RowStyles.Add(
                 new RowStyle(SizeType.Percent, 100));
             listModelsNew.Dock = DockStyle.Fill;
-            libraryLayout.Controls.Add(libraryHeader, 0, 0);
-            libraryLayout.Controls.Add(listModelsNew, 0, 1);
+            libraryLayout.Controls.Add(searchRow, 0, 0);
+            libraryLayout.Controls.Add(sortRow, 0, 1);
+            libraryLayout.Controls.Add(listModelsNew, 0, 2);
             splitContainer1.Panel1.Controls.Clear();
             splitContainer1.Panel1.Controls.Add(libraryLayout);
 
@@ -5757,6 +5749,10 @@ namespace IStripperQuickPlayer
                 new ColumnStyle(SizeType.AutoSize));
             timelineRow.ColumnStyles.Add(
                 new ColumnStyle(SizeType.Percent, 100));
+            lblPlaybackTime.AutoSize = false;
+            lblPlaybackTime.SetDisplayText(lblPlaybackTime.Text);
+            lblPlaybackTime.Text = "";
+            lblPlaybackTime.TextAlign = ContentAlignment.MiddleLeft;
             lblPlaybackTime.Dock = DockStyle.Fill;
             trkPlaybackPosition.Dock = DockStyle.Fill;
             timelineRow.Controls.Add(lblPlaybackTime, 0, 0);
@@ -5778,6 +5774,8 @@ namespace IStripperQuickPlayer
                 Name = "clipHeaderLayout",
                 RowCount = 4
             };
+            clipHeader.ColumnStyles.Add(
+                new ColumnStyle(SizeType.Percent, 100));
             for (int row = 0; row < 4; row++)
                 clipHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             clipHeader.Controls.Add(nowPlayingRow, 0, 0);
@@ -5799,6 +5797,8 @@ namespace IStripperQuickPlayer
                 Name = "detailsLayout",
                 RowCount = 3
             };
+            detailsLayout.ColumnStyles.Add(
+                new ColumnStyle(SizeType.Percent, 100));
             detailsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             detailsLayout.RowStyles.Add(
                 new RowStyle(SizeType.Percent, 100));
@@ -5866,6 +5866,8 @@ namespace IStripperQuickPlayer
                 Name = "modelDetailsLayout",
                 RowCount = 4
             };
+            modelDetailsLayout.ColumnStyles.Add(
+                new ColumnStyle(SizeType.Percent, 100));
             modelDetailsLayout.RowStyles.Add(
                 new RowStyle(SizeType.AutoSize));
             modelDetailsLayout.RowStyles.Add(
@@ -6209,6 +6211,8 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.BlurRadius = trackBarBlur.Value;
             Properties.Settings.Default.BlurWallpaper =
                 trackBarBlur.Value > 0;
+            if (trackBarBlur.Value == 0)
+                Wallpaper.ReleaseBlurCache();
             this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
         }
 

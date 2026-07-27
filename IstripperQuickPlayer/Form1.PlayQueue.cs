@@ -910,12 +910,16 @@ namespace IStripperQuickPlayer
                 $"{automaticPlayQueue.Count} automatic";
             int headerHeight = playQueueHeader.Font.Height +
                 playQueueHeader.Padding.Vertical + 6;
+            int gripHeight = Math.Max(5, 7 * DeviceDpi / 96);
+            playQueueResizeGrip.Height = gripHeight;
+            bool showGrip = playQueueExpanded &&
+                Properties.Settings.Default.EnablePlayQueue;
+            playQueueResizeGrip.Visible = showGrip;
             playQueueHeader.MinimumSize =
                 new System.Drawing.Size(0, headerHeight);
             if (playQueueLayout != null)
                 playQueueLayout.RowStyles[0].Height =
-                    playQueueResizeGrip.Visible
-                        ? playQueueResizeGrip.Height : 0;
+                    showGrip ? gripHeight : 0;
             if (!playQueueExpanded)
                 playQueuePanel.Height = headerHeight;
         }
@@ -1160,9 +1164,12 @@ namespace IStripperQuickPlayer
 
         private void playQueueResizeGrip_Paint(object? sender, PaintEventArgs e)
         {
+            e.Graphics.Clear(Properties.Settings.Default.DarkMode
+                ? Color.FromArgb(65, 82, 88)
+                : Color.FromArgb(190, 200, 204));
             int left = Math.Max(0, (playQueueResizeGrip.Width - 80) / 2);
             using Pen pen = new(Properties.Settings.Default.DarkMode
-                ? Color.WhiteSmoke : Color.FromArgb(55, 65, 70));
+                ? Color.WhiteSmoke : Color.FromArgb(55, 65, 70), 1.5f);
             e.Graphics.DrawLine(pen, left, 2, left + 80, 2);
             e.Graphics.DrawLine(pen, left, 4, left + 80, 4);
         }

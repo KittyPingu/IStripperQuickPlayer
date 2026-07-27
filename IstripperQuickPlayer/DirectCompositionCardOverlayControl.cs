@@ -69,6 +69,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                         item.Index, out CardRenderer.GpuCardVisual visual) ||
                     visual.Card.image == null ||
                     !visual.Bounds.IntersectsWith(viewport) ||
+                    !FitsHorizontally(visual.Bounds, viewport) ||
                     !CardOverlayLoader.TryGetFrame(
                         visual.Card.name, out CardOverlayFrame frame) ||
                     frame.Source.Width <= 0 || frame.Source.Height <= 0)
@@ -358,6 +359,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 return false;
             }
             list.Paint += list_Paint;
+            list.SizeChanged += list_SizeChanged;
             return true;
         }
         catch (Exception exception)
@@ -370,6 +372,17 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     }
 
     private void list_Paint(object? sender, PaintEventArgs e) => Render();
+
+    private void list_SizeChanged(object? sender, EventArgs e)
+    {
+        if (disposed || !list.IsHandleCreated)
+            return;
+        list.BeginInvoke((Action)(() =>
+        {
+            if (!disposed && !list.IsDisposed)
+                list.Refresh();
+        }));
+    }
 
     internal void SetQueueCards(IEnumerable<(
         Control Host, PictureBox Picture, string CardTag)> cards)
@@ -482,6 +495,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                                 item.Index,
                                 out CardRenderer.GpuCardVisual card) ||
                             !card.Bounds.IntersectsWith(viewport) ||
+                            !FitsHorizontally(card.Bounds, viewport) ||
                             card.DrawText != (layer == 0))
                             continue;
                         DrawCard(item.Index, card);
@@ -795,6 +809,10 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         DrawingRectangle bounds) => new(
             bounds.Left, bounds.Top, bounds.Width, bounds.Height);
 
+    private static bool FitsHorizontally(
+        DrawingRectangle bounds, DrawingRectangle viewport) =>
+        bounds.Left >= viewport.Left && bounds.Right <= viewport.Right;
+
     private static Vortice.RawRectF ToRaw(
         DrawingRectangle bounds) => new(
             bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
@@ -1050,6 +1068,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             return;
         disposed = true;
         list.Paint -= list_Paint;
+        list.SizeChanged -= list_SizeChanged;
         renderer.DrawWithDirectComposition = false;
         CardOverlayLoader.DrawWithDirectComposition = false;
         ClearSharedOverlays();
@@ -1088,6 +1107,12 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             ToRect(new DrawingRectangle(10, 20, 30, 40));
         if (rectangle.X != 10 || rectangle.Y != 20 ||
             rectangle.Width != 30 || rectangle.Height != 40)
+            return false;
+        DrawingRectangle viewport = new(0, 0, 100, 100);
+        if (!FitsHorizontally(new DrawingRectangle(0, 80, 100, 40),
+                viewport) ||
+            FitsHorizontally(new DrawingRectangle(90, 0, 20, 40),
+                viewport))
             return false;
 
         using DrawingBitmap image = new(
