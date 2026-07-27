@@ -54,7 +54,10 @@ public class DirectBitmap : IDisposable
         if (Disposed) return;
         Disposed = true;
         Bitmap.Dispose();
-        BitsHandle.Free();
+        if (BitsHandle.IsAllocated)
+            BitsHandle.Free();
+        Bits = [];
+        GC.SuppressFinalize(this);
     }
 }
 }

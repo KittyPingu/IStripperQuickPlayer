@@ -125,7 +125,8 @@ namespace IStripperQuickPlayer
                         new System.Drawing.Size(162, 242) ||
                     Form1.CardThumbnailSize(192, 1) !=
                         new System.Drawing.Size(216, 323) ||
-                    !CardRenderer.VerifyRelativeMetrics())
+                    !CardRenderer.VerifyRelativeMetrics() ||
+                    !Wallpaper.VerifyBlurBufferReuse())
                 {
                     Environment.ExitCode = 1;
                     return;

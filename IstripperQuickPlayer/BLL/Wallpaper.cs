@@ -24,6 +24,8 @@ namespace IStripperQuickPlayer.BLL
         private static volatile bool suspended;
         private static readonly SemaphoreSlim renderGate = new(1, 1);
         private static readonly object initialImagesLock = new();
+        private static readonly Dictionary<Size, (
+            DirectBitmap Image, DirectBitmap Scratch)> blurBuffers = [];
         private static int redrawVersion;
 
         public static void CaptureOriginalDesktopState()
@@ -124,9 +126,11 @@ namespace IStripperQuickPlayer.BLL
                 (double)Properties.Settings.Default.WallpaperBrightness / 100);
             if (Properties.Settings.Default.BlurRadius > 0)
             {
-                using DirectBitmap input = CopyToDirectBitmap(source);
-                using DirectBitmap blurred = AddBlur(input);
-                rendered = AdjustBrightness(blurred.Bitmap, brightness);
+                rendered = AdjustBrightness(
+                    AddBlur(source,
+                        Convert.ToInt32(
+                            Properties.Settings.Default.BlurRadius)),
+                    brightness);
             }
             else
             {
@@ -136,17 +140,6 @@ namespace IStripperQuickPlayer.BLL
             if (Properties.Settings.Default.WallpaperDetails)
                 AddDetails(rendered, rect, modelname, outfit);
             return rendered;
-        }
-
-        private static DirectBitmap CopyToDirectBitmap(Bitmap source)
-        {
-            DirectBitmap direct = new(source.Width, source.Height);
-            using Graphics graphics = Graphics.FromImage(direct.Bitmap);
-            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-            graphics.CompositingMode = CompositingMode.SourceCopy;
-            graphics.SmoothingMode = SmoothingMode.None;
-            graphics.DrawImageUnscaled(source, 0, 0);
-            return direct;
         }
 
         private static void showIcons()
@@ -191,113 +184,85 @@ namespace IStripperQuickPlayer.BLL
             return b;
         }
 
-        private static DirectBitmap FastBoxBlur(DirectBitmap img, int radius) {
+        private static void FastBoxBlur(
+            DirectBitmap image, DirectBitmap scratch, int radius)
+        {
+            int kernelSize = radius % 2 == 0 ? radius + 1 : radius;
+            float scale = 1f / kernelSize;
 
-             int kSize = radius; 
-
-             if (kSize % 2 == 0) kSize++;
-             DirectBitmap Hblur = new DirectBitmap(img.Width, img.Height);
-             Graphics g = Graphics.FromImage(Hblur.Bitmap);
-             g.InterpolationMode = InterpolationMode.NearestNeighbor;
-             g.CompositingMode = CompositingMode.SourceCopy; 
-             g.SmoothingMode = SmoothingMode.None;
-             g.DrawImageUnscaled(img.Bitmap, 0,0);
-             g.Dispose();
-
-             float Avg = (float) 1 / kSize;
-
-             Parallel.For (0, img.Height, j => {
-
-              float[] hSum = new float[] {
-               0f, 0f, 0f, 0f
-              };
-
-              float[] iAvg = new float[] {
-               0f, 0f, 0f, 0f
-              };
-    
-              for (int x = 0; x < kSize; x++) {
-                    Color tmpColor = img.GetPixel(x, j);
-                    hSum[0] += tmpColor.A;
-                    hSum[1] += tmpColor.R;
-                    hSum[2] += tmpColor.G;
-                    hSum[3] += tmpColor.B;
-              }
-              iAvg[0] = hSum[0] * Avg;
-              iAvg[1] = hSum[1] * Avg;
-              iAvg[2] = hSum[2] * Avg;
-              iAvg[3] = hSum[3] * Avg;
-              for (int i = 0; i < img.Width; i++) 
-              { 
-                if (i - kSize / 2  >= 0 && (i + 1 + kSize / 2) < img.Width)
+            Parallel.For(0, image.Height, y =>
+            {
+                float[] sum = [0, 0, 0, 0];
+                float[] average = [0, 0, 0, 0];
+                for (int x = 0; x < kernelSize; x++)
                 {
-                    Color tmp_pColor = img.GetPixel((i - kSize / 2), j);
-                    hSum[0] -= tmp_pColor.A;
-                    hSum[1] -= tmp_pColor.R;
-                    hSum[2] -= tmp_pColor.G;
-                    hSum[3] -= tmp_pColor.B;
-                    Color tmp_nColor = img.GetPixel(i + 1 + kSize / 2, j);
-                    hSum[0] += tmp_nColor.A;
-                    hSum[1] += tmp_nColor.R;
-                    hSum[2] += tmp_nColor.G;
-                    hSum[3] += tmp_nColor.B;
-                    //
-                    iAvg[0] = hSum[0] * Avg;
-                    iAvg[1] = hSum[1] * Avg;
-                    iAvg[2] = hSum[2] * Avg;
-                    iAvg[3] = hSum[3] * Avg;
+                    Color pixel = image.GetPixel(x, y);
+                    sum[0] += pixel.A;
+                    sum[1] += pixel.R;
+                    sum[2] += pixel.G;
+                    sum[3] += pixel.B;
                 }
-                Hblur.SetPixel(i, j, Color.FromArgb((int) iAvg[0], (int) iAvg[1], (int) iAvg[2], (int) iAvg[3]));
-              }
-             });
-             DirectBitmap total = new DirectBitmap(Hblur.Width, Hblur.Height);
-             g = Graphics.FromImage(total.Bitmap);
-             g.InterpolationMode = InterpolationMode.NearestNeighbor;
-             g.CompositingMode = CompositingMode.SourceCopy; 
-             g.SmoothingMode = SmoothingMode.None;
-             g.DrawImageUnscaled(Hblur.Bitmap, 0,0);
-             g.Dispose();
-             Parallel.For (0, Hblur.Width, i => {
-              float[] tSum = new float[] {
-               0f, 0f, 0f, 0f
-              };
-              float[] iAvg = new float[] {
-               0f, 0f, 0f, 0f
-              };
-              for (int y = 0; y < kSize; y++) {
-               Color tmpColor = Hblur.GetPixel(i, y);
-               tSum[0] += tmpColor.A;
-               tSum[1] += tmpColor.R;
-               tSum[2] += tmpColor.G;
-               tSum[3] += tmpColor.B;
-              }
-              iAvg[0] = tSum[0] * Avg;
-              iAvg[1] = tSum[1] * Avg;
-              iAvg[2] = tSum[2] * Avg;
-              iAvg[3] = tSum[3] * Avg;
+                for (int x = 0; x < image.Width; x++)
+                {
+                    if (x == 0 || (x - kernelSize / 2 >= 0 &&
+                        x + 1 + kernelSize / 2 < image.Width))
+                    {
+                        if (x != 0)
+                        {
+                            Color previous = image.GetPixel(
+                                x - kernelSize / 2, y);
+                            Color next = image.GetPixel(
+                                x + 1 + kernelSize / 2, y);
+                            sum[0] += next.A - previous.A;
+                            sum[1] += next.R - previous.R;
+                            sum[2] += next.G - previous.G;
+                            sum[3] += next.B - previous.B;
+                        }
+                        for (int channel = 0; channel < 4; channel++)
+                            average[channel] = sum[channel] * scale;
+                    }
+                    scratch.SetPixel(x, y, Color.FromArgb(
+                        (int)average[0], (int)average[1],
+                        (int)average[2], (int)average[3]));
+                }
+            });
 
-              for (int j = 0; j < Hblur.Height; j++) {
-               if (j - kSize / 2 >= 0 && j + 1 + kSize / 2 < Hblur.Height) {
-                Color tmp_pColor = Hblur.GetPixel(i, j - kSize / 2);
-                tSum[0] -= tmp_pColor.A;
-                tSum[1] -= tmp_pColor.R;
-                tSum[2] -= tmp_pColor.G;
-                tSum[3] -= tmp_pColor.B;
-                Color tmp_nColor = Hblur.GetPixel(i, j + 1 + kSize / 2);
-                tSum[0] += tmp_nColor.A;
-                tSum[1] += tmp_nColor.R;
-                tSum[2] += tmp_nColor.G;
-                tSum[3] += tmp_nColor.B;
-                //
-                iAvg[0] = tSum[0] * Avg;
-                iAvg[1] = tSum[1] * Avg;
-                iAvg[2] = tSum[2] * Avg;
-                iAvg[3] = tSum[3] * Avg;
-               }
-               total.SetPixel(i, j, Color.FromArgb((int) iAvg[0], (int) iAvg[1], (int) iAvg[2], (int) iAvg[3]));
-              }
-             });
-             return total;
+            Parallel.For(0, image.Width, x =>
+            {
+                float[] sum = [0, 0, 0, 0];
+                float[] average = [0, 0, 0, 0];
+                for (int y = 0; y < kernelSize; y++)
+                {
+                    Color pixel = scratch.GetPixel(x, y);
+                    sum[0] += pixel.A;
+                    sum[1] += pixel.R;
+                    sum[2] += pixel.G;
+                    sum[3] += pixel.B;
+                }
+                for (int y = 0; y < image.Height; y++)
+                {
+                    if (y == 0 || (y - kernelSize / 2 >= 0 &&
+                        y + 1 + kernelSize / 2 < image.Height))
+                    {
+                        if (y != 0)
+                        {
+                            Color previous = scratch.GetPixel(
+                                x, y - kernelSize / 2);
+                            Color next = scratch.GetPixel(
+                                x, y + 1 + kernelSize / 2);
+                            sum[0] += next.A - previous.A;
+                            sum[1] += next.R - previous.R;
+                            sum[2] += next.G - previous.G;
+                            sum[3] += next.B - previous.B;
+                        }
+                        for (int channel = 0; channel < 4; channel++)
+                            average[channel] = sum[channel] * scale;
+                    }
+                    image.SetPixel(x, y, Color.FromArgb(
+                        (int)average[0], (int)average[1],
+                        (int)average[2], (int)average[3]));
+                }
+            });
         }
        
 
@@ -323,19 +288,42 @@ namespace IStripperQuickPlayer.BLL
          return sizes;
         }
 
-         private static DirectBitmap FastGaussianBlur(DirectBitmap src, int Radius) {
-          var bxs = boxesForGaussian(Radius, 3);
-          DirectBitmap img = FastBoxBlur(src, bxs[0]);
-          DirectBitmap img_2 = FastBoxBlur(img, bxs[1]);
-          DirectBitmap img_3 = FastBoxBlur(img_2, bxs[2]);
-          img.Dispose();
-          img_2.Dispose();
-          return img_3;
-         }
-
-        private static DirectBitmap AddBlur(DirectBitmap b)
+        private static Bitmap AddBlur(Bitmap source, int radius)
         {
-            return FastGaussianBlur(b, Convert.ToInt32(Properties.Settings.Default.BlurRadius));
+            if (radius <= 1)
+                return source;
+            if (!blurBuffers.TryGetValue(
+                    source.Size, out var buffers))
+            {
+                buffers = (
+                    new DirectBitmap(source.Width, source.Height),
+                    new DirectBitmap(source.Width, source.Height));
+                blurBuffers.Add(source.Size, buffers);
+            }
+            using (Graphics graphics = Graphics.FromImage(
+                buffers.Image.Bitmap))
+            {
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.DrawImageUnscaled(source, 0, 0);
+            }
+            foreach (int size in boxesForGaussian(radius, 3))
+                FastBoxBlur(buffers.Image, buffers.Scratch, size);
+            return buffers.Image.Bitmap;
+        }
+
+        internal static bool VerifyBlurBufferReuse()
+        {
+            using Bitmap source = new(
+                8, 8, PixelFormat.Format32bppPArgb);
+            using (Graphics graphics = Graphics.FromImage(source))
+                graphics.Clear(Color.CornflowerBlue);
+            if (!ReferenceEquals(AddBlur(source, 1), source))
+                return false;
+            Bitmap first = AddBlur(source, 2);
+            Bitmap second = AddBlur(source, 2);
+            return ReferenceEquals(first, second) &&
+                first.GetPixel(4, 4).ToArgb() ==
+                    Color.CornflowerBlue.ToArgb();
         }
         private static Bitmap AddDetails(Bitmap b, Rect l,
             string modelname, string outfit)
