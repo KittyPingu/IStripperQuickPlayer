@@ -388,7 +388,8 @@ namespace
             processId == GetCurrentProcessId() &&
             GetClassNameW(window, className,
                 static_cast<int>(_countof(className))) > 0 &&
-            std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") != nullptr;
+            std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") != nullptr &&
+            (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED) != 0;
     }
 
     BOOL CALLBACK FindVisibleMovieWindow(HWND window, LPARAM parameter)
@@ -7037,7 +7038,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 68;
+    return 69;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

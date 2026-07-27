@@ -20,6 +20,8 @@ or include shows.
 - Search model names, show titles, descriptions and tags.
 - Sort by model, age, rating, statistics, purchase date or release date.
 - Add your own favourites, ratings and tags.
+- Show the static and animated card overlays available to your iStripper
+  account.
 - Save and reload detailed card filters.
 - Optionally restrict automatic playback to the cards and clips remaining
   after your filters are applied.
@@ -55,8 +57,47 @@ The collapsible strip at the bottom of QuickPlayer shows two queues:
 
 Automatic queuing is disabled when **Enforce Card Filter** is off, while the
 manual queue remains available. Queue support and automatic queue length are
-configured under **Settings > Playback queue**. The queue's height and
+configured under **Settings > Playback & queue**. The queue's height and
 manual/automatic split are remembered for the next launch.
+
+The same menu can return completed manual entries to the end of the queue or
+choose manual entries randomly. **Smart automatic queue** can:
+
+- restrict the first choices to favourites;
+- exclude recently played cards for a configurable cooldown, optionally
+  applying that cooldown to every card from the same model;
+- favour cards played least recently, favourites and higher personal ratings,
+  or newer purchases;
+- occasionally ignore those scores and make a random choice;
+- prefer clips that have never been played; and
+- avoid placing consecutive cards from the same model.
+
+Enabled favour rules contribute to a combined score. When strict favourites
+or cooldown rules leave too few cards to fill the requested automatic queue,
+QuickPlayer progressively admits model-cooldown matches, non-favourites and
+finally card-cooldown matches. It still respects the current card and clip
+filters and stops when the available unique cards are exhausted.
+
+### Show iStripper card overlays
+
+QuickPlayer reads iStripper's card and person overlay assignments, overlay
+catalogue and account entitlements. Only overlays available to the current
+iStripper account are offered. An official card or person assignment takes
+priority over every QuickPlayer default.
+
+Under **Settings > Library & search**:
+
+- **Draw Card Overlays** enables or disables overlays throughout the card
+  library and play-next queues.
+- **DirectComposition overlays (GPU)** is enabled by default. It renders the
+  model-list card scene and animated overlay surfaces through Direct3D,
+  Direct2D and DirectComposition. Shared overlay frames are reused by cards
+  showing the same animation. QuickPlayer falls back to its software drawing
+  path if GPU initialization or rendering fails.
+- **Overlay defaults** previews available overlays and assigns them to the
+  newest releases, most recent purchases, cards at or above a personal-rating
+  threshold, or particular card types. Rules can be reordered; the first
+  matching rule wins.
 
 ### Control desktop playback
 
@@ -96,7 +137,7 @@ favourites and playback history.
 
 QuickPlayer records a local playback history and can avoid the 100 most recent
 clips when alternatives are available. View it from
-**Settings > Playback queue > Playback History**.
+**Settings > Playback & queue > Playback History**.
 
 ![Playback history](docs/images/quickplayer-history.jpg)
 
@@ -138,7 +179,7 @@ work. Use explicit `AND` between separate requirements.
 
 Playback controls appear when:
 
-- **Settings > Playback queue > Enable playback control** is selected;
+- **Settings > Playback & queue > Enable playback control** is selected;
 - iStripper reports a Platinum-or-higher account level; and
 - QuickPlayer safely recognizes the decoder used by the active desktop clip.
 
@@ -158,8 +199,8 @@ Change or disable any shortcut from
 **Settings > Hotkeys**. These are global Windows hotkeys, so they continue to
 work while another application has focus.
 
-Settings are grouped into **Playback queue**, **Library search** and
-**Appearance desktop**, with frequently used **Hotkeys** and **Lock Player**
+Settings are grouped into **Playback & queue**, **Library & search** and
+**Appearance & desktop**, with frequently used **Hotkeys** and **Lock Player**
 kept at the top level.
 
 <img src="docs/images/quickplayer-settings-menu.jpg" alt="QuickPlayer Settings menu" width="161">
@@ -170,6 +211,11 @@ kept at the top level.
 - **Avoid recently played clips** is enabled by default.
 - **Enable play next queue** shows the collapsible manual and automatic queue
   strip; **Automatic queue length** controls how far it looks ahead.
+- **Smart automatic queue** combines optional eligibility, scoring, clip and
+  model-rotation rules, relaxing strict eligibility only when necessary to
+  fill the queue.
+- **Draw Card Overlays** and **DirectComposition overlays (GPU)** are enabled
+  by default.
 - **Enable alpha checkpoint cache** speeds up repeated long seeks in modern
   clips and is enabled by default.
 - **Alpha checkpoint cache size** defaults to 256 MB. Reducing the limit

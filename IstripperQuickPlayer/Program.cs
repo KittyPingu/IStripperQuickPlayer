@@ -93,6 +93,10 @@ namespace IStripperQuickPlayer
             {
                 if (!AreDpiAwarenessContextsEqual(
                         GetThreadDpiAwarenessContext(), new IntPtr(-4)) ||
+                    !LockStateOverlay.IsMovieWindowCandidate(
+                        "Qt51519QWindowToolSaveBitsOwnDC", 0x80000) ||
+                    LockStateOverlay.IsMovieWindowCandidate(
+                        "Qt51519QWindowToolSaveBitsOwnDC", 0x80) ||
                     !Form1.TryParseHotKey("Control+Alt+N", out uint modifiers, out uint key) ||
                     modifiers != 0x4003 || key != (uint)Keys.N ||
                     !Form1.TryParseHotKey("Ctrl+Alt+Shift+N",

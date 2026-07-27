@@ -274,8 +274,8 @@ internal sealed class LockStateOverlay : Form
 
             StringBuilder className = new(128);
             if (GetClassName(window, className, className.Capacity) == 0 ||
-                !className.ToString().Contains("QWindowToolSaveBitsOwnDC",
-                    StringComparison.Ordinal))
+                !IsMovieWindowCandidate(className.ToString(),
+                    GetWindowLongPtr(window, -20).ToInt64()))
                 return true;
 
             found = window;
@@ -283,6 +283,12 @@ internal sealed class LockStateOverlay : Form
         }, IntPtr.Zero);
         return found;
     }
+
+    internal static bool IsMovieWindowCandidate(string className,
+        long extendedStyle) =>
+        className.Contains("QWindowToolSaveBitsOwnDC",
+            StringComparison.Ordinal) &&
+        (extendedStyle & WsExLayered) != 0;
 
 #if DEBUG
     static LockStateOverlay()
@@ -319,6 +325,9 @@ internal sealed class LockStateOverlay : Form
 
     [DllImport("user32.dll")]
     private static extern bool IsWindow(IntPtr window);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr window, int command);
