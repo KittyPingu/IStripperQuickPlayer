@@ -206,6 +206,10 @@ namespace IStripperQuickPlayer
                 FlowLayoutPanel nowPlayingActions =
                     (FlowLayoutPanel)mainWindow.Controls.Find(
                         "nowPlayingActions", true).Single();
+                Button panicResume = (Button)mainWindow.Controls.Find(
+                    "panicResumeButton", true).Single();
+                Button showModel = (Button)mainWindow.Controls.Find(
+                    "cmdShowModel", true).Single();
                 Label[] queueLabels =
                 [
                     (Label)mainWindow.Controls.Find(
@@ -343,6 +347,14 @@ namespace IStripperQuickPlayer
                         .Any(name =>
                             nowPlayingActions.Controls.Find(
                                 name, false).Length != 1) ||
+                    !panicResume.AutoSize ||
+                    panicResume.Width <
+                        panicResume.GetPreferredSize(
+                            System.Drawing.Size.Empty).Width ||
+                    nowPlayingActions.Controls.GetChildIndex(
+                        panicResume) <=
+                    nowPlayingActions.Controls.GetChildIndex(
+                        showModel) ||
                     description.Height <= 0 ||
                     description.Parent?.Name != "modelDetailsLayout" ||
                     photos.Parent?.Name != "clipListHost" ||

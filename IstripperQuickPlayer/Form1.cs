@@ -166,6 +166,10 @@ namespace IStripperQuickPlayer
         {
             AccessibleDescription =
                 "Resume animation playback, queues and QuickPlayer desktop changes.",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Name = "panicResumeButton",
+            Padding = new Padding(8, 2, 8, 3),
             Text = "Resume",
             BackColor = Color.FromArgb(22, 145, 70),
             ForeColor = Color.White,
@@ -290,7 +294,6 @@ namespace IStripperQuickPlayer
             queuedAnimationPendingConfirmed = false;
             queuedAnimationProtectedUntil = DateTime.MinValue;
             panicResumeButton.Visible = true;
-            panicResumeButton.BringToFront();
             panicMovieWindow =
                 LockStateOverlay.HideMovieWindowForProcess(vghd_procID);
             Wallpaper.SuspendAndRestoreOriginalDesktop();
