@@ -118,7 +118,9 @@ namespace IStripperQuickPlayer
                     modifiers != 0x4008 || key != (uint)Keys.N ||
                     !Form1.TryParseHotKey("Windows+Control+N",
                         out modifiers, out key) ||
-                    modifiers != 0x400A || key != (uint)Keys.N)
+                    modifiers != 0x400A || key != (uint)Keys.N ||
+                    !Form1.ShouldBypassHookCallback(1) ||
+                    Form1.ShouldBypassHookCallback(0))
                 {
                     Environment.ExitCode = 1;
                     return;

@@ -114,6 +114,8 @@ namespace IStripperQuickPlayer
         private readonly SemaphoreSlim playbackOperationLock = new(1, 1);
         private readonly object playbackApiLock = new();
         private readonly CancellationTokenSource playbackLifetime = new();
+        private readonly int uiThreadId = Environment.CurrentManagedThreadId;
+        private int playbackApiCallsOnUiThread;
         private bool movieCaptureHookInstalled;
         private string playbackBridgePath = "";
         private int vghdInjectionInProgress;
@@ -3113,11 +3115,30 @@ namespace IStripperQuickPlayer
                 return unchecked((int)0x80070015);
             }
 
-            lock (playbackApiLock)
+            object parameter = (locked ?? playerlocked) ? 1UL : 0UL;
+            return CallPlaybackBridgeApi(
+                "IStripperSetPlayerLocked", ref parameter);
+        }
+
+        private int CallPlaybackBridgeApi(string apiName,
+            ref object parameters)
+        {
+            bool uiCall =
+                Environment.CurrentManagedThreadId == uiThreadId;
+            if (uiCall)
+                Interlocked.Increment(ref playbackApiCallsOnUiThread);
+            try
             {
-                object parameter = (locked ?? playerlocked) ? 1UL : 0UL;
-                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
-                    "IStripperSetPlayerLocked", ref parameter, true);
+                lock (playbackApiLock)
+                {
+                    return _spyMgr.CallCustomApi(vghd_procID,
+                        playbackBridgePath, apiName, ref parameters, true);
+                }
+            }
+            finally
+            {
+                if (uiCall)
+                    Interlocked.Decrement(ref playbackApiCallsOnUiThread);
             }
         }
 
@@ -3129,11 +3150,7 @@ namespace IStripperQuickPlayer
             }
 
             object parameters = parameter.HasValue ? parameter.Value : null!;
-            lock (playbackApiLock)
-            {
-                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath, apiName,
-                    ref parameters, true);
-            }
+            return CallPlaybackBridgeApi(apiName, ref parameters);
         }
 
         private int RequirePlaybackResult(string apiName, ulong? parameter = null)
@@ -4058,11 +4075,8 @@ namespace IStripperQuickPlayer
             }
 
             object parameter = enabled ? 1UL : 0UL;
-            lock (playbackApiLock)
-            {
-                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
-                    "IStripperSetPlayerClickThrough", ref parameter, true);
-            }
+            return CallPlaybackBridgeApi(
+                "IStripperSetPlayerClickThrough", ref parameter);
         }
 
         private int SetVghdPlayerWheelResize(bool enabled)
@@ -4073,11 +4087,8 @@ namespace IStripperQuickPlayer
             }
 
             object parameter = enabled ? 1UL : 0UL;
-            lock (playbackApiLock)
-            {
-                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
-                    "IStripperSetPlayerWheelResize", ref parameter, true);
-            }
+            return CallPlaybackBridgeApi(
+                "IStripperSetPlayerWheelResize", ref parameter);
         }
 
         private int SetVghdPlayerMode(int mode)
@@ -4088,11 +4099,8 @@ namespace IStripperQuickPlayer
             }
 
             object parameter = (ulong)mode;
-            lock (playbackApiLock)
-            {
-                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
-                    "IStripperSetPlayerMode", ref parameter, true);
-            }
+            return CallPlaybackBridgeApi(
+                "IStripperSetPlayerMode", ref parameter);
         }
 
         private int SetVghdPlayerLarge(bool large)
@@ -4103,11 +4111,8 @@ namespace IStripperQuickPlayer
             }
 
             object parameter = large ? 1UL : 0UL;
-            lock (playbackApiLock)
-            {
-                return _spyMgr.CallCustomApi(vghd_procID, playbackBridgePath,
-                    "IStripperSetPlayerLarge", ref parameter, true);
-            }
+            return CallPlaybackBridgeApi(
+                "IStripperSetPlayerLarge", ref parameter);
         }
 
         private HashSet<string> GetRecentPlaybackPaths()
@@ -4208,6 +4213,14 @@ namespace IStripperQuickPlayer
                 }
                 if (param.Name == "lpValueName")
                     keyname = param.Value?.ToString() ?? "";
+            }
+            if (ShouldBypassHookCallback(
+                    Volatile.Read(ref playbackApiCallsOnUiThread)) ||
+                formIsClosing || IsDisposed || !IsHandleCreated)
+            {
+                // Avoid re-entering Deviare while QuickPlayer's UI is already
+                // waiting for a Deviare call to finish.
+                return;
             }
             if (keyname == "playingMode" && length >= sizeof(uint))
             {
@@ -4351,6 +4364,10 @@ namespace IStripperQuickPlayer
                 isAutoSelecting = true;
                 return;
         }
+
+        internal static bool ShouldBypassHookCallback(
+            int playbackApiCallsOnUiThread) =>
+            playbackApiCallsOnUiThread > 0;
 
         private List<ModelClip> FilterClipList(List<ModelClip> clips)
         {
