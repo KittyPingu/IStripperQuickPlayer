@@ -29,17 +29,11 @@
     <Content Include="Assets\Wide310x150Logo.scale-200.png" />
     <Content Include="..\IstripperQuickPlayer\next_clip.ico" Link="Assets\next_clip.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\IstripperQuickPlayer\next_model.ico" Link="Assets\next_model.ico" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\IstripperQuickPlayer\dependencies\deviare32.db" Link="deviare32.db" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\IstripperQuickPlayer\dependencies\deviare64.db" Link="deviare64.db" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\IstripperQuickPlayer\dependencies\DeviareCOM64.dll" Link="DeviareCOM64.dll" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\IstripperQuickPlayer\dependencies\DvAgent.dll" Link="DvAgent.dll" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\IstripperQuickPlayer\dependencies\DvAgent64.dll" Link="DvAgent64.dll" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\IstripperQuickPlayer\dependencies\IStripperPlaybackBridge64.dll" Link="IStripperPlaybackBridge64.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
-    <Reference Include="Nektra.Deviare2">
-      <HintPath>..\IstripperQuickPlayer\dependencies\Nektra.Deviare2.dll</HintPath>
-    </Reference>
+    <Compile Include="..\IstripperQuickPlayer\PlaybackBridgeClient.cs" Link="Interop\PlaybackBridgeClient.cs" />
   </ItemGroup>
 
   <ItemGroup>

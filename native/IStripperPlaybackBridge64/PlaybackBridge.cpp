@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include "BridgeIpc.h"
 #include <TlHelp32.h>
 #include <dwmapi.h>
 #include <compressapi.h>
@@ -7039,7 +7040,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 70;
+    return 71;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -8282,6 +8283,10 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     {
         g_bridgeModule = instance;
         DisableThreadLibraryCalls(instance);
+        HANDLE commandThread = CreateThread(
+            nullptr, 0, &StartBridgeCommandServer, instance, 0, nullptr);
+        if (commandThread)
+            CloseHandle(commandThread);
     }
     return TRUE;
 }

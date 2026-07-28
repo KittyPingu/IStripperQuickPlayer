@@ -65,9 +65,12 @@ the installed vghd binary, not from those public Qt documents.
 
 ## Playback control path
 
-The WinForms app already uses
-[`Deviare`](https://www.nektra.com/products/deviare-api-hook-windows/) to attach
-to `vghd.exe`. The added path reuses that agent:
+QuickPlayer uses the Windows remote-thread API to load the bridge into
+`vghd.exe`. A bounded named-pipe channel invokes its exported controls, and
+[MinHook](https://github.com/TsudaKageyu/minhook) intercepts only the three
+registry values QuickPlayer observes. Registry callbacks fail open after two
+seconds if QuickPlayer is unavailable, so the injected bridge cannot leave
+iStripper waiting on the UI process.
 
 1. Load `IStripperPlaybackBridge64.dll` in the x64 vghd process.
 2. Read the running executable's file version and PE identity.

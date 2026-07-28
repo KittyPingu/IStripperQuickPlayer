@@ -1,7 +1,6 @@
-using System.Runtime.InteropServices;
 using System.Text;
+using IStripperQuickPlayer.Interop;
 using IStripperQuickPlayer.WinUI.Core;
-using Nektra.Deviare2;
 
 namespace IStripperQuickPlayer.WinUI.Services;
 
@@ -15,10 +14,7 @@ public sealed class LockPlayerService : IDisposable
     private readonly Timer _attachTimer;
     private readonly object _gate = new();
 
-    private NktSpyMgr? _spyMgr;
-    private NktHook? _registryHook;
-    private NktHook? _windowProcHook;
-    private NktProcess? _vghdProcess;
+    private PlaybackBridgeClient? _bridge;
     private int _vghdProcessId;
     private bool _disposed;
     private bool _started;
@@ -56,18 +52,7 @@ public sealed class LockPlayerService : IDisposable
             _started = true;
         }
 
-        try
-        {
-            _spyMgr = new NktSpyMgr();
-            _spyMgr.Initialize();
-            _spyMgr.OnFunctionCalled += OnFunctionCalled;
-            _attachTimer.Change(100, 2000);
-            _status("Deviare hook service started");
-        }
-        catch (Exception ex)
-        {
-            _status($"Deviare hook service could not start: {ex.Message}");
-        }
+        _attachTimer.Change(100, 2000);
     }
 
     public void SetPlayerLocked(bool locked)
@@ -84,7 +69,7 @@ public sealed class LockPlayerService : IDisposable
 
     private void AttachTimerTick(object? state)
     {
-        if (_disposed || _spyMgr == null)
+        if (_disposed)
         {
             return;
         }
@@ -100,70 +85,48 @@ public sealed class LockPlayerService : IDisposable
         }
         catch (Exception ex)
         {
-            _status($"Deviare attach failed: {ex.Message}");
+            _status($"Playback bridge attach failed: {ex.Message}");
         }
     }
 
     private void AttachToVghdProcess()
     {
-        if (_spyMgr == null)
+        foreach (System.Diagnostics.Process process in
+            System.Diagnostics.Process.GetProcessesByName("vghd"))
         {
-            return;
-        }
-
-        NktProcessesEnum enumProcess = _spyMgr.Processes();
-        NktProcess process = enumProcess.First();
-        while (process != null)
-        {
-            if (process.Name.Equals("vghd.exe", StringComparison.InvariantCultureIgnoreCase) && process.PlatformBits == 64)
+            using (process)
             {
-                _registryHook = _spyMgr.CreateHook(
-                    "KernelBase.dll!RegSetValueExW",
-                    (int)(eNktHookFlags.flgAutoHookChildProcess | eNktHookFlags.flgOnlyPreCall));
-                _registryHook.Hook(true);
-
-                _windowProcHook = _spyMgr.CreateHook(
-                    "user32.dll!CallWindowProcW",
-                    (int)eNktHookFlags.flgAutoHookChildProcess);
-                _windowProcHook.Hook(true);
-
-                _registryHook.Attach(process, true);
-                _vghdProcess = process;
+                _bridge?.Dispose();
+                _bridge = PlaybackBridgeClient.Attach(process.Id,
+                    Path.Combine(AppContext.BaseDirectory,
+                        "IStripperPlaybackBridge64.dll"),
+                    HandleRegistryWrite);
+                int hookResult = _bridge.StartRegistryHook();
+                if (hookResult < 0)
+                    throw new InvalidOperationException(
+                        $"Registry hook setup failed (0x{hookResult:X8}).");
                 _vghdProcessId = process.Id;
                 ChangePlayerLocked();
-                _status("Attached Deviare hooks to vghd.exe");
+                _status("Attached MinHook bridge to vghd.exe");
                 return;
             }
-
-            process = enumProcess.Next();
         }
     }
 
     private void ChangePlayerLocked()
     {
-        if (_windowProcHook == null || _vghdProcess == null)
+        if (_bridge?.IsConnected != true)
         {
             return;
         }
 
         try
         {
-            eNktHookState state = _windowProcHook.State(_vghdProcess);
-            if (_playerLocked)
-            {
-                if (state != eNktHookState.stActive && state != eNktHookState.stDisabled)
-                {
-                    _windowProcHook.Attach(_vghdProcess, true);
-                }
-                else if (state == eNktHookState.stDisabled)
-                {
-                    _windowProcHook.Enable(_vghdProcess, true);
-                }
-            }
-            else if (state == eNktHookState.stActive)
-            {
-                _windowProcHook.Enable(_vghdProcess, false);
-            }
+            int result = _bridge.Call("IStripperSetPlayerLocked",
+                _playerLocked ? 1UL : 0UL);
+            if (result < 0)
+                throw new InvalidOperationException(
+                    $"Player lock failed (0x{result:X8}).");
         }
         catch (Exception ex)
         {
@@ -171,90 +134,30 @@ public sealed class LockPlayerService : IDisposable
         }
     }
 
-    private void OnFunctionCalled(NktHook hook, NktProcess process, NktHookCallInfo hookCallInfo)
-    {
-        try
-        {
-            if (hook.FunctionName == "user32.dll!CallWindowProcW")
-            {
-                HandleWindowProc(hookCallInfo);
-                return;
-            }
-
-            HandleRegistryWrite(hookCallInfo);
-        }
-        catch (Exception ex)
-        {
-            _status($"Deviare hook callback failed: {ex.Message}");
-        }
-    }
-
-    private void HandleWindowProc(NktHookCallInfo hookCallInfo)
-    {
-        if (!_playerLocked)
-        {
-            return;
-        }
-
-        foreach (INktParam param in hookCallInfo.Params())
-        {
-            if (param.Name == "Msg" && Convert.ToUInt32(param.Value) == 132)
-            {
-                hookCallInfo.Result().LongVal = -1;
-                hookCallInfo.Result().LongLongVal = -1;
-                return;
-            }
-        }
-    }
-
-    private void HandleRegistryWrite(NktHookCallInfo hookCallInfo)
+    private bool HandleRegistryWrite(string valueName, byte[] data)
     {
         FilterEnforcementState state = _getState();
         if (!state.Settings.EnforceCardFilter)
-        {
-            return;
-        }
+            return false;
 
-        IntPtr lpData = IntPtr.Zero;
-        string valueName = string.Empty;
-        int dataLength = 0;
-        foreach (INktParam param in hookCallInfo.Params())
-        {
-            if (param.Name == "lpData")
-            {
-                lpData = param.PointerVal;
-            }
-            else if (param.Name == "cbData")
-            {
-                dataLength = Convert.ToInt32(param.Value);
-            }
-            else if (param.Name == "lpValueName")
-            {
-                valueName = param.Value?.ToString() ?? string.Empty;
-            }
-        }
+        if (valueName != "CurrentAnim" || data.Length < 2)
+            return false;
 
-        if (valueName != "CurrentAnim" || lpData == IntPtr.Zero || dataLength < 2)
-        {
-            return;
-        }
-
-        string requestedAnimation = ReadRemoteUnicodeString(lpData, dataLength);
+        string requestedAnimation = Encoding.Unicode.GetString(data)
+            .Replace("\0", string.Empty);
         if (string.IsNullOrWhiteSpace(requestedAnimation))
-        {
-            return;
-        }
+            return false;
 
         if (string.Equals(requestedAnimation, _lastReplacement, StringComparison.OrdinalIgnoreCase))
         {
             _lastReplacement = null;
-            return;
+            return false;
         }
 
         ClipReplacement? replacement = FindReplacement(requestedAnimation, state);
         if (replacement == null || replacement.Animation.Equals(requestedAnimation, StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            return false;
         }
 
         _lastReplacement = replacement.Animation;
@@ -262,31 +165,7 @@ public sealed class LockPlayerService : IDisposable
         _replacementSelected?.Invoke(replacement.Card, replacement.Clip);
         _status($"Blocked filtered clip and selected {replacement.Card.ModelName}: {replacement.Card.Outfit}");
 
-        hookCallInfo.Result().LongLongVal = -1;
-        hookCallInfo.Result().LongVal = -1;
-        hookCallInfo.Result().Value = -1;
-        hookCallInfo.LastError = 5;
-    }
-
-    private string ReadRemoteUnicodeString(IntPtr address, int length)
-    {
-        if (_spyMgr == null || _vghdProcessId == 0)
-        {
-            return string.Empty;
-        }
-
-        INktProcessMemory processMemory = _spyMgr.ProcessMemoryFromPID(_vghdProcessId);
-        byte[] buffer = new byte[length];
-        GCHandle pinnedBuffer = GCHandle.Alloc(buffer, GCHandleType.Pinned);
-        try
-        {
-            processMemory.ReadMem(pinnedBuffer.AddrOfPinnedObject(), address, new IntPtr(length));
-            return Encoding.Unicode.GetString(buffer).Replace("\0", string.Empty);
-        }
-        finally
-        {
-            pinnedBuffer.Free();
-        }
+        return true;
     }
 
     private ClipReplacement? FindReplacement(string requestedAnimation, FilterEnforcementState state)
@@ -377,16 +256,8 @@ public sealed class LockPlayerService : IDisposable
     {
         _disposed = true;
         _attachTimer.Dispose();
-        try
-        {
-            if (_spyMgr != null)
-            {
-                _spyMgr.OnFunctionCalled -= OnFunctionCalled;
-            }
-        }
-        catch
-        {
-        }
+        _bridge?.Dispose();
+        _bridge = null;
     }
 
     private sealed record ClipReplacement(string Animation, ModelCard Card, ModelClip Clip);

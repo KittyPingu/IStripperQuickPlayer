@@ -36,7 +36,7 @@
     <OutDir>$(ProjectDir)..\..\IstripperQuickPlayer\dependencies\</OutDir>
     <IntDir>$(ProjectDir)obj\$(Configuration)\</IntDir>
     <TargetName>IStripperPlaybackBridge64</TargetName>
-    <IncludePath>$(WindowsSdkDir)Include\$(WindowsTargetPlatformVersion)\ucrt;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)..\..\third_party\minhook\include;$(ProjectDir)..\..\third_party\minhook\src;$(WindowsSdkDir)Include\$(WindowsTargetPlatformVersion)\ucrt;$(IncludePath)</IncludePath>
     <LibraryPath>$(WindowsSdkDir)Lib\$(WindowsTargetPlatformVersion)\ucrt\x64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -74,7 +74,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BridgeIpc.cpp" />
     <ClCompile Include="PlaybackBridge.cpp" />
+    <ClCompile Include="..\..\third_party\minhook\src\buffer.c" />
+    <ClCompile Include="..\..\third_party\minhook\src\hook.c" />
+    <ClCompile Include="..\..\third_party\minhook\src\trampoline.c" />
+    <ClCompile Include="..\..\third_party\minhook\src\hde\hde64.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

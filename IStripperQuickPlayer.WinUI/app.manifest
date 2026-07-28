@@ -16,9 +16,4 @@
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
     </windowsSettings>
   </application>
-  <dependency>
-    <dependentAssembly>
-      <assemblyIdentity type="win32" name="DeviareCOM64" version="2.0.0.0" processorArchitecture="amd64" />
-    </dependentAssembly>
-  </dependency>
 </assembly>

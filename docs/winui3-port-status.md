@@ -34,9 +34,9 @@ The WinForms project is intentionally left as the working reference app. The Win
 - Card right-click context menu for favourite, next clip, photos, wallpaper, browser, user rating, and delete.
 - Global hotkeys for next clip and next card using native `RegisterHotKey`.
 - Hotkey configuration UI for next clip, next card, and toggle-lock shortcut strings.
-- Lock-player Deviare integration:
+- Lock-player MinHook bridge integration:
   - attaches to `vghd.exe`,
-  - blocks player dragging while locked by intercepting `CallWindowProcW`,
+  - blocks player dragging through the bridge's targeted Qt movie-window subclass,
   - enforces the visible card/clip filter by intercepting `RegSetValueExW` for `CurrentAnim`.
 - Minimize-to-tray behavior using native `Shell_NotifyIcon`.
 - Automatic wallpaper on now-playing card changes, plus brightness, blur, detail text, and desktop-icon options.

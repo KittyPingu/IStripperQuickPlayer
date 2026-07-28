@@ -68,9 +68,6 @@
     <Reference Include="DesktopWallpaper">
       <HintPath>dependencies\DesktopWallpaper.dll</HintPath>
     </Reference>
-    <Reference Include="Nektra.Deviare2">
-      <HintPath>Deviare\Nektra.Deviare2.dll</HintPath>
-    </Reference>
   </ItemGroup>
 
   <ItemGroup Condition="'$(MSBuildRuntimeType)' != 'Core'">
