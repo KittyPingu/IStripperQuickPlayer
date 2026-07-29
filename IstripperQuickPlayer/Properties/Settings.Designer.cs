@@ -946,5 +946,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["TooltipInitialDelay"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("{}")]
+        public string ClipTypePlayerSizes {
+            get {
+                return ((string)(this["ClipTypePlayerSizes"]));
+            }
+            set {
+                this["ClipTypePlayerSizes"] = value;
+            }
+        }
     }
 }

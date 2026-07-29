@@ -432,8 +432,9 @@ namespace IStripperQuickPlayer
         private object CreateRestApiQueue() => new
         {
             enabled = Properties.Settings.Default.EnablePlayQueue,
-            active = activeQueuedCard == null
-                ? null : CreateRestApiQueueEntry(activeQueuedCard, -1),
+            active = (activeManualQueueEntry ??
+                activeAutomaticQueueEntry ?? activeQueuedCard) is { } active
+                    ? CreateRestApiQueueEntry(active, -1) : null,
             manual = manualPlayQueue.Select(
                 CreateRestApiQueueEntry).ToList(),
             automatic = automaticPlayQueue.Select(

@@ -2,6 +2,7 @@ using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
 using Manina.Windows.Forms;
 using Microsoft.Win32;
+using System.Text.Json;
 
 namespace IStripperQuickPlayer
 {
@@ -20,7 +21,7 @@ namespace IStripperQuickPlayer
             int Relaxation);
 
         private sealed record PlayQueueDrag(string Source, int Index,
-            PlayQueueEntry Entry);
+            PlayQueueEntry Entry, bool Playing = false);
 
         private readonly List<PlayQueueEntry> manualPlayQueue = [];
         private readonly List<PlayQueueEntry> automaticPlayQueue = [];
@@ -89,7 +90,16 @@ namespace IStripperQuickPlayer
         private readonly ToolStripMenuItem librarySettingsToolStripMenuItem =
             new("Library & search");
         private readonly ToolStripMenuItem appearanceSettingsToolStripMenuItem =
-            new("Appearance & desktop");
+            new("Appearance");
+        private readonly ToolStripMenuItem
+            playerSizeByClipTypeToolStripMenuItem =
+            new("Player size by clip type...");
+        private readonly object playerSizeLock = new();
+        private int? normalSmallPlayerSizePercent;
+        private int? normalLargePlayerSizePercent;
+        private bool smallPlayerSizeOverrideActive;
+        private bool largePlayerSizeOverrideActive;
+        private long playerSizeRequestVersion;
         private readonly ToolStripMenuItem tooltipDelayToolStripMenuItem =
             new("Tooltip delay");
         private ToolTip? applicationToolTip;
@@ -127,6 +137,7 @@ namespace IStripperQuickPlayer
         private DateTime queuedAnimationProtectedUntil = DateTime.MinValue;
         private PlayQueueEntry? activeQueuedCard;
         private PlayQueueEntry? activeManualQueueEntry;
+        private PlayQueueEntry? activeAutomaticQueueEntry;
         private long activeQueuedCardStartedAt = -1;
         private string activeQueuedCardLastAnimationPath = "";
         private bool activeQueuedCardUsesSmartRules;
@@ -523,6 +534,8 @@ namespace IStripperQuickPlayer
             SetupTooltipDelayMenu();
             SetupPlaybackQueueTooltips();
             SetupMinimumClipSizeMenu();
+            playerSizeByClipTypeToolStripMenuItem.Click += (_, _) =>
+                ShowPlayerSizeByClipTypeSettings();
             UpdateMinimumClipSizeMenuText();
             GroupSettingsMenu();
             SetPlayQueueColours();
@@ -731,6 +744,8 @@ namespace IStripperQuickPlayer
 
         private void SetupPlaybackQueueTooltips()
         {
+            playerSizeByClipTypeToolStripMenuItem.ToolTipText =
+                "Set separate small and large player sizes for standing, table, pole, swing and cage clips.";
             playbackSettingsToolStripMenuItem.ToolTipText =
                 "Configure what plays next and QuickPlayer's playback controls.";
             enablePlayQueueToolStripMenuItem.ToolTipText =
@@ -825,6 +840,8 @@ namespace IStripperQuickPlayer
             ]);
             appearanceSettingsToolStripMenuItem.DropDownItems.AddRange(
             [
+                playerSizeByClipTypeToolStripMenuItem,
+                new ToolStripSeparator(),
                 wallpaperToolStripMenuItem,
                 showKittyToolStripMenuItem,
                 minimizeToTrayToolStripMenuItem,
@@ -842,6 +859,306 @@ namespace IStripperQuickPlayer
                 librarySettingsToolStripMenuItem,
                 appearanceSettingsToolStripMenuItem
             ]);
+        }
+
+        private static Dictionary<string, int> ParseClipTypePlayerSizes(
+            string? json)
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<Dictionary<string, int>>(
+                    json ?? "") is { } values
+                    ? new Dictionary<string, int>(values,
+                        StringComparer.OrdinalIgnoreCase)
+                    : new(StringComparer.OrdinalIgnoreCase);
+            }
+            catch (JsonException)
+            {
+                return new(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
+        private static string? PlayerSizeClipType(string? clipTypes)
+        {
+            string[] types = (clipTypes ?? "").Split(',',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries);
+            if (types.Contains("Pole", StringComparer.OrdinalIgnoreCase))
+                return "pole";
+            if (types.Contains("Cage", StringComparer.OrdinalIgnoreCase))
+                return "cage";
+            if (types.Contains("Swing", StringComparer.OrdinalIgnoreCase))
+                return "swing";
+            if (types.Contains("Table", StringComparer.OrdinalIgnoreCase) ||
+                types.Contains("BehindTable",
+                    StringComparer.OrdinalIgnoreCase))
+                return "table";
+            return types.Contains("Standing",
+                StringComparer.OrdinalIgnoreCase) ? "standing" : null;
+        }
+
+        private static int PlayerSizePercent(
+            IReadOnlyDictionary<string, int> sizes, string key) =>
+            sizes.TryGetValue(key, out int percent) &&
+            percent is >= 1 and <= 200 ? percent : 0;
+
+        private int ConfiguredPlayerSizePercent(string animationPath, int mode,
+            IReadOnlyDictionary<string, int> sizes)
+        {
+            string[] parts = animationPath.Replace('/', '\\').Split('\\', 2);
+            if (parts.Length != 2)
+                return 0;
+            ModelCard? card = Datastore.findCardByTag(
+                parts[0].Split('-')[0]);
+            ModelClip? clip = card?.clips?.FirstOrDefault(item =>
+                string.Equals(item.clipName, parts[1],
+                    StringComparison.OrdinalIgnoreCase));
+            string? type = PlayerSizeClipType(clip?.clipType);
+            string key = type + (mode == 1 ? "Large" : "Small");
+            return type == null ? 0 : PlayerSizePercent(sizes, key);
+        }
+
+        private static int? ReadNormalPlayerSizePercent(bool large)
+        {
+            try
+            {
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Totem\vghd\player", false);
+                object? value = key?.GetValue(large
+                    ? "expectedLargeHeightPercent"
+                    : "expectedHeightPercent");
+                int percent = Convert.ToInt32(value);
+                return percent is >= 1 and <= 200 ? percent : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void CaptureNormalPlayerSizes()
+        {
+            int? small = ReadNormalPlayerSizePercent(false);
+            int? large = ReadNormalPlayerSizePercent(true);
+            lock (playerSizeLock)
+            {
+                normalSmallPlayerSizePercent ??= small;
+                normalLargePlayerSizePercent ??= large;
+            }
+        }
+
+        private int SetVghdPlayerSizePercent(int mode, int percent)
+        {
+            if (!playerLockBridgeLoaded || vghd_procID == 0 ||
+                mode is not (1 or 2) || percent is < 1 or > 200)
+            {
+                return unchecked((int)0x80070057);
+            }
+            ulong packed = ((ulong)(uint)mode << 32) | (uint)percent;
+            return CallPlaybackBridgeApi(
+                "IStripperSetPlayerSizePercent", packed);
+        }
+
+        private void QueueConfiguredPlayerSize(string? animationPath = null,
+            int? mode = null)
+        {
+            string path = animationPath ?? GetCurrentAnimationPath();
+            int requestedMode = mode ?? Volatile.Read(ref playerMode);
+            long request = Interlocked.Increment(
+                ref playerSizeRequestVersion);
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                CaptureNormalPlayerSizes();
+                Dictionary<string, int> sizes = ParseClipTypePlayerSizes(
+                    Properties.Settings.Default.ClipTypePlayerSizes);
+                int configured = ConfiguredPlayerSizePercent(
+                    path, requestedMode, sizes);
+                lock (playerSizeLock)
+                {
+                    if (request != Volatile.Read(
+                            ref playerSizeRequestVersion) ||
+                        !playerLockBridgeLoaded)
+                        return;
+                    bool active = requestedMode == 1
+                        ? largePlayerSizeOverrideActive
+                        : smallPlayerSizeOverrideActive;
+                    int? normal = requestedMode == 1
+                        ? normalLargePlayerSizePercent
+                        : normalSmallPlayerSizePercent;
+                    int? target = configured > 0
+                        ? configured : active ? normal : null;
+                    if (target == null)
+                        return;
+                    int result = SetVghdPlayerSizePercent(
+                        requestedMode, target.Value);
+                    if (result < 0)
+                    {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"Player size update failed (0x{result:X8}).");
+                        return;
+                    }
+                    if (requestedMode == 1)
+                        largePlayerSizeOverrideActive = configured > 0;
+                    else
+                        smallPlayerSizeOverrideActive = configured > 0;
+                }
+            });
+        }
+
+        private void RememberNormalPlayerSizeFromWheel(int mode, int percent)
+        {
+            lock (playerSizeLock)
+            {
+                if (mode == 1 && !largePlayerSizeOverrideActive)
+                    normalLargePlayerSizePercent = percent;
+                else if (mode == 2 && !smallPlayerSizeOverrideActive)
+                    normalSmallPlayerSizePercent = percent;
+            }
+        }
+
+        private void RestoreNormalPlayerSizes()
+        {
+            Interlocked.Increment(ref playerSizeRequestVersion);
+            lock (playerSizeLock)
+            {
+                if (smallPlayerSizeOverrideActive &&
+                    normalSmallPlayerSizePercent is int small)
+                    SetVghdPlayerSizePercent(2, small);
+                if (largePlayerSizeOverrideActive &&
+                    normalLargePlayerSizePercent is int large)
+                    SetVghdPlayerSizePercent(1, large);
+                smallPlayerSizeOverrideActive = false;
+                largePlayerSizeOverrideActive = false;
+            }
+        }
+
+        private void ResetPlayerSizeState()
+        {
+            Interlocked.Increment(ref playerSizeRequestVersion);
+            lock (playerSizeLock)
+            {
+                normalSmallPlayerSizePercent = null;
+                normalLargePlayerSizePercent = null;
+                smallPlayerSizeOverrideActive = false;
+                largePlayerSizeOverrideActive = false;
+            }
+        }
+
+        private void ShowPlayerSizeByClipTypeSettings()
+        {
+            Dictionary<string, int> sizes = ParseClipTypePlayerSizes(
+                Properties.Settings.Default.ClipTypePlayerSizes);
+            string[] types =
+                ["Standing", "Table", "Pole", "Swing", "Cage"];
+            using Form dialog = new()
+            {
+                Text = "Player size by clip type",
+                AutoScaleMode = AutoScaleMode.Font,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+                StartPosition = FormStartPosition.CenterParent,
+                Padding = new Padding(12)
+            };
+            TableLayoutPanel grid = new()
+            {
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 3,
+                RowCount = types.Length + 3,
+                Dock = DockStyle.Fill
+            };
+            grid.ColumnStyles.Add(new(SizeType.AutoSize));
+            grid.ColumnStyles.Add(new(SizeType.Absolute, 100));
+            grid.ColumnStyles.Add(new(SizeType.Absolute, 100));
+            grid.Controls.Add(new Label { Text = "Clip type", AutoSize = true },
+                0, 0);
+            grid.Controls.Add(new Label { Text = "Small (%)", AutoSize = true },
+                1, 0);
+            grid.Controls.Add(new Label { Text = "Large (%)", AutoSize = true },
+                2, 0);
+
+            Dictionary<string, NumericUpDown> inputs =
+                new(StringComparer.OrdinalIgnoreCase);
+            for (int index = 0; index < types.Length; index++)
+            {
+                string type = types[index];
+                grid.Controls.Add(new Label
+                {
+                    Text = type,
+                    AutoSize = true,
+                    Anchor = AnchorStyles.Left,
+                    Margin = new Padding(3, 7, 12, 3)
+                }, 0, index + 1);
+                foreach ((string suffix, int column) in
+                    new[] { ("Small", 1), ("Large", 2) })
+                {
+                    string key = type.ToLowerInvariant() + suffix;
+                    NumericUpDown input = new()
+                    {
+                        Minimum = 0,
+                        Maximum = 200,
+                        Increment = 5,
+                        Value = sizes.GetValueOrDefault(key),
+                        Dock = DockStyle.Fill,
+                        AccessibleName = $"{type} {suffix} player size"
+                    };
+                    inputs[key] = input;
+                    grid.Controls.Add(input, column, index + 1);
+                }
+            }
+            int noteRow = types.Length + 1;
+            Label note = new()
+            {
+                Text = "0 uses iStripper's normal size.",
+                AutoSize = true,
+                ForeColor = SystemColors.GrayText,
+                Margin = new Padding(3, 10, 3, 8)
+            };
+            grid.Controls.Add(note, 0, noteRow);
+            grid.SetColumnSpan(note, 3);
+
+            FlowLayoutPanel buttons = new()
+            {
+                AutoSize = true,
+                FlowDirection = FlowDirection.RightToLeft,
+                Dock = DockStyle.Fill
+            };
+            Button ok = new()
+            {
+                Text = "OK",
+                AutoSize = true,
+                DialogResult = DialogResult.OK
+            };
+            Button cancel = new()
+            {
+                Text = "Cancel",
+                AutoSize = true,
+                DialogResult = DialogResult.Cancel
+            };
+            buttons.Controls.Add(ok);
+            buttons.Controls.Add(cancel);
+            grid.Controls.Add(buttons, 0, noteRow + 1);
+            grid.SetColumnSpan(buttons, 3);
+            dialog.Controls.Add(grid);
+            dialog.AcceptButton = ok;
+            dialog.CancelButton = cancel;
+            AppTheme.Apply(dialog);
+
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+            Dictionary<string, int> saved = inputs
+                .Where(pair => pair.Value.Value > 0)
+                .ToDictionary(pair => pair.Key,
+                    pair => Decimal.ToInt32(pair.Value.Value),
+                    StringComparer.OrdinalIgnoreCase);
+            Properties.Settings.Default.ClipTypePlayerSizes =
+                JsonSerializer.Serialize(saved);
+            Properties.Settings.Default.Save();
+            QueueConfiguredPlayerSize();
         }
 
         private void RefreshPlayQueueVisibility()
@@ -906,8 +1223,10 @@ namespace IStripperQuickPlayer
         {
             playQueueHeader.Text =
                 $"{(playQueueExpanded ? "▼" : "▶")}  Play next queue" +
-                $"  —  {manualPlayQueue.Count} manual · " +
-                $"{automaticPlayQueue.Count} automatic";
+                $"  —  {manualPlayQueue.Count +
+                    (activeManualQueueEntry == null ? 0 : 1)} manual · " +
+                $"{automaticPlayQueue.Count +
+                    (activeAutomaticQueueEntry == null ? 0 : 1)} automatic";
             int headerHeight = playQueueHeader.Font.Height +
                 playQueueHeader.Padding.Vertical + 6;
             int gripHeight = Math.Max(5, 7 * DeviceDpi / 96);
@@ -981,24 +1300,35 @@ namespace IStripperQuickPlayer
             if (manualQueueFlow == null)
                 return;
 
-            RenderPlayQueue(manualQueueFlow, manualPlayQueue, "manual");
+            RenderPlayQueue(manualQueueFlow, manualPlayQueue, "manual",
+                activeManualQueueEntry);
             RenderPlayQueue(automaticQueueFlow, automaticPlayQueue,
-                "automatic");
+                "automatic", activeAutomaticQueueEntry);
             manualQueueLabel.Text =
-                $"Manual ({manualPlayQueue.Count}) — drop cards or clips here";
+                $"Manual ({manualPlayQueue.Count +
+                    (activeManualQueueEntry == null ? 0 : 1)}) — " +
+                "drop cards or clips here";
             automaticQueueLabel.Text =
                 Properties.Settings.Default.EnforceCardFilter
-                    ? $"Automatic ({automaticPlayQueue.Count}) — filtered cards"
+                    ? $"Automatic ({automaticPlayQueue.Count +
+                        (activeAutomaticQueueEntry == null ? 0 : 1)}) — " +
+                      "filtered cards"
                     : "Automatic — disabled while card filter enforcement is off";
             UpdatePlayQueueHeader();
             UpdatePlayQueueCardOverlays();
         }
 
         private void RenderPlayQueue(FlowLayoutPanel flow,
-            List<PlayQueueEntry> entries, string source)
+            List<PlayQueueEntry> entries, string source,
+            PlayQueueEntry? active)
         {
             bool dark = Properties.Settings.Default.DarkMode;
-            if (QueueRenderIsCurrent(flow, entries, source, dark))
+            List<PlayQueueDrag> cards = [];
+            if (active != null)
+                cards.Add(new(source, -1, active, true));
+            cards.AddRange(entries.Select((entry, index) =>
+                new PlayQueueDrag(source, index, entry)));
+            if (QueueRenderIsCurrent(flow, cards, dark))
                 return;
 
             ClearPlayQueueCardHighlight();
@@ -1008,42 +1338,37 @@ namespace IStripperQuickPlayer
                 while (flow.Controls.Count > 0)
                     flow.Controls[0].Dispose();
                 System.Drawing.Size cardSize =
-                    PlayQueueCardSize(flow, entries.Count);
-                for (int index = 0; index < entries.Count; index++)
-                {
-                    PlayQueueEntry entry = entries[index];
-                    flow.Controls.Add(CreatePlayQueueCard(
-                        new PlayQueueDrag(source, index, entry), cardSize));
-                }
+                    PlayQueueCardSize(flow, cards.Count);
+                foreach (PlayQueueDrag card in cards)
+                    flow.Controls.Add(CreatePlayQueueCard(card, cardSize));
                 flow.Tag = dark;
             }
             finally
             {
                 flow.ResumeLayout(true);
             }
-            if (entries.Count == 0)
+            if (cards.Count == 0)
                 flow.AutoScrollMinSize = new System.Drawing.Size(1, 1);
         }
 
         private static bool QueueRenderIsCurrent(FlowLayoutPanel flow,
-            List<PlayQueueEntry> entries, string source, bool dark)
+            IReadOnlyList<PlayQueueDrag> cards, bool dark)
         {
-            if (flow.Controls.Count != entries.Count ||
+            if (flow.Controls.Count != cards.Count ||
                 flow.Tag is not bool renderedDark || renderedDark != dark)
                 return false;
 
-            for (int index = 0; index < entries.Count; index++)
+            for (int index = 0; index < cards.Count; index++)
             {
                 if (flow.Controls[index] is not Panel panel ||
                     panel.Tag is not PlayQueueDrag drag ||
-                    drag.Source != source || drag.Index != index ||
-                    drag.Entry != entries[index])
+                    drag != cards[index])
                     return false;
 
                 PictureBox? picture = panel.Controls.OfType<PictureBox>()
                     .FirstOrDefault();
                 Image? expected = Datastore.findCardByTag(
-                    entries[index].CardTag)?.image;
+                    cards[index].Entry.CardTag)?.image;
                 if (picture == null ||
                     !ReferenceEquals(picture.Image, expected))
                     return false;
@@ -1194,7 +1519,9 @@ namespace IStripperQuickPlayer
             Panel panel = new()
             {
                 AccessibleDescription =
-                    "Click to select, double-click to play, or drag to move this queue item.",
+                    drag.Playing
+                        ? "Currently playing. Drag out of the queue to stop it."
+                        : "Click to select, double-click to play, or drag to move this queue item.",
                 Size = cardSize,
                 Margin = new Padding(3),
                 Padding = new Padding(2),
@@ -1215,8 +1542,12 @@ namespace IStripperQuickPlayer
                 Cursor = Cursors.SizeAll
             };
             image.Paint += (_, e) =>
+            {
                 DrawPlayQueueCardOverlay(
                     image, drag.Entry.CardTag, e.Graphics);
+                if (drag.Playing)
+                    DrawPlayingQueueOverlay(image, e.Graphics);
+            };
             Label label = new()
             {
                 AccessibleDescription = panel.AccessibleDescription,
@@ -1276,6 +1607,22 @@ namespace IStripperQuickPlayer
             image.Tag = drag;
             label.Tag = drag;
             return panel;
+        }
+
+        private static void DrawPlayingQueueOverlay(
+            PictureBox picture, Graphics graphics)
+        {
+            int height = Math.Min(24, Math.Max(18, picture.Height / 5));
+            Rectangle badge = new(0, Math.Max(0, picture.Height - height),
+                picture.Width, height);
+            using Brush background =
+                new SolidBrush(Color.FromArgb(220, 22, 145, 70));
+            graphics.FillRectangle(background, badge);
+            TextRenderer.DrawText(graphics, "Playing",
+                SystemFonts.MessageBoxFont, badge, Color.White,
+                TextFormatFlags.HorizontalCenter |
+                TextFormatFlags.VerticalCenter |
+                TextFormatFlags.SingleLine);
         }
 
         private static void DrawPlayQueueCardOverlay(
@@ -1364,6 +1711,7 @@ namespace IStripperQuickPlayer
             }
             else
             {
+                activeAutomaticQueueEntry = entry;
                 FillAutomaticQueue(entry.CardTag);
             }
             RenderPlayQueues();
@@ -1444,6 +1792,12 @@ namespace IStripperQuickPlayer
                 return;
             }
 
+            if (drag.Playing)
+            {
+                RemovePlayingQueueEntry(drag);
+                return;
+            }
+
             List<PlayQueueEntry> queue = drag.Source == "manual"
                 ? manualPlayQueue : automaticPlayQueue;
             if (drag.Index >= 0 && drag.Index < queue.Count &&
@@ -1460,6 +1814,31 @@ namespace IStripperQuickPlayer
             if (drag.Source == "automatic")
                 FillAutomaticQueue(drag.Entry.CardTag);
             RenderPlayQueues();
+        }
+
+        private void RemovePlayingQueueEntry(PlayQueueDrag drag)
+        {
+            PlayQueueEntry? active = drag.Source == "manual"
+                ? activeManualQueueEntry : activeAutomaticQueueEntry;
+            if (active != drag.Entry)
+                return;
+
+            queuedAnimationPendingPath = "";
+            queuedAnimationPendingConfirmed = false;
+            queuedAnimationProtectedUntil = DateTime.MinValue;
+            ClearQueuedCardSession(discardManualQueueEntry: true);
+            SavePreviousQueue();
+            if (!TryPlayNextQueuedAnimation())
+                StopQueuedPlayback();
+            RenderPlayQueues();
+        }
+
+        private static void StopQueuedPlayback()
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\parameters", true);
+            key?.SetValue("ForceAnim", "");
+            key?.SetValue("CurrentAnim", "");
         }
 
         private static bool HasMovedPastDragThreshold(Point start)
@@ -1559,7 +1938,8 @@ namespace IStripperQuickPlayer
         private void QueueFlow_DragEnter(object? sender, DragEventArgs e)
         {
             PlayQueueDrag? drag = GetPlayQueueDrag(e);
-            e.Effect = drag == null ? DragDropEffects.None :
+            e.Effect = drag == null || drag.Playing
+                ? DragDropEffects.None :
                 drag.Source is "library" or "clip"
                     ? DragDropEffects.Copy : DragDropEffects.Move;
         }
@@ -1571,14 +1951,14 @@ namespace IStripperQuickPlayer
             DragEventArgs e)
         {
             PlayQueueDrag? drag = GetPlayQueueDrag(e);
-            e.Effect = drag?.Source == "automatic"
+            e.Effect = drag is { Source: "automatic", Playing: false }
                 ? DragDropEffects.Move : DragDropEffects.None;
         }
 
         private void ManualQueueFlow_DragDrop(object? sender, DragEventArgs e)
         {
             PlayQueueDrag? drag = GetPlayQueueDrag(e);
-            if (drag == null)
+            if (drag == null || drag.Playing)
                 return;
 
             int insertAt = QueueDropIndex(manualQueueFlow, e);
@@ -1607,7 +1987,7 @@ namespace IStripperQuickPlayer
             DragEventArgs e)
         {
             PlayQueueDrag? drag = GetPlayQueueDrag(e);
-            if (drag?.Source != "automatic")
+            if (drag is not { Source: "automatic", Playing: false })
                 return;
 
             int insertAt = QueueDropIndex(automaticQueueFlow, e);
@@ -2013,15 +2393,19 @@ namespace IStripperQuickPlayer
             if (activeManualQueueEntry != null && activeQueuedCard == null)
                 completedManualItemRequeued =
                     CompleteActiveManualQueueEntry();
+            if (activeAutomaticQueueEntry != null &&
+                activeQueuedCard == null)
+                activeAutomaticQueueEntry = null;
             if (TryContinueQueuedCard(out animationPath, out cardTag))
                 return true;
             completedManualItemRequeued |= CompleteActiveManualQueueEntry();
 
             while (manualPlayQueue.Count > 0)
             {
-                int selectableCount = manualPlayQueue.Count -
-                    (completedManualItemRequeued &&
-                     manualPlayQueue.Count > 1 ? 1 : 0);
+                int selectableCount = ManualQueueSelectableCount(
+                    manualPlayQueue.Count, completedManualItemRequeued);
+                if (selectableCount == 0)
+                    break;
                 int index = Properties.Settings.Default
                     .RandomManualQueueSelection
                         ? Random.Shared.Next(selectableCount) : 0;
@@ -2050,6 +2434,7 @@ namespace IStripperQuickPlayer
                 {
                     cardTag = entry.CardTag;
                     StartQueuedCardSession(entry, animationPath);
+                    activeAutomaticQueueEntry = entry;
                     RenderPlayQueues();
                     return true;
                 }
@@ -2190,11 +2575,16 @@ namespace IStripperQuickPlayer
             active = null;
         }
 
+        private static int ManualQueueSelectableCount(
+            int queueCount, bool completedItemRequeued) =>
+            Math.Max(0, queueCount - (completedItemRequeued ? 1 : 0));
+
         private void ClearQueuedCardSession(
             bool clearManualQueueEntry = true,
             bool discardManualQueueEntry = false)
         {
             activeQueuedCard = null;
+            activeAutomaticQueueEntry = null;
             activeQueuedCardStartedAt = -1;
             activeQueuedCardLastAnimationPath = "";
             activeQueuedCardUsesSmartRules = false;
@@ -2208,6 +2598,7 @@ namespace IStripperQuickPlayer
                     ref activeManualQueueEntry, requeue);
                 SavePreviousQueue();
             }
+            RenderPlayQueues();
         }
 
         private static bool ShouldContinueQueuedCard(long startedAt,

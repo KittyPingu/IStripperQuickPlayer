@@ -547,9 +547,10 @@ namespace
         return nullptr;
     }
 
-    bool ResizeMovieWindow(HWND, int steps)
+    bool SetMovieWindowPercent(LONG mode, DWORD newPercent, bool notify)
     {
-        if (steps == 0)
+        if ((mode != 1 && mode != 2) ||
+            newPercent < 1 || newPercent > 200)
         {
             return false;
         }
@@ -576,32 +577,7 @@ namespace
             return false;
         }
 
-        const LONG mode = InterlockedCompareExchange(&g_playerMode, 0, 0);
-        if (mode != 1 && mode != 2)
-        {
-            return false;
-        }
         const bool large = mode == 1;
-        const wchar_t* valueName = large
-            ? L"expectedLargeHeightPercent" : L"expectedHeightPercent";
-        DWORD currentPercent = large ? 100 : 30;
-        DWORD valueSize = sizeof(currentPercent);
-        const LSTATUS readResult = RegGetValueW(HKEY_CURRENT_USER,
-            L"Software\\Totem\\vghd\\player", valueName,
-            RRF_RT_REG_DWORD, nullptr, &currentPercent, &valueSize);
-        if (readResult != ERROR_SUCCESS && readResult != ERROR_FILE_NOT_FOUND)
-        {
-            return false;
-        }
-
-        const DWORD newPercent = static_cast<DWORD>(std::clamp(
-            static_cast<int>(currentPercent) + steps * 2,
-            large ? 60 : 10, large ? 100 : 60));
-        if (newPercent == currentPercent)
-        {
-            return true;
-        }
-
         const int percent = static_cast<int>(newPercent);
         const QtGenericArgument argument = { &percent, "int" };
         const QtGenericArgument empty = {};
@@ -620,7 +596,7 @@ namespace
         }
         if (invoked)
         {
-            if (g_wheelResizeMessage != 0)
+            if (notify && g_wheelResizeMessage != 0)
             {
                 PostMessageW(HWND_BROADCAST, g_wheelResizeMessage,
                     newPercent, 0);
@@ -628,6 +604,36 @@ namespace
             return true;
         }
         return false;
+    }
+
+    bool ResizeMovieWindow(int steps)
+    {
+        if (steps == 0)
+        {
+            return false;
+        }
+        const LONG mode = InterlockedCompareExchange(&g_playerMode, 0, 0);
+        if (mode != 1 && mode != 2)
+        {
+            return false;
+        }
+        const bool large = mode == 1;
+        const wchar_t* valueName = large
+            ? L"expectedLargeHeightPercent" : L"expectedHeightPercent";
+        DWORD currentPercent = large ? 100 : 30;
+        DWORD valueSize = sizeof(currentPercent);
+        const LSTATUS readResult = RegGetValueW(HKEY_CURRENT_USER,
+            L"Software\\Totem\\vghd\\player", valueName,
+            RRF_RT_REG_DWORD, nullptr, &currentPercent, &valueSize);
+        if (readResult != ERROR_SUCCESS && readResult != ERROR_FILE_NOT_FOUND)
+        {
+            return false;
+        }
+        const DWORD newPercent = static_cast<DWORD>(std::clamp(
+            static_cast<int>(currentPercent) + steps * 2,
+            large ? 60 : 10, 200));
+        return newPercent == currentPercent ||
+            SetMovieWindowPercent(mode, newPercent, true);
     }
 
     LRESULT CALLBACK MovieMouseHook(int code, WPARAM wParam, LPARAM lParam)
@@ -645,7 +651,7 @@ namespace
                 const LONG accumulated = InterlockedExchangeAdd(
                     &g_playerWheelDelta, delta) + delta;
                 const int steps = accumulated / WHEEL_DELTA;
-                if (steps == 0 || ResizeMovieWindow(search.window, steps))
+                if (steps == 0 || ResizeMovieWindow(steps))
                 {
                     if (steps != 0)
                     {
@@ -1044,6 +1050,21 @@ namespace
         }
         InterlockedExchange(&g_playerMode, static_cast<LONG>(mode));
         return BridgeSuccess;
+    }
+
+    HRESULT SetPlayerSizePercent(SIZE_T packed)
+    {
+        const auto value = static_cast<std::uint64_t>(packed);
+        const DWORD mode = static_cast<DWORD>(value >> 32);
+        const DWORD percent = static_cast<DWORD>(value);
+        if ((mode != 1 && mode != 2) ||
+            percent < 1 || percent > 200)
+        {
+            return E_INVALIDARG;
+        }
+        return SetMovieWindowPercent(
+            static_cast<LONG>(mode), percent, false)
+            ? BridgeSuccess : E_FAIL;
     }
 
     HRESULT SetPlayerLarge(bool large)
@@ -7023,6 +7044,19 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
     return SetPlayerMode(mode);
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerSizePercent(
+    SIZE_T packed)
+{
+    __try
+    {
+        return SetPlayerSizePercent(packed);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerLarge(
     SIZE_T large)
 {
@@ -7040,7 +7074,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 71;
+    return 72;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

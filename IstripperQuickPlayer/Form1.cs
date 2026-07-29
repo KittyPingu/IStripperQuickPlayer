@@ -42,7 +42,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 71;
+        private const int PlaybackBridgeVersion = 72;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -361,6 +361,10 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(completedQueueCheck == null &&
                 requeueCheck.Select(entry => entry.CardTag)
                     .SequenceEqual(["second", "first"]));
+            System.Diagnostics.Debug.Assert(
+                ManualQueueSelectableCount(1, true) == 0 &&
+                ManualQueueSelectableCount(2, true) == 1 &&
+                ManualQueueSelectableCount(1, false) == 1);
             System.Diagnostics.Debug.Assert(QueueForPersistence(
                 [new("second")], new("first"), true)
                 .Select(entry => entry.CardTag)
@@ -518,6 +522,20 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(AddModelFilter(
                 "tag:duo OR tag:pole", "Georgia") ==
                 "(tag:duo OR tag:pole) AND model:Georgia");
+            System.Diagnostics.Debug.Assert(
+                PlayerSizeClipType("Standing, Solo") == "standing" &&
+                PlayerSizeClipType("Standing, Table") == "table" &&
+                PlayerSizeClipType("Standing, Pole") == "pole" &&
+                PlayerSizeClipType("Swing") == "swing" &&
+                PlayerSizeClipType("Cage") == "cage" &&
+                PlayerSizeClipType("InOut") == null);
+            Dictionary<string, int> playerSizeCheck =
+                ParseClipTypePlayerSizes(
+                    """{"tableSmall":200,"poleLarge":0}""");
+            System.Diagnostics.Debug.Assert(
+                PlayerSizePercent(playerSizeCheck, "tableSmall") == 200 &&
+                PlayerSizePercent(playerSizeCheck, "poleLarge") == 0 &&
+                PlayerSizePercent(playerSizeCheck, "standingSmall") == 0);
             TextSearchDocument raeSearchCheck = new(
                 "Asia Rae pole", "Asia Rae", "", "", "", "pole");
             TextSearchDocument kittySearchCheck = new(
@@ -2630,8 +2648,10 @@ namespace IStripperQuickPlayer
             if (message.Msg == WheelResizeMessage)
             {
                 int percent = message.WParam.ToInt32();
+                RememberNormalPlayerSizeFromWheel(
+                    Volatile.Read(ref playerMode), percent);
                 if (Properties.Settings.Default.EnablePlayerWheelResize &&
-                    percent is >= 10 and <= 100)
+                    percent is >= 10 and <= 200)
                 {
                     LockStateOverlay.ShowTextForProcess(
                         vghd_procID, $"{percent}%");
@@ -2800,6 +2820,7 @@ namespace IStripperQuickPlayer
                 Volatile.Write(ref playerMode, 2);
                 Volatile.Write(ref playbackInputQuietUntilTicks, 0);
             }
+            ResetPlayerSizeState();
             SetPlaybackStatus(string.Empty);
         }
 
@@ -2882,6 +2903,8 @@ namespace IStripperQuickPlayer
                         $"Player wheel resize setup failed (0x{wheelResizeResult:X8}).",
                         wheelResizeResult);
                 }
+                CaptureNormalPlayerSizes();
+                QueueConfiguredPlayerSize();
                 if (!Properties.Settings.Default.EnablePlaybackControl)
                 {
                     return;
@@ -4159,13 +4182,24 @@ namespace IStripperQuickPlayer
                         Volatile.Write(ref playerMode, (int)mode);
                         ThreadPool.QueueUserWorkItem(_ =>
                         {
-                            try { SetVghdPlayerMode((int)mode); } catch { }
+                            try
+                            {
+                                SetVghdPlayerMode((int)mode);
+                                QueueConfiguredPlayerSize(
+                                    mode: (int)mode);
+                            }
+                            catch { }
                         });
                     }
                 }
                 catch { }
                 return false;
             }
+            string str = data.Length < 1 ? "" :
+                Encoding.Unicode.GetString(data)
+                    .Replace("\0", string.Empty);
+            if (keyname == "CurrentAnim")
+                QueueConfiguredPlayerSize(str);
             if (keyname == "CurrentAnim" &&
                 (GetAsyncKeyState(VirtualKeyLeftButton) & 0x8000) != 0)
             {
@@ -4174,8 +4208,6 @@ namespace IStripperQuickPlayer
                 return false;
             }
             if (data.Length < 1) return false;
-            string str = Encoding.Unicode.GetString(data)
-                .Replace("\0", string.Empty);
             if (keyname == "PreviousUserLevel")
             {
                 if (!formIsClosing && IsHandleCreated)
@@ -4283,6 +4315,7 @@ namespace IStripperQuickPlayer
                 }
                 //if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
                 isAutoSelecting = true;
+                QueueConfiguredPlayerSize(newcardstring);
                 return skipOriginal;
         }
 
@@ -4683,6 +4716,7 @@ namespace IStripperQuickPlayer
             DisableMovieCapture();
             if (playerLockBridgeLoaded)
             {
+                try { RestoreNormalPlayerSizes(); } catch { }
                 try { SetVghdPlayerWheelResize(false); } catch { }
                 try { SetVghdPlayerLocked(false); } catch { }
                 playerLockBridgeLoaded = false;

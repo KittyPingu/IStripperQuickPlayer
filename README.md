@@ -206,7 +206,7 @@ queue integrations. See the [REST API documentation](docs/api/README.md) for
 authentication, endpoints, and examples.
 
 Settings are grouped into **Playback & queue**, **Library & search** and
-**Appearance & desktop**, with frequently used **Hotkeys** and **Lock Player**
+**Appearance**, with frequently used **Hotkeys** and **Lock Player**
 kept at the top level.
 
 <img src="docs/images/quickplayer-settings-menu.jpg" alt="QuickPlayer Settings menu" width="161">
@@ -230,6 +230,9 @@ kept at the top level.
   handles animation windows created later.
 - **Wallpaper** controls automatic wallpaper generation and per-monitor
   options.
+- **Player size by clip type** sets independent percentages for standing,
+  table, pole, swing and cage clips in small and large playback modes. A
+  value of `0` leaves that size under iStripper's normal control.
 - **Enable playback control** completely disables playback attachment when
   turned off.
 

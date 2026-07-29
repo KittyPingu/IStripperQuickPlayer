@@ -697,8 +697,10 @@ namespace IStripperQuickPlayer
                     "Resize an animation by scrolling while the pointer is over it.",
                 ["Library & search"] =
                     "Configure card display and searchable library fields.",
-                ["Appearance & desktop"] =
-                    "Configure themes, wallpaper and minimize behaviour.",
+                ["Appearance"] =
+                    "Configure player sizing, themes, wallpaper and minimize behaviour.",
+                ["Player size by clip type"] =
+                    "Set separate small and large player sizes for standing, table, pole, swing and cage clips.",
                 ["Tooltip delay"] =
                     "Choose whether tooltips appear and how quickly they open.",
                 ["Queue"] = "Save, load or clear the manual play-next queue.",
