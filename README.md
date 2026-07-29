@@ -205,6 +205,8 @@ QuickPlayer provides an authenticated local API for playback, library, and
 queue integrations. See the [REST API documentation](docs/api/README.md) for
 authentication, endpoints, and examples.
 
+## Settings
+
 Settings are grouped into **Playback & queue**, **Library & search** and
 **Appearance**, with frequently used **Hotkeys** and **Lock Player**
 kept at the top level.
@@ -212,7 +214,7 @@ kept at the top level.
 <img src="docs/images/quickplayer-settings-menu.jpg" alt="QuickPlayer Settings menu" width="161">
 <img src="docs/images/quickplayer-playback-queue-menu.jpg" alt="QuickPlayer Playback queue settings" width="201">
 
-## Settings worth knowing
+### Settings worth knowing
 
 - **Avoid recently played clips** is enabled by default.
 - **Enable play next queue** shows the collapsible manual and automatic queue
