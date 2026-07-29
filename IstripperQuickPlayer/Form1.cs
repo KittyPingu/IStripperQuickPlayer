@@ -502,7 +502,8 @@ namespace IStripperQuickPlayer
                 "Anna Delos c1001 Pool Side duo red table",
                 "Anna Delos", "c1001", "Pool Side", "", "duo red table");
             System.Diagnostics.Debug.Assert(
-                TextQuery.Parse("anna tag:duo !blue").Matches(searchCheck));
+                TextQuery.Parse("anna AND tag:duo AND !blue")
+                    .Matches(searchCheck));
             System.Diagnostics.Debug.Assert(
                 TextQuery.Parse("(beth OR model:anna) AND \"pool side\"")
                     .Matches(searchCheck));
@@ -2268,6 +2269,7 @@ namespace IStripperQuickPlayer
             RetrieveModels();
             RestorePreviousQueue();
             GetNowPlaying();
+            StartRestApi();
             clickingNowPlaying = false;
             SetupKeyHooks();
             await Task.Delay(1000);
@@ -4655,6 +4657,7 @@ namespace IStripperQuickPlayer
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             formIsClosing = true;
+            StopRestApi();
             cardOverlayTimer.Stop();
             directCompositionCardOverlays?.Dispose();
             directCompositionCardOverlays = null;

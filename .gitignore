@@ -370,6 +370,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/DirectCompositionCardOverlayControl.cs
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/Form1.LibraryCleanup.cs
+!/IstripperQuickPlayer/Form1.RestApi.cs
 !/IstripperQuickPlayer/LockStateOverlay.cs
 !/IstripperQuickPlayer/PlaybackBridgeClient.cs
 !/IstripperQuickPlayer/Controls/

@@ -199,6 +199,12 @@ Change or disable any shortcut from
 **Settings > Hotkeys**. These are global Windows hotkeys, so they continue to
 work while another application has focus.
 
+## REST API
+
+QuickPlayer provides an authenticated local API for playback, library, and
+queue integrations. See the [REST API documentation](docs/api/README.md) for
+authentication, endpoints, and examples.
+
 Settings are grouped into **Playback & queue**, **Library & search** and
 **Appearance & desktop**, with frequently used **Hotkeys** and **Lock Player**
 kept at the top level.
