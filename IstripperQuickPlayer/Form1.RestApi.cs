@@ -218,6 +218,8 @@ namespace IStripperQuickPlayer
                         "POST /api/v1/fullscreen/next",
                         "POST /api/v1/fullscreen/slots/{slotId}/next",
                         "POST /api/v1/fullscreen/slots/{slotId}/play",
+                        "POST /api/v1/fullscreen/source/{source}/next",
+                        "POST /api/v1/fullscreen/source/{source}/play",
                         "DELETE /api/v1/fullscreen/queue",
                         "PATCH /api/v1/queue",
                         "POST /api/v1/queue/manual",
@@ -303,6 +305,35 @@ namespace IStripperQuickPlayer
                         request, cancellationToken);
                 return await InvokeAsync(() =>
                     PlayRestApiFullscreenSlot(playFullscreenSlotId, body));
+            }
+
+            if (method == "POST" && parts.Length == 6 &&
+                parts[2].Equals("fullscreen",
+                    StringComparison.OrdinalIgnoreCase) &&
+                parts[3].Equals("source",
+                    StringComparison.OrdinalIgnoreCase) &&
+                parts[5].Equals("next",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return await InvokeAsync(() =>
+                    RunFullscreenSourceAction(parts[4],
+                        RunFullscreenSlotAction));
+            }
+
+            if (method == "POST" && parts.Length == 6 &&
+                parts[2].Equals("fullscreen",
+                    StringComparison.OrdinalIgnoreCase) &&
+                parts[3].Equals("source",
+                    StringComparison.OrdinalIgnoreCase) &&
+                parts[5].Equals("play",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                ApiQueueEntryRequest body =
+                    await ReadRestApiJsonAsync<ApiQueueEntryRequest>(
+                        request, cancellationToken);
+                return await InvokeAsync(() =>
+                    RunFullscreenSourceAction(parts[4], slotId =>
+                        PlayRestApiFullscreenSlot(slotId, body)));
             }
 
             if (method == "DELETE" &&
@@ -591,6 +622,21 @@ namespace IStripperQuickPlayer
             if (result < 0)
                 return Error(404, "The fullscreen slot is no longer active.");
             return new ApiResult(202, new { accepted = true, slotId });
+        }
+
+        private ApiResult RunFullscreenSourceAction(string source,
+            Func<int, ApiResult> action)
+        {
+            source = Uri.UnescapeDataString(source).Trim();
+            if (source.Length == 0)
+                return Error(400, "The fullscreen source is invalid.");
+            FullscreenBridgeSlot? slot = Volatile.Read(
+                    ref fullscreenBridgeState).Slots
+                .FirstOrDefault(slot => slot.Source.Equals(source,
+                    StringComparison.OrdinalIgnoreCase));
+            return slot == null
+                ? Error(404, "The fullscreen source is no longer active.")
+                : action(slot.Id);
         }
 
         private ApiResult PlayRestApiFullscreenEntry(
