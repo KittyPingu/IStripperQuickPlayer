@@ -45,6 +45,8 @@ Send that token in the `Authorization` header:
 | `GET` | `/api/v1/fullscreen` | Get active fullscreen clips and iStripper's observed next queue. |
 | `POST` | `/api/v1/fullscreen/play` | Replace fullscreen playback with a requested card or clip. |
 | `POST` | `/api/v1/fullscreen/next` | Advance fullscreen to iStripper's next queued card. |
+| `POST` | `/api/v1/fullscreen/slots/{slotId}/next` | Advance one fullscreen slot. |
+| `POST` | `/api/v1/fullscreen/slots/{slotId}/play` | Replace one fullscreen slot with a requested card or clip. |
 | `DELETE` | `/api/v1/fullscreen/queue` | Clear iStripper's next queue. |
 | `PATCH` | `/api/v1/queue` | Enable or disable queue playback. |
 | `POST` | `/api/v1/queue/manual` | Add a manual queue entry. |

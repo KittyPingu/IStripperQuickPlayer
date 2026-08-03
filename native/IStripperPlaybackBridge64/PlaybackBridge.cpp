@@ -2453,7 +2453,7 @@ namespace
             ".?AVCardSequencer@Model@@");
         auto insertNext = FindUniqueFunction(
             CardSequencerInsertNextSignature,
-            sizeof(CardSequencerInsertNextSignature), -1);
+            sizeof(CardSequencerInsertNextSignature), 5);
         auto exactConstructor = FindUniqueFunction(
             PlayableCardExactConstructorSignature,
             sizeof(PlayableCardExactConstructorSignature), -1);
@@ -2740,6 +2740,41 @@ namespace
                         return true;
                     }
                 }
+            }
+            return false;
+        }
+        if (kind == 5)
+        {
+            if (!IsReadable(candidate, 1536))
+                return false;
+            const unsigned char queue[] = {
+                0x49, 0x8B, 0x45, 0x00, 0x8B, 0x48, 0x0C,
+                0x2B, 0x48, 0x08
+            };
+            bool hasCard = false;
+            for (std::size_t offset = 0; offset + 11 <= 1536; ++offset)
+                if (candidate[offset] == 0x4C &&
+                    candidate[offset + 1] == 0x89 &&
+                    candidate[offset + 2] == 0x65 &&
+                    candidate[offset + 4] == 0x48 &&
+                    candidate[offset + 5] == 0x89 &&
+                    candidate[offset + 6] == 0x5D &&
+                    candidate[offset + 8] == 0x44 &&
+                    candidate[offset + 9] == 0x89 &&
+                    candidate[offset + 10] == 0x75)
+                {
+                    hasCard = true;
+                    break;
+                }
+            if (!hasCard)
+                return false;
+            for (std::size_t offset = 0; offset + sizeof(queue) <= 1536;
+                ++offset)
+            {
+                if (candidate[offset] == queue[0] &&
+                    std::memcmp(candidate + offset + 4, queue + 4,
+                        sizeof(queue) - 4) == 0)
+                    return true;
             }
             return false;
         }
