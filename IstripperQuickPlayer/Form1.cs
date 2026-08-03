@@ -6119,6 +6119,7 @@ namespace IStripperQuickPlayer
             this.Icon =
                 Properties.Resources.df2284943cc77e7e1a5fa6a0da8ca265;
             TaskbarManager.Instance.SetOverlayIcon(
+                Handle,
                 playerlocked ? Properties.Resources.padlock : null,
                 playerlocked ? "iStripper is locked" : "");
         }
