@@ -106,6 +106,35 @@ public sealed class PlaybackBridgeClient : IDisposable
         }
     }
 
+    public int CallUtf8(string apiName, string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        byte[] data = Encoding.UTF8.GetBytes(value + "\0");
+        if (data.Length > 4 * 1024)
+            throw new ArgumentOutOfRangeException(nameof(value));
+        nint process = OpenProcess(ProcessAccess, false, processId);
+        if (process == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        nint remoteValue = 0;
+        try
+        {
+            remoteValue = VirtualAllocEx(process, 0, (nuint)data.Length,
+                MemCommitReserve, PageReadWrite);
+            if (remoteValue == 0 ||
+                !WriteProcessMemory(process, remoteValue, data,
+                    (nuint)data.Length, out nuint written) ||
+                written != (nuint)data.Length)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return Call(apiName, (ulong)(nuint)remoteValue);
+        }
+        finally
+        {
+            if (remoteValue != 0)
+                VirtualFreeEx(process, remoteValue, 0, 0x8000);
+            CloseHandle(process);
+        }
+    }
+
     public int StartRegistryHook() => Call("IStripperStartRegistryHook");
 
     internal static bool VerifyProtocol()

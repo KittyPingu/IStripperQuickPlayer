@@ -42,7 +42,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 72;
+        private const int PlaybackBridgeVersion = 83;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -160,6 +160,8 @@ namespace IStripperQuickPlayer
             new("Playback History...");
         private readonly ToolStripMenuItem libraryHealthCheckToolStripMenuItem =
             new("Library Health Check...");
+        private readonly ToolStripMenuItem refreshCardMetadataToolStripMenuItem =
+            new("Refresh Card Metadata...");
         private readonly ToolStripMenuItem addModelToFilterToolStripMenuItem =
             new();
         private readonly Button panicResumeButton = new()
@@ -697,9 +699,15 @@ namespace IStripperQuickPlayer
                 ShowPlaybackHistory();
             libraryHealthCheckToolStripMenuItem.Click += async (_, _) =>
                 await RunLibraryHealthCheckAsync();
+            refreshCardMetadataToolStripMenuItem.Click += async (_, _) =>
+                await RefreshCardMetadataAsync();
             fileToolStripMenuItem.DropDownItems.Insert(
                 fileToolStripMenuItem.DropDownItems.IndexOf(
                     reloadModelslstToolStripMenuItem) + 1,
+                refreshCardMetadataToolStripMenuItem);
+            fileToolStripMenuItem.DropDownItems.Insert(
+                fileToolStripMenuItem.DropDownItems.IndexOf(
+                    refreshCardMetadataToolStripMenuItem) + 1,
                 libraryHealthCheckToolStripMenuItem);
             SetupLibraryCleaner();
             backupToolStripMenuItem.Click += (_, _) => BackupQuickPlayerData();
@@ -2847,7 +2855,7 @@ namespace IStripperQuickPlayer
                 }
 
                 playbackBridgeClient = PlaybackBridgeClient.Attach(
-                    process.Id, localBridgePath, OnRegistryValueWrite);
+                    process.Id, localBridgePath, OnBridgeEvent);
                 int bridgeVersion = playbackBridgeClient.Call(
                     "IStripperPlaybackBridgeVersion");
                 if (bridgeVersion != PlaybackBridgeVersion)
@@ -2861,6 +2869,13 @@ namespace IStripperQuickPlayer
                     throw new COMException(
                         $"Registry hook setup failed (0x{hookResult:X8}).",
                         hookResult);
+
+                int fullscreenHookResult = playbackBridgeClient.Call(
+                    "IStripperStartFullscreenHook");
+                if (fullscreenHookResult < 0)
+                    throw new COMException(
+                        $"Fullscreen hook setup failed (0x{fullscreenHookResult:X8}).",
+                        fullscreenHookResult);
 
                 int resetResult = playbackBridgeClient.Call(
                     "IStripperResetPlaybackSession");
@@ -4177,7 +4192,7 @@ namespace IStripperQuickPlayer
                 try
                 {
                     uint mode = BitConverter.ToUInt32(data);
-                    if (mode is 1 or 2)
+                    if (mode is >= 1 and <= 3)
                     {
                         Volatile.Write(ref playerMode, (int)mode);
                         ThreadPool.QueueUserWorkItem(_ =>
@@ -4185,8 +4200,9 @@ namespace IStripperQuickPlayer
                             try
                             {
                                 SetVghdPlayerMode((int)mode);
-                                QueueConfiguredPlayerSize(
-                                    mode: (int)mode);
+                                if (mode != 3)
+                                    QueueConfiguredPlayerSize(
+                                        mode: (int)mode);
                             }
                             catch { }
                         });
@@ -4942,6 +4958,37 @@ namespace IStripperQuickPlayer
         {
             StaticPropertiesLoader.loadXML();
             PropertiesLoader.loadXML();
+        }
+
+        private async Task RefreshCardMetadataAsync()
+        {
+            refreshCardMetadataToolStripMenuItem.Enabled = false;
+            Cursor previousCursor = Cursor;
+            Cursor = Cursors.WaitCursor;
+            try
+            {
+                await MetadataRefresh.RefreshAsync();
+                ReloadModels();
+                MessageBox.Show(this,
+                    "Card metadata was refreshed and the catalogue was reloaded.",
+                    "Refresh Card Metadata", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception exception)
+            {
+                MetadataDiagnostics.RecordRefreshFailure(exception);
+                MessageBox.Show(this,
+                    "Card metadata could not be refreshed.\r\n" +
+                    exception.Message + "\r\n\r\nA privacy-safe diagnostic was " +
+                    "written to:\r\n" + MetadataDiagnostics.FilePath,
+                    "Refresh Card Metadata",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                Cursor = previousCursor;
+                refreshCardMetadataToolStripMenuItem.Enabled = true;
+            }
         }
 
         private void exitToolStripMenuItem_Click(object sender, EventArgs e)

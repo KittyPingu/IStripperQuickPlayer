@@ -242,6 +242,12 @@ namespace
     }
 }
 
+bool SendBridgeEvent(const wchar_t* name, const void* data, DWORD dataSize)
+{
+    return name != nullptr && dataSize <= MaximumEventDataBytes &&
+        SendRegistryEvent(name, static_cast<const BYTE*>(data), dataSize);
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI
 IStripperStartRegistryHook()
 {

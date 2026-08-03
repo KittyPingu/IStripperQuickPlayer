@@ -97,6 +97,14 @@ namespace IStripperQuickPlayer
                 Environment.ExitCode = Persistence.VerifyMigration(args[1]) ? 0 : 1;
                 return;
             }
+            if (args.Length == 1 &&
+                args[0] == "--verify-metadata-refresh")
+            {
+                Environment.ExitCode =
+                    MetadataRefresh.VerifyValidation() &&
+                    MetadataDiagnostics.VerifyPrivacy() ? 0 : 1;
+                return;
+            }
             if (args.Length == 1 && args[0] == "--verify-controls")
             {
                 if (!AreDpiAwarenessContextsEqual(
@@ -685,6 +693,8 @@ namespace IStripperQuickPlayer
 
                 ["Library Health Check"] =
                     "Check installed clip files and write a diagnostic report.",
+                ["Refresh Card Metadata"] =
+                    "Download fresh model and release metadata, then reload the library.",
                 ["Backup QuickPlayer Data"] =
                     "Save settings, filters, metadata and playback history to one file.",
                 ["Restore QuickPlayer Data"] =

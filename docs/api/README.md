@@ -42,6 +42,10 @@ Send that token in the `Authorization` header:
 | `GET` | `/api/v1/status` | Get playback, player, and queue state. |
 | `GET` | `/api/v1/library` | Search the local card and clip library. |
 | `GET` | `/api/v1/queue` | Get manual and automatic queues. |
+| `GET` | `/api/v1/fullscreen` | Get active fullscreen clips and iStripper's observed next queue. |
+| `POST` | `/api/v1/fullscreen/play` | Replace fullscreen playback with a requested card or clip. |
+| `POST` | `/api/v1/fullscreen/next` | Advance fullscreen to iStripper's next queued card. |
+| `DELETE` | `/api/v1/fullscreen/queue` | Clear iStripper's next queue. |
 | `PATCH` | `/api/v1/queue` | Enable or disable queue playback. |
 | `POST` | `/api/v1/queue/manual` | Add a manual queue entry. |
 | `DELETE` | `/api/v1/queue/manual` | Clear the manual queue. |
@@ -149,6 +153,47 @@ Get both queues:
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue `
   -Headers $headers
 ```
+
+## Fullscreen playback
+
+Fullscreen can render several clips at once. Query iStripper's logical scene
+slots and current `CardSequencer` queue:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen `
+  -Headers @{ Authorization = "Bearer $token" }
+```
+
+Advance to iStripper's next queued card or clear that queue:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/next `
+  -Method Post -Headers @{ Authorization = "Bearer $token" }
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/slots/2/next `
+  -Method Post -Headers @{ Authorization = "Bearer $token" }
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue `
+  -Method Delete -Headers @{ Authorization = "Bearer $token" }
+```
+
+Request an exact fullscreen clip using the same card/clip body as `/play`:
+
+```powershell
+$body = @{
+  cardTag = "f0960"
+  clipName = "f0960_6144401.vghd"
+} | ConvertTo-Json
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/play `
+  -Method Post -Headers $headers -ContentType application/json -Body $body
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/slots/2/play `
+  -Method Post -Headers $headers -ContentType application/json -Body $body
+```
+
+The slot endpoint creates iStripper's native `PlayableCard` and gives it to the
+selected scene node. Desktop `ForceAnim` remains separate.
 
 Add a card or exact clip to the end of the manual queue:
 

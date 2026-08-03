@@ -21,9 +21,14 @@ namespace IStripperQuickPlayer.BLL
         internal static XmlNodeList? dnode;
         internal static void loadXML()
         {
-            var path = findXMLFile();
+            FileInfo? path = null;
+            try
+            {
+            path = findXMLFile();
             if (path == null || string.IsNullOrEmpty(path.FullName)) 
             {
+                MetadataDiagnostics.RecordSourceFailure(
+                    "static properties", null);
                 MessageBox.Show("could not find StaticProperties.xml file");
                 return;
             }
@@ -44,6 +49,13 @@ namespace IStripperQuickPlayer.BLL
                 dnode = PropertiesXML.SelectNodes("/root/d");
 #pragma warning restore CS8601 // Possible null reference assignment.
             }         
+            }
+            catch (Exception exception)
+            {
+                MetadataDiagnostics.RecordSourceFailure(
+                    "static properties", path?.FullName, exception);
+                throw;
+            }
         }
 
         internal static ModelProperties? getModelByID(string ID)

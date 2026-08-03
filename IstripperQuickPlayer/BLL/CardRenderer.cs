@@ -510,8 +510,10 @@ namespace IStripperQuickPlayer.BLL
                         myrating > 0 ? myrating.ToString() : "";
                 case "Height":
                     decimal height;
-                    decimal.TryParse(
-                        card.height, style, culture, out height);
+                    if (!decimal.TryParse(
+                            card.height, style, culture, out height) ||
+                        height <= 0)
+                        return "";
                     return RegionInfo.CurrentRegion.IsMetric &&
                         CultureInfo.CurrentCulture.Name != "en-GB"
                         ? (((Math.Floor(height) * 12) +
@@ -526,7 +528,8 @@ namespace IStripperQuickPlayer.BLL
                 case "Rating":
                     return (Convert.ToDecimal(card.rating) - 5m).ToString();
                 case "Age":
-                    return card.modelAge.ToString() ?? "";
+                    return card.modelAge > 0
+                        ? card.modelAge.ToString() : "";
                 case "Ethnicity":
                     return card.ethnicity ?? "";
                 case "Breast Size":
@@ -543,7 +546,8 @@ namespace IStripperQuickPlayer.BLL
                     return card.datePurchased?.ToShortDateString() ?? "";
                 case "Release Date":
                 case "Release Date (Descending)":
-                    return card.dateReleased.ToShortDateString();
+                    return card.dateReleased == default ? "" :
+                        card.dateReleased.ToShortDateString();
                 default:
                     return "";
             }

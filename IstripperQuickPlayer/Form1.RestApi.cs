@@ -1,4 +1,5 @@
 using IStripperQuickPlayer.DataModel;
+using IStripperQuickPlayer.Interop;
 using Microsoft.Win32;
 using System.Diagnostics;
 using System.Net;
@@ -27,6 +28,13 @@ namespace IStripperQuickPlayer
         private sealed record ApiSeekRequest(
             int? ElapsedMilliseconds, double? Position);
         private sealed record ApiSpeedRequest(double? Speed);
+        private sealed record FullscreenBridgeSlot(
+            int Id, string Source, string Card, string Clip);
+        private sealed record FullscreenBridgeSnapshot(
+            string[] Clips, string[] Queue, FullscreenBridgeSlot[] Slots);
+        private FullscreenBridgeSnapshot fullscreenBridgeState =
+            new([], [], []);
+        private string fullscreenTreeJson = "[]";
         private sealed class ApiRequestException(
             int statusCode, string message) : Exception(message)
         {
@@ -205,6 +213,12 @@ namespace IStripperQuickPlayer
                         "GET /api/v1/status",
                         "GET /api/v1/library?search=&limit=",
                         "GET /api/v1/queue",
+                        "GET /api/v1/fullscreen",
+                        "POST /api/v1/fullscreen/play",
+                        "POST /api/v1/fullscreen/next",
+                        "POST /api/v1/fullscreen/slots/{slotId}/next",
+                        "POST /api/v1/fullscreen/slots/{slotId}/play",
+                        "DELETE /api/v1/fullscreen/queue",
                         "PATCH /api/v1/queue",
                         "POST /api/v1/queue/manual",
                         "DELETE /api/v1/queue/manual",
@@ -235,6 +249,69 @@ namespace IStripperQuickPlayer
 
             if (method == "GET" && Matches(parts, "queue"))
                 return Ok(await InvokeAsync(CreateRestApiQueue));
+
+            if (method == "GET" && Matches(parts, "fullscreen"))
+                return Ok(await InvokeAsync(CreateRestApiFullscreen));
+
+            if (method == "POST" &&
+                Matches(parts, "fullscreen", "play"))
+            {
+                ApiQueueEntryRequest body =
+                    await ReadRestApiJsonAsync<ApiQueueEntryRequest>(
+                        request, cancellationToken);
+                return await InvokeAsync(() =>
+                    PlayRestApiFullscreenEntry(body));
+            }
+
+            if (method == "POST" &&
+                Matches(parts, "fullscreen", "next"))
+            {
+                return await InvokeAsync(() =>
+                    RunFullscreenBridgeAction("IStripperFullscreenNext"));
+            }
+
+            if (method == "POST" &&
+                Matches(parts, "fullscreen", "debug-tree"))
+            {
+                return await InvokeAsync(DumpRestApiFullscreenTree);
+            }
+
+            if (method == "POST" && parts.Length == 6 &&
+                parts[2].Equals("fullscreen",
+                    StringComparison.OrdinalIgnoreCase) &&
+                parts[3].Equals("slots",
+                    StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(parts[4], out int fullscreenSlotId) &&
+                parts[5].Equals("next",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return await InvokeAsync(() =>
+                    RunFullscreenSlotAction(fullscreenSlotId));
+            }
+
+            if (method == "POST" && parts.Length == 6 &&
+                parts[2].Equals("fullscreen",
+                    StringComparison.OrdinalIgnoreCase) &&
+                parts[3].Equals("slots",
+                    StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(parts[4], out int playFullscreenSlotId) &&
+                parts[5].Equals("play",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                ApiQueueEntryRequest body =
+                    await ReadRestApiJsonAsync<ApiQueueEntryRequest>(
+                        request, cancellationToken);
+                return await InvokeAsync(() =>
+                    PlayRestApiFullscreenSlot(playFullscreenSlotId, body));
+            }
+
+            if (method == "DELETE" &&
+                Matches(parts, "fullscreen", "queue"))
+            {
+                return await InvokeAsync(() =>
+                    RunFullscreenBridgeAction(
+                        "IStripperFullscreenClearQueue"));
+            }
 
             if (method == "PATCH" && Matches(parts, "queue"))
             {
@@ -392,6 +469,198 @@ namespace IStripperQuickPlayer
                 },
                 queue = CreateRestApiQueue()
             };
+        }
+
+        private bool OnBridgeEvent(string name, byte[] data)
+        {
+            if (name == "FullscreenTree")
+            {
+                Volatile.Write(ref fullscreenTreeJson,
+                    Encoding.UTF8.GetString(data));
+                return false;
+            }
+            if (name != "FullscreenState")
+                return OnRegistryValueWrite(name, data);
+            try
+            {
+                FullscreenBridgeSnapshot? state = JsonSerializer.Deserialize<
+                    FullscreenBridgeSnapshot>(data, RestApiJson);
+                if (state != null)
+                    Volatile.Write(ref fullscreenBridgeState, state);
+            }
+            catch (JsonException) { }
+            return false;
+        }
+
+        private ApiResult DumpRestApiFullscreenTree()
+        {
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+            Volatile.Write(ref fullscreenTreeJson, "[]");
+            int result = playbackBridgeClient.Call(
+                "IStripperDumpFullscreenTree");
+            if (result < 0)
+                return Error(409,
+                    $"The fullscreen tree is unavailable (0x{result:X8}).");
+            Stopwatch wait = Stopwatch.StartNew();
+            while (Volatile.Read(ref fullscreenTreeJson) == "[]" &&
+                wait.ElapsedMilliseconds < 500)
+                Thread.Sleep(10);
+            JsonElement nodes = JsonSerializer.Deserialize<JsonElement>(
+                Volatile.Read(ref fullscreenTreeJson));
+            return new ApiResult(200, new { nodes });
+        }
+
+        private object CreateRestApiFullscreen()
+        {
+            FullscreenBridgeSnapshot state = Volatile.Read(
+                ref fullscreenBridgeState);
+            FullscreenBridgeSlot[] logicalSlots = state.Slots;
+            return new
+            {
+                active = ReadRegistryInteger(
+                    @"Software\Totem\vghd\player", "playingMode") == 3,
+                clips = logicalSlots.Select(slot =>
+                {
+                    string clipName = slot.Clip;
+                    string cardTag = string.IsNullOrWhiteSpace(slot.Card)
+                        ? clipName.Split('_')[0] : slot.Card;
+                    ModelCard? card = Datastore.findCardByTag(cardTag);
+                    return new
+                    {
+                        slotId = slot.Id,
+                        source = slot.Source,
+                        clipName = clipName.Contains('_')
+                            ? clipName : null,
+                        cardTag,
+                        cardName = card == null ? null :
+                            ApiCardDisplayName(card),
+                        model = card?.modelName,
+                        outfit = card?.outfit
+                    };
+                }).ToList(),
+                slots = logicalSlots.Select(slot =>
+                {
+                    string clipName = slot.Clip;
+                    string cardTag = string.IsNullOrWhiteSpace(slot.Card)
+                        ? clipName.Split('_')[0] : slot.Card;
+                    return new
+                    {
+                        slotId = slot.Id,
+                        source = slot.Source,
+                        clipName = clipName.Contains('_') ? clipName : null,
+                        cardTag
+                    };
+                }).ToList(),
+                queue = state.Queue.Select((cardTag, index) =>
+                {
+                    ModelCard? card = Datastore.findCardByTag(cardTag);
+                    return new
+                    {
+                        index,
+                        cardTag,
+                        cardName = card == null ? null :
+                            ApiCardDisplayName(card),
+                        model = card?.modelName,
+                        outfit = card?.outfit
+                    };
+                }).ToList()
+            };
+        }
+
+        private ApiResult RunFullscreenBridgeAction(string action)
+        {
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+            int result = playbackBridgeClient.Call(action);
+            if (result < 0)
+                return Error(409,
+                    $"The fullscreen operation is unavailable (0x{result:X8}).");
+            playbackBridgeClient.Call("IStripperRefreshFullscreenState");
+            return new ApiResult(202, CreateRestApiFullscreen());
+        }
+
+        private ApiResult RunFullscreenSlotAction(int slotId)
+        {
+            if (slotId <= 0)
+                return Error(400, "The fullscreen slot ID is invalid.");
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+            int result = playbackBridgeClient.Call(
+                "IStripperFullscreenNextSlot", (ulong)slotId);
+            if (result < 0)
+                return Error(404, "The fullscreen slot is no longer active.");
+            return new ApiResult(202, new { accepted = true, slotId });
+        }
+
+        private ApiResult PlayRestApiFullscreenEntry(
+            ApiQueueEntryRequest request)
+        {
+            if (!TryCreateRestApiQueueEntry(request,
+                    out PlayQueueEntry? entry, out ApiResult? error))
+                return error!;
+            if (!TryResolveQueueEntry(entry!, out string animationPath))
+                return Error(409, "No playable clip matches the request.");
+            if (ReadRegistryInteger(@"Software\Totem\vghd\player",
+                    "playingMode") != 3)
+                return Error(409, "Fullscreen is not active.");
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\parameters", true);
+            if (key == null)
+                return Error(503, "iStripper is not available.");
+            key.SetValue("ForceAnimFs", animationPath);
+
+            PlaybackBridgeClient client = playbackBridgeClient;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(1_000);
+                    client.Call("IStripperFullscreenNext");
+                }
+                catch { }
+            });
+            return new ApiResult(202, new
+            {
+                accepted = true,
+                animationPath
+            });
+        }
+
+        private ApiResult PlayRestApiFullscreenSlot(int slotId,
+            ApiQueueEntryRequest request)
+        {
+            if (slotId <= 0)
+                return Error(400, "The fullscreen slot ID is invalid.");
+            if (!TryCreateRestApiQueueEntry(request,
+                    out PlayQueueEntry? entry, out ApiResult? error))
+                return error!;
+            if (!TryResolveQueueEntry(entry!, out string animationPath))
+                return Error(409, "No playable clip matches the request.");
+            if (ReadRegistryInteger(@"Software\Totem\vghd\player",
+                    "playingMode") != 3)
+                return Error(409, "Fullscreen is not active.");
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+
+            string clipName = Path.GetFileName(animationPath);
+            int result = playbackBridgeClient.CallUtf8(
+                "IStripperFullscreenPlaySlot",
+                $"{slotId}\n{entry!.CardTag}\n{clipName}");
+            if (result < 0)
+                return Error(result == unchecked((int)0x80070490) ? 404 : 409,
+                    "The fullscreen slot could not be replaced " +
+                    $"(0x{result:X8}).");
+            return new ApiResult(202, new
+            {
+                accepted = true,
+                slotId,
+                cardTag = entry.CardTag,
+                clipName
+            });
         }
 
         private object CreateRestApiLibrary(string search, int limit)
