@@ -105,11 +105,7 @@ Each clip includes its `clipName` and numeric `clipNumber`.
 
 ## Direct playback
 
-All direct playback requests use `POST /api/v1/play`.
-
-### Play by card tag
-
-This selects a random eligible clip from the card:
+Play a random eligible clip from a card:
 
 ```powershell
 $body = @{ cardTag = "f0979" } | ConvertTo-Json
@@ -118,9 +114,7 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/play `
   -Method Post -Headers $headers -ContentType application/json -Body $body
 ```
 
-### Play by card title
-
-Use the friendly `Model - Outfit` title instead of the internal tag:
+The same request can use the friendly card name:
 
 ```powershell
 $body = @{ cardName = "Nikki Hill - A Dress To Seduce" } | ConvertTo-Json
@@ -129,7 +123,7 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/play `
   -Method Post -Headers $headers -ContentType application/json -Body $body
 ```
 
-### Play an exact clip by filename
+Play an exact clip:
 
 ```powershell
 $body = @{
@@ -141,7 +135,7 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/play `
   -Method Post -Headers $headers -ContentType application/json -Body $body
 ```
 
-### Play an exact clip by card title and clip number
+An exact clip can also be selected by friendly card name and clip number:
 
 ```powershell
 $body = @{
@@ -160,16 +154,14 @@ choosing one. Use the full `Model - Outfit` name in that case. Use either
 
 ## Queue control
 
-### Get the queues
-
-Return the manual and automatic queues:
+Get both queues:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue `
   -Headers $headers
 ```
 
-### Add an exact clip to the manual queue
+Add a card or exact clip to the end of the manual queue:
 
 ```powershell
 $body = @{
@@ -181,7 +173,7 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue/manual `
   -Method Post -Headers $headers -ContentType application/json -Body $body
 ```
 
-### Add by card title and clip number
+Friendly names and clip numbers work here too:
 
 ```powershell
 $body = @{
@@ -193,12 +185,10 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue/manual `
   -Method Post -Headers $headers -ContentType application/json -Body $body
 ```
 
-Include `index` in either add request to insert at a particular zero-based
+Include `index` in the request body to insert at a particular zero-based
 position.
 
-### Move a manual queue entry
-
-Move entry `0` to position `2`:
+Move entry 0 to position 2:
 
 ```powershell
 $body = @{ index = 2 } | ConvertTo-Json
@@ -207,23 +197,21 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue/manual/0 `
   -Method Patch -Headers $headers -ContentType application/json -Body $body
 ```
 
-### Remove a manual queue entry
-
-Remove entry `0`:
+Remove entry 0:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue/manual/0 `
   -Method Delete -Headers $headers
 ```
 
-### Clear the manual queue
+Clear the manual queue:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue/manual `
   -Method Delete -Headers $headers
 ```
 
-### Enable or disable queue playback
+Enable or disable queue playback:
 
 ```powershell
 $body = @{ enabled = $true } | ConvertTo-Json
@@ -232,7 +220,7 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/queue `
   -Method Patch -Headers $headers -ContentType application/json -Body $body
 ```
 
-### Rebuild the automatic queue
+Rebuild the automatic queue:
 
 ```powershell
 Invoke-RestMethod `
@@ -242,47 +230,31 @@ Invoke-RestMethod `
 
 ## Fullscreen playback
 
-Fullscreen can render several logical slots at once. Each slot has both a
-numeric `slotId` and a source name such as `Girl03`.
-
-### Get fullscreen state
-
-Return the active clips, logical slots, source names, and observed
-`CardSequencer` queue:
+Fullscreen can render several clips at once. Query iStripper's logical scene
+slots, source names, and current `CardSequencer` queue:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen `
   -Headers $headers
 ```
 
-Use the returned `slotId` or `source` to target one logical slot.
-
-### Advance fullscreen globally
+Advance globally, by slot ID, or by source; or clear the fullscreen queue:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/next `
   -Method Post -Headers $headers
-```
 
-### Advance one slot by ID
-
-```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/slots/2/next `
   -Method Post -Headers $headers
-```
 
-Replace `2` with a `slotId` returned by `GET /api/v1/fullscreen`.
-
-### Advance one slot by source
-
-```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/source/Girl03/next `
   -Method Post -Headers $headers
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue `
+  -Method Delete -Headers $headers
 ```
 
-Replace `Girl03` with a `source` returned by `GET /api/v1/fullscreen`.
-
-### Request an exact fullscreen clip globally
+Request an exact fullscreen clip globally, by slot ID, or by source:
 
 ```powershell
 $body = @{
@@ -292,47 +264,20 @@ $body = @{
 
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/play `
   -Method Post -Headers $headers -ContentType application/json -Body $body
-```
-
-### Play an exact clip in one slot by ID
-
-```powershell
-$body = @{
-  cardName = "Nikki Hill - A Dress To Seduce"
-  clipNumber = 11
-} | ConvertTo-Json
 
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/slots/2/play `
   -Method Post -Headers $headers -ContentType application/json -Body $body
-```
-
-Only the selected logical slot is replaced. Replace `2` with a returned
-`slotId`.
-
-### Play an exact clip in one slot by source
-
-```powershell
-$body = @{
-  cardName = "Nikki Hill - A Dress To Seduce"
-  clipNumber = 11
-} | ConvertTo-Json
 
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/source/Girl03/play `
   -Method Post -Headers $headers -ContentType application/json -Body $body
 ```
 
-Only the matching logical source is replaced. Source matching is
-case-insensitive.
+Replace `2` or `Girl03` with a `slotId` or `source` returned by
+`GET /api/v1/fullscreen`. Source matching is case-insensitive. Only the
+selected logical slot is replaced.
 
 The targeted play endpoints create iStripper's native `PlayableCard` and give
-it to the selected scene node. Desktop `ForceAnim` remains separate.
-
-### Clear iStripper's fullscreen queue
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue `
-  -Method Delete -Headers $headers
-```
+it to the selected scene node.
 
 ## Seeking and speed
 
