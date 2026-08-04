@@ -205,6 +205,9 @@ QuickPlayer provides an authenticated local API for playback, library, and
 queue integrations. See the [REST API documentation](docs/api/README.md) for
 authentication, endpoints, and examples.
 
+QuickPlayer can be started in --api-only mode, in which case it will load no UI 
+and consume minimal resources
+
 ## Settings
 
 Settings are grouped into **Playback & queue**, **Library & search** and
