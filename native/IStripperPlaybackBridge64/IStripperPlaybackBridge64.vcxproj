@@ -76,10 +76,18 @@
   <ItemGroup>
     <ClCompile Include="BridgeIpc.cpp" />
     <ClCompile Include="PlaybackBridge.cpp" />
-    <ClCompile Include="..\..\third_party\minhook\src\buffer.c" />
-    <ClCompile Include="..\..\third_party\minhook\src\hook.c" />
-    <ClCompile Include="..\..\third_party\minhook\src\trampoline.c" />
-    <ClCompile Include="..\..\third_party\minhook\src\hde\hde64.c" />
+    <ClCompile Include="..\..\third_party\minhook\src\buffer.c">
+      <DisableSpecificWarnings>4201;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="..\..\third_party\minhook\src\hook.c">
+      <DisableSpecificWarnings>4244;4310;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="..\..\third_party\minhook\src\trampoline.c">
+      <DisableSpecificWarnings>4244;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="..\..\third_party\minhook\src\hde\hde64.c">
+      <DisableSpecificWarnings>4701;4706;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

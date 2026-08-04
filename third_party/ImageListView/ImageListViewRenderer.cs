@@ -744,6 +744,7 @@ namespace Manina.Windows.Forms
             /// Renders the control.
             /// </summary>
             /// <param name="graphics">The graphics to draw on.</param>
+            /// <param name="redraw">True to redraw the backing buffer; otherwise false.</param>
             internal void Render(Graphics graphics, bool redraw)
             {
                 if (disposed) return;
