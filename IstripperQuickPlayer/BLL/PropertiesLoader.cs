@@ -57,20 +57,21 @@ namespace IStripperQuickPlayer.BLL
 
         internal static CardProperties2? getCardByID(string ID)
         {
-            if (cnode == null) return null;
+            XmlNode? node = getCardNodeByID(ID);
+            return node == null ? null : new CardProperties2(node);
+        }
+
+        internal static string? getCardXmlByID(string ID) =>
+            getCardNodeByID(ID)?.OuterXml;
+
+        private static XmlNode? getCardNodeByID(string ID)
+        {
+            if (cnode == null)
+                return null;
             ID = ID.Split('-')[0];
-            foreach(XmlNode n in cnode)
-            {
-                if (n.Attributes != null)
-                {
-                    var attribute = n.Attributes["i"];
-                    if (attribute != null && attribute.Value == ID)
-                    {
-                        CardProperties2 card = new CardProperties2(n);         
-                        return card;
-                    }
-                }
-            }
+            foreach (XmlNode node in cnode)
+                if (node.Attributes?["i"]?.Value == ID)
+                    return node;
             return null;
         }
 
@@ -328,14 +329,15 @@ namespace IStripperQuickPlayer.BLL
         internal static void Record(
             string? cardTag, string stage, string reason,
             string? filePath = null, string? modelId = null,
-            string? modelName = null, Exception? exception = null)
+            string? modelName = null, Exception? exception = null,
+            string? xmlContext = null)
         {
             lock (Sync)
             {
                 if (report == null)
                     return;
                 AddIssue(cardTag, stage, reason, filePath,
-                    modelId, modelName, exception);
+                    modelId, modelName, exception, xmlContext);
             }
         }
 
@@ -408,7 +410,8 @@ namespace IStripperQuickPlayer.BLL
         private static void AddIssue(
             string? cardTag, string stage, string reason,
             string? filePath = null, string? modelId = null,
-            string? modelName = null, Exception? exception = null)
+            string? modelName = null, Exception? exception = null,
+            string? xmlContext = null)
         {
             if (report == null || issueCounts == null)
                 return;
@@ -433,6 +436,12 @@ namespace IStripperQuickPlayer.BLL
             if (!string.IsNullOrWhiteSpace(filePath) &&
                 FindXmlException(exception) is XmlException xml)
                 AppendXmlFragment(line, filePath, xml);
+            if (!string.IsNullOrWhiteSpace(xmlContext))
+            {
+                string context = SanitizeXmlFragment(xmlContext, 2_000);
+                if (context.Length > 0)
+                    line.Append($"; xml-context={context}");
+            }
             report.AppendLine(line.ToString());
         }
 
@@ -570,7 +579,8 @@ namespace IStripperQuickPlayer.BLL
             }
         }
 
-        private static string SanitizeXmlFragment(string fragment)
+        private static string SanitizeXmlFragment(
+            string fragment, int maximumLength = 200)
         {
             string safe = Regex.Replace(fragment,
                 @"(?<name>\b(?:access[_-]?token|api[_-]?key|token|secret|pass(?:word|wd)?|authorization|auth|account(?:id)?|user(?:name|id)?|email|session(?:id)?|cookie|license(?:key)?|path))(?<equals>\s*=\s*)(?<quote>[""'])(?<value>.*?)(\k<quote>)",
@@ -596,14 +606,15 @@ namespace IStripperQuickPlayer.BLL
                 @"(?i)(?:[a-z]:\\|\\\\)[^\s<>'""]+",
                 "[redacted-path]", RegexOptions.None,
                 TimeSpan.FromMilliseconds(100));
-            return Safe(safe);
+            return Safe(safe, maximumLength);
         }
 
-        private static string Safe(string value)
+        private static string Safe(string value, int maximumLength = 200)
         {
             string safe = value.Replace('\r', ' ').Replace('\n', ' ')
                 .Replace('\t', ' ').Trim();
-            return safe.Length <= 200 ? safe : safe[..200];
+            return safe.Length <= maximumLength
+                ? safe : safe[..maximumLength];
         }
 
         private static string SafeFileName(string path)

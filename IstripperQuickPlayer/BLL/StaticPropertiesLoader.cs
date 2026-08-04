@@ -60,52 +60,60 @@ namespace IStripperQuickPlayer.BLL
 
         internal static ModelProperties? getModelByID(string ID)
         {
-            if (mnode == null) return null;
-            foreach(XmlNode n in mnode)
-            {
-                if (n.Attributes != null)
-                {
-                var attribute = n.Attributes["id"];
-                if (attribute != null && attribute.Value == ID)
-                {
-                    ModelProperties model = new ModelProperties(n); 
-                    return model;
-                }
-                }
-            }
-            return null;
-           
+            XmlNode? node = getModelNodeByID(ID);
+            return node == null ? null : new ModelProperties(node);
         }
 
         internal static ModelProperties? getModelByName(string? name)
         {
-            if (mnode == null || string.IsNullOrWhiteSpace(name))
-                return null;
-            foreach (XmlNode node in mnode)
-            {
-                if (string.Equals(node.Attributes?["na"]?.Value, name,
-                    StringComparison.OrdinalIgnoreCase))
-                    return new ModelProperties(node);
-            }
-            return null;
+            XmlNode? node = getModelNodeByName(name);
+            return node == null ? null : new ModelProperties(node);
         }
 
         internal static CardProperties? getCardByID(string ID)
         {
-            if (cnode == null) return null;
+            XmlNode? node = getCardNodeByID(ID);
+            return node == null ? null : new CardProperties(node);
+        }
+
+        internal static string? getCardXmlByID(string ID) =>
+            getCardNodeByID(ID)?.OuterXml;
+
+        internal static string? getModelXmlByID(string ID) =>
+            getModelNodeByID(ID)?.OuterXml;
+
+        internal static string? getModelXmlByName(string? name) =>
+            getModelNodeByName(name)?.OuterXml;
+
+        private static XmlNode? getCardNodeByID(string ID)
+        {
+            if (cnode == null)
+                return null;
             ID = ID.Split('-')[0];
-            foreach(XmlNode n in cnode)
-            {
-                if (n.Attributes != null)
-                {
-                    var attribute = n.Attributes["id"];
-                    if (attribute != null && attribute.Value == ID)
-                    {
-                         CardProperties card = new CardProperties(n);         
-                        return card;
-                    }
-                }
-            }
+            foreach (XmlNode node in cnode)
+                if (node.Attributes?["id"]?.Value == ID)
+                    return node;
+            return null;
+        }
+
+        private static XmlNode? getModelNodeByID(string ID)
+        {
+            if (mnode == null)
+                return null;
+            foreach (XmlNode node in mnode)
+                if (node.Attributes?["id"]?.Value == ID)
+                    return node;
+            return null;
+        }
+
+        private static XmlNode? getModelNodeByName(string? name)
+        {
+            if (mnode == null || string.IsNullOrWhiteSpace(name))
+                return null;
+            foreach (XmlNode node in mnode)
+                if (string.Equals(node.Attributes?["na"]?.Value, name,
+                    StringComparison.OrdinalIgnoreCase))
+                    return node;
             return null;
         }
 

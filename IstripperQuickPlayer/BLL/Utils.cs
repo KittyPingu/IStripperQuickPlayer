@@ -159,7 +159,7 @@ namespace IStripperQuickPlayer.BLL
             if (Application.OpenForms == null) return null;
             var frms = Application.OpenForms;
             foreach (var form in frms)
-                if (form is Form1) return (Form1)form;
+                if (form is Form1 main && !main.IsApiOnlyMode) return main;
             return null;
 
         }

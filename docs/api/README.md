@@ -3,6 +3,30 @@
 QuickPlayer exposes a local REST API for querying and controlling playback,
 the library, and play queues.
 
+## Running the API
+
+QuickPlayer normally starts its full interface and API together. The API port
+defaults to `17871` and can be changed in either mode:
+
+```powershell
+.\IStripperQuickPlayer.exe --api-port 18000
+```
+
+Start only the API, model catalogue, and iStripper playback bridge with:
+
+```powershell
+.\IStripperQuickPlayer.exe --api-only
+.\IStripperQuickPlayer.exe --api-only --api-port 18000
+```
+
+API-only mode displays no main window. Its tray icon has a **Quit** command.
+Only one full or API-only QuickPlayer instance can run at a time.
+
+API-only mode starts with an empty, process-local QuickPlayer queue. It does
+not restore a previous queue or generate automatic entries. Manual queue and
+native fullscreen queue operations still work when explicitly requested;
+when the manual queue empties, iStripper resumes its own queueing.
+
 ## Connection and authentication
 
 The API listens on:
@@ -10,6 +34,8 @@ The API listens on:
 ```text
 http://127.0.0.1:17871
 ```
+
+Replace `17871` in the examples below when using `--api-port`.
 
 It only accepts connections from the local computer. QuickPlayer creates a
 bearer token when it starts:
@@ -232,6 +258,9 @@ Invoke-RestMethod `
   -Method Post -Headers $headers
 ```
 
+Automatic rebuilding returns `409 Conflict` in API-only mode because that
+mode intentionally leaves automatic queueing to iStripper.
+
 ## Fullscreen playback
 
 Fullscreen can render several clips at once. Query iStripper's logical scene
@@ -373,8 +402,17 @@ Supported actions:
 | `now-playing-info` | Show the current card overlay. |
 | `panic` | Hide or restore playback and QuickPlayer desktop changes. |
 
-Playback operations return `202 Accepted` because they continue
-asynchronously on QuickPlayer's UI thread.
+In API-only mode, `next-card` calls iStripper's native desktop next-card
+operation. With no explicit manual QuickPlayer entry waiting, iStripper's own
+queue chooses the card; QuickPlayer does not choose a random card or write
+`ForceAnim`.
+
+`now-playing-info` returns `409 Conflict` in API-only mode because it requires
+displaying an overlay. The other actions use their direct headless playback
+equivalents.
+
+Mutation actions return `202 Accepted`. API-only seek actions wait for the
+playback operation and return `409 Conflict` instead if it cannot complete.
 
 ## Errors
 

@@ -1526,6 +1526,51 @@ namespace
             empty, empty, empty, empty, empty) ? BridgeSuccess : E_FAIL;
     }
 
+    HRESULT InvokeDesktopNext()
+    {
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        using QObjectChildren = const void*(__fastcall*)(const void*);
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
+                GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
+            reinterpret_cast<QMetaInvoke>(core == nullptr ? nullptr :
+                GetProcAddress(core,
+                    "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+                    "VQGenericArgument@@222222222@Z"))
+        };
+        const auto children = reinterpret_cast<QObjectChildren>(
+            core == nullptr ? nullptr : GetProcAddress(core,
+                "?children@QObject@@QEBAAEBV?$QList@PEAVQObject@@@@XZ"));
+        if (qt.inherits == nullptr || qt.invoke == nullptr ||
+            children == nullptr)
+            return E_NOINTERFACE;
+
+        void* live = FindLiveObject(qt);
+        if (live == nullptr)
+            return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+
+        std::vector<void*> objects = { live };
+        const QtGenericArgument empty = {};
+        for (std::size_t index = 0;
+            index < objects.size() && objects.size() <= 4096; ++index)
+        {
+            void* object = objects[index];
+            if (object != live && qt.inherits(object, "LiveActor"))
+            {
+                return qt.invoke(object, "doNext", empty, empty, empty,
+                    empty, empty, empty, empty, empty, empty, empty)
+                    ? BridgeSuccess : E_FAIL;
+            }
+
+            std::vector<void*> childObjects;
+            if (ReadQtPointerList(
+                    const_cast<void*>(children(object)), 4096, childObjects))
+                objects.insert(objects.end(), childObjects.begin(),
+                    childObjects.end());
+        }
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    }
+
     HRESULT DumpFullScreenObjectTree()
     {
         const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
@@ -8819,6 +8864,18 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperFullscreenNext()
         ".?AVFullScreen@@", "FullScreen", "goToNextCard");
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperDesktopNext()
+{
+    __try
+    {
+        return InvokeDesktopNext();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI
 IStripperFullscreenNextSlot(SIZE_T slotId)
 {
@@ -8915,7 +8972,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 86;
+    return 88;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
@@ -9050,7 +9107,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperConsumeCapturedMovie()
     }
     InterlockedExchange(&g_movieCaptureArmed, 0);
     void* movie = ActiveMovie();
-    if (movie == nullptr)
+    if (!IsActiveMovieCandidate(movie))
     {
         return ManagerError();
     }

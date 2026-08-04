@@ -436,8 +436,31 @@ namespace IStripperQuickPlayer
                 return;
             }
             //CultureInfo.CurrentCulture = new CultureInfo("en-GB", false);
-            Application.Run(new Form1());
-            System.Diagnostics.Process.GetCurrentProcess().Kill();
+            if (args.Length == 1 && args[0] == "--verify-api-options")
+            {
+                Environment.ExitCode = AppOptions.VerifyParser() ? 0 : 1;
+                return;
+            }
+            if (!AppOptions.TryParse(args, out AppOptions options,
+                    out string optionError))
+            {
+                Console.Error.WriteLine(optionError);
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            using Mutex instanceMutex = new(true,
+                @"Local\IStripperQuickPlayer.SingleInstance.v1",
+                out bool firstInstance);
+            if (!firstInstance)
+            {
+                Console.Error.WriteLine(
+                    "Another iStripper QuickPlayer instance is already running.");
+                Environment.ExitCode = 3;
+                return;
+            }
+
+            Application.Run(new Form1(options));
         }
 
         private sealed class PartialRefreshRenderer :
@@ -1082,5 +1105,90 @@ namespace IStripperQuickPlayer
             public override Color SeparatorLight => DarkSurface;
         }
 
+    }
+
+    internal sealed record AppOptions(bool ApiOnly, int ApiPort)
+    {
+        internal const int DefaultApiPort = 17871;
+
+        internal static AppOptions Default { get; } =
+            new(false, DefaultApiPort);
+
+        internal static bool TryParse(string[] args, out AppOptions options,
+            out string error)
+        {
+            bool apiOnly = false;
+            bool apiOnlySeen = false;
+            int apiPort = DefaultApiPort;
+            bool apiPortSeen = false;
+
+            for (int index = 0; index < args.Length; index++)
+            {
+                switch (args[index].ToLowerInvariant())
+                {
+                    case "--api-only":
+                        if (apiOnlySeen)
+                            return Fail(
+                                "'--api-only' was specified more than once.",
+                                out options, out error);
+                        apiOnlySeen = true;
+                        apiOnly = true;
+                        break;
+
+                    case "--api-port":
+                        if (apiPortSeen)
+                            return Fail(
+                                "'--api-port' was specified more than once.",
+                                out options, out error);
+                        if (++index >= args.Length ||
+                            !int.TryParse(args[index], out apiPort) ||
+                            apiPort is < 1 or > 65535)
+                        {
+                            return Fail(
+                                "'--api-port' requires a number from 1 to 65535.",
+                                out options, out error);
+                        }
+                        apiPortSeen = true;
+                        break;
+
+                    default:
+                        return Fail($"Unknown argument '{args[index]}'.",
+                            out options, out error);
+                }
+            }
+
+            options = new(apiOnly, apiPort);
+            error = "";
+            return true;
+        }
+
+        private static bool Fail(string message, out AppOptions options,
+            out string error)
+        {
+            options = Default;
+            error = message;
+            return false;
+        }
+
+        internal static bool VerifyParser()
+        {
+            return
+                TryParse([], out AppOptions defaults, out _) &&
+                defaults == Default &&
+                TryParse(["--api-only"],
+                    out AppOptions headless, out _) &&
+                headless == new AppOptions(true, DefaultApiPort) &&
+                TryParse(["--api-port", "18000"],
+                    out AppOptions port, out _) &&
+                port == new AppOptions(false, 18000) &&
+                TryParse(["--api-port", "18000", "--api-only"],
+                    out AppOptions combined, out _) &&
+                combined == new AppOptions(true, 18000) &&
+                !TryParse(["--api-port"], out _, out _) &&
+                !TryParse(["--api-port", "0"], out _, out _) &&
+                !TryParse(["--api-port", "65536"], out _, out _) &&
+                !TryParse(["--api-only", "--api-only"], out _, out _) &&
+                !TryParse(["--unknown"], out _, out _);
+        }
     }
 }

@@ -16,6 +16,13 @@ namespace IStripperQuickPlayer.BLL
 {
     internal class ModelsLstLoader
     {
+        private readonly bool loadCardImages;
+
+        internal ModelsLstLoader(bool loadCardImages = true)
+        {
+            this.loadCardImages = loadCardImages;
+        }
+
         internal readonly record struct ZeroClipCard(
             string Tag, string Section, int Index, long CardOffset,
             long ClipCountOffset, bool InCollection, bool Downloaded,
@@ -154,9 +161,11 @@ namespace IStripperQuickPlayer.BLL
                                         out card.modelAge) &&
                                     !string.IsNullOrWhiteSpace(age))
                                     MetadataDiagnostics.Record(card.name,
-                                        "card XML", "age is invalid");
+                                        "card XML", "age is invalid",
+                                        xmlContext: card.XML?.OuterXml);
                                 if (card.modelAge > 50) card.modelAge = 50;
-                                card.image = LoadCardImage(card);
+                                if (loadCardImages)
+                                    card.image = LoadCardImage(card);
                             }
 
                             ApplyStaticProperties(card);
@@ -352,9 +361,11 @@ namespace IStripperQuickPlayer.BLL
                                             out card.modelAge) &&
                                         !string.IsNullOrWhiteSpace(age))
                                         MetadataDiagnostics.Record(card.name,
-                                            "card XML", "age is invalid");
+                                            "card XML", "age is invalid",
+                                            xmlContext: card.XML?.OuterXml);
                                     if (card.modelAge > 50) card.modelAge = 50;
-                                    card.image = LoadCardImage(card);
+                                    if (loadCardImages)
+                                        card.image = LoadCardImage(card);
                                 }
 
                                 ApplyStaticProperties(card);
@@ -572,7 +583,9 @@ namespace IStripperQuickPlayer.BLL
             {
                 MetadataDiagnostics.Record(card.name,
                     "static properties", "card entry is missing",
-                    modelName: card.modelName);
+                    modelName: card.modelName,
+                    xmlContext: StaticPropertiesLoader.getModelXmlByName(
+                        card.modelName));
                 modelProperties =
                     StaticPropertiesLoader.getModelByName(card.modelName);
                 card.modelId = modelProperties?.Name;
@@ -584,9 +597,13 @@ namespace IStripperQuickPlayer.BLL
             {
                 MetadataDiagnostics.Record(card.name,
                     "static properties", "model entry is missing",
-                    modelId: card.modelId, modelName: card.modelName);
+                    modelId: card.modelId, modelName: card.modelName,
+                    xmlContext: StaticPropertiesLoader.getCardXmlByID(
+                        card.name));
                 return;
             }
+            string? modelXml = StaticPropertiesLoader.getModelXmlByID(
+                modelProperties.Name);
             card.bust = modelProperties.Bust;
             card.waist = modelProperties.Waist;
             card.hips = modelProperties.Hips;
@@ -600,11 +617,13 @@ namespace IStripperQuickPlayer.BLL
                 height <= 0)
                 MetadataDiagnostics.Record(card.name,
                     "static properties", "model height is missing or invalid",
-                    modelId: card.modelId, modelName: card.modelName);
+                    modelId: card.modelId, modelName: card.modelName,
+                    xmlContext: modelXml);
             if (card.birthdate == null)
                 MetadataDiagnostics.Record(card.name,
                     "static properties", "model birth date is missing or invalid",
-                    modelId: card.modelId, modelName: card.modelName);
+                    modelId: card.modelId, modelName: card.modelName,
+                    xmlContext: modelXml);
         }
 
         private static void ApplyReleaseProperties(ModelCard card)
@@ -614,7 +633,9 @@ namespace IStripperQuickPlayer.BLL
             if (properties == null)
             {
                 MetadataDiagnostics.Record(card.name,
-                    "release properties", "card entry is missing");
+                    "release properties", "card entry is missing",
+                    xmlContext: StaticPropertiesLoader.getCardXmlByID(
+                        card.name));
                 return;
             }
 
@@ -622,7 +643,8 @@ namespace IStripperQuickPlayer.BLL
             if (!properties.HasReleaseDate)
             {
                 MetadataDiagnostics.Record(card.name,
-                    "release properties", "release date is missing or invalid");
+                    "release properties", "release date is missing or invalid",
+                    xmlContext: PropertiesLoader.getCardXmlByID(card.name));
                 card.dateReleased = card.dateShow.AddMonths(2);
             }
         }
@@ -693,7 +715,8 @@ namespace IStripperQuickPlayer.BLL
             {
                 MetadataDiagnostics.Record(card.name,
                     $"card XML/{variable}", "value could not be read",
-                    exception: exception);
+                    exception: exception,
+                    xmlContext: card.XML?.OuterXml);
 
                 return "";
             }
@@ -717,7 +740,10 @@ namespace IStripperQuickPlayer.BLL
                 if (metadataExpected)
                     MetadataDiagnostics.Record(cardnumber,
                         "card XML", "file could not be read",
-                        filePath: fullpath, exception: exception);
+                        filePath: fullpath, exception: exception,
+                        xmlContext:
+                            StaticPropertiesLoader.getCardXmlByID(cardnumber) ??
+                            PropertiesLoader.getCardXmlByID(cardnumber));
                 Console.WriteLine("no cardXML for " + cardnumber);
             }
             return null;

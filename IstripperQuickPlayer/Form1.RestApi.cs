@@ -11,7 +11,6 @@ namespace IStripperQuickPlayer
 {
     public partial class Form1
     {
-        private const int RestApiPort = 17871;
         private const int RestApiMaxBodyLength = 16 * 1024;
         private static readonly JsonSerializerOptions RestApiJson =
             new(JsonSerializerDefaults.Web);
@@ -77,12 +76,12 @@ namespace IStripperQuickPlayer
                 restApiLifetime = new CancellationTokenSource();
                 restApiListener = new HttpListener();
                 restApiListener.Prefixes.Add(
-                    $"http://127.0.0.1:{RestApiPort}/");
+                    $"http://127.0.0.1:{restApiPort}/");
                 restApiListener.Start();
                 _ = Task.Run(() => RunRestApiAsync(
                     restApiListener, restApiLifetime.Token));
                 Debug.WriteLine(
-                    $"REST API listening on http://127.0.0.1:{RestApiPort}/");
+                    $"REST API listening on http://127.0.0.1:{restApiPort}/");
             }
             catch (Exception exception)
             {
@@ -92,6 +91,23 @@ namespace IStripperQuickPlayer
                 restApiLifetime = null;
                 Debug.WriteLine("REST API could not start: " +
                     exception.Message);
+                if (apiOnlyNotifyIcon != null)
+                {
+                    apiOnlyNotifyIcon.Text =
+                        $"QuickPlayer API unavailable on port {restApiPort}";
+                    apiOnlyNotifyIcon.ShowBalloonTip(5_000,
+                        "QuickPlayer API could not start",
+                        $"Port {restApiPort} is unavailable. Quit and choose another port.",
+                        ToolTipIcon.Error);
+                }
+                else if (!apiOnlyMode)
+                {
+                    MessageBox.Show(this,
+                        $"The REST API could not start on port {restApiPort}.\r\n" +
+                        exception.Message,
+                        "QuickPlayer REST API", MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
             }
         }
 
@@ -392,10 +408,13 @@ namespace IStripperQuickPlayer
                 {
                     Properties.Settings.Default.EnablePlayQueue =
                         body.Enabled.Value;
-                    enablePlayQueueToolStripMenuItem.Checked =
-                        body.Enabled.Value;
-                    RefreshPlayQueueVisibility();
-                    RebuildAutomaticQueue();
+                    if (!apiOnlyMode)
+                    {
+                        enablePlayQueueToolStripMenuItem.Checked =
+                            body.Enabled.Value;
+                        RefreshPlayQueueVisibility();
+                        RebuildAutomaticQueue();
+                    }
                     return Ok(CreateRestApiQueue());
                 });
             }
@@ -442,6 +461,9 @@ namespace IStripperQuickPlayer
             if (method == "POST" &&
                 Matches(parts, "queue", "automatic", "rebuild"))
             {
+                if (apiOnlyMode)
+                    return Error(409,
+                        "Automatic queueing is unavailable in API-only mode.");
                 return await InvokeAsync(() =>
                 {
                     RebuildAutomaticQueue();
@@ -463,7 +485,9 @@ namespace IStripperQuickPlayer
                 ApiSeekRequest body =
                     await ReadRestApiJsonAsync<ApiSeekRequest>(
                         request, cancellationToken);
-                return await InvokeAsync(() => SeekRestApiPlayback(body));
+                return await InvokeAsync(
+                    async _ => await SeekRestApiPlaybackAsync(body),
+                    cancellationToken);
             }
 
             if (method == "POST" &&
@@ -472,7 +496,9 @@ namespace IStripperQuickPlayer
                 ApiSpeedRequest body =
                     await ReadRestApiJsonAsync<ApiSpeedRequest>(
                         request, cancellationToken);
-                return await InvokeAsync(() => SetRestApiPlaybackSpeed(body));
+                return await InvokeAsync(
+                    async _ => await SetRestApiPlaybackSpeedAsync(body),
+                    cancellationToken);
             }
 
             if (method == "POST" && parts.Length == 4 &&
@@ -480,7 +506,8 @@ namespace IStripperQuickPlayer
                     StringComparison.OrdinalIgnoreCase))
             {
                 return await InvokeAsync(
-                    () => ExecuteRestApiAction(parts[3]));
+                    async _ => await ExecuteRestApiActionAsync(parts[3]),
+                    cancellationToken);
             }
 
             return Error(404, "Endpoint not found.");
@@ -488,6 +515,7 @@ namespace IStripperQuickPlayer
 
         private object CreateRestApiStatus()
         {
+            RefreshApiOnlyPlaybackState();
             string animationPath = GetCurrentAnimationPath();
             string[] animationParts = animationPath.Split('\\', 2);
             string cardTag = animationParts.FirstOrDefault() ?? "";
@@ -499,11 +527,31 @@ namespace IStripperQuickPlayer
             int stateCode = playbackBridgeLoaded &&
                 playbackMovieRegistered
                     ? CallPlaybackBridgeApi("IStripperGetState") : -1;
+            int elapsedMilliseconds =
+                playbackLastKnownElapsedMilliseconds;
+            int durationMilliseconds =
+                playbackTimelineDurationMilliseconds;
+            if (apiOnlyMode && playbackBridgeLoaded &&
+                playbackMovieRegistered)
+            {
+                int elapsed = CallPlaybackBridgeApi(
+                    "IStripperGetElapsedMilliseconds");
+                int duration = CallPlaybackBridgeApi(
+                    "IStripperGetTotalMilliseconds");
+                if (elapsed >= 0)
+                    elapsedMilliseconds = elapsed;
+                if (duration >= 0)
+                    durationMilliseconds = duration;
+                playbackLastKnownElapsedMilliseconds =
+                    elapsedMilliseconds;
+                playbackTimelineDurationMilliseconds =
+                    durationMilliseconds;
+            }
             string state = stateCode switch
             {
+                _ when string.IsNullOrEmpty(animationPath) => "stopped",
                 3 => "playing",
                 4 => "paused",
-                _ when string.IsNullOrEmpty(animationPath) => "stopped",
                 _ => "unavailable"
             };
 
@@ -520,9 +568,8 @@ namespace IStripperQuickPlayer
                     clipName,
                     model = card?.modelName,
                     outfit = card?.outfit,
-                    elapsedMilliseconds = playbackLastKnownElapsedMilliseconds,
-                    durationMilliseconds =
-                        playbackTimelineDurationMilliseconds,
+                    elapsedMilliseconds,
+                    durationMilliseconds,
                     speed = requestedPlaybackSpeed
                 },
                 player = new
@@ -530,7 +577,7 @@ namespace IStripperQuickPlayer
                     locked = playerlocked,
                     panic = panicActive,
                     playbackControlsAvailable =
-                        Properties.Settings.Default.EnablePlaybackControl &&
+                        PlaybackControlEnabled &&
                         playbackControlsAvailableForAccount &&
                         playbackBridgeLoaded,
                     seekReady = playbackSeekReady
@@ -857,12 +904,15 @@ namespace IStripperQuickPlayer
         {
             enabled = Properties.Settings.Default.EnablePlayQueue,
             active = (activeManualQueueEntry ??
-                activeAutomaticQueueEntry ?? activeQueuedCard) is { } active
+                (apiOnlyMode ? null : activeAutomaticQueueEntry) ??
+                activeQueuedCard) is { } active
                     ? CreateRestApiQueueEntry(active, -1) : null,
             manual = manualPlayQueue.Select(
                 CreateRestApiQueueEntry).ToList(),
-            automatic = automaticPlayQueue.Select(
-                CreateRestApiQueueEntry).ToList()
+            automatic = apiOnlyMode
+                ? []
+                : automaticPlayQueue.Select(
+                    CreateRestApiQueueEntry).ToList()
         };
 
         private static object CreateRestApiQueueEntry(
@@ -945,8 +995,11 @@ namespace IStripperQuickPlayer
             ClearQueuedCardSession();
             BeginAnimationReplacement(animationPath);
             key.SetValue("ForceAnim", animationPath);
-            SelectQueuedCard(entry!.CardTag, animationPath);
-            BeginInvoke((Action)TaskbarThumbnail);
+            if (!apiOnlyMode)
+            {
+                SelectQueuedCard(entry!.CardTag, animationPath);
+                BeginInvoke((Action)TaskbarThumbnail);
+            }
             return new ApiResult(202, new
             {
                 accepted = true,
@@ -954,7 +1007,8 @@ namespace IStripperQuickPlayer
             });
         }
 
-        private ApiResult SeekRestApiPlayback(ApiSeekRequest request)
+        private async Task<ApiResult> SeekRestApiPlaybackAsync(
+            ApiSeekRequest request)
         {
             if (!RestApiPlaybackControlAvailable(seek: true,
                     out ApiResult? error))
@@ -972,12 +1026,14 @@ namespace IStripperQuickPlayer
             if (target < 0)
                 return Error(400,
                     "'elapsedMilliseconds' cannot be negative.");
-            _ = RunPlaybackOperationAsync(
-                token => SeekAbsoluteAsync(target, token));
-            return Accepted();
+            return await RunPlaybackOperationAsync(
+                token => SeekAbsoluteAsync(target, token))
+                ? Accepted()
+                : Error(409, "The seek could not be completed.");
         }
 
-        private ApiResult SetRestApiPlaybackSpeed(ApiSpeedRequest request)
+        private async Task<ApiResult> SetRestApiPlaybackSpeedAsync(
+            ApiSpeedRequest request)
         {
             if (!RestApiPlaybackControlAvailable(seek: false,
                     out ApiResult? error))
@@ -992,32 +1048,41 @@ namespace IStripperQuickPlayer
 
             double speed = request.Speed.Value;
             requestedPlaybackSpeed = speed;
-            suppressPlaybackSpeedSelection = true;
-            cmbPlaybackSpeed.SelectedItem =
-                $"{speed.ToString("0.##",
-                    System.Globalization.CultureInfo.InvariantCulture)}x";
-            suppressPlaybackSpeedSelection = false;
-            _ = RunPlaybackOperationAsync(_ =>
+            if (!apiOnlyMode)
+            {
+                suppressPlaybackSpeedSelection = true;
+                cmbPlaybackSpeed.SelectedItem =
+                    $"{speed.ToString("0.##",
+                        System.Globalization.CultureInfo.InvariantCulture)}x";
+                suppressPlaybackSpeedSelection = false;
+            }
+            return await RunPlaybackOperationAsync(_ =>
             {
                 SetPlaybackRate(speed);
                 SetPlaybackStatus(
                     $"Playback speed set to {speed:0.##}x.");
                 return Task.CompletedTask;
-            });
-            return Accepted();
+            }) ? Accepted()
+                : Error(409, "The playback speed could not be changed.");
         }
 
-        private ApiResult ExecuteRestApiAction(string action)
+        private async Task<ApiResult> ExecuteRestApiActionAsync(string action)
         {
             switch (action.ToLowerInvariant())
             {
                 case "next-clip":
+                    if (apiOnlyMode)
+                        return PlayNextApiOnlyClip();
                     GetNextClip(useQueue: false);
                     break;
                 case "next-card":
+                    if (apiOnlyMode)
+                        return PlayNextApiOnlyCard();
                     GetNextCard();
                     break;
                 case "toggle-lock":
+                    if (apiOnlyMode)
+                        return ToggleApiOnlyPlayerLock();
                     lockPlayerToolStripMenuItem.Checked =
                         !lockPlayerToolStripMenuItem.Checked;
                     setPlayerLocked();
@@ -1026,26 +1091,68 @@ namespace IStripperQuickPlayer
                     if (!RestApiPlaybackControlAvailable(false,
                             out ApiResult? playPauseError))
                         return playPauseError!;
-                    cmdPlayPause.PerformClick();
+                    if (apiOnlyMode)
+                    {
+                        if (!await RunPlaybackOperationAsync(_ =>
+                        {
+                            int state = RequirePlaybackResult(
+                                "IStripperGetState");
+                            RequirePlaybackResult(state == 3
+                                ? "IStripperPause"
+                                : state == 4
+                                    ? "IStripperResume"
+                                    : throw new InvalidOperationException(
+                                        "There is no controllable video."));
+                            return Task.CompletedTask;
+                        }, prepareFastDecode: false))
+                            return Error(409,
+                                "Play/pause could not be completed.");
+                    }
+                    else
+                        cmdPlayPause.PerformClick();
                     break;
                 case "back-10-percent":
                     if (!RestApiPlaybackControlAvailable(true,
                             out ApiResult? rewindError))
                         return rewindError!;
-                    cmdRewind.PerformClick();
+                    if (apiOnlyMode)
+                    {
+                        if (!await RunPlaybackOperationAsync(token =>
+                                SeekRelativeAsync(-0.1, token)))
+                            return Error(409,
+                                "The seek could not be completed.");
+                    }
+                    else
+                        cmdRewind.PerformClick();
                     break;
                 case "forward-10-percent":
                     if (!RestApiPlaybackControlAvailable(true,
                             out ApiResult? forwardError))
                         return forwardError!;
-                    cmdFastForward.PerformClick();
+                    if (apiOnlyMode)
+                    {
+                        if (!await RunPlaybackOperationAsync(token =>
+                                SeekRelativeAsync(0.1, token)))
+                            return Error(409,
+                                "The seek could not be completed.");
+                    }
+                    else
+                        cmdFastForward.PerformClick();
                     break;
                 case "restart":
                     if (!RestApiPlaybackControlAvailable(true,
                             out ApiResult? restartError))
                         return restartError!;
-                    _ = RunPlaybackOperationAsync(
-                        token => SeekAbsoluteAsync(0, token));
+                    if (apiOnlyMode)
+                    {
+                        if (!await RunPlaybackOperationAsync(
+                                token => SeekAbsoluteAsync(0, token)))
+                            return Error(409,
+                                "The seek could not be completed.");
+                    }
+                    else
+                        _ = RunPlaybackOperationAsync(
+                            token => SeekAbsoluteAsync(0, token));
                     break;
                 case "player-large":
                     if (!playerLockBridgeLoaded)
@@ -1060,6 +1167,9 @@ namespace IStripperQuickPlayer
                     actSetPlayerLarge(false);
                     break;
                 case "now-playing-info":
+                    if (apiOnlyMode)
+                        return Error(409,
+                            "This visual action is unavailable in API-only mode.");
                     if (string.IsNullOrEmpty(nowPlayingPath))
                         return Error(409, "Nothing is currently playing.");
                     actNowPlayingInfo();
@@ -1073,10 +1183,75 @@ namespace IStripperQuickPlayer
             return Accepted();
         }
 
+        private ApiResult PlayNextApiOnlyClip()
+        {
+            string current = GetCurrentAnimationPath();
+            string[] parts = current.Split('\\', 2);
+            if (parts.Length != 2)
+                return Error(409, "Nothing is currently playing.");
+
+            ModelCard? card = Datastore.findCardByTag(
+                parts[0].Split('-')[0]);
+            List<ModelClip> clips = (card?.clips ?? [])
+                .Where(clip => !string.IsNullOrWhiteSpace(clip.clipName))
+                .OrderBy(clip => clip.clipNumber ?? int.MaxValue)
+                .ToList();
+            if (clips.Count == 0)
+                return Error(409, "The current card has no playable clips.");
+
+            int currentIndex = clips.FindIndex(clip => string.Equals(
+                clip.clipName, parts[1], StringComparison.OrdinalIgnoreCase));
+            ModelClip next = clips[(currentIndex + 1) % clips.Count];
+            return ForceApiOnlyAnimation(GetAnimationPath(next));
+        }
+
+        private ApiResult PlayNextApiOnlyCard()
+        {
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+            int result = playbackBridgeClient.Call("IStripperDesktopNext");
+            return result < 0
+                ? Error(409,
+                    $"Native next card is unavailable (0x{result:X8}).")
+                : Accepted();
+        }
+
+        private ApiResult ForceApiOnlyAnimation(string animationPath)
+        {
+            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\parameters", true);
+            if (key == null)
+                return Error(503, "iStripper is not available.");
+
+            ClearQueuedCardSession();
+            BeginAnimationReplacement(animationPath);
+            key.SetValue("ForceAnim", animationPath);
+            return new ApiResult(202, new
+            {
+                accepted = true,
+                animationPath
+            });
+        }
+
+        private ApiResult ToggleApiOnlyPlayerLock()
+        {
+            if (!playerLockBridgeLoaded)
+                return Error(409,
+                    "Player locking is not currently available.");
+            bool requested = !playerlocked;
+            int result = SetVghdPlayerLocked(requested);
+            if (result < 0)
+                return Error(409,
+                    $"Player locking is unavailable (0x{result:X8}).");
+            playerlocked = requested;
+            return Accepted();
+        }
+
         private bool RestApiPlaybackControlAvailable(bool seek,
             out ApiResult? error)
         {
-            if (!Properties.Settings.Default.EnablePlaybackControl ||
+            RefreshApiOnlyPlaybackState();
+            if (!PlaybackControlEnabled ||
                 !playbackControlsAvailableForAccount ||
                 !playbackBridgeLoaded)
             {
@@ -1092,6 +1267,104 @@ namespace IStripperQuickPlayer
             }
             error = null;
             return true;
+        }
+
+        private void RefreshApiOnlyPlaybackState()
+        {
+            if (!apiOnlyMode || !playbackBridgeLoaded)
+                return;
+
+            try
+            {
+                if (!playbackMovieRegistered)
+                {
+                    playbackMovieRegistered = movieCaptureHookInstalled &&
+                        CallPlaybackBridgeApi(
+                            "IStripperConsumeCapturedMovie") >= 0;
+                    bool allowFallbackDiscovery =
+                        !movieCaptureHookInstalled ||
+                        playbackMovieCaptureFallbackAt ==
+                            DateTime.MinValue ||
+                        DateTime.UtcNow >= playbackMovieCaptureFallbackAt;
+                    if (!playbackMovieRegistered && allowFallbackDiscovery)
+                    {
+                        DisableMovieCapture();
+                        playbackMovieRegistered = CallPlaybackBridgeApi(
+                            "IStripperDiscoverMovie") >= 0;
+                    }
+                    if (playbackMovieRegistered)
+                    {
+                        DisableMovieCapture();
+                        playbackDecoderKind = CallPlaybackBridgeApi(
+                            "IStripperGetDecoderKind");
+                        playbackSeekingSupported =
+                            playbackDecoderKind is 1 or 2;
+                    }
+                }
+                if (!playbackMovieRegistered)
+                    return;
+
+                int state = CallPlaybackBridgeApi("IStripperGetState");
+                if (state is not 3 and not 4)
+                {
+                    playbackMovieRegistered = false;
+                    playbackSeekReady = false;
+                    playbackLastKnownElapsedMilliseconds = 0;
+                    playbackTimelineDurationMilliseconds = 0;
+                    if (CallPlaybackBridgeApi(
+                            "IStripperDiscoverMovie") < 0 ||
+                        CallPlaybackBridgeApi(
+                            "IStripperGetState") is not 3 and not 4)
+                        return;
+                    playbackMovieRegistered = true;
+                    playbackDecoderKind = CallPlaybackBridgeApi(
+                        "IStripperGetDecoderKind");
+                    playbackSeekingSupported =
+                        playbackDecoderKind is 1 or 2;
+                }
+
+                int elapsed = CallPlaybackBridgeApi(
+                    "IStripperGetElapsedMilliseconds");
+                int total = CallPlaybackBridgeApi(
+                    "IStripperGetTotalMilliseconds");
+                if (elapsed >= 0)
+                    playbackLastKnownElapsedMilliseconds = elapsed;
+                if (total >= 0)
+                    playbackTimelineDurationMilliseconds = total;
+
+                if (!playbackSeekReady && playbackSeekingSupported)
+                {
+                    int ready = CallPlaybackBridgeApi(
+                        "IStripperIsSeekReady");
+                    if (ready == 1 && playbackDecoderKind == 1)
+                    {
+                        int checkpoint = CallPlaybackBridgeApi(
+                            "IStripperCaptureAlphaCheckpoint");
+                        if (checkpoint >= 0)
+                        {
+                            playbackAlphaCheckpointBucket = elapsed / 5_000;
+                            ready = 1;
+                        }
+                        else
+                            ready = 0;
+                    }
+                    playbackSeekReady = ready == 1 || elapsed >=
+                        PlaybackForcedReadyMilliseconds;
+                }
+                int checkpointBucket = elapsed / 5_000;
+                if (playbackDecoderKind == 1 && playbackSeekReady &&
+                    checkpointBucket != playbackAlphaCheckpointBucket &&
+                    CallPlaybackBridgeApi(
+                        "IStripperCaptureAlphaCheckpoint") >= 0)
+                {
+                    playbackAlphaCheckpointBucket = checkpointBucket;
+                }
+            }
+            catch
+            {
+                playbackMovieRegistered = false;
+                playbackSeekReady = false;
+            }
         }
 
         private static bool TryCreateRestApiQueueEntry(

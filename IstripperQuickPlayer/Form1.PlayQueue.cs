@@ -636,6 +636,8 @@ namespace IStripperQuickPlayer
 
         private void SavePreviousQueue()
         {
+            if (apiOnlyMode)
+                return;
             try
             {
                 Persistence.Save(PreviousQueuePath, QueueForPersistence(
@@ -2026,6 +2028,12 @@ namespace IStripperQuickPlayer
 
         private void RebuildAutomaticQueue()
         {
+            if (apiOnlyMode)
+            {
+                automaticPlayQueue.Clear();
+                activeAutomaticQueueEntry = null;
+                return;
+            }
             if (automaticQueueFlow == null)
                 return;
 
@@ -2084,6 +2092,8 @@ namespace IStripperQuickPlayer
 
         private void FillAutomaticQueue(string? excludedCardTag = null)
         {
+            if (apiOnlyMode)
+                return;
             if (!Properties.Settings.Default.EnablePlayQueue ||
                 !Properties.Settings.Default.EnforceCardFilter)
                 return;
@@ -2424,7 +2434,8 @@ namespace IStripperQuickPlayer
                 }
             }
 
-            while (Properties.Settings.Default.EnforceCardFilter &&
+            while (!apiOnlyMode &&
+                Properties.Settings.Default.EnforceCardFilter &&
                 automaticPlayQueue.Count > 0)
             {
                 PlayQueueEntry entry = automaticPlayQueue[0];
@@ -2464,7 +2475,10 @@ namespace IStripperQuickPlayer
                 return !string.IsNullOrEmpty(animationPath);
             }
 
-            List<ModelClip> clips = FilterClipList(card.clips);
+            List<ModelClip> clips = apiOnlyMode
+                ? card.clips.Where(clip =>
+                    !string.IsNullOrWhiteSpace(clip.clipName)).ToList()
+                : FilterClipList(card.clips);
             if (clips.Count == 0)
                 return false;
             if (useSmartRules &&
@@ -2639,7 +2653,8 @@ namespace IStripperQuickPlayer
             BeginAnimationReplacement(animationPath);
             key.SetValue("ForceAnim", animationPath);
             SelectQueuedCard(cardTag, animationPath);
-            BeginInvoke((Action)TaskbarThumbnail);
+            if (!apiOnlyMode)
+                BeginInvoke((Action)TaskbarThumbnail);
             return true;
         }
 
@@ -2717,7 +2732,7 @@ namespace IStripperQuickPlayer
                     StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            if (!CurrentAnimationReachedQueueAdvancePoint())
+            if (!apiOnlyMode && !CurrentAnimationReachedQueueAdvancePoint())
                 return false;
 
             if (!TryTakeQueuedAnimation(out selected, out string cardTag))
@@ -2757,6 +2772,8 @@ namespace IStripperQuickPlayer
 
         private void SelectQueuedCard(string cardTag, string animationPath)
         {
+            if (apiOnlyMode)
+                return;
             SelectCardInModelList(cardTag);
             string clipName = animationPath.Split('\\').LastOrDefault() ?? "";
             ListViewItem? clipItem = listClips.Items.Cast<ListViewItem>()
