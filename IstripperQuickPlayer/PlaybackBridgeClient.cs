@@ -291,12 +291,15 @@ public sealed class PlaybackBridgeClient : IDisposable
 
     private void DisconnectCommands()
     {
-        commandReader?.Dispose();
-        commandWriter?.Dispose();
-        commandPipe?.Dispose();
+        BinaryReader? reader = commandReader;
+        BinaryWriter? writer = commandWriter;
+        NamedPipeClientStream? pipe = commandPipe;
         commandReader = null;
         commandWriter = null;
         commandPipe = null;
+        try { reader?.Dispose(); } catch { }
+        try { writer?.Dispose(); } catch { }
+        try { pipe?.Dispose(); } catch { }
     }
 
     public void Dispose()

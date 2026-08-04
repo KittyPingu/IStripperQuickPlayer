@@ -43,13 +43,17 @@ Send that token in the `Authorization` header:
 | `GET` | `/api/v1/library` | Search the local card and clip library. |
 | `GET` | `/api/v1/queue` | Get manual and automatic queues. |
 | `GET` | `/api/v1/fullscreen` | Get active fullscreen clips and iStripper's observed next queue. |
+| `GET` | `/api/v1/fullscreen/queue` | Get iStripper's native next queue. |
+| `POST` | `/api/v1/fullscreen/queue/insert` | Insert a card or exact clip at the start of the native next queue. |
+| `POST` | `/api/v1/fullscreen/queue/add` | Add a card or exact clip at the end of the native next queue. |
+| `DELETE` | `/api/v1/fullscreen/queue` | Clear iStripper's native next queue. |
+| `DELETE` | `/api/v1/fullscreen/queue/{index}` | Remove one native next-queue entry by its current index. |
 | `POST` | `/api/v1/fullscreen/play` | Replace fullscreen playback with a requested card or clip. |
 | `POST` | `/api/v1/fullscreen/next` | Advance fullscreen to iStripper's next queued card. |
 | `POST` | `/api/v1/fullscreen/slots/{slotId}/next` | Advance one fullscreen slot. |
 | `POST` | `/api/v1/fullscreen/slots/{slotId}/play` | Replace one fullscreen slot with a requested card or clip. |
 | `POST` | `/api/v1/fullscreen/source/{source}/next` | Advance one fullscreen source. |
 | `POST` | `/api/v1/fullscreen/source/{source}/play` | Replace one fullscreen source with a requested card or clip. |
-| `DELETE` | `/api/v1/fullscreen/queue` | Clear iStripper's next queue. |
 | `PATCH` | `/api/v1/queue` | Enable or disable queue playback. |
 | `POST` | `/api/v1/queue/manual` | Add a manual queue entry. |
 | `DELETE` | `/api/v1/queue/manual` | Clear the manual queue. |
@@ -238,7 +242,7 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen `
   -Headers $headers
 ```
 
-Advance globally, by slot ID, or by source; or clear the fullscreen queue:
+Advance globally, by slot ID, or by source:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/next `
@@ -249,9 +253,6 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/slots/2/next `
 
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/source/Girl03/next `
   -Method Post -Headers $headers
-
-Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue `
-  -Method Delete -Headers $headers
 ```
 
 Request an exact fullscreen clip globally, by slot ID, or by source:
@@ -278,6 +279,44 @@ selected logical slot is replaced.
 
 The targeted play endpoints create iStripper's native `PlayableCard` and give
 it to the selected scene node.
+
+### Native iStripper queue
+
+Read iStripper's native fullscreen queue, insert an entry at its start, add
+one at its end, or remove an entry by its current index:
+
+```powershell
+$body = @{
+  cardName = "Nikki Hill - A Dress To Seduce"
+  clipNumber = 11
+} | ConvertTo-Json
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue `
+  -Headers $headers
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue/insert `
+  -Method Post -Headers $headers -ContentType application/json -Body $body
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue/add `
+  -Method Post -Headers $headers -ContentType application/json -Body $body
+
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue/0 `
+  -Method Delete -Headers $headers
+```
+
+Insert and add accept the same `cardTag`/`cardName` and
+`clipName`/`clipNumber` combinations as the play endpoints. `GET` returns
+`count` and a `queue` array containing each entry's `index`, `cardTag`,
+`clipName`, `cardName`, `model`, and `outfit`.
+
+Remove an entry with the zero-based `index` returned by `GET`. Indexes can
+change whenever iStripper consumes or modifies the queue. Clear every native
+queue entry with:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/queue `
+  -Method Delete -Headers $headers
+```
 
 ## Seeking and speed
 

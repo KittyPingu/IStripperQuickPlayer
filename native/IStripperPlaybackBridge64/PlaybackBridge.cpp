@@ -50,6 +50,8 @@ namespace
     std::uintptr_t FsClipNodeNextShowClipRva = 0;
     std::uintptr_t PlayableCardVtableRva = 0;
     std::uintptr_t PlayableCardExactConstructorRva = 0;
+    std::uintptr_t CardSequencerInsertNextRva = 0;
+    std::uintptr_t CardSequencerTakeNextAtRva = 0;
     std::uintptr_t VghdOperatorNewRva = 0;
     std::uintptr_t WmvClearQueuesRva = 0;
     std::uintptr_t WmvPeekFrameRva = 0;
@@ -111,6 +113,8 @@ namespace
     std::size_t SceneNodesOffset = 0;
     std::size_t FsClipNodePlayableCardOffset = 0;
     std::size_t PlayableCardTagOffset = 0;
+    std::size_t PlayableCardClipsOffset = 0;
+    std::size_t PlayableCardSize = 0;
     std::size_t CardSequencerNextOffset = 0;
     std::size_t NextCardPlayableCardOffset = 0;
     std::size_t SceneExpectedPendingOffset = 0;
@@ -189,6 +193,12 @@ namespace
         0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74,
         0x24, 0x20, 0x4C, 0x89, 0x44, 0x24, 0x18, 0x48,
         0x89, 0x4C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x30
+    };
+
+    constexpr unsigned char CardSequencerTakeNextAtSignature[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83,
+        0xEC, 0x20, 0x48, 0x63, 0xDA, 0x45, 0x0F, 0xB6,
+        0xD0, 0x48, 0x8B, 0xF9
     };
 
     constexpr std::size_t DecodeScaleCallLength = 6;
@@ -289,8 +299,14 @@ namespace
     PVOID volatile g_originalFsClipNodeNextShowClip = nullptr;
     SRWLOCK g_fullScreenStateLock = SRWLOCK_INIT;
     SRWLOCK g_fullScreenHookLock = SRWLOCK_INIT;
+    SRWLOCK g_fullScreenQueueOperationLock = SRWLOCK_INIT;
     std::vector<std::string> g_fullScreenClips;
-    std::vector<std::string> g_fullScreenQueue;
+    struct FullScreenQueueEntry
+    {
+        std::string card;
+        std::string clip;
+    };
+    std::vector<FullScreenQueueEntry> g_fullScreenQueue;
     struct FullScreenSlot
     {
         DWORD id = 0;
@@ -320,6 +336,25 @@ namespace
     DWORD g_nextFullScreenSlotId = 1;
     void* g_fullScreenSceneParent = nullptr;
     FullScreenReplacement g_fullScreenReplacement;
+    enum class FullScreenQueueOperationKind
+    {
+        None,
+        Executing,
+        Insert,
+        Add,
+        Remove
+    };
+    struct FullScreenQueueOperation
+    {
+        FullScreenQueueOperationKind kind =
+            FullScreenQueueOperationKind::None;
+        std::string card;
+        std::string clip;
+        std::size_t index = 0;
+        HANDLE completed = nullptr;
+        HRESULT result = E_PENDING;
+    };
+    FullScreenQueueOperation g_fullScreenQueueOperation;
     thread_local void* g_activeFullScreenReplacementNode = nullptr;
     thread_local std::string g_activeFullScreenReplacementClip;
     LONG volatile g_bridgePinned = 0;
@@ -534,6 +569,7 @@ namespace
     unsigned char* FindUniqueFunction(const unsigned char* signature,
         std::size_t signatureLength, int kind);
     bool ResolveFullScreenLayout(unsigned char* startNextShow);
+    bool CompleteFullScreenQueueOperation(void* sequencer);
     bool OffsetProfilePath(wchar_t (&path)[MAX_PATH]);
     void SaveResolvedOffsets(const wchar_t* profilePath);
     bool IsQtObject(const QtObjectFunctions& qt, void* object,
@@ -795,6 +831,32 @@ namespace
             std::string();
     }
 
+    std::string PlayableCardClip(void* card)
+    {
+        if (card == nullptr || PlayableCardClipsOffset == 0)
+            return {};
+        std::vector<void*> clips;
+        if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(card) +
+                PlayableCardClipsOffset, 4096, clips) ||
+            clips.empty())
+            return {};
+        void* clip = clips.front();
+        return QtStringUtf8(&clip);
+    }
+
+    void* FindCardSequencer()
+    {
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
+                GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
+            nullptr
+        };
+        return qt.inherits == nullptr ? nullptr : FindQtObject(qt,
+            g_cardSequencerVtableRva, &g_cardSequencerObject,
+            ".?AVCardSequencer@Model@@", "Model::CardSequencer");
+    }
+
     void* FullScreenScene(void* node)
     {
         if (node == nullptr || FsClipNodeSceneOffset == 0)
@@ -885,24 +947,14 @@ namespace
         if (CardSequencerNextOffset == 0 ||
             NextCardPlayableCardOffset == 0)
             return false;
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
-        const QtObjectFunctions qt = {
-            reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
-                GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
-            nullptr
-        };
-        if (qt.inherits == nullptr)
-            return false;
-        void* sequencer = FindQtObject(qt, g_cardSequencerVtableRva,
-            &g_cardSequencerObject, ".?AVCardSequencer@Model@@",
-            "Model::CardSequencer");
+        void* sequencer = FindCardSequencer();
         if (sequencer == nullptr)
             return false;
         std::vector<void*> nextCards;
         if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(sequencer) +
                 CardSequencerNextOffset, 4096, nextCards))
             return false;
-        std::vector<std::string> queue;
+        std::vector<FullScreenQueueEntry> queue;
         queue.reserve(nextCards.size());
         for (void* nextCard : nextCards)
         {
@@ -912,7 +964,8 @@ namespace
             void* card = *reinterpret_cast<void**>(
                 reinterpret_cast<unsigned char*>(nextCard) +
                     NextCardPlayableCardOffset);
-            queue.push_back(PlayableCardTag(card));
+            queue.push_back({ PlayableCardTag(card),
+                PlayableCardClip(card) });
         }
         AcquireSRWLockExclusive(&g_fullScreenStateLock);
         g_fullScreenQueue = std::move(queue);
@@ -923,6 +976,11 @@ namespace
     using VghdOperatorNew = void*(__fastcall*)(std::size_t);
     using PlayableCardExactConstructor = void*(__fastcall*)(
         void*, const void*, const void*, void*);
+    using CardSequencerInsertNext = void(__fastcall*)(
+        void*, int, const void*, int, int);
+    using CardSequencerTakeNextAt = void*(__fastcall*)(void*, int, bool);
+    using QtListDetach = void*(__fastcall*)(void*, int);
+    using QtListDisposeData = void(__fastcall*)(void*);
     using QStringAnsiConstructor = void*(__fastcall*)(void*, const char*);
     using QStringDestructor = void(__fastcall*)(void*);
     using QObjectThread = void*(__fastcall*)(const void*);
@@ -982,7 +1040,7 @@ namespace
         auto base = ImageBase();
         if (constructString == nullptr || destroyString == nullptr ||
             base == nullptr || PlayableCardExactConstructorRva == 0 ||
-            VghdOperatorNewRva == 0)
+            VghdOperatorNewRva == 0 || PlayableCardSize == 0)
             return nullptr;
 
         void* tag = nullptr;
@@ -990,12 +1048,13 @@ namespace
         constructString(&tag, card.c_str());
         constructString(&candidate, clip.c_str());
         void* memory = reinterpret_cast<VghdOperatorNew>(
-            base + VghdOperatorNewRva)(0x28);
+            base + VghdOperatorNewRva)(PlayableCardSize);
         void* result = memory == nullptr ? nullptr :
             reinterpret_cast<PlayableCardExactConstructor>(
                 base + PlayableCardExactConstructorRva)(memory, &tag,
                     &candidate, nullptr);
-        destroyString(&candidate);
+        if (memory == nullptr)
+            destroyString(&candidate);
         destroyString(&tag);
         return result;
     }
@@ -1134,7 +1193,11 @@ namespace
         for (std::size_t index = 0; index < g_fullScreenQueue.size(); ++index)
         {
             if (index != 0) json.push_back(',');
-            AppendJsonString(json, g_fullScreenQueue[index]);
+            json += "{\"card\":";
+            AppendJsonString(json, g_fullScreenQueue[index].card);
+            json += ",\"clip\":";
+            AppendJsonString(json, g_fullScreenQueue[index].clip);
+            json.push_back('}');
         }
         json += "],\"slots\":[";
         bool firstSlot = true;
@@ -1232,14 +1295,16 @@ namespace
                     *reinterpret_cast<void**>(arguments[1]));
             }
         }
-        else if (senderClass != nullptr && arguments != nullptr &&
+        else if (senderClass != nullptr &&
             std::strcmp(senderClass, "Model::CardSequencer") == 0)
         {
             InterlockedExchangePointer(&g_cardSequencerObject, sender);
+            if (IsSignal(metaObject, signalIndex, "frequencyUpdated()"))
+                changed = CompleteFullScreenQueueOperation(sender);
             changed = IsSignal(metaObject, signalIndex,
                     "nextInserted(int,Model::NextCard)") ||
                 IsSignal(metaObject, signalIndex, "nextRemoved(int)") ||
-                IsSignal(metaObject, signalIndex, "nextRemoved()");
+                IsSignal(metaObject, signalIndex, "nextRemoved()") || changed;
         }
 
         const auto original = reinterpret_cast<QMetaActivate>(
@@ -1599,6 +1664,200 @@ namespace
         return extension != std::string::npos &&
             (_stricmp(clip.c_str() + extension, ".vghd") == 0 ||
              _stricmp(clip.c_str() + extension, ".demo") == 0);
+    }
+
+    bool ParseFullScreenQueueRequest(SIZE_T address, std::string& card,
+        std::string& clip)
+    {
+        char request[1024] = {};
+        if (!CopyFullScreenRequest(address, request, sizeof(request)))
+            return false;
+        char* separator = std::strchr(request, '\n');
+        if (separator == nullptr)
+            return false;
+        *separator = '\0';
+        card = request;
+        clip = separator + 1;
+        return IsFullScreenCardRequest(card, clip);
+    }
+
+    HRESULT InsertFullScreenQueueOnThread(void* sequencer,
+        const std::string& card, const std::string& clip, bool prepend)
+    {
+        auto base = ImageBase();
+        if (base == nullptr || sequencer == nullptr ||
+            CardSequencerInsertNextRva == 0)
+            return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+
+        void* playableCard = CreatePlayableCard(card, clip);
+        if (playableCard == nullptr ||
+            PlayableCardTag(playableCard) != card)
+        {
+            DestroyPlayableCard(playableCard);
+            return E_UNEXPECTED;
+        }
+        if (!MovePlayableCardToNodeThread(playableCard, sequencer))
+        {
+            DestroyPlayableCard(playableCard);
+            return E_FAIL;
+        }
+
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        void* const sharedNull = core == nullptr ? nullptr :
+            reinterpret_cast<void*>(GetProcAddress(core,
+                "?shared_null@QListData@@2UData@1@B"));
+        const auto detach = core == nullptr ? nullptr :
+            reinterpret_cast<QtListDetach>(GetProcAddress(core,
+                "?detach@QListData@@QEAAPEAUData@1@H@Z"));
+        const auto disposeData = core == nullptr ? nullptr :
+            reinterpret_cast<QtListDisposeData>(GetProcAddress(core,
+                "?dispose@QListData@@SAXPEAUData@1@@Z"));
+        if (sharedNull == nullptr || detach == nullptr ||
+            disposeData == nullptr)
+        {
+            DeletePlayableCardLater(playableCard);
+            return E_NOINTERFACE;
+        }
+
+        void* cards = sharedNull;
+        const auto releaseCards = [&cards, disposeData]()
+        {
+            auto data = reinterpret_cast<QtListData*>(cards);
+            if (data != nullptr && data->ref != -1 &&
+                InterlockedDecrement(&data->ref) == 0)
+                disposeData(data);
+        };
+        detach(&cards, 1);
+        auto data = reinterpret_cast<QtListData*>(cards);
+        if (data == nullptr || data == sharedNull || data->alloc < 1 ||
+            data->begin < 0 || data->begin != data->end ||
+            data->end >= data->alloc)
+        {
+            releaseCards();
+            DeletePlayableCardLater(playableCard);
+            return E_OUTOFMEMORY;
+        }
+        data->values[data->end++] = playableCard;
+
+        std::vector<void*> nextCards;
+        if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(sequencer) +
+                CardSequencerNextOffset, 4096, nextCards))
+        {
+            releaseCards();
+            DeletePlayableCardLater(playableCard);
+            return E_UNEXPECTED;
+        }
+        const int index = prepend ? 0 : static_cast<int>(nextCards.size());
+        reinterpret_cast<CardSequencerInsertNext>(
+            base + CardSequencerInsertNextRva)(sequencer, index, &cards, 0, 0);
+        releaseCards();
+        return BridgeSuccess;
+    }
+
+    HRESULT RemoveFullScreenQueueOnThread(void* sequencer,
+        std::size_t index)
+    {
+        auto base = ImageBase();
+        if (base == nullptr || sequencer == nullptr ||
+            CardSequencerTakeNextAtRva == 0)
+            return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+        std::vector<void*> nextCards;
+        if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(sequencer) +
+                CardSequencerNextOffset, 4096, nextCards))
+            return E_UNEXPECTED;
+        if (index >= nextCards.size() || index > MAXINT)
+            return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        void* playableCard = reinterpret_cast<CardSequencerTakeNextAt>(
+            base + CardSequencerTakeNextAtRva)(sequencer,
+                static_cast<int>(index), false);
+        if (playableCard == nullptr)
+            return E_FAIL;
+        DeletePlayableCardLater(playableCard);
+        return BridgeSuccess;
+    }
+
+    bool CompleteFullScreenQueueOperation(void* sequencer)
+    {
+        AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
+        if (g_fullScreenQueueOperation.kind ==
+                FullScreenQueueOperationKind::None ||
+            g_fullScreenQueueOperation.kind ==
+                FullScreenQueueOperationKind::Executing)
+        {
+            ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
+            return false;
+        }
+
+        const FullScreenQueueOperationKind kind =
+            g_fullScreenQueueOperation.kind;
+        const std::string card = g_fullScreenQueueOperation.card;
+        const std::string clip = g_fullScreenQueueOperation.clip;
+        const std::size_t index = g_fullScreenQueueOperation.index;
+        HANDLE completed = g_fullScreenQueueOperation.completed;
+        g_fullScreenQueueOperation.kind =
+            FullScreenQueueOperationKind::Executing;
+        ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
+
+        HRESULT result = E_UNEXPECTED;
+        switch (kind)
+        {
+        case FullScreenQueueOperationKind::Insert:
+        case FullScreenQueueOperationKind::Add:
+            result = InsertFullScreenQueueOnThread(sequencer, card, clip,
+                kind == FullScreenQueueOperationKind::Insert);
+            break;
+        case FullScreenQueueOperationKind::Remove:
+            result = RemoveFullScreenQueueOnThread(sequencer, index);
+            break;
+        }
+
+        AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
+        g_fullScreenQueueOperation.result = result;
+        SetEvent(completed);
+        ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
+        return result >= 0;
+    }
+
+    HRESULT RunFullScreenQueueOperation(FullScreenQueueOperationKind kind,
+        const std::string& card = {}, const std::string& clip = {},
+        std::size_t index = 0)
+    {
+        HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (completed == nullptr)
+            return HRESULT_FROM_WIN32(GetLastError());
+
+        AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
+        if (g_fullScreenQueueOperation.kind !=
+                FullScreenQueueOperationKind::None)
+        {
+            ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
+            CloseHandle(completed);
+            return HRESULT_FROM_WIN32(ERROR_BUSY);
+        }
+        g_fullScreenQueueOperation = { kind, card, clip, index, completed,
+            E_PENDING };
+        ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
+
+        HRESULT result = InvokeQtSingleton(g_cardSequencerVtableRva,
+            &g_cardSequencerObject, ".?AVCardSequencer@Model@@",
+            "Model::CardSequencer", "frequencyUpdated");
+        if (result >= 0 && WaitForSingleObject(completed, 5'000) ==
+                WAIT_OBJECT_0)
+        {
+            AcquireSRWLockShared(&g_fullScreenQueueOperationLock);
+            result = g_fullScreenQueueOperation.result;
+            ReleaseSRWLockShared(&g_fullScreenQueueOperationLock);
+        }
+        else if (result >= 0)
+        {
+            result = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+        }
+
+        AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
+        g_fullScreenQueueOperation = {};
+        ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
+        CloseHandle(completed);
+        return result;
     }
 
     bool SetMovieWindowPercent(LONG mode, DWORD newPercent, bool notify)
@@ -2438,6 +2697,8 @@ namespace
         SceneNodesOffset = 0;
         FsClipNodePlayableCardOffset = 0;
         PlayableCardTagOffset = 0;
+        PlayableCardClipsOffset = 0;
+        PlayableCardSize = 0;
         CardSequencerNextOffset = 0;
         NextCardPlayableCardOffset = 0;
         SceneExpectedPendingOffset = 0;
@@ -2445,6 +2706,8 @@ namespace
         SceneExpectedCardOffset = 0;
         SceneExpectedModeOffset = 0;
         PlayableCardExactConstructorRva = 0;
+        CardSequencerInsertNextRva = 0;
+        CardSequencerTakeNextAtRva = 0;
         VghdOperatorNewRva = 0;
         FsClipNodeVtableRva = FindVtableRva(".?AVFsClipNode@@");
         PlayableCardVtableRva = FindVtableRva(
@@ -2457,6 +2720,9 @@ namespace
         auto exactConstructor = FindUniqueFunction(
             PlayableCardExactConstructorSignature,
             sizeof(PlayableCardExactConstructorSignature), -1);
+        auto takeNextAt = FindUniqueFunction(
+            CardSequencerTakeNextAtSignature,
+            sizeof(CardSequencerTakeNextAtSignature), -1);
         if (startNextShow == nullptr || insertNext == nullptr ||
             exactConstructor == nullptr ||
             !IsReadable(startNextShow, 1024) ||
@@ -2464,7 +2730,27 @@ namespace
             PlayableCardVtableRva == 0 || g_cardSequencerVtableRva == 0)
             return false;
         PlayableCardExactConstructorRva = RvaFromAddress(exactConstructor);
+        CardSequencerInsertNextRva = RvaFromAddress(insertNext);
+        if (takeNextAt != nullptr)
+            CardSequencerTakeNextAtRva = RvaFromAddress(takeNextAt);
         unsigned char* nextShowClip = nullptr;
+
+        if (!IsReadable(exactConstructor, 192))
+            return false;
+        std::size_t constructorTagOffset = 0;
+        for (std::size_t offset = 0; offset + 9 <= 192; ++offset)
+        {
+            const auto candidate = exactConstructor + offset;
+            if (candidate[0] == 0x48 && candidate[1] == 0x8D &&
+                candidate[2] == 0x4F && candidate[4] == 0x48 &&
+                candidate[5] == 0x8B && candidate[6] == 0xD3)
+                constructorTagOffset = candidate[3];
+            if (candidate[0] == 0x48 && candidate[1] == 0x8D &&
+                candidate[2] == 0x5F && candidate[4] == 0x48 &&
+                candidate[5] == 0x89 && candidate[6] == 0x5C &&
+                candidate[7] == 0x24)
+                PlayableCardClipsOffset = candidate[3];
+        }
 
         for (std::size_t offset = 0; offset + 27 <= 1024; ++offset)
         {
@@ -2567,15 +2853,24 @@ namespace
                 {
                     auto allocation = start + previous;
                     if (previous + 10 > offset || allocation[0] != 0xB9 ||
+                        allocation[5] != 0xE8)
+                        continue;
+                    const std::size_t allocationSize =
                         *reinterpret_cast<const std::uint32_t*>(
-                            allocation + 1) != 0x28 || allocation[5] != 0xE8)
+                            allocation + 1);
+                    if (allocationSize < 0x20 || allocationSize > 0x400 ||
+                        (allocationSize & 7) != 0)
                         continue;
                     auto candidate = allocation + 10 +
                         *reinterpret_cast<const std::int32_t*>(
                             allocation + 6);
                     if (operatorNew != nullptr && operatorNew != candidate)
                         return false;
+                    if (PlayableCardSize != 0 &&
+                        PlayableCardSize != allocationSize)
+                        return false;
                     operatorNew = candidate;
+                    PlayableCardSize = allocationSize;
                     break;
                 }
             }
@@ -2615,6 +2910,10 @@ namespace
             FsClipNodePlayableCardOffset > 0 &&
             FsClipNodePlayableCardOffset <= 0x400 &&
             PlayableCardTagOffset > 0 && PlayableCardTagOffset <= 0x100 &&
+            constructorTagOffset == PlayableCardTagOffset &&
+            PlayableCardClipsOffset > PlayableCardTagOffset &&
+            PlayableCardClipsOffset <= 0x100 &&
+            PlayableCardSize >= PlayableCardClipsOffset + sizeof(void*) &&
             CardSequencerNextOffset > 0 && CardSequencerNextOffset <= 0x200 &&
             NextCardPlayableCardOffset > 0 &&
             NextCardPlayableCardOffset <= 0x100 &&
@@ -4251,6 +4550,12 @@ namespace
             L"PlayableCardExactConstructorRva",
             PlayableCardExactConstructorRva);
         WriteResolvedValue(profilePath, section,
+            L"CardSequencerInsertNextRva",
+            CardSequencerInsertNextRva);
+        WriteResolvedValue(profilePath, section,
+            L"CardSequencerTakeNextAtRva",
+            CardSequencerTakeNextAtRva);
+        WriteResolvedValue(profilePath, section,
             L"VghdOperatorNewRva", VghdOperatorNewRva);
         WriteResolvedValue(profilePath, section,
             L"CardSequencerVtableRva", g_cardSequencerVtableRva);
@@ -4263,6 +4568,10 @@ namespace
             FsClipNodePlayableCardOffset);
         WriteResolvedValue(profilePath, section,
             L"PlayableCardTagOffset", PlayableCardTagOffset);
+        WriteResolvedValue(profilePath, section,
+            L"PlayableCardClipsOffset", PlayableCardClipsOffset);
+        WriteResolvedValue(profilePath, section,
+            L"PlayableCardSize", PlayableCardSize);
         WriteResolvedValue(profilePath, section,
             L"CardSequencerNextOffset", CardSequencerNextOffset);
         WriteResolvedValue(profilePath, section,
@@ -8464,6 +8773,33 @@ IStripperFullscreenClearQueue()
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperFullscreenQueueInsert(SIZE_T requestAddress)
+{
+    std::string card;
+    std::string clip;
+    return ParseFullScreenQueueRequest(requestAddress, card, clip)
+        ? RunFullScreenQueueOperation(FullScreenQueueOperationKind::Insert,
+            card, clip) : E_INVALIDARG;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperFullscreenQueueAdd(SIZE_T requestAddress)
+{
+    std::string card;
+    std::string clip;
+    return ParseFullScreenQueueRequest(requestAddress, card, clip)
+        ? RunFullScreenQueueOperation(FullScreenQueueOperationKind::Add,
+            card, clip) : E_INVALIDARG;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperFullscreenQueueRemove(SIZE_T index)
+{
+    return RunFullScreenQueueOperation(
+        FullScreenQueueOperationKind::Remove, {}, {}, index);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
 IStripperRefreshFullscreenState()
 {
     PublishFullScreenState();
@@ -8487,7 +8823,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 83;
+    return 85;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
