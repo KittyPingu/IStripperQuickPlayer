@@ -581,11 +581,6 @@ namespace IStripperQuickPlayer.BLL
             }
             else
             {
-                MetadataDiagnostics.Record(card.name,
-                    "static properties", "card entry is missing",
-                    modelName: card.modelName,
-                    xmlContext: StaticPropertiesLoader.getModelXmlByName(
-                        card.modelName));
                 modelProperties =
                     StaticPropertiesLoader.getModelByName(card.modelName);
                 card.modelId = modelProperties?.Name;
@@ -596,10 +591,13 @@ namespace IStripperQuickPlayer.BLL
             if (modelProperties == null)
             {
                 MetadataDiagnostics.Record(card.name,
-                    "static properties", "model entry is missing",
+                    "static properties", cardProperties == null
+                        ? "card and fallback model entries are missing"
+                        : "model entry is missing",
                     modelId: card.modelId, modelName: card.modelName,
-                    xmlContext: StaticPropertiesLoader.getCardXmlByID(
-                        card.name));
+                    xmlContext: cardProperties == null
+                        ? card.XML?.OuterXml
+                        : StaticPropertiesLoader.getCardXmlByID(card.name));
                 return;
             }
             string? modelXml = StaticPropertiesLoader.getModelXmlByID(
