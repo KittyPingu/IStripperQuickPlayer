@@ -105,7 +105,7 @@ F9::QuickPlayer("POST", "/actions/next-card")
 F10::MsgBox QuickPlayer("GET", "/status")
 
 F11::{
-    body := "{""cardName"":""Nikki Hill - A Dress To Seduce"",""clipNumber"":11}"
+    body := '{"cardName":"Nikki Hill - A Dress To Seduce","clipNumber":11}'
     QuickPlayer("POST", "/play", body)
 }
 ```
