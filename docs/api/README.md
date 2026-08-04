@@ -59,6 +59,60 @@ Send that token in the `Authorization` header:
 
 `GET /health` is the only endpoint that does not require authentication.
 
+## AutoHotkey v2
+
+AutoHotkey can call the API directly through Windows' built-in WinHTTP COM
+object. This helper reads QuickPlayer's token and throws an error for any
+non-success response:
+
+```ahk
+#Requires AutoHotkey v2.0
+
+QuickPlayerBase := "http://127.0.0.1:17871/api/v1"
+QuickPlayerToken := Trim(
+    FileRead(A_LocalAppData "\IStripperQuickPlayer\api-token.txt", "UTF-8"),
+    " `t`r`n"
+)
+
+QuickPlayer(method, path, body := "")
+{
+    global QuickPlayerBase, QuickPlayerToken
+
+    http := ComObject("WinHttp.WinHttpRequest.5.1")
+    http.Open(method, QuickPlayerBase path, false)
+    http.SetRequestHeader("Authorization", "Bearer " QuickPlayerToken)
+
+    if (body != "") {
+        http.SetRequestHeader("Content-Type", "application/json")
+        http.Send(body)
+    } else {
+        http.Send()
+    }
+
+    if (http.Status < 200 || http.Status >= 300)
+        throw Error("QuickPlayer returned " http.Status ": " http.ResponseText)
+
+    return http.ResponseText
+}
+```
+
+The following hotkeys toggle play/pause, advance to the next card, display
+API status, and play an exact clip:
+
+```ahk
+F8::QuickPlayer("POST", "/actions/play-pause")
+F9::QuickPlayer("POST", "/actions/next-card")
+F10::MsgBox QuickPlayer("GET", "/status")
+
+F11::{
+    body := "{""cardName"":""Nikki Hill - A Dress To Seduce"",""clipNumber"":11}"
+    QuickPlayer("POST", "/play", body)
+}
+```
+
+Calls are synchronous because `Open` uses `false`. Change the port in
+`QuickPlayerBase` when QuickPlayer is started with `--api-port`.
+
 ## Endpoints
 
 | Method | Path | Purpose |
