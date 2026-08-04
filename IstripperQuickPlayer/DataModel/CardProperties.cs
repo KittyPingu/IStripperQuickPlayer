@@ -11,6 +11,7 @@ namespace IStripperQuickPlayer.DataModel
     internal class CardProperties
     {
         internal string modelID;
+        internal string outfit;
         internal string hair;
         internal string[] tags;
         internal string date;
@@ -22,11 +23,12 @@ namespace IStripperQuickPlayer.DataModel
         public CardProperties(XmlNode? element)
         {
             modelID = element.GetAttribute("mo");
+            outfit = element.GetAttribute("na");
             hair = element.GetAttribute("ha");
             tags = element.GetAttribute("ca").Split(",");
             date = element.GetAttribute("da");
             datesh = element.GetAttribute("dsh");
-            switch (element.GetAttribute("na"))
+            switch (outfit)
             {
                 case "Duo":
                     numgirls = 2;

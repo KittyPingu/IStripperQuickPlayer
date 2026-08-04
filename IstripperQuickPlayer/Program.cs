@@ -102,7 +102,9 @@ namespace IStripperQuickPlayer
             {
                 Environment.ExitCode =
                     MetadataRefresh.VerifyValidation() &&
-                    MetadataDiagnostics.VerifyPrivacy() ? 0 : 1;
+                    MetadataDiagnostics.VerifyPrivacy() &&
+                    ModelsLstLoader.VerifyMetadataFallbackDiagnostics()
+                        ? 0 : 1;
                 return;
             }
             if (args.Length == 1 && args[0] == "--verify-controls")

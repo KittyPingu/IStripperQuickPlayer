@@ -141,7 +141,7 @@ namespace IStripperQuickPlayer.BLL
                             card.r = reader.ReadByte();
                             card.s = reader.ReadByte();
 
-                            card.XML = loadCardXML(card.name, true);
+                            card.XML = loadCardXML(card.name);
                             if (card.XML != null)
                             {
                                 card.description = getXMLValue(card, "description");
@@ -157,12 +157,8 @@ namespace IStripperQuickPlayer.BLL
                                 card.xmlSize = getXMLValue(card, "size");
                                 card.modelName = getXMLValue(card, "name");
                                 string age = getXMLValue(card, "age");
-                                if (!decimal.TryParse(age, style, culture,
-                                        out card.modelAge) &&
-                                    !string.IsNullOrWhiteSpace(age))
-                                    MetadataDiagnostics.Record(card.name,
-                                        "card XML", "age is invalid",
-                                        xmlContext: card.XML?.OuterXml);
+                                decimal.TryParse(age, style, culture,
+                                    out card.modelAge);
                                 if (card.modelAge > 50) card.modelAge = 50;
                                 if (loadCardImages)
                                     card.image = LoadCardImage(card);
@@ -172,8 +168,8 @@ namespace IStripperQuickPlayer.BLL
                             //read properties to model
                             ApplyReleaseProperties(card);
                             
-                            //if model age is 0, calculate it from release date and birthdate
-                            if (card.modelAge == 0 && card.birthdate != null &&
+                            //Recover invalid ages from release date and birth date.
+                            if (card.modelAge <= 0 && card.birthdate != null &&
                                 card.dateReleased != default)
                             {
                                 var rel = LocalDateTime.FromDateTime(card.dateReleased);
@@ -243,6 +239,7 @@ namespace IStripperQuickPlayer.BLL
                             }
                             if (card.clips != null && card.clips.Count > 0) 
                             {
+                                RecordUnresolvedMetadata(card);
                                 LibraryCardsWithClips++;
                                 if (Datastore.modelcards != null)
                                 { 
@@ -338,10 +335,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.s = reader.ReadByte();
 
                                 card.XML = loadCardXML(
-                                    card.name.Split(new char[] { '-' }).First(),
-                                    card.inCollection == true ||
-                                    card.cardDownloaded == true ||
-                                    card.cardDownloaded2 == true);
+                                    card.name.Split(new char[] { '-' }).First());
                                 if (card.XML != null)
                                 {
                                     card.description = getXMLValue(card, "description");
@@ -357,12 +351,8 @@ namespace IStripperQuickPlayer.BLL
                                     card.xmlSize = getXMLValue(card, "size");
                                     card.modelName = getXMLValue(card, "name");
                                     string age = getXMLValue(card, "age");
-                                    if (!decimal.TryParse(age, style, culture,
-                                            out card.modelAge) &&
-                                        !string.IsNullOrWhiteSpace(age))
-                                        MetadataDiagnostics.Record(card.name,
-                                            "card XML", "age is invalid",
-                                            xmlContext: card.XML?.OuterXml);
+                                    decimal.TryParse(age, style, culture,
+                                        out card.modelAge);
                                     if (card.modelAge > 50) card.modelAge = 50;
                                     if (loadCardImages)
                                         card.image = LoadCardImage(card);
@@ -372,8 +362,8 @@ namespace IStripperQuickPlayer.BLL
                                 //read properties to model
                                 ApplyReleaseProperties(card);
 
-                                //if model age is 0, calculate it from release date and birthdate
-                                if (card.modelAge == 0 && card.birthdate != null &&
+                                //Recover invalid ages from release date and birth date.
+                                if (card.modelAge <= 0 && card.birthdate != null &&
                                     card.dateReleased != default)
                                 {
                                     var rel = LocalDateTime.FromDateTime(card.dateReleased);
@@ -443,6 +433,7 @@ namespace IStripperQuickPlayer.BLL
                                 }
                                 if (card.clips != null && card.clips.Count > 0)
                                 {
+                                    RecordUnresolvedMetadata(card);
                                     MarketCardsWithClips++;
                                     if (Datastore.modelcards != null)
                                     {
@@ -569,6 +560,10 @@ namespace IStripperQuickPlayer.BLL
             ModelProperties? modelProperties;
             if (cardProperties != null)
             {
+                if (string.IsNullOrWhiteSpace(card.outfit))
+                    card.outfit = cardProperties.outfit;
+                if (string.IsNullOrWhiteSpace(card.hair))
+                    card.hair = cardProperties.hair;
                 card.tags = cardProperties.tags;
                 card.ethnicity = cardProperties.ethnicity;
                 card.exclusive = cardProperties.exclusive;
@@ -589,19 +584,7 @@ namespace IStripperQuickPlayer.BLL
             modelProperties ??=
                 StaticPropertiesLoader.getModelByName(card.modelName);
             if (modelProperties == null)
-            {
-                MetadataDiagnostics.Record(card.name,
-                    "static properties", cardProperties == null
-                        ? "card and fallback model entries are missing"
-                        : "model entry is missing",
-                    modelId: card.modelId, modelName: card.modelName,
-                    xmlContext: cardProperties == null
-                        ? card.XML?.OuterXml
-                        : StaticPropertiesLoader.getCardXmlByID(card.name));
                 return;
-            }
-            string? modelXml = StaticPropertiesLoader.getModelXmlByID(
-                modelProperties.Name);
             card.bust = modelProperties.Bust;
             card.waist = modelProperties.Waist;
             card.hips = modelProperties.Hips;
@@ -610,41 +593,85 @@ namespace IStripperQuickPlayer.BLL
             card.country = modelProperties.Country;
             card.birthdate = modelProperties.Birthdate == default
                 ? null : modelProperties.Birthdate;
-            if (!decimal.TryParse(card.height, NumberStyles.AllowDecimalPoint,
-                    CultureInfo.InvariantCulture, out decimal height) ||
-                height <= 0)
-                MetadataDiagnostics.Record(card.name,
-                    "static properties", "model height is missing or invalid",
-                    modelId: card.modelId, modelName: card.modelName,
-                    xmlContext: modelXml);
-            if (card.birthdate == null)
-                MetadataDiagnostics.Record(card.name,
-                    "static properties", "model birth date is missing or invalid",
-                    modelId: card.modelId, modelName: card.modelName,
-                    xmlContext: modelXml);
         }
 
         private static void ApplyReleaseProperties(ModelCard card)
         {
             CardProperties2? properties =
                 PropertiesLoader.getCardByID(card.name);
-            if (properties == null)
-            {
-                MetadataDiagnostics.Record(card.name,
-                    "release properties", "card entry is missing",
-                    xmlContext: StaticPropertiesLoader.getCardXmlByID(
-                        card.name));
-                return;
-            }
-
-            card.dateReleased = properties.daterel;
-            if (!properties.HasReleaseDate)
-            {
-                MetadataDiagnostics.Record(card.name,
-                    "release properties", "release date is missing or invalid",
-                    xmlContext: PropertiesLoader.getCardXmlByID(card.name));
+            if (properties?.HasReleaseDate == true)
+                card.dateReleased = properties.daterel;
+            else if (card.dateShow != default)
                 card.dateReleased = card.dateShow.AddMonths(2);
-            }
+        }
+
+        private static void RecordUnresolvedMetadata(ModelCard card)
+        {
+            var missing = GetMissingMetadata(card);
+            string? cardXml = card.XML?.OuterXml ??
+                StaticPropertiesLoader.getCardXmlByID(card.name) ??
+                PropertiesLoader.getCardXmlByID(card.name);
+            string? modelXml = null;
+            if (!string.IsNullOrWhiteSpace(card.modelId))
+                modelXml = StaticPropertiesLoader.getModelXmlByID(
+                    card.modelId.Split(',')[0]);
+            modelXml ??=
+                StaticPropertiesLoader.getModelXmlByName(card.modelName);
+
+            if (missing.ModelName)
+                MetadataDiagnostics.Record(card.name, "final card metadata",
+                    "model name remains missing after fallbacks",
+                    modelId: card.modelId, xmlContext: cardXml);
+            if (missing.Outfit)
+                MetadataDiagnostics.Record(card.name, "final card metadata",
+                    "outfit remains missing after fallbacks",
+                    modelId: card.modelId, modelName: card.modelName,
+                    xmlContext: cardXml);
+            if (missing.Age)
+                MetadataDiagnostics.Record(card.name, "final model metadata",
+                    "age remains missing or invalid after fallbacks",
+                    modelId: card.modelId, modelName: card.modelName,
+                    xmlContext: modelXml ?? cardXml);
+            if (missing.Height)
+                MetadataDiagnostics.Record(card.name, "final model metadata",
+                    "height remains missing or invalid after fallbacks",
+                    modelId: card.modelId, modelName: card.modelName,
+                    xmlContext: modelXml ?? cardXml);
+            if (missing.ReleaseDate)
+                MetadataDiagnostics.Record(card.name, "final card metadata",
+                    "release date remains missing after fallbacks",
+                    modelId: card.modelId, modelName: card.modelName,
+                    xmlContext: PropertiesLoader.getCardXmlByID(card.name) ??
+                        cardXml);
+        }
+
+        internal static bool VerifyMetadataFallbackDiagnostics()
+        {
+            ModelCard resolved = new()
+            {
+                name = "test",
+                modelName = "Model",
+                outfit = "Outfit",
+                modelAge = 25,
+                height = "1.70",
+                dateReleased = new DateTime(2026, 1, 1)
+            };
+            return GetMissingMetadata(resolved) ==
+                    (false, false, false, false, false) &&
+                GetMissingMetadata(new ModelCard()) ==
+                    (true, true, true, true, true);
+        }
+
+        private static (bool ModelName, bool Outfit, bool Age, bool Height,
+            bool ReleaseDate) GetMissingMetadata(ModelCard card)
+        {
+            bool validHeight = decimal.TryParse(card.height,
+                    NumberStyles.AllowDecimalPoint,
+                    CultureInfo.InvariantCulture, out decimal height) &&
+                height > 0;
+            return (string.IsNullOrWhiteSpace(card.modelName),
+                string.IsNullOrWhiteSpace(card.outfit), card.modelAge <= 0,
+                !validHeight, card.dateReleased == default);
         }
 
         private string GetModelsString(string? card_modelId)
@@ -722,8 +749,7 @@ namespace IStripperQuickPlayer.BLL
             
         }
 
-        private XmlDocument? loadCardXML(
-            string cardnumber, bool metadataExpected)
+        private XmlDocument? loadCardXML(string cardnumber)
         {
             string localapp = getDataFolderPath();
             string fullpath = Path.Combine(localapp, cardnumber, cardnumber + ".xml");
@@ -733,15 +759,8 @@ namespace IStripperQuickPlayer.BLL
                 doc.Load(fullpath);
                 return doc;
             }
-            catch (Exception exception)
+            catch (Exception)
             {
-                if (metadataExpected)
-                    MetadataDiagnostics.Record(cardnumber,
-                        "card XML", "file could not be read",
-                        filePath: fullpath, exception: exception,
-                        xmlContext:
-                            StaticPropertiesLoader.getCardXmlByID(cardnumber) ??
-                            PropertiesLoader.getCardXmlByID(cardnumber));
                 Console.WriteLine("no cardXML for " + cardnumber);
             }
             return null;

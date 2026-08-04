@@ -385,6 +385,17 @@ namespace IStripperQuickPlayer.BLL
                         // Diagnostics must never stop the catalogue loading.
                     }
                 }
+                else
+                {
+                    try
+                    {
+                        File.Delete(FilePath);
+                    }
+                    catch
+                    {
+                        // Diagnostics must never stop the catalogue loading.
+                    }
+                }
                 report = null;
                 issueCounts = null;
             }
