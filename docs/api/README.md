@@ -70,7 +70,7 @@ non-success response:
 
 QuickPlayerBase := "http://127.0.0.1:17871/api/v1"
 QuickPlayerToken := Trim(
-    FileRead(A_LocalAppData "\IStripperQuickPlayer\api-token.txt", "UTF-8"),
+    FileRead(EnvGet("LOCALAPPDATA") "\IStripperQuickPlayer\api-token.txt", "UTF-8"),
     " `t`r`n"
 )
 
