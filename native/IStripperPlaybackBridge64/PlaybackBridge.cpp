@@ -291,6 +291,8 @@ namespace
     std::uintptr_t g_liveVtableRva = 0;
     PVOID volatile g_liveObject = nullptr;
     std::uintptr_t g_fullScreenVtableRva = 0;
+    std::uintptr_t g_fullScreenRendererVtableRva = 0;
+    std::uintptr_t g_sceneVtableRva = 0;
     std::uintptr_t g_cardSequencerVtableRva = 0;
     PVOID volatile g_fullScreenObject = nullptr;
     PVOID volatile g_cardSequencerObject = nullptr;
@@ -857,6 +859,19 @@ namespace
             ".?AVCardSequencer@Model@@", "Model::CardSequencer");
     }
 
+    void* FindFullScreen()
+    {
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
+                GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
+            nullptr
+        };
+        return qt.inherits == nullptr ? nullptr : FindQtObject(qt,
+            g_fullScreenVtableRva, &g_fullScreenObject,
+            ".?AVFullScreen@@", "FullScreen");
+    }
+
     void* FullScreenScene(void* node)
     {
         if (node == nullptr || FsClipNodeSceneOffset == 0)
@@ -940,6 +955,73 @@ namespace
         }
         ReleaseSRWLockExclusive(&g_fullScreenStateLock);
         return true;
+    }
+
+    bool SynchronizeCurrentFullScreenScene()
+    {
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
+                GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
+            nullptr
+        };
+        auto base = ImageBase();
+        void* fullScreen = qt.inherits == nullptr ? nullptr : FindFullScreen();
+        if (base == nullptr || fullScreen == nullptr ||
+            SceneNodesOffset == 0)
+            return false;
+        if (g_fullScreenRendererVtableRva == 0)
+            g_fullScreenRendererVtableRva = FindVtableRva(
+                ".?AVFullScreenRenderer@@");
+        if (g_sceneVtableRva == 0)
+            g_sceneVtableRva = FindVtableRva(".?AVScene@@");
+        if (g_fullScreenRendererVtableRva == 0 || g_sceneVtableRva == 0)
+            return false;
+
+        void* renderer = nullptr;
+        for (std::size_t offset = sizeof(void*); offset < 0x200;
+            offset += sizeof(void*))
+        {
+            auto field = reinterpret_cast<unsigned char*>(fullScreen) + offset;
+            if (!IsReadable(field, sizeof(void*)))
+                break;
+            void* candidate = *reinterpret_cast<void**>(field);
+            if (IsQtObject(qt, candidate,
+                    base + g_fullScreenRendererVtableRva,
+                    "FullScreenRenderer"))
+            {
+                renderer = candidate;
+                break;
+            }
+        }
+        if (renderer == nullptr)
+            return false;
+
+        for (std::size_t offset = sizeof(void*); offset < 0x100;
+            offset += sizeof(void*))
+        {
+            auto field = reinterpret_cast<unsigned char*>(renderer) + offset;
+            if (!IsReadable(field, sizeof(void*)))
+                break;
+            void* scene = *reinterpret_cast<void**>(field);
+            if (!IsQtObject(qt, scene, base + g_sceneVtableRva, "Scene"))
+                continue;
+            std::vector<void*> nodes;
+            if (ReadQtPointerList(reinterpret_cast<unsigned char*>(scene) +
+                    SceneNodesOffset, 256, nodes) && !nodes.empty())
+                return SynchronizeFullScreenScene(scene);
+        }
+        return false;
+    }
+
+    bool IsFullScreenModeActive()
+    {
+        DWORD mode = 0;
+        DWORD size = sizeof(mode);
+        return RegGetValueW(HKEY_CURRENT_USER,
+                L"Software\\Totem\\vghd\\player", L"playingMode",
+                RRF_RT_REG_DWORD, nullptr, &mode, &size) == ERROR_SUCCESS &&
+            mode == 3;
     }
 
     bool RefreshFullScreenQueue()
@@ -1123,7 +1205,7 @@ namespace
             assign(value, text.c_str());
     }
 
-    void PublishFullScreenState();
+    void PublishFullScreenState(bool discoverScene = false);
 
     using FsClipNodeStartNextShow = void*(__fastcall*)(void*, void*);
     using FsClipNodeNextShowClip = void*(__fastcall*)(void*, void*, bool);
@@ -1179,8 +1261,18 @@ namespace
         json.push_back('"');
     }
 
-    void PublishFullScreenState()
+    void PublishFullScreenState(bool discoverScene)
     {
+        bool missingScene = false;
+        AcquireSRWLockShared(&g_fullScreenStateLock);
+        missingScene = std::none_of(g_fullScreenSlots.begin(),
+            g_fullScreenSlots.end(), [](const FullScreenSlot& slot)
+            {
+                return slot.active;
+            });
+        ReleaseSRWLockShared(&g_fullScreenStateLock);
+        if (discoverScene && missingScene && IsFullScreenModeActive())
+            SynchronizeCurrentFullScreenScene();
         RefreshFullScreenQueue();
         std::string json = "{\"clips\":[";
         AcquireSRWLockShared(&g_fullScreenStateLock);
@@ -8717,7 +8809,7 @@ IStripperStartFullscreenHook()
 {
     const HRESULT hook = InstallFullScreenHook();
     if (hook >= 0)
-        PublishFullScreenState();
+        PublishFullScreenState(true);
     return hook;
 }
 
@@ -8802,7 +8894,7 @@ IStripperFullscreenQueueRemove(SIZE_T index)
 extern "C" __declspec(dllexport) HRESULT WINAPI
 IStripperRefreshFullscreenState()
 {
-    PublishFullScreenState();
+    PublishFullScreenState(true);
     return BridgeSuccess;
 }
 
@@ -8823,7 +8915,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 85;
+    return 86;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
