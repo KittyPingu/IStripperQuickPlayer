@@ -139,7 +139,20 @@ internal static class CardOverlayLoader
 
     private static readonly Dictionary<string, CardOverlay> overlaysByCard =
         new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, CardOverlay> overlaysById =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, string> overlayIdsByCard =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> officialOverlayCards =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> builtInFavouriteCards =
+        new(StringComparer.OrdinalIgnoreCase);
     private static readonly List<CardOverlay> loadedOverlays = [];
+    private static CardOverlayRules activeRules = new();
+    private static HashSet<string> activeRecentCards =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static HashSet<string> activeRecentPurchases =
+        new(StringComparer.OrdinalIgnoreCase);
     private static IntPtr cryptoLibrary;
     private static long lastAnimationSignature = long.MinValue;
     internal static bool DrawWithDirectComposition { get; set; }
@@ -151,6 +164,14 @@ internal static class CardOverlayLoader
     internal static bool HasAnimatedOverlay(string cardTag) =>
         overlaysByCard.TryGetValue(cardTag, out CardOverlay? overlay) &&
         overlay.Animated;
+
+    internal static bool ShouldDrawFavouriteIcon(
+        string cardTag, bool favourite) => ShouldDrawFavouriteIcon(
+            favourite, builtInFavouriteCards.Contains(cardTag));
+
+    private static bool ShouldDrawFavouriteIcon(
+        bool favourite, bool builtInFavouriteOverlay) =>
+        favourite && !builtInFavouriteOverlay;
 
     internal static bool TryGetFrame(
         string cardTag, out CardOverlayFrame frame)
@@ -185,6 +206,10 @@ internal static class CardOverlayLoader
             overlay.Dispose();
         loadedOverlays.Clear();
         overlaysByCard.Clear();
+        overlaysById.Clear();
+        overlayIdsByCard.Clear();
+        officialOverlayCards.Clear();
+        builtInFavouriteCards.Clear();
         lastAnimationSignature = long.MinValue;
         Generation++;
 
@@ -207,13 +232,11 @@ internal static class CardOverlayLoader
                     ReadAssignments(Path.Combine(
                         dataPath, "overlays", "person_overlays.cds"));
             CardOverlayRules rules = GetRules();
+            activeRules = rules;
 
             Dictionary<string, CardOverlayChoice> catalogue =
                 ReadAvailableOverlayCatalogue(
                     dataPath, mainPath);
-            Dictionary<string, CardOverlay> overlaysById =
-                new(StringComparer.OrdinalIgnoreCase);
-
             foreach (string id in showAssignments.Values
                 .Concat(personAssignments.Values)
                 .Concat(rules.OverlayIds())
@@ -252,6 +275,8 @@ internal static class CardOverlayLoader
             HashSet<string> recentPurchases =
                 GetRecentPurchases(
                     cards, rules.RecentPurchaseCount);
+            activeRecentCards = recentCards;
+            activeRecentPurchases = recentPurchases;
 
             foreach (ModelCard card in cards)
             {
@@ -269,6 +294,10 @@ internal static class CardOverlayLoader
                     overlaysById.TryGetValue(id, out CardOverlay? official))
                 {
                     overlaysByCard[card.name] = official;
+                    overlayIdsByCard[card.name] = id;
+                    officialOverlayCards.Add(card.name);
+                    if (IsBuiltInFavouriteOverlay(id))
+                        builtInFavouriteCards.Add(card.name);
                     continue;
                 }
 
@@ -277,13 +306,47 @@ internal static class CardOverlayLoader
                     recentPurchases, myData);
                 if (id != null &&
                     overlaysById.TryGetValue(id, out CardOverlay? fallback))
+                {
                     overlaysByCard[card.name] = fallback;
+                    overlayIdsByCard[card.name] = id;
+                    if (IsBuiltInFavouriteOverlay(id))
+                        builtInFavouriteCards.Add(card.name);
+                }
             }
         }
         catch (Exception exception)
         {
             Debug.WriteLine($"Card overlays were not loaded: {exception}");
         }
+    }
+
+    internal static bool RecalculateCard(ModelCard card, MyData? myData)
+    {
+        if (officialOverlayCards.Contains(card.name))
+            return false;
+        string? id = ResolveDefaultOverlayId(
+            card, activeRules, activeRecentCards,
+            activeRecentPurchases, myData);
+        if (id != null && !overlaysById.ContainsKey(id))
+            id = null;
+        overlayIdsByCard.TryGetValue(card.name, out string? previousId);
+        if (string.Equals(previousId, id,
+                StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        overlaysByCard.Remove(card.name);
+        overlayIdsByCard.Remove(card.name);
+        builtInFavouriteCards.Remove(card.name);
+        if (id != null)
+        {
+            overlaysByCard[card.name] = overlaysById[id];
+            overlayIdsByCard[card.name] = id;
+            if (IsBuiltInFavouriteOverlay(id))
+                builtInFavouriteCards.Add(card.name);
+        }
+        lastAnimationSignature = long.MinValue;
+        Generation++;
+        return true;
     }
 
     internal static void Draw(
@@ -317,12 +380,15 @@ internal static class CardOverlayLoader
             using CardOverlay? builtIn =
                 QuickPlayerCardOverlays.Create(choice);
             return builtIn?.Animated == true && VerifyRuleSelection() &&
+                ShouldDrawFavouriteIcon(true, false) &&
+                !ShouldDrawFavouriteIcon(true, true) &&
                 (id.Equals("quickplayer-favourite",
                     StringComparison.OrdinalIgnoreCase) ||
                  QuickPlayerCardOverlays.VerifyTextSpark()) &&
                 (!id.Equals("quickplayer-favourite",
                     StringComparison.OrdinalIgnoreCase) ||
-                 QuickPlayerCardOverlays.VerifyHeartbeat());
+                 (QuickPlayerCardOverlays.VerifyHeartbeat() &&
+                  VerifyCardRecalculation(builtIn)));
         }
         string? path = FindRcc(choice.File, paths.Overlays, paths.Main);
         if (path == null)
@@ -336,6 +402,45 @@ internal static class CardOverlayLoader
                 HasInwardGlow(overlay)) &&
             GetChoices().Any(item => item.Id == id) &&
             VerifyRuleSelection();
+    }
+
+    private static bool IsBuiltInFavouriteOverlay(string id) =>
+        id.Equals("quickplayer-favourite",
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool VerifyCardRecalculation(CardOverlay overlay)
+    {
+        const string id = "quickplayer-favourite";
+        const string tag = "verify-card-recalculation";
+        ModelCard card = new() { name = tag };
+        MyData data = new();
+        activeRules = new() { FavouriteOverlayId = id };
+        activeRecentCards.Clear();
+        activeRecentPurchases.Clear();
+        overlaysById[id] = overlay;
+        overlayIdsByCard.Remove(tag);
+        overlaysByCard.Remove(tag);
+        officialOverlayCards.Remove(tag);
+        builtInFavouriteCards.Remove(tag);
+        int generation = Generation;
+
+        bool unchanged = !RecalculateCard(card, data) &&
+            Generation == generation;
+        data.AddCardFavourite(tag, true);
+        bool added = RecalculateCard(card, data) &&
+            overlayIdsByCard.GetValueOrDefault(tag) == id &&
+            builtInFavouriteCards.Contains(tag) &&
+            Generation == generation + 1;
+        bool stable = !RecalculateCard(card, data) &&
+            Generation == generation + 1;
+        data.AddCardFavourite(tag, false);
+        bool removed = RecalculateCard(card, data) &&
+            !overlayIdsByCard.ContainsKey(tag) &&
+            !builtInFavouriteCards.Contains(tag) &&
+            Generation == generation + 2;
+
+        overlaysById.Remove(id);
+        return unchanged && added && stable && removed;
     }
 
     internal static bool VerifyAllOverlaysMachine()

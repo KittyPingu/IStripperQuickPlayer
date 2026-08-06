@@ -39,9 +39,11 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
     private sealed class CardOverlayVisual(
         IDCompositionVisual visual,
+        IDCompositionVisual playingVisual,
         IDCompositionRectangleClip clip) : IDisposable
     {
         internal IDCompositionVisual Visual { get; } = visual;
+        internal IDCompositionVisual PlayingVisual { get; } = playingVisual;
         internal IDCompositionRectangleClip Clip { get; } = clip;
         internal SharedOverlaySurface? Surface { get; set; }
         internal DrawingRectangle Bounds { get; set; }
@@ -50,6 +52,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         public void Dispose()
         {
             Clip.Dispose();
+            PlayingVisual.Dispose();
             Visual.Dispose();
         }
     }
@@ -92,6 +95,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             .Where(index => !active.Contains(index)).ToArray())
         {
             CardOverlayVisual visual = cardOverlayVisuals[removed];
+            compositionVisual!.RemoveVisual(visual.PlayingVisual);
             compositionVisual!.RemoveVisual(visual.Visual);
             visual.Dispose();
             cardOverlayVisuals.Remove(removed);
@@ -110,11 +114,15 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             {
                 IDCompositionVisual visual =
                     compositionDevice!.CreateVisual();
+                IDCompositionVisual playingVisual =
+                    compositionDevice.CreateVisual();
                 IDCompositionRectangleClip clip =
                     compositionDevice.CreateRectangleClip();
-                overlayVisual = new CardOverlayVisual(visual, clip);
+                overlayVisual = new CardOverlayVisual(
+                    visual, playingVisual, clip);
                 visual.SetClip(clip);
                 compositionVisual!.AddVisual(visual, true, null);
+                compositionVisual.AddVisual(playingVisual, true, visual);
                 cardOverlayVisuals.Add(card.Index, overlayVisual);
             }
             if (!ReferenceEquals(overlayVisual.Surface, surface))
@@ -138,6 +146,27 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                     overlayVisual.Clip, surface.Size, rounded);
                 overlayVisual.Bounds = bounds;
                 overlayVisual.Rounded = rounded;
+            }
+
+            bool playing = renderer.nowPlayingTag ==
+                card.Visual.Card.modelName + "\r\n" +
+                card.Visual.Card.outfit;
+            if (playing)
+            {
+                DrawingRectangle playingBounds =
+                    card.Visual.PlayingBounds;
+                overlayVisual.PlayingVisual.SetContent(
+                    GetPlayingBannerSurface(
+                        playingBounds.Size,
+                        card.Visual.PlayingFontSize));
+                overlayVisual.PlayingVisual.SetTransform(
+                    Matrix3x2.Identity);
+                overlayVisual.PlayingVisual.SetOffsetX(playingBounds.Left);
+                overlayVisual.PlayingVisual.SetOffsetY(playingBounds.Top);
+            }
+            else
+            {
+                overlayVisual.PlayingVisual.SetContent(null);
             }
         }
     }
@@ -282,6 +311,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         sharedOverlaySurfaces =
             new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, CardOverlayVisual> cardOverlayVisuals = [];
+    private readonly Dictionary<(Size Size, float FontSize),
+        IDCompositionSurface> playingBannerSurfaces = [];
     private readonly Dictionary<Control, QueueSurface> queueSurfaces = [];
     private QueueSurface? previewSurface;
     private Func<CardOverlayFrame?>? previewFrame;
@@ -615,7 +646,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 imageBounds.Left, statusTop);
         }
 
-        if (renderer.myData?.GetCardFavourite(card.name) == true)
+        if (CardOverlayLoader.ShouldDrawFavouriteIcon(card.name,
+                renderer.myData?.GetCardFavourite(card.name) == true))
         {
             float heartSize = CardRenderer.CardPixels(imageBounds, 28);
             float heartMargin = CardRenderer.CardPixels(
@@ -688,7 +720,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     }
 
     internal bool HasPendingStaticChanges =>
-        renderer.GpuSceneVersion != renderedGpuSceneVersion;
+        renderer.GpuSceneVersion != renderedGpuSceneVersion ||
+        overlayGeneration != CardOverlayLoader.Generation;
 
     private bool VerifySharedOverlaySurface(DrawingBitmap sheet)
     {
@@ -1069,6 +1102,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     {
         foreach (CardOverlayVisual visual in cardOverlayVisuals.Values)
         {
+            compositionVisual?.RemoveVisual(visual.PlayingVisual);
             compositionVisual?.RemoveVisual(visual.Visual);
             visual.Dispose();
         }
@@ -1077,6 +1111,76 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             sharedOverlaySurfaces.Values)
             surface.Dispose();
         sharedOverlaySurfaces.Clear();
+    }
+
+    private IDCompositionSurface GetPlayingBannerSurface(
+        Size size, float fontSize)
+    {
+        size = ValidSize(size);
+        var key = (size, fontSize);
+        if (playingBannerSurfaces.TryGetValue(
+                key, out IDCompositionSurface? banner))
+            return banner;
+        compositionDevice!.CreateSurface(
+            (uint)size.Width, (uint)size.Height,
+            DxgiFormat.B8G8R8A8_UNorm, DxgiAlphaMode.Premultiplied,
+            out banner);
+        IDXGISurface updateSurface =
+            banner.BeginDraw<IDXGISurface>(null, out Int2 offset);
+        try
+        {
+            using (updateSurface)
+            using (ID2D1Bitmap1 target =
+                d2dContext!.CreateBitmapFromDxgiSurface(
+                    updateSurface,
+                    new BitmapProperties1(
+                        new D2DPixelFormat(
+                            DxgiFormat.B8G8R8A8_UNorm,
+                            D2DAlphaMode.Premultiplied),
+                        96, 96,
+                        BitmapOptions.Target |
+                        BitmapOptions.CannotDraw)))
+            {
+                d2dContext.Target = target;
+                d2dContext.Transform =
+                    Matrix3x2.CreateTranslation(offset.X, offset.Y);
+                d2dContext.BeginDraw();
+                d2dContext.Clear(new D2DColor(0, 0, 0, 0));
+                DrawingRectangle bounds = new(Point.Empty, size);
+                d2dContext.FillRectangle(
+                    ToRect(bounds), GetBrush(Color.Green));
+                d2dContext.DrawRectangle(
+                    ToRect(bounds), GetBrush(Color.Black), 2);
+                DrawText("Playing", bounds, "Verdana", fontSize,
+                    Color.White, FontWeight.Bold);
+                d2dContext.EndDraw();
+                d2dContext.Target = null;
+                d2dContext.Transform = Matrix3x2.Identity;
+            }
+        }
+        finally
+        {
+            banner.EndDraw();
+        }
+        playingBannerSurfaces.Add(key, banner);
+        return banner;
+    }
+
+    private static bool VerifyPlayingBannerSize(Size requested)
+    {
+        Size actual = ValidSize(requested);
+        return actual.Width == Math.Max(1, requested.Width) &&
+            actual.Height == Math.Max(1, requested.Height);
+    }
+
+    private void ClearPlayingBanners()
+    {
+        foreach (IDCompositionSurface banner in
+            playingBannerSurfaces.Values)
+        {
+            banner.Dispose();
+        }
+        playingBannerSurfaces.Clear();
     }
 
     public void Dispose()
@@ -1089,6 +1193,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         renderer.DrawWithDirectComposition = false;
         CardOverlayLoader.DrawWithDirectComposition = false;
         ClearSharedOverlays();
+        ClearPlayingBanners();
         ClearBitmaps();
         foreach (ID2D1SolidColorBrush brush in brushes.Values)
             brush.Dispose();
@@ -1120,6 +1225,9 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
     internal static bool Verify()
     {
+        if (!VerifyPlayingBannerSize(new Size(98, 22)) ||
+            !VerifyPlayingBannerSize(Size.Empty))
+            return false;
         Vortice.Mathematics.Rect rectangle =
             ToRect(new DrawingRectangle(10, 20, 30, 40));
         if (rectangle.X != 10 || rectangle.Y != 20 ||
@@ -1227,6 +1335,19 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         {
             Console.Error.WriteLine(
                 "GPU verify: static invalidation failed");
+            return false;
+        }
+        staticDraws = control.staticSurfaceDrawCount;
+        int generation = CardOverlayLoader.Generation;
+        CardOverlayLoader.Reload([]);
+        if (CardOverlayLoader.Generation == generation ||
+            !control.HasPendingStaticChanges ||
+            !control.Render(true) ||
+            control.staticSurfaceDrawCount != staticDraws ||
+            control.HasPendingStaticChanges)
+        {
+            Console.Error.WriteLine(
+                "GPU verify: overlay invalidation failed");
             return false;
         }
         control.SetQueueCards([(queue, queueCard, "missing", false)]);

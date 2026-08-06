@@ -776,7 +776,8 @@ namespace IStripperQuickPlayer.BLL
                         imgrect2.Left, (int)Math.Round(statusIconTop));
                 }
 
-                if (myData != null && myData.GetCardFavourite(card.name))
+                if (CardOverlayLoader.ShouldDrawFavouriteIcon(card.name,
+                        myData?.GetCardFavourite(card.name) == true))
                 {
                     g.InterpolationMode = InterpolationMode.High;
                     g.SmoothingMode = SmoothingMode.HighQuality;

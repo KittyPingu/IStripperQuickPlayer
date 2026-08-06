@@ -5358,7 +5358,7 @@ namespace IStripperQuickPlayer
             if (myData.GetCardFavourite(currentMenuCard.Tag.ToString()) != menuCardFavourite.Checked)
             {
                 myData.AddCardFavourite(currentMenuCard.Tag.ToString(), menuCardFavourite.Checked);
-                currentMenuCard.Update();
+                RecalculateCardOverlay(currentMenuCard, true);
             }
         }
 
@@ -5372,6 +5372,8 @@ namespace IStripperQuickPlayer
         {
             if (myData == null || currentMenuCard == null) return;
             myData.AddCardRating(currentMenuCard.Tag.ToString(), cmbMenuCardRating.SelectedIndex + 1);
+            RecalculateCardOverlay(
+                currentMenuCard, menuShowRatingsStars.Checked);
         }
 
 
@@ -5387,10 +5389,21 @@ namespace IStripperQuickPlayer
             if (myData.GetCardRating(currentMenuCard.Tag.ToString()) ==
                 rating * 2) return;
             myData.AddCardRating(currentMenuCard.Tag.ToString(), rating * 2);
-            if (menuShowRatingsStars.Checked)
-            {
-                currentMenuCard.Update();
-            }
+            RecalculateCardOverlay(
+                currentMenuCard, menuShowRatingsStars.Checked);
+        }
+
+        private void RecalculateCardOverlay(
+            ImageListViewItem changedCard, bool baseCardChanged)
+        {
+            ModelCard? card = Datastore.findCardByTag(
+                changedCard.Tag?.ToString() ?? "");
+            bool overlayChanged = card != null &&
+                CardOverlayLoader.RecalculateCard(card, myData);
+            if (overlayChanged || baseCardChanged)
+                listModelsNew.RefreshItems([changedCard]);
+            if (overlayChanged)
+                RefreshPlayQueueCardOverlays();
         }
 
         private void UpdateFavouriteMenuItem()
@@ -5901,13 +5914,8 @@ namespace IStripperQuickPlayer
 
         private void listModelsNew_ItemClick(object sender, ItemClickEventArgs e)
         {
-            ImageListView.HitInfo hit;
-            listModelsNew.HitTest(e.Location, out hit);
-
-            if (!hit.ItemHit)
-                return;          
-            ImageListViewItem clickCard = listModelsNew.Items[hit.ItemIndex];
-            int idx = hit.ItemIndex;
+            ImageListViewItem clickCard = e.Item;
+            int idx = clickCard.Index;
 
             if (!cardRenderer.TryGetItemBounds(idx, out var cardRect))
                 return;
@@ -5935,10 +5943,8 @@ namespace IStripperQuickPlayer
             if (myData == null || clickCard == null) return;
             if (myData.GetCardRating(clickCard.Tag.ToString()) == rating) return;
             myData.AddCardRating(clickCard.Tag.ToString(), rating);
-            if (menuShowRatingsStars.Checked)
-            {
-                clickCard.Update();
-            }
+            RecalculateCardOverlay(
+                clickCard, menuShowRatingsStars.Checked);
         }
 
         private void listModelsNew_MouseDown(object sender, MouseEventArgs e)
