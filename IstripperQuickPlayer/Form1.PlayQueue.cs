@@ -1653,7 +1653,8 @@ namespace IStripperQuickPlayer
         }
 
         private static IEnumerable<(
-            Control Host, PictureBox Picture, string CardTag)>
+            Control Host, PictureBox Picture, string CardTag,
+            bool Playing)>
             QueueOverlayCards(FlowLayoutPanel flow)
         {
             foreach (Panel panel in flow.Controls.OfType<Panel>())
@@ -1663,7 +1664,8 @@ namespace IStripperQuickPlayer
                 PictureBox? picture =
                     panel.Controls.OfType<PictureBox>().FirstOrDefault();
                 if (picture != null)
-                    yield return (flow, picture, drag.Entry.CardTag);
+                    yield return (
+                        flow, picture, drag.Entry.CardTag, drag.Playing);
             }
         }
 

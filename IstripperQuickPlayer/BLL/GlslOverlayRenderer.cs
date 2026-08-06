@@ -24,12 +24,25 @@ internal static class GlslOverlayRenderer
         string?[] defaultColors, DrawingBitmap? channel0,
         DrawingBitmap? channel1, int rotation, bool mirrorX,
         out int frameCount, out int frameDuration)
+        => Render(name, pixelShader, parameters, defaultColors,
+            channel0, channel1, rotation, mirrorX,
+            out frameCount, out frameDuration, Width, Height);
+
+    internal static DrawingBitmap? Render(
+        string name, string pixelShader, string parameters,
+        string?[] defaultColors, DrawingBitmap? channel0,
+        DrawingBitmap? channel1, int rotation, bool mirrorX,
+        out int frameCount, out int frameDuration,
+        int width, int height)
     {
-        frameDuration = FrameDuration;
+        bool quickPlayer = name.StartsWith(
+            "quickPlayer", StringComparison.OrdinalIgnoreCase);
+        frameDuration = quickPlayer ? 75 : FrameDuration;
         frameCount = name.Equals(
                 "borderGlow", StringComparison.OrdinalIgnoreCase) ? 50 :
             name.Equals(
                 "heartsFireworks", StringComparison.OrdinalIgnoreCase) ? 60 :
+            quickPlayer ? 80 :
             name is "flux" or "wave" ? 63 : 100;
         lock (renderLock)
         {
@@ -38,7 +51,8 @@ internal static class GlslOverlayRenderer
             {
                 return RenderCore(
                     pixelShader, ParseColors(parameters, defaultColors),
-                    channel0, channel1, rotation, mirrorX, frameCount);
+                    channel0, channel1, rotation, mirrorX,
+                    frameCount, width, height);
             }
             catch (Exception exception)
             {
@@ -54,12 +68,13 @@ internal static class GlslOverlayRenderer
     private static DrawingBitmap RenderCore(
         string source, Vector3[] colors,
         DrawingBitmap? channel0, DrawingBitmap? channel1,
-        int rotation, bool mirrorX, int frameCount)
+        int rotation, bool mirrorX, int frameCount,
+        int width, int height)
     {
         GLFWProvider.CheckForMainThread = false;
         NativeWindowSettings settings = new()
         {
-            ClientSize = new Vector2i(Width, Height),
+            ClientSize = new Vector2i(width, height),
             StartVisible = false,
             StartFocused = false,
             WindowBorder = WindowBorder.Hidden,
@@ -89,7 +104,7 @@ internal static class GlslOverlayRenderer
         int texture0 = CreateTexture(channel0);
         int texture1 = CreateTexture(channel1);
         DrawingBitmap sheet = new(
-            Width * frameCount, Height,
+            width * frameCount, height,
             System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         BitmapData target = sheet.LockBits(
             new Rectangle(Point.Empty, sheet.Size),
@@ -100,7 +115,7 @@ internal static class GlslOverlayRenderer
             GL.BindVertexArray(vertexArray);
             GL.UseProgram(program);
             SetUniform(program, "iResolution",
-                new Vector3(Width, Height, 0));
+                new Vector3(width, height, 0));
             SetUniform(program, "qt_Opacity", 1f);
             SetUniform(program, "rotate180",
                 rotation % 360 == 180 ? 1 : 0);
@@ -110,9 +125,9 @@ internal static class GlslOverlayRenderer
             BindTexture(program, "iChannel0", texture0, 0);
             BindTexture(program, "iChannel1", texture1, 1);
 
-            byte[] pixels = new byte[Width * Height * 4];
-            byte[] row = new byte[Width * 4];
-            GL.Viewport(0, 0, Width, Height);
+            byte[] pixels = new byte[width * height * 4];
+            byte[] row = new byte[width * 4];
+            GL.Viewport(0, 0, width, height);
             GL.Disable(EnableCap.Blend);
             for (int frame = 0; frame < frameCount; frame++)
             {
@@ -121,9 +136,9 @@ internal static class GlslOverlayRenderer
                 GL.ClearColor(0, 0, 0, 0);
                 GL.Clear(ClearBufferMask.ColorBufferBit);
                 GL.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
-                GL.ReadPixels(0, 0, Width, Height,
+                GL.ReadPixels(0, 0, width, height,
                     GlPixelFormat.Bgra, PixelType.UnsignedByte, pixels);
-                CopyFrame(pixels, row, target, frame);
+                CopyFrame(pixels, row, target, frame, width, height);
             }
         }
         catch
@@ -145,16 +160,17 @@ internal static class GlslOverlayRenderer
     }
 
     private static void CopyFrame(
-        byte[] pixels, byte[] row, BitmapData target, int frame)
+        byte[] pixels, byte[] row, BitmapData target, int frame,
+        int width, int height)
     {
-        for (int y = 0; y < Height; y++)
+        for (int y = 0; y < height; y++)
         {
             System.Buffer.BlockCopy(
-                pixels, (Height - y - 1) * row.Length,
+                pixels, (height - y - 1) * row.Length,
                 row, 0, row.Length);
-            for (int x = 0; x < Width; x++)
+            for (int x = 0; x < width; x++)
             {
-                float mask = RoundedMask(x, y);
+                float mask = RoundedMask(x, y, width, height);
                 int pixel = x * 4;
                 if (mask < 1)
                 {
@@ -169,18 +185,19 @@ internal static class GlslOverlayRenderer
             }
             Marshal.Copy(row, 0,
                 target.Scan0 + y * target.Stride +
-                    frame * Width * 4,
+                    frame * width * 4,
                 row.Length);
         }
     }
 
-    private static float RoundedMask(int x, int y)
+    private static float RoundedMask(
+        int x, int y, int width, int height)
     {
-        const float radius = 6;
+        float radius = 6f * width / Width;
         float dx = Math.Max(radius - x - .5f,
-            x + .5f - (Width - radius));
+            x + .5f - (width - radius));
         float dy = Math.Max(radius - y - .5f,
-            y + .5f - (Height - radius));
+            y + .5f - (height - radius));
         if (dx <= 0 || dy <= 0)
             return 1;
         return Math.Clamp(radius + .5f -

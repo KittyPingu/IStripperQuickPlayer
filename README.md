@@ -80,10 +80,11 @@ filters and stops when the available unique cards are exhausted.
 
 ### Show iStripper card overlays
 
-QuickPlayer reads iStripper's card and person overlay assignments, overlay
-catalogue and account entitlements. Only overlays available to the current
-iStripper account are offered. An official card or person assignment takes
-priority over every QuickPlayer default.
+QuickPlayer provides animated **New**, **Recent**, and **Favourite** overlays,
+and reads iStripper's card and person overlay assignments, catalogue, and
+account entitlements. Official overlays are limited to those available to the
+current iStripper account, and an official assignment takes priority over every
+QuickPlayer default.
 
 Under **Settings > Library & search**:
 

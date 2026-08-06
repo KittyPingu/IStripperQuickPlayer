@@ -34,6 +34,7 @@ internal sealed class CardOverlayRules
     public string RecentPurchaseOverlayId { get; set; } = "";
     public decimal MinimumMyRating { get; set; }
     public string RatingOverlayId { get; set; } = "";
+    public string FavouriteOverlayId { get; set; } = "";
     public List<string> Priority { get; set; } = [];
 
     internal IEnumerable<string> OverlayIds() =>
@@ -41,6 +42,7 @@ internal sealed class CardOverlayRules
             .Append(RecentOverlayId)
             .Append(RecentPurchaseOverlayId)
             .Append(RatingOverlayId)
+            .Append(FavouriteOverlayId)
             .Where(id => !string.IsNullOrWhiteSpace(id));
 
     internal void Normalize()
@@ -49,6 +51,7 @@ internal sealed class CardOverlayRules
         RecentOverlayId ??= "";
         RecentPurchaseOverlayId ??= "";
         RatingOverlayId ??= "";
+        FavouriteOverlayId ??= "";
         Priority ??= [];
     }
 }
@@ -193,15 +196,16 @@ internal static class CardOverlayLoader
             string overlaysPath =
                 system?.GetValue("OverlaysPath", "")?.ToString() ?? "";
             string mainPath = system?.GetValue("MainPath", "")?.ToString() ?? "";
-            if (dataPath.Length == 0)
-                return;
-
             Dictionary<string, string> showAssignments =
-                ReadAssignments(Path.Combine(
-                    dataPath, "overlays", "show_overlays.cds"));
+                dataPath.Length == 0 ?
+                    new(StringComparer.OrdinalIgnoreCase) :
+                    ReadAssignments(Path.Combine(
+                        dataPath, "overlays", "show_overlays.cds"));
             Dictionary<string, string> personAssignments =
-                ReadAssignments(Path.Combine(
-                    dataPath, "overlays", "person_overlays.cds"));
+                dataPath.Length == 0 ?
+                    new(StringComparer.OrdinalIgnoreCase) :
+                    ReadAssignments(Path.Combine(
+                        dataPath, "overlays", "person_overlays.cds"));
             CardOverlayRules rules = GetRules();
 
             Dictionary<string, CardOverlayChoice> catalogue =
@@ -218,6 +222,16 @@ internal static class CardOverlayLoader
             {
                 if (!catalogue.TryGetValue(id, out CardOverlayChoice? choice))
                     continue;
+                if (QuickPlayerCardOverlays.Contains(choice.Id))
+                {
+                    CardOverlay? builtIn =
+                        QuickPlayerCardOverlays.Create(choice);
+                    if (builtIn == null)
+                        continue;
+                    overlaysById[id] = builtIn;
+                    loadedOverlays.Add(builtIn);
+                    continue;
+                }
                 string? rccPath = FindRcc(
                     choice.File, overlaysPath, mainPath);
                 if (rccPath == null)
@@ -298,6 +312,18 @@ internal static class CardOverlayLoader
                 paths.Data, paths.Main)
             .TryGetValue(id, out CardOverlayChoice? choice))
             return false;
+        if (QuickPlayerCardOverlays.Contains(id))
+        {
+            using CardOverlay? builtIn =
+                QuickPlayerCardOverlays.Create(choice);
+            return builtIn?.Animated == true && VerifyRuleSelection() &&
+                (id.Equals("quickplayer-favourite",
+                    StringComparison.OrdinalIgnoreCase) ||
+                 QuickPlayerCardOverlays.VerifyTextSpark()) &&
+                (!id.Equals("quickplayer-favourite",
+                    StringComparison.OrdinalIgnoreCase) ||
+                 QuickPlayerCardOverlays.VerifyHeartbeat());
+        }
         string? path = FindRcc(choice.File, paths.Overlays, paths.Main);
         if (path == null)
             return false;
@@ -385,13 +411,13 @@ internal static class CardOverlayLoader
         try
         {
             var paths = GetPaths();
-            if (paths.Data.Length == 0)
-                return [];
             return ReadAvailableOverlayCatalogue(
                     paths.Data, paths.Main)
                 .Values
                 .Where(choice =>
                 {
+                    if (QuickPlayerCardOverlays.Contains(choice.Id))
+                        return true;
                     string? path = FindRcc(
                         choice.File, paths.Overlays, paths.Main);
                     return path != null &&
@@ -415,6 +441,12 @@ internal static class CardOverlayLoader
             if (!ReadAvailableOverlayCatalogue(
                     paths.Data, paths.Main).ContainsKey(choice.Id))
                 return null;
+            if (QuickPlayerCardOverlays.Contains(choice.Id))
+            {
+                CardOverlay? builtIn =
+                    QuickPlayerCardOverlays.Create(choice);
+                return builtIn == null ? null : new Preview(builtIn);
+            }
             string? path = FindRcc(
                 choice.File, paths.Overlays, paths.Main);
             if (path == null)
@@ -467,16 +499,19 @@ internal static class CardOverlayLoader
         Dictionary<string, CardOverlayChoice> catalogue =
             ReadOverlayCatalogue(Path.Combine(
                 dataPath, "staticOverlayProperties.cds"));
-        if (IsAllOverlaysMachine())
-            return catalogue;
-
-        HashSet<string> owned = ReadOwnedOverlayIds(
-            Path.Combine(dataPath, "overlayRights.ovbf"), mainPath);
-        return catalogue
-            .Where(item => owned.Contains(item.Key))
-            .ToDictionary(
-                item => item.Key, item => item.Value,
-                StringComparer.OrdinalIgnoreCase);
+        if (!IsAllOverlaysMachine())
+        {
+            HashSet<string> owned = ReadOwnedOverlayIds(
+                Path.Combine(dataPath, "overlayRights.ovbf"), mainPath);
+            catalogue = catalogue
+                .Where(item => owned.Contains(item.Key))
+                .ToDictionary(
+                    item => item.Key, item => item.Value,
+                    StringComparer.OrdinalIgnoreCase);
+        }
+        foreach (CardOverlayChoice choice in QuickPlayerCardOverlays.Choices)
+            catalogue[choice.Id] = choice;
+        return catalogue;
     }
 
     private static bool IsAllOverlaysMachine()
@@ -567,6 +602,9 @@ internal static class CardOverlayLoader
                     myData?.GetCardRating(card.name) >=
                         rules.MinimumMyRating * 2 =>
                     rules.RatingOverlayId,
+                "favourite" when
+                    myData?.GetCardFavourite(card.name) == true =>
+                    rules.FavouriteOverlayId,
                 _ when key.StartsWith("type:") &&
                     key[5..] == card.collection.ToString() =>
                     rules.CardTypes.GetValueOrDefault(key[5..]),
@@ -585,6 +623,7 @@ internal static class CardOverlayLoader
         [
             "recent",
             "purchase",
+            "favourite",
             "rating",
             .. Enum.GetValues<Enums.CollectionType>()
                 .Where(value =>
@@ -631,6 +670,7 @@ internal static class CardOverlayLoader
             RecentPurchaseOverlayId = "purchase",
             MinimumMyRating = 4,
             RatingOverlayId = "rating",
+            FavouriteOverlayId = "favourite",
             CardTypes = new() { ["IStripper"] = "type" }
         };
         MyData data = new();
@@ -654,6 +694,7 @@ internal static class CardOverlayLoader
             datePurchased = new(2026, 1, 3)
         };
         data.AddCardRating(rated.name, 8);
+        data.AddCardFavourite(rated.name, true);
         HashSet<string> newest = GetRecentCards([typed, recent], 1);
         HashSet<string> purchases =
             GetRecentPurchases([typed, purchased], 1);
@@ -666,7 +707,7 @@ internal static class CardOverlayLoader
                 purchases, data) == "purchase" &&
             ResolveDefaultOverlayId(
                 rated, rules, new HashSet<string>(),
-                new HashSet<string>(), data) == "rating" &&
+                new HashSet<string>(), data) == "favourite" &&
             ResolveDefaultOverlayId(
                 typed, rules, new HashSet<string>(),
                 new HashSet<string>(), data) == "type" &&

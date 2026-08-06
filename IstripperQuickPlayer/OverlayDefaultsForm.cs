@@ -233,7 +233,9 @@ internal sealed class OverlayDefaultsForm : Form
                     "My Rating at least (0-5)",
                     rules.MinimumMyRating.ToString(
                         "0.0", CultureInfo.CurrentCulture),
-                    rules.RatingOverlayId, false)
+                    rules.RatingOverlayId, false),
+                ["favourite"] = (
+                    "Favourites", "", rules.FavouriteOverlayId, true)
             };
         foreach (Enums.CollectionType type in
                  Enum.GetValues<Enums.CollectionType>()
@@ -503,6 +505,8 @@ internal sealed class OverlayDefaultsForm : Form
                 rules.MinimumMyRating = rating;
                 rules.RatingOverlayId = overlayId;
             }
+            else if (key == "favourite")
+                rules.FavouriteOverlayId = overlayId;
         }
         return true;
     }

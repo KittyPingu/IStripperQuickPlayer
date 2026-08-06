@@ -257,8 +257,9 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         internal IDCompositionVisual CompositionVisual { get; } =
             compositionVisual;
         internal Size Size { get; set; } = ValidSize(host.ClientSize);
-        internal List<(PictureBox Picture, string CardTag)> Cards { get; } =
-            [];
+        internal List<(
+            PictureBox Picture, string CardTag, bool Playing)> Cards { get; }
+            = [];
 
         public void Dispose()
         {
@@ -385,7 +386,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     }
 
     internal void SetQueueCards(IEnumerable<(
-        Control Host, PictureBox Picture, string CardTag)> cards)
+        Control Host, PictureBox Picture, string CardTag,
+        bool Playing)> cards)
     {
         if (disposed)
             return;
@@ -412,7 +414,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 }
                 surface.Cards.Clear();
                 surface.Cards.AddRange(entries.Select(entry =>
-                    (entry.Picture, entry.CardTag)));
+                    (entry.Picture, entry.CardTag, entry.Playing)));
             }
             compositionDevice!.Commit();
             Render(true);
@@ -856,22 +858,37 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         if (surface.Host.Visible &&
             Properties.Settings.Default.DrawCardOverlays)
         {
-            foreach ((PictureBox picture, string cardTag) in surface.Cards)
+            foreach ((PictureBox picture, string cardTag, bool playing)
+                     in surface.Cards)
             {
-                if (!picture.Visible ||
-                    !CardOverlayLoader.TryGetFrame(
-                        cardTag, out CardOverlayFrame frame))
+                if (!picture.Visible)
                     continue;
                 DrawingRectangle destination = GetZoomBounds(picture);
                 destination.Offset(surface.Host.PointToClient(
                     picture.PointToScreen(Point.Empty)));
-                d2dContext.DrawBitmap(
-                    GetBitmap(frame.Image),
-                    destination,
-                    1,
-                    Vortice.Direct2D1.InterpolationMode.Linear,
-                    frame.Source,
-                    Matrix4x4.Identity);
+                if (CardOverlayLoader.TryGetFrame(
+                        cardTag, out CardOverlayFrame frame))
+                {
+                    d2dContext.DrawBitmap(
+                        GetBitmap(frame.Image),
+                        destination,
+                        1,
+                        Vortice.Direct2D1.InterpolationMode.Linear,
+                        frame.Source,
+                        Matrix4x4.Identity);
+                }
+                if (playing)
+                {
+                    int height = Math.Min(
+                        24, Math.Max(18, destination.Height / 5));
+                    DrawingRectangle badge = new(
+                        destination.Left, destination.Bottom - height,
+                        destination.Width, height);
+                    d2dContext.FillRectangle(
+                        ToRect(badge),
+                        GetBrush(Color.FromArgb(220, 22, 145, 70)));
+                    DrawText("Playing", badge, "Segoe UI", 12, Color.White);
+                }
             }
         }
         d2dContext.EndDraw();
@@ -1212,7 +1229,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 "GPU verify: static invalidation failed");
             return false;
         }
-        control.SetQueueCards([(queue, queueCard, "missing")]);
+        control.SetQueueCards([(queue, queueCard, "missing", false)]);
         bool rendered = control.SetPreview(preview, () => null) &&
             control.Render(true);
         control.ClearPreview();

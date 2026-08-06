@@ -366,6 +366,7 @@ FodyWeavers.xsd
 /IstripperQuickPlayer/BLL/*
 !/IstripperQuickPlayer/BLL/CardOverlayLoader.cs
 !/IstripperQuickPlayer/BLL/GlslOverlayRenderer.cs
+!/IstripperQuickPlayer/BLL/QuickPlayerCardOverlays.cs
 !/IstripperQuickPlayer/OverlayDefaultsForm.cs
 !/IstripperQuickPlayer/DirectCompositionCardOverlayControl.cs
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
