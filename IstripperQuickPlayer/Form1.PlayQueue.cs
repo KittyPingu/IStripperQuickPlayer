@@ -821,6 +821,8 @@ namespace IStripperQuickPlayer
                 randomPlayOrderToolStripMenuItem,
                 avoidRecentRepeatsToolStripMenuItem,
                 new ToolStripSeparator(),
+                customPlayerVolumeMenu,
+                customPlayerFullOpacityMenu,
                 enablePlaybackControlToolStripMenuItem,
                 alphaCheckpointCacheToolStripMenuItem,
                 alphaCheckpointCacheSizeToolStripMenuItem,
@@ -1698,14 +1700,6 @@ namespace IStripperQuickPlayer
                 return;
 
             ClearQueuedCardSession();
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Totem\vghd\parameters", true);
-            if (key == null)
-            {
-                queue.Insert(Math.Min(drag.Index, queue.Count), entry);
-                return;
-            }
-
             StartQueuedCardSession(entry, animationPath,
                 useSmartRules: manual);
             if (manual)
@@ -1722,8 +1716,11 @@ namespace IStripperQuickPlayer
             queuedAnimationPendingPath = animationPath;
             queuedAnimationPendingConfirmed = false;
             queuedAnimationProtectedUntil = DateTime.MinValue;
-            BeginAnimationReplacement(animationPath);
-            key.SetValue("ForceAnim", animationPath);
+            if (!RequestAnimationPlayback(animationPath))
+            {
+                queue.Insert(Math.Min(drag.Index, queue.Count), entry);
+                return;
+            }
             SelectQueuedCard(entry.CardTag, animationPath);
             BeginInvoke((Action)TaskbarThumbnail);
         }
@@ -2537,7 +2534,6 @@ namespace IStripperQuickPlayer
             cardTag = "";
             if (activeQueuedCard == null)
                 return false;
-
             if (!ShouldContinueQueuedCard(activeQueuedCardStartedAt,
                     Environment.TickCount64, ReadShowDurationMinutes()) ||
                 !TryResolveQueueEntry(activeQueuedCard, out animationPath,
@@ -2643,17 +2639,15 @@ namespace IStripperQuickPlayer
             if (panicActive)
                 return false;
 
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Totem\vghd\parameters", true);
-            if (key == null || !TryTakeQueuedAnimation(
+            if (!TryTakeQueuedAnimation(
                     out string animationPath, out string cardTag))
                 return false;
 
             queuedAnimationPendingPath = animationPath;
             queuedAnimationPendingConfirmed = false;
             queuedAnimationProtectedUntil = DateTime.MinValue;
-            BeginAnimationReplacement(animationPath);
-            key.SetValue("ForceAnim", animationPath);
+            if (!RequestAnimationPlayback(animationPath))
+                return false;
             SelectQueuedCard(cardTag, animationPath);
             if (!apiOnlyMode)
                 BeginInvoke((Action)TaskbarThumbnail);

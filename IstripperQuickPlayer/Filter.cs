@@ -27,6 +27,12 @@ namespace IStripperQuickPlayer
         public FilterSettings? filterSettings;
         FilterSettings? savedSettings;
         bool deleting = false;
+        readonly CheckBox chkCustom = new()
+        {
+            AutoSize = true,
+            Location = new Point(630, 748),
+            Text = "Custom"
+        };
         internal Filter(FilterSettings filter, string filterName)
         {
             filterSettings = (FilterSettings)filter.Clone();
@@ -43,6 +49,8 @@ namespace IStripperQuickPlayer
             this.Controls.Add(rangeWaist);
             this.Controls.Add(rangeHips);
             this.Controls.Add(rangeAge);
+            chkCustom.CheckedChanged += (_, e) => chk_CheckedChanged(chkCustom, e);
+            this.Controls.Add(chkCustom);
             AppTheme.Apply(this);
             isLoaded = true;
             if (string.IsNullOrEmpty(_filterName) || _filterName == "Default") button1.Enabled = false;
@@ -161,6 +169,7 @@ namespace IStripperQuickPlayer
             chkNormal.Checked = filterSettings.Normal;
             chkVirtuaGuy.Checked = filterSettings.VirtuaGuy;
             chkTradingCard.Checked = filterSettings.TradingCard;
+            chkCustom.Checked = filterSettings.Custom;
             dateTimePickerMin.Value = filterSettings.minDate;
             dateTimePickerMax.Value = filterSettings.maxDate;
             dateTimePickerMin.ValueChanged += Range_ValueChanged;
@@ -293,6 +302,7 @@ namespace IStripperQuickPlayer
             filterSettings.Normal = chkNormal.Checked;
             filterSettings.VirtuaGuy = chkVirtuaGuy.Checked;
             filterSettings.TradingCard = chkTradingCard.Checked;
+            filterSettings.Custom = chkCustom.Checked;
 
             Form1? frm = Utils.GetMainForm();
             if (frm != null)

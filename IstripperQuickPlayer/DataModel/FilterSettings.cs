@@ -27,6 +27,7 @@ namespace IStripperQuickPlayer.DataModel
         internal bool Normal=true;
         internal bool VirtuaGuy = true;
         internal bool TradingCard = true;
+        internal bool Custom = true;
         internal decimal minMyRating=0;
         internal decimal maxMyRating=10;
         internal DateTime minDate=new DateTime(2000,1,1);
@@ -37,6 +38,7 @@ namespace IStripperQuickPlayer.DataModel
         {
             maxWaist = 99;
             maxHips = 99;
+            Custom = true;
         }
 
         public object Clone()
@@ -70,7 +72,8 @@ namespace IStripperQuickPlayer.DataModel
             Special == other.Special &&
             Normal == other.Normal &&
             VirtuaGuy == other.VirtuaGuy &&
-            TradingCard == other.TradingCard;
+            TradingCard == other.TradingCard &&
+            Custom == other.Custom;
     }
 
     [Serializable]

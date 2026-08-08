@@ -101,6 +101,16 @@ internal sealed class LockStateOverlay : Form
         current.Show();
     }
 
+    internal static void ShowForWindow(Form window, bool locked)
+    {
+        if (!window.IsHandleCreated || window.Bounds.IsEmpty)
+            return;
+        current?.Close();
+        current = new LockStateOverlay(CalculateBounds(window.Bounds,
+            (int)GetDpiForWindow(window.Handle)), locked);
+        current.Show();
+    }
+
     internal static bool ShowImageForProcess(int processId, Image image)
     {
         if (processId == 0 || !TryGetMovieWindowBounds(processId,
@@ -111,6 +121,17 @@ internal sealed class LockStateOverlay : Form
             image.Size);
         current?.Close();
         current = new LockStateOverlay(bounds, false, image);
+        current.Show();
+        return true;
+    }
+
+    internal static bool ShowImageForWindow(Form window, Image image)
+    {
+        if (!window.IsHandleCreated || window.Bounds.IsEmpty)
+            return false;
+        current?.Close();
+        current = new LockStateOverlay(CalculateImageBounds(window.Bounds,
+            (int)GetDpiForWindow(window.Handle), image.Size), false, image);
         current.Show();
         return true;
     }
@@ -127,6 +148,16 @@ internal sealed class LockStateOverlay : Form
         current.Show();
     }
 
+    internal static void ShowTextForWindow(Form window, string text)
+    {
+        if (!window.IsHandleCreated || window.Bounds.IsEmpty)
+            return;
+        current?.Close();
+        current = new LockStateOverlay(CalculateTextBounds(window.Bounds,
+            (int)GetDpiForWindow(window.Handle)), false, text: text);
+        current.Show();
+    }
+
     internal static IntPtr HideMovieWindowForProcess(int processId)
     {
         IntPtr window = FindMovieWindow(processId, visibleOnly: true);
@@ -139,6 +170,19 @@ internal sealed class LockStateOverlay : Form
     {
         if (window != IntPtr.Zero && IsWindow(window))
             ShowWindowAsync(window, 4);
+    }
+
+    internal static bool TryGetWindowBounds(IntPtr window, out Rectangle bounds)
+    {
+        if (window != IntPtr.Zero && IsWindow(window) &&
+            GetWindowRect(window, out NativeRectangle rectangle))
+        {
+            bounds = Rectangle.FromLTRB(rectangle.Left, rectangle.Top,
+                rectangle.Right, rectangle.Bottom);
+            return bounds.Width > 0 && bounds.Height > 0;
+        }
+        bounds = Rectangle.Empty;
+        return false;
     }
 
     protected override void OnPaint(PaintEventArgs e)

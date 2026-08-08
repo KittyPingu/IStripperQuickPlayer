@@ -17,5 +17,10 @@ namespace IStripperQuickPlayer
         internal HotnessCode? hotnessCode;
         internal string? clipType;
         internal int? clipNumber;
+        internal string? customForegroundPath;
+        internal string? customAlphaPath;
+        internal int customAlphaThreshold;
+        internal long customStartMs;
+        internal long customEndMs;
     }
 }

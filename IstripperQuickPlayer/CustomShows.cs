@@ -1,0 +1,828 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using IStripperQuickPlayer.DataModel;
+using Microsoft.VisualBasic.FileIO;
+using static IStripperQuickPlayer.DataModel.Enums;
+
+namespace IStripperQuickPlayer;
+
+internal sealed class CustomShowConfiguration
+{
+    internal static string FilePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "IStripperQuickPlayer", "custom-shows-settings.json");
+
+    public string LibraryRoot { get; set; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "IStripperQuickPlayer", "custom-shows");
+    public string PythonExecutable { get; set; } = FindPythonExecutable();
+    public int SmallPlayerVolume { get; set; } = 100;
+    public int LargePlayerVolume { get; set; } = 100;
+    public int FullOpacityThreshold { get; set; } = 255;
+
+    internal static CustomShowConfiguration Load()
+    {
+        try
+        {
+            CustomShowConfiguration configuration =
+                JsonSerializer.Deserialize<CustomShowConfiguration>(
+                    File.ReadAllText(FilePath), CustomShowStore.JsonOptions) ?? new();
+            if (string.IsNullOrWhiteSpace(configuration.PythonExecutable))
+                configuration.PythonExecutable = FindPythonExecutable();
+            return configuration;
+        }
+        catch { return new(); }
+    }
+
+    internal void Save() => CustomShowStore.WriteJsonAtomic(FilePath, this);
+
+    internal static string FindPythonExecutable()
+    {
+        string rvmPython = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "IStripperQuickPlayer", "rvm-runtime", "venv", "Scripts", "python.exe");
+        if (File.Exists(rvmPython)) return rvmPython;
+
+        return TryPython("py") ?? TryPython("py", "-3.11") ??
+            TryPython("python") ?? "";
+    }
+
+    static string? TryPython(string command, string? launcherVersion = null)
+    {
+        try
+        {
+            ProcessStartInfo start = new(command)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true
+            };
+            if (launcherVersion is not null) start.ArgumentList.Add(launcherVersion);
+            start.ArgumentList.Add("-c");
+            start.ArgumentList.Add("import sys; print(sys.executable)");
+            using Process process = Process.Start(start)!;
+            if (!process.WaitForExit(3000))
+            {
+                process.Kill(true);
+                return null;
+            }
+            string path = process.StandardOutput.ReadToEnd().Trim();
+            return process.ExitCode == 0 && File.Exists(path)
+                ? Path.GetFullPath(path) : null;
+        }
+        catch { return null; }
+    }
+}
+
+internal sealed class CustomPerformerProfile
+{
+    public int SchemaVersion { get; set; } = 1;
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string ModelName { get; set; } = "";
+    public DateOnly? BirthDate { get; set; }
+    public decimal? HeightCm { get; set; }
+    public decimal? BustCm { get; set; }
+    public decimal? WaistCm { get; set; }
+    public decimal? HipsCm { get; set; }
+    public string Hair { get; set; } = "";
+    public string Ethnicity { get; set; } = "";
+    public string City { get; set; } = "";
+    public string Country { get; set; } = "";
+}
+
+internal sealed class CustomShowManifest
+{
+    public int SchemaVersion { get; set; } = 2;
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string PerformerId { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Description { get; set; } = "";
+    public string[] Tags { get; set; } = [];
+    public DateOnly ReleaseDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public DateOnly? ShowDate { get; set; }
+    public int? AgeAtReleaseOverride { get; set; }
+    public decimal? OfficialRating { get; set; }
+    public string Hotness { get; set; } = "NoNudity";
+    public bool Exclusive { get; set; }
+    public int PerformerCount { get; set; } = 1;
+    public string[] ClipTypes { get; set; } = ["Standing"];
+    public CustomShowClip[] Clips { get; set; } = [];
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+    public CustomShowSource Source { get; set; } = new();
+    public CustomShowMedia Media { get; set; } = new();
+}
+
+internal sealed class CustomShowClip
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public long StartMs { get; set; }
+    public long EndMs { get; set; }
+    public bool Included { get; set; } = true;
+    public string Hotness { get; set; } = "NoNudity";
+    public string[] ClipTypes { get; set; } = ["Standing"];
+    public int AlphaThreshold { get; set; }
+    public CustomClipMedia? Media { get; set; }
+}
+
+internal sealed class CustomClipMedia
+{
+    public string Foreground { get; set; } = "";
+    public string Alpha { get; set; } = "";
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public string FrameRate { get; set; } = "";
+    public long DurationMs { get; set; }
+}
+
+internal sealed class CustomShowSource
+{
+    public string Mode { get; set; } = "reference";
+    public string Path { get; set; } = "";
+}
+
+internal sealed class CustomShowMedia
+{
+    public string Cover { get; set; } = "cover.jpg";
+    public bool AutoGeneratedCover { get; set; } = true;
+    public string CoverTitleColor { get; set; } = "#FF1493";
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public string FrameRate { get; set; } = "";
+    public long DurationMs { get; set; }
+}
+
+internal sealed class CustomShowStore
+{
+    internal static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        AllowTrailingCommas = false,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    static readonly HashSet<string> HotnessValues =
+        ["Public", "NoNudity", "Topless", "Nudity", "FullNudity", "XXX"];
+    static readonly HashSet<string> ClipTypeValues =
+        ["Standing", "Table", "Behind Table", "Swing", "Cage", "Pole",
+         "Glass", "Sign", "Prop", "Full Legs", "Side"];
+
+    readonly string root;
+    internal string Root => root;
+    internal string PerformersFolder => Path.Combine(root, "performers");
+    internal string ShowsFolder => Path.Combine(root, "shows");
+    internal List<string> LoadWarnings { get; } = [];
+
+    internal CustomShowStore(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+            throw new ArgumentException("The custom library folder is required.");
+        this.root = Path.GetFullPath(root);
+    }
+
+    internal void EnsureCreated()
+    {
+        Directory.CreateDirectory(PerformersFolder);
+        Directory.CreateDirectory(ShowsFolder);
+    }
+
+    internal IReadOnlyList<CustomPerformerProfile> LoadPerformers()
+    {
+        EnsureCreated();
+        List<CustomPerformerProfile> profiles = [];
+        HashSet<string> ids = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string path in Directory.EnumerateFiles(
+                     PerformersFolder, "*.json", System.IO.SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                CustomPerformerProfile profile = ReadJson<CustomPerformerProfile>(path);
+                ValidateProfile(profile);
+                if (!string.Equals(Path.GetFileNameWithoutExtension(path), profile.Id,
+                        StringComparison.OrdinalIgnoreCase) || !ids.Add(profile.Id))
+                    throw new InvalidDataException("Duplicate or mismatched performer ID.");
+                profiles.Add(profile);
+            }
+            catch (Exception error)
+            {
+                LoadWarnings.Add($"{path}: {error.Message}");
+            }
+        }
+        return profiles.OrderBy(profile => profile.ModelName).ToArray();
+    }
+
+    internal IReadOnlyList<ModelCard> LoadCards(bool loadImages = true)
+    {
+        LoadWarnings.Clear();
+        Dictionary<string, CustomPerformerProfile> performers =
+            LoadPerformers().ToDictionary(profile => profile.Id,
+                StringComparer.OrdinalIgnoreCase);
+        List<ModelCard> cards = [];
+        HashSet<string> ids = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string folder in Directory.EnumerateDirectories(ShowsFolder))
+        {
+            string manifestPath = Path.Combine(folder, "show.json");
+            if (!File.Exists(manifestPath))
+                continue;
+            try
+            {
+                CustomShowManifest show = ReadJson<CustomShowManifest>(manifestPath);
+                ValidateManifest(show, folder);
+                if (!string.Equals(Path.GetFileName(folder), show.Id,
+                        StringComparison.OrdinalIgnoreCase) || !ids.Add(show.Id))
+                    throw new InvalidDataException("Duplicate or mismatched show ID.");
+                if (!performers.TryGetValue(show.PerformerId, out var performer))
+                    throw new InvalidDataException("The linked performer profile is missing.");
+                ValidateLink(show, performer);
+                ValidateMediaCompatibility(show, folder);
+                cards.Add(ToModelCard(show, performer, folder, manifestPath, loadImages));
+            }
+            catch (Exception error)
+            {
+                LoadWarnings.Add($"{manifestPath}: {error.Message}");
+            }
+        }
+        return cards;
+    }
+
+    internal CustomShowManifest LoadManifest(string showId)
+    {
+        ValidateId(showId, "show");
+        string folder = Path.Combine(ShowsFolder, showId);
+        CustomShowManifest show = ReadJson<CustomShowManifest>(Path.Combine(folder, "show.json"));
+        ValidateManifest(show, folder);
+        return show;
+    }
+
+    internal CustomPerformerProfile LoadPerformer(string performerId)
+    {
+        ValidateId(performerId, "performer");
+        CustomPerformerProfile profile = ReadJson<CustomPerformerProfile>(
+            Path.Combine(PerformersFolder, performerId + ".json"));
+        ValidateProfile(profile);
+        return profile;
+    }
+
+    internal void SavePerformer(CustomPerformerProfile profile)
+    {
+        ValidateProfile(profile);
+        EnsureCreated();
+        WriteJsonAtomic(Path.Combine(PerformersFolder, profile.Id + ".json"), profile);
+    }
+
+    internal void SaveManifest(CustomShowManifest show)
+    {
+        string folder = Path.Combine(ShowsFolder, show.Id);
+        ValidateManifest(show, folder);
+        WriteJsonAtomic(Path.Combine(folder, "show.json"), show);
+    }
+
+    internal void Publish(string stagingFolder, CustomShowManifest show)
+    {
+        ValidateId(show.Id, "show");
+        string destination = Path.Combine(ShowsFolder, show.Id);
+        if (Directory.Exists(destination))
+            throw new IOException("A show with this ID already exists.");
+        ValidateManifest(show, stagingFolder);
+        WriteJsonAtomic(Path.Combine(stagingFolder, "show.json"), show);
+        EnsureCreated();
+        Directory.Move(stagingFolder, destination);
+    }
+
+    internal void DeleteShow(string showId)
+    {
+        ValidateId(showId, "show");
+        string folder = Path.Combine(ShowsFolder, showId);
+        if (Directory.Exists(folder))
+            FileSystem.DeleteDirectory(folder, UIOption.OnlyErrorDialogs,
+                RecycleOption.SendToRecycleBin);
+    }
+
+    internal static void WriteJsonAtomic<T>(string path, T value)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(value, JsonOptions));
+            File.Move(temporary, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    static T ReadJson<T>(string path) =>
+        JsonSerializer.Deserialize<T>(File.ReadAllText(path), JsonOptions) ??
+        throw new InvalidDataException("The JSON document is empty.");
+
+    internal static void ValidateProfile(CustomPerformerProfile profile)
+    {
+        if (profile.SchemaVersion != 1) throw new InvalidDataException("Unsupported performer schema version.");
+        ValidateId(profile.Id, "performer");
+        if (string.IsNullOrWhiteSpace(profile.ModelName)) throw new InvalidDataException("Model name is required.");
+        ValidateMeasurement(profile.HeightCm, 80, 250, "height");
+        ValidateMeasurement(profile.BustCm, 30, 250, "bust");
+        ValidateMeasurement(profile.WaistCm, 30, 250, "waist");
+        ValidateMeasurement(profile.HipsCm, 30, 250, "hips");
+        if (profile.BirthDate > DateOnly.FromDateTime(DateTime.Today))
+            throw new InvalidDataException("Birth date cannot be in the future.");
+    }
+
+    internal static void ValidateManifest(CustomShowManifest show, string folder)
+    {
+        if (show.SchemaVersion != 2) throw new InvalidDataException(
+            "This custom show uses the old shared-media format and must be reprocessed.");
+        if (show.Source == null || show.Media == null || show.Tags == null ||
+            show.ClipTypes == null || show.Clips == null)
+            throw new InvalidDataException("Required show metadata is missing.");
+        ValidateId(show.Id, "show");
+        ValidateId(show.PerformerId, "performer");
+        if (string.IsNullOrWhiteSpace(show.Title)) throw new InvalidDataException("Show title is required.");
+        if (show.ReleaseDate == default) throw new InvalidDataException("Release date is required.");
+        if (show.CreatedUtc == default || show.CreatedUtc.Kind != DateTimeKind.Utc)
+            throw new InvalidDataException("createdUtc must be an ISO-8601 UTC value.");
+        if (show.OfficialRating is < 0 or > 5) throw new InvalidDataException("Official rating must be 0–5.");
+        if (show.AgeAtReleaseOverride is < 18 or > 120) throw new InvalidDataException("Age at release must be 18–120.");
+        if (!HotnessValues.Contains(show.Hotness)) throw new InvalidDataException("Unknown hotness value.");
+        if (show.PerformerCount < 1) throw new InvalidDataException("Performer count must be at least one.");
+        if (show.ClipTypes.Length == 0 || show.ClipTypes.Any(type => !ClipTypeValues.Contains(type)))
+            throw new InvalidDataException("At least one valid clip type is required.");
+        if (show.Media.CoverTitleColor.Length != 7 ||
+            show.Media.CoverTitleColor[0] != '#' ||
+            !int.TryParse(show.Media.CoverTitleColor.AsSpan(1),
+                NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _))
+            throw new InvalidDataException("Cover title colour must be #RRGGBB.");
+        ValidateMediaFields(show.Media.Width, show.Media.Height,
+            show.Media.FrameRate, show.Media.DurationMs, "Show media");
+        ValidateClips(show.Clips, show.Media.DurationMs);
+        foreach (CustomShowClip clip in show.Clips)
+        {
+            if (clip.Included && clip.Media == null)
+                throw new InvalidDataException("Every included clip needs processed media.");
+            if (clip.Media is not CustomClipMedia media) continue;
+            ValidateMediaFields(media.Width, media.Height, media.FrameRate,
+                media.DurationMs, "Clip media");
+        }
+        IEnumerable<string> paths = show.Clips.Where(clip => clip.Included)
+            .SelectMany(clip => new[] { clip.Media!.Foreground, clip.Media.Alpha })
+            .Append(show.Media.Cover);
+        foreach (string relative in paths)
+        {
+            string mediaPath = ResolveRelative(folder, relative);
+            if (!File.Exists(mediaPath)) throw new FileNotFoundException("Required custom-show media is missing.", mediaPath);
+        }
+        if (show.Source.Mode is not "copy" and not "reference")
+            throw new InvalidDataException("Source mode must be copy or reference.");
+        if (show.Source.Mode == "copy" && !File.Exists(ResolveRelative(folder, show.Source.Path)))
+            throw new FileNotFoundException("The copied source video is missing.");
+        if (show.Source.Mode == "reference" && string.IsNullOrWhiteSpace(show.Source.Path))
+            throw new InvalidDataException("The referenced source path is required.");
+    }
+
+    static void ValidateMediaFields(int width, int height, string frameRate,
+        long durationMs, string description)
+    {
+        if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0 ||
+            durationMs <= 0 || !TryFrameRate(frameRate, out _))
+            throw new InvalidDataException($"{description} dimensions, frame rate, or duration are invalid.");
+    }
+
+    internal static void ValidateClips(CustomShowClip[] clips, long durationMs)
+    {
+        if (clips.Length == 0) throw new InvalidDataException(
+            "A custom show must contain at least one clip.");
+        if (!clips.Any(clip => clip.Included))
+            throw new InvalidDataException("At least one segment must be included as a clip.");
+        HashSet<string> ids = new(StringComparer.OrdinalIgnoreCase);
+        long expectedStart = 0;
+        foreach (CustomShowClip clip in clips)
+        {
+            ValidateId(clip.Id, "clip");
+            if (!ids.Add(clip.Id)) throw new InvalidDataException("Clip IDs must be unique.");
+            if (clip.StartMs != expectedStart || clip.EndMs <= clip.StartMs || clip.EndMs > durationMs)
+                throw new InvalidDataException("Clip ranges must be ordered, contiguous, and inside the video.");
+            if (!HotnessValues.Contains(clip.Hotness)) throw new InvalidDataException("Unknown clip hotness value.");
+            if (clip.AlphaThreshold is < 0 or > 255)
+                throw new InvalidDataException("Clip alpha threshold must be 0–255.");
+            if (clip.ClipTypes == null || clip.ClipTypes.Length == 0 ||
+                clip.ClipTypes.Any(type => !ClipTypeValues.Contains(type)))
+                throw new InvalidDataException("Every clip needs at least one valid clip type.");
+            expectedStart = clip.EndMs;
+        }
+        if (expectedStart != durationMs)
+            throw new InvalidDataException("Clip ranges must cover the complete video.");
+    }
+
+    internal static string ResolveRelative(string folder, string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative) || Path.IsPathRooted(relative))
+            throw new InvalidDataException("Media paths must be relative.");
+        string root = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        string full = Path.GetFullPath(Path.Combine(root, relative));
+        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("A media path leaves its show folder.");
+        return full;
+    }
+
+    internal static int AgeAt(DateOnly birthDate, DateOnly releaseDate)
+    {
+        int age = releaseDate.Year - birthDate.Year;
+        if (releaseDate < birthDate.AddYears(age)) age--;
+        return Math.Max(0, age);
+    }
+
+    internal static void ValidateLink(CustomShowManifest show,
+        CustomPerformerProfile performer)
+    {
+        if (performer.BirthDate is DateOnly birth &&
+            AgeAt(birth, show.ReleaseDate) is < 18 or > 120)
+            throw new InvalidDataException(
+                "The calculated model age at release must be 18–120.");
+    }
+
+    internal static decimal? CmToInches(decimal? centimetres) =>
+        centimetres is null ? null : decimal.Round(centimetres.Value / 2.54m, 1);
+
+    internal static string CmToLegacyHeight(decimal? centimetres)
+    {
+        if (centimetres is null) return "";
+        int inches = (int)Math.Round(centimetres.Value / 2.54m);
+        return $"{inches / 12}.{inches % 12}";
+    }
+
+    internal static bool TryFrameRate(string value, out double rate)
+    {
+        rate = 0;
+        string[] parts = value.Split('/');
+        if (parts.Length != 2 || !double.TryParse(parts[0], NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out double numerator) ||
+            !double.TryParse(parts[1], NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out double denominator) || denominator <= 0)
+            return false;
+        rate = numerator / denominator;
+        return double.IsFinite(rate) && rate > 0 && rate <= 240;
+    }
+
+    static void ValidateMediaCompatibility(CustomShowManifest show, string folder)
+    {
+        foreach (CustomClipMedia media in show.Clips.Where(clip => clip.Included)
+                     .Select(clip => clip.Media!))
+            ValidateMediaCompatibility(folder, media.Foreground, media.Alpha,
+                media.Width, media.Height, media.FrameRate, media.DurationMs);
+    }
+
+    static void ValidateMediaCompatibility(string folder, string foreground,
+        string alphaPath, int width, int height, string frameRate, long durationMs)
+    {
+        using FfmpegCpuDecoder rgb = new(ResolveRelative(folder, foreground));
+        using FfmpegCpuDecoder alpha = new(ResolveRelative(folder, alphaPath));
+        TryFrameRate(frameRate, out double declaredRate);
+        if (rgb.Width != alpha.Width || rgb.Height != alpha.Height ||
+            rgb.Width != width || rgb.Height != height ||
+            Math.Abs(rgb.FrameDuration - alpha.FrameDuration) > .0005 ||
+            Math.Abs(1 / rgb.FrameDuration - declaredRate) > .02 ||
+            Math.Abs(rgb.Duration - alpha.Duration) > Math.Max(.05, rgb.FrameDuration * 2) ||
+            Math.Abs(rgb.Duration * 1000 - durationMs) > Math.Max(100, rgb.FrameDuration * 2000))
+            throw new InvalidDataException(
+                "Foreground, alpha, and manifest media properties do not match.");
+        if (!rgb.DecodeNext(out long rgbTime) || !alpha.DecodeNext(out long alphaTime))
+            throw new InvalidDataException("Foreground or alpha contains no frames.");
+        rgb.ValidateGpuFrame();
+        alpha.GrayPlane();
+        if (Math.Abs(rgbTime - alphaTime) >
+            Math.Max(10_000, (long)Math.Round(rgb.FrameDuration * 5_000_000)))
+            throw new InvalidDataException("Foreground and alpha timestamps do not match.");
+    }
+
+    static ModelCard ToModelCard(CustomShowManifest show,
+        CustomPerformerProfile performer, string folder, string manifestPath,
+        bool loadImage)
+    {
+        string cover = ResolveRelative(folder, show.Media.Cover);
+        CustomClipMedia[] playableMedia = show.Clips.Where(clip => clip.Included)
+            .Select(clip => clip.Media!).ToArray();
+        int age = performer.BirthDate is DateOnly birth
+            ? AgeAt(birth, show.ReleaseDate)
+            : show.AgeAtReleaseOverride ?? 0;
+        long mediaSize = playableMedia.Sum(media =>
+            new FileInfo(ResolveRelative(folder, media.Foreground)).Length +
+            new FileInfo(ResolveRelative(folder, media.Alpha)).Length);
+        long playableDuration = playableMedia.Sum(media => media.DurationMs);
+        ModelCard card = new()
+        {
+            name = "custom:" + show.Id,
+            customShowId = show.Id,
+            customPerformerId = show.PerformerId,
+            customManifestPath = manifestPath,
+            collection = CollectionType.Custom,
+            modelName = performer.ModelName.Trim(),
+            modelId = show.PerformerId,
+            outfit = show.Title.Trim(),
+            description = show.Description,
+            tags = show.Tags,
+            datePurchased = show.CreatedUtc.ToLocalTime(),
+            dateReleased = show.ReleaseDate.ToDateTime(TimeOnly.MinValue),
+            dateShow = show.ShowDate?.ToDateTime(TimeOnly.MinValue) ?? default,
+            birthdate = performer.BirthDate?.ToDateTime(TimeOnly.MinValue),
+            modelAge = age,
+            rating = show.OfficialRating is decimal rating ? rating + 5 : 0,
+            hotnessLevel = show.Hotness,
+            exclusive = show.Exclusive,
+            numgirls = show.PerformerCount,
+            hair = performer.Hair,
+            ethnicity = performer.Ethnicity,
+            city = performer.City,
+            country = performer.Country,
+            bust = CmToInches(performer.BustCm),
+            waist = CmToInches(performer.WaistCm),
+            hips = CmToInches(performer.HipsCm),
+            height = CmToLegacyHeight(performer.HeightCm),
+            imagefile = cover,
+            resolution = ResolutionFor(show.Media.Height),
+            bestResolution = ResolutionFor(show.Media.Height),
+            frameCount = TryFrameRate(show.Media.FrameRate, out double fps)
+                ? (int)Math.Min(int.MaxValue, Math.Round(fps * playableDuration / 1000d)) : 0,
+            folderSize = (int)Math.Min(int.MaxValue, mediaSize),
+            inCollection = true,
+            cardDownloaded = true,
+            cardDownloaded2 = true,
+            cardEnabled = true
+        };
+        if (loadImage)
+        {
+            using Image source = Image.FromFile(cover);
+            card.image = new Bitmap(source);
+        }
+        card.clips = show.Clips.Where(clip => clip.Included).Select((clip, index) =>
+            {
+                CustomClipMedia media = clip.Media!;
+                string clipForeground = ResolveRelative(folder, media.Foreground);
+                string clipAlpha = ResolveRelative(folder, media.Alpha);
+                int size = (int)Math.Min(int.MaxValue,
+                    new FileInfo(clipForeground).Length + new FileInfo(clipAlpha).Length);
+                string clipName = playableMedia.Length == 1
+                    ? card.name : $"{card.name}:{clip.Id}";
+                return CreateClip(clipName, clipForeground, clipAlpha,
+                    size, index + 1, clip.Hotness, clip.ClipTypes,
+                    clip.AlphaThreshold, 0, media.DurationMs);
+            }).ToList();
+        return card;
+    }
+
+    static ModelClip CreateClip(string name, string foreground, string alpha,
+        int size, int number, string hotness, string[] types,
+        int alphaThreshold, long startMs, long endMs) => new()
+    {
+        clipName = name,
+        customForegroundPath = foreground,
+        customAlphaPath = alpha,
+        customAlphaThreshold = alphaThreshold,
+        customStartMs = startMs,
+        customEndMs = endMs,
+        size = size,
+        isEnabled = true,
+        hotnessCode = ParseHotness(hotness),
+        clipType = string.Join(", ", types),
+        clipNumber = number
+    };
+
+    static CardResolutionType ResolutionFor(int height) => height switch
+    {
+        >= 2160 => CardResolutionType.highest,
+        >= 1600 => CardResolutionType.high,
+        >= 1080 => CardResolutionType.medium,
+        >= 720 => CardResolutionType.low,
+        _ => CardResolutionType.lowest
+    };
+
+    static HotnessCode ParseHotness(string value) => value switch
+    {
+        "Public" => HotnessCode.publ,
+        "Topless" => HotnessCode.topless,
+        "Nudity" => HotnessCode.nudity,
+        "FullNudity" => HotnessCode.fullnudity,
+        "XXX" => HotnessCode.xxx,
+        _ => HotnessCode.nonudity
+    };
+
+    static void ValidateId(string id, string description)
+    {
+        if (!Guid.TryParseExact(id, "N", out _))
+            throw new InvalidDataException($"The {description} ID must be a 32-character UUID.");
+    }
+
+    static void ValidateMeasurement(decimal? value, decimal min, decimal max, string name)
+    {
+        if (value is not null && (value < min || value > max))
+            throw new InvalidDataException($"Model {name} must be {min}–{max} cm.");
+    }
+
+    internal static bool VerifyCoreLogic()
+    {
+        return AgeAt(new DateOnly(2000, 8, 8), new DateOnly(2026, 8, 7)) == 25 &&
+            AgeAt(new DateOnly(2000, 8, 7), new DateOnly(2026, 8, 7)) == 26 &&
+            CmToInches(91.44m) == 36m && CmToLegacyHeight(170m) == "5.7" &&
+            TryFrameRate("30000/1001", out double rate) && rate > 29.9 && rate < 30 &&
+            (FindPythonForVerification() is string python &&
+                (python.Length == 0 || File.Exists(python))) &&
+            RejectsTraversal();
+    }
+
+    static string FindPythonForVerification() =>
+        CustomShowConfiguration.FindPythonExecutable();
+
+    internal static bool VerifyIntegration()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "iqp-custom-show-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            CustomShowStore store = new(root);
+            store.EnsureCreated();
+            CustomPerformerProfile profile = new()
+            {
+                ModelName = "Test Model", HeightCm = 170,
+                BustCm = 91.44m, WaistCm = 66, HipsCm = 94
+            };
+            store.SavePerformer(profile);
+            CustomShowManifest show = new()
+            {
+                PerformerId = profile.Id, Title = "Test Show",
+                AgeAtReleaseOverride = 24,
+                Media = new() { Width = 64, Height = 64,
+                    FrameRate = "10/1", DurationMs = 1000 },
+                Source = new() { Mode = "reference", Path = "test-source.mp4" },
+                Clips =
+                [
+                    new() { StartMs = 0, EndMs = 400, Hotness = "NoNudity",
+                        AlphaThreshold = 24,
+                        ClipTypes = ["Standing"] },
+                    new() { StartMs = 400, EndMs = 600, Included = false,
+                        Hotness = "NoNudity", ClipTypes = ["Standing"] },
+                    new() { StartMs = 600, EndMs = 1000, Hotness = "Topless",
+                        ClipTypes = ["Table"] }
+                ]
+            };
+            string folder = Path.Combine(store.ShowsFolder, show.Id);
+            Directory.CreateDirectory(folder);
+            string ffmpeg = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
+            Run(ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i",
+                "testsrc2=size=64x64:rate=10:duration=1", "-f", "lavfi", "-i",
+                "sine=frequency=440:duration=1", "-map", "0:v", "-map", "1:a",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", Path.Combine(folder, "source.mp4"));
+            foreach (CustomShowClip clip in show.Clips.Where(clip => clip.Included))
+            {
+                string relative = Path.Combine("clips", clip.Id);
+                string clipFolder = Path.Combine(folder, relative);
+                Directory.CreateDirectory(clipFolder);
+                double seconds = (clip.EndMs - clip.StartMs) / 1000d;
+                Run(ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i",
+                    $"testsrc2=size=64x64:rate=10:duration={seconds}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    Path.Combine(clipFolder, "foreground.mp4"));
+                Run(ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i",
+                    $"color=white:size=64x64:rate=10:duration={seconds}",
+                    "-vf", "format=yuv420p", "-c:v", "libx264", "-crf", "10",
+                    Path.Combine(clipFolder, "alpha.mkv"));
+                clip.Media = new()
+                {
+                    Foreground = Path.Combine(relative, "foreground.mp4").Replace('\\', '/'),
+                    Alpha = Path.Combine(relative, "alpha.mkv").Replace('\\', '/'),
+                    Width = 64, Height = 64, FrameRate = "10/1",
+                    DurationMs = clip.EndMs - clip.StartMs
+                };
+            }
+            using (Bitmap cover = new(64, 96)) cover.Save(
+                Path.Combine(folder, "cover.jpg"), System.Drawing.Imaging.ImageFormat.Jpeg);
+            store.SaveManifest(show);
+            using (CustomClipEditorForm editor = new(
+                Path.Combine(folder, "source.mp4"), show.Clips,
+                show.Hotness, show.ClipTypes, allowBoundaryEditing: false))
+                editor.CreateControl();
+            bool completed = false, failed = false;
+            Exception? playbackError = null;
+            using (CustomPlayerForm player = new(
+                ResolveRelative(folder, show.Clips[0].Media!.Foreground),
+                ResolveRelative(folder, show.Clips[0].Media!.Alpha), 10, 0,
+                suppressErrorDialog: true, startMs: 0, endMs: 400))
+            using (System.Windows.Forms.Timer exercise = new() { Interval = 120 })
+            using (System.Windows.Forms.Timer timeout = new() { Interval = 5_000 })
+            {
+                int step = 0;
+                player.PlaybackCompleted += (_, _) => completed = true;
+                player.PlaybackFailed += (_, error) =>
+                {
+                    failed = true;
+                    playbackError = error;
+                };
+                exercise.Tick += (_, _) =>
+                {
+                    if (++step == 1) player.SetRate(.5);
+                    else if (step == 2) player.SeekTo(.25);
+                    else if (step == 3) player.TogglePause();
+                    else if (step == 4) { player.TogglePause(); player.SetRate(2); }
+                    else exercise.Stop();
+                };
+                timeout.Tick += (_, _) => { failed = true; player.Close(); };
+                player.Shown += (_, _) => { exercise.Start(); timeout.Start(); };
+                player.ShowDialog();
+            }
+            if (!completed || failed)
+            {
+                Console.Error.WriteLine($"Custom player check: completed={completed}, failed={failed}, error={playbackError}");
+                return false;
+            }
+            CustomClipMedia probeMedia = show.Clips[0].Media!;
+            string alphaProbe = ResolveRelative(folder, probeMedia.Alpha);
+            using (CustomPlayerForm earlyClose = new(
+                ResolveRelative(folder, probeMedia.Foreground),
+                alphaProbe, 10, 0, suppressErrorDialog: true))
+            using (System.Windows.Forms.Timer close = new() { Interval = 80 })
+            {
+                close.Tick += (_, _) =>
+                {
+                    close.Stop();
+                    earlyClose.Close();
+                };
+                earlyClose.Shown += (_, _) => close.Start();
+                earlyClose.ShowDialog();
+                earlyClose.ClosePlayerAsync().GetAwaiter().GetResult();
+                using FileStream unlocked = new(alphaProbe, FileMode.Open,
+                    FileAccess.Read, FileShare.None);
+            }
+            IReadOnlyList<ModelCard> cards = store.LoadCards(false);
+            List<ModelClip>? loadedClips = cards.FirstOrDefault()?.clips;
+            if (cards.Count != 1 || cards[0].name != "custom:" + show.Id ||
+                cards[0].modelAge != 24 || cards[0].bust != 36 ||
+                cards[0].height != "5.7" || loadedClips?.Count != 2 ||
+                loadedClips[0].customEndMs != 400 ||
+                loadedClips[0].customAlphaThreshold != 24 ||
+                loadedClips[1].customStartMs != 0 ||
+                loadedClips[1].hotnessCode != HotnessCode.topless)
+            {
+                Console.Error.WriteLine("Custom card check failed: " +
+                    string.Join(" | ", store.LoadWarnings));
+                return false;
+            }
+            profile.ModelName = "Updated Model";
+            store.SavePerformer(profile);
+            if (store.LoadCards(false).Single().modelName != "Updated Model")
+            {
+                Console.Error.WriteLine("Custom performer propagation check failed.");
+                return false;
+            }
+            CustomShowManifest invalid = new()
+            {
+                PerformerId = profile.Id, Title = "Invalid",
+                Media = new() { Width = 64, Height = 64,
+                    FrameRate = "10/1", DurationMs = 1000 },
+                Source = new() { Mode = "reference", Path = "source.mp4" },
+                Clips = [new()
+                {
+                    StartMs = 0, EndMs = 1000,
+                    Media = new() { Width = 64, Height = 64,
+                        FrameRate = "10/1", DurationMs = 1000,
+                        Foreground = "../foreground.mp4", Alpha = "alpha.mkv" }
+                }]
+            };
+            string invalidFolder = Path.Combine(store.ShowsFolder, invalid.Id);
+            Directory.CreateDirectory(invalidFolder);
+            WriteJsonAtomic(Path.Combine(invalidFolder, "show.json"), invalid);
+            return store.LoadCards(false).Count == 1 &&
+                store.LoadWarnings.Count == 1;
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine("Custom-show integration failed: " + error);
+            return false;
+        }
+        finally
+        {
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); }
+            catch { }
+        }
+    }
+
+    static void Run(string executable, params string[] arguments)
+    {
+        ProcessStartInfo start = new(executable)
+        { UseShellExecute = false, CreateNoWindow = true };
+        foreach (string argument in arguments) start.ArgumentList.Add(argument);
+        using Process process = Process.Start(start) ??
+            throw new InvalidOperationException("FFmpeg did not start.");
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new InvalidOperationException("FFmpeg fixture creation failed.");
+    }
+
+    static bool RejectsTraversal()
+    {
+        try { ResolveRelative(Path.GetTempPath(), "..\\escape.mp4"); return false; }
+        catch (InvalidDataException) { return true; }
+    }
+}

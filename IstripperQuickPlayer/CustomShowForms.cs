@@ -1,0 +1,1250 @@
+using System.Drawing.Imaging;
+using System.Diagnostics;
+
+namespace IStripperQuickPlayer;
+
+internal sealed class CustomShowEditorForm : Form
+{
+    static readonly string[] HotnessValues =
+        ["Public", "NoNudity", "Topless", "Nudity", "FullNudity", "XXX"];
+    static readonly string[] ClipTypeValues =
+        ["Standing", "Table", "Behind Table", "Swing", "Cage", "Pole",
+         "Glass", "Sign", "Prop", "Full Legs", "Side"];
+
+    readonly CustomShowStore store;
+    readonly CustomShowConfiguration configuration;
+    readonly string? showId;
+    readonly TextBox source = new();
+    readonly CheckBox copySource = new() { Text = "Copy original into the show folder" };
+    readonly TextBox title = new();
+    readonly ComboBox performer = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly Button newPerformer = new() { Text = "New model...", AutoSize = true };
+    readonly Button editPerformer = new() { Text = "Edit model...", AutoSize = true,
+        Enabled = false };
+    readonly TextBox description = new() { Multiline = true, Height = 70, ScrollBars = ScrollBars.Vertical };
+    readonly TextBox tags = new();
+    readonly DateTimePicker releaseDate = new() { Format = DateTimePickerFormat.Short };
+    readonly DateTimePicker showDate = new() { Format = DateTimePickerFormat.Short, ShowCheckBox = true };
+    readonly NumericUpDown ageOverride = new() { Minimum = 18, Maximum = 120, Value = 18 };
+    readonly CheckBox useAgeOverride = new() { Text = "Use" };
+    readonly NumericUpDown rating = new() { Minimum = 0, Maximum = 5, DecimalPlaces = 1, Increment = .5m };
+    readonly CheckBox useRating = new() { Text = "Set" };
+    readonly ComboBox hotness = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly CheckBox exclusive = new() { Text = "Exclusive" };
+    readonly NumericUpDown performerCount = new() { Minimum = 1, Maximum = 20, Value = 1 };
+    readonly CheckedListBox clipTypes = new() { Height = 90, CheckOnClick = true };
+    readonly Button editClips = new() { Text = "Split into clips...", AutoSize = true };
+    readonly TextBox cover = new();
+    readonly Button coverTitleColor = new() { AutoSize = true,
+        BackColor = Color.DeepPink, UseVisualStyleBackColor = false };
+    readonly ComboBox preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox mattingDetail = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox sequenceChunk = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly Button save = new() { Text = "Process and Preview", AutoSize = true };
+    readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+    List<CustomPerformerProfile> profiles = [];
+    CustomPerformerProfile? selectedProfile;
+    CustomShowClip[] showClips = [];
+
+    internal CustomShowEditorForm(CustomShowStore store,
+        CustomShowConfiguration configuration, string? showId)
+    {
+        this.store = store;
+        this.configuration = configuration;
+        this.showId = showId;
+        Text = showId == null ? "Create Custom Show" : "Edit Custom Show Metadata";
+        ClientSize = new Size(760, 780);
+        MinimumSize = new Size(650, 650);
+        StartPosition = FormStartPosition.CenterParent;
+        AutoScroll = true;
+        TableLayoutPanel table = new()
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 3,
+            Padding = new Padding(12)
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        Controls.Add(table);
+        AddFileRow(table, "Source video", source, "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*");
+        AddRow(table, "", copySource);
+        AddRow(table, "Show title", title);
+        AddRow(table, "Model profile", performer, Flow(newPerformer, editPerformer));
+        AddRow(table, "Description", description);
+        AddRow(table, "Tags (comma separated)", tags);
+        AddRow(table, "Release date", releaseDate);
+        AddRow(table, "Show / recording date", showDate);
+        FlowLayoutPanel agePanel = Flow(ageOverride, useAgeOverride);
+        AddRow(table, "Age at release override", agePanel);
+        FlowLayoutPanel ratingPanel = Flow(rating, useRating);
+        AddRow(table, "Official rating (0–5)", ratingPanel);
+        hotness.Items.AddRange(HotnessValues);
+        hotness.SelectedItem = "NoNudity";
+        AddRow(table, "Hotness", hotness);
+        AddRow(table, "", exclusive);
+        AddRow(table, "Number of performers", performerCount);
+        clipTypes.Items.AddRange(ClipTypeValues);
+        clipTypes.SetItemChecked(0, true);
+        AddRow(table, "Clip types", clipTypes);
+        AddRow(table, "Video sections", editClips);
+        AddFileRow(table, "Custom cover (optional)", cover,
+            "Images|*.jpg;*.jpeg;*.png;*.bmp|All files|*.*");
+        AddRow(table, "Auto-cover title colour", coverTitleColor);
+        preset.Items.AddRange(["RVM Quality (ResNet50)", "RVM Fast (MobileNetV3)"]);
+        if (CustomShowProcessor.IsMatAnyone2Installed(configuration))
+            preset.Items.Add("MatAnyone 2 (interactive initial mask)");
+        if (CustomShowProcessor.IsVideoMaMaInstalled(configuration))
+            preset.Items.Add("VideoMaMa High Quality (SAM2 + diffusion)");
+        if (CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
+            preset.Items.Add("ViTMatte S (editable SAM2 masks)");
+        if (CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
+            preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
+        preset.SelectedIndex = 0;
+        AddRow(table, "Processing algorithm", preset);
+        mattingDetail.Items.AddRange([
+            "Standard (512 px - recommended)", "High (768 px)",
+            "Very High (1024 px)", "Full resolution (slowest)"]);
+        mattingDetail.SelectedIndex = 0;
+        AddRow(table, "Matting detail", mattingDetail);
+        sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12]);
+        sequenceChunk.SelectedItem = 3;
+        AddRow(table, "Processing batch size", sequenceChunk);
+        FlowLayoutPanel buttons = Flow(save, cancel);
+        AddRow(table, "", buttons);
+        AcceptButton = save;
+        CancelButton = cancel;
+        save.Click += Save;
+        preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
+        newPerformer.Click += (_, _) => OpenPerformer(null);
+        editPerformer.Click += (_, _) => OpenPerformer(selectedProfile);
+        editClips.Click += EditClips;
+        coverTitleColor.Click += ChooseCoverTitleColor;
+        cover.TextChanged += (_, _) => coverTitleColor.Enabled =
+            string.IsNullOrWhiteSpace(cover.Text);
+        performer.SelectedIndexChanged += (_, _) =>
+        {
+            selectedProfile = performer.SelectedItem as CustomPerformerProfile;
+            editPerformer.Enabled = selectedProfile != null;
+        };
+        LoadData();
+        Color selectedCoverColor = coverTitleColor.BackColor;
+        AppTheme.Apply(this);
+        coverTitleColor.BackColor = selectedCoverColor;
+        UpdateColorButton();
+    }
+
+    void ChooseCoverTitleColor(object? sender, EventArgs e)
+    {
+        using ColorDialog dialog = new() { Color = coverTitleColor.BackColor,
+            FullOpen = true };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        coverTitleColor.BackColor = dialog.Color;
+        UpdateColorButton();
+    }
+
+    void UpdateColorButton()
+    {
+        Color color = coverTitleColor.BackColor;
+        coverTitleColor.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+        coverTitleColor.ForeColor = color.GetBrightness() > .55f ? Color.Black : Color.White;
+    }
+
+    void UpdateProcessingOptions()
+    {
+        bool rvm = SelectedPreset() is "quality" or "fast";
+        mattingDetail.Enabled = rvm && showId == null;
+        sequenceChunk.Enabled = (rvm || UsesSam2(SelectedPreset())) && showId == null;
+    }
+
+    string SelectedPreset()
+    {
+        string selected = preset.SelectedItem?.ToString() ?? "";
+        if (selected.StartsWith("RVM Fast", StringComparison.Ordinal)) return "fast";
+        if (selected.StartsWith("MatAnyone", StringComparison.Ordinal)) return "matanyone2";
+        if (selected.StartsWith("VideoMaMa", StringComparison.Ordinal)) return "videomama";
+        if (selected.StartsWith("ViTMatte S", StringComparison.Ordinal)) return "vitmatte-s";
+        if (selected.StartsWith("ViTMatte B", StringComparison.Ordinal)) return "vitmatte-b";
+        return "quality";
+    }
+
+    static bool UsesSam2(string selectedPreset) => selectedPreset is
+        "videomama" or "vitmatte-s" or "vitmatte-b";
+
+    void LoadData()
+    {
+        profiles = store.LoadPerformers().ToList();
+        performer.DataSource = null;
+        performer.DisplayMember = nameof(CustomPerformerProfile.ModelName);
+        performer.DataSource = profiles;
+        if (showId == null) return;
+        CustomShowManifest show = store.LoadManifest(showId);
+        copySource.Enabled = preset.Enabled =
+            mattingDetail.Enabled = sequenceChunk.Enabled = false;
+        source.Text = SourceVideo(show);
+        save.Text = "Save Metadata";
+        title.Text = show.Title;
+        description.Text = show.Description;
+        tags.Text = string.Join(", ", show.Tags);
+        releaseDate.Value = show.ReleaseDate.ToDateTime(TimeOnly.MinValue);
+        showDate.Checked = show.ShowDate != null;
+        if (show.ShowDate is DateOnly date) showDate.Value = date.ToDateTime(TimeOnly.MinValue);
+        useAgeOverride.Checked = show.AgeAtReleaseOverride != null;
+        if (show.AgeAtReleaseOverride is int age) ageOverride.Value = age;
+        useRating.Checked = show.OfficialRating != null;
+        if (show.OfficialRating is decimal value) rating.Value = value;
+        hotness.SelectedItem = show.Hotness;
+        exclusive.Checked = show.Exclusive;
+        performerCount.Value = show.PerformerCount;
+        coverTitleColor.BackColor = ColorTranslator.FromHtml(
+            show.Media.CoverTitleColor);
+        coverTitleColor.Enabled = show.Media.AutoGeneratedCover;
+        for (int i = 0; i < clipTypes.Items.Count; i++)
+            clipTypes.SetItemChecked(i, show.ClipTypes.Contains(clipTypes.Items[i]!.ToString()));
+        performer.SelectedItem = profiles.FirstOrDefault(profile => profile.Id == show.PerformerId);
+        showClips = show.Clips;
+        UpdateClipButton();
+    }
+
+    void EditClips(object? sender, EventArgs e)
+    {
+        string video = source.Text;
+        if (showId != null && string.IsNullOrWhiteSpace(video))
+            video = SourceVideo(store.LoadManifest(showId));
+        if (!File.Exists(video))
+        {
+            MessageBox.Show(this, showId == null
+                    ? "Select a source video first."
+                    : "The original source video is no longer available. Clip dividers can only be edited against the original source.", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        string[] overallTypes = clipTypes.CheckedItems.Cast<object>()
+            .Select(item => item.ToString()!).ToArray();
+        using CustomClipEditorForm form = new(video, showClips,
+            hotness.SelectedItem?.ToString() ?? "NoNudity",
+            overallTypes.Length == 0 ? ["Standing"] : overallTypes,
+            configuration, allowBoundaryEditing: showId == null);
+        if (form.ShowDialog(this) != DialogResult.OK) return;
+        showClips = form.Clips;
+        UpdateClipButton();
+    }
+
+    void UpdateClipButton()
+    {
+        if (showClips.Length < 2) { editClips.Text = "Split into clips..."; return; }
+        int included = showClips.Count(clip => clip.Included);
+        int skipped = showClips.Length - included;
+        editClips.Text = skipped == 0 ? $"Edit {included} clips..." :
+            $"Edit {included} clips ({skipped} skipped)...";
+    }
+
+    void OpenPerformer(CustomPerformerProfile? profile)
+    {
+        using CustomPerformerForm form = new(profile);
+        if (form.ShowDialog(this) != DialogResult.OK) return;
+        selectedProfile = form.Profile;
+        int index = profiles.FindIndex(profile => profile.Id == selectedProfile.Id);
+        if (index >= 0) profiles[index] = selectedProfile; else profiles.Add(selectedProfile);
+        performer.DataSource = null;
+        performer.DisplayMember = nameof(CustomPerformerProfile.ModelName);
+        performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
+        performer.SelectedItem = performer.Items.Cast<CustomPerformerProfile>()
+            .First(profile => profile.Id == selectedProfile.Id);
+    }
+
+    async void Save(object? sender, EventArgs e)
+    {
+        save.Enabled = false;
+        try
+        {
+            if (selectedProfile == null) throw new InvalidDataException("Select or create a model profile.");
+            CustomShowStore.ValidateProfile(selectedProfile);
+            CustomShowManifest show = showId == null ? new() : store.LoadManifest(showId);
+            ApplyFields(show);
+            CustomShowStore.ValidateLink(show, selectedProfile);
+            if (showId != null)
+            {
+                RelinkSource(show);
+                store.SavePerformer(selectedProfile);
+                string destination = CustomShowStore.ResolveRelative(
+                    Path.Combine(store.ShowsFolder, show.Id), show.Media.Cover);
+                if (!string.IsNullOrWhiteSpace(cover.Text))
+                {
+                    SaveCover(cover.Text, destination);
+                    show.Media.AutoGeneratedCover = false;
+                }
+                else if (show.Media.AutoGeneratedCover)
+                    await SaveAutoCover(show, destination);
+                store.SaveManifest(show);
+                DialogResult = DialogResult.OK;
+                Close();
+                return;
+            }
+            if (!File.Exists(source.Text)) throw new FileNotFoundException("Select a source video.", source.Text);
+            if (showClips.Length == 0)
+            {
+                using FfmpegCpuDecoder decoder = new(source.Text, fastDecode: true);
+                showClips = [new()
+                {
+                    StartMs = 0,
+                    EndMs = checked((long)Math.Round(decoder.Duration * 1000)),
+                    Hotness = show.Hotness,
+                    ClipTypes = [.. show.ClipTypes]
+                }];
+            }
+            string staging = Path.Combine(store.Root, ".staging", show.Id);
+            await DeleteDirectoryWhenReleasedAsync(staging);
+            Directory.CreateDirectory(staging);
+            bool discardStaging = false;
+            try
+            {
+                string input = source.Text;
+                if (copySource.Checked)
+                {
+                    string relative = Path.Combine("source", "original" + Path.GetExtension(source.Text));
+                    input = Path.Combine(staging, relative);
+                    Directory.CreateDirectory(Path.GetDirectoryName(input)!);
+                    File.Copy(source.Text, input, true);
+                    show.Source = new() { Mode = "copy", Path = relative.Replace('\\', '/') };
+                }
+                else show.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
+                Dictionary<string, string> initialMasks = [];
+                Dictionary<string, string> sam2Masks = [];
+                string selectedPreset = SelectedPreset();
+                if (selectedPreset == "matanyone2" || UsesSam2(selectedPreset))
+                {
+                    CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included).ToArray();
+                    for (int index = 0; index < clipsToMask.Length; index++)
+                    {
+                        CustomShowClip clip = clipsToMask[index];
+                        using CustomMaskEditorForm maskEditor = new(input, configuration,
+                            clip.StartMs, clip.EndMs, clipsToMask.Length == 1 ? null :
+                            $"Clip {index + 1} of {clipsToMask.Length}",
+                            selectedPreset switch
+                            {
+                                "videomama" => "VideoMaMa",
+                                "vitmatte-s" => "ViTMatte S",
+                                "vitmatte-b" => "ViTMatte B",
+                                _ => "MatAnyone 2"
+                            });
+                        if (maskEditor.ShowDialog(this) != DialogResult.OK)
+                        {
+                            discardStaging = true;
+                            return;
+                        }
+                        if (maskEditor.FrameMs > clip.StartMs)
+                        {
+                            int clipIndex = Array.FindIndex(showClips,
+                                value => value.Id == clip.Id);
+                            CustomShowClip skipped = new()
+                            {
+                                StartMs = clip.StartMs, EndMs = maskEditor.FrameMs,
+                                Included = false, Hotness = clip.Hotness,
+                                ClipTypes = [.. clip.ClipTypes]
+                            };
+                            clip.StartMs = maskEditor.FrameMs;
+                            showClips = [.. showClips[..clipIndex], skipped, clip,
+                                .. showClips[(clipIndex + 1)..]];
+                            UpdateClipButton();
+                        }
+                        string mask = Path.Combine(staging, "clips", clip.Id,
+                            "initial-mask.png");
+                        Directory.CreateDirectory(Path.GetDirectoryName(mask)!);
+                        maskEditor.SaveMask(mask);
+                        initialMasks[clip.Id] = mask;
+                        if (UsesSam2(selectedPreset))
+                        {
+                            string maskSequence = Path.Combine(staging, "clips", clip.Id,
+                                ".sam2-masks");
+                            using CustomVideoMaskEditorForm refinement = new(input,
+                                configuration, clip.StartMs, clip.EndMs, mask, maskSequence,
+                                clipsToMask.Length == 1 ? null :
+                                $"Clip {index + 1} of {clipsToMask.Length}");
+                            if (refinement.ShowDialog(this) != DialogResult.OK)
+                            {
+                                discardStaging = true;
+                                return;
+                            }
+                            sam2Masks[clip.Id] = maskSequence;
+                        }
+                    }
+                }
+                bool retry;
+                do
+                {
+                    using CustomShowProcessingForm processing = new(async (progress, token) =>
+                    {
+                        int detail = mattingDetail.SelectedIndex switch
+                        {
+                            1 => 768, 2 => 1024, 3 => 0, _ => 512
+                        };
+                        int chunk = (int)(sequenceChunk.SelectedItem ?? 3);
+                        string log = Path.Combine(staging, "processing.log");
+                        if (File.Exists(log)) File.Delete(log);
+                        CustomShowClip[] included = showClips.Where(clip => clip.Included).ToArray();
+                        long totalDuration = included.Sum(clip =>
+                            Math.Max(1, clip.EndMs - clip.StartMs));
+                        long completedDuration = 0;
+                        CustomShowProcessResult? first = null;
+                        if (selectedPreset is "quality" or "fast")
+                        {
+                            CustomShowProcessJob[] jobs = included.Select(clip =>
+                                new CustomShowProcessJob(
+                                    Path.Combine(staging, "clips", clip.Id),
+                                    clip.StartMs, clip.EndMs)).ToArray();
+                            first = await CustomShowProcessor.RunAsync(
+                                configuration, input, staging, selectedPreset,
+                                null, null, detail, chunk, 0, null, log, false,
+                                progress, token, jobs);
+                            for (int index = 0; index < included.Length; index++)
+                            {
+                                CustomShowClip clip = included[index];
+                                string relativeFolder = Path.Combine("clips", clip.Id);
+                                CustomShowProcessResult result = index == 0 ? first :
+                                    System.Text.Json.JsonSerializer.Deserialize<CustomShowProcessResult>(
+                                        await File.ReadAllTextAsync(Path.Combine(
+                                            jobs[index].Output, "result.json"), token),
+                                        CustomShowStore.JsonOptions) ?? throw new InvalidDataException(
+                                            "The RVM worker did not return clip media information.");
+                                clip.Media = new()
+                                {
+                                    Foreground = Path.Combine(relativeFolder,
+                                        "foreground.mp4").Replace('\\', '/'),
+                                    Alpha = Path.Combine(relativeFolder,
+                                        "alpha.mkv").Replace('\\', '/'),
+                                    Width = result.Width, Height = result.Height,
+                                    FrameRate = result.FrameRate,
+                                    DurationMs = result.DurationMs
+                                };
+                            }
+                            return new CustomShowProcessResult
+                            {
+                                Width = first.Width, Height = first.Height,
+                                FrameRate = first.FrameRate,
+                                DurationMs = showClips[^1].EndMs
+                            };
+                        }
+                        for (int index = 0; index < included.Length; index++)
+                        {
+                            CustomShowClip clip = included[index];
+                            int clipIndex = index;
+                            long clipDuration = Math.Max(1, clip.EndMs - clip.StartMs);
+                            long completedBefore = completedDuration;
+                            Progress<CustomShowProgress> aggregate = new(value =>
+                                progress.Report(value with
+                                {
+                                    Percent = CustomShowProcessingForm.AggregateClipPercent(
+                                        completedBefore, clipDuration, totalDuration,
+                                        value.Percent),
+                                    Message = $"Clip {clipIndex + 1}/{included.Length}: {value.Message}"
+                                }));
+                            string relativeFolder = Path.Combine("clips", clip.Id);
+                            string output = Path.Combine(staging, relativeFolder);
+                            CustomShowProcessResult result = await CustomShowProcessor.RunAsync(
+                                configuration, input, output, selectedPreset,
+                                initialMasks.GetValueOrDefault(clip.Id),
+                                sam2Masks.GetValueOrDefault(clip.Id), detail, chunk,
+                                clip.StartMs, clip.EndMs, log, index > 0, aggregate, token);
+                            clip.Media = new()
+                            {
+                                Foreground = Path.Combine(relativeFolder, "foreground.mp4").Replace('\\', '/'),
+                                Alpha = Path.Combine(relativeFolder, "alpha.mkv").Replace('\\', '/'),
+                                Width = result.Width, Height = result.Height,
+                                FrameRate = result.FrameRate, DurationMs = result.DurationMs
+                            };
+                            completedDuration += clipDuration;
+                            first ??= result;
+                        }
+                        return new CustomShowProcessResult
+                        {
+                            Width = first!.Width, Height = first.Height,
+                            FrameRate = first.FrameRate, DurationMs = showClips[^1].EndMs
+                        };
+                    });
+                    DialogResult processingResult = processing.ShowDialog(this);
+                    if (processingResult != DialogResult.OK || processing.Result == null)
+                    {
+                        if (processingResult == DialogResult.Cancel)
+                        {
+                            discardStaging = true;
+                            return;
+                        }
+                        using CustomShowDecisionForm failure = new(
+                            Path.Combine(staging, "processing.log"), allowAccept: false);
+                        if (failure.ShowDialog(this) == DialogResult.Retry)
+                        {
+                            retry = true;
+                            continue;
+                        }
+                        discardStaging = true;
+                        return;
+                    }
+                    CustomShowProcessResult media = processing.Result;
+                    show.Media = new()
+                    {
+                        Width = media.Width, Height = media.Height,
+                        FrameRate = media.FrameRate, DurationMs = media.DurationMs,
+                        AutoGeneratedCover = string.IsNullOrWhiteSpace(cover.Text),
+                        CoverTitleColor = ColorHex(coverTitleColor.BackColor)
+                    };
+                    if (showClips.Length > 0)
+                    {
+                        showClips[^1].EndMs = media.DurationMs;
+                        CustomShowStore.ValidateClips(showClips, media.DurationMs);
+                    }
+                    show.Clips = showClips;
+                    if (!string.IsNullOrWhiteSpace(cover.Text))
+                        SaveCover(cover.Text, Path.Combine(staging, show.Media.Cover));
+                    else await CustomShowProcessor.GenerateCoverAsync(input,
+                        Path.Combine(staging, show.Media.Cover), show.Media.DurationMs,
+                        selectedProfile.ModelName, show.Title, coverTitleColor.BackColor,
+                        CancellationToken.None);
+                    DialogResult decision = await ReviewProcessedShow(staging,
+                        showClips.Where(clip => clip.Included).ToArray());
+                    retry = decision == DialogResult.Retry;
+                    if (decision == DialogResult.Cancel)
+                    {
+                        discardStaging = true;
+                        return;
+                    }
+                } while (retry);
+                foreach (string folder in sam2Masks.Values)
+                    if (Directory.Exists(folder)) await DeleteDirectoryWhenReleasedAsync(folder);
+                store.SavePerformer(selectedProfile);
+                store.Publish(staging, show);
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+            catch (Exception error)
+            {
+                throw new InvalidOperationException(
+                    $"{error.Message}\n\nStaged files were preserved at:\n{staging}", error);
+            }
+            finally
+            {
+                if (discardStaging && Directory.Exists(staging))
+                    try { await DeleteDirectoryWhenReleasedAsync(staging); }
+                    catch (Exception cleanupError)
+                    {
+                        Debug.WriteLine("Could not remove cancelled custom-show staging: " +
+                            cleanupError);
+                    }
+            }
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally { save.Enabled = true; }
+        await Task.CompletedTask;
+    }
+
+    internal static async Task DeleteDirectoryWhenReleasedAsync(string path)
+    {
+        if (!Directory.Exists(path)) return;
+        for (int attempt = 0; ; attempt++)
+            try
+            {
+                Directory.Delete(path, true);
+                return;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException &&
+                attempt < 100)
+            {
+                await Task.Delay(100);
+            }
+    }
+
+    internal static bool VerifyStagingCleanup()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "iqp-cleanup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        FileStream held = new(Path.Combine(root, "alpha.mkv"), FileMode.Create,
+            FileAccess.ReadWrite, FileShare.None);
+        try
+        {
+            _ = Task.Run(async () => { await Task.Delay(150); held.Dispose(); });
+            DeleteDirectoryWhenReleasedAsync(root).GetAwaiter().GetResult();
+            return !Directory.Exists(root);
+        }
+        finally
+        {
+            held.Dispose();
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    async Task<DialogResult> ReviewProcessedShow(
+        string staging, CustomShowClip[] clips)
+    {
+        List<CustomPlayerForm> previews = [];
+        CustomPlayerForm? preview = null;
+        string? previewClipId = null;
+        try
+        {
+            using CustomShowDecisionForm review = new(
+                Path.Combine(staging, "processing.log"), true, clips);
+            review.PreviewChanged += (clip, threshold) =>
+            {
+                if (previewClipId == clip.Id &&
+                    preview is { IsDisposed: false })
+                {
+                    preview.SetAlphaThreshold(threshold);
+                    return;
+                }
+                preview?.Close();
+                preview = new CustomPlayerForm(
+                    CustomShowStore.ResolveRelative(
+                        staging, clip.Media!.Foreground),
+                    CustomShowStore.ResolveRelative(
+                        staging, clip.Media.Alpha),
+                    alphaThreshold: threshold,
+                    fullOpacityThreshold:
+                        configuration.FullOpacityThreshold);
+                previews.Add(preview);
+                previewClipId = clip.Id;
+                preview.Show(this);
+            };
+            return review.ShowDialog(this);
+        }
+        finally
+        {
+            await Task.WhenAll(previews.Select(player =>
+                player.ClosePlayerAsync()));
+            foreach (CustomPlayerForm player in previews) player.Dispose();
+        }
+    }
+
+    void ApplyFields(CustomShowManifest show)
+    {
+        show.PerformerId = selectedProfile!.Id;
+        show.Title = title.Text.Trim();
+        show.Description = description.Text.Trim();
+        show.Tags = tags.Text.Split(',', StringSplitOptions.RemoveEmptyEntries |
+            StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        show.ReleaseDate = DateOnly.FromDateTime(releaseDate.Value);
+        show.ShowDate = showDate.Checked ? DateOnly.FromDateTime(showDate.Value) : null;
+        show.AgeAtReleaseOverride = selectedProfile.BirthDate == null && useAgeOverride.Checked
+            ? (int)ageOverride.Value : null;
+        show.OfficialRating = useRating.Checked ? rating.Value : null;
+        show.Hotness = hotness.SelectedItem?.ToString() ?? "NoNudity";
+        show.Exclusive = exclusive.Checked;
+        show.PerformerCount = (int)performerCount.Value;
+        show.ClipTypes = clipTypes.CheckedItems.Cast<object>()
+            .Select(item => item.ToString()!).ToArray();
+        show.Clips = showClips;
+        show.Media.CoverTitleColor = ColorHex(coverTitleColor.BackColor);
+        if (string.IsNullOrWhiteSpace(show.Title)) throw new InvalidDataException("Show title is required.");
+    }
+
+    string SourceVideo(CustomShowManifest show)
+    {
+        string folder = Path.Combine(store.ShowsFolder, show.Id);
+        return show.Source.Mode == "copy"
+            ? CustomShowStore.ResolveRelative(folder, show.Source.Path)
+            : show.Source.Path;
+    }
+
+    void RelinkSource(CustomShowManifest show)
+    {
+        string selected = source.Text.Trim();
+        if (string.IsNullOrWhiteSpace(selected) ||
+            SamePath(selected, SourceVideo(show))) return;
+        if (!File.Exists(selected))
+            throw new FileNotFoundException(
+                "Select the renamed or moved original source video.", selected);
+        show.Source = new()
+        {
+            Mode = "reference",
+            Path = Path.GetFullPath(selected)
+        };
+    }
+
+    static bool SamePath(string first, string second) =>
+        string.Equals(Path.GetFullPath(first), Path.GetFullPath(second),
+            StringComparison.OrdinalIgnoreCase);
+
+    async Task SaveAutoCover(CustomShowManifest show, string destination)
+    {
+        string video = SourceVideo(show);
+        if (!File.Exists(video))
+            throw new FileNotFoundException(
+                "The original source video is required to regenerate the automatic cover.", video);
+        string temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp.jpg";
+        try
+        {
+            await CustomShowProcessor.GenerateCoverAsync(video, temporary,
+                show.Media.DurationMs, selectedProfile!.ModelName, show.Title,
+                coverTitleColor.BackColor, CancellationToken.None);
+            File.Move(temporary, destination, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    static string ColorHex(Color color) =>
+        $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    static void SaveCover(string source, string destination)
+    {
+        using Image image = Image.FromFile(source);
+        using Bitmap copy = new(600, 900);
+        using (Graphics graphics = Graphics.FromImage(copy))
+        {
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            graphics.DrawImage(image, CoverDestination(image.Size));
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        string temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            copy.Save(temporary, ImageFormat.Jpeg);
+            File.Move(temporary, destination, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    static RectangleF CoverDestination(Size source)
+    {
+        float scale = Math.Max(600f / source.Width, 900f / source.Height);
+        SizeF size = new(source.Width * scale, source.Height * scale);
+        return new RectangleF((600 - size.Width) / 2, (900 - size.Height) / 2,
+            size.Width, size.Height);
+    }
+
+    internal static bool VerifyCoverCrop() =>
+        CoverDestination(new Size(1920, 1080)) ==
+            new RectangleF(-500, 0, 1600, 900) &&
+        CoverDestination(new Size(600, 900)) ==
+            new RectangleF(0, 0, 600, 900) &&
+        ColorHex(Color.DeepPink) == "#FF1493" &&
+        SamePath(@"C:\video\..\source.mp4", @"c:\source.mp4");
+
+    static void AddRow(TableLayoutPanel table, string label, Control control,
+        Control? extra = null)
+    {
+        int row = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label { Text = label, AutoSize = true,
+            Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 3, 3) }, 0, row);
+        control.Dock = DockStyle.Fill;
+        table.Controls.Add(control, 1, row);
+        if (extra != null) table.Controls.Add(extra, 2, row);
+        else table.SetColumnSpan(control, 2);
+    }
+
+    static void AddFileRow(TableLayoutPanel table, string label, TextBox box, string filter)
+    {
+        Button browse = new() { Text = "Browse...", AutoSize = true };
+        browse.Click += (_, _) =>
+        {
+            using OpenFileDialog dialog = new() { Filter = filter };
+            if (dialog.ShowDialog(table.FindForm()) == DialogResult.OK) box.Text = dialog.FileName;
+        };
+        AddRow(table, label, box, browse);
+    }
+
+    static FlowLayoutPanel Flow(params Control[] controls)
+    {
+        FlowLayoutPanel panel = new() { AutoSize = true, Dock = DockStyle.Fill };
+        panel.Controls.AddRange(controls);
+        return panel;
+    }
+}
+
+internal sealed class CustomShowDecisionForm : Form
+{
+    readonly CustomShowClip[] clips;
+    readonly ComboBox clip = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly Controls.PlaybackSeekBar threshold = new()
+        { Minimum = 0, Maximum = 255, SmallChange = 1, LargeChange = 10,
+          Width = 260, Height = 32, AccessibleName = "Alpha threshold" };
+    readonly TextBox thresholdText = new()
+        { Width = 48, MaxLength = 3, TextAlign = HorizontalAlignment.Right };
+    bool loading;
+    internal event Action<CustomShowClip, int>? PreviewChanged;
+
+    internal CustomShowDecisionForm(string logPath, bool allowAccept,
+        IReadOnlyList<CustomShowClip>? clips = null)
+    {
+        this.clips = clips?.ToArray() ?? [];
+        Text = allowAccept ? "Review Custom Show" : "Processing Failed";
+        ClientSize = new Size(860, allowAccept ? 180 : 130);
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = MinimizeBox = false;
+        Label message = new()
+        {
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Text = allowAccept
+                ? "Tune pixels below the alpha threshold to transparent, then accept, retry, inspect the log, or discard."
+                : "Processing failed. Retry, inspect processing.log, or discard the staged show."
+        };
+        FlowLayoutPanel buttons = new()
+        {
+            Dock = DockStyle.Bottom, AutoSize = true,
+            FlowDirection = FlowDirection.RightToLeft
+        };
+        Button discard = new() { Text = "Discard", AutoSize = true, DialogResult = DialogResult.Cancel };
+        Button openLog = new() { Text = "Open Log", AutoSize = true };
+        Button retry = new() { Text = "Retry", AutoSize = true, DialogResult = DialogResult.Retry };
+        openLog.Click += (_, _) =>
+        {
+            if (File.Exists(logPath)) Process.Start(new ProcessStartInfo(logPath)
+            { UseShellExecute = true });
+        };
+        buttons.Controls.AddRange([discard, openLog, retry]);
+        if (allowAccept)
+        {
+            Button accept = new() { Text = "Accept", AutoSize = true, DialogResult = DialogResult.OK };
+            buttons.Controls.Add(accept);
+            AcceptButton = accept;
+        }
+        CancelButton = discard;
+        Controls.Add(message);
+        Controls.Add(buttons);
+        if (allowAccept && this.clips.Length > 0)
+        {
+            FlowLayoutPanel tuning = new()
+            {
+                Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8),
+                FlowDirection = FlowDirection.LeftToRight
+            };
+            for (int index = 0; index < this.clips.Length; index++)
+                clip.Items.Add($"Clip {index + 1}");
+            tuning.Controls.AddRange([
+                new Label { Text = "Preview", AutoSize = true, Margin = new Padding(3, 7, 3, 3) },
+                clip,
+                new Label { Text = "Alpha threshold (0–255)", AutoSize = true, Margin = new Padding(14, 7, 3, 3) },
+                threshold,
+                thresholdText
+            ]);
+            Controls.Add(tuning);
+            clip.SelectedIndexChanged += (_, _) => SelectClip();
+            threshold.Scroll += (_, _) => ChangeThreshold(threshold.Value);
+            thresholdText.TextChanged += (_, _) =>
+            {
+                if (int.TryParse(thresholdText.Text, out int value))
+                    ChangeThreshold(value);
+            };
+            thresholdText.Leave += (_, _) =>
+                thresholdText.Text = threshold.Value.ToString();
+            Shown += (_, _) => { if (clip.SelectedIndex < 0) clip.SelectedIndex = 0; };
+        }
+        AppTheme.Apply(this);
+    }
+
+    void SelectClip()
+    {
+        if (clip.SelectedIndex < 0) return;
+        loading = true;
+        threshold.Value = clips[clip.SelectedIndex].AlphaThreshold;
+        thresholdText.Text = threshold.Value.ToString();
+        loading = false;
+        PreviewChanged?.Invoke(clips[clip.SelectedIndex], threshold.Value);
+    }
+
+    void ChangeThreshold(int value)
+    {
+        if (loading || clip.SelectedIndex < 0) return;
+        value = Math.Clamp(value, threshold.Minimum, threshold.Maximum);
+        loading = true;
+        threshold.Value = value;
+        thresholdText.Text = value.ToString();
+        loading = false;
+        CustomShowClip selected = clips[clip.SelectedIndex];
+        selected.AlphaThreshold = value;
+        PreviewChanged?.Invoke(selected, selected.AlphaThreshold);
+    }
+
+    internal static bool VerifyAlphaReview()
+    {
+        CustomShowClip first = new() { AlphaThreshold = 12 };
+        CustomShowClip second = new() { AlphaThreshold = 34 };
+        using CustomShowDecisionForm form = new("", true, [first, second]);
+        CustomShowClip? selected = null;
+        form.PreviewChanged += (value, _) => selected = value;
+        form.clip.SelectedIndex = 1;
+        form.thresholdText.Text = "40";
+        return ReferenceEquals(selected, second) && second.AlphaThreshold == 40;
+    }
+}
+
+internal sealed class CustomPerformerForm : Form
+{
+    readonly TextBox name = new();
+    readonly DateTimePicker birth = new() { Format = DateTimePickerFormat.Short, ShowCheckBox = true };
+    readonly NumericUpDown height = Measure(80, 250);
+    readonly NumericUpDown bust = Measure(30, 250);
+    readonly NumericUpDown waist = Measure(30, 250);
+    readonly NumericUpDown hips = Measure(30, 250);
+    readonly CheckBox useHeight = new() { Text = "Set" };
+    readonly CheckBox useBust = new() { Text = "Set" };
+    readonly CheckBox useWaist = new() { Text = "Set" };
+    readonly CheckBox useHips = new() { Text = "Set" };
+    readonly TextBox hair = new(), ethnicity = new(), city = new(), country = new();
+    internal CustomPerformerProfile Profile { get; private set; }
+
+    internal CustomPerformerForm(CustomPerformerProfile? profile)
+    {
+        Profile = profile == null ? new() : Clone(profile);
+        Text = profile == null ? "New Model Profile" : "Edit Model Profile";
+        ClientSize = new Size(500, 470);
+        TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12) };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        Controls.Add(table);
+        Add(table, "Model name", name);
+        Add(table, "Birth date", birth);
+        Add(table, "Height (cm)", Pair(height, useHeight));
+        Add(table, "Bust (cm)", Pair(bust, useBust));
+        Add(table, "Waist (cm)", Pair(waist, useWaist));
+        Add(table, "Hips (cm)", Pair(hips, useHips));
+        Add(table, "Hair", hair); Add(table, "Ethnicity", ethnicity);
+        Add(table, "City", city); Add(table, "Country", country);
+        Button ok = new() { Text = "OK", AutoSize = true };
+        Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+        Add(table, "", Pair(ok, cancel));
+        ok.Click += Save;
+        AcceptButton = ok; CancelButton = cancel;
+        Read();
+        AppTheme.Apply(this);
+    }
+
+    void Read()
+    {
+        name.Text = Profile.ModelName; birth.Checked = Profile.BirthDate != null;
+        if (Profile.BirthDate is DateOnly date) birth.Value = date.ToDateTime(TimeOnly.MinValue);
+        Set(height, useHeight, Profile.HeightCm); Set(bust, useBust, Profile.BustCm);
+        Set(waist, useWaist, Profile.WaistCm); Set(hips, useHips, Profile.HipsCm);
+        hair.Text = Profile.Hair; ethnicity.Text = Profile.Ethnicity;
+        city.Text = Profile.City; country.Text = Profile.Country;
+    }
+
+    void Save(object? sender, EventArgs e)
+    {
+        try
+        {
+            Profile.ModelName = name.Text.Trim();
+            Profile.BirthDate = birth.Checked ? DateOnly.FromDateTime(birth.Value) : null;
+            Profile.HeightCm = useHeight.Checked ? height.Value : null;
+            Profile.BustCm = useBust.Checked ? bust.Value : null;
+            Profile.WaistCm = useWaist.Checked ? waist.Value : null;
+            Profile.HipsCm = useHips.Checked ? hips.Value : null;
+            Profile.Hair = hair.Text.Trim(); Profile.Ethnicity = ethnicity.Text.Trim();
+            Profile.City = city.Text.Trim(); Profile.Country = country.Text.Trim();
+            CustomShowStore.ValidateProfile(Profile);
+            DialogResult = DialogResult.OK; Close();
+        }
+        catch (Exception error) { MessageBox.Show(this, error.Message, Text); }
+    }
+
+    static NumericUpDown Measure(int min, int max) => new()
+        { Minimum = min, Maximum = max, DecimalPlaces = 1, Increment = .5m };
+    static void Set(NumericUpDown input, CheckBox enabled, decimal? value)
+        { enabled.Checked = value != null; if (value != null) input.Value = value.Value; }
+    static FlowLayoutPanel Pair(params Control[] controls)
+        { FlowLayoutPanel p = new() { AutoSize = true, Dock = DockStyle.Fill }; p.Controls.AddRange(controls); return p; }
+    static void Add(TableLayoutPanel table, string label, Control control)
+        { int row = table.RowCount++; table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row); control.Dock = DockStyle.Fill; table.Controls.Add(control, 1, row); }
+    static CustomPerformerProfile Clone(CustomPerformerProfile p) => new()
+        { SchemaVersion=p.SchemaVersion, Id=p.Id, ModelName=p.ModelName, BirthDate=p.BirthDate,
+          HeightCm=p.HeightCm, BustCm=p.BustCm, WaistCm=p.WaistCm, HipsCm=p.HipsCm,
+          Hair=p.Hair, Ethnicity=p.Ethnicity, City=p.City, Country=p.Country };
+}
+
+internal sealed class CustomModelManagerForm : Form
+{
+    readonly CustomShowStore store;
+    readonly ListBox list = new() { Dock = DockStyle.Fill, DisplayMember = nameof(CustomPerformerProfile.ModelName) };
+    internal CustomModelManagerForm(CustomShowStore store)
+    {
+        this.store = store; Text = "Custom Show Models"; ClientSize = new Size(440, 420);
+        FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, AutoSize = true };
+        Button add = new() { Text = "Add...", AutoSize = true };
+        Button edit = new() { Text = "Edit...", AutoSize = true };
+        Button close = new() { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+        buttons.Controls.AddRange([add, edit, close]); Controls.Add(list); Controls.Add(buttons);
+        add.Click += (_, _) => Edit(null);
+        edit.Click += (_, _) => Edit(list.SelectedItem as CustomPerformerProfile);
+        list.SelectedIndexChanged += (_, _) => edit.Enabled = list.SelectedItem != null;
+        edit.Enabled = false;
+        Reload(); AppTheme.Apply(this);
+    }
+    void Reload() { list.DataSource = null; list.DataSource = store.LoadPerformers(); }
+    void Edit(CustomPerformerProfile? profile)
+    {
+        using CustomPerformerForm form = new(profile);
+        if (form.ShowDialog(this) != DialogResult.OK) return;
+        store.SavePerformer(form.Profile); Reload(); DialogResult = DialogResult.OK;
+    }
+}
+
+internal sealed class CustomShowSettingsForm : Form
+{
+    readonly TextBox root = new(), python = new();
+    readonly Label validation = new() { AutoSize = true };
+    CancellationTokenSource? validationCancellation;
+    internal CustomShowConfiguration Configuration { get; }
+    internal CustomShowSettingsForm(CustomShowConfiguration current)
+    {
+        Configuration = new()
+        {
+            LibraryRoot = current.LibraryRoot,
+            PythonExecutable = current.PythonExecutable,
+            SmallPlayerVolume = current.SmallPlayerVolume,
+            LargePlayerVolume = current.LargePlayerVolume,
+            FullOpacityThreshold = current.FullOpacityThreshold
+        };
+        Text = "Custom Show Settings"; ClientSize = new Size(700, 210);
+        TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(12) };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); Controls.Add(table);
+        AddPath(table, "Library folder", root, true); AddPath(table, "Python executable", python, false);
+        Button validate = new() { Text = "Validate setup", AutoSize = true };
+        Button ok = new() { Text = "OK", AutoSize = true };
+        Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+        FlowLayoutPanel buttons = new() { AutoSize = true }; buttons.Controls.AddRange([validate, ok, cancel]);
+        table.Controls.Add(validation, 1, 2); table.SetColumnSpan(validation, 2); table.Controls.Add(buttons, 1, 3); table.SetColumnSpan(buttons, 2);
+        root.Text = Configuration.LibraryRoot; python.Text = Configuration.PythonExecutable;
+        validate.Click += async (_, _) => await ValidateSetup(validate);
+        ok.Click += SaveSettings;
+        FormClosed += (_, _) => validationCancellation?.Cancel();
+        AcceptButton = ok; CancelButton = cancel; AppTheme.Apply(this);
+    }
+    async Task ValidateSetup(Button button)
+    {
+        if (validationCancellation != null)
+        {
+            validation.Text = "Cancelling validation...";
+            validationCancellation.Cancel();
+            return;
+        }
+        validationCancellation = new();
+        button.Text = "Cancel validation";
+        validation.Text = "Starting validation...";
+        string result;
+        try { Configuration.LibraryRoot = Path.GetFullPath(root.Text); Configuration.PythonExecutable = Path.GetFullPath(python.Text); Directory.CreateDirectory(Configuration.LibraryRoot); result = await CustomShowProcessor.ValidateAsync(Configuration, validationCancellation.Token, new Progress<string>(message => validation.Text = message)); }
+        catch (OperationCanceledException) { result = "Validation cancelled."; }
+        catch (Exception error) { result = "Failed: " + error.Message; }
+        finally { validationCancellation.Dispose(); validationCancellation = null; button.Text = "Validate setup"; }
+        if (result.StartsWith("OK:", StringComparison.Ordinal))
+            result = "Setup validated successfully.";
+        BeginInvoke(() => validation.Text = result);
+    }
+    void SaveSettings(object? sender, EventArgs e)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(root.Text))
+                throw new InvalidDataException("The custom library folder is required.");
+            if (!File.Exists(python.Text))
+                throw new FileNotFoundException("Select the Python executable created by setup.", python.Text);
+            Configuration.LibraryRoot = Path.GetFullPath(root.Text);
+            Configuration.PythonExecutable = Path.GetFullPath(python.Text);
+            Directory.CreateDirectory(Configuration.LibraryRoot);
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+    static void AddPath(TableLayoutPanel table, string label, TextBox box, bool folder)
+    {
+        int row = table.RowCount++; table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row); box.Dock = DockStyle.Fill; table.Controls.Add(box, 1, row);
+        Button browse = new() { Text = "Browse...", AutoSize = true };
+        browse.Click += (_, _) => { if (folder) { using FolderBrowserDialog d = new() { SelectedPath = box.Text }; if (d.ShowDialog(table.FindForm()) == DialogResult.OK) box.Text = d.SelectedPath; } else { using OpenFileDialog d = new() { Filter = "Python|python.exe" }; if (d.ShowDialog(table.FindForm()) == DialogResult.OK) box.Text = d.FileName; } };
+        table.Controls.Add(browse, 2, row);
+    }
+}
+
+internal sealed class CustomShowSetupOptionsForm : Form
+{
+    readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
+        AutoSize = true };
+    readonly CheckBox matAnyone = new() { Text =
+        "MatAnyone 2 + SAM2 interactive masking (~520 MB)", AutoSize = true };
+    readonly CheckBox videoMaMa = new() { Text =
+        "VideoMaMa high-quality matting + SAM2 (~8 GB, NVIDIA CUDA required)",
+        AutoSize = true };
+    readonly CheckBox vitMatte = new() { Text =
+        "ViTMatte S + B with editable SAM2 video masks (~900 MB)", AutoSize = true };
+    readonly CheckBox proPainter = new() { Text =
+        "ProPainter video object removal (~200 MB, NVIDIA CUDA recommended)",
+        AutoSize = true };
+    internal bool InstallTransNetV2 => transNet.Checked;
+    internal bool InstallMatAnyone2 => matAnyone.Checked;
+    internal bool InstallVideoMaMa => videoMaMa.Checked;
+    internal bool InstallViTMatte => vitMatte.Checked;
+    internal bool InstallProPainter => proPainter.Checked;
+
+    internal CustomShowSetupOptionsForm()
+    {
+        string runtime = Path.Combine(Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData),
+            "IStripperQuickPlayer", "rvm-runtime");
+        transNet.Checked = File.Exists(Path.Combine(runtime, "TRANSNETV2_COMMIT"));
+        matAnyone.Checked = File.Exists(Path.Combine(runtime, "MATANYONE2_COMMIT"));
+        videoMaMa.Checked = File.Exists(Path.Combine(runtime, "VIDEOMAMA_COMMIT"));
+        vitMatte.Checked = File.Exists(Path.Combine(runtime, "VITMATTE_S_REVISION")) &&
+            File.Exists(Path.Combine(runtime, "VITMATTE_B_REVISION"));
+        proPainter.Checked = File.Exists(Path.Combine(runtime, "PROPAINTER_STREAMING_COMMIT"));
+        Text = "Choose Custom Show Processing Tools";
+        ClientSize = new Size(680, 420);
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterParent;
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(16),
+            ColumnCount = 1, RowCount = 13 };
+        layout.Controls.Add(new Label { Text =
+            "Robust Video Matting is always installed. Select optional tools:", AutoSize = true });
+        layout.Controls.Add(transNet);
+        layout.Controls.Add(matAnyone);
+        layout.Controls.Add(videoMaMa);
+        layout.Controls.Add(vitMatte);
+        layout.Controls.Add(proPainter);
+        layout.Controls.Add(new Label { Text =
+            "MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; ViTMatte and SAM2 permit commercial use.", AutoSize = true });
+        LinkLabel matAnyoneLicence = new() { Text = "Read the MatAnyone 2 licence", AutoSize = true };
+        matAnyoneLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/pq-yang/MatAnyone2/blob/main/LICENSE.txt") { UseShellExecute = true });
+        LinkLabel videoMaMaLicence = new() { Text = "Read the VideoMaMa licence", AutoSize = true };
+        videoMaMaLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/cvlab-kaist/VideoMaMa/blob/main/License.md") { UseShellExecute = true });
+        layout.Controls.Add(matAnyoneLicence);
+        layout.Controls.Add(videoMaMaLicence);
+        LinkLabel vitMatteLicence = new() { Text = "Read the ViTMatte licence", AutoSize = true };
+        vitMatteLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/hustvl/ViTMatte/blob/main/LICENSE") { UseShellExecute = true });
+        layout.Controls.Add(vitMatteLicence);
+        LinkLabel proPainterLicence = new() { Text = "Read the ProPainter licence", AutoSize = true };
+        proPainterLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/sczhou/ProPainter/blob/main/LICENSE") { UseShellExecute = true });
+        layout.Controls.Add(proPainterLicence);
+        FlowLayoutPanel buttons = new() { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
+        buttons.Controls.Add(new Button { Text = "Install / Update", AutoSize = true,
+            DialogResult = DialogResult.OK });
+        buttons.Controls.Add(new Button { Text = "Cancel", AutoSize = true,
+            DialogResult = DialogResult.Cancel });
+        layout.Controls.Add(buttons);
+        Controls.Add(layout);
+        AcceptButton = (Button)buttons.Controls[0];
+        CancelButton = (Button)buttons.Controls[1];
+        AppTheme.Apply(this);
+        matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor =
+            proPainterLicence.LinkColor =
+            Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
+    }
+}
+
+internal sealed class CustomShowSetupForm : Form
+{
+    readonly string script;
+    readonly bool installTransNetV2;
+    readonly bool installMatAnyone2;
+    readonly bool installVideoMaMa;
+    readonly bool installViTMatte;
+    readonly bool installProPainter;
+    readonly TextBox output = new()
+    {
+        Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Both, WordWrap = false
+    };
+    readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
+    Process? process;
+    bool complete;
+    internal bool Succeeded { get; private set; }
+
+    internal CustomShowSetupForm(string script, bool installTransNetV2,
+        bool installMatAnyone2, bool installVideoMaMa, bool installViTMatte,
+        bool installProPainter)
+    {
+        this.script = script;
+        this.installTransNetV2 = installTransNetV2;
+        this.installMatAnyone2 = installMatAnyone2;
+        this.installVideoMaMa = installVideoMaMa;
+        this.installViTMatte = installViTMatte;
+        this.installProPainter = installProPainter;
+        Text = "Install Custom Show Processing Tools";
+        ClientSize = new Size(900, 520);
+        Controls.Add(output);
+        Controls.Add(close);
+        close.Click += (_, _) => CloseSetup();
+        FormClosing += (_, _) => { if (!complete) process?.Kill(true); };
+        Shown += async (_, _) => await Run();
+        AppTheme.Apply(this);
+    }
+
+    async Task Run()
+    {
+        Append("Starting custom-show processing setup...");
+        try
+        {
+            ProcessStartInfo start = new("powershell.exe")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WorkingDirectory = Path.GetDirectoryName(script)!
+            };
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-ExecutionPolicy");
+            start.ArgumentList.Add("Bypass");
+            start.ArgumentList.Add("-File");
+            start.ArgumentList.Add(script);
+            if (installTransNetV2)
+                start.ArgumentList.Add("-InstallTransNetV2");
+            if (installMatAnyone2)
+                start.ArgumentList.Add("-InstallMatAnyone2");
+            if (installVideoMaMa)
+                start.ArgumentList.Add("-InstallVideoMaMa");
+            if (installViTMatte)
+                start.ArgumentList.Add("-InstallViTMatte");
+            if (installProPainter)
+                start.ArgumentList.Add("-InstallProPainter");
+            process = Process.Start(start) ??
+                throw new InvalidOperationException("PowerShell could not be started.");
+            process.OutputDataReceived += (_, e) => Append(e.Data);
+            process.ErrorDataReceived += (_, e) => Append(e.Data);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync();
+            Succeeded = process.ExitCode == 0;
+            Append(Succeeded ? "Setup completed successfully." :
+                $"Setup failed with exit code {process.ExitCode}.");
+        }
+        catch (Exception error) { Append("Setup failed: " + error.Message); }
+        finally
+        {
+            complete = true;
+            close.Text = "Close";
+        }
+    }
+
+    void Append(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
+        output.AppendText(text + Environment.NewLine);
+    }
+
+    void CloseSetup()
+    {
+        if (!complete)
+        {
+            try { process?.Kill(true); } catch { }
+            DialogResult = DialogResult.Cancel;
+        }
+        else DialogResult = Succeeded ? DialogResult.OK : DialogResult.Abort;
+        Close();
+    }
+}

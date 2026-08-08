@@ -518,9 +518,12 @@ namespace IStripperQuickPlayer
             RefreshApiOnlyPlaybackState();
             string animationPath = GetCurrentAnimationPath();
             string[] animationParts = animationPath.Split('\\', 2);
-            string cardTag = animationParts.FirstOrDefault() ?? "";
+            string cardTag = string.IsNullOrEmpty(animationPath) ? "" :
+                GetCardTagFromAnimationPath(animationPath);
             string clipName = animationParts.Length > 1
-                ? animationParts[1] : "";
+                ? animationParts[1]
+                : animationPath.StartsWith("custom:",
+                    StringComparison.OrdinalIgnoreCase) ? animationPath : "";
             ModelCard? card = string.IsNullOrEmpty(cardTag)
                 ? null : Datastore.findCardByTag(
                     cardTag.Split('-')[0]);
@@ -531,7 +534,14 @@ namespace IStripperQuickPlayer
                 playbackLastKnownElapsedMilliseconds;
             int durationMilliseconds =
                 playbackTimelineDurationMilliseconds;
-            if (apiOnlyMode && playbackBridgeLoaded &&
+            if (customPlayer != null)
+            {
+                elapsedMilliseconds = (int)Math.Min(int.MaxValue,
+                    customPlayer.CurrentSeconds * 1000);
+                durationMilliseconds = (int)Math.Min(int.MaxValue,
+                    customPlayer.DurationSeconds * 1000);
+            }
+            if (customPlayer == null && apiOnlyMode && playbackBridgeLoaded &&
                 playbackMovieRegistered)
             {
                 int elapsed = CallPlaybackBridgeApi(
@@ -550,6 +560,8 @@ namespace IStripperQuickPlayer
             string state = stateCode switch
             {
                 _ when string.IsNullOrEmpty(animationPath) => "stopped",
+                _ when customPlayer != null && customPlayer.Paused => "paused",
+                _ when customPlayer != null => "playing",
                 3 => "playing",
                 4 => "paused",
                 _ => "unavailable"
@@ -562,6 +574,8 @@ namespace IStripperQuickPlayer
                 {
                     state,
                     animationPath,
+                    source = card?.IsCustom == true ? "custom" : "istripper",
+                    showId = card?.customShowId,
                     cardTag,
                     cardName = card == null
                         ? null : ApiCardDisplayName(card),
@@ -577,7 +591,7 @@ namespace IStripperQuickPlayer
                     locked = playerlocked,
                     panic = panicActive,
                     playbackControlsAvailable =
-                        PlaybackControlEnabled &&
+                        customPlayer != null || PlaybackControlEnabled &&
                         playbackControlsAvailableForAccount &&
                         playbackBridgeLoaded,
                     seekReady = playbackSeekReady
@@ -803,6 +817,13 @@ namespace IStripperQuickPlayer
                 return error!;
             if (!TryResolveQueueEntry(entry!, out string animationPath))
                 return Error(409, "No playable clip matches the request.");
+            if (animationPath.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!RequestAnimationPlayback(animationPath))
+                    return Error(409, "The custom show could not be started.");
+                actSetPlayerLarge(true);
+                return new ApiResult(202, new { accepted = true, animationPath });
+            }
             if (ReadRegistryInteger(@"Software\Totem\vghd\player",
                     "playingMode") != 3)
                 return Error(409, "Fullscreen is not active.");
@@ -883,10 +904,31 @@ namespace IStripperQuickPlayer
                 count = Math.Min(matches.Count, limit),
                 cards = matches.Take(limit).Select(card => new
                 {
+                    source = card.IsCustom ? "custom" : "istripper",
+                    showId = card.customShowId,
                     cardTag = ApiCardTag(card),
                     cardName = ApiCardDisplayName(card),
                     model = card.modelName,
                     outfit = card.outfit,
+                    description = card.description,
+                    tags = card.tags,
+                    releaseDate = card.dateReleased == default ? null :
+                        card.dateReleased.ToString("yyyy-MM-dd"),
+                    showDate = card.dateShow == default ? null :
+                        card.dateShow.ToString("yyyy-MM-dd"),
+                    age = card.modelAge,
+                    rating = card.rating is > 0 ? card.rating - 5 : null,
+                    hotness = card.hotnessLevel,
+                    exclusive = card.exclusive,
+                    performerCount = card.numgirls,
+                    bust = card.bust,
+                    waist = card.waist,
+                    hips = card.hips,
+                    height = card.height,
+                    hair = card.hair,
+                    ethnicity = card.ethnicity,
+                    city = card.city,
+                    country = card.country,
                     clips = (card.clips ?? []).Select(clip => new
                     {
                         clipName = clip.clipName,
@@ -922,6 +964,8 @@ namespace IStripperQuickPlayer
             return new
             {
                 index,
+                source = card?.IsCustom == true ? "custom" : "istripper",
+                showId = card?.customShowId,
                 cardTag = entry.CardTag,
                 cardName = card == null
                     ? null : ApiCardDisplayName(card),
@@ -987,14 +1031,12 @@ namespace IStripperQuickPlayer
                     out string animationPath))
                 return Error(409, "No playable clip matches the request.");
 
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Totem\vghd\parameters", true);
-            if (key == null)
-                return Error(503, "iStripper is not available.");
-
             ClearQueuedCardSession();
-            BeginAnimationReplacement(animationPath);
-            key.SetValue("ForceAnim", animationPath);
+            if (!RequestAnimationPlayback(animationPath))
+                return Error(503, animationPath.StartsWith("custom:",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? "The custom show is unavailable."
+                    : "iStripper is not available.");
             if (!apiOnlyMode)
             {
                 SelectQueuedCard(entry!.CardTag, animationPath);
@@ -1186,6 +1228,11 @@ namespace IStripperQuickPlayer
         private ApiResult PlayNextApiOnlyClip()
         {
             string current = GetCurrentAnimationPath();
+            if (current.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+            {
+                GetNextClip(null, current);
+                return Accepted();
+            }
             string[] parts = current.Split('\\', 2);
             if (parts.Length != 2)
                 return Error(409, "Nothing is currently playing.");
@@ -1218,14 +1265,12 @@ namespace IStripperQuickPlayer
 
         private ApiResult ForceApiOnlyAnimation(string animationPath)
         {
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Totem\vghd\parameters", true);
-            if (key == null)
-                return Error(503, "iStripper is not available.");
-
             ClearQueuedCardSession();
-            BeginAnimationReplacement(animationPath);
-            key.SetValue("ForceAnim", animationPath);
+            if (!RequestAnimationPlayback(animationPath))
+                return Error(503, animationPath.StartsWith("custom:",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? "The custom show is unavailable."
+                    : "iStripper is not available.");
             return new ApiResult(202, new
             {
                 accepted = true,

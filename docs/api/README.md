@@ -162,6 +162,9 @@ The response contains:
 - `queue`: enabled state, active entry, manual entries, and automatic entries.
 
 Playback state is `playing`, `paused`, `stopped`, or `unavailable`.
+Library, status, and queue entries include `source` (`istripper` or `custom`)
+and nullable `showId`. A playing custom show uses
+`animationPath: "custom:<32-character-show-id>"`.
 
 ## Library
 
@@ -186,6 +189,9 @@ Each card includes both its internal `cardTag` and friendly `cardName`. The
 friendly name uses `Model - Outfit`, for example
 `Nikki Hill - A Dress To Seduce`.
 Each clip includes its `clipName` and numeric `clipNumber`.
+Cards also expose the shared metadata fields used by the UI: model, outfit,
+description, tags, release/show dates, age, official rating, hotness,
+exclusive/performer values, measurements, hair, ethnicity, city, and country.
 
 ## Direct playback
 
@@ -235,6 +241,9 @@ Invoke-RestMethod http://127.0.0.1:17871/api/v1/play `
 an outfit name matches multiple cards, the API returns `409` rather than
 choosing one. Use the full `Model - Outfit` name in that case. Use either
 `cardTag` or `cardName`, and either `clipName` or `clipNumber`.
+Custom card tags and clip names are both `custom:<show-id>` and work with the
+same play, queue, seek, speed, and action routes; no custom-only REST route is
+required.
 
 ## Queue control
 

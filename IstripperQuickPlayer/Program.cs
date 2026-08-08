@@ -17,6 +17,32 @@ namespace IStripperQuickPlayer
         {
             ApplicationConfiguration.Initialize();
 
+            if (args.Length == 1 && args[0] == "--verify-custom-shows")
+            {
+                (string Name, bool Passed)[] checks =
+                [
+                    ("core", CustomShowStore.VerifyCoreLogic()),
+                    ("integration", CustomShowStore.VerifyIntegration()),
+                    ("hit testing", CustomPlayerForm.VerifyHitTesting()),
+                    ("cover crop", CustomShowEditorForm.VerifyCoverCrop()),
+                    ("cover text", CustomShowProcessor.VerifyCoverOverlay()),
+                    ("IAFD link parsing", Form1.VerifyIafdLinkParsing()),
+                    ("mask frame selection", CustomMaskEditorForm.VerifyFrameSelection()),
+                    ("watermark selection", CustomWatermarkRemovalForm.VerifySelection()),
+                    ("staging cleanup", CustomShowEditorForm.VerifyStagingCleanup()),
+                    ("clip splitting", CustomClipEditorForm.VerifyClipSplitting()),
+                    ("divider handles", ClipTimelineControl.VerifyMarkerHitTesting()),
+                    ("time estimate", CustomShowProcessingForm.VerifyEstimate()),
+                    ("alpha review", CustomShowDecisionForm.VerifyAlphaReview()),
+                    ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),
+                    ("FFmpeg runtime", FfmpegCpuDecoder.VerifyRuntime())
+                ];
+                foreach ((string name, bool passed) in checks)
+                    if (!passed) Console.Error.WriteLine($"Custom-show check failed: {name}");
+                Environment.ExitCode = checks.All(check => check.Passed) ? 0 : 1;
+                return;
+            }
+
             if (args.Length == 2 && args[0] == "--verify-card-overlay")
             {
                 Environment.ExitCode =
@@ -912,6 +938,8 @@ namespace IStripperQuickPlayer
         private static readonly Color DarkBorder =
             Color.FromArgb(90, 90, 90);
         private static readonly Color DarkText = Color.AntiqueWhite;
+        private static readonly Color DarkDisabledText =
+            Color.FromArgb(175, 175, 175);
 
         internal static void Apply(Form form)
         {
@@ -943,12 +971,16 @@ namespace IStripperQuickPlayer
                     control.BackColor = surface;
                     break;
                 case Button button:
+                    button.Paint -= Button_Paint;
                     button.FlatStyle =
                         dark ? FlatStyle.Flat : FlatStyle.Standard;
                     button.UseVisualStyleBackColor = !dark;
                     button.BackColor = background;
                     if (dark)
+                    {
                         button.FlatAppearance.BorderColor = DarkBorder;
+                        button.Paint += Button_Paint;
+                    }
                     break;
                 case CheckBox checkBox:
                     checkBox.UseVisualStyleBackColor = !dark;
@@ -973,6 +1005,19 @@ namespace IStripperQuickPlayer
                 ApplyControl(child, dark);
             if (control.ContextMenuStrip != null)
                 ApplyToolStrip(control.ContextMenuStrip, dark);
+        }
+
+        private static void Button_Paint(object? sender, PaintEventArgs e)
+        {
+            if (sender is not Button { Enabled: false } button ||
+                string.IsNullOrEmpty(button.Text)) return;
+            Rectangle interior = Rectangle.Inflate(button.ClientRectangle, -2, -2);
+            using Brush background = new SolidBrush(button.BackColor);
+            e.Graphics.FillRectangle(background, interior);
+            TextRenderer.DrawText(e.Graphics, button.Text, button.Font, interior,
+                DarkDisabledText, TextFormatFlags.HorizontalCenter |
+                TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine |
+                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
         private static void ApplyGrid(DataGridView grid, bool dark)

@@ -42,7 +42,7 @@ internal static class GlslOverlayRenderer
                 "borderGlow", StringComparison.OrdinalIgnoreCase) ? 50 :
             name.Equals(
                 "heartsFireworks", StringComparison.OrdinalIgnoreCase) ? 60 :
-            quickPlayer ? 80 :
+            quickPlayer ? 154 :
             name is "flux" or "wave" ? 63 : 100;
         lock (renderLock)
         {
@@ -52,7 +52,7 @@ internal static class GlslOverlayRenderer
                 return RenderCore(
                     pixelShader, ParseColors(parameters, defaultColors),
                     channel0, channel1, rotation, mirrorX,
-                    frameCount, width, height);
+                    frameCount, frameDuration, width, height);
             }
             catch (Exception exception)
             {
@@ -68,7 +68,7 @@ internal static class GlslOverlayRenderer
     private static DrawingBitmap RenderCore(
         string source, Vector3[] colors,
         DrawingBitmap? channel0, DrawingBitmap? channel1,
-        int rotation, bool mirrorX, int frameCount,
+        int rotation, bool mirrorX, int frameCount, int frameDuration,
         int width, int height)
     {
         GLFWProvider.CheckForMainThread = false;
@@ -132,7 +132,7 @@ internal static class GlslOverlayRenderer
             for (int frame = 0; frame < frameCount; frame++)
             {
                 SetUniform(program, "iTime",
-                    frame * FrameDuration / 1000f);
+                    frame * frameDuration / 1000f);
                 GL.ClearColor(0, 0, 0, 0);
                 GL.Clear(ClearBufferMask.ColorBufferBit);
                 GL.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);

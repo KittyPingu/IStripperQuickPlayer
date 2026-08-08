@@ -1098,6 +1098,12 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         bitmaps.Clear();
     }
 
+    internal void ResetCardImages()
+    {
+        ClearBitmaps();
+        renderedGpuSceneVersion = -1;
+    }
+
     private void ClearSharedOverlays()
     {
         foreach (CardOverlayVisual visual in cardOverlayVisuals.Values)

@@ -25,6 +25,8 @@ namespace IStripperQuickPlayer.DataModel
             IStripperXXX, 
             [Description("Trading Card")]
             TradingCard,
+            [Description("Custom")]
+            Custom,
             Undefined
         }
 

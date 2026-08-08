@@ -38,7 +38,7 @@ internal static class QuickPlayerCardOverlays
         if (sheet == null)
             return null;
         if (favourite)
-            DrawHeart(sheet, frameCount, frameDuration);
+            DrawHeart(sheet, frameCount);
         else
             DrawLabel(sheet, frameCount,
                 choice.Id.EndsWith("new", StringComparison.OrdinalIgnoreCase)
@@ -49,15 +49,14 @@ internal static class QuickPlayerCardOverlays
         return new(sheet, null, Width, Height, frameCount, frameDuration);
     }
 
-    private static void DrawHeart(
-        Bitmap sheet, int frameCount, int frameDuration)
+    private static void DrawHeart(Bitmap sheet, int frameCount)
     {
         using Graphics graphics = Graphics.FromImage(sheet);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
         for (int frame = 0; frame < frameCount; frame++)
         {
-            double phase = frame * frameDuration / 1200d % 1;
+            double phase = frame / (double)frameCount * 5 % 1;
             double beat = Heartbeat(phase);
             float size = 40 * (1 + (float)beat * .11f);
             RectangleF bounds = new(
@@ -79,7 +78,8 @@ internal static class QuickPlayerCardOverlays
 
     private static double Pulse(double phase, double centre, double width)
     {
-        double x = (phase - centre) / width;
+        double distance = Math.Abs(phase - centre);
+        double x = Math.Min(distance, 1 - distance) / width;
         return Math.Exp(-x * x);
     }
 
@@ -88,10 +88,12 @@ internal static class QuickPlayerCardOverlays
 
     internal static bool VerifyHeartbeat()
     {
-        double[] samples = Enumerable.Range(0, 16)
-            .Select(frame => Heartbeat(frame * 75 / 1200d))
+        double[] samples = Enumerable.Range(0, 154)
+            .Select(frame => Heartbeat(frame / 154d * 5 % 1))
             .ToArray();
-        return samples[3] > .9 && samples[6] > .5 && samples[12] < .01 &&
+        return samples[6] > .9 && samples[12] > .5 &&
+            samples[23] < .01 &&
+            Math.Abs(Heartbeat(1) - Heartbeat(0)) < .001 &&
             samples.Zip(samples.Skip(1), (first, second) =>
                 Math.Abs(second - first)).Max() < .6;
     }
@@ -261,11 +263,13 @@ internal static class QuickPlayerCardOverlays
             float border = 1.0 - smoothstep(
                 0.6 * scale, 2.0 * scale, distanceToEdge);
             float glow = exp(-max(distanceToEdge - 1.0, 0.0) * 0.68) * 0.22;
+            float loopPhase = fract(iTime / 11.55);
             float orbit = atan(center.y, center.x) * 3.0 +
-                length(center) * 0.055 / scale - iTime * 4.2;
+                length(center) * 0.055 / scale -
+                loopPhase * 25.132741;
             float ribbon = 0.5 + 0.5 * sin(orbit);
             float position = edgePosition(fragCoord, iResolution.xy);
-            float cometPosition = fract(iTime / 4.0);
+            float cometPosition = fract(loopPhase * 2.0);
             float separation = abs(position - cometPosition);
             float headDistance = min(separation, 1.0 - separation);
             float cometHead = exp(-headDistance * headDistance * 5000.0);
@@ -287,7 +291,8 @@ internal static class QuickPlayerCardOverlays
         uniform vec3 color2;
 
         float pulse(float phase, float centre, float width) {
-            float x = (phase - centre) / width;
+            float distance = abs(phase - centre);
+            float x = min(distance, 1.0 - distance) / width;
             return exp(-x * x);
         }
 
@@ -312,7 +317,8 @@ internal static class QuickPlayerCardOverlays
 
         void mainImage(out vec4 fragColor, in vec2 fragCoord) {
             float scale = iResolution.x / 96.0;
-            float phase = fract(iTime / 1.2);
+            float loopPhase = fract(iTime / 11.55);
+            float phase = fract(loopPhase * 5.0);
             float beat = pulse(phase, 0.18, 0.10) +
                 0.58 * pulse(phase, 0.40, 0.105);
             vec2 center = fragCoord - iResolution.xy * 0.5;
@@ -324,10 +330,11 @@ internal static class QuickPlayerCardOverlays
             float glow = exp(-max(distanceToEdge - 1.0, 0.0) * 0.31) *
                 (0.20 + beat * 0.10);
             float travel = 0.5 + 0.5 * sin(
-                atan(center.y, center.x) * 4.0 - iTime * 3.1);
+                atan(center.y, center.x) * 4.0 -
+                loopPhase * 18.849556);
             vec3 borderColour = mix(color0, color1, travel);
             float position = edgePosition(fragCoord, iResolution.xy);
-            float cometPosition = fract(iTime / 4.0);
+            float cometPosition = fract(loopPhase * 2.0);
             float separation = abs(position - cometPosition);
             float headDistance = min(separation, 1.0 - separation);
             float cometHead = exp(-headDistance * headDistance * 5000.0);

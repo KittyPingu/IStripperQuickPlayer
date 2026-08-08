@@ -1,0 +1,3 @@
+FFmpeg 2026-07-27-git-a757b708ae essentials build
+https://www.gyan.dev/ffmpeg/builds/
+Archive SHA-256: fad16db73e20d0d3c111bad1f40fcd581c62b0624abce5d18b67c183a03dd9ab

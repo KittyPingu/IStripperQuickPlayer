@@ -473,6 +473,15 @@ namespace IStripperQuickPlayer.BLL
             int itemIndex, out GpuCardVisual visual)
             => gpuCards.TryGetValue(itemIndex, out visual);
 
+        internal void ResetCardScene()
+        {
+            gpuCards.Clear();
+            _boundsByIndex.Clear();
+            _imageBoundsByIndex.Clear();
+            _starBoundsByIndex.Clear();
+            GpuSceneVersion++;
+        }
+
         internal void SetGpuStarBounds(int itemIndex, Rectangle bounds)
             => _starBoundsByIndex[itemIndex] = bounds;
 
@@ -593,8 +602,8 @@ namespace IStripperQuickPlayer.BLL
                     double ratio =
                         (1.0 * card.image.Width) / card.image.Height;
                     int dy = CardImageBottomInset(bounds);
-                    int dx = (int)(bounds.Width -
-                        ((bounds.Height - 34) * ratio)) / 2;
+                    int dx = Math.Max(0, (int)(bounds.Width -
+                        ((bounds.Height - 34) * ratio)) / 2);
                     imgrect2 = new Rectangle(
                         bounds.Left + dx, bounds.Top,
                         bounds.Width - dx * 2, bounds.Height - dy);
@@ -625,7 +634,7 @@ namespace IStripperQuickPlayer.BLL
                 float playingFontSize = GetFittedFont(
                     g, "Playing", "Verdana",
                     (int)Math.Round(playingPoints),
-                    Math.Max(1, (int)(imgrect.Width * .7f)))
+                    Math.Max(1, (int)(imgrect.Width * .7f)), FontStyle.Bold)
                     .SizeInPoints;
                 Rectangle nameBounds = new(
                     bounds.Left,
@@ -646,7 +655,7 @@ namespace IStripperQuickPlayer.BLL
                     sortWidth, (int)Math.Round(
                         CardPixels(imgrect2, 30)));
                 Font playingFont = GetFont(
-                    "Verdana", (int)Math.Round(playingFontSize));
+                    "Verdana", (int)Math.Round(playingFontSize), FontStyle.Bold);
                 Rectangle playingBounds = new(
                     imgrect.Left,
                     bounds.Top + (int)Math.Round(
@@ -825,7 +834,8 @@ namespace IStripperQuickPlayer.BLL
 
                     Rectangle rect = playingBounds;
                     Font font = GetFittedFont(g, "Playing", "Verdana",
-                        (int)Math.Round(playingPoints), rect.Width);
+                        (int)Math.Round(playingPoints), rect.Width,
+                        FontStyle.Bold);
                     using GraphicsPath p = new();
                     p.AddString(
                         "Playing",            

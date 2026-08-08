@@ -9,6 +9,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DebugType>full</DebugType>
     <ApplicationIcon>df2284943cc77e7e1a5fa6a0da8ca265.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -37,6 +38,44 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include="df2284943cc77e7e1a5fa6a0da8ca265.ico" />
+    <Content Include="..\tools\custom-shows\rvm_worker.py" Link="custom-shows\rvm_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\transnetv2_worker.py" Link="custom-shows\transnetv2_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\matanyone2_worker.py" Link="custom-shows\matanyone2_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\videomama_worker.py" Link="custom-shows\videomama_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\vitmatte_worker.py" Link="custom-shows\vitmatte_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam2_refine_worker.py" Link="custom-shows\sam2_refine_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam_mask_worker.py" Link="custom-shows\sam_mask_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\propainter_worker.py" Link="custom-shows\propainter_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\benchmark_rvm.py" Link="custom-shows\benchmark_rvm.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\benchmark_matanyone2.py" Link="custom-shows\benchmark_matanyone2.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\setup.ps1" Link="custom-shows\setup.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="dependencies\avcodec-62.dll;dependencies\avformat-62.dll;dependencies\avutil-60.dll;dependencies\swresample-6.dll;dependencies\swscale-9.dll;dependencies\ffmpeg.exe;dependencies\ffprobe.exe;dependencies\FFmpeg-*.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>%(Filename)%(Extension)</Link>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\.editorconfig" Link=".editorconfig" />
@@ -51,12 +90,15 @@
          exercised by our .NET 10 control smoke test. -->
     <PackageReference Include="CyotekImageBox" Version="1.5.0" NoWarn="NU1701" />
     <PackageReference Include="DG.EnhancedBoxHelpers" Version="1.0.25907.18" />
+    <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
     <PackageReference Include="Microsoft-WindowsAPICodePack-Shell" Version="1.1.4" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
     <PackageReference Include="NodaTime" Version="3.0.10" />
+    <PackageReference Include="NAudio.Wasapi" Version="2.3.0" />
     <PackageReference Include="OpenTK" Version="4.9.4" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <PackageReference Include="Vortice.DirectComposition" Version="3.8.3" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\third_party\ImageListView\ImageListView.csproj" />

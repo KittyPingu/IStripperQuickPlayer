@@ -1,0 +1,462 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Vortice.D3DCompiler;
+using Vortice.Direct3D;
+using Vortice.Direct3D11;
+using Vortice.DirectComposition;
+using Vortice.DXGI;
+using D3D11 = Vortice.Direct3D11.D3D11;
+using DComp = Vortice.DirectComposition.DComp;
+using DxgiAlphaMode = Vortice.DXGI.AlphaMode;
+using DxgiFormat = Vortice.DXGI.Format;
+using GpuViewport = Vortice.Mathematics.Viewport;
+
+namespace IStripperQuickPlayer;
+
+internal sealed class CustomPlayerForm : Form
+{
+    const int WsExNoRedirectionBitmap = 0x00200000, WsExTransparent = 0x20,
+        WsExLayered = 0x80000, WsExToolWindow = 0x80, WsExNoActivate = 0x08000000;
+    const int GwlExStyle = -20, WmNcHitTest = 0x84, WmMouseWheel = 0x20A,
+        WmEnterSizeMove = 0x231, WmExitSizeMove = 0x232,
+        HtTransparent = -1, HtClient = 1, HtCaption = 2;
+    readonly string foregroundPath, alphaPath;
+    readonly bool suppressErrorDialog;
+    readonly double rangeStartSeconds, requestedRangeEndSeconds;
+    readonly Rectangle? initialBounds;
+    readonly CancellationTokenSource cancellation = new();
+    readonly System.Windows.Forms.Timer hitTestTimer = new() { Interval = 20 };
+    PairedRenderer? renderer;
+    byte[]? hitTestAlpha;
+    volatile bool paused, locked, clickThroughLocked, wheelResize;
+    bool? mouseTransparent;
+    bool movingWindow;
+    int sizePercent, volumePercent, wheelDelta, volumeWheelDelta;
+    volatile int alphaThreshold, fullOpacityThreshold;
+    Task playbackTask = Task.CompletedTask;
+    long requestedSeekBits = BitConverter.DoubleToInt64Bits(double.NaN);
+    long requestedRateBits = BitConverter.DoubleToInt64Bits(1d);
+    double RangeEndSeconds => renderer == null || requestedRangeEndSeconds <= 0
+        ? renderer?.Duration ?? 0
+        : Math.Min(requestedRangeEndSeconds, renderer.Duration);
+    internal double CurrentSeconds => Math.Max(0,
+        (renderer?.CurrentTime ?? rangeStartSeconds) - rangeStartSeconds);
+    internal double DurationSeconds => Math.Max(0,
+        RangeEndSeconds - rangeStartSeconds);
+    internal int SizePercent => sizePercent;
+    internal int AlphaThreshold => alphaThreshold;
+    internal bool Paused => paused;
+    internal event EventHandler? PlaybackCompleted;
+    internal event EventHandler<Exception>? PlaybackFailed;
+    internal event Action<int>? VolumeChanged;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    static extern IntPtr SetWindowLongPtr(IntPtr window, int index, IntPtr value);
+    [DllImport("user32.dll")]
+    static extern bool SetWindowPos(IntPtr window, IntPtr after,
+        int x, int y, int width, int height, int flags);
+
+    internal CustomPlayerForm(string foregroundPath, string alphaPath,
+        int playerSizePercent = 40, int volumePercent = 100,
+        int alphaThreshold = 0, int fullOpacityThreshold = 255,
+        bool suppressErrorDialog = false, long startMs = 0, long endMs = 0,
+        Rectangle? initialBounds = null)
+    {
+        this.foregroundPath = foregroundPath;
+        this.alphaPath = alphaPath;
+        this.suppressErrorDialog = suppressErrorDialog;
+        rangeStartSeconds = Math.Max(0, startMs / 1000d);
+        requestedRangeEndSeconds = endMs / 1000d;
+        this.initialBounds = initialBounds;
+        sizePercent = Math.Clamp(playerSizePercent, 10, 200);
+        this.volumePercent = Math.Clamp(volumePercent, 0, 100);
+        this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
+        this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
+        Text = "QuickPlayer Custom Show";
+        AutoScaleMode = AutoScaleMode.None;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        ClientSize = new Size(2, 2);
+        SetStyle(ControlStyles.Opaque, true);
+        Shown += (_, _) => playbackTask = Task.Run(PlayAsync);
+        FormClosed += (_, _) => { cancellation.Cancel(); hitTestTimer.Dispose(); };
+        hitTestTimer.Tick += (_, _) => UpdateMouseTransparency();
+        KeyPreview = true;
+        KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Space) TogglePause();
+            else if (e.KeyCode == Keys.Escape) Close();
+        };
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams p = base.CreateParams;
+            p.ExStyle |= WsExNoRedirectionBitmap | WsExToolWindow |
+                WsExNoActivate;
+            if (UseTransparentWindowStyle(locked, clickThroughLocked,
+                    Volatile.Read(ref hitTestAlpha) != null))
+                p.ExStyle |= WsExTransparent | WsExLayered;
+            return p;
+        }
+    }
+    static bool UseTransparentWindowStyle(
+        bool locked, bool clickThrough, bool hasAlpha) =>
+        locked && clickThrough || !hasAlpha;
+    protected override bool ShowWithoutActivation => true;
+    protected override void OnPaintBackground(PaintEventArgs e) { }
+
+    async Task PlayAsync()
+    {
+        try
+        {
+            renderer = await Task.Run(() => new PairedRenderer(
+                foregroundPath, alphaPath, alphaThreshold,
+                fullOpacityThreshold), cancellation.Token);
+            renderer.SetVolume(volumePercent);
+            if (rangeStartSeconds >= RangeEndSeconds)
+                throw new InvalidDataException("The custom clip time range is invalid.");
+            renderer.Seek(rangeStartSeconds);
+            Invoke(() => ConfigureWindow(renderer.Width, renderer.Height));
+            (IntPtr handle, int width, int height) window =
+                ((IntPtr, int, int))Invoke(() => (Handle, ClientSize.Width, ClientSize.Height));
+            renderer.AttachWindow(window.handle, window.width, window.height);
+            hitTestTimer.Start();
+            renderer.Play();
+            while (!renderer.Ended && renderer.CurrentTime < RangeEndSeconds)
+            {
+                cancellation.Token.ThrowIfCancellationRequested();
+                double seek = BitConverter.Int64BitsToDouble(Interlocked.Exchange(
+                    ref requestedSeekBits, BitConverter.DoubleToInt64Bits(double.NaN)));
+                if (!double.IsNaN(seek)) renderer.Seek(Math.Clamp(
+                    rangeStartSeconds + seek, rangeStartSeconds, RangeEndSeconds));
+                double rate = BitConverter.Int64BitsToDouble(Volatile.Read(ref requestedRateBits));
+                if (Math.Abs(renderer.PlaybackRate - rate) > .0001) renderer.PlaybackRate = rate;
+                if (paused) { renderer.Pause(); await Task.Delay(15, cancellation.Token); continue; }
+                renderer.Play();
+                if (renderer.TryRenderDue(out byte[]? alpha))
+                    Volatile.Write(ref hitTestAlpha, alpha);
+                else await Task.Delay(1, cancellation.Token);
+            }
+            if (!IsDisposed) BeginInvoke(() =>
+            {
+                PlaybackCompleted?.Invoke(this, EventArgs.Empty);
+                Close();
+            });
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            if (!IsDisposed) BeginInvoke(() =>
+            {
+                PlaybackFailed?.Invoke(this, error);
+                if (!suppressErrorDialog)
+                    MessageBox.Show(error.Message, "Custom Show Player",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Close();
+            });
+        }
+        finally { renderer?.Dispose(); renderer = null; }
+    }
+
+    void ConfigureWindow(int width, int height)
+    {
+        Rectangle work = initialBounds is Rectangle previousBounds
+            ? Screen.FromRectangle(previousBounds).WorkingArea
+            : Screen.FromPoint(Cursor.Position).WorkingArea;
+        double scale = work.Height * sizePercent / 100d / height;
+        int w = Math.Max(2, (int)Math.Round(width * scale));
+        int h = Math.Max(2, (int)Math.Round(height * scale));
+        Point location = initialBounds is Rectangle previous
+            ? AnchoredLocation(new Size(w, h), previous, work)
+            : new Point(work.Left + (work.Width - w) / 2, work.Bottom - h);
+        Bounds = new Rectangle(location, new Size(w, h));
+    }
+
+    static Point AnchoredLocation(Size size, Rectangle previous,
+        Rectangle workArea) => new(
+        previous.Left + (previous.Width - size.Width) / 2,
+        workArea.Bottom - size.Height);
+
+    internal void TogglePause() => paused = !paused;
+    internal void SeekTo(double seconds) => Interlocked.Exchange(ref requestedSeekBits,
+        BitConverter.DoubleToInt64Bits(Math.Clamp(seconds, 0, DurationSeconds)));
+    internal void SeekBy(double seconds) => SeekTo(CurrentSeconds + seconds);
+    internal void SetRate(double rate) => Interlocked.Exchange(ref requestedRateBits,
+        BitConverter.DoubleToInt64Bits(Math.Clamp(rate, .25, 4)));
+    internal void SetLocked(bool value) { locked = value; UpdateMouseTransparency(); }
+    internal void SetClickThroughLocked(bool value) { clickThroughLocked = value; UpdateMouseTransparency(); }
+    internal void SetWheelResize(bool value) { wheelResize = value; wheelDelta = 0; }
+    internal void SetVolumePercent(int percent)
+    {
+        volumePercent = Math.Clamp(percent, 0, 100);
+        renderer?.SetVolume(volumePercent);
+    }
+    internal void SetAlphaThreshold(int value)
+    {
+        alphaThreshold = Math.Clamp(value, 0, 255);
+        renderer?.SetAlphaThreshold(alphaThreshold);
+        UpdateMouseTransparency();
+    }
+    internal void SetFullOpacityThreshold(int value)
+    {
+        fullOpacityThreshold = Math.Clamp(value, 1, 255);
+        renderer?.SetFullOpacityThreshold(fullOpacityThreshold);
+    }
+    internal void SetSizePercent(int percent, int minimumPercent = 10)
+    {
+        sizePercent = Math.Clamp(percent, minimumPercent, 200);
+        if (renderer == null) return;
+        Rectangle work = Screen.FromHandle(Handle).WorkingArea;
+        double scale = work.Height * sizePercent / 100d / renderer.Height;
+        int width = Math.Max(2, (int)Math.Round(renderer.Width * scale));
+        int height = Math.Max(2, (int)Math.Round(renderer.Height * scale));
+        SetWindowPos(Handle, new IntPtr(-1), Left + (Width - width) / 2,
+            work.Bottom - height, width, height, 0x10 | 0x40);
+        renderer.ResizeOutput(width, height);
+        LockStateOverlay.ShowTextForWindow(this, $"{sizePercent}%");
+    }
+    internal void ClosePlayer() { if (!IsDisposed) BeginInvoke(Close); }
+    internal async Task ClosePlayerAsync()
+    {
+        cancellation.Cancel();
+        if (!IsDisposed)
+        {
+            if (InvokeRequired) BeginInvoke(Close); else Close();
+        }
+        await playbackTask;
+    }
+    internal void HidePlayer() { if (!IsDisposed) BeginInvoke(Hide); }
+    internal void ShowPlayer() { if (!IsDisposed) BeginInvoke(Show); }
+
+    bool IsAlphaVisible(Point point)
+    {
+        byte[]? alpha = Volatile.Read(ref hitTestAlpha);
+        if (alpha == null || renderer == null || ClientSize.Width <= 0 ||
+            ClientSize.Height <= 0 || point.X < 0 || point.Y < 0 ||
+            point.X >= ClientSize.Width || point.Y >= ClientSize.Height) return false;
+        int x = Math.Min(renderer.Width - 1, point.X * renderer.Width / ClientSize.Width);
+        int y = Math.Min(renderer.Height - 1, point.Y * renderer.Height / ClientSize.Height);
+        return IsVisibleAlpha(alpha[y * renderer.Width + x], alphaThreshold);
+    }
+
+    void UpdateMouseTransparency()
+    {
+        if (!IsHandleCreated) return;
+        bool transparent = locked && clickThroughLocked ||
+            !movingWindow && !IsAlphaVisible(PointToClient(Cursor.Position));
+        if (mouseTransparent == transparent) return;
+        mouseTransparent = transparent;
+        long style = GetWindowLongPtr(Handle, GwlExStyle).ToInt64();
+        long updated = transparent ? style | WsExTransparent | WsExLayered :
+            style & ~(WsExTransparent | WsExLayered);
+        SetWindowLongPtr(Handle, GwlExStyle, new IntPtr(updated));
+        SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x1 | 0x2 | 0x4 | 0x10 | 0x20);
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == WmNcHitTest)
+        {
+            long coordinates = message.LParam.ToInt64();
+            Point point = PointToClient(new Point((short)(coordinates & 0xffff),
+                (short)((coordinates >> 16) & 0xffff)));
+            message.Result = new IntPtr(HitTest(
+                locked, clickThroughLocked, movingWindow,
+                IsAlphaVisible(point)));
+            return;
+        }
+        if (message.Msg == WmMouseWheel)
+        {
+            long value = message.WParam.ToInt64();
+            int delta = (short)((value >> 16) & 0xffff);
+            if ((value & 0xffff & 0x0008) != 0)
+            {
+                volumeWheelDelta += delta;
+                int steps = volumeWheelDelta / 120;
+                volumeWheelDelta -= steps * 120;
+                if (steps != 0)
+                {
+                    int next = Math.Clamp(volumePercent + steps * 5, 0, 100);
+                    SetVolumePercent(next);
+                    LockStateOverlay.ShowTextForWindow(this, $"Volume {next}%");
+                    VolumeChanged?.Invoke(next);
+                }
+                return;
+            }
+            if (wheelResize && !locked)
+            {
+                wheelDelta += delta; int steps = wheelDelta / 120;
+                wheelDelta -= steps * 120; if (steps != 0) SetSizePercent(sizePercent + steps * 2);
+                return;
+            }
+        }
+        if (message.Msg == WmEnterSizeMove)
+        {
+            movingWindow = true;
+            UpdateMouseTransparency();
+        }
+        else if (message.Msg == WmExitSizeMove)
+        {
+            movingWindow = false;
+            UpdateMouseTransparency();
+        }
+        base.WndProc(ref message);
+    }
+
+    internal static bool VerifyHitTesting() =>
+        HitTest(false, false, false, false) == HtTransparent &&
+        HitTest(false, false, false, true) == HtCaption &&
+        HitTest(true, false, false, true) == HtClient &&
+        HitTest(true, true, false, true) == HtTransparent &&
+        HitTest(false, false, true, false) == HtCaption &&
+        UseTransparentWindowStyle(false, false, false) &&
+        !UseTransparentWindowStyle(false, false, true) &&
+        !IsVisibleAlpha(0, 0) && !IsVisibleAlpha(15, 16) &&
+        IsVisibleAlpha(16, 16) && IsVisibleAlpha(255, 255) &&
+        ApplyOpacityThresholds(10, 20, 200) == 0 &&
+        ApplyOpacityThresholds(100, 20, 200) == 100 &&
+        ApplyOpacityThresholds(200, 20, 200) == 255 &&
+        ApplyOpacityThresholds(99, 100, 50) == 0 &&
+        ApplyOpacityThresholds(100, 100, 50) == 255 &&
+        PairDurationMatches(145.733333, 145.8, 1d / 30) &&
+        !PairDurationMatches(145.733333, 145.85, 1d / 30) &&
+        Math.Clamp(205, 10, 200) == 200 &&
+        AnchoredLocation(new Size(100, 200),
+            new Rectangle(300, 400, 200, 300),
+            new Rectangle(0, 0, 1920, 1080)) == new Point(350, 880);
+
+    static bool PairDurationMatches(double foreground, double alpha,
+        double frameDuration) => Math.Abs(foreground - alpha) <=
+            Math.Max(.05, frameDuration * 2 + .002);
+
+    static bool IsVisibleAlpha(byte alpha, int threshold) =>
+        alpha > 0 && alpha >= Math.Clamp(threshold, 0, 255);
+
+    static byte ApplyOpacityThresholds(byte alpha, int lower, int upper) =>
+        alpha < Math.Clamp(lower, 0, 255) ? (byte)0 :
+        alpha >= Math.Clamp(upper, 1, 255) ? (byte)255 : alpha;
+
+    static int HitTest(bool locked, bool clickThrough,
+        bool moving, bool alphaVisible) =>
+        locked && clickThrough || !moving && !alphaVisible
+            ? HtTransparent : locked ? HtClient : HtCaption;
+
+    sealed class PairedRenderer : IDisposable
+    {
+        const string Shader = """
+            struct O { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
+            O VSMain(uint id:SV_VertexID) { O o; float2 uv=float2((id<<1)&2,id&2); o.uv=uv; o.p=float4(uv.x*2-1,1-uv.y*2,0,1); return o; }
+            Texture2D<float> Y:register(t0); Texture2D<float> U:register(t1); Texture2D<float> V:register(t2); Texture2D<float> A:register(t3); Texture2D<float2> T:register(t4);
+            SamplerState S:register(s0);
+            float4 PSMain(O i):SV_TARGET { float y=1.16438356*(Y.Sample(S,i.uv)-16.0/255.0); float u=U.Sample(S,i.uv)-.5; float v=V.Sample(S,i.uv)-.5;
+              float3 c=float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u); float a=A.Sample(S,i.uv); float2 t=T.Load(int3(0,0,0)); a=a<t.r?0:a>=t.g?1:a; return float4(saturate(c)*a,a); }
+            """;
+        readonly FfmpegCpuDecoder rgb, alpha;
+        readonly InternalAudioPlayer? audio;
+        readonly Stopwatch clock = new();
+        readonly object sync = new();
+        ID3D11Device? device; ID3D11DeviceContext? context;
+        IDXGIDevice? dxgiDevice; IDXGIFactory2? factory; IDXGISwapChain1? swap;
+        ID3D11Texture2D? back, yTex, uTex, vTex, aTex, thresholdTex;
+        ID3D11RenderTargetView? target;
+        ID3D11ShaderResourceView? yView, uView, vView, aView, thresholdView;
+        ID3D11SamplerState? sampler; ID3D11VertexShader? vs; ID3D11PixelShader? ps;
+        IDCompositionDevice? composition; IDCompositionTarget? compositionTarget;
+        IDCompositionVisual? visual;
+        bool pending, playing, disposed; long rgbTick, alphaTick;
+        int alphaThreshold, fullOpacityThreshold;
+        int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1;
+        double clockSeconds, rate = 1;
+        internal int Width => rgb.Width; internal int Height => rgb.Height;
+        internal double Duration { get; }
+        internal bool Ended { get; private set; }
+        internal double CurrentTime { get { lock (sync) return TimeLocked(); } }
+        internal double PlaybackRate { get { lock (sync) return rate; } set { lock (sync) { UpdateClock(); rate = value; audio?.SetRate(value, clockSeconds, playing); } } }
+
+        internal PairedRenderer(string foreground, string alphaPath,
+            int alphaThreshold, int fullOpacityThreshold)
+        {
+            this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
+            this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
+            rgb = new FfmpegCpuDecoder(foreground);
+            try { alpha = new FfmpegCpuDecoder(alphaPath); }
+            catch { rgb.Dispose(); throw; }
+            if (rgb.Width != alpha.Width || rgb.Height != alpha.Height ||
+                Math.Abs(rgb.FrameDuration - alpha.FrameDuration) > .0005 ||
+                !PairDurationMatches(rgb.Duration, alpha.Duration, rgb.FrameDuration))
+                throw new InvalidDataException("Foreground and alpha dimensions, frame rate, or duration do not match.");
+            Duration = Math.Min(rgb.Duration, alpha.Duration);
+            audio = InternalAudioPlayer.TryOpen(foreground);
+            device = D3D11.D3D11CreateDevice(DriverType.Hardware,
+                DeviceCreationFlags.BgraSupport, Vortice.Direct3D.FeatureLevel.Level_11_1,
+                Vortice.Direct3D.FeatureLevel.Level_11_0);
+            context = device.ImmediateContext; dxgiDevice = device.QueryInterface<IDXGIDevice>();
+            factory = DXGI.CreateDXGIFactory2<IDXGIFactory2>(false);
+        }
+
+        internal void AttachWindow(IntPtr handle, int width, int height)
+        {
+            swap = factory!.CreateSwapChainForComposition(device!, new SwapChainDescription1(
+                (uint)width, (uint)height, DxgiFormat.B8G8R8A8_UNorm,
+                bufferUsage: Usage.RenderTargetOutput, bufferCount: 2,
+                scaling: Scaling.Stretch, swapEffect: SwapEffect.FlipSequential,
+                alphaMode: DxgiAlphaMode.Premultiplied));
+            back = swap.GetBuffer<ID3D11Texture2D>(0); target = device!.CreateRenderTargetView(back);
+            yTex = Texture(Width, Height); uTex = Texture((Width+1)/2, (Height+1)/2);
+            vTex = Texture((Width+1)/2, (Height+1)/2); aTex = Texture(Width, Height);
+            thresholdTex = Texture(1, 1, DxgiFormat.R8G8_UNorm);
+            yView=device.CreateShaderResourceView(yTex); uView=device.CreateShaderResourceView(uTex);
+            vView=device.CreateShaderResourceView(vTex); aView=device.CreateShaderResourceView(aTex);
+            thresholdView=device.CreateShaderResourceView(thresholdTex);
+            sampler=device.CreateSamplerState(SamplerDescription.LinearClamp);
+            vs=device.CreateVertexShader(Compiler.Compile(Shader,"VSMain","CustomPlayer.hlsl","vs_5_0",ShaderFlags.OptimizationLevel3).Span);
+            ps=device.CreatePixelShader(Compiler.Compile(Shader,"PSMain","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
+            composition=DComp.DCompositionCreateDevice<IDCompositionDevice>(dxgiDevice!);
+            composition.CreateTargetForHwnd(handle,true,out compositionTarget).CheckError();
+            visual=composition.CreateVisual(); visual.SetContent(swap); compositionTarget.SetRoot(visual); composition.Commit();
+        }
+        ID3D11Texture2D Texture(int width,int height,DxgiFormat format=DxgiFormat.R8_UNorm) => device!.CreateTexture2D(new Texture2DDescription
+            { Width=(uint)width, Height=(uint)height, MipLevels=1, ArraySize=1, Format=format,
+              SampleDescription=new SampleDescription(1,0), Usage=ResourceUsage.Default, BindFlags=BindFlags.ShaderResource });
+        internal void Play() { lock(sync) { if(playing)return; clock.Restart(); playing=true; audio?.Play(clockSeconds); } }
+        internal void Pause() { lock(sync) { if(!playing)return; UpdateClock(); playing=false; audio?.Pause(); } }
+        internal void Seek(double seconds) { lock(sync) { seconds=Math.Clamp(seconds,0,Duration); rgb.Seek(seconds); alpha.Seek(seconds); clockSeconds=seconds; clock.Restart(); if(!playing)clock.Stop(); pending=false; Ended=false; audio?.Seek(seconds,playing); } }
+        internal void SetVolume(int percent)=>audio?.SetVolume(percent);
+        internal void SetAlphaThreshold(int value) =>
+            Volatile.Write(ref alphaThreshold, Math.Clamp(value, 0, 255));
+        internal void SetFullOpacityThreshold(int value) =>
+            Volatile.Write(ref fullOpacityThreshold, Math.Clamp(value, 1, 255));
+        internal unsafe bool TryRenderDue(out byte[]? alphaBytes)
+        {
+            alphaBytes=null; lock(sync)
+            {
+                if(!pending && !DecodePair()) return false;
+                long now=(long)Math.Round(TimeLocked()*10_000_000);
+                long frame=(long)Math.Round(rgb.FrameDuration*10_000_000);
+                while(rgbTick+frame<now) { pending=false; if(!DecodePair())return false; }
+                if(rgbTick>now+10_000)return false;
+                if(Math.Abs(rgbTick-alphaTick)>Math.Max(10_000,frame/2)) throw new InvalidDataException("Foreground and alpha timestamps do not match.");
+                rgb.ValidateGpuFrame(); (IntPtr yd,uint yp)=rgb.Plane(0); (IntPtr ud,uint up)=rgb.Plane(1); (IntPtr vd,uint vp)=rgb.Plane(2); (IntPtr ad,uint ap)=alpha.GrayPlane();
+                context!.UpdateSubresource(yTex!,0,null,yd,yp,0); context.UpdateSubresource(uTex!,0,null,ud,up,0); context.UpdateSubresource(vTex!,0,null,vd,vp,0); context.UpdateSubresource(aTex!,0,null,ad,ap,0);
+                int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold); if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold){ushort value=(ushort)(lower|(upper<<8));context.UpdateSubresource(thresholdTex!,0,null,new IntPtr(&value),2,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;}
+                context.OMSetRenderTargets(target!); context.RSSetViewport(new GpuViewport(0,0,back!.Description.Width,back.Description.Height)); context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+                context.VSSetShader(vs); context.PSSetShader(ps); context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView); context.PSSetShaderResource(3,aView); context.PSSetShaderResource(4,thresholdView); context.PSSetSampler(0,sampler); context.Draw(3,0);
+                context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3); context.PSUnsetShaderResource(4); swap!.Present(1,PresentFlags.None);
+                alphaBytes=new byte[checked(Width*Height)]; for(int y=0;y<Height;y++) Marshal.Copy(ad+y*(int)ap,alphaBytes,y*Width,Width);
+                pending=false; return true;
+            }
+        }
+        bool DecodePair() { bool a=rgb.DecodeNext(out rgbTick), b=alpha.DecodeNext(out alphaTick); if(!a||!b){Ended=true;return false;} pending=true;return true; }
+        double TimeLocked()=>Math.Clamp(clockSeconds+(playing?clock.Elapsed.TotalSeconds*rate:0),0,Duration);
+        void UpdateClock(){clockSeconds=TimeLocked();clock.Restart();if(!playing)clock.Stop();}
+        internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),DxgiFormat.B8G8R8A8_UNorm);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);}}
+        public void Dispose(){if(disposed)return;disposed=true;audio?.Dispose();rgb.Dispose();alpha.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();context?.Dispose();device?.Dispose();}
+    }
+}

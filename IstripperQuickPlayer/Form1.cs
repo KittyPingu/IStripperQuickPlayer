@@ -10,11 +10,13 @@ using Microsoft.WindowsAPICodePack.Taskbar;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Globalization;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using static Microsoft.WindowsAPICodePack.Shell.PropertySystem.SystemProperties.System;
 using OpenFileDialog = System.Windows.Forms.OpenFileDialog;
 using SaveFileDialog = System.Windows.Forms.SaveFileDialog;
@@ -261,11 +263,21 @@ namespace IStripperQuickPlayer
         private async void actRestartClip()
         {
             if (Properties.Settings.Default.RestartClipHotkeyEnabled)
-                await RunPlaybackOperationAsync(token => SeekAbsoluteAsync(0, token));
+            {
+                if (customPlayer != null) customPlayer.SeekTo(0);
+                else await RunPlaybackOperationAsync(token => SeekAbsoluteAsync(0, token));
+            }
         }
 
         private void actSetPlayerLarge(bool large)
         {
+            if (customPlayer != null)
+            {
+                playerMode = large ? 1 : 2;
+                customPlayer.SetSizePercent(large ? 80 : 40, large ? 60 : 10);
+                customPlayer.SetVolumePercent(CustomPlayerVolume(large));
+                return;
+            }
             if (!playerLockBridgeLoaded)
                 return;
 
@@ -285,7 +297,12 @@ namespace IStripperQuickPlayer
                 return;
             card.image ??= ModelsLstLoader.LoadCardImage(card);
             if (card.image != null)
-                LockStateOverlay.ShowImageForProcess(vghd_procID, card.image);
+            {
+                if (customPlayer != null)
+                    LockStateOverlay.ShowImageForWindow(customPlayer, card.image);
+                else
+                    LockStateOverlay.ShowImageForProcess(vghd_procID, card.image);
+            }
         }
 
         private async void actPanic()
@@ -297,6 +314,7 @@ namespace IStripperQuickPlayer
             }
 
             panicActive = true;
+            customPlayer?.HidePlayer();
             playbackCompletedAnimationPath = "";
             playbackRequestedAnimationPath = "";
             playbackRequestedAnimationAt = DateTime.MinValue;
@@ -343,6 +361,7 @@ namespace IStripperQuickPlayer
             if (!apiOnlyMode)
                 Wallpaper.ResumeQuickPlayerDesktop();
             panicMovieWindow = IntPtr.Zero;
+            customPlayer?.ShowPlayer();
             panicActive = false;
             if (!apiOnlyMode)
                 panicResumeButton.Visible = false;
@@ -571,6 +590,7 @@ namespace IStripperQuickPlayer
                 raeSearchCheck));
             System.Diagnostics.Debug.Assert(unionSearchCheck.Matches(
                 kittySearchCheck));
+            System.Diagnostics.Debug.Assert(CustomShowStore.VerifyCoreLogic());
             }
 #endif
             if (apiOnlyMode)
@@ -740,6 +760,7 @@ namespace IStripperQuickPlayer
                     refreshCardMetadataToolStripMenuItem) + 1,
                 libraryHealthCheckToolStripMenuItem);
             SetupLibraryCleaner();
+            SetupCustomShows();
             backupToolStripMenuItem.Click += (_, _) => BackupQuickPlayerData();
             restoreToolStripMenuItem.Click += (_, _) => RestoreQuickPlayerData();
             fileToolStripMenuItem.DropDownItems.Insert(
@@ -977,6 +998,7 @@ namespace IStripperQuickPlayer
                         "previous cards retained");
                     return;
                 }
+                AppendCustomCards(diagnostics);
                 if (!apiOnlyMode)
                     listModelsNew.Items.Clear();
                 if (!apiOnlyMode)
@@ -1534,10 +1556,12 @@ namespace IStripperQuickPlayer
                 }
                 else
                 {
-                    Datastore.modelcards = models;
+                    Datastore.modelcards = models
+                        .Where(card => !card.IsCustom).ToList();
+                    AppendCustomCards();
                     if (!apiOnlyMode)
                     {
-                        CardOverlayLoader.Reload(models, myData);
+                        CardOverlayLoader.Reload(Datastore.modelcards, myData);
                         BeginInvoke((Action)PopulateModelListview);
                     }
                 }
@@ -1717,6 +1741,8 @@ namespace IStripperQuickPlayer
             int idx = 0;
 
             cardRenderer.updating = true;
+            directCompositionCardOverlays?.ResetCardImages();
+            cardRenderer.ResetCardScene();
             listModelsNew.SuspendLayout();
             listModelsNew.Items.Clear();
             listModelsNew.ThumbnailSize = CardThumbnailSize(
@@ -1806,6 +1832,7 @@ namespace IStripperQuickPlayer
             if (filterSettings.IStripper) enabledcollections.Add(Enums.CollectionType.IStripper);
             if (filterSettings.VirtuaGuy) enabledcollections.Add(Enums.CollectionType.VirtuaGuy);
             if (filterSettings.TradingCard) enabledcollections.Add(Enums.CollectionType.TradingCard);
+            if (filterSettings.Custom) enabledcollections.Add(Enums.CollectionType.Custom);
 
             if (filterSettings.Normal && !filterSettings.Special)
                 currentCards = currentCards.Where(c => c.exclusive != null && !(bool)c.exclusive).ToList();
@@ -2227,7 +2254,9 @@ namespace IStripperQuickPlayer
             txtDescription.Text = card.description;
             lblAge.Text = "Age: " + card.modelAge;
             lblStats.Text = "Stats: " + card.bust + "/" + card.waist + "/" + card.hips;
-            lblRatingScore.Text = "Rating: " + (Convert.ToDecimal(card.rating) - 5m).ToString();
+            lblRatingScore.Text = card.rating is > 0
+                ? "Rating: " + (card.rating - 5m)
+                : "Rating: NA";
             lblCollection.Text = "CardType: " + card.collection.GetDescription();
             lblResolution.Text = "Res: " + card.resolution.GetDescription();
             lblTags.Text = "Tags: " + String.Join(",", card.tags);
@@ -2254,19 +2283,14 @@ namespace IStripperQuickPlayer
                 return;
             ClearQueuedCardSession();
             string r = listClips.SelectedItems[0].SubItems[1].Text;
-            string p = r.Split("_")[0];
-            string full = p + "\\" + r;
-            using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Totem\vghd\parameters", true);
-            if (key != null)
-            {
-                var currentkey = key.GetValue("CurrentAnim");
-                if (currentkey != null && currentkey.ToString() != full)
-                {
-                    BeginAnimationReplacement(full);
-                    key.SetValue("ForceAnim", full);
-                }
-            }
+            ModelCard? card = Datastore.findCardByTag(clipListTag);
+            ModelClip? clip = card?.clips?.FirstOrDefault(item =>
+                string.Equals(item.clipName, r, StringComparison.OrdinalIgnoreCase));
+            string full = clip == null ? "" : GetAnimationPath(clip);
+            if (!string.IsNullOrEmpty(full) &&
+                !string.Equals(GetCurrentAnimationPath(), full,
+                    StringComparison.OrdinalIgnoreCase))
+                RequestAnimationPlayback(full);
             lastchosen = r;
         }
 
@@ -3190,16 +3214,17 @@ namespace IStripperQuickPlayer
             if (apiOnlyMode)
                 return;
 
-            bool enabled = PlaybackControlEnabled &&
+            bool custom = customPlayer != null;
+            bool enabled = custom || PlaybackControlEnabled &&
                 playbackControlsAvailableForAccount &&
                 playbackBridgeLoaded && !playbackBusy && !formIsClosing;
-            bool seekEnabled = enabled && playbackMovieRegistered &&
+            bool seekEnabled = custom || enabled && playbackMovieRegistered &&
                 playbackSeekingSupported && playbackSeekReady;
             var state = (
                 Rewind: seekEnabled,
                 PlayPause: enabled,
                 FastForward: seekEnabled,
-                Speed: enabled && playbackSeekingSupported &&
+                Speed: custom || enabled && playbackSeekingSupported &&
                     (playbackDecoderKind != 2 || playbackSeekReady),
                 Position: seekEnabled);
             if (playbackControlEnabledState == state)
@@ -3228,9 +3253,10 @@ namespace IStripperQuickPlayer
                 userLevel = key?.GetValue("PreviousUserLevel")?.ToString();
             }
 
-            bool visible = PlaybackControlEnabled &&
+            bool entitled = PlaybackControlEnabled &&
                 HasPlatinumPlaybackEntitlement(userLevel);
-            playbackControlsAvailableForAccount = visible;
+            playbackControlsAvailableForAccount = entitled;
+            bool visible = customPlayer != null || entitled;
             if (apiOnlyMode)
                 return;
             cmdRewind.Visible = visible;
@@ -3240,6 +3266,9 @@ namespace IStripperQuickPlayer
             cmbPlaybackSpeed.Visible = visible;
             lblPlaybackTime.Visible = visible;
             trkPlaybackPosition.Visible = visible;
+            customAlphaThresholdLabel.Visible = customPlayer != null;
+            customAlphaThresholdInput.Visible = customPlayer != null;
+            customAlphaThresholdInput.Enabled = customPlayer != null;
             UpdatePlaybackControlsEnabled();
         }
 
@@ -3329,6 +3358,11 @@ namespace IStripperQuickPlayer
             Func<CancellationToken, Task> operation,
             bool prepareFastDecode = true)
         {
+            if (customPlayer != null)
+            {
+                await operation(playbackLifetime.Token);
+                return true;
+            }
             if (!PlaybackControlEnabled ||
                 !playbackControlsAvailableForAccount)
             {
@@ -3376,6 +3410,12 @@ namespace IStripperQuickPlayer
 
         private async void cmdPlayPause_Click(object sender, EventArgs e)
         {
+            if (customPlayer != null)
+            {
+                customPlayer.TogglePause();
+                SetPlaybackStatus(customPlayer.Paused ? "Paused." : "Playing.");
+                return;
+            }
             await RunPlaybackOperationAsync(_ =>
             {
                 int state = RequirePlaybackResult("IStripperGetState");
@@ -3401,11 +3441,13 @@ namespace IStripperQuickPlayer
 
         private async void cmdRewind_Click(object sender, EventArgs e)
         {
+            if (customPlayer != null) { customPlayer.SeekBy(-customPlayer.DurationSeconds * .1); return; }
             await RunPlaybackOperationAsync(token => SeekRelativeAsync(-0.1, token));
         }
 
         private async void cmdFastForward_Click(object sender, EventArgs e)
         {
+            if (customPlayer != null) { customPlayer.SeekBy(customPlayer.DurationSeconds * .1); return; }
             await RunPlaybackOperationAsync(token => SeekRelativeAsync(0.1, token));
         }
 
@@ -3432,6 +3474,12 @@ namespace IStripperQuickPlayer
             }
 
             requestedPlaybackSpeed = speed;
+            if (customPlayer != null)
+            {
+                customPlayer.SetRate(speed);
+                SetPlaybackStatus($"Playback speed set to {speed:0.##}x.");
+                return;
+            }
             if (!playbackBridgeLoaded)
             {
                 return;
@@ -3447,6 +3495,20 @@ namespace IStripperQuickPlayer
 
         private async void playbackTimelineTimer_Tick(object? sender, EventArgs e)
         {
+            if (customPlayer != null)
+            {
+                SuspendIStripperForCustomPlayback();
+                int duration = (int)Math.Min(int.MaxValue,
+                    customPlayer.DurationSeconds * 1000);
+                int elapsed = Math.Clamp((int)(customPlayer.CurrentSeconds * 1000), 0, Math.Max(0, duration));
+                playbackTimelineDurationMilliseconds = duration;
+                playbackLastKnownElapsedMilliseconds = elapsed;
+                trkPlaybackPosition.Maximum = Math.Max(1, duration);
+                if (!playbackTimelineDragging) trkPlaybackPosition.Value = Math.Min(trkPlaybackPosition.Maximum, elapsed);
+                UpdatePlaybackTime(elapsed, duration);
+                trkPlaybackPosition.Enabled = true;
+                return;
+            }
             if (formIsClosing || panicActive || playbackTimelinePolling ||
                 playbackBusy ||
                 !Properties.Settings.Default.EnablePlaybackControl ||
@@ -3827,6 +3889,12 @@ namespace IStripperQuickPlayer
         private async Task SeekRelativeAsync(double clipFraction,
             CancellationToken cancellationToken)
         {
+            if (customPlayer != null)
+            {
+                customPlayer.SeekBy(customPlayer.DurationSeconds * clipFraction);
+                await Task.CompletedTask;
+                return;
+            }
             int current = RequirePlaybackResult("IStripperGetElapsedMilliseconds");
             int total = RequirePlaybackResult("IStripperGetTotalMilliseconds");
             await SeekAbsoluteAsync(current +
@@ -3836,6 +3904,12 @@ namespace IStripperQuickPlayer
         private async Task SeekAbsoluteAsync(int requestedTarget,
             CancellationToken cancellationToken)
         {
+            if (customPlayer != null)
+            {
+                customPlayer.SeekTo(requestedTarget / 1000d);
+                await Task.CompletedTask;
+                return;
+            }
             if (!playbackSeekingSupported)
             {
                 throw new NotSupportedException(
@@ -4168,8 +4242,9 @@ namespace IStripperQuickPlayer
             return current;
         }
 
-        private static string GetCurrentAnimationPath()
-            => GetPlaybackRegistryValue("CurrentAnim");
+        private string GetCurrentAnimationPath()
+            => customPlayer != null ? customPlayerAnimationPath :
+                GetPlaybackRegistryValue("CurrentAnim");
 
         private static string GetPlaybackRegistryValue(string valueName)
         {
@@ -4302,9 +4377,19 @@ namespace IStripperQuickPlayer
         private static string GetAnimationPath(ModelClip clip)
         {
             string clipName = clip.clipName ?? "";
+            if (clipName.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+                return clipName;
             return string.IsNullOrEmpty(clipName)
                 ? ""
                 : clipName.Split('_')[0] + "\\" + clipName;
+        }
+
+        private static string GetCardTagFromAnimationPath(string path)
+        {
+            if (!path.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
+                return path.Split('\\')[0].Split('-')[0];
+            int clipSeparator = path.IndexOf(':', "custom:".Length);
+            return clipSeparator < 0 ? path : path[..clipSeparator];
         }
 
         private static List<ModelClip> ExcludeRecentClips(
@@ -4438,7 +4523,14 @@ namespace IStripperQuickPlayer
                 }
                 return false;
             }
-            if (keyname != "CurrentAnim" || panicActive) return false;
+            if (keyname == "CurrentAnim" && customIstripperSuspended)
+            {
+                if (!formIsClosing && IsHandleCreated)
+                    BeginInvoke(SuspendIStripperForCustomPlayback);
+                return false;
+            }
+            if (keyname != "CurrentAnim" || panicActive)
+                return false;
             System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
                 bool skipOriginal = false;
 
@@ -4524,13 +4616,8 @@ namespace IStripperQuickPlayer
                         StringComparison.OrdinalIgnoreCase) &&
                     (forceQueuedAnimation || newcardstring != wallpaperTag))
                 {
-                    RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
-
-                    if (keynew != null)
+                    if (RequestAnimationPlayback(newcardstring))
                     {
-                        BeginAnimationReplacement(newcardstring);
-                        keynew.SetValue("ForceAnim", newcardstring);
-                        keynew.Close();
                         wallpaperTag = newcardstring;
                         skipOriginal = true;
                     }
@@ -4674,7 +4761,8 @@ namespace IStripperQuickPlayer
 
         private bool EnforceNowPlaying(string nowplaying)
         {
-            ModelCard? model = Datastore.findCardByTag(nowplaying.Split("\\")[0]);
+            ModelCard? model = Datastore.findCardByTag(
+                GetCardTagFromAnimationPath(nowplaying));
             ListViewItem? res = null;
             if (model == null) return false;
             this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
@@ -4716,12 +4804,18 @@ namespace IStripperQuickPlayer
                 if (Datastore.modelcards == null) return;
                 if (Datastore.modelcards.Count > 0)
                 {
-                    ModelCard? model = Datastore.findCardByTag(path.Split("\\")[0].Split("-")[0]);
+                    bool custom = path.StartsWith("custom:",
+                        StringComparison.OrdinalIgnoreCase);
+                    string cardTag = GetCardTagFromAnimationPath(path);
+                    ModelCard? model = Datastore.findCardByTag(cardTag);
                     if (model == null) return;
-                    ModelClip? modelClip = model.clips.Where(x => x.clipName == path.Split("\\")[1]).FirstOrDefault();
+                    string clipName = custom ? path : path.Split("\\")[1];
+                    ModelClip? modelClip = model.clips?.FirstOrDefault(x =>
+                        string.Equals(x.clipName, clipName,
+                            StringComparison.OrdinalIgnoreCase));
                     if (modelClip == null) return;
                     nowPlaying = model.modelName + ", " + model.outfit + " (Clip " + modelClip.clipNumber + ")";
-                    nowPlayingTagShort = path.Split("\\")[0];
+                    nowPlayingTagShort = cardTag;
                     nowPlayingTag = model.modelName + "\r\n" + model.outfit;
                     if (listModelsNew.Items.Where(x => x.Text == nowPlayingTag).Any())
                     {
@@ -4948,6 +5042,7 @@ namespace IStripperQuickPlayer
             }
 
             formIsClosing = true;
+            StopCustomPlayback(restoreIstripper: true);
             StopRestApi();
             cardOverlayTimer.Stop();
             directCompositionCardOverlays?.Dispose();
@@ -5090,7 +5185,8 @@ namespace IStripperQuickPlayer
             if (Datastore.modelcards == null) return;
             if (Datastore.modelcards.Count > 0)
             {
-                if (model == null) model = Datastore.findCardByTag(path.Split("\\")[0]);
+                if (model == null) model = Datastore.findCardByTag(
+                    GetCardTagFromAnimationPath(path));
                 if (model == null) return;
                 List<ModelClip> clips = new List<ModelClip>();
                 if (model.clips == null) return;
@@ -5109,13 +5205,20 @@ namespace IStripperQuickPlayer
                 }
                 else
                 {
-                    var cliplst = clips.Where(x => x.clipName == path.Split("\\")[1]);
+                    string currentClipName = model.IsCustom
+                        ? path : path.Split("\\")[1];
+                    var cliplst = clips.Where(x => x.clipName == currentClipName);
                     if (cliplst.Count() > 0)
                     {
                         ModelClip modelClip = cliplst.First();
                         mnew = selectableClips.FirstOrDefault(x =>
-                            x.clipNumber > modelClip.clipNumber) ??
-                            selectableClips.FirstOrDefault();
+                            x.clipNumber > modelClip.clipNumber);
+                        if (mnew == null && model.IsCustom)
+                        {
+                            GetNextCard();
+                            return;
+                        }
+                        mnew ??= selectableClips.FirstOrDefault();
                     }
                     else
                     {
@@ -5125,20 +5228,7 @@ namespace IStripperQuickPlayer
 
                 if (mnew != null && mnew.clipName != null)
                 {
-                    RegistryKey? keynew = Registry.CurrentUser.OpenSubKey(@"Software\Totem\vghd\parameters", true);
-
-                    string r = mnew.clipName;
-                    string p = r.Split("_")[0];
-                    string full = p + "\\" + r;
-                    if (keynew != null)
-                    {
-                        if (completedAnimation == null)
-                        {
-                            BeginAnimationReplacement(full);
-                        }
-                        keynew.SetValue("ForceAnim", full);
-                        keynew.Close();
-                    }
+                    RequestAnimationPlayback(GetAnimationPath(mnew));
                 }
             }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
@@ -5181,13 +5271,7 @@ namespace IStripperQuickPlayer
                     clipItem.Selected = true;
                     listClips.EnsureVisible(clipItem.Index);
                 }
-                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
-                    @"Software\Totem\vghd\parameters", true);
-                if (key != null)
-                {
-                    BeginAnimationReplacement(animationPath);
-                    key.SetValue("ForceAnim", animationPath);
-                }
+                RequestAnimationPlayback(animationPath);
                 BeginInvoke((Action)TaskbarThumbnail);
                 return;
             }
@@ -5339,12 +5423,20 @@ namespace IStripperQuickPlayer
             statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
             nameToolStripMenuItem.Text = c.modelName;
             outfitToolStripMenuItem.Text = c.outfit;
+            outfitToolStripMenuItem.Enabled = !c.IsCustom;
+            nameToolStripMenuItem.ToolTipText = c.IsCustom
+                ? "Open this model on IAFD."
+                : "Open this model on the iStripper website.";
+            outfitToolStripMenuItem.ToolTipText = c.IsCustom
+                ? "Custom show title."
+                : "Open this card on the iStripper website.";
             addModelToFilterToolStripMenuItem.Text = "Filter to Model";
             CultureInfo cultureInfo = Thread.CurrentThread.CurrentCulture;
             TextInfo textInfo = cultureInfo.TextInfo;
             if (c.hair != null) hairToolStripMenuItem.Text = "Hair: " + textInfo.ToTitleCase(c.hair.ToLower());
             if (c.datePurchased != null) purchasedToolStripMenuItem.Text = "Purchased: " + ((DateTime)c.datePurchased).ToShortDateString();
-            if (c.hotnessLevel != "") hotnessToolStripMenuItem.Text = "Hotness: " + ((Enums.HotnessCode)Convert.ToInt32(c.hotnessLevel)).GetDescription();
+            if (c.IsCustom) hotnessToolStripMenuItem.Text = "Hotness: " + c.hotnessLevel;
+            else if (c.hotnessLevel != "") hotnessToolStripMenuItem.Text = "Hotness: " + ((Enums.HotnessCode)Convert.ToInt32(c.hotnessLevel)).GetDescription();
             else hotnessToolStripMenuItem.Text = "Hotness: NA";
             ageToolStripMenuItem.Text = "Age: " + c.modelAge;
         }
@@ -6312,16 +6404,81 @@ namespace IStripperQuickPlayer
                 cardRenderer.MouseIsOnList = true;
         }
 
-        private void nameToolStripMenuItem_Click(object? sender, EventArgs e)
+        private async void nameToolStripMenuItem_Click(object? sender, EventArgs e)
         {
             if (currentMenuCard == null)
                 return;
             ModelCard? card = Datastore.findCardByTag(
                 currentMenuCard.Tag.ToString());
-            if (!string.IsNullOrEmpty(card?.modelName))
+            if (string.IsNullOrEmpty(card?.modelName)) return;
+            if (card.IsCustom)
+                OpenBrowser(await ResolveIafdPerformerUrl(card.modelName));
+            else
                 OpenBrowser(@"https://www.istripper.com/models/" +
                     card.modelName.Replace(" ", "-"));
         }
+
+        internal static string IafdSearchUrl(string modelName) =>
+            "https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=" +
+            WebUtility.UrlEncode(modelName);
+
+        private static async Task<string> ResolveIafdPerformerUrl(
+            string modelName)
+        {
+            string searchUrl = IafdSearchUrl(modelName);
+            try
+            {
+                using CancellationTokenSource timeout = new(
+                    TimeSpan.FromSeconds(8));
+                using HttpRequestMessage request = new(
+                    HttpMethod.Get, searchUrl);
+                request.Headers.UserAgent.ParseAdd(
+                    "Mozilla/5.0 IStripperQuickPlayer/1.0");
+                using HttpResponseMessage response = await client.SendAsync(
+                    request, timeout.Token);
+                response.EnsureSuccessStatusCode();
+                string html = await response.Content.ReadAsStringAsync(
+                    timeout.Token);
+                return FindIafdPerformerUrl(html, modelName) ?? searchUrl;
+            }
+            catch { return searchUrl; }
+        }
+
+        internal static string? FindIafdPerformerUrl(
+            string html, string modelName)
+        {
+            foreach (Match match in Regex.Matches(html,
+                @"<a\b[^>]*\bhref\s*=\s*(?:""(?<url>[^""]*person\.rme[^""]*)""|'(?<url>[^']*person\.rme[^']*)')[^>]*>(?<text>.*?)</a>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline))
+            {
+                string text = WebUtility.HtmlDecode(Regex.Replace(
+                    match.Groups["text"].Value, "<[^>]+>", " "));
+                text = Regex.Replace(text, @"\s+", " ").Trim();
+                if (!string.Equals(text, modelName,
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                string href = WebUtility.HtmlDecode(
+                    match.Groups["url"].Value);
+                if (Uri.TryCreate(new Uri("https://www.iafd.com/"), href,
+                        out Uri? url) && url.Scheme == Uri.UriSchemeHttps &&
+                    url.Host.Equals("www.iafd.com",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    url.AbsolutePath.StartsWith("/person.rme/",
+                        StringComparison.OrdinalIgnoreCase))
+                    return url.AbsoluteUri;
+            }
+            return null;
+        }
+
+        internal static bool VerifyIafdLinkParsing() =>
+            IafdSearchUrl("Natalie Mars").EndsWith("natalie+mars",
+                StringComparison.OrdinalIgnoreCase) &&
+            FindIafdPerformerUrl(
+                "<a href='/person.rme/id=7e3ad313-5f7c-49ab-bfb7-b8ceca902abf'><b>Natalie Mars</b></a>",
+                "Natalie Mars") ==
+            "https://www.iafd.com/person.rme/id=7e3ad313-5f7c-49ab-bfb7-b8ceca902abf" &&
+            FindIafdPerformerUrl(
+                "<a href='https://evil.example/person.rme/id=x'>Natalie Mars</a>",
+                "Natalie Mars") == null;
 
         private void outfitToolStripMenuItem_Click(object? sender, EventArgs e)
         {
@@ -6425,7 +6582,10 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.LockPlayer = lockPlayerToolStripMenuItem.Checked;
             playerlocked = lockPlayerToolStripMenuItem.Checked;
             ChangePlayerLocked();
-            LockStateOverlay.ShowForProcess(vghd_procID, playerlocked);
+            if (customPlayer != null)
+                LockStateOverlay.ShowForWindow(customPlayer, playerlocked);
+            else
+                LockStateOverlay.ShowForProcess(vghd_procID, playerlocked);
         }
 
         private void doTaskbarPadlock()
@@ -6458,6 +6618,7 @@ namespace IStripperQuickPlayer
 
         private void ChangePlayerLocked()
         {
+            customPlayer?.SetLocked(playerlocked);
             if (playerLockBridgeLoaded)
             {
                 int result = SetVghdPlayerLocked();
@@ -6482,6 +6643,8 @@ namespace IStripperQuickPlayer
 
         private void ChangePlayerClickThrough()
         {
+            customPlayer?.SetClickThroughLocked(
+                Properties.Settings.Default.ClickThroughLockedPlayer);
             if (!playerLockBridgeLoaded)
                 return;
 
@@ -6496,6 +6659,8 @@ namespace IStripperQuickPlayer
 
         private void ChangePlayerWheelResize()
         {
+            customPlayer?.SetWheelResize(
+                Properties.Settings.Default.EnablePlayerWheelResize);
             if (!playerLockBridgeLoaded)
                 return;
 
