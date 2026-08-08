@@ -26,13 +26,13 @@ internal sealed class CustomPlayerForm : Form
     readonly Rectangle? initialBounds;
     readonly CancellationTokenSource cancellation = new();
     readonly System.Windows.Forms.Timer settleTimer = new() { Interval = 15 };
-    readonly System.Windows.Forms.Timer hitTestTimer = new() { Interval = 20 };
     readonly Stopwatch settleClock = new();
     PairedRenderer? renderer;
     byte[]? hitTestAlpha;
     volatile bool paused, locked, clickThroughLocked, wheelResize;
     bool? mouseTransparent;
     bool movingWindow;
+    bool windowConfigured;
     int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
         settleStart, settleTarget;
     volatile int alphaThreshold, fullOpacityThreshold;
@@ -42,6 +42,8 @@ internal sealed class CustomPlayerForm : Form
     double RangeEndSeconds => renderer == null || requestedRangeEndSeconds <= 0
         ? renderer?.Duration ?? 0
         : Math.Min(requestedRangeEndSeconds, renderer.Duration);
+    internal bool HasEstablishedBounds =>
+        IsEstablishedWindow(windowConfigured, Width, Height);
     internal double CurrentSeconds => Math.Max(0,
         (renderer?.CurrentTime ?? rangeStartSeconds) - rangeStartSeconds);
     internal double DurationSeconds => Math.Max(0,
@@ -90,10 +92,8 @@ internal sealed class CustomPlayerForm : Form
         {
             cancellation.Cancel();
             settleTimer.Dispose();
-            hitTestTimer.Dispose();
         };
         settleTimer.Tick += (_, _) => SettleTick();
-        hitTestTimer.Tick += (_, _) => UpdateMouseTransparency();
         KeyPreview = true;
         KeyDown += (_, e) =>
         {
@@ -109,15 +109,13 @@ internal sealed class CustomPlayerForm : Form
             CreateParams p = base.CreateParams;
             p.ExStyle |= WsExNoRedirectionBitmap | WsExToolWindow |
                 WsExNoActivate;
-            if (UseTransparentWindowStyle(locked, clickThroughLocked,
-                    Volatile.Read(ref hitTestAlpha) != null))
+            if (UseTransparentWindowStyle(locked, clickThroughLocked))
                 p.ExStyle |= WsExTransparent | WsExLayered;
             return p;
         }
     }
-    static bool UseTransparentWindowStyle(
-        bool locked, bool clickThrough, bool hasAlpha) =>
-        locked && clickThrough || !hasAlpha;
+    static bool UseTransparentWindowStyle(bool locked, bool clickThrough) =>
+        locked && clickThrough;
     protected override bool ShowWithoutActivation => true;
     protected override void OnHandleCreated(EventArgs e)
     {
@@ -142,7 +140,6 @@ internal sealed class CustomPlayerForm : Form
             (IntPtr handle, int width, int height) window =
                 ((IntPtr, int, int))Invoke(() => (Handle, ClientSize.Width, ClientSize.Height));
             renderer.AttachWindow(window.handle, window.width, window.height);
-            hitTestTimer.Start();
             renderer.Play();
             while (!renderer.Ended && renderer.CurrentTime < RangeEndSeconds)
             {
@@ -192,6 +189,7 @@ internal sealed class CustomPlayerForm : Form
             ? AnchoredLocation(new Size(w, h), previous, work)
             : new Point(work.Left + (work.Width - w) / 2, work.Bottom - h);
         Bounds = new Rectangle(location, new Size(w, h));
+        windowConfigured = true;
     }
 
     static Point AnchoredLocation(Size size, Rectangle previous,
@@ -265,8 +263,7 @@ internal sealed class CustomPlayerForm : Form
     void UpdateMouseTransparency()
     {
         if (!IsHandleCreated) return;
-        bool transparent = locked && clickThroughLocked ||
-            !movingWindow && !IsAlphaVisible(PointToClient(Cursor.Position));
+        bool transparent = locked && clickThroughLocked;
         long style = GetWindowLongPtr(Handle, GwlExStyle).ToInt64();
         const long transparentStyles = WsExTransparent | WsExLayered;
         bool styleMatches = transparent
@@ -385,8 +382,8 @@ internal sealed class CustomPlayerForm : Form
         HitTest(true, false, false, true) == HtClient &&
         HitTest(true, true, false, true) == HtTransparent &&
         HitTest(false, false, true, false) == HtCaption &&
-        UseTransparentWindowStyle(false, false, false) &&
-        !UseTransparentWindowStyle(false, false, true) &&
+        !UseTransparentWindowStyle(false, false) &&
+        UseTransparentWindowStyle(true, true) &&
         !IsVisibleAlpha(0, 0) && !IsVisibleAlpha(15, 16) &&
         IsVisibleAlpha(16, 16) && IsVisibleAlpha(255, 255) &&
         ApplyOpacityThresholds(10, 20, 200) == 0 &&
@@ -399,9 +396,14 @@ internal sealed class CustomPlayerForm : Form
         Math.Clamp(205, 10, 200) == 200 &&
         SettlePosition(100, 500, 0) == (100, false) &&
         SettlePosition(100, 500, 10) == (500, true) &&
+        !IsEstablishedWindow(false, 1024, 576) &&
+        IsEstablishedWindow(true, 1024, 576) &&
         AnchoredLocation(new Size(100, 200),
             new Rectangle(300, 400, 200, 300),
             new Rectangle(0, 0, 1920, 1080)) == new Point(350, 880);
+
+    static bool IsEstablishedWindow(bool configured, int width, int height) =>
+        configured && width > 15 && height > 15;
 
     static bool PairDurationMatches(double foreground, double alpha,
         double frameDuration) => Math.Abs(foreground - alpha) <=
