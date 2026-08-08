@@ -24,6 +24,7 @@ namespace IStripperQuickPlayer
                     ("core", CustomShowStore.VerifyCoreLogic()),
                     ("integration", CustomShowStore.VerifyIntegration()),
                     ("hit testing", CustomPlayerForm.VerifyHitTesting()),
+                    ("custom playback handoff", Form1.VerifyCustomPlaybackHandoff()),
                     ("cover crop", CustomShowEditorForm.VerifyCoverCrop()),
                     ("cover text", CustomShowProcessor.VerifyCoverOverlay()),
                     ("IAFD link parsing", Form1.VerifyIafdLinkParsing()),

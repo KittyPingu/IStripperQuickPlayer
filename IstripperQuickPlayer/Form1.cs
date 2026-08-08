@@ -4526,7 +4526,10 @@ namespace IStripperQuickPlayer
             if (keyname == "CurrentAnim" && customIstripperSuspended)
             {
                 if (!formIsClosing && IsHandleCreated)
-                    BeginInvoke(SuspendIStripperForCustomPlayback);
+                    BeginInvoke(string.IsNullOrEmpty(
+                        customPendingIstripperAnimation)
+                            ? SuspendIStripperForCustomPlayback
+                            : RefreshHiddenIStripperWindow);
                 return false;
             }
             if (keyname != "CurrentAnim" || panicActive)

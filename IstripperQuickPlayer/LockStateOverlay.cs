@@ -172,11 +172,13 @@ internal sealed class LockStateOverlay : Form
             ShowWindowAsync(window, 4);
     }
 
-    internal static void CenterWindowHorizontally(IntPtr window, int centerX)
+    internal static IntPtr ResolveMovieWindowForProcess(int processId,
+        IntPtr preferred)
     {
-        if (!TryGetWindowBounds(window, out Rectangle bounds)) return;
-        SetWindowPos(window, IntPtr.Zero, centerX - bounds.Width / 2,
-            bounds.Top, 0, 0, 0x1 | 0x4 | 0x10);
+        IntPtr visible = FindMovieWindow(processId, visibleOnly: true);
+        if (visible != IntPtr.Zero) return visible;
+        if (preferred != IntPtr.Zero && IsWindow(preferred)) return preferred;
+        return FindMovieWindow(processId, visibleOnly: false);
     }
 
     internal static bool TryGetWindowBounds(IntPtr window, out Rectangle bounds)
@@ -387,10 +389,6 @@ internal sealed class LockStateOverlay : Form
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr window, int command);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(IntPtr window, IntPtr after,
-        int x, int y, int width, int height, int flags);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, StringBuilder className, int maximumCount);
