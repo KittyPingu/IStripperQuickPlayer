@@ -36,7 +36,7 @@ Tools…**. TransNetV2 and MatAnyone2 are selected by default; VideoMaMa,
 ViTMatte, and ProPainter are initially cleared. Select the tools to install or
 update in the choices dialog, then leave
 the setup window open until it finishes. Selecting any mask-guided method
-installs SAM2 for interactive first-frame selection. VideoMaMa and ViTMatte also
+installs SAM2 for interactive source-frame selection. VideoMaMa and ViTMatte also
 use SAM2 for the editable tracked-mask workflow. QuickPlayer selects the isolated Python automatically. If no
 compatible Python is installed and Windows Package Manager is available, setup
 installs Python 3.12 for the current user first.
@@ -163,13 +163,26 @@ processed.
 The **Quality** preset uses RVM ResNet50 and is the default. **Fast** uses MobileNetV3. QuickPlayer normalizes display rotation, variable frame rate, square pixels, and odd dimensions while FFmpeg streams frames to RVM. RVM then streams RGBA into one FFmpeg encoder process:
 
 The optional **MatAnyone 2** algorithm opens an initial-mask editor for every
-included clip before processing. It extracts that clip's first normalized frame,
-loads SAM2 base-plus once per editor, and updates the mask interactively: left-click
+included clip before processing. Play, scrub, use 0.25x slow motion, or step a
+frame at a time through the original clip to choose a clear mask frame. After
+playback or scrubbing stops, QuickPlayer loads the exact still frame while keeping
+SAM2 base-plus resident, then updates the mask interactively: left-click
 every person to include and right-click unwanted people or background areas to
 exclude. **Auto mask frame** runs SAM2's automatic image-mask generator; positive
 clicks guide which generated masks are combined, while no clicks selects the
-largest useful candidate for further refinement. The accepted mask is retained beside that clip's media. RVM-specific
-detail and chunk controls do not apply.
+largest useful candidate for further refinement. MatAnyone propagates a first-frame
+mask forward normally. For a middle or last frame it propagates forward to the end,
+resets its recurrent processor, and propagates backward to the beginning. Earlier
+frames are prepared at the selected **Matting detail** resolution on disk, so this
+does not retain the complete decoded video in RAM; selecting a later mask frame does
+add preparation and backward-propagation time. The accepted mask is retained beside
+that clip's media. **Matting detail** controls MatAnyone's internal resolution;
+the processing batch-size control does not apply because its recurrent pass is
+sequential. This bidirectional behavior follows the
+[ComfyUI-MatAnyone `mask_frame` workflow](https://github.com/FuouM/ComfyUI-MatAnyone?tab=readme-ov-file#workflow)
+and its [middle-frame two-pass implementation](https://github.com/FuouM/ComfyUI-MatAnyone/blob/main/mat_anyone2.py#L100-L166),
+rather than the official MatAnyone 2 command-line interface's first-frame-only
+workflow.
 
 The optional **VideoMaMa High Quality** algorithm reuses that initial mask,
 tracks it across each clip with SAM2, and refines the resulting masks in

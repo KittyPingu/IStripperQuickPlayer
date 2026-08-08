@@ -80,14 +80,22 @@ def main():
     bf16 = device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
     model = build_sam2("configs/sam2.1/sam2.1_hiera_b+.yaml",
                        str(weights), device=device)
-    image = np.array(Image.open(args.image).convert("RGB"), copy=True)
     predictor = SAM2ImagePredictor(model)
-    predictor.set_image(image)
+    def load_image(path):
+        value = np.array(Image.open(path).convert("RGB"), copy=True)
+        predictor.set_image(value)
+        return value
+    image = load_image(args.image)
     send(status="ready", width=int(image.shape[1]), height=int(image.shape[0]),
          device=device, precision="BF16" if bf16 else "FP32",
          checkpoint="SAM2.1 Hiera Base+")
     for line in sys.stdin:
         request = json.loads(line)
+        if request.get("command") == "load":
+            image = load_image(Path(request.get("image", args.image)))
+            send(status="loaded", width=int(image.shape[1]),
+                 height=int(image.shape[0]))
+            continue
         points = np.asarray(request.get("points", []), dtype=np.float32)
         labels = np.asarray(request.get("labels", []), dtype=np.int32)
         if request.get("command") == "auto":

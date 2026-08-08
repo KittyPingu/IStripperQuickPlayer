@@ -136,7 +136,8 @@ internal static class CustomShowProcessor
         string? logPath, bool appendLog,
         IProgress<CustomShowProgress>? progress,
         CancellationToken cancellationToken,
-        IReadOnlyList<CustomShowProcessJob>? jobs = null)
+        IReadOnlyList<CustomShowProcessJob>? jobs = null,
+        long? maskFrameMs = null)
     {
         string python = configuration.PythonExecutable;
         if (!File.Exists(python))
@@ -177,6 +178,8 @@ internal static class CustomShowProcessor
             start.ArgumentList.Add(initialMask!);
             start.ArgumentList.Add("--max-size");
             start.ArgumentList.Add(mattingResolution.ToString());
+            start.ArgumentList.Add("--mask-frame-ms");
+            start.ArgumentList.Add((maskFrameMs ?? startMs).ToString());
         }
         else if (preset is "videomama" or "vitmatte-s" or "vitmatte-b")
         {

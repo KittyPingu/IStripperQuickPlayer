@@ -78,7 +78,11 @@ recurrent state, MatAnyone2 state, and SAM2 tracking at scene boundaries.
 - **MatAnyone2** requires an initial person mask for every included clip and is
   useful when an explicit subject selection matters. If you have a powerful
   NVIDIA GPU, try MatAnyone2 first for mask-guided work: it gives direct control
-  over the subject while remaining much lighter than VideoMaMa.
+  over the subject while remaining much lighter than VideoMaMa. Its mask editor
+  can play, scrub, slow-play, and step through the original clip so the mask can
+  be created on the clearest frame, not just the first frame. A middle-frame mask
+  is propagated to the end and, after resetting recurrent state, backward to the
+  beginning. Choosing a later frame therefore adds a preparation/backward pass.
 - **VideoMaMa** is a large, slow, high-quality diffusion option requiring CUDA.
 - **ViTMatte S/B** uses editable SAM2 video masks as trimaps; S is lighter and B
   normally gives finer refinement. ViTMatte processing is slow, and the B model
@@ -99,7 +103,9 @@ to it.
 
 For a mask-guided method, left-click people or missing foreground and right-click
 background or unwanted foreground. The initial editor also supports automatic
-mask generation. During video-mask review, scrub to a bad frame, add correction
+mask generation. For MatAnyone2, first use the timeline and playback controls to
+choose the best source frame; mask creation is enabled on the exact still frame
+after playback or scrubbing stops. During video-mask review, scrub to a bad frame, add correction
 clicks, inspect the still-frame result, then choose **Update masks** to propagate
 the correction backward and forward.
 

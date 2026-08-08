@@ -318,6 +318,7 @@ internal sealed class CustomShowEditorForm : Form
                 }
                 else show.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
                 Dictionary<string, string> initialMasks = [];
+                Dictionary<string, long> initialMaskFrames = [];
                 Dictionary<string, string> sam2Masks = [];
                 string selectedPreset = SelectedPreset();
                 int detail = SelectedMattingResolution();
@@ -336,13 +337,14 @@ internal sealed class CustomShowEditorForm : Form
                                 "vitmatte-s" => "ViTMatte S",
                                 "vitmatte-b" => "ViTMatte B",
                                 _ => "MatAnyone 2"
-                            });
+                            }, allowFrameSelection: selectedPreset == "matanyone2");
                         if (maskEditor.ShowDialog(this) != DialogResult.OK)
                         {
                             discardStaging = true;
                             return;
                         }
-                        if (maskEditor.FrameMs > clip.StartMs)
+                        if (selectedPreset != "matanyone2" &&
+                            maskEditor.FrameMs > clip.StartMs)
                         {
                             int clipIndex = Array.FindIndex(showClips,
                                 value => value.Id == clip.Id);
@@ -362,6 +364,7 @@ internal sealed class CustomShowEditorForm : Form
                         Directory.CreateDirectory(Path.GetDirectoryName(mask)!);
                         maskEditor.SaveMask(mask);
                         initialMasks[clip.Id] = mask;
+                        initialMaskFrames[clip.Id] = maskEditor.FrameMs;
                         if (UsesSam2(selectedPreset))
                         {
                             string maskSequence = Path.Combine(staging, "clips", clip.Id,
@@ -450,7 +453,9 @@ internal sealed class CustomShowEditorForm : Form
                                 configuration, input, output, selectedPreset,
                                 initialMasks.GetValueOrDefault(clip.Id),
                                 sam2Masks.GetValueOrDefault(clip.Id), detail, chunk,
-                                clip.StartMs, clip.EndMs, log, index > 0, aggregate, token);
+                                clip.StartMs, clip.EndMs, log, index > 0, aggregate, token,
+                                maskFrameMs: initialMaskFrames.GetValueOrDefault(
+                                    clip.Id, clip.StartMs));
                             clip.Media = new()
                             {
                                 Foreground = Path.Combine(relativeFolder, "foreground.mp4").Replace('\\', '/'),
