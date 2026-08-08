@@ -104,9 +104,10 @@ internal sealed class CustomShowEditorForm : Form
         preset.SelectedIndex = 0;
         AddRow(table, "Processing algorithm", preset);
         mattingDetail.Items.AddRange([
+            "Very Low (256 px)", "Low (384 px)",
             "Standard (512 px - recommended)", "High (768 px)",
             "Very High (1024 px)", "Full resolution (slowest)"]);
-        mattingDetail.SelectedIndex = 0;
+        mattingDetail.SelectedIndex = 2;
         AddRow(table, "Matting detail", mattingDetail);
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12]);
         sequenceChunk.SelectedItem = 3;
@@ -153,10 +154,16 @@ internal sealed class CustomShowEditorForm : Form
 
     void UpdateProcessingOptions()
     {
-        bool rvm = SelectedPreset() is "quality" or "fast";
-        mattingDetail.Enabled = rvm && showId == null;
-        sequenceChunk.Enabled = (rvm || UsesSam2(SelectedPreset())) && showId == null;
+        string selected = SelectedPreset();
+        bool rvm = selected is "quality" or "fast";
+        mattingDetail.Enabled = (rvm || selected == "matanyone2") && showId == null;
+        sequenceChunk.Enabled = (rvm || UsesSam2(selected)) && showId == null;
     }
+
+    int SelectedMattingResolution() => mattingDetail.SelectedIndex switch
+    {
+        0 => 256, 1 => 384, 3 => 768, 4 => 1024, 5 => 0, _ => 512
+    };
 
     string SelectedPreset()
     {
@@ -313,6 +320,7 @@ internal sealed class CustomShowEditorForm : Form
                 Dictionary<string, string> initialMasks = [];
                 Dictionary<string, string> sam2Masks = [];
                 string selectedPreset = SelectedPreset();
+                int detail = SelectedMattingResolution();
                 if (selectedPreset == "matanyone2" || UsesSam2(selectedPreset))
                 {
                     CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included).ToArray();
@@ -376,10 +384,6 @@ internal sealed class CustomShowEditorForm : Form
                 {
                     using CustomShowProcessingForm processing = new(async (progress, token) =>
                     {
-                        int detail = mattingDetail.SelectedIndex switch
-                        {
-                            1 => 768, 2 => 1024, 3 => 0, _ => 512
-                        };
                         int chunk = (int)(sequenceChunk.SelectedItem ?? 3);
                         string log = Path.Combine(staging, "processing.log");
                         if (File.Exists(log)) File.Delete(log);
@@ -473,12 +477,17 @@ internal sealed class CustomShowEditorForm : Form
                         }
                         using CustomShowDecisionForm failure = new(
                             Path.Combine(staging, "processing.log"), allowAccept: false);
-                        if (failure.ShowDialog(this) == DialogResult.Retry)
+                        DialogResult failureDecision = failure.ShowDialog(this);
+                        if (failureDecision == DialogResult.Retry)
                         {
                             retry = true;
                             continue;
                         }
-                        discardStaging = true;
+                        discardStaging = failureDecision == DialogResult.Abort;
+                        if (!discardStaging)
+                            MessageBox.Show(this,
+                                $"Staged files were preserved at:\n{staging}", Text,
+                                MessageBoxButtons.OK, MessageBoxIcon.Information);
                         return;
                     }
                     CustomShowProcessResult media = processing.Result;
@@ -790,7 +799,8 @@ internal sealed class CustomShowDecisionForm : Form
             Dock = DockStyle.Bottom, AutoSize = true,
             FlowDirection = FlowDirection.RightToLeft
         };
-        Button discard = new() { Text = "Discard", AutoSize = true, DialogResult = DialogResult.Cancel };
+        Button discard = new() { Text = "Discard", AutoSize = true,
+            DialogResult = allowAccept ? DialogResult.Cancel : DialogResult.Abort };
         Button openLog = new() { Text = "Open Log", AutoSize = true };
         Button retry = new() { Text = "Retry", AutoSize = true, DialogResult = DialogResult.Retry };
         openLog.Click += (_, _) =>
@@ -871,7 +881,8 @@ internal sealed class CustomShowDecisionForm : Form
         form.PreviewChanged += (value, _) => selected = value;
         form.clip.SelectedIndex = 1;
         form.thresholdText.Text = "40";
-        return ReferenceEquals(selected, second) && second.AlphaThreshold == 40;
+        return ReferenceEquals(selected, second) && second.AlphaThreshold == 40 &&
+            new CustomShowClip().AlphaThreshold == 25;
     }
 }
 
@@ -1069,9 +1080,10 @@ internal sealed class CustomShowSettingsForm : Form
 internal sealed class CustomShowSetupOptionsForm : Form
 {
     readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
-        AutoSize = true };
+        AutoSize = true, Checked = true };
     readonly CheckBox matAnyone = new() { Text =
-        "MatAnyone 2 + SAM2 interactive masking (~520 MB)", AutoSize = true };
+        "MatAnyone 2 + SAM2 interactive masking (~520 MB)", AutoSize = true,
+        Checked = true };
     readonly CheckBox videoMaMa = new() { Text =
         "VideoMaMa high-quality matting + SAM2 (~8 GB, NVIDIA CUDA required)",
         AutoSize = true };
@@ -1088,15 +1100,6 @@ internal sealed class CustomShowSetupOptionsForm : Form
 
     internal CustomShowSetupOptionsForm()
     {
-        string runtime = Path.Combine(Environment.GetFolderPath(
-            Environment.SpecialFolder.LocalApplicationData),
-            "IStripperQuickPlayer", "rvm-runtime");
-        transNet.Checked = File.Exists(Path.Combine(runtime, "TRANSNETV2_COMMIT"));
-        matAnyone.Checked = File.Exists(Path.Combine(runtime, "MATANYONE2_COMMIT"));
-        videoMaMa.Checked = File.Exists(Path.Combine(runtime, "VIDEOMAMA_COMMIT"));
-        vitMatte.Checked = File.Exists(Path.Combine(runtime, "VITMATTE_S_REVISION")) &&
-            File.Exists(Path.Combine(runtime, "VITMATTE_B_REVISION"));
-        proPainter.Checked = File.Exists(Path.Combine(runtime, "PROPAINTER_STREAMING_COMMIT"));
         Text = "Choose Custom Show Processing Tools";
         ClientSize = new Size(680, 420);
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -1142,6 +1145,14 @@ internal sealed class CustomShowSetupOptionsForm : Form
         matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor =
             proPainterLicence.LinkColor =
             Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
+    }
+
+    internal static bool VerifyDefaults()
+    {
+        using CustomShowSetupOptionsForm form = new();
+        return form.InstallTransNetV2 && form.InstallMatAnyone2 &&
+            !form.InstallVideoMaMa && !form.InstallViTMatte &&
+            !form.InstallProPainter;
     }
 }
 

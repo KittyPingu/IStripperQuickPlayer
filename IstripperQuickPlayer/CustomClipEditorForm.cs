@@ -42,6 +42,13 @@ internal sealed class CustomClipEditorForm : Form
     readonly Button autoDetect = new() { Text = "Auto-detect clips", AutoSize = true };
     readonly ComboBox detector = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 190 };
+    readonly CheckBox skipTransitions = new() { Text = "Skip transition ±",
+        AutoSize = true };
+    readonly NumericUpDown transitionSeconds = new() { DecimalPlaces = 2,
+        Minimum = .05m, Maximum = 30, Increment = .1m, Value = .5m, Width = 62,
+        Enabled = false };
+    readonly Label transitionSecondsLabel = new() { Text = "seconds", AutoSize = true,
+        Margin = new Padding(0, 7, 3, 3) };
     readonly System.Windows.Forms.Timer playback = new() { Interval = 100 };
     readonly System.Windows.Forms.Timer previewDelay = new() { Interval = 140 };
     CancellationTokenSource? previewCancellation;
@@ -123,9 +130,10 @@ internal sealed class CustomClipEditorForm : Form
         if (configuration != null &&
             CustomShowProcessor.IsTransNetV2Installed(configuration))
             detector.Items.Add("Accurate (TransNetV2)");
-        detector.SelectedIndex = 0;
+        detector.SelectedIndex = detector.Items.Count - 1;
         actions.Controls.AddRange([addDivider, removeDivider,
-            detector, autoDetect, ok, cancel]);
+            detector, skipTransitions, transitionSeconds,
+            transitionSecondsLabel, autoDetect, ok, cancel]);
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         AcceptButton = ok;
@@ -145,6 +153,8 @@ internal sealed class CustomClipEditorForm : Form
         timeline.AllowDividerDragging = allowBoundaryEditing;
         addDivider.Visible = removeDivider.Visible = autoDetect.Visible =
             detector.Visible = allowBoundaryEditing;
+        skipTransitions.Visible = transitionSeconds.Visible =
+            transitionSecondsLabel.Visible = allowBoundaryEditing;
         timeline.PositionChanged += (_, _) => { UpdatePosition(); RequestPreview(); };
         timeline.ScrubStarted += (_, _) =>
         {
@@ -169,6 +179,8 @@ internal sealed class CustomClipEditorForm : Form
         addDivider.Click += (_, _) => AddDivider();
         removeDivider.Click += (_, _) => RemoveDivider();
         autoDetect.Click += async (_, _) => await AutoDetectAsync();
+        skipTransitions.CheckedChanged += (_, _) =>
+            transitionSeconds.Enabled = skipTransitions.Checked;
         ok.Click += (_, _) => AcceptClips();
         previousFrame.Click += (_, _) => StepFrame(-1);
         play.Click += (_, _) => TogglePlayback();
@@ -335,7 +347,8 @@ internal sealed class CustomClipEditorForm : Form
             return;
         StopPlayback(requestPreview: false);
         SaveSelectedMetadata();
-        autoDetect.Enabled = detector.Enabled = addDivider.Enabled =
+        autoDetect.Enabled = detector.Enabled = skipTransitions.Enabled =
+            transitionSeconds.Enabled = addDivider.Enabled =
             removeDivider.Enabled = timeline.Enabled = false;
         Cursor = Cursors.WaitCursor;
         detectionCancellation?.Cancel();
@@ -362,18 +375,12 @@ internal sealed class CustomClipEditorForm : Form
                 return;
             }
             CustomShowClip seed = Clone(clips.FirstOrDefault(clip => clip.Included) ?? clips[0]);
-            long[] boundaries = [0, .. validDividers, durationMs];
+            long bufferMs = skipTransitions.Checked
+                ? checked((long)Math.Round(transitionSeconds.Value * 1000)) : 0;
+            CustomShowClip[] detected = BuildDetectedClips(
+                seed, validDividers, durationMs, bufferMs);
             clips.Clear();
-            for (int i = 0; i < boundaries.Length - 1; i++)
-            {
-                CustomShowClip clip = Clone(seed);
-                clip.Id = Guid.NewGuid().ToString("N");
-                clip.StartMs = boundaries[i];
-                clip.EndMs = boundaries[i + 1];
-                clip.Included = true;
-                clip.Media = null;
-                clips.Add(clip);
-            }
+            clips.AddRange(detected);
             timeline.PositionMs = validDividers[0];
             timeline.Invalidate();
             RefreshGrid(0);
@@ -392,7 +399,9 @@ internal sealed class CustomClipEditorForm : Form
             if (!IsDisposed)
             {
                 autoDetect.Text = "Auto-detect clips";
-                autoDetect.Enabled = detector.Enabled = addDivider.Enabled = timeline.Enabled = true;
+                autoDetect.Enabled = detector.Enabled = skipTransitions.Enabled =
+                    addDivider.Enabled = timeline.Enabled = true;
+                transitionSeconds.Enabled = skipTransitions.Checked;
                 removeDivider.Enabled = SelectedIndex > 0;
                 Cursor = Cursors.Default;
                 grid.Cursor = Cursors.Default;
@@ -636,6 +645,41 @@ internal sealed class CustomClipEditorForm : Form
         return -1;
     }
 
+    internal static CustomShowClip[] BuildDetectedClips(CustomShowClip seed,
+        IEnumerable<long> dividers, long durationMs, long bufferMs)
+    {
+        const long minimumClipMs = 10_000;
+        List<(long Start, long End)> skipped = [];
+        foreach (long divider in dividers.Where(value => value > 0 && value < durationMs)
+                     .Distinct().Order())
+        {
+            long start = Math.Max(0, divider - Math.Max(0, bufferMs));
+            long end = Math.Min(durationMs, divider + Math.Max(0, bufferMs));
+            if (skipped.Count > 0 && start <= skipped[^1].End)
+                skipped[^1] = (skipped[^1].Start, Math.Max(skipped[^1].End, end));
+            else skipped.Add((start, end));
+        }
+        List<(long Start, long End, bool Included)> ranges = [];
+        long cursor = 0;
+        foreach ((long start, long end) in skipped)
+        {
+            if (cursor < start) ranges.Add((cursor, start, true));
+            if (start < end) ranges.Add((start, end, false));
+            cursor = end;
+        }
+        if (cursor < durationMs) ranges.Add((cursor, durationMs, true));
+        return ranges.Select(range =>
+        {
+            CustomShowClip clip = Clone(seed);
+            clip.Id = Guid.NewGuid().ToString("N");
+            clip.StartMs = range.Start;
+            clip.EndMs = range.End;
+            clip.Included = range.Included && range.End - range.Start >= minimumClipMs;
+            clip.Media = null;
+            return clip;
+        }).ToArray();
+    }
+
     internal static long FrameStep(long position, int direction,
         double frameDurationMs, long durationMs) => Math.Clamp(
             (long)Math.Round((Math.Round(position / frameDurationMs) +
@@ -649,6 +693,11 @@ internal sealed class CustomClipEditorForm : Form
         first.EndMs = 400;
         second.StartMs = 400;
         second.Included = false;
+        CustomShowClip seed = new();
+        CustomShowClip[] detected = BuildDetectedClips(
+            seed, [15_000, 30_000], 40_000, 1_000);
+        CustomShowClip[] unbuffered = BuildDetectedClips(
+            seed, [12_000], 30_000, 0);
         return first.EndMs == second.StartMs && second.EndMs == 1_000 &&
             first.Id != second.Id && !second.Included &&
             ClipIndexAt([first, second], 399) == 0 &&
@@ -656,6 +705,14 @@ internal sealed class CustomClipEditorForm : Form
             ClipIndexAt([first, second], 1_000) == 1 &&
             FrameStep(1_000, 1, 40, 2_000) == 1_040 &&
             FrameStep(1_000, -1, 40, 2_000) == 960 &&
+            detected.Length == 5 && detected[0].Included &&
+            detected[0].StartMs == 0 && detected[0].EndMs == 14_000 &&
+            !detected[1].Included && detected[1].EndMs == 16_000 &&
+            detected[2].Included && detected[2].EndMs == 29_000 &&
+            !detected[3].Included && !detected[4].Included &&
+            detected[4].StartMs == 31_000 && detected[4].EndMs == 40_000 &&
+            unbuffered.Length == 2 && unbuffered.All(clip => clip.Included) &&
+            unbuffered[0].EndMs == 12_000 && unbuffered[1].StartMs == 12_000 &&
             CustomSceneDetector.MonotonicProgress(18, 5) == 18 &&
             CustomSceneDetector.MonotonicProgress(18, 20) == 20;
     }
@@ -794,6 +851,8 @@ internal sealed class ClipTimelineControl : Control
     long durationMs, positionMs;
     bool scrubbing;
     int draggingDivider = -1;
+    IList<long> fixedMarkers = [];
+    IList<(long StartMs, long EndMs, Color Color)> highlightedRanges = [];
     [System.ComponentModel.DesignerSerializationVisibility(
         System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal long DurationMs { get => durationMs; set { durationMs = Math.Max(1, value); Invalidate(); } }
@@ -817,10 +876,25 @@ internal sealed class ClipTimelineControl : Control
     [System.ComponentModel.DesignerSerializationVisibility(
         System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal bool AllowDividerDragging { get; set; } = true;
+    [System.ComponentModel.DesignerSerializationVisibility(
+        System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal IList<long> FixedMarkers
+    {
+        get => fixedMarkers;
+        set { fixedMarkers = value; Invalidate(); }
+    }
+    [System.ComponentModel.DesignerSerializationVisibility(
+        System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal IList<(long StartMs, long EndMs, Color Color)> HighlightedRanges
+    {
+        get => highlightedRanges;
+        set { highlightedRanges = value; Invalidate(); }
+    }
     internal event EventHandler? PositionChanged;
     internal event EventHandler? ScrubStarted;
     internal event EventHandler? ScrubEnded;
     internal event Action<int>? DividerMoved;
+    internal event Action<long>? FixedMarkerClicked;
 
     internal ClipTimelineControl()
     {
@@ -857,6 +931,26 @@ internal sealed class ClipTimelineControl : Control
                 e.Graphics.DrawPolygon(Pens.Black, marker);
             }
         }
+        foreach ((long startMs, long endMs, Color color) in highlightedRanges)
+        {
+            int left = bar.Left + (int)Math.Round(
+                bar.Width * startMs / (double)durationMs);
+            int right = bar.Left + (int)Math.Round(
+                bar.Width * endMs / (double)durationMs);
+            using Brush brush = new SolidBrush(color);
+            e.Graphics.FillRectangle(brush, left, bar.Top,
+                Math.Max(1, right - left), bar.Height);
+        }
+        foreach (long markerMs in fixedMarkers)
+        {
+            int markerX = bar.Left + (int)Math.Round(
+                bar.Width * markerMs / (double)durationMs);
+            e.Graphics.DrawLine(Pens.White, markerX, bar.Top, markerX, bar.Bottom);
+            Point[] marker = [new(markerX - 8, bar.Bottom + 4),
+                new(markerX + 8, bar.Bottom + 4), new(markerX, Height - 3)];
+            e.Graphics.FillPolygon(Brushes.Gold, marker);
+            e.Graphics.DrawPolygon(Pens.Black, marker);
+        }
         int playhead = bar.Left + (int)Math.Round(bar.Width * positionMs / (double)durationMs);
         using Pen pen = new(Color.Red, 2);
         e.Graphics.DrawLine(pen, playhead, 3, playhead, bar.Bottom + 2);
@@ -868,6 +962,13 @@ internal sealed class ClipTimelineControl : Control
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
         Focus();
+        int fixedMarker = FixedMarkerAt(e.Location);
+        if (fixedMarker >= 0)
+        {
+            PositionMs = fixedMarkers[fixedMarker];
+            FixedMarkerClicked?.Invoke(positionMs);
+            return;
+        }
         draggingDivider = AllowDividerDragging ? MarkerAt(e.Location) : -1;
         scrubbing = true;
         Capture = true;
@@ -914,6 +1015,19 @@ internal sealed class ClipTimelineControl : Control
         return -1;
     }
 
+    int FixedMarkerAt(Point point)
+    {
+        Rectangle bar = BarRectangle;
+        if (point.Y < bar.Bottom + 1) return -1;
+        for (int i = 0; i < fixedMarkers.Count; i++)
+        {
+            int marker = bar.Left + (int)Math.Round(
+                bar.Width * fixedMarkers[i] / (double)durationMs);
+            if (Math.Abs(point.X - marker) <= 9) return i;
+        }
+        return -1;
+    }
+
     void MoveDivider(int x)
     {
         int index = draggingDivider;
@@ -942,10 +1056,13 @@ internal sealed class ClipTimelineControl : Control
         {
             Size = new Size(400, 60), DurationMs = 1000,
             Clips = [new() { StartMs = 0, EndMs = 500 },
-                new() { StartMs = 500, EndMs = 1000 }]
+                new() { StartMs = 500, EndMs = 1000 }],
+            FixedMarkers = [250]
         };
         int x = control.BarRectangle.Left + control.BarRectangle.Width / 2;
+        int fixedX = control.BarRectangle.Left + control.BarRectangle.Width / 4;
         return control.MarkerAt(new Point(x, control.Height - 5)) == 1 &&
-            control.MarkerAt(new Point(x, control.BarRectangle.Top + 5)) == -1;
+            control.MarkerAt(new Point(x, control.BarRectangle.Top + 5)) == -1 &&
+            control.FixedMarkerAt(new Point(fixedX, control.Height - 5)) == 0;
     }
 }

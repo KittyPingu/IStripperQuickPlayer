@@ -12,6 +12,8 @@ SVD_IMAGE_BYTES = 1264217240
 SVD_VAE_BYTES = 195531910
 SAM2_BYTES = 323606802
 SAM2_VOS_CACHE_MARKER = "SAM2_VOS_TORCH_2_11_TRITON_3_6_READY"
+SAM2_VOS_COMPILE_MODE = os.environ.get(
+    "IQP_SAM2_COMPILE_MODE", "max-autotune")
 
 
 def require_file(path, size):
@@ -26,7 +28,12 @@ def sam2_vos_optimized(torch, device):
 
 
 def sam2_vos_cache_marker(runtime):
-    return runtime / "torchinductor-cache" / SAM2_VOS_CACHE_MARKER
+    mode = SAM2_VOS_COMPILE_MODE.upper().replace("-", "_")
+    return runtime / "torchinductor-cache" / f"{SAM2_VOS_CACHE_MARKER}_{mode}"
+
+
+def sam2_vos_uses_cudagraphs(mode=SAM2_VOS_COMPILE_MODE):
+    return mode in ("max-autotune", "reduce-overhead")
 
 
 def load_sam2(runtime, torch, device="cuda", optimized=True):
@@ -38,9 +45,19 @@ def load_sam2(runtime, torch, device="cuda", optimized=True):
     require_file(checkpoint, SAM2_BYTES)
     from sam2.build_sam import build_sam2_video_predictor
     use_optimized = optimized and sam2_vos_optimized(torch, device)
-    return build_sam2_video_predictor(
-        "configs/sam2.1/sam2.1_hiera_b+.yaml", str(checkpoint), device=device,
-        vos_optimized=use_optimized)
+    original_compile = torch.compile
+    if use_optimized and SAM2_VOS_COMPILE_MODE != "max-autotune":
+        def configured_compile(model, *args, **kwargs):
+            if kwargs.get("mode") == "max-autotune":
+                kwargs["mode"] = SAM2_VOS_COMPILE_MODE
+            return original_compile(model, *args, **kwargs)
+        torch.compile = configured_compile
+    try:
+        return build_sam2_video_predictor(
+            "configs/sam2.1/sam2.1_hiera_b+.yaml", str(checkpoint), device=device,
+            vos_optimized=use_optimized)
+    finally:
+        torch.compile = original_compile
 
 
 def use_on_demand_sam2_frames(frame_folder, torch):
@@ -140,10 +157,12 @@ def propagate_masks(runtime, frame_files, mask_path, mask_folder, output, total,
     emit("tracking", 15, "Loading SAM2 mask tracking...")
     predictor = load_sam2(runtime, torch)
     use_on_demand_sam2_frames(frame_files[0].parent, torch)
-    torch.compiler.cudagraph_mark_step_begin()
+    mark_step = torch.compiler.cudagraph_mark_step_begin \
+        if sam2_vos_uses_cudagraphs() else None
+    if mark_step: mark_step()
     state = predictor.init_state(str(frame_files[0].parent),
         offload_video_to_cpu=True, offload_state_to_cpu=True)
-    torch.compiler.cudagraph_mark_step_begin()
+    if mark_step: mark_step()
     predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
     optimized = sam2_vos_optimized(torch, "cuda")
     first_compile = optimized and not sam2_vos_cache_marker(runtime).is_file()
@@ -154,7 +173,7 @@ def propagate_masks(runtime, frame_files, mask_path, mask_folder, output, total,
     count, last_preview = 0, 0
     iterator = iter(predictor.propagate_in_video(state))
     while True:
-        torch.compiler.cudagraph_mark_step_begin()
+        if mark_step: mark_step()
         try: frame_index, object_ids, logits = next(iterator)
         except StopIteration: break
         ids = object_ids.tolist() if hasattr(object_ids, "tolist") else list(object_ids)
@@ -265,8 +284,9 @@ def process(args):
             for offset in range(0, total, batch_size):
                 chunk_files = frame_files[offset:offset + batch_size]
                 cond = [Image.open(path).convert("RGB") for path in chunk_files]
-                guides = [Image.open(masks / (path.stem + ".png")).convert("L")
-                          for path in chunk_files]
+                guides = [Image.open(masks / (path.stem + ".png")).convert("L").resize(
+                    (model_width, model_height), Image.Resampling.NEAREST)
+                    for path in chunk_files]
                 mattes = pipeline.run(cond, guides, seed=42, mask_cond_mode="vae",
                                       fps=max(1, round(fps)))
                 for matte in mattes:
@@ -313,6 +333,8 @@ def main():
     if args.self_test:
         assert model_size(1920, 1080) == (1024, 576)
         assert model_size(1080, 1920) == (576, 1024)
+        assert sam2_vos_uses_cudagraphs("max-autotune")
+        assert not sam2_vos_uses_cudagraphs("max-autotune-no-cudagraphs")
         print("VideoMaMa worker self-test passed")
     elif not all((args.source, args.mask_folder, args.output, args.runtime)):
         parser.error("--source, --mask-folder, --output and --runtime are required")

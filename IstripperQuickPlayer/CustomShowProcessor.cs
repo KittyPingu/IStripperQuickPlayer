@@ -175,6 +175,8 @@ internal static class CustomShowProcessor
         {
             start.ArgumentList.Add("--mask");
             start.ArgumentList.Add(initialMask!);
+            start.ArgumentList.Add("--max-size");
+            start.ArgumentList.Add(mattingResolution.ToString());
         }
         else if (preset is "videomama" or "vitmatte-s" or "vitmatte-b")
         {

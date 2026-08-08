@@ -122,7 +122,7 @@ internal sealed class CustomShowClip
     public bool Included { get; set; } = true;
     public string Hotness { get; set; } = "NoNudity";
     public string[] ClipTypes { get; set; } = ["Standing"];
-    public int AlphaThreshold { get; set; }
+    public int AlphaThreshold { get; set; } = 25;
     public CustomClipMedia? Media { get; set; }
 }
 

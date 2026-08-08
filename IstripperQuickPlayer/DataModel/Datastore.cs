@@ -46,5 +46,26 @@ namespace IStripperQuickPlayer.DataModel
             }
             return null;
         }
+
+        internal static bool VerifyTagIndexReplacement()
+        {
+            List<ModelCard>? original = modelcards;
+            try
+            {
+                ModelCard first = new() { name = "custom:test" };
+                ModelCard replacement = new() { name = "custom:test" };
+                modelcards = [first];
+                if (!ReferenceEquals(findCardByTag("custom:test"), first)) return false;
+                modelcards = [replacement];
+                return ReferenceEquals(findCardByTag("custom:test"), replacement);
+            }
+            finally
+            {
+                modelcards = original;
+                indexedCards = null;
+                indexedCardCount = -1;
+                cardsByTag.Clear();
+            }
+        }
     }
 }

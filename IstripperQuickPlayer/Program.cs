@@ -35,6 +35,8 @@ namespace IStripperQuickPlayer
                     ("divider handles", ClipTimelineControl.VerifyMarkerHitTesting()),
                     ("time estimate", CustomShowProcessingForm.VerifyEstimate()),
                     ("alpha review", CustomShowDecisionForm.VerifyAlphaReview()),
+                    ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),
+                    ("card index refresh", Datastore.VerifyTagIndexReplacement()),
                     ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),
                     ("FFmpeg runtime", FfmpegCpuDecoder.VerifyRuntime())
                 ];

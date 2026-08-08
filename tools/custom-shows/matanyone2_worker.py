@@ -8,6 +8,12 @@ from rvm_worker import digest, emit, executable, fast_fp16, probe, replace_previ
 COMMIT = "0079197acd6d16a741f71558809c06c586c579e0"
 WEIGHTS_HASH = "5e9821e4087231427376b437c85bb6e072b41e582314f06fd524f75bc4af5914"
 
+def processing_size(width, height, max_size):
+    if max_size <= 0 or min(width, height) <= max_size:
+        return width, height
+    scale = max_size / min(width, height)
+    return int(width * scale), int(height * scale)
+
 def load_model(runtime):
     import torch
     root = runtime / "matanyone2"
@@ -35,6 +41,9 @@ def process(args):
     source, output = args.source.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     width, height, frame_rate, fps, source_duration = probe(source)
+    process_width, process_height = processing_size(width, height, args.max_size)
+    emit("startup", 0, f"MatAnyone 2 inference at {process_width}x{process_height}; "
+         f"output remains {width}x{height}")
     start = args.start_ms / 1000
     end = source_duration if args.end_ms is None else args.end_ms / 1000
     if start < 0 or end <= start or end > source_duration + .1:
@@ -89,12 +98,18 @@ def process(args):
         return np.frombuffer(value, np.uint8).reshape(height, width, 3)
 
     def tensor(frame):
+        if (process_width, process_height) != (width, height):
+            frame = np.asarray(Image.fromarray(frame, "RGB").resize(
+                (process_width, process_height), Image.Resampling.BILINEAR))
         return torch.from_numpy(frame.copy()).permute(2, 0, 1).to(
             device=device, dtype=torch.float32).div_(255)
 
     def write(frame, output_prob):
         nonlocal last_frame, last_alpha
         alpha = processor.output_prob_to_mask(output_prob).clamp(0, 1).mul(255).byte().cpu().numpy()
+        if alpha.shape != (height, width):
+            alpha = np.asarray(Image.fromarray(alpha, "L").resize(
+                (width, height), Image.Resampling.BILINEAR))
         last_frame, last_alpha = frame, alpha
         save_preview(frame, alpha)
         rgba = np.empty((height, width, 4), dtype=np.uint8)
@@ -109,7 +124,8 @@ def process(args):
     try:
         first = read_frame()
         if first is None: raise RuntimeError("The source video has no frames")
-        mask = Image.open(args.mask).convert("L").resize((width, height), Image.Resampling.NEAREST)
+        mask = Image.open(args.mask).convert("L").resize(
+            (process_width, process_height), Image.Resampling.NEAREST)
         mask_tensor = torch.from_numpy(np.asarray(mask, dtype=np.uint8).copy()).float().to(device)
         first_tensor = tensor(first)
         emit("inference", 0, "Warming up MatAnyone 2 on the initial mask...")
@@ -138,13 +154,24 @@ def process(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--mask", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--source", type=Path)
+    parser.add_argument("--mask", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--runtime", type=Path)
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int)
-    process(parser.parse_args())
+    parser.add_argument("--max-size", type=int,
+                        choices=(0, 256, 384, 512, 768, 1024), default=512)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        assert processing_size(3840, 2160, 512) == (910, 512)
+        assert processing_size(1920, 1080, 0) == (1920, 1080)
+        print("MatAnyone 2 worker self-test passed")
+    elif not all((args.source, args.mask, args.output, args.runtime)):
+        parser.error("--source, --mask, --output, and --runtime are required")
+    else:
+        process(args)
 
 if __name__ == "__main__":
     try: main()

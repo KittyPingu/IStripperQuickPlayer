@@ -248,7 +248,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path); parser.add_argument("--output", type=Path)
     parser.add_argument("--preset", choices=WEIGHTS, default="quality")
-    parser.add_argument("--matting-resolution", type=int, choices=(0, 512, 768, 1024), default=512)
+    parser.add_argument("--matting-resolution", type=int,
+                        choices=(0, 256, 384, 512, 768, 1024), default=512)
     parser.add_argument("--sequence-chunk", type=int, choices=range(1, 25), default=3)
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int)

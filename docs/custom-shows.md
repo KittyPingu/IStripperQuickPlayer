@@ -2,6 +2,9 @@
 
 Custom shows are normal QuickPlayer library cards backed by a local foreground video and alpha video. They can be searched, sorted, filtered, rated, favourited, dragged, saved in manual queues, selected by automatic queues, and controlled through REST alongside iStripper cards. iStripper still plays official shows; QuickPlayer's transparent player is used only for IDs beginning `custom:`.
 
+For the task-oriented workflow, begin with [Creating Custom Shows](../CUSTOM_SHOWS.md).
+This document is the exact setup, format, licensing, and troubleshooting reference.
+
 Only process videos you have permission to use. V1 mattes people (one or more visible people) and links each show to one primary reusable model profile. It does not segment arbitrary objects; SAM2 correction clicks refine person masks.
 
 ## Requirements
@@ -29,7 +32,9 @@ QuickPlayer pins:
 ## Exact setup
 
 The simplest method is **File → Custom Shows → Install / Update Processing
-Tools…**. Select TransNetV2, MatAnyone2, VideoMaMa, ViTMatte, and/or ProPainter in the choices dialog, then leave
+Tools…**. TransNetV2 and MatAnyone2 are selected by default; VideoMaMa,
+ViTMatte, and ProPainter are initially cleared. Select the tools to install or
+update in the choices dialog, then leave
 the setup window open until it finishes. Selecting any mask-guided method
 installs SAM2 for interactive first-frame selection. VideoMaMa and ViTMatte also
 use SAM2 for the editable tracked-mask workflow. QuickPlayer selects the isolated Python automatically. If no
@@ -139,8 +144,13 @@ original source. Scrub or play the preview, place dividers, and drag only their
 gold triangle handles below the timeline; scrubbing across divider lines no
 longer moves them. Select each resulting segment to set its hotness and clip types.
 Choose **Fast (FFmpeg)** for lightweight built-in scene-score detection or
-**Accurate (TransNetV2)** for neural detection, then click **Auto-detect
-clips** to replace current dividers. TransNet inference runs on CUDA when available and FFmpeg
+**Accurate (TransNetV2)** for neural detection. Accurate is selected by default
+when installed. Click **Auto-detect clips** to replace current dividers. Enable
+**Skip transition ±** to turn the selected number of seconds on both sides of
+each detected cut into a skipped segment; overlapping transition buffers are
+merged. Auto-detected playable segments shorter than 10 seconds are also
+skipped by default. Both kinds remain visible and can be re-enabled manually.
+TransNet inference runs on CUDA when available and FFmpeg
 uses CUDA decode/scale where the source codec supports it, with automatic CPU
 decode fallback. Clear **Include this segment as a playable
 clip** to mark a segment as skipped; it remains editable in the manifest but is
@@ -186,11 +196,16 @@ has a one-time compilation delay, reported in the progress dialog, which can tak
 several minutes; subsequent propagation reuses the compiler cache.
 QuickPlayer marks every propagated frame as a new CUDA Graph step; PyTorch 2.11
 otherwise overwrites tensors passed between SAM2's separately compiled components.
-On the reference RTX 4080, a warmed 600-frame synthetic test measured 27.28 FPS
-versus 19.17 FPS uncompiled (about 42% faster). A new worker must first record its
-CUDA Graph shapes, so QuickPlayer enables compiled VOS only for clips containing
-at least 1,200 frames (roughly 40–50 seconds at 25–30 FPS). Shorter clips use the
-original predictor because it is faster below the measured break-even point.
+Synthetic tensor tests overstate the benefit because they omit worker startup and
+interactive correction. A controlled 1,000-frame, 1024x576 review test on the RTX
+4080 ran an initial pass plus a midpoint correction propagated through the full
+section. Two eager runs averaged 241.2 seconds total; two full `max-autotune` runs
+averaged 245.2 seconds; cached `max-autotune-no-cudagraphs` took 271.9 seconds (and
+314.4 seconds on its cold run). Full compilation did make correction propagation
+faster on average, but its per-process startup erased that gain at this length.
+QuickPlayer therefore keeps the original predictor for clips under 16,000 frames
+(roughly 9–11 minutes at 25–30 FPS) and uses full `max-autotune`, not the
+no-CUDA-graphs variant, for longer clips.
 The first eligible clip builds the full compiler cache; this took about nine minutes
 on the reference RTX 4080. The dialog labels this as a one-time cache build; leave
 the indeterminate phase running. Subsequent jobs say that cached SAM2 is loading
@@ -205,12 +220,14 @@ quality. Both support CUDA FP16 with FP32/CPU fallback and automatic batch
 splitting on CUDA out-of-memory. Corrected review masks are staging data and are
 removed after successful publication; the generated RGB/alpha clips are retained.
 
-**Matting detail** controls RVM's internal inference resolution per show:
-Standard (512 px, recommended), High (768 px), Very High (1024 px), or Full
-resolution. Higher detail can improve fine edges but increases processing time
-and GPU memory use. It never changes the full-resolution dimensions of the
-foreground or alpha output. RVM's official HD baseline is approximately 480 px
-internally (`downsample_ratio=0.25` at 1920 px wide).
+**Matting detail** controls RVM and MatAnyone2's internal inference resolution
+per show: Very Low (256 px), Low (384 px), Standard (512 px, recommended), High
+(768 px), Very High (1024 px), or Full resolution. Higher detail can improve
+fine edges but increases processing time and GPU memory use. If dedicated VRAM
+fills or Task Manager shows shared-GPU-memory spill, cancel and retry at a lower
+detail setting. It never changes the full-resolution dimensions of the
+foreground or alpha output. RVM's official HD baseline is
+approximately 480 px internally (`downsample_ratio=0.25` at 1920 px wide).
 
 QuickPlayer processes configurable temporal chunks through RVM while retaining
 recurrent state. The default is 3 frames, with 1, 2, 3, 4, 6, 8, and 12 available
@@ -227,7 +244,16 @@ foreground/alpha result composited over a checkerboard on the right, allowing a
 poor matte to be cancelled early. Snapshot files are written atomically and
 removed after processing. Cancel terminates the Python/FFmpeg process tree. Work happens below `<library>\.staging`; failed or cancelled jobs never become library cards. `processing.log` contains worker and FFmpeg diagnostics.
 
-After processing, QuickPlayer opens its transparent player. Choose **Yes** to publish, **No** to retry, or **Cancel** to discard the staging folder. A cover is generated from the middle of the source unless a custom image was selected. Generated covers embed the model name in white script and the uppercase show title in the colour selected on the creation form. Generated and selected covers use the official-style 2:3 portrait ratio (`600×900`) so custom cards retain the normal library size and alignment. User-supplied covers are not given the text overlay.
+After processing, QuickPlayer opens its transparent player for each clip. New
+clips begin with a lower alpha threshold of 25; tune the slider before accepting
+to remove weak background pixels while retaining soft subject edges. Choose
+**Accept** to publish, **Retry** to process again, **Open Log** for diagnostics,
+or **Discard** to remove staging. A cover is generated from the middle of the
+source unless a custom image was selected. Generated covers embed the model name
+in white script and the uppercase show title in the colour selected on the
+creation form. Generated and selected covers use the official-style 2:3 portrait
+ratio (`600×900`) so custom cards retain the normal library size and alignment.
+User-supplied covers are not given the text overlay.
 
 ## Models and metadata
 

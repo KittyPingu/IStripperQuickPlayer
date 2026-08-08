@@ -26,6 +26,10 @@ def trimap_from_mask(mask, cv2):
     return trimap
 
 
+def alpha_bytes(alpha):
+    return (alpha * 255).byte().cpu().numpy()
+
+
 def process(args):
     import cv2
     import numpy as np
@@ -92,7 +96,7 @@ def process(args):
             with torch.inference_mode(), torch.autocast(device_type=device.type,
                     dtype=torch.float16, enabled=fp16):
                 alphas = model(**inputs).alphas[:, 0, :height, :width].clamp_(0, 1)
-            return list(alphas.mul_(255).byte().cpu().numpy())
+            return list(alpha_bytes(alphas))
         except torch.OutOfMemoryError:
             if len(frames) == 1: raise
             if device.type == "cuda": torch.cuda.empty_cache()
@@ -149,10 +153,12 @@ def process(args):
 
 
 def self_test():
-    import cv2, numpy as np
+    import cv2, numpy as np, torch
     mask = np.zeros((64, 64), np.uint8); mask[16:48, 16:48] = 255
     trimap = trimap_from_mask(mask, cv2)
     assert trimap[32, 32] == 255 and trimap[0, 0] == 0 and 128 in trimap
+    with torch.inference_mode(): alpha = torch.tensor([0., .5, 1.])
+    assert alpha_bytes(alpha).tolist() == [0, 127, 255]
     print("ViTMatte worker self-test passed")
 
 
