@@ -480,8 +480,12 @@ internal sealed class CustomShowProcessingForm : Form
                 percent = Math.Clamp(value.Percent, 0, 100);
                 AddProgressSample(progressSamples,
                     elapsed.Elapsed.TotalSeconds, percent);
-                bar.Value = (int)Math.Round(percent);
                 statusMessage = string.IsNullOrWhiteSpace(value.Message) ? value.Stage : value.Message;
+                bool compiling = statusMessage.StartsWith("Compiling optimized SAM2",
+                    StringComparison.Ordinal) || statusMessage.StartsWith(
+                    "Loading cached optimized SAM2", StringComparison.Ordinal);
+                bar.Style = compiling ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
+                if (!compiling) bar.Value = (int)Math.Round(percent);
                 UpdatePreview(value.PreviewSource, value.PreviewComposite);
             });
             Result = await operation(progress, cancellation.Token);

@@ -11,6 +11,7 @@ MODEL_BYTES = 6098728544
 SVD_IMAGE_BYTES = 1264217240
 SVD_VAE_BYTES = 195531910
 SAM2_BYTES = 323606802
+SAM2_VOS_CACHE_MARKER = "SAM2_VOS_TORCH_2_11_TRITON_3_6_READY"
 
 
 def require_file(path, size):
@@ -18,13 +19,25 @@ def require_file(path, size):
         raise RuntimeError(f"VideoMaMa installation is incomplete: {path.name}")
 
 
+def sam2_vos_optimized(torch, device):
+    if device != "cuda": return False
+    from torch.utils._triton import has_triton
+    return has_triton()
+
+
+def sam2_vos_cache_marker(runtime):
+    return runtime / "torchinductor-cache" / SAM2_VOS_CACHE_MARKER
+
+
 def load_sam2(runtime, torch, device="cuda", optimized=True):
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR",
+                          str(runtime / "torchinductor-cache"))
     if (runtime / "SAM2_COMMIT").read_text().strip() != SAM2_COMMIT:
         raise RuntimeError("SAM2 commit validation failed; run setup again")
     checkpoint = runtime / "checkpoints" / "sam2.1_hiera_base_plus.pt"
     require_file(checkpoint, SAM2_BYTES)
     from sam2.build_sam import build_sam2_video_predictor
-    use_optimized = optimized and device == "cuda" and sys.platform != "win32"
+    use_optimized = optimized and sam2_vos_optimized(torch, device)
     return build_sam2_video_predictor(
         "configs/sam2.1/sam2.1_hiera_b+.yaml", str(checkpoint), device=device,
         vos_optimized=use_optimized)
@@ -127,11 +140,23 @@ def propagate_masks(runtime, frame_files, mask_path, mask_folder, output, total,
     emit("tracking", 15, "Loading SAM2 mask tracking...")
     predictor = load_sam2(runtime, torch)
     use_on_demand_sam2_frames(frame_files[0].parent, torch)
+    torch.compiler.cudagraph_mark_step_begin()
     state = predictor.init_state(str(frame_files[0].parent),
         offload_video_to_cpu=True, offload_state_to_cpu=True)
+    torch.compiler.cudagraph_mark_step_begin()
     predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
+    optimized = sam2_vos_optimized(torch, "cuda")
+    first_compile = optimized and not sam2_vos_cache_marker(runtime).is_file()
+    if optimized:
+        emit("tracking", 15, "Compiling optimized SAM2 (one-time cache build; "
+             "later processing reuses it). This may take several minutes..." if first_compile
+             else "Loading cached optimized SAM2; recording this worker's CUDA Graphs...")
     count, last_preview = 0, 0
-    for frame_index, object_ids, logits in predictor.propagate_in_video(state):
+    iterator = iter(predictor.propagate_in_video(state))
+    while True:
+        torch.compiler.cudagraph_mark_step_begin()
+        try: frame_index, object_ids, logits = next(iterator)
+        except StopIteration: break
         ids = object_ids.tolist() if hasattr(object_ids, "tolist") else list(object_ids)
         if 1 not in ids:
             raise RuntimeError(f"SAM2 lost the selected foreground at frame {frame_index + 1}")
@@ -149,6 +174,7 @@ def propagate_masks(runtime, frame_files, mask_path, mask_folder, output, total,
     gc.collect(); torch.cuda.empty_cache()
     if count != len(frame_files):
         raise RuntimeError("SAM2 returned a different number of masks than source frames")
+    if optimized: sam2_vos_cache_marker(runtime).touch()
 
 
 def encoder(ffmpeg, source, output, start, duration, frame_rate, width, height):

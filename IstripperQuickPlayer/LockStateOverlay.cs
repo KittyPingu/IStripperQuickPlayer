@@ -172,6 +172,13 @@ internal sealed class LockStateOverlay : Form
             ShowWindowAsync(window, 4);
     }
 
+    internal static void CenterWindowHorizontally(IntPtr window, int centerX)
+    {
+        if (!TryGetWindowBounds(window, out Rectangle bounds)) return;
+        SetWindowPos(window, IntPtr.Zero, centerX - bounds.Width / 2,
+            bounds.Top, 0, 0, 0x1 | 0x4 | 0x10);
+    }
+
     internal static bool TryGetWindowBounds(IntPtr window, out Rectangle bounds)
     {
         if (window != IntPtr.Zero && IsWindow(window) &&
@@ -380,6 +387,10 @@ internal sealed class LockStateOverlay : Form
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindowAsync(IntPtr window, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr window, IntPtr after,
+        int x, int y, int width, int height, int flags);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, StringBuilder className, int maximumCount);

@@ -4,8 +4,11 @@ import argparse, json, shutil, subprocess, sys
 from pathlib import Path
 
 from rvm_worker import executable, probe
-from videomama_worker import load_sam2, model_size, use_on_demand_sam2_frames
+from videomama_worker import (load_sam2, model_size, sam2_vos_cache_marker,
+                              sam2_vos_optimized, use_on_demand_sam2_frames)
 from sam_mask_worker import automatic_foreground
+
+VOS_MIN_FRAMES = 1200
 
 
 def send(**values):
@@ -43,14 +46,22 @@ def correction_limits(frame, correction_frames, total):
             min((value for value in correction_frames if value > frame), default=total - 1))
 
 
+def compiled_vos_worthwhile(frame_count):
+    return frame_count >= VOS_MIN_FRAMES
+
+
 def propagate(predictor, state, mask_folder, start, total, reverse, progress_start,
-              progress_size, message, max_frames=None):
+              progress_size, message, max_frames=None, mark_step=None):
     maximum = (start + 1 if reverse else total - start) if max_frames is None \
         else max_frames + 1
     count = 0
-    for frame_index, object_ids, logits in predictor.propagate_in_video(
-            state, start_frame_idx=start, reverse=reverse,
-            max_frame_num_to_track=max_frames):
+    iterator = iter(predictor.propagate_in_video(
+        state, start_frame_idx=start, reverse=reverse,
+        max_frame_num_to_track=max_frames))
+    while True:
+        if mark_step: mark_step()
+        try: frame_index, object_ids, logits = next(iterator)
+        except StopIteration: break
         mask_from_logits(object_ids, logits, frame_index, mask_folder)
         count += 1
         send(status="progress",
@@ -84,19 +95,29 @@ def process(args):
         (review_width, review_height), Image.Resampling.NEAREST)) >= 128
     device = "cuda" if torch.cuda.is_available() else "cpu"
     bf16 = device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
-    optimized = device == "cuda" and sys.platform != "win32"
+    optimized = sam2_vos_optimized(torch, device) and compiled_vos_worthwhile(total)
+    first_compile = optimized and not sam2_vos_cache_marker(runtime).is_file()
     send(status="progress", percent=15,
          message=f"Loading SAM2 on {device.upper()}...")
-    predictor = load_sam2(runtime, torch, device, optimized=True)
+    predictor = load_sam2(runtime, torch, device, optimized=optimized)
+    mark_step = torch.compiler.cudagraph_mark_step_begin if optimized else None
     use_on_demand_sam2_frames(frames, torch)
     with torch.inference_mode(), torch.autocast(device_type=device,
             dtype=torch.bfloat16, enabled=bf16):
+        if mark_step: mark_step()
         state = predictor.init_state(str(frames), offload_video_to_cpu=True,
                                      offload_state_to_cpu=device != "cuda")
+        if mark_step: mark_step()
         predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
         correction_frames = {0}
+        if optimized:
+            send(status="progress", percent=15,
+                 message="Compiling optimized SAM2 (one-time cache build; later processing "
+                 "reuses it). This may take several minutes..." if first_compile else
+                 "Loading cached optimized SAM2; recording this worker's CUDA Graphs...")
         propagate(predictor, state, masks, 0, total, False, 15, 85,
-                  "Tracked")
+                  "Tracked", mark_step=mark_step)
+        if optimized: sam2_vos_cache_marker(runtime).touch()
         send(status="ready", frameCount=total, fps=fps,
              width=review_width, height=review_height, device=device,
              precision="BF16" if bf16 else "FP32", optimized=optimized,
@@ -120,11 +141,14 @@ def process(args):
                     continue
                 if command == "auto":
                     frame_image = np.asarray(Image.open(frame_files[frame]).convert("RGB"))
+                    if mark_step: mark_step()
                     automatic, candidate_count = automatic_foreground(
                         predictor, frame_image, points, labels, torch, device, bf16)
+                    if mark_step: mark_step()
                     _, object_ids, logits = predictor.add_new_mask(
                         state, frame_idx=frame, obj_id=1, mask=automatic)
                 else:
+                    if mark_step: mark_step()
                     _, object_ids, logits = predictor.add_new_points_or_box(
                         state, frame_idx=frame, obj_id=1, points=points, labels=labels,
                         clear_old_points=True)
@@ -136,10 +160,10 @@ def process(args):
             previous, following = correction_limits(frame, correction_frames, total)
             if frame > previous:
                 propagate(predictor, state, masks, frame, total, True, 0, 50,
-                          "Updated backward", frame - previous)
+                          "Updated backward", frame - previous, mark_step)
             propagate(predictor, state, masks, frame, total, False,
                       50 if frame > previous else 0, 50 if frame > previous else 100,
-                      "Updated forward", following - frame)
+                      "Updated forward", following - frame, mark_step)
             correction_frames.add(frame)
             send(status="ready", frameCount=total, fps=fps,
                  width=review_width, height=review_height, device=device,
@@ -151,6 +175,8 @@ def self_test():
     assert model_size(1920, 1080) == (1024, 576)
     assert model_size(1080, 1920) == (576, 1024)
     assert correction_limits(75, {0, 50, 100}, 150) == (50, 100)
+    assert not compiled_vos_worthwhile(VOS_MIN_FRAMES - 1)
+    assert compiled_vos_worthwhile(VOS_MIN_FRAMES)
     print("SAM2 refinement worker self-test passed")
 
 

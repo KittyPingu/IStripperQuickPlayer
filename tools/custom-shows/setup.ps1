@@ -123,6 +123,7 @@ function Install-Sam2 {
     $sam2Marker = Join-Path $runtime 'SAM2_COMMIT'
     Remove-Item -LiteralPath $sam2Marker -Force -ErrorAction SilentlyContinue
     Write-Host 'Installing shared SAM2 video mask tracking...'
+    & $python -m pip install triton-windows==3.6.0.post26
     & $python -m pip install iopath==0.1.10 hydra-core==1.3.2 tqdm==4.67.1
     if (-not (Test-Path (Join-Path $sam2 '.git'))) {
         git clone https://github.com/facebookresearch/sam2.git $sam2
@@ -138,6 +139,23 @@ function Install-Sam2 {
         'A2345AEDE8715AB1D5D31B4A509FB160C5A4AF1970F199D9054CCFB746C004C5'
     & $python -c "from sam2.build_sam import build_sam2_video_predictor; print('SAM2 import verified')"
     if ($LASTEXITCODE -ne 0) { throw 'SAM2 verification failed.' }
+    $compileTest = @'
+import torch
+if torch.cuda.is_available():
+    from torch.utils._triton import has_triton
+    assert has_triton(), "Triton is unavailable"
+    model = torch.compile(torch.nn.Conv2d(3, 8, 3, padding=1).cuda().eval(),
+                          mode="max-autotune")
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+        for _ in range(2):
+            torch.compiler.cudagraph_mark_step_begin()
+            model(torch.randn(1, 3, 32, 32, device="cuda"))
+    torch.cuda.synchronize()
+print("SAM2 compiler verified")
+'@
+    $env:TORCHINDUCTOR_CACHE_DIR = Join-Path $runtime 'torchinductor-cache'
+    & $python -c $compileTest
+    if ($LASTEXITCODE -ne 0) { throw 'SAM2 compiler verification failed.' }
     [System.IO.File]::WriteAllText($sam2Marker, $sam2Commit)
 }
 if ($InstallMatAnyone2 -or $InstallVideoMaMa -or $InstallViTMatte) { Install-Sam2 }

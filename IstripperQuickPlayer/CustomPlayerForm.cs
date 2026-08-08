@@ -25,13 +25,16 @@ internal sealed class CustomPlayerForm : Form
     readonly double rangeStartSeconds, requestedRangeEndSeconds;
     readonly Rectangle? initialBounds;
     readonly CancellationTokenSource cancellation = new();
+    readonly System.Windows.Forms.Timer settleTimer = new() { Interval = 15 };
     readonly System.Windows.Forms.Timer hitTestTimer = new() { Interval = 20 };
+    readonly Stopwatch settleClock = new();
     PairedRenderer? renderer;
     byte[]? hitTestAlpha;
     volatile bool paused, locked, clickThroughLocked, wheelResize;
     bool? mouseTransparent;
     bool movingWindow;
-    int sizePercent, volumePercent, wheelDelta, volumeWheelDelta;
+    int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
+        settleStart, settleTarget;
     volatile int alphaThreshold, fullOpacityThreshold;
     Task playbackTask = Task.CompletedTask;
     long requestedSeekBits = BitConverter.DoubleToInt64Bits(double.NaN);
@@ -83,7 +86,13 @@ internal sealed class CustomPlayerForm : Form
         ClientSize = new Size(2, 2);
         SetStyle(ControlStyles.Opaque, true);
         Shown += (_, _) => playbackTask = Task.Run(PlayAsync);
-        FormClosed += (_, _) => { cancellation.Cancel(); hitTestTimer.Dispose(); };
+        FormClosed += (_, _) =>
+        {
+            cancellation.Cancel();
+            settleTimer.Dispose();
+            hitTestTimer.Dispose();
+        };
+        settleTimer.Tick += (_, _) => SettleTick();
         hitTestTimer.Tick += (_, _) => UpdateMouseTransparency();
         KeyPreview = true;
         KeyDown += (_, e) =>
@@ -110,6 +119,12 @@ internal sealed class CustomPlayerForm : Form
         bool locked, bool clickThrough, bool hasAlpha) =>
         locked && clickThrough || !hasAlpha;
     protected override bool ShowWithoutActivation => true;
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        mouseTransparent = null;
+        UpdateMouseTransparency();
+    }
     protected override void OnPaintBackground(PaintEventArgs e) { }
 
     async Task PlayAsync()
@@ -211,6 +226,7 @@ internal sealed class CustomPlayerForm : Form
     }
     internal void SetSizePercent(int percent, int minimumPercent = 10)
     {
+        settleTimer.Stop();
         sizePercent = Math.Clamp(percent, minimumPercent, 200);
         if (renderer == null) return;
         Rectangle work = Screen.FromHandle(Handle).WorkingArea;
@@ -251,13 +267,64 @@ internal sealed class CustomPlayerForm : Form
         if (!IsHandleCreated) return;
         bool transparent = locked && clickThroughLocked ||
             !movingWindow && !IsAlphaVisible(PointToClient(Cursor.Position));
-        if (mouseTransparent == transparent) return;
-        mouseTransparent = transparent;
         long style = GetWindowLongPtr(Handle, GwlExStyle).ToInt64();
-        long updated = transparent ? style | WsExTransparent | WsExLayered :
-            style & ~(WsExTransparent | WsExLayered);
-        SetWindowLongPtr(Handle, GwlExStyle, new IntPtr(updated));
-        SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x1 | 0x2 | 0x4 | 0x10 | 0x20);
+        const long transparentStyles = WsExTransparent | WsExLayered;
+        bool styleMatches = transparent
+            ? (style & transparentStyles) == transparentStyles
+            : (style & transparentStyles) == 0;
+        if (mouseTransparent == transparent && styleMatches) return;
+        mouseTransparent = transparent;
+        long updated = transparent ? style | transparentStyles :
+            style & ~transparentStyles;
+        if (updated != style)
+        {
+            SetWindowLongPtr(Handle, GwlExStyle, new IntPtr(updated));
+            SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+                0x1 | 0x2 | 0x4 | 0x10 | 0x20);
+        }
+    }
+
+    void StartSettle()
+    {
+        Rectangle work = Screen.FromHandle(Handle).WorkingArea;
+        settleTimer.Stop();
+        settleStart = Top;
+        settleTarget = work.Bottom - Height;
+        if (settleStart >= settleTarget)
+        {
+            Top = settleTarget;
+            return;
+        }
+        settleClock.Restart();
+        settleTimer.Start();
+    }
+
+    void SettleTick()
+    {
+        (int top, bool complete) = SettlePosition(
+            settleStart, settleTarget, settleClock.Elapsed.TotalSeconds);
+        Top = top;
+        if (complete) settleTimer.Stop();
+    }
+
+    static (int Top, bool Complete) SettlePosition(
+        int start, int target, double elapsed)
+    {
+        const double gravity = 4_000;
+        if (start >= target) return (target, true);
+        double distance = target - start;
+        double impactTime = Math.Sqrt(2 * distance / gravity);
+        if (elapsed < impactTime)
+            return (start + (int)Math.Round(
+                .5 * gravity * elapsed * elapsed), false);
+        double bounceHeight = Math.Clamp(distance / 16, 4, 16);
+        double bounceVelocity = Math.Sqrt(2 * gravity * bounceHeight);
+        double bounceElapsed = elapsed - impactTime;
+        if (bounceElapsed < 2 * bounceVelocity / gravity)
+            return (target - (int)Math.Round(
+                bounceVelocity * bounceElapsed -
+                .5 * gravity * bounceElapsed * bounceElapsed), false);
+        return (target, true);
     }
 
     protected override void WndProc(ref Message message)
@@ -301,11 +368,13 @@ internal sealed class CustomPlayerForm : Form
         {
             movingWindow = true;
             UpdateMouseTransparency();
+            settleTimer.Stop();
         }
         else if (message.Msg == WmExitSizeMove)
         {
             movingWindow = false;
             UpdateMouseTransparency();
+            StartSettle();
         }
         base.WndProc(ref message);
     }
@@ -328,6 +397,8 @@ internal sealed class CustomPlayerForm : Form
         PairDurationMatches(145.733333, 145.8, 1d / 30) &&
         !PairDurationMatches(145.733333, 145.85, 1d / 30) &&
         Math.Clamp(205, 10, 200) == 200 &&
+        SettlePosition(100, 500, 0) == (100, false) &&
+        SettlePosition(100, 500, 10) == (500, true) &&
         AnchoredLocation(new Size(100, 200),
             new Rectangle(300, 400, 200, 300),
             new Rectangle(0, 0, 1920, 1080)) == new Point(350, 880);

@@ -301,6 +301,15 @@ Processing options are:
   unwanted foreground. Clicks preview the corrected current frame immediately;
   **Update masks** then propagates backward and forward. **Auto mask frame** runs
   SAM2 automatic mask generation, and 0.25× slow motion is available during review.
+- On CUDA, SAM2 video propagation uses full compiled VOS. Its first use can spend
+  several minutes compiling and each worker records CUDA Graph shapes once; the
+  dialog shows an indeterminate compile phase and elapsed time. Later propagation
+  reuses the compiler cache and is faster. Clips under 1,200 frames retain the
+  original predictor because compiled VOS does not recover its startup overhead.
+  Full compilation is deferred until the first 1,200+ frame clip and took about
+  nine minutes on the reference RTX 4080; the dialog identifies this as a one-time
+  cache build, so leave it open. Subsequent jobs load that cache and only record
+  their per-worker CUDA Graph shapes. Deleting the cache repeats the full delay.
 - **Matting detail** controls RVM's internal long-edge resolution: Standard
   512 px, High 768 px, Very High 1024 px, or Full resolution. Higher settings
   can improve fine edges but take longer and use more GPU memory.

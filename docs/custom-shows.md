@@ -16,6 +16,7 @@ QuickPlayer pins:
 
 - [Robust Video Matting](https://github.com/PeterL1n/RobustVideoMatting) commit `53d74c6826735f01f4406b5ca9075eee27bec094`.
 - PyTorch `2.11.0`, torchvision `0.26.0`, CUDA `12.8` wheels, and NumPy `2.3.2`.
+- Triton for Windows `3.6.0.post26` for compiled SAM2 video propagation.
 - RVM MobileNetV3 SHA-256 `3C7C1D92033F7C38D6577C481D13A195D7D80A159B960F4F3119AC7B534CF4F8`.
 - RVM ResNet50 SHA-256 `C191A807251164C073DCE5FA408E7A816070D539B882B2A3150330A9FEC112CE`.
 - Optional [TransNetV2](https://github.com/soCzech/TransNetV2) PyTorch source commit `85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed` and converted-weight SHA-256 `46520D66D4BF60414A4D82E0E94A92442FF950E34517A3718B2E54815E642B53`.
@@ -179,9 +180,24 @@ adjacent accepted correction frames instead of needlessly recalculating beyond
 them. Playback includes normal speed, 0.25× slow motion, and frame stepping. Repeat
 on later failures, then choose **Use corrected masks**. QuickPlayer uses the
 SAM2.1 Hiera Base+ checkpoint with CUDA/BF16 autocast on supported NVIDIA cards.
-Full `vos_optimized` compilation is disabled on Windows because TorchInductor fails
-to lower SAM2's first CUDA convolution on the supported local PyTorch build; the
-tracking state remains on the GPU while review frames are loaded lazily from CPU.
+On CUDA, SAM2 uses `vos_optimized=True`; setup installs the PyTorch 2.11-compatible
+Triton 3.6 compiler and verifies it with a compiled CUDA convolution. The first run
+has a one-time compilation delay, reported in the progress dialog, which can take
+several minutes; subsequent propagation reuses the compiler cache.
+QuickPlayer marks every propagated frame as a new CUDA Graph step; PyTorch 2.11
+otherwise overwrites tensors passed between SAM2's separately compiled components.
+On the reference RTX 4080, a warmed 600-frame synthetic test measured 27.28 FPS
+versus 19.17 FPS uncompiled (about 42% faster). A new worker must first record its
+CUDA Graph shapes, so QuickPlayer enables compiled VOS only for clips containing
+at least 1,200 frames (roughly 40–50 seconds at 25–30 FPS). Shorter clips use the
+original predictor because it is faster below the measured break-even point.
+The first eligible clip builds the full compiler cache; this took about nine minutes
+on the reference RTX 4080. The dialog labels this as a one-time cache build; leave
+the indeterminate phase running. Subsequent jobs say that cached SAM2 is loading
+and only record their per-worker CUDA Graph shapes. The cache is retained at
+`<runtime>\torchinductor-cache`; deleting it repeats the full compilation delay.
+Without CUDA or Triton it falls back to uncompiled propagation. Tracking state
+remains on the GPU while review frames are loaded lazily from CPU.
 
 ViTMatte turns the corrected SAM2 masks into trimaps and predicts soft alpha per
 frame. S is the smaller/faster model; B uses the larger backbone for higher
