@@ -30,7 +30,7 @@ internal sealed class CustomClipEditorForm : Form
     readonly ComboBox hotness = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly CheckedListBox clipTypes = new() { CheckOnClick = true, Height = 120 };
     readonly CheckBox include = new() { Text = "Include this segment as a playable clip",
-        AutoSize = true, Checked = true, ThreeState = true };
+        AutoSize = true, Checked = true, ThreeState = true, AutoCheck = false };
     readonly Label position = new() { AutoSize = true, Padding = new Padding(6, 8, 6, 0) };
     readonly Button previousFrame = new() { Text = "◀ 1 frame", AutoSize = true };
     readonly Button play = new() { Text = "Play", AutoSize = true };
@@ -168,8 +168,13 @@ internal sealed class CustomClipEditorForm : Form
         };
         timeline.DividerMoved += _ => UpdateGridTimes();
         grid.SelectionChanged += (_, _) => LoadSelectedMetadata();
-        grid.CellDoubleClick += (_, e) => PlaySegment(e.RowIndex);
-        include.CheckedChanged += (_, _) => SaveSelectedMetadata();
+        grid.CellDoubleClick += (_, e) => SeekToSegment(e.RowIndex);
+        include.Click += (_, _) =>
+        {
+            if (loadingMetadata || !include.Enabled) return;
+            include.CheckState = NextIncludeCheckState(include.CheckState);
+            SaveSelectedMetadata();
+        };
         hotness.SelectedIndexChanged += (_, _) => SaveSelectedMetadata();
         clipTypes.ItemCheck += (_, e) =>
         {
@@ -482,14 +487,13 @@ internal sealed class CustomClipEditorForm : Form
             grid.FirstDisplayedScrollingRowIndex = index;
     }
 
-    void PlaySegment(int index)
+    void SeekToSegment(int index)
     {
         if (index < 0 || index >= clips.Count) return;
         StopPlayback(requestPreview: false);
         grid.ClearSelection();
         grid.Rows[index].Selected = true;
         timeline.PositionMs = clips[index].StartMs;
-        StartPlayback(clips[index].EndMs);
     }
 
     void UpdatePosition() => position.Text = $"{Format(timeline.PositionMs)} / {Format(durationMs)}";
@@ -685,6 +689,10 @@ internal sealed class CustomClipEditorForm : Form
             (long)Math.Round((Math.Round(position / frameDurationMs) +
                 Math.Sign(direction)) * frameDurationMs), 0, durationMs);
 
+    internal static CheckState NextIncludeCheckState(CheckState current) =>
+        current == CheckState.Checked
+            ? CheckState.Unchecked : CheckState.Checked;
+
     internal static bool VerifyClipSplitting()
     {
         CustomShowClip first = new() { StartMs = 0, EndMs = 1_000 };
@@ -705,6 +713,9 @@ internal sealed class CustomClipEditorForm : Form
             ClipIndexAt([first, second], 1_000) == 1 &&
             FrameStep(1_000, 1, 40, 2_000) == 1_040 &&
             FrameStep(1_000, -1, 40, 2_000) == 960 &&
+            NextIncludeCheckState(CheckState.Unchecked) == CheckState.Checked &&
+            NextIncludeCheckState(CheckState.Checked) == CheckState.Unchecked &&
+            NextIncludeCheckState(CheckState.Indeterminate) == CheckState.Checked &&
             detected.Length == 5 && detected[0].Included &&
             detected[0].StartMs == 0 && detected[0].EndMs == 14_000 &&
             !detected[1].Included && detected[1].EndMs == 16_000 &&

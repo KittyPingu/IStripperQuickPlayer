@@ -51,6 +51,10 @@ Choose **Split into clips...** before processing. The editor always works on the
 original source, not a generated RGB/alpha pair. Scrub, play, step one frame at
 a time, use slow motion, and drag the gold divider triangles to exact positions.
 Each segment can have its own hotness, clip types, and included/skipped state.
+Double-click a grid row to seek to that segment's first frame without starting
+playback. The include checkbox shows a mixed state only when a multi-selection
+contains both included and skipped segments; clicking it always chooses a clear
+included or skipped state.
 
 **Accurate (TransNetV2)** is the default detector when it is installed; otherwise
 QuickPlayer falls back to **Fast (FFmpeg)**. Automatic detection replaces the
@@ -77,7 +81,9 @@ recurrent state, MatAnyone2 state, and SAM2 tracking at scene boundaries.
   over the subject while remaining much lighter than VideoMaMa.
 - **VideoMaMa** is a large, slow, high-quality diffusion option requiring CUDA.
 - **ViTMatte S/B** uses editable SAM2 video masks as trimaps; S is lighter and B
-  normally gives finer refinement.
+  normally gives finer refinement. ViTMatte processing is slow, and the B model
+  can take several times as long as S; start with S unless the extra refinement
+  is worth a substantially longer conversion.
 
 **Matting detail** controls internal inference resolution while exported RGB and
 alpha media retain the source display resolution. Standard 512 px is the default.
@@ -162,9 +168,11 @@ clips start at **25**: alpha below that value is transparent. Playback settings
 also provide a global full-opacity threshold; alpha at or above it becomes fully
 opaque, while values between the two thresholds retain soft edges.
 
-Choose **Accept** only after preview players have closed and released the media.
-The finished show is published atomically beneath the configured custom library.
-Retry reruns conversion, Open Log shows diagnostics, and Discard removes staging.
+Choose **Accept** when you are satisfied with the previews. QuickPlayer closes
+every preview player and waits for its RGB/alpha decoders to release the media
+before publishing the finished show atomically beneath the configured custom
+library. Retry reruns conversion, Open Log shows diagnostics, and Discard removes
+staging.
 
 ## 8. Playback, storage, and backup
 

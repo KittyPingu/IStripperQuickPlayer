@@ -216,7 +216,8 @@ remains on the GPU while review frames are loaded lazily from CPU.
 
 ViTMatte turns the corrected SAM2 masks into trimaps and predicts soft alpha per
 frame. S is the smaller/faster model; B uses the larger backbone for higher
-quality. Both support CUDA FP16 with FP32/CPU fallback and automatic batch
+quality. Both are slow, and B can take several times as long as S, so S is the
+recommended starting point. Both support CUDA FP16 with FP32/CPU fallback and automatic batch
 splitting on CUDA out-of-memory. Corrected review masks are staging data and are
 removed after successful publication; the generated RGB/alpha clips are retained.
 
@@ -247,8 +248,9 @@ removed after processing. Cancel terminates the Python/FFmpeg process tree. Work
 After processing, QuickPlayer opens its transparent player for each clip. New
 clips begin with a lower alpha threshold of 25; tune the slider before accepting
 to remove weak background pixels while retaining soft subject edges. Choose
-**Accept** to publish, **Retry** to process again, **Open Log** for diagnostics,
-or **Discard** to remove staging. A cover is generated from the middle of the
+**Accept** to publish; QuickPlayer closes all preview players and awaits decoder
+shutdown before moving any media. Choose **Retry** to process again, **Open Log**
+for diagnostics, or **Discard** to remove staging. A cover is generated from the middle of the
 source unless a custom image was selected. Generated covers embed the model name
 in white script and the uppercase show title in the colour selected on the
 creation form. Generated and selected covers use the official-style 2:3 portrait

@@ -391,6 +391,9 @@ internal sealed class CustomPlayerForm : Form
         ApplyOpacityThresholds(200, 20, 200) == 255 &&
         ApplyOpacityThresholds(99, 100, 50) == 0 &&
         ApplyOpacityThresholds(100, 100, 50) == 255 &&
+        TimestampStreamToAdvance(100, 110, 20) == 0 &&
+        TimestampStreamToAdvance(100, 142, 20) == -1 &&
+        TimestampStreamToAdvance(142, 100, 20) == 1 &&
         PairDurationMatches(145.733333, 145.8, 1d / 30) &&
         !PairDurationMatches(145.733333, 145.85, 1d / 30) &&
         Math.Clamp(205, 10, 200) == 200 &&
@@ -408,6 +411,10 @@ internal sealed class CustomPlayerForm : Form
     static bool PairDurationMatches(double foreground, double alpha,
         double frameDuration) => Math.Abs(foreground - alpha) <=
             Math.Max(.05, frameDuration * 2 + .002);
+
+    static int TimestampStreamToAdvance(long foreground, long alpha,
+        long tolerance) => Math.Abs(foreground - alpha) <= tolerance
+            ? 0 : foreground < alpha ? -1 : 1;
 
     static bool IsVisibleAlpha(byte alpha, int threshold) =>
         alpha > 0 && alpha >= Math.Clamp(threshold, 0, 255);
@@ -526,7 +533,38 @@ internal sealed class CustomPlayerForm : Form
                 pending=false; return true;
             }
         }
-        bool DecodePair() { bool a=rgb.DecodeNext(out rgbTick), b=alpha.DecodeNext(out alphaTick); if(!a||!b){Ended=true;return false;} pending=true;return true; }
+        bool DecodePair()
+        {
+            if (!rgb.DecodeNext(out rgbTick) ||
+                !alpha.DecodeNext(out alphaTick))
+            {
+                Ended = true;
+                return false;
+            }
+            long frame = (long)Math.Round(rgb.FrameDuration * 10_000_000);
+            long tolerance = Math.Max(10_000, frame / 2);
+            for (int discarded = 0; ; discarded++)
+            {
+                int advance = TimestampStreamToAdvance(
+                    rgbTick, alphaTick, tolerance);
+                if (advance == 0)
+                {
+                    pending = true;
+                    return true;
+                }
+                if (discarded >= 2)
+                    throw new InvalidDataException(
+                        "Foreground and alpha timestamps do not match.");
+                bool decoded = advance < 0
+                    ? rgb.DecodeNext(out rgbTick)
+                    : alpha.DecodeNext(out alphaTick);
+                if (!decoded)
+                {
+                    Ended = true;
+                    return false;
+                }
+            }
+        }
         double TimeLocked()=>Math.Clamp(clockSeconds+(playing?clock.Elapsed.TotalSeconds*rate:0),0,Duration);
         void UpdateClock(){clockSeconds=TimeLocked();clock.Restart();if(!playing)clock.Stop();}
         internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),DxgiFormat.B8G8R8A8_UNorm);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);}}
