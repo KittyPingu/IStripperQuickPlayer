@@ -428,7 +428,10 @@ def choose_execution(args, runtime, torch, device, frames):
         result = entry.get(mode, {})
         speedup = float(result.get("warmSpeedup", 0))
         break_even = float(result.get("breakEvenFrames", math.inf))
-        if result.get("enabled") and speedup >= .10 and expected >= break_even * 1.2:
+        cutoff_met = args.compile_cutoff_frames <= 0 or \
+            frames >= args.compile_cutoff_frames
+        if result.get("enabled") and speedup >= .10 and cutoff_met and \
+                expected >= break_even * 1.2:
             choices.append((speedup, mode,
                 result.get("compileMode", default_compile)))
     if not choices:
@@ -477,6 +480,52 @@ def clear_stale_memory(predictor, state, frame):
     # The compiled VOS class omits this helper, although it uses the same state.
     from sam2.sam2_video_predictor import SAM2VideoPredictor
     SAM2VideoPredictor._clear_non_cond_mem_around_input(predictor, state, frame)
+
+
+def clear_prompts_in_frame(predictor, state, frame, need_output=True):
+    """Call the supported SAM2 prompt-removal API on eager and compiled VOS."""
+    clear = getattr(predictor, "clear_all_prompts_in_frame", None)
+    if clear is not None:
+        return clear(state, frame, 1, need_output=need_output)
+    from sam2.sam2_video_predictor import SAM2VideoPredictor
+    return SAM2VideoPredictor.clear_all_prompts_in_frame(
+        predictor, state, frame, 1, need_output=need_output)
+
+
+def load_resume_state(path, masks, total, fps, width, height):
+    if path is None or not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if value.get("schemaVersion") != 1 or int(value.get("frameCount", -1)) != total:
+            return None
+        if abs(float(value.get("fps", 0)) - fps) > .001 or \
+                int(value.get("reviewWidth", -1)) != width or \
+                int(value.get("reviewHeight", -1)) != height:
+            return None
+        anchors = value.get("anchors", [])
+        if not isinstance(anchors, list): return None
+        for anchor in anchors:
+            frame = int(anchor.get("frame", -1))
+            if frame < 0 or frame >= total or anchor.get("mode") not in ("prompt", "auto"):
+                return None
+            points, labels = anchor.get("points", []), anchor.get("labels", [])
+            if not isinstance(points, list) or not isinstance(labels, list) or \
+                    len(points) != len(labels) or any(value not in (0, 1)
+                                                       for value in labels) or \
+                    any(not isinstance(point, list) or len(point) != 2
+                        for point in points):
+                return None
+        for frame in range(total):
+            if not (masks / f"{frame + 1:08d}.png").is_file():
+                return None
+        from PIL import Image
+        for frame in {0, total - 1, *(int(item["frame"]) for item in anchors)}:
+            with Image.open(masks / f"{frame + 1:08d}.png") as image:
+                if image.size != (width, height): return None
+        return value
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
 
 
 def physical_memory_bytes():
@@ -638,7 +687,6 @@ def process(args):
     source, runtime, masks = args.source.resolve(), args.runtime.resolve(), args.masks.resolve()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     args.extraction_mode = choose_extraction(args, runtime, torch, device)
-    shutil.rmtree(masks, ignore_errors=True); masks.mkdir(parents=True)
     width, height, rate, fps, source_duration = probe(source)
     start, end = args.start_ms / 1000, args.end_ms / 1000
     if start < 0 or end <= start or end > source_duration + .1:
@@ -652,6 +700,12 @@ def process(args):
     frame_files = sorted(frames.glob("*.jpg"), key=lambda path: int(path.stem))
     if not frame_files: raise RuntimeError("The clip has no review frames")
     total = len(frame_files)
+    resume = load_resume_state(args.resume_state.resolve()
+        if args.resume_state else None, masks, total, fps,
+        review_width, review_height)
+    if resume is None:
+        shutil.rmtree(masks, ignore_errors=True)
+        masks.mkdir(parents=True)
     initial = np.asarray(Image.open(args.mask).convert("L").resize(
         (review_width, review_height), Image.Resampling.NEAREST)) >= 128
     bf16 = device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
@@ -694,7 +748,11 @@ def process(args):
     cache_stats = {}
     use_on_demand_sam2_frames(frames, torch, memory_cache, cache_stats)
     writer = MaskWriter(torch, device, profiler)
-    correction_frames, propagated_frames = {0}, total
+    correction_frames = {0}
+    if resume is not None:
+        correction_frames.update(int(value["frame"])
+                                 for value in resume.get("anchors", []))
+    propagated_frames = 0 if resume is not None else total
     try:
         with torch.inference_mode(), torch.autocast(device_type=device,
                 dtype=torch.bfloat16, enabled=bf16):
@@ -708,9 +766,18 @@ def process(args):
             prompted = time.perf_counter()
             predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
             profiler.add("initial_prompt", time.perf_counter() - prompted)
-            propagate(predictor, state, writer, masks, 0, total, False, 15, 85,
-                      "Tracked", profiler, mark_step=mark_step)
-            writer.flush()
+            if resume is None:
+                propagate(predictor, state, writer, masks, 0, total, False, 15, 85,
+                          "Tracked", profiler, mark_step=mark_step)
+                writer.flush()
+            else:
+                for anchor in sorted(resume.get("anchors", []),
+                                     key=lambda value: int(value["frame"])):
+                    frame = int(anchor["frame"])
+                    saved = np.asarray(Image.open(
+                        masks / f"{frame + 1:08d}.png").convert("L")) >= 128
+                    predictor.add_new_mask(state, frame_idx=frame, obj_id=1,
+                                           mask=saved)
             if execution != "eager": marker.parent.mkdir(parents=True, exist_ok=True); marker.touch()
             prompt_forwards = interactive_forwards(predictor) if optimized else []
             use_compiled_interactive_forwards(prompt_forwards, False)
@@ -720,6 +787,7 @@ def process(args):
                 execution=execution, checkpoint=model_info["label"], model=args.model,
                 gpuFeatureCacheFrames=feature_cache_frames,
                 frameCacheHit=cache_hit, framesFolder=str(frames))
+            ready["resumed"] = resume is not None
             send(**ready)
             args.ready_sent = True
             preview_baselines, auto_cache = {}, {}
@@ -727,12 +795,24 @@ def process(args):
                 request = json.loads(line)
                 if request.get("command") == "quit": break
                 command = request.get("command")
-                if command not in ("prompt", "auto", "reset", "update"):
+                if command not in ("prompt", "auto", "reset", "update",
+                                   "remove-preview", "remove"):
                     send(status="error", message="Unknown SAM2 editor command"); continue
                 frame = int(request["frame"])
                 if not 0 <= frame < total:
                     send(status="error", message="Correction frame is outside the clip"); continue
-                if command != "update":
+                if command not in ("update", "remove"):
+                    if command == "remove-preview":
+                        remember_prompt_preview(state, preview_baselines, frame)
+                        result = clear_prompts_in_frame(predictor, state, frame,
+                                                       need_output=True)
+                        if frame == 0:
+                            result = predictor.add_new_mask(
+                                state, frame_idx=0, obj_id=1, mask=initial)
+                        _, object_ids, logits = result
+                        writer.submit(object_ids, logits, frame, masks); writer.flush()
+                        send(status="preview", frame=frame, automatic=False,
+                             removed=True); continue
                     if command == "reset":
                         original = clear_prompt_preview(state, preview_baselines, frame)
                         if original is None: raise RuntimeError("The original tracked mask is unavailable")
@@ -778,6 +858,16 @@ def process(args):
                     writer.submit(object_ids, logits, frame, masks); writer.flush()
                     send(status="preview", frame=frame, candidates=candidate_count,
                          automatic=command == "auto"); continue
+                removing = command == "remove"
+                if removing:
+                    preview_baselines.pop(frame, None)
+                    clear_prompts_in_frame(predictor, state, frame,
+                                           need_output=False)
+                    correction_frames.discard(frame)
+                    if frame == 0:
+                        predictor.add_new_mask(state, frame_idx=0, obj_id=1,
+                                               mask=initial)
+                        correction_frames.add(0)
                 clear_stale_memory(predictor, state, frame)
                 previous, following = correction_limits(frame, correction_frames, total)
                 use_compiled_interactive_forwards(prompt_forwards, True)
@@ -794,7 +884,8 @@ def process(args):
                     writer.flush()
                 finally:
                     use_compiled_interactive_forwards(prompt_forwards, False)
-                correction_frames.add(frame); preview_baselines.pop(frame, None)
+                if not removing: correction_frames.add(frame)
+                preview_baselines.pop(frame, None)
                 send(**ready)
     finally:
         try: writer.close()
@@ -846,6 +937,16 @@ def self_test():
                         saved.histogram()) if count}
                     assert values <= {0, 255}
             assert not list(folder.glob("*.tmp-*"))
+            resume_folder = folder / "resume-masks"; resume_folder.mkdir()
+            for frame in range(12):
+                Image.new("L", (2, 2), 255 if frame % 2 else 0).save(
+                    resume_folder / f"{frame + 1:08d}.png")
+            resume = folder / "resume.json"
+            atomic_json(resume, {"schemaVersion": 1, "frameCount": 12,
+                "fps": 25.0, "reviewWidth": 2, "reviewHeight": 2,
+                "anchors": [{"frame": 4, "mode": "prompt"}]})
+            assert load_resume_state(resume, resume_folder, 12, 25.0, 2, 2) is not None
+            assert load_resume_state(resume, resume_folder, 11, 25.0, 2, 2) is None
     except ImportError:
         pass
     print("SAM2 refinement worker self-test passed")
@@ -881,8 +982,10 @@ def main():
     parser.add_argument("--masks", type=Path); parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int); parser.add_argument("--model",
         choices=tuple(SAM2_MODELS), default="base-plus")
+    parser.add_argument("--resume-state", type=Path)
     parser.add_argument("--execution", choices=("auto", "eager", "encoder", "vos"),
                         default="auto")
+    parser.add_argument("--compile-cutoff-frames", type=int, default=0)
     parser.add_argument("--cache-root", type=Path)
     parser.add_argument("--cache-limit-bytes", type=int, default=0)
     parser.add_argument("--profile-log", type=Path)

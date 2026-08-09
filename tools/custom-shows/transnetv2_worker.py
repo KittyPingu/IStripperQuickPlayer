@@ -59,7 +59,7 @@ def decode(source, ffmpeg, expected_frames, use_cuda):
             output.extend(block)
             if expected_frames:
                 count = len(output) // frame_bytes
-                emit("decode", min(19, 5 + 14 * count / expected_frames),
+                emit("decode", min(89, 5 + 84 * count / expected_frames),
                      f"Reading video {count}/{expected_frames} frames")
         error = process.stderr.read().decode(errors="replace").strip()
         return output, error, process.wait()
@@ -102,11 +102,11 @@ def predict(frames, torch, model, device):
                     raise
                 use_fp16 = False
                 torch.cuda.empty_cache()
-                emit("detect", 20 + 75 * (window - 1) / windows,
+                emit("detect", 90 + 9 * (window - 1) / windows,
                      "FP16 unavailable; continuing with FP32 CUDA")
                 logits, _ = model(inputs)
             predictions.append(torch.sigmoid(logits)[0, 25:75, 0].cpu().numpy())
-            emit("detect", 20 + 75 * window / windows,
+            emit("detect", 90 + 9 * window / windows,
                  f"Detecting scenes {min(window * 50, len(frames))}/{len(frames)} frames")
     return np.concatenate(predictions)[:len(frames)]
 
@@ -137,7 +137,7 @@ def main():
     fps, duration = frame_rate(args.source, ffprobe)
     frames = decode(args.source, ffmpeg, round(fps * duration), device.type == "cuda")
     precision = "FP16" if device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 7 else "FP32"
-    emit("load", 20, f"Loaded {len(frames)} frames; using {device.type.upper()} {precision}")
+    emit("load", 90, f"Loaded {len(frames)} frames; using {device.type.upper()} {precision}")
     cuts = dividers(predict(frames, torch, model, device), fps)
     duration_ms = round(len(frames) * 1000 / fps)
     cuts = [cut for cut in cuts if cut <= duration_ms - 250]

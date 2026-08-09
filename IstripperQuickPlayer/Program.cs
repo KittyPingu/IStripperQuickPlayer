@@ -29,6 +29,7 @@ namespace IStripperQuickPlayer
                     ("cover text", CustomShowProcessor.VerifyCoverOverlay()),
                     ("IAFD link parsing", Form1.VerifyIafdLinkParsing()),
                     ("mask frame selection", CustomMaskEditorForm.VerifyFrameSelection()),
+                    ("mask draft round trip", CustomShowMaskDraft.VerifyRoundTrip()),
                     ("watermark selection", CustomWatermarkRemovalForm.VerifySelection()),
                     ("staging cleanup", CustomShowEditorForm.VerifyStagingCleanup()),
                     ("clip splitting", CustomClipEditorForm.VerifyClipSplitting()),

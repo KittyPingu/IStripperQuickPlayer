@@ -381,6 +381,8 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/CustomPlayerForm.cs
 !/IstripperQuickPlayer/CustomClipEditorForm.cs
 !/IstripperQuickPlayer/CustomMaskEditorForm.cs
+!/IstripperQuickPlayer/CustomVideoMaskEditorForm.cs
+!/IstripperQuickPlayer/CustomShowMaskDrafts.cs
 !/IstripperQuickPlayer/CustomShowForms.cs
 !/IstripperQuickPlayer/CustomShowProcessor.cs
 !/IstripperQuickPlayer/CustomShows.cs

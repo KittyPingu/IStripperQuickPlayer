@@ -175,8 +175,8 @@ mask forward normally. For a middle or last frame it propagates forward to the e
 resets its recurrent processor, and propagates backward to the beginning. Earlier
 frames are prepared at the selected **Matting detail** resolution on disk, so this
 does not retain the complete decoded video in RAM; selecting a later mask frame does
-add preparation and backward-propagation time. The accepted mask is retained beside
-that clip's media. **Matting detail** controls MatAnyone's internal resolution;
+add preparation and backward-propagation time. **Matting detail** controls
+MatAnyone's internal resolution;
 the processing batch-size control does not apply because its recurrent pass is
 sequential. This bidirectional behavior follows the
 [ComfyUI-MatAnyone `mask_frame` workflow](https://github.com/FuouM/ComfyUI-MatAnyone?tab=readme-ov-file#workflow)
@@ -207,6 +207,17 @@ installed, size-verified checkpoints are listed and the selected model directly
 produces the accepted masks. CUDA uses BF16 autocast, TF32 matmul/cuDNN, and cuDNN
 benchmarking where supported; unsupported CUDA and CPU retain FP32 fallback.
 
+Initial and per-frame masks are saved as resumable drafts under
+`<custom-library>\.mask-drafts`. If conversion is cancelled or fails after mask
+setup, starting the same source again with the same algorithm, SAM2 model, and
+included clip boundaries reopens each editor at its saved mask frame. Initial
+clicks and their complete undo history are restored. VideoMaMa and ViTMatte also
+reuse every generated per-frame mask, correction marker, correction range, and
+per-anchor click/undo history, so the expensive initial SAM2 tracking pass is not
+repeated. Changing the source file or clip layout creates a separate draft.
+Successful publication and the explicit **Discard** actions remove the matching
+draft; ordinary processing cancellation preserves it.
+
 Normal processing consults `<runtime>\sam2-performance-policy-v1.json`, keyed by
 GPU, driver, PyTorch/CUDA, SAM2 commit, checkpoint, and compile mode. Eager mode
 is the safe default. Meta's supported `compile_image_encoder=True` encoder path
@@ -219,6 +230,15 @@ requires equivalent masks and at least 4 GiB VRAM headroom. Compiler failure
 invalidates the attempted choice and falls back to eager. The UI separately identifies one-time cache
 generation, cached compiled loading, and per-worker/CUDA-graph setup. Accepted
 compile artefacts remain in `<runtime>\torchinductor-cache`.
+
+Custom Show Settings exposes the minimum source-frame cutoff for MatAnyone2 and
+SAM2 Base+, Small, and Tiny. The shipped value is a conservative 16,000 frames
+for each model. A compiled path must pass both this user-visible cutoff and its
+hardware-specific performance-policy gate. Use **Benchmark and recalculate
+cutoffs...** to test the installed models and update the fields; QuickPlayer
+never starts these GPU-heavy benchmarks automatically. The run can take many
+minutes, shows live output, supports cancellation, and preserves the current
+value when a compiled variant is not faster and mask-equivalent.
 
 A historical 1,000-frame, 1024x576 Base+ test with a full midpoint correction
 averaged 241.2 seconds eager, 245.2 seconds full `max-autotune`, and 271.9 seconds
@@ -264,8 +284,9 @@ ViTMatte turns the corrected SAM2 masks into trimaps and predicts soft alpha per
 frame. S is the smaller/faster model; B uses the larger backbone for higher
 quality. Both are slow, and B can take several times as long as S, so S is the
 recommended starting point. Both support CUDA FP16 with FP32/CPU fallback and automatic batch
-splitting on CUDA out-of-memory. Corrected review masks are staging data and are
-removed after successful publication; the generated RGB/alpha clips are retained.
+splitting on CUDA out-of-memory. Corrected review masks remain resumable draft data
+until successful publication or explicit discard; the generated RGB/alpha clips
+are retained in the published show.
 
 **Matting detail** controls RVM and MatAnyone2's internal inference resolution
 per show: Very Low (256 px), Low (384 px), Standard (512 px, recommended), High

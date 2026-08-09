@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace IStripperQuickPlayer;
 
@@ -206,6 +207,9 @@ internal static class CustomShowProcessor
             start.ArgumentList.Add(mattingResolution.ToString());
             start.ArgumentList.Add("--mask-frame-ms");
             start.ArgumentList.Add((maskFrameMs ?? startMs).ToString());
+            start.ArgumentList.Add("--compile-cutoff-frames");
+            start.ArgumentList.Add(Math.Max(1,
+                configuration.MatAnyone2CompileCutoffFrames).ToString());
         }
         else if (preset is "videomama" or "vitmatte-s" or "vitmatte-b")
         {
@@ -457,8 +461,10 @@ internal sealed class CustomShowProcessingForm : Form
     readonly Func<IProgress<CustomShowProgress>, CancellationToken,
         Task<CustomShowProcessResult>> operation;
     readonly List<(double Seconds, double Percent)> progressSamples = [];
+    readonly List<(double Seconds, long Frames)> frameSamples = [];
     string statusMessage = "Starting processing tools...";
     double percent;
+    long frameSampleTotal = -1;
     DateTime lastPreviewUtc;
     internal CustomShowProcessResult? Result { get; private set; }
 
@@ -512,6 +518,7 @@ internal sealed class CustomShowProcessingForm : Form
                 AddProgressSample(progressSamples,
                     elapsed.Elapsed.TotalSeconds, percent);
                 statusMessage = string.IsNullOrWhiteSpace(value.Message) ? value.Stage : value.Message;
+                AddFrameSample(statusMessage, elapsed.Elapsed.TotalSeconds);
                 bool compiling = statusMessage.StartsWith("Compiling optimized SAM2",
                     StringComparison.Ordinal) || statusMessage.StartsWith(
                     "Loading cached optimized SAM2", StringComparison.Ordinal);
@@ -583,9 +590,42 @@ internal sealed class CustomShowProcessingForm : Form
     void RefreshStatus()
     {
         TimeSpan? remaining = EstimateRemaining(progressSamples, percent);
+        double? fps = EstimateFps(frameSamples);
         status.Text = $"{statusMessage}{Environment.NewLine}Elapsed {FormatDuration(elapsed.Elapsed)}  •  " +
+            (fps == null ? "FPS: estimating...  •  " : $"FPS: {fps.Value:0.0}  •  ") +
             (remaining == null ? "Remaining: estimating..." :
                 $"Remaining: ~{FormatDuration(remaining.Value)}");
+    }
+
+    void AddFrameSample(string message, double seconds)
+    {
+        Match match = Regex.Match(message,
+            @"\bProcessed\s+(\d+)\s*/\s*(\d+)\s+frames\b",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        if (!match.Success ||
+            !long.TryParse(match.Groups[1].Value, out long frames) ||
+            !long.TryParse(match.Groups[2].Value, out long total)) return;
+        if (total != frameSampleTotal || frameSamples.Count > 0 &&
+            frames < frameSamples[^1].Frames)
+        {
+            frameSamples.Clear();
+            frameSampleTotal = total;
+        }
+        if (frameSamples.Count > 0 && frames <= frameSamples[^1].Frames) return;
+        frameSamples.Add((seconds, frames));
+        double cutoff = seconds - 30;
+        while (frameSamples.Count > 2 && frameSamples[1].Seconds < cutoff)
+            frameSamples.RemoveAt(0);
+    }
+
+    static double? EstimateFps(IReadOnlyList<(double Seconds, long Frames)> samples)
+    {
+        if (samples.Count < 2) return null;
+        double seconds = samples[^1].Seconds - samples[0].Seconds;
+        long frames = samples[^1].Frames - samples[0].Frames;
+        if (seconds < 3 || frames <= 0) return null;
+        double fps = frames / seconds;
+        return double.IsFinite(fps) && fps > 0 ? fps : null;
     }
 
     static TimeSpan? EstimateRemaining(
@@ -636,6 +676,7 @@ internal sealed class CustomShowProcessingForm : Form
                TimeSpan.FromSeconds(25) &&
             EstimateRemaining([(5, 20), (10, 30), (15, 40)], 40) == null &&
             EstimateRemaining(fast, 50) is not null &&
+            Math.Abs(EstimateFps([(2, 10L), (7, 60L)])!.Value - 10) < .001 &&
             AggregateClipPercent(0, 10_000, 100_000, 100) == 10 &&
             AggregateClipPercent(10_000, 90_000, 100_000, 50) == 55;
     }

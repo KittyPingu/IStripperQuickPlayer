@@ -168,7 +168,8 @@ internal sealed class CustomClipEditorForm : Form
         };
         timeline.DividerMoved += _ => UpdateGridTimes();
         grid.SelectionChanged += (_, _) => LoadSelectedMetadata();
-        grid.CellDoubleClick += (_, e) => SeekToSegment(e.RowIndex);
+        grid.CellDoubleClick += (_, e) => SeekToSegment(
+            e.RowIndex, e.ColumnIndex == 3);
         include.Click += (_, _) =>
         {
             if (loadingMetadata || !include.Enabled) return;
@@ -487,14 +488,21 @@ internal sealed class CustomClipEditorForm : Form
             grid.FirstDisplayedScrollingRowIndex = index;
     }
 
-    void SeekToSegment(int index)
+    void SeekToSegment(int index, bool seekToEnd)
     {
         if (index < 0 || index >= clips.Count) return;
         StopPlayback(requestPreview: false);
         grid.ClearSelection();
         grid.Rows[index].Selected = true;
-        timeline.PositionMs = clips[index].StartMs;
+        timeline.PositionMs = SegmentSeekPosition(clips[index], seekToEnd,
+            frameDurationMs, durationMs);
     }
+
+    internal static long SegmentSeekPosition(CustomShowClip clip, bool seekToEnd,
+        double frameDurationMs, long durationMs) => seekToEnd
+        ? Math.Clamp((long)Math.Round(clip.EndMs - frameDurationMs),
+            clip.StartMs, durationMs)
+        : clip.StartMs;
 
     void UpdatePosition() => position.Text = $"{Format(timeline.PositionMs)} / {Format(durationMs)}";
 
@@ -713,6 +721,9 @@ internal sealed class CustomClipEditorForm : Form
             ClipIndexAt([first, second], 1_000) == 1 &&
             FrameStep(1_000, 1, 40, 2_000) == 1_040 &&
             FrameStep(1_000, -1, 40, 2_000) == 960 &&
+            SegmentSeekPosition(first, false, 40, 1_000) == 0 &&
+            SegmentSeekPosition(first, true, 40, 1_000) == 360 &&
+            SegmentSeekPosition(second, true, 40, 1_000) == 960 &&
             NextIncludeCheckState(CheckState.Unchecked) == CheckState.Checked &&
             NextIncludeCheckState(CheckState.Checked) == CheckState.Unchecked &&
             NextIncludeCheckState(CheckState.Indeterminate) == CheckState.Checked &&

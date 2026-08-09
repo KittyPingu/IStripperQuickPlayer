@@ -123,6 +123,14 @@ being regenerated, and green means regenerated masks. Undo removes correction
 clicks from the history; when none remain, playback is unlocked and updating is
 disabled.
 
+Mask setup is resumable. QuickPlayer saves initial masks, selected source frames,
+click histories, SAM2 per-frame masks, correction anchors/ranges, and each anchor's
+undo history beneath `<custom-library>\.mask-drafts`. Cancelling or failing during
+conversion keeps that draft. Starting the same source again with the same method,
+SAM2 model, and included clip boundaries restores every clip's mask editors and
+avoids repeating the initial SAM2 pass. A successful publish or explicit
+**Discard** removes the matching draft.
+
 Choose the **SAM2 mask model** beside the processing algorithm. Base+ is the
 default and most robust; Small is balanced; Tiny is fastest. Only verified
 installed checkpoints appear. The selected model produces the accepted mask
@@ -144,6 +152,13 @@ still requires at least 10% improvement, and expected initial plus correction
 work must exceed break-even by a 20% safety margin. Unknown or invalid policy
 data uses eager mode. The dialog distinguishes one-time compiler cache
 generation, cached compiled loading, and per-worker/CUDA-graph setup.
+
+Custom Show Settings also exposes conservative 16,000-source-frame compile
+cutoffs for MatAnyone2 and each SAM2 model. Clips below a cutoff always use eager
+execution; the measured policy gates still apply above it. **Benchmark and
+recalculate cutoffs...** is the only action that runs these expensive tests. It
+uses deterministic media, can take many minutes, is cancellable, and retains the
+current cutoff whenever compilation fails the speed or mask-quality gate.
 
 ## 6. Performance findings and recommendations
 

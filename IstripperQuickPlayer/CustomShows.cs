@@ -22,6 +22,17 @@ internal sealed class CustomShowConfiguration
     public int LargePlayerVolume { get; set; } = 100;
     public int FullOpacityThreshold { get; set; } = 255;
     public int Sam2FrameCacheSizeGb { get; set; } = 10;
+    public int MatAnyone2CompileCutoffFrames { get; set; } = 16000;
+    public int Sam2BasePlusCompileCutoffFrames { get; set; } = 16000;
+    public int Sam2SmallCompileCutoffFrames { get; set; } = 16000;
+    public int Sam2TinyCompileCutoffFrames { get; set; } = 16000;
+
+    internal int Sam2CompileCutoffFrames(string model) => model switch
+    {
+        "small" => Sam2SmallCompileCutoffFrames,
+        "tiny" => Sam2TinyCompileCutoffFrames,
+        _ => Sam2BasePlusCompileCutoffFrames
+    };
 
     internal static CustomShowConfiguration Load()
     {

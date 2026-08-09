@@ -16,6 +16,7 @@ internal sealed class CustomMaskEditorForm : Form
     readonly double frameDurationMs;
     readonly bool allowFrameSelection;
     readonly string sam2Model;
+    readonly string? draftFolder;
     readonly string temporary = Path.Combine(Path.GetTempPath(),
         "iqp-mask-" + Guid.NewGuid().ToString("N"));
     readonly PictureBox image = new() { Dock = DockStyle.Fill,
@@ -32,6 +33,7 @@ internal sealed class CustomMaskEditorForm : Form
         Padding = new Padding(8, 6, 0, 0) };
     readonly Label status = new() { AutoSize = true, Padding = new Padding(8) };
     readonly Button clear = new() { Text = "Clear clicks", AutoSize = true, Enabled = false };
+    readonly Button undo = new() { Text = "Undo click", AutoSize = true, Enabled = false };
     readonly Button automatic = new() { Text = "Auto mask frame", AutoSize = true,
         Enabled = false };
     readonly Button accept = new() { Text = "Use this mask", AutoSize = true, Enabled = false };
@@ -53,6 +55,7 @@ internal sealed class CustomMaskEditorForm : Form
     bool frameReady;
     bool resumeAfterScrub;
     bool closing;
+    bool currentAutomatic;
 
     internal long FrameMs => Math.Min(Math.Max(startMs, endMs - 1),
         startMs + timeline.PositionMs);
@@ -63,7 +66,8 @@ internal sealed class CustomMaskEditorForm : Form
     internal CustomMaskEditorForm(string videoPath,
         CustomShowConfiguration configuration, long startMs, long endMs,
         string? clipLabel = null, string algorithm = "MatAnyone 2",
-        bool allowFrameSelection = false, string sam2Model = "base-plus")
+        bool allowFrameSelection = false, string sam2Model = "base-plus",
+        string? draftFolder = null)
     {
         this.videoPath = videoPath;
         this.configuration = configuration;
@@ -71,6 +75,7 @@ internal sealed class CustomMaskEditorForm : Form
         this.endMs = endMs;
         this.allowFrameSelection = allowFrameSelection;
         this.sam2Model = sam2Model;
+        this.draftFolder = draftFolder;
         durationMs = Math.Max(1, endMs - startMs);
         try
         {
@@ -109,7 +114,7 @@ internal sealed class CustomMaskEditorForm : Form
             FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(6) };
         Button cancel = new() { Text = "Cancel", AutoSize = true,
             DialogResult = DialogResult.Cancel };
-        actions.Controls.AddRange([clear, automatic, accept, cancel, status]);
+        actions.Controls.AddRange([clear, undo, automatic, accept, cancel, status]);
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         CancelButton = cancel;
@@ -120,6 +125,7 @@ internal sealed class CustomMaskEditorForm : Form
         {
             StartMs = 0, EndMs = durationMs, Included = true
         }];
+        LoadDraftState();
         UpdatePosition();
         timeline.PositionChanged += (_, _) =>
         {
@@ -148,8 +154,14 @@ internal sealed class CustomMaskEditorForm : Form
         };
         image.MouseClick += Image_MouseClick;
         clear.Click += (_, _) => ClearClicks();
+        undo.Click += async (_, _) => await UndoClickAsync();
         automatic.Click += async (_, _) => await UpdateMaskAsync(true);
-        accept.Click += (_, _) => { DialogResult = DialogResult.OK; Close(); };
+        accept.Click += (_, _) =>
+        {
+            SaveDraftState();
+            DialogResult = DialogResult.OK;
+            Close();
+        };
         Shown += async (_, _) => await StartWorkerAsync();
         FormClosing += (_, _) =>
         {
@@ -171,6 +183,48 @@ internal sealed class CustomMaskEditorForm : Form
         File.Copy(MaskPath, destination, true);
     }
 
+    void LoadDraftState()
+    {
+        if (draftFolder == null) return;
+        CustomInitialMaskDraft? saved = CustomShowMaskDraft.Load<CustomInitialMaskDraft>(
+            Path.Combine(draftFolder, "initial-mask.json"));
+        if (saved == null || saved.SchemaVersion != CustomShowMaskDraft.SchemaVersion ||
+            saved.FrameMs < startMs || saved.FrameMs >= endMs ||
+            saved.Points.Length != saved.Labels.Length) return;
+        timeline.PositionMs = Math.Clamp(saved.FrameMs - startMs, 0, durationMs);
+        foreach (float[] value in saved.Points)
+            if (value.Length == 2 && float.IsFinite(value[0]) && float.IsFinite(value[1]))
+                points.Add(new PointF(value[0], value[1]));
+        if (points.Count != saved.Labels.Length ||
+            saved.Labels.Any(value => value is not (0 or 1)))
+        {
+            points.Clear();
+            return;
+        }
+        labels.AddRange(saved.Labels);
+        currentAutomatic = saved.Automatic;
+    }
+
+    void SaveDraftState()
+    {
+        if (draftFolder == null) return;
+        Directory.CreateDirectory(draftFolder);
+        string savedMask = Path.Combine(draftFolder, "initial-mask.png");
+        string savedPreview = Path.Combine(draftFolder, "initial-mask-preview.jpg");
+        if (File.Exists(MaskPath)) CustomShowMaskDraft.CopyAtomic(MaskPath, savedMask);
+        else try { File.Delete(savedMask); } catch { }
+        if (File.Exists(PreviewPath)) CustomShowMaskDraft.CopyAtomic(PreviewPath, savedPreview);
+        else try { File.Delete(savedPreview); } catch { }
+        CustomShowStore.WriteJsonAtomic(Path.Combine(draftFolder, "initial-mask.json"),
+            new CustomInitialMaskDraft
+            {
+                FrameMs = FrameMs,
+                Automatic = currentAutomatic,
+                Points = points.Select(value => new[] { value.X, value.Y }).ToArray(),
+                Labels = [.. labels]
+            });
+    }
+
     async Task StartWorkerAsync()
     {
         try
@@ -181,6 +235,19 @@ internal sealed class CustomMaskEditorForm : Form
             SetImage(LoadImage(FramePath));
             displayedFrameMs = FrameMs;
             frameReady = true;
+            if (draftFolder != null &&
+                File.Exists(Path.Combine(draftFolder, "initial-mask.png")))
+            {
+                CustomShowMaskDraft.CopyAtomic(Path.Combine(draftFolder,
+                    "initial-mask.png"), MaskPath);
+                string savedPreview = Path.Combine(draftFolder,
+                    "initial-mask-preview.jpg");
+                if (File.Exists(savedPreview))
+                {
+                    CustomShowMaskDraft.CopyAtomic(savedPreview, PreviewPath);
+                    SetImage(LoadImage(PreviewPath));
+                }
+            }
             if (IsMostlyBlack(image.Image!))
             {
                 timeline.PositionMs = Math.Min(durationMs,
@@ -215,10 +282,14 @@ internal sealed class CustomMaskEditorForm : Form
                 throw new InvalidOperationException(ResponseError(ready));
             workerFrameMs = displayedFrameMs;
             workerReady = true;
-            status.Text = $"{ready.GetProperty("checkpoint").GetString()} ready on " +
-                $"{ready.GetProperty("device").GetString()?.ToUpperInvariant()}/" +
-                ready.GetProperty("precision").GetString() +
-                (allowFrameSelection ? "; choose the best frame, then create its mask." : "");
+            status.Text = File.Exists(MaskPath)
+                ? $"Recovered saved mask at {Format(FrameMs - startMs)} with " +
+                    $"{points.Count} undoable click{(points.Count == 1 ? "" : "s")}."
+                : $"{ready.GetProperty("checkpoint").GetString()} ready on " +
+                    $"{ready.GetProperty("device").GetString()?.ToUpperInvariant()}/" +
+                    ready.GetProperty("precision").GetString() +
+                    (allowFrameSelection
+                        ? "; choose the best frame, then create its mask." : "");
             UpdateEnabledState();
         }
         catch (Exception error)
@@ -444,7 +515,7 @@ internal sealed class CustomMaskEditorForm : Form
         if (point == null) return;
         points.Add(point.Value);
         labels.Add(e.Button == MouseButtons.Right ? 0 : 1);
-        await UpdateMaskAsync();
+        await UpdateMaskAsync(currentAutomatic);
     }
 
     async Task EnsureWorkerFrameAsync()
@@ -484,10 +555,12 @@ internal sealed class CustomMaskEditorForm : Form
             JsonElement response = await ReadResponseAsync();
             if (response.GetProperty("status").GetString() != "mask")
                 throw new InvalidOperationException(ResponseError(response));
+            currentAutomatic = useAutomatic;
             SetImage(LoadImage(PreviewPath));
             status.Text = useAutomatic && response.TryGetProperty("candidates", out JsonElement count)
                 ? $"Automatic mask ready from {count.GetInt32()} candidates; refine with clicks if needed."
                 : $"Mask ready · {points.Count} click{(points.Count == 1 ? "" : "s")}";
+            SaveDraftState();
         }
         catch (Exception error)
         {
@@ -500,6 +573,25 @@ internal sealed class CustomMaskEditorForm : Form
             updatingMask = false;
             UpdateEnabledState();
         }
+    }
+
+    async Task UndoClickAsync()
+    {
+        if (updatingMask || points.Count == 0) return;
+        points.RemoveAt(points.Count - 1);
+        labels.RemoveAt(labels.Count - 1);
+        if (points.Count == 0)
+        {
+            try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
+            try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
+            if (frameReady && File.Exists(FramePath)) SetImage(LoadImage(FramePath));
+            status.Text = "Last click undone; click the foreground to create a mask.";
+            currentAutomatic = false;
+            SaveDraftState();
+            UpdateEnabledState();
+            return;
+        }
+        await UpdateMaskAsync(currentAutomatic);
     }
 
     async Task<JsonElement> ReadResponseAsync()
@@ -539,9 +631,12 @@ internal sealed class CustomMaskEditorForm : Form
     {
         points.Clear();
         labels.Clear();
+        currentAutomatic = false;
         try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
+        try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
         if (frameReady && File.Exists(FramePath)) SetImage(LoadImage(FramePath));
         status.Text = "Click one or more people";
+        SaveDraftState();
         UpdateEnabledState();
     }
 
@@ -549,6 +644,7 @@ internal sealed class CustomMaskEditorForm : Form
     {
         points.Clear();
         labels.Clear();
+        currentAutomatic = false;
         try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
         try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
     }
@@ -558,6 +654,7 @@ internal sealed class CustomMaskEditorForm : Form
         if (closing || IsDisposed) return;
         bool editable = workerReady && frameReady && !updatingMask && !playback.Enabled;
         image.Enabled = clear.Enabled = automatic.Enabled = editable;
+        undo.Enabled = editable && points.Count > 0;
         accept.Enabled = editable && File.Exists(MaskPath);
         timeline.Enabled = previousFrame.Enabled = nextFrame.Enabled =
             slowMotion.Enabled = allowFrameSelection && workerReady && !updatingMask;

@@ -1,5 +1,6 @@
 using System.Drawing.Imaging;
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace IStripperQuickPlayer;
 
@@ -357,6 +358,8 @@ internal sealed class CustomShowEditorForm : Form
             await DeleteDirectoryWhenReleasedAsync(staging);
             Directory.CreateDirectory(staging);
             bool discardStaging = false;
+            bool discardMaskDraft = false;
+            CustomShowMaskDraft? maskDraft = null;
             try
             {
                 string input = source.Text;
@@ -380,9 +383,12 @@ internal sealed class CustomShowEditorForm : Form
                 if (selectedPreset == "matanyone2" || UsesSam2(selectedPreset))
                 {
                     CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included).ToArray();
+                    maskDraft = CustomShowMaskDraft.Open(store, source.Text,
+                        selectedPreset, selectedSam2Model, clipsToMask);
                     for (int index = 0; index < clipsToMask.Length; index++)
                     {
                         CustomShowClip clip = clipsToMask[index];
+                        string draftClip = maskDraft.ClipFolder(index);
                         using CustomMaskEditorForm maskEditor = new(input, configuration,
                             clip.StartMs, clip.EndMs, clipsToMask.Length == 1 ? null :
                             $"Clip {index + 1} of {clipsToMask.Length}",
@@ -393,7 +399,7 @@ internal sealed class CustomShowEditorForm : Form
                                 "vitmatte-b" => "ViTMatte B",
                                 _ => "MatAnyone 2"
                             }, allowFrameSelection: selectedPreset == "matanyone2",
-                            sam2Model: selectedSam2Model);
+                            sam2Model: selectedSam2Model, draftFolder: draftClip);
                         if (maskEditor.ShowDialog(this) != DialogResult.OK)
                         {
                             discardStaging = true;
@@ -415,21 +421,20 @@ internal sealed class CustomShowEditorForm : Form
                                 .. showClips[(clipIndex + 1)..]];
                             UpdateClipButton();
                         }
-                        string mask = Path.Combine(staging, "clips", clip.Id,
-                            "initial-mask.png");
-                        Directory.CreateDirectory(Path.GetDirectoryName(mask)!);
+                        string mask = Path.Combine(draftClip, "initial-mask.png");
                         maskEditor.SaveMask(mask);
                         initialMasks[clip.Id] = mask;
                         initialMaskFrames[clip.Id] = maskEditor.FrameMs;
                         if (UsesSam2(selectedPreset))
                         {
-                            string maskSequence = Path.Combine(staging, "clips", clip.Id,
-                                ".sam2-masks");
+                            string maskSequence = Path.Combine(draftClip, "sam2-masks");
+                            string correctionState = Path.Combine(draftClip,
+                                "sam2-corrections.json");
                             using CustomVideoMaskEditorForm refinement = new(input,
                                 configuration, clip.StartMs, clip.EndMs, mask, maskSequence,
                                 clipsToMask.Length == 1 ? null :
                                 $"Clip {index + 1} of {clipsToMask.Length}",
-                                selectedSam2Model, log);
+                                selectedSam2Model, log, correctionState);
                             if (refinement.ShowDialog(this) != DialogResult.OK)
                             {
                                 discardStaging = true;
@@ -545,6 +550,7 @@ internal sealed class CustomShowEditorForm : Form
                             continue;
                         }
                         discardStaging = failureDecision == DialogResult.Abort;
+                        discardMaskDraft = discardStaging;
                         if (!discardStaging)
                             MessageBox.Show(this,
                                 $"Staged files were preserved at:\n{staging}", Text,
@@ -601,13 +607,19 @@ internal sealed class CustomShowEditorForm : Form
                     if (decision == DialogResult.Cancel)
                     {
                         discardStaging = true;
+                        discardMaskDraft = true;
                         return;
                     }
                 } while (retry);
-                foreach (string folder in sam2Masks.Values)
-                    if (Directory.Exists(folder)) await DeleteDirectoryWhenReleasedAsync(folder);
                 store.SavePerformer(selectedProfile);
                 store.Publish(staging, show);
+                if (maskDraft != null && Directory.Exists(maskDraft.Root))
+                    try { await DeleteDirectoryWhenReleasedAsync(maskDraft.Root); }
+                    catch (Exception cleanupError)
+                    {
+                        Debug.WriteLine("Could not remove published custom-show mask draft: " +
+                            cleanupError);
+                    }
                 DialogResult = DialogResult.OK;
                 Close();
             }
@@ -623,6 +635,14 @@ internal sealed class CustomShowEditorForm : Form
                     catch (Exception cleanupError)
                     {
                         Debug.WriteLine("Could not remove cancelled custom-show staging: " +
+                            cleanupError);
+                    }
+                if (discardMaskDraft && maskDraft != null &&
+                    Directory.Exists(maskDraft.Root))
+                    try { await DeleteDirectoryWhenReleasedAsync(maskDraft.Root); }
+                    catch (Exception cleanupError)
+                    {
+                        Debug.WriteLine("Could not remove discarded custom-show mask draft: " +
                             cleanupError);
                     }
             }
@@ -1115,6 +1135,10 @@ internal sealed class CustomShowSettingsForm : Form
         Minimum = 0, Maximum = 100, DecimalPlaces = 0, Width = 90
     };
     readonly Label sam2CacheUsage = new() { AutoSize = true };
+    readonly NumericUpDown matAnyoneCutoff = CutoffInput();
+    readonly NumericUpDown sam2BaseCutoff = CutoffInput();
+    readonly NumericUpDown sam2SmallCutoff = CutoffInput();
+    readonly NumericUpDown sam2TinyCutoff = CutoffInput();
     readonly Label validation = new() { AutoSize = true };
     CancellationTokenSource? validationCancellation;
     internal CustomShowConfiguration Configuration { get; }
@@ -1127,11 +1151,17 @@ internal sealed class CustomShowSettingsForm : Form
             SmallPlayerVolume = current.SmallPlayerVolume,
             LargePlayerVolume = current.LargePlayerVolume,
             FullOpacityThreshold = current.FullOpacityThreshold,
-            Sam2FrameCacheSizeGb = current.Sam2FrameCacheSizeGb
+            Sam2FrameCacheSizeGb = current.Sam2FrameCacheSizeGb,
+            MatAnyone2CompileCutoffFrames = current.MatAnyone2CompileCutoffFrames,
+            Sam2BasePlusCompileCutoffFrames = current.Sam2BasePlusCompileCutoffFrames,
+            Sam2SmallCompileCutoffFrames = current.Sam2SmallCompileCutoffFrames,
+            Sam2TinyCompileCutoffFrames = current.Sam2TinyCompileCutoffFrames
         };
-        Text = "Custom Show Settings"; ClientSize = new Size(700, 280);
-        TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(12) };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); Controls.Add(table);
+        Text = "Custom Show Settings"; ClientSize = new Size(920, 560);
+        MinimumSize = new Size(820, 540);
+        TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 3,
+            Padding = new Padding(12), AutoScroll = true };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); Controls.Add(table);
         AddPath(table, "Library folder", root, true); AddPath(table, "Python executable", python, false);
         int cacheRow = table.RowCount++;
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1141,6 +1171,20 @@ internal sealed class CustomShowSettingsForm : Form
         Button clearCache = new() { Text = "Clear SAM2 frame cache", AutoSize = true };
         cacheControls.Controls.AddRange([sam2CacheSize, clearCache, sam2CacheUsage]);
         table.Controls.Add(cacheControls, 1, cacheRow); table.SetColumnSpan(cacheControls, 2);
+        AddCutoff(table, "MatAnyone2 compile cutoff", matAnyoneCutoff);
+        AddCutoff(table, "SAM2 Base+ compile cutoff", sam2BaseCutoff);
+        AddCutoff(table, "SAM2 Small compile cutoff", sam2SmallCutoff);
+        AddCutoff(table, "SAM2 Tiny compile cutoff", sam2TinyCutoff);
+        Button benchmark = new() { Text = "Benchmark and recalculate cutoffs...",
+            AutoSize = true };
+        Label cutoffHelp = new() { AutoSize = true,
+            Text = "Frames below these cutoffs use eager execution. Benchmarking is manual and may take a long time." };
+        FlowLayoutPanel cutoffActions = new() { AutoSize = true, WrapContents = true };
+        cutoffActions.Controls.AddRange([benchmark, cutoffHelp]);
+        int cutoffActionRow = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(cutoffActions, 1, cutoffActionRow);
+        table.SetColumnSpan(cutoffActions, 2);
         Button validate = new() { Text = "Validate setup", AutoSize = true };
         Button ok = new() { Text = "OK", AutoSize = true };
         Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
@@ -1153,9 +1197,14 @@ internal sealed class CustomShowSettingsForm : Form
         table.Controls.Add(buttons, 1, buttonRow); table.SetColumnSpan(buttons, 2);
         root.Text = Configuration.LibraryRoot; python.Text = Configuration.PythonExecutable;
         sam2CacheSize.Value = Math.Clamp(Configuration.Sam2FrameCacheSizeGb, 0, 100);
+        matAnyoneCutoff.Value = ClampCutoff(Configuration.MatAnyone2CompileCutoffFrames);
+        sam2BaseCutoff.Value = ClampCutoff(Configuration.Sam2BasePlusCompileCutoffFrames);
+        sam2SmallCutoff.Value = ClampCutoff(Configuration.Sam2SmallCompileCutoffFrames);
+        sam2TinyCutoff.Value = ClampCutoff(Configuration.Sam2TinyCompileCutoffFrames);
         sam2CacheUsage.Text = "Calculating usage...";
         Shown += async (_, _) => await UpdateCacheUsageAsync();
         clearCache.Click += async (_, _) => await ClearSam2CacheAsync(clearCache);
+        benchmark.Click += (_, _) => BenchmarkCutoffs();
         validate.Click += async (_, _) => await ValidateSetup(validate);
         ok.Click += SaveSettings;
         FormClosed += (_, _) => validationCancellation?.Cancel();
@@ -1192,6 +1241,10 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.LibraryRoot = Path.GetFullPath(root.Text);
             Configuration.PythonExecutable = Path.GetFullPath(python.Text);
             Configuration.Sam2FrameCacheSizeGb = (int)sam2CacheSize.Value;
+            Configuration.MatAnyone2CompileCutoffFrames = (int)matAnyoneCutoff.Value;
+            Configuration.Sam2BasePlusCompileCutoffFrames = (int)sam2BaseCutoff.Value;
+            Configuration.Sam2SmallCompileCutoffFrames = (int)sam2SmallCutoff.Value;
+            Configuration.Sam2TinyCompileCutoffFrames = (int)sam2TinyCutoff.Value;
             Directory.CreateDirectory(Configuration.LibraryRoot);
             DialogResult = DialogResult.OK;
             Close();
@@ -1201,6 +1254,54 @@ internal sealed class CustomShowSettingsForm : Form
             MessageBox.Show(this, error.Message, Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    void BenchmarkCutoffs()
+    {
+        if (!File.Exists(python.Text))
+        {
+            MessageBox.Show(this, "Select the processing-environment Python executable first.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (MessageBox.Show(this,
+            "This benchmark loads and compiles the installed MatAnyone2 and SAM2 models. " +
+            "It can take many minutes, uses the GPU heavily, and runs only when you continue.\n\nRun it now?",
+            "Benchmark model cutoffs", MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information) != DialogResult.Yes) return;
+        CustomShowConfiguration benchmarkConfiguration = new()
+        {
+            LibraryRoot = root.Text,
+            PythonExecutable = python.Text,
+            MatAnyone2CompileCutoffFrames = (int)matAnyoneCutoff.Value,
+            Sam2BasePlusCompileCutoffFrames = (int)sam2BaseCutoff.Value,
+            Sam2SmallCompileCutoffFrames = (int)sam2SmallCutoff.Value,
+            Sam2TinyCompileCutoffFrames = (int)sam2TinyCutoff.Value
+        };
+        using CustomShowCutoffBenchmarkForm form = new(benchmarkConfiguration);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
+        matAnyoneCutoff.Value = ClampCutoff(form.Result.MatAnyone2CompileCutoffFrames);
+        sam2BaseCutoff.Value = ClampCutoff(form.Result.Sam2BasePlusCompileCutoffFrames);
+        sam2SmallCutoff.Value = ClampCutoff(form.Result.Sam2SmallCompileCutoffFrames);
+        sam2TinyCutoff.Value = ClampCutoff(form.Result.Sam2TinyCompileCutoffFrames);
+        validation.Text = "Benchmark completed; review the recalculated cutoffs and click OK to save them.";
+    }
+
+    static NumericUpDown CutoffInput() => new()
+    {
+        Minimum = 1, Maximum = 10_000_000, Increment = 1000,
+        ThousandsSeparator = true, Width = 130
+    };
+
+    static decimal ClampCutoff(int value) => Math.Clamp(value, 1, 10_000_000);
+
+    static void AddCutoff(TableLayoutPanel table, string label, NumericUpDown input)
+    {
+        int row = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label { Text = label + " (frames)", AutoSize = true,
+            Anchor = AnchorStyles.Left }, 0, row);
+        table.Controls.Add(input, 1, row);
     }
 
     async Task UpdateCacheUsageAsync()
@@ -1251,6 +1352,105 @@ internal sealed class CustomShowSettingsForm : Form
         Button browse = new() { Text = "Browse...", AutoSize = true };
         browse.Click += (_, _) => { if (folder) { using FolderBrowserDialog d = new() { SelectedPath = box.Text }; if (d.ShowDialog(table.FindForm()) == DialogResult.OK) box.Text = d.SelectedPath; } else { using OpenFileDialog d = new() { Filter = "Python|python.exe" }; if (d.ShowDialog(table.FindForm()) == DialogResult.OK) box.Text = d.FileName; } };
         table.Controls.Add(browse, 2, row);
+    }
+}
+
+internal sealed class CustomShowCutoffBenchmarkForm : Form
+{
+    readonly CustomShowConfiguration configuration;
+    readonly TextBox output = new()
+    {
+        Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Both, WordWrap = false
+    };
+    readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
+    Process? process;
+    bool complete;
+    internal CustomShowConfiguration? Result { get; private set; }
+
+    internal CustomShowCutoffBenchmarkForm(CustomShowConfiguration configuration)
+    {
+        this.configuration = configuration;
+        Text = "Benchmark Custom Show Model Cutoffs";
+        ClientSize = new Size(920, 560);
+        Controls.Add(output); Controls.Add(close);
+        close.Click += (_, _) => CloseBenchmark();
+        FormClosing += (_, _) => { if (!complete) try { process?.Kill(true); } catch { } };
+        Shown += async (_, _) => await RunAsync();
+        AppTheme.Apply(this);
+    }
+
+    async Task RunAsync()
+    {
+        string resultPath = Path.Combine(Path.GetTempPath(),
+            "iqp-model-cutoffs-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            Append("Preparing model cutoff benchmarks. This runs only from this dialog...");
+            ProcessStartInfo start = new(configuration.PythonExecutable)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            foreach (string argument in new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "custom-shows", "benchmark_model_cutoffs.py"),
+                "--runtime", CustomShowProcessor.RuntimeRoot(configuration),
+                "--ffmpeg", Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"),
+                "--ffprobe", Path.Combine(AppContext.BaseDirectory, "ffprobe.exe"),
+                "--sam-worker", Path.Combine(AppContext.BaseDirectory, "custom-shows", "sam2_refine_worker.py"),
+                "--output", resultPath,
+                "--matanyone-default", configuration.MatAnyone2CompileCutoffFrames.ToString(),
+                "--sam-base-default", configuration.Sam2BasePlusCompileCutoffFrames.ToString(),
+                "--sam-small-default", configuration.Sam2SmallCompileCutoffFrames.ToString(),
+                "--sam-tiny-default", configuration.Sam2TinyCompileCutoffFrames.ToString()
+            }) start.ArgumentList.Add(argument);
+            process = Process.Start(start) ??
+                throw new InvalidOperationException("Python could not start the benchmark.");
+            Task standardOutput = PumpAsync(process.StandardOutput);
+            Task standardError = PumpAsync(process.StandardError);
+            await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"Benchmark failed with exit code {process.ExitCode}.");
+            Result = JsonSerializer.Deserialize<CustomShowConfiguration>(
+                await File.ReadAllTextAsync(resultPath), CustomShowStore.JsonOptions) ??
+                throw new InvalidDataException("The benchmark did not return cutoff values.");
+            Append("Benchmark completed. The measured values will be copied into Settings.");
+        }
+        catch (Exception error)
+        {
+            if (!IsDisposed) Append("Benchmark failed: " + error.Message);
+        }
+        finally
+        {
+            complete = true;
+            if (!IsDisposed) close.Text = Result == null ? "Close" : "Use results";
+            try { File.Delete(resultPath); } catch { }
+        }
+    }
+
+    async Task PumpAsync(StreamReader reader)
+    {
+        while (await reader.ReadLineAsync() is string line) Append(line);
+    }
+
+    void Append(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
+        output.AppendText(text + Environment.NewLine);
+    }
+
+    void CloseBenchmark()
+    {
+        if (!complete)
+        {
+            try { process?.Kill(true); } catch { }
+            DialogResult = DialogResult.Cancel;
+        }
+        else if (Result != null) DialogResult = DialogResult.OK;
+        Close();
     }
 }
 

@@ -1,0 +1,148 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+namespace IStripperQuickPlayer;
+
+internal sealed class CustomShowMaskDraft
+{
+    internal const int SchemaVersion = 1;
+    readonly string root;
+
+    internal string Root => root;
+    internal string ManifestPath => Path.Combine(root, "draft.json");
+
+    CustomShowMaskDraft(string root) => this.root = root;
+
+    internal static CustomShowMaskDraft Open(CustomShowStore store, string source,
+        string algorithm, string sam2Model, IReadOnlyList<CustomShowClip> clips)
+    {
+        string fullSource = Path.GetFullPath(source);
+        FileInfo file = new(fullSource);
+        CustomShowMaskDraftManifest expected = new()
+        {
+            SourcePath = fullSource,
+            SourceLength = file.Length,
+            SourceLastWriteUtcTicks = file.LastWriteTimeUtc.Ticks,
+            Algorithm = algorithm,
+            Sam2Model = sam2Model,
+            Clips = clips.Select((clip, index) => new CustomShowMaskDraftClip
+            {
+                Index = index,
+                StartMs = clip.StartMs,
+                EndMs = clip.EndMs
+            }).ToArray()
+        };
+        string identity = JsonSerializer.Serialize(expected, CustomShowStore.JsonOptions);
+        string key = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
+        CustomShowMaskDraft result = new(Path.Combine(store.Root, ".mask-drafts", key));
+        Directory.CreateDirectory(result.root);
+        CustomShowStore.WriteJsonAtomic(result.ManifestPath, expected);
+        return result;
+    }
+
+    internal string ClipFolder(int index)
+    {
+        string folder = Path.Combine(root, $"clip-{index + 1:000}");
+        Directory.CreateDirectory(folder);
+        return folder;
+    }
+
+    internal static T? Load<T>(string path) where T : class
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(File.ReadAllText(path),
+                CustomShowStore.JsonOptions);
+        }
+        catch { return null; }
+    }
+
+    internal static void CopyAtomic(string source, string destination)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        string temporary = destination + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.Copy(source, temporary, true);
+            File.Move(temporary, destination, true);
+        }
+        finally { try { File.Delete(temporary); } catch { } }
+    }
+
+    internal static bool VerifyRoundTrip()
+    {
+        string folder = Path.Combine(Path.GetTempPath(),
+            "iqp-mask-draft-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, "initial-mask.json");
+            CustomShowStore.WriteJsonAtomic(path, new CustomInitialMaskDraft
+            {
+                FrameMs = 1234,
+                Automatic = true,
+                Points = [[12.5f, 30.25f], [8, 9]],
+                Labels = [1, 0]
+            });
+            CustomInitialMaskDraft? loaded = Load<CustomInitialMaskDraft>(path);
+            return loaded?.FrameMs == 1234 && loaded.Automatic &&
+                loaded.Points.Length == 2 && loaded.Labels.SequenceEqual([1, 0]);
+        }
+        finally { try { Directory.Delete(folder, true); } catch { } }
+    }
+}
+
+internal sealed class CustomShowMaskDraftManifest
+{
+    public int SchemaVersion { get; set; } = CustomShowMaskDraft.SchemaVersion;
+    public string SourcePath { get; set; } = "";
+    public long SourceLength { get; set; }
+    public long SourceLastWriteUtcTicks { get; set; }
+    public string Algorithm { get; set; } = "";
+    public string Sam2Model { get; set; } = "";
+    public CustomShowMaskDraftClip[] Clips { get; set; } = [];
+}
+
+internal sealed class CustomShowMaskDraftClip
+{
+    public int Index { get; set; }
+    public long StartMs { get; set; }
+    public long EndMs { get; set; }
+}
+
+internal sealed class CustomInitialMaskDraft
+{
+    public int SchemaVersion { get; set; } = CustomShowMaskDraft.SchemaVersion;
+    public long FrameMs { get; set; }
+    public bool Automatic { get; set; }
+    public float[][] Points { get; set; } = [];
+    public int[] Labels { get; set; } = [];
+}
+
+internal sealed class CustomVideoMaskDraft
+{
+    public int SchemaVersion { get; set; } = CustomShowMaskDraft.SchemaVersion;
+    public int FrameCount { get; set; }
+    public double Fps { get; set; }
+    public int ReviewWidth { get; set; }
+    public int ReviewHeight { get; set; }
+    public CustomVideoMaskAnchor[] Anchors { get; set; } = [];
+    public CustomVideoMaskRange[] CorrectedRanges { get; set; } = [];
+}
+
+internal sealed class CustomVideoMaskAnchor
+{
+    public int Frame { get; set; }
+    public string Mode { get; set; } = "prompt";
+    public float[][] Points { get; set; } = [];
+    public int[] Labels { get; set; } = [];
+}
+
+internal sealed class CustomVideoMaskRange
+{
+    public int AnchorFrame { get; set; }
+    public int Start { get; set; }
+    public int End { get; set; }
+}

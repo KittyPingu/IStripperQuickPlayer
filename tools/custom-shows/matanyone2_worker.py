@@ -148,7 +148,7 @@ def load_model(runtime, device_override=None):
     return torch, InferenceCore, model, device
 
 
-def compile_policy(runtime, mode, max_size, frames):
+def compile_policy(runtime, mode, max_size, frames, cutoff_frames=0):
     if mode == "eager":
         return False, 0
     if mode == "partial":
@@ -156,7 +156,8 @@ def compile_policy(runtime, mode, max_size, frames):
     try:
         policy = optimization_policy(runtime)
         sizes = {int(value) for value in policy.get("detailSizes", [512])}
-        break_even = max(0, int(policy.get("breakEvenFrames", 0)))
+        measured = max(0, int(policy.get("breakEvenFrames", 0)))
+        break_even = max(0, int(cutoff_frames)) or measured
         return (bool(policy.get("enabled")) and max_size in sizes and
                 frames >= break_even), break_even
     except (OSError, ValueError, TypeError):
@@ -638,7 +639,8 @@ def _process_once(args, compile_enabled):
             decode = subprocess.Popen([ffmpeg, "-v", "error", "-ss", f"{start:.6f}",
                 "-i", str(source), "-t", f"{duration:.6f}", "-map", "0:v:0",
                 "-vf", f"fps={frame_rate},scale={width}:{height}:flags=lanczos,setsar=1",
-                "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
+                "-frames:v", str(total), "-f", "rawvideo", "-pix_fmt", "rgb24",
+                "pipe:1"], stdout=subprocess.PIPE)
             encoders = subprocess.check_output([ffmpeg, "-hide_banner", "-encoders"],
                                                text=True, errors="replace")
             nvenc = (not args.force_software_encode and width >= 256 and
@@ -824,7 +826,8 @@ def process(args):
     if args.precision_mode == "auto":
         args.precision_mode = policy.get("precisionMode", "autocast")
     enabled, break_even = compile_policy(args.runtime.resolve(), args.compile_mode,
-                                         args.max_size, total)
+                                         args.max_size, total,
+                                         args.compile_cutoff_frames)
     log_record("configuration", sourceSize=f"{width}x{height}", frames=total,
                pipeline=args.pipeline_mode, compileRequested=args.compile_mode,
                compileEnabled=enabled, compileBreakEvenFrames=break_even,
@@ -858,6 +861,8 @@ def main():
                         default="bounded", help=argparse.SUPPRESS)
     parser.add_argument("--compile-mode", choices=("auto", "eager", "partial"),
                         default="auto", help=argparse.SUPPRESS)
+    parser.add_argument("--compile-cutoff-frames", type=int, default=0,
+                        help=argparse.SUPPRESS)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"),
                         default="auto", help=argparse.SUPPRESS)
     parser.add_argument("--disable-previews", action="store_true", help=argparse.SUPPRESS)
