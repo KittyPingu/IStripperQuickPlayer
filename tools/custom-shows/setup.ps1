@@ -137,6 +137,14 @@ function Install-Sam2 {
         'https://huggingface.co/facebook/sam2.1-hiera-base-plus/resolve/b7320756a13354e7530a63935656d35b2f91a290/sam2.1_hiera_base_plus.pt?download=true' `
         (Join-Path $checkpoints 'sam2.1_hiera_base_plus.pt') `
         'A2345AEDE8715AB1D5D31B4A509FB160C5A4AF1970F199D9054CCFB746C004C5'
+    Get-VerifiedDownload `
+        'https://huggingface.co/facebook/sam2.1-hiera-small/resolve/ee5bba1d82bb8749febdf90f45e84b687142ba03/sam2.1_hiera_small.pt?download=true' `
+        (Join-Path $checkpoints 'sam2.1_hiera_small.pt') `
+        '6D1AA6F30DE5C92224F8172114DE081D104BBD23DD9DC5C58996F0CAD5DC4D38'
+    Get-VerifiedDownload `
+        'https://huggingface.co/facebook/sam2.1-hiera-tiny/resolve/de431c4043854a71d8101e17995dfe596bf101a5/sam2.1_hiera_tiny.pt?download=true' `
+        (Join-Path $checkpoints 'sam2.1_hiera_tiny.pt') `
+        '7402E0D864FA82708A20FBD15BC84245C2F26DFF0EB43A4B5B93452DEB34BE69'
     & $python -c "from sam2.build_sam import build_sam2_video_predictor; print('SAM2 import verified')"
     if ($LASTEXITCODE -ne 0) { throw 'SAM2 verification failed.' }
     $compileTest = @'

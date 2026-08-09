@@ -21,6 +21,7 @@ internal sealed class CustomShowConfiguration
     public int SmallPlayerVolume { get; set; } = 100;
     public int LargePlayerVolume { get; set; } = 100;
     public int FullOpacityThreshold { get; set; } = 255;
+    public int Sam2FrameCacheSizeGb { get; set; } = 10;
 
     internal static CustomShowConfiguration Load()
     {
@@ -112,6 +113,29 @@ internal sealed class CustomShowManifest
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public CustomShowSource Source { get; set; } = new();
     public CustomShowMedia Media { get; set; } = new();
+    public CustomShowProcessing? Processing { get; set; }
+}
+
+internal sealed class CustomShowProcessing
+{
+    public string Algorithm { get; set; } = "";
+    public int MattingDetailPx { get; set; }
+    public int BatchSize { get; set; } = 3;
+    public string? Sam2Model { get; set; }
+    public string ExecutionPolicy { get; set; } = "auto";
+    public string PrecisionPolicy { get; set; } = "fp16-autocast-fp32-cpu-fallback";
+    public int RecurrentRefinementSteps { get; set; }
+    public DateTime ProcessedUtc { get; set; } = DateTime.UtcNow;
+    public string QuickPlayerVersion { get; set; } = "";
+    public Dictionary<string, string> ToolRevisions { get; set; } = [];
+    public CustomClipProcessing[] Clips { get; set; } = [];
+}
+
+internal sealed class CustomClipProcessing
+{
+    public string ClipId { get; set; } = "";
+    public long? InitialMaskFrameMs { get; set; }
+    public bool Sam2MaskTracking { get; set; }
 }
 
 internal sealed class CustomShowClip
@@ -169,6 +193,11 @@ internal sealed class CustomShowStore
     static readonly HashSet<string> ClipTypeValues =
         ["Standing", "Table", "Behind Table", "Swing", "Cage", "Pole",
          "Glass", "Sign", "Prop", "Full Legs", "Side"];
+    static readonly HashSet<string> ProcessingAlgorithms =
+        ["quality", "fast", "matanyone2", "videomama", "vitmatte-s", "vitmatte-b"];
+    static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
+    static readonly HashSet<int> BatchSizeValues = [1, 2, 3, 4, 6, 8, 12];
+    static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
 
     readonly string root;
     internal string Root => root;
@@ -360,6 +389,7 @@ internal sealed class CustomShowStore
         ValidateMediaFields(show.Media.Width, show.Media.Height,
             show.Media.FrameRate, show.Media.DurationMs, "Show media");
         ValidateClips(show.Clips, show.Media.DurationMs);
+        ValidateProcessing(show.Processing, show.Clips);
         foreach (CustomShowClip clip in show.Clips)
         {
             if (clip.Included && clip.Media == null)
@@ -382,6 +412,56 @@ internal sealed class CustomShowStore
             throw new FileNotFoundException("The copied source video is missing.");
         if (show.Source.Mode == "reference" && string.IsNullOrWhiteSpace(show.Source.Path))
             throw new InvalidDataException("The referenced source path is required.");
+    }
+
+    static void ValidateProcessing(CustomShowProcessing? processing,
+        CustomShowClip[] clips)
+    {
+        if (processing == null) return;
+        if (!ProcessingAlgorithms.Contains(processing.Algorithm))
+            throw new InvalidDataException("Unknown custom-show processing algorithm.");
+        if (!MattingDetailValues.Contains(processing.MattingDetailPx))
+            throw new InvalidDataException("Unknown matting-detail resolution.");
+        if (!BatchSizeValues.Contains(processing.BatchSize))
+            throw new InvalidDataException("Unknown processing batch size.");
+        bool usesSam2 = processing.Algorithm is
+            "matanyone2" or "videomama" or "vitmatte-s" or "vitmatte-b";
+        if (usesSam2 && (processing.Sam2Model == null ||
+            !Sam2Models.Contains(processing.Sam2Model)))
+            throw new InvalidDataException("A valid SAM2 model is required for this algorithm.");
+        if (!usesSam2 && processing.Sam2Model != null)
+            throw new InvalidDataException("SAM2 model metadata is not valid for this algorithm.");
+        if (processing.ExecutionPolicy != "auto" ||
+            string.IsNullOrWhiteSpace(processing.PrecisionPolicy))
+            throw new InvalidDataException("Invalid processing execution policy.");
+        if (processing.RecurrentRefinementSteps is < 0 or > 100)
+            throw new InvalidDataException("Invalid recurrent-refinement step count.");
+        if (processing.ProcessedUtc == default ||
+            processing.ProcessedUtc.Kind != DateTimeKind.Utc)
+            throw new InvalidDataException("processedUtc must be an ISO-8601 UTC value.");
+        if (processing.Clips == null)
+            throw new InvalidDataException("Processing clip metadata is missing.");
+        if (processing.ToolRevisions == null || processing.ToolRevisions.Any(pair =>
+            string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value) ||
+            pair.Key.Length > 80 || pair.Value.Length > 200))
+            throw new InvalidDataException("Invalid processing tool revision metadata.");
+
+        Dictionary<string, CustomShowClip> included = clips.Where(value => value.Included)
+            .ToDictionary(value => value.Id, StringComparer.OrdinalIgnoreCase);
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        foreach (CustomClipProcessing item in processing.Clips)
+        {
+            ValidateId(item.ClipId, "processing clip");
+            if (!seen.Add(item.ClipId) || !included.TryGetValue(item.ClipId, out CustomShowClip? clip))
+                throw new InvalidDataException("Processing metadata must reference each included clip at most once.");
+            if (item.InitialMaskFrameMs is long frame &&
+                (frame < clip.StartMs || frame >= clip.EndMs))
+                throw new InvalidDataException("Initial mask frame lies outside its clip.");
+            if (!usesSam2 && (item.InitialMaskFrameMs != null || item.Sam2MaskTracking))
+                throw new InvalidDataException("Mask metadata is not valid for this algorithm.");
+        }
+        if (seen.Count != included.Count)
+            throw new InvalidDataException("Processing metadata is required for every included clip.");
     }
 
     static void ValidateMediaFields(int width, int height, string frameRate,
@@ -698,9 +778,36 @@ internal sealed class CustomShowStore
                     DurationMs = clip.EndMs - clip.StartMs
                 };
             }
+            show.Processing = new()
+            {
+                Algorithm = "matanyone2", MattingDetailPx = 512,
+                BatchSize = 3, Sam2Model = "small",
+                ExecutionPolicy = "auto",
+                PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
+                RecurrentRefinementSteps = 11,
+                ProcessedUtc = DateTime.UtcNow,
+                QuickPlayerVersion = "verification",
+                ToolRevisions = new() { ["MATANYONE2_COMMIT"] = "test-revision" },
+                Clips = show.Clips.Where(clip => clip.Included).Select(clip =>
+                    new CustomClipProcessing
+                    {
+                        ClipId = clip.Id,
+                        InitialMaskFrameMs = clip.StartMs,
+                        Sam2MaskTracking = false
+                    }).ToArray()
+            };
             using (Bitmap cover = new(64, 96)) cover.Save(
                 Path.Combine(folder, "cover.jpg"), System.Drawing.Imaging.ImageFormat.Jpeg);
             store.SaveManifest(show);
+            CustomShowManifest roundTrip = store.LoadManifest(show.Id);
+            if (roundTrip.Processing?.Algorithm != "matanyone2" ||
+                roundTrip.Processing.MattingDetailPx != 512 ||
+                roundTrip.Processing.Sam2Model != "small" ||
+                roundTrip.Processing.Clips.Length != 2)
+            {
+                Console.Error.WriteLine("Custom processing provenance round-trip failed.");
+                return false;
+            }
             using (CustomClipEditorForm editor = new(
                 Path.Combine(folder, "source.mp4"), show.Clips,
                 show.Hotness, show.ClipTypes, allowBoundaryEditing: false))

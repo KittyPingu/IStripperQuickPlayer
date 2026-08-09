@@ -31,6 +31,32 @@ internal static class CustomShowProcessor
     internal static string ProPainterWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "propainter_worker.py");
 
+    internal static string Sam2FrameCacheRoot => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "IStripperQuickPlayer", "sam2-frame-cache");
+
+    internal static IReadOnlyList<string> InstalledSam2Models(
+        CustomShowConfiguration configuration)
+    {
+        try
+        {
+            string checkpoints = Path.Combine(RuntimeRoot(configuration), "checkpoints");
+            List<string> result = [];
+            foreach ((string name, string file, long size) in new[]
+            {
+                ("base-plus", "sam2.1_hiera_base_plus.pt", 323606802L),
+                ("small", "sam2.1_hiera_small.pt", 184416285L),
+                ("tiny", "sam2.1_hiera_tiny.pt", 156008466L)
+            })
+            {
+                FileInfo checkpoint = new(Path.Combine(checkpoints, file));
+                if (checkpoint.Exists && checkpoint.Length == size) result.Add(name);
+            }
+            return result;
+        }
+        catch { return []; }
+    }
+
     internal static string RuntimeRoot(CustomShowConfiguration configuration) =>
         Path.GetFullPath(Path.Combine(
             Path.GetDirectoryName(configuration.PythonExecutable)!, "..", ".."));

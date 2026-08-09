@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """QuickPlayer VideoMaMa worker. Stdout is NDJSON progress only."""
 import argparse, gc, json, os, shutil, subprocess, sys, time
+from collections import OrderedDict
 from pathlib import Path
 
 from rvm_worker import emit, executable, probe, replace_preview
@@ -10,7 +11,26 @@ SAM2_COMMIT = "2b90b9f5ceec907a1c18123530e92e794ad901a4"
 MODEL_BYTES = 6098728544
 SVD_IMAGE_BYTES = 1264217240
 SVD_VAE_BYTES = 195531910
-SAM2_BYTES = 323606802
+SAM2_MODELS = {
+    "base-plus": {
+        "file": "sam2.1_hiera_base_plus.pt",
+        "bytes": 323606802,
+        "config": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+        "label": "SAM2.1 Hiera Base+",
+    },
+    "small": {
+        "file": "sam2.1_hiera_small.pt",
+        "bytes": 184416285,
+        "config": "configs/sam2.1/sam2.1_hiera_s.yaml",
+        "label": "SAM2.1 Hiera Small",
+    },
+    "tiny": {
+        "file": "sam2.1_hiera_tiny.pt",
+        "bytes": 156008466,
+        "config": "configs/sam2.1/sam2.1_hiera_t.yaml",
+        "label": "SAM2.1 Hiera Tiny",
+    },
+}
 SAM2_VOS_CACHE_MARKER = "SAM2_VOS_TORCH_2_11_TRITON_3_6_READY"
 SAM2_VOS_COMPILE_MODE = os.environ.get(
     "IQP_SAM2_COMPILE_MODE", "max-autotune")
@@ -27,43 +47,64 @@ def sam2_vos_optimized(torch, device):
     return has_triton()
 
 
-def sam2_vos_cache_marker(runtime):
-    mode = SAM2_VOS_COMPILE_MODE.upper().replace("-", "_")
-    return runtime / "torchinductor-cache" / f"{SAM2_VOS_CACHE_MARKER}_{mode}"
+def sam2_model(runtime, name="base-plus"):
+    if name not in SAM2_MODELS:
+        raise RuntimeError(f"Unknown SAM2 model: {name}")
+    model = SAM2_MODELS[name]
+    checkpoint = runtime / "checkpoints" / model["file"]
+    require_file(checkpoint, model["bytes"])
+    return model, checkpoint
 
 
-def sam2_vos_uses_cudagraphs(mode=SAM2_VOS_COMPILE_MODE):
+def sam2_vos_cache_marker(runtime, model_name="base-plus", execution="vos",
+                          compile_mode=None):
+    mode = (compile_mode or SAM2_VOS_COMPILE_MODE).upper().replace("-", "_")
+    model = model_name.upper().replace("-", "_")
+    return runtime / "torchinductor-cache" / \
+        f"{SAM2_VOS_CACHE_MARKER}_{model}_{execution.upper()}_{mode}"
+
+
+def sam2_vos_uses_cudagraphs(mode=None):
+    mode = mode or SAM2_VOS_COMPILE_MODE
     return mode in ("max-autotune", "reduce-overhead")
 
 
-def load_sam2(runtime, torch, device="cuda", optimized=True):
+def load_sam2(runtime, torch, device="cuda", optimized=True,
+              model_name="base-plus", encoder_compiled=False,
+              compile_mode=None):
     os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR",
                           str(runtime / "torchinductor-cache"))
     if (runtime / "SAM2_COMMIT").read_text().strip() != SAM2_COMMIT:
         raise RuntimeError("SAM2 commit validation failed; run setup again")
-    checkpoint = runtime / "checkpoints" / "sam2.1_hiera_base_plus.pt"
-    require_file(checkpoint, SAM2_BYTES)
+    model, checkpoint = sam2_model(runtime, model_name)
     from sam2.build_sam import build_sam2_video_predictor
     use_optimized = optimized and sam2_vos_optimized(torch, device)
+    use_encoder_compile = encoder_compiled and not use_optimized and \
+        sam2_vos_optimized(torch, device)
+    selected_compile_mode = compile_mode or SAM2_VOS_COMPILE_MODE
     original_compile = torch.compile
-    if use_optimized and SAM2_VOS_COMPILE_MODE != "max-autotune":
+    if (use_optimized or use_encoder_compile) and \
+            selected_compile_mode != "max-autotune":
         def configured_compile(model, *args, **kwargs):
             if kwargs.get("mode") == "max-autotune":
-                kwargs["mode"] = SAM2_VOS_COMPILE_MODE
+                kwargs["mode"] = selected_compile_mode
             return original_compile(model, *args, **kwargs)
         torch.compile = configured_compile
     try:
+        overrides = ["++model.compile_image_encoder=True"] \
+            if use_encoder_compile else []
         return build_sam2_video_predictor(
-            "configs/sam2.1/sam2.1_hiera_b+.yaml", str(checkpoint), device=device,
-            vos_optimized=use_optimized)
+            model["config"], str(checkpoint), device=device,
+            vos_optimized=use_optimized, hydra_overrides_extra=overrides)
     finally:
         torch.compile = original_compile
 
 
-def use_on_demand_sam2_frames(frame_folder, torch):
+def use_on_demand_sam2_frames(frame_folder, torch, cache_limit_bytes=0,
+                              cache_stats=None):
     import sam2.sam2_video_predictor as predictor_module
+    import numpy as np
     from PIL import Image
-    from sam2.utils.misc import _load_img_as_tensor
     frame_folder = frame_folder.resolve()
     original_loader = predictor_module.load_video_frames
 
@@ -79,11 +120,53 @@ def use_on_demand_sam2_frames(frame_folder, torch):
         std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
 
         class Frames:
+            def __init__(self):
+                self.cache = OrderedDict()
+                self.cache_bytes = 0
             def __len__(self): return len(paths)
             def __getitem__(self, index):
-                image, _, _ = _load_img_as_tensor(str(paths[index]), image_size)
+                if index in self.cache:
+                    image = self.cache.pop(index)
+                    self.cache[index] = image
+                    if cache_stats is not None:
+                        cache_stats["hits"] = cache_stats.get("hits", 0) + 1
+                    return image
+                if cache_stats is not None:
+                    cache_stats["misses"] = cache_stats.get("misses", 0) + 1
+                with Image.open(paths[index]) as opened:
+                    decoded_at = time.perf_counter()
+                    decoded = opened.convert("RGB")
+                    decoded_seconds = time.perf_counter() - decoded_at
+                    prepared_at = time.perf_counter()
+                    pixels = np.array(decoded.resize((image_size, image_size)))
+                if pixels.dtype != np.uint8:
+                    raise RuntimeError(f"Unknown image dtype: {pixels.dtype}")
+                image = torch.from_numpy(pixels / 255.0).permute(2, 0, 1)
                 image.sub_(mean).div_(std)
-                return image if offload_video_to_cpu else image.to(compute_device)
+                if cache_stats is not None:
+                    cache_stats["decodePreprocessCount"] = \
+                        cache_stats.get("decodePreprocessCount", 0) + 1
+                    cache_stats["jpegDecodeSeconds"] = \
+                        cache_stats.get("jpegDecodeSeconds", 0.0) + decoded_seconds
+                    cache_stats["preprocessSeconds"] = \
+                        cache_stats.get("preprocessSeconds", 0.0) + \
+                        time.perf_counter() - prepared_at
+                if offload_video_to_cpu and compute_device is not None and \
+                        str(compute_device).startswith("cuda"):
+                    image = image.pin_memory()
+                elif not offload_video_to_cpu:
+                    image = image.to(compute_device)
+                if cache_limit_bytes > 0:
+                    size = image.nelement() * image.element_size()
+                    while self.cache and self.cache_bytes + size > cache_limit_bytes:
+                        _, removed = self.cache.popitem(last=False)
+                        self.cache_bytes -= removed.nelement() * removed.element_size()
+                    if size <= cache_limit_bytes:
+                        self.cache[index] = image
+                        self.cache_bytes += size
+                        if cache_stats is not None:
+                            cache_stats["bytes"] = self.cache_bytes
+                return image
 
         with Image.open(paths[0]) as first:
             width, height = first.size

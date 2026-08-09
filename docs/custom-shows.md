@@ -25,7 +25,7 @@ QuickPlayer pins:
 - Optional [TransNetV2](https://github.com/soCzech/TransNetV2) PyTorch source commit `85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed` and converted-weight SHA-256 `46520D66D4BF60414A4D82E0E94A92442FF950E34517A3718B2E54815E642B53`.
 - Optional [MatAnyone2](https://github.com/pq-yang/MatAnyone2) commit `0079197acd6d16a741f71558809c06c586c579e0` and checkpoint SHA-256 `5E9821E4087231427376B437C85BB6E072B41E582314F06FD524F75BC4AF5914`.
 - Optional [VideoMaMa](https://github.com/cvlab-kaist/VideoMaMa) commit `d5cce3e0ffe3b6429c147e658bb28bcfb576374c`, model revision `e289a7acc8403c4fbe4dea2a1de5a9749ebc9bf5`, and inference UNet SHA-256 `F2442BF16EDEDAD25C1C272AE7535B6411C43CEE5C27B012BB6F7FDA72D07B8C`.
-- VideoMaMa's SVD inference components use revision `9e43909513c6714f1bc78bcb44d96e733cd242aa`; every mask-guided algorithm uses [SAM2](https://github.com/facebookresearch/sam2) commit `2b90b9f5ceec907a1c18123530e92e794ad901a4` and the base-plus checkpoint SHA-256 `A2345AEDE8715AB1D5D31B4A509FB160C5A4AF1970F199D9054CCFB746C004C5`.
+- VideoMaMa's SVD inference components use revision `9e43909513c6714f1bc78bcb44d96e733cd242aa`; every mask-guided algorithm uses [SAM2](https://github.com/facebookresearch/sam2) commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`. Setup verifies Hiera Base+ SHA-256 `A2345AEDE8715AB1D5D31B4A509FB160C5A4AF1970F199D9054CCFB746C004C5`, Small `6D1AA6F30DE5C92224F8172114DE081D104BBD23DD9DC5C58996F0CAD5DC4D38`, and Tiny `7402E0D864FA82708A20FBD15BC84245C2F26DFF0EB43A4B5B93452DEB34BE69`.
 - Optional [ViTMatte](https://github.com/hustvl/ViTMatte) S revision `6a58ad7646403c1df626fbd746900aec7361ea1d` and B revision `bf486d01a7d9e3dbcc8400f7942835caf0eaf76e`; setup SHA-256 verifies both official Hugging Face model repositories.
 - Optional [streaming ProPainter](https://github.com/osmr/propainter) commit `c8983a445720450bf2fd976cab0adb1cad19547d` and PyTorchCV `0.0.74`. Its RAFT, flow-completion, and ProPainter files are verified against upstream SHA-1 values `d74fed4b7511a95ca9713b69ff19a132210a1016`, `a865ddc0281f27ff0814939a8c0101e936678312`, and `5f3cc1e7083fb5c49a7e5c574a06d41c763550a5`.
 
@@ -201,31 +201,64 @@ backward and forward. **Auto mask frame** can replace the current frame prompt w
 an automatically generated candidate before updating. Later corrections stop at
 adjacent accepted correction frames instead of needlessly recalculating beyond
 them. Playback includes normal speed, 0.25× slow motion, and frame stepping. Repeat
-on later failures, then choose **Use corrected masks**. QuickPlayer uses the
-SAM2.1 Hiera Base+ checkpoint with CUDA/BF16 autocast on supported NVIDIA cards.
-On CUDA, SAM2 uses `vos_optimized=True`; setup installs the PyTorch 2.11-compatible
-Triton 3.6 compiler and verifies it with a compiled CUDA convolution. The first run
-has a one-time compilation delay, reported in the progress dialog, which can take
-several minutes; subsequent propagation reuses the compiler cache.
-QuickPlayer marks every propagated frame as a new CUDA Graph step; PyTorch 2.11
-otherwise overwrites tensors passed between SAM2's separately compiled components.
-Synthetic tensor tests overstate the benefit because they omit worker startup and
-interactive correction. A controlled 1,000-frame, 1024x576 review test on the RTX
-4080 ran an initial pass plus a midpoint correction propagated through the full
-section. Two eager runs averaged 241.2 seconds total; two full `max-autotune` runs
-averaged 245.2 seconds; cached `max-autotune-no-cudagraphs` took 271.9 seconds (and
-314.4 seconds on its cold run). Full compilation did make correction propagation
-faster on average, but its per-process startup erased that gain at this length.
-QuickPlayer therefore keeps the original predictor for clips under 16,000 frames
-(roughly 9–11 minutes at 25–30 FPS) and uses full `max-autotune`, not the
-no-CUDA-graphs variant, for longer clips.
-The first eligible clip builds the full compiler cache; this took about nine minutes
-on the reference RTX 4080. The dialog labels this as a one-time cache build; leave
-the indeterminate phase running. Subsequent jobs say that cached SAM2 is loading
-and only record their per-worker CUDA Graph shapes. The cache is retained at
-`<runtime>\torchinductor-cache`; deleting it repeats the full compilation delay.
-Without CUDA or Triton it falls back to uncompiled propagation. Tracking state
-remains on the GPU while review frames are loaded lazily from CPU.
+on later failures, then choose **Use corrected masks**. Choose Base+ (default and
+most robust), Small (balanced), or Tiny (fastest) in **SAM2 mask model**. Only
+installed, size-verified checkpoints are listed and the selected model directly
+produces the accepted masks. CUDA uses BF16 autocast, TF32 matmul/cuDNN, and cuDNN
+benchmarking where supported; unsupported CUDA and CPU retain FP32 fallback.
+
+Normal processing consults `<runtime>\sam2-performance-policy-v1.json`, keyed by
+GPU, driver, PyTorch/CUDA, SAM2 commit, checkpoint, and compile mode. Eager mode
+is the safe default. Meta's supported `compile_image_encoder=True` encoder path
+or full `vos_optimized=True` path is selected only after the benchmark records at
+least 10% cached end-to-end improvement and the predicted initial pass plus two
+correction-equivalent passes exceeds break-even by 20%. Completed local sessions
+refine that correction-work estimate. The bounded GPU feature cache qualifies at
+2% end-to-end improvement because it has no compilation startup cost, but still
+requires equivalent masks and at least 4 GiB VRAM headroom. Compiler failure
+invalidates the attempted choice and falls back to eager. The UI separately identifies one-time cache
+generation, cached compiled loading, and per-worker/CUDA-graph setup. Accepted
+compile artefacts remain in `<runtime>\torchinductor-cache`.
+
+A historical 1,000-frame, 1024x576 Base+ test with a full midpoint correction
+averaged 241.2 seconds eager, 245.2 seconds full `max-autotune`, and 271.9 seconds
+cached `max-autotune-no-cudagraphs`, so neither compiled mode qualifies for that
+workload. `benchmark_sam2_workflows.py` now repeats eager, encoder-only, and full
+VOS modes for all three models on 1080p and 4K sources, measures cold/cached
+startup and two corrections, verifies mask equivalence, and writes qualifying
+policy entries. Smaller extracted review frames are not a speed control: SAM2
+still resizes input internally to 1024x1024.
+
+On the current RTX 4080/PyTorch 2.11 setup, the corrected-output 1,000-frame
+1080p benchmark plus two correction passes measured median eager totals of
+158.4 seconds (Base+), 151.3 seconds (Small), and 142.0 seconds (Tiny). Cache
+capacities 1, 4, 8, 16, 64, and 256 were screened. Only three feature lookups
+were reused in the complete workflow; the one-frame cache changed the respective
+three-run medians by -0.3%, +1.9%, and +0.5%, so no model qualified at the 2%
+threshold. Larger caches added no hits and increased VRAM.
+
+Base+ compiled totals for the same workload were 162.9 seconds (encoder-only
+`max-autotune-no-cudagraphs`), 172.1 seconds (encoder-only `max-autotune`),
+168.3 seconds (full VOS `max-autotune-no-cudagraphs`), and 179.8 seconds (full
+VOS `max-autotune`). All are slower than the 158.4-second eager median and are
+therefore disabled by policy. One-time compilation ranged from roughly two to
+five minutes in these populated-cache tests; even cached worker initialization
+remained materially slower than eager. Small and Tiny do not inherit Base+'s
+results. Tiny boundary tests measured 154.5 seconds encoder-only and 147.6
+seconds full VOS without CUDA graphs versus 142.0 seconds eager. Since neither
+the largest nor smallest model benefits end-to-end, Small safely remains eager
+without paying a speculative compilation cost.
+
+Review JPEGs use a persistent, validated LRU cache under
+`%LOCALAPPDATA%\IStripperQuickPlayer\sam2-frame-cache`, default 10 GB. Configure
+0–100 GB, inspect usage, or clear inactive entries in Custom Show Settings; 0
+disables it. Active worker entries cannot be evicted. A bounded decoded-frame LRU
+uses the smaller of 512 MiB or 5% of physical RAM. Tracking state remains on the
+GPU. Three pinned mask-output slots overlap asynchronous CUDA downloads and
+atomic level-1 PNG writes with subsequent inference. Automatic-mask candidates
+are retained while refining clicks on one frame. Detailed timings and cache hit
+statistics are appended to `processing.log`, while throttled covered-range events
+keep the correction timeline responsive without flooding it.
 
 ViTMatte turns the corrected SAM2 masks into trimaps and predicts soft alpha per
 frame. S is the smaller/faster model; B uses the larger backbone for higher
@@ -358,6 +391,15 @@ Every show has a `clips` array. Each entry contains a UUID `id`, contiguous sour
 `startMs`/`endMs`, `hotness`, `clipTypes`, and per-clip media metadata when
 included. Ranges start at zero and cover the complete source without gaps or
 overlaps. Skipped entries have no required media and never become playable clips.
+
+New conversions also include an optional `processing` object in `show.json`.
+It records the algorithm, matting-detail resolution, processing batch size,
+SAM2 model (when applicable), execution and precision policies, MatAnyone2
+recurrent-refinement count, processing time, QuickPlayer version, and each
+installed processing tool's exact commit/model revision. It also records each
+included clip's initial-mask frame and whether SAM2 mask tracking was used.
+This provenance is read-only in **Edit Custom Show Metadata**. Older shows with
+no `processing` object remain valid; their original settings cannot be inferred.
 
 To move a library, close QuickPlayer, copy the entire configured custom-library root, then select the new root in **Custom Shows → Settings**. Relative show media remains portable; referenced originals do not need to move unless you want to reprocess them.
 

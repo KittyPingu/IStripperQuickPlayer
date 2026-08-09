@@ -1,61 +1,348 @@
 #!/usr/bin/env python3
-"""Persistent SAM2 video-mask propagation and correction worker."""
-import argparse, json, os, shutil, subprocess, sys
+"""Persistent SAM2 propagation/correction worker. Stdout is NDJSON UI protocol."""
+import argparse, hashlib, json, math, os, queue, shutil, subprocess, sys
+import tempfile, threading, time, uuid
+from collections import defaultdict
 from pathlib import Path
 
 from rvm_worker import executable, probe
-from videomama_worker import (load_sam2, model_size, sam2_vos_cache_marker,
+from videomama_worker import (SAM2_COMMIT, SAM2_MODELS, load_sam2, model_size,
+                              sam2_model, sam2_vos_cache_marker,
                               sam2_vos_optimized, sam2_vos_uses_cudagraphs,
                               use_on_demand_sam2_frames)
-from sam_mask_worker import automatic_foreground
+from sam_mask_worker import automatic_candidates, select_automatic_foreground
 
-VOS_MIN_FRAMES = 16000
+CACHE_SCHEMA = 1
+POLICY_SCHEMA = 1
+PROGRESS_INTERVAL = .15
 
 
 def send(**values):
-    print(json.dumps(values), flush=True)
+    print(json.dumps(values, separators=(",", ":")), flush=True)
 
 
-def extract_frames(source, folder, start, duration, rate, width, height, total):
+class Profiler:
+    def __init__(self, path):
+        self.path = path
+        self.started = time.perf_counter()
+        self.stages = defaultdict(list)
+        self.counters = defaultdict(int)
+        self.gpu_stages = []
+
+    def add(self, name, seconds):
+        self.stages[name].append(float(seconds))
+
+    def count(self, name, value=1):
+        self.counters[name] += value
+
+    def add_gpu(self, name, begin, end):
+        self.gpu_stages.append((name, begin, end))
+
+    def report(self, **metadata):
+        if not self.path:
+            return
+        for name, begin, end in self.gpu_stages:
+            try:
+                end.synchronize()
+                self.add(name, begin.elapsed_time(end) / 1000)
+            except RuntimeError:
+                self.count("gpuTimingFailures")
+        self.gpu_stages.clear()
+        values = {}
+        for name, samples in self.stages.items():
+            ordered = sorted(samples)
+            values[name] = {
+                "count": len(samples), "totalSeconds": round(sum(samples), 6),
+                "meanSeconds": round(sum(samples) / len(samples), 6),
+                "medianSeconds": round(ordered[len(ordered) // 2], 6),
+                "p95Seconds": round(ordered[min(len(ordered) - 1,
+                    math.ceil(len(ordered) * .95) - 1)], 6),
+            }
+        record = {"type": "sam2_profile", "schemaVersion": 1,
+            "createdUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "totalSeconds": round(time.perf_counter() - self.started, 6),
+            "stages": values, "counters": dict(self.counters), **metadata}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def atomic_json(path, value):
+    temporary = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
+    temporary.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def frame_cache_key(source, start, duration, rate, width, height,
+                    extraction_mode="standard"):
+    stat = source.stat()
+    value = {"schema": CACHE_SCHEMA, "source": str(source).casefold(),
+        "size": stat.st_size, "mtimeNs": stat.st_mtime_ns,
+        "start": round(start, 6), "duration": round(duration, 6), "rate": rate,
+        "width": width, "height": height, "extractionMode": extraction_mode}
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest(), value
+
+
+def directory_size(path):
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+def process_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def active_lock(entry):
+    return entry / f".active-{os.getpid()}"
+
+
+def replace_directory_with_retry(source, target, attempts=20):
+    """Publish a cache directory despite transient Windows handle scanning."""
+    for attempt in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(.1)
+
+
+def entry_is_active(entry):
+    active = False
+    for lock in entry.glob(".active*"):
+        try:
+            pid = int(lock.read_text().strip())
+            if process_alive(pid): active = True
+            else: lock.unlink()
+        except (OSError, ValueError):
+            try: lock.unlink()
+            except OSError: pass
+    return active
+
+
+def prune_frame_cache(root, limit, exclude=None):
+    if limit <= 0 or not root.is_dir():
+        return
+    entries, protected_size = [], 0
+    for entry in root.iterdir():
+        if not entry.is_dir() or entry.name.startswith(".staging-"):
+            continue
+        if entry == exclude:
+            protected_size += directory_size(entry)
+            continue
+        if entry_is_active(entry): continue
+        manifest = entry / "manifest.json"
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            accessed = float(data.get("lastAccessUnix", entry.stat().st_mtime))
+        except (OSError, ValueError):
+            accessed = entry.stat().st_mtime
+        entries.append([accessed, directory_size(entry), entry])
+    total = protected_size + sum(value[1] for value in entries)
+    for _, size, entry in sorted(entries):
+        if total <= limit: break
+        shutil.rmtree(entry, ignore_errors=True)
+        total -= size
+
+
+def extract_frames(source, folder, start, duration, rate, width, height, total,
+                   profiler, extraction_mode="standard"):
+    required = max(64 * 1024 ** 2, round(width * height * total * .75))
+    free = shutil.disk_usage(folder).free
+    if free < required:
+        raise RuntimeError("Insufficient disk space for SAM2 review frames "
+                           f"(need approximately {required / 1024 ** 3:.2f} GB)")
+    scale = {"bicubic": "bicubic", "bilinear": "fast_bilinear"}.get(
+        extraction_mode, "lanczos")
+    jpeg_quality = "3" if extraction_mode == "jpeg3" else "2"
+    input_options = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] \
+        if extraction_mode == "nvdec" else []
+    filters = (f"scale_cuda={width}:{height}:interp_algo=lanczos,hwdownload,"
+        f"format=nv12,fps={rate},setsar=1") if extraction_mode == "nvdec" else \
+        f"fps={rate},scale={width}:{height}:flags={scale},setsar=1"
     command = [executable("ffmpeg"), "-y", "-v", "error", "-ss", f"{start:.6f}",
-        "-i", str(source), "-t", f"{duration:.6f}", "-map", "0:v:0", "-vf",
-        f"fps={rate},scale={width}:{height}:flags=lanczos,setsar=1", "-q:v", "2",
+        *input_options, "-i", str(source), "-t", f"{duration:.6f}", "-map", "0:v:0", "-vf",
+        filters, "-q:v", jpeg_quality,
         str(folder / "%08d.jpg"), "-progress", "pipe:1", "-nostats"]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
+    started = time.perf_counter()
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True)
+    last = 0.0
     for line in process.stdout:
         if line.startswith("frame="):
             count = int(line.partition("=")[2])
-            send(status="progress", percent=min(15, count * 15 / total),
-                 message=f"Extracted {count}/{total} review frames")
+            now = time.monotonic()
+            if count == 1 or count >= total or now - last >= PROGRESS_INTERVAL:
+                send(status="progress", percent=min(15, count * 15 / total),
+                     message=f"Extracted {count}/{total} review frames")
+                last = now
+    error = process.stderr.read().strip()
     if process.wait() != 0:
-        raise RuntimeError("SAM2 review-frame extraction failed")
+        raise RuntimeError(error or "SAM2 review-frame extraction failed")
+    profiler.add("extraction", time.perf_counter() - started)
 
 
-def mask_from_logits(object_ids, logits, frame_index, mask_folder):
-    import numpy as np
-    from PIL import Image
-    ids = object_ids.tolist() if hasattr(object_ids, "tolist") else list(object_ids)
-    if 1 not in ids:
-        raise RuntimeError(f"SAM2 lost the selected foreground at frame {frame_index + 1}")
-    mask = (logits[ids.index(1)] > 0).squeeze().byte().cpu().numpy() * 255
-    Image.fromarray(mask.astype(np.uint8), "L").save(
-        mask_folder / f"{frame_index + 1:08d}.png")
+def prepare_frames(args, source, start, duration, rate, width, height, total,
+                   profiler):
+    scratch = args.frames.resolve()
+    if args.cache_limit_bytes <= 0 or args.cache_root is None:
+        shutil.rmtree(scratch, ignore_errors=True)
+        scratch.mkdir(parents=True)
+        extract_frames(source, scratch, start, duration, rate, width, height, total,
+                       profiler, args.extraction_mode)
+        return scratch, False, None
+    root = args.cache_root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    key, identity = frame_cache_key(source, start, duration, rate, width, height,
+                                    args.extraction_mode)
+    entry, manifest_path = root / key, root / key / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        frames = entry / "frames"
+        files = list(frames.glob("*.jpg"))
+        if (manifest.get("schemaVersion") == CACHE_SCHEMA and
+                manifest.get("identity") == identity and
+                manifest.get("frameCount") == len(files) and files):
+            manifest["lastAccessUnix"] = time.time()
+            atomic_json(manifest_path, manifest)
+            active_lock(entry).write_text(str(os.getpid()))
+            prune_frame_cache(root, args.cache_limit_bytes, entry)
+            profiler.count("frameCacheHits")
+            return frames, True, entry
+    except (OSError, ValueError):
+        pass
+    if entry.is_dir():
+        if entry_is_active(entry):
+            raise RuntimeError("An incomplete SAM2 frame-cache entry is currently in use")
+        shutil.rmtree(entry, ignore_errors=True)
+    profiler.count("frameCacheMisses")
+    staging = root / (".staging-" + key + "-" + uuid.uuid4().hex)
+    frames = staging / "frames"
+    frames.mkdir(parents=True)
+    try:
+        extract_frames(source, frames, start, duration, rate, width, height, total,
+                       profiler, args.extraction_mode)
+        count = len(list(frames.glob("*.jpg")))
+        if count == 0:
+            raise RuntimeError("The clip has no review frames")
+        atomic_json(staging / "manifest.json", {"schemaVersion": CACHE_SCHEMA,
+            "identity": identity, "frameCount": count,
+            "lastAccessUnix": time.time()})
+        active_lock(staging).write_text(str(os.getpid()))
+        try: replace_directory_with_retry(staging, entry)
+        except OSError:
+            if not entry.is_dir(): raise
+            shutil.rmtree(staging, ignore_errors=True)
+            active_lock(entry).write_text(str(os.getpid()))
+        prune_frame_cache(root, args.cache_limit_bytes, entry)
+        return entry / "frames", False, entry
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+class MaskWriter:
+    def __init__(self, torch, device, profiler, slots=3):
+        self.torch, self.device, self.profiler = torch, device, profiler
+        self.available, self.pending = queue.Queue(), queue.Queue(maxsize=slots)
+        self.error = None
+        self.transfer = torch.cuda.Stream(device=device) if device == "cuda" else None
+        for _ in range(slots): self.available.put({"cpu": None})
+        self.thread = threading.Thread(target=self._run, name="sam2-mask-writer",
+                                       daemon=True)
+        self.thread.start()
+
+    def _raise(self):
+        if self.error is not None:
+            raise RuntimeError(f"SAM2 mask writer failed: {self.error}")
+
+    def submit(self, object_ids, logits, frame, folder, gpu_timings=None):
+        self._raise()
+        ids = object_ids.tolist() if hasattr(object_ids, "tolist") else list(object_ids)
+        if 1 not in ids:
+            raise RuntimeError(f"SAM2 lost the selected foreground at frame {frame + 1}")
+        slot = self.available.get()
+        try:
+            # Keep independent storage until the transfer completes. SAM2 reuses
+            # output tensors aggressively during propagation, so retaining only
+            # a view of its logits can corrupt the queued host copy.
+            mask = (logits[ids.index(1)] > 0).squeeze().to(
+                self.torch.uint8).mul_(255).contiguous().clone()
+            shape = tuple(mask.shape)
+            if self.device == "cuda":
+                if slot["cpu"] is None or tuple(slot["cpu"].shape) != shape:
+                    slot["cpu"] = self.torch.empty(shape, dtype=self.torch.uint8,
+                                                   pin_memory=True)
+                begin = self.torch.cuda.Event(enable_timing=True)
+                end = self.torch.cuda.Event(enable_timing=True)
+                producer_done = self.torch.cuda.Event()
+                producer_done.record(self.torch.cuda.current_stream())
+                with self.torch.cuda.stream(self.transfer):
+                    self.transfer.wait_event(producer_done)
+                    begin.record(self.transfer)
+                    slot["cpu"].copy_(mask, non_blocking=True)
+                    end.record(self.transfer)
+                mask.record_stream(self.transfer)
+                slot.update(event=end, begin=begin, producer=producer_done, gpu=mask,
+                            timings=gpu_timings or [])
+            else:
+                slot["cpu"] = mask.cpu()
+                slot.update(event=None, begin=None, gpu=None, timings=[])
+            slot.update(frame=frame, path=folder / f"{frame + 1:08d}.png")
+            self.pending.put(slot)
+        except BaseException:
+            self.available.put(slot)
+            raise
+
+    def _run(self):
+        from PIL import Image
+        while True:
+            item = self.pending.get()
+            if item is None:
+                self.pending.task_done(); break
+            try:
+                if self.error is None:
+                    started = time.perf_counter()
+                    if item["event"] is not None:
+                        item["event"].synchronize()
+                        self.profiler.add("mask_download_gpu",
+                            item["begin"].elapsed_time(item["event"]) / 1000)
+                        for name, begin, end in item["timings"]:
+                            end.synchronize()
+                            self.profiler.add(name, begin.elapsed_time(end) / 1000)
+                    array = item["cpu"].numpy()
+                    temporary = item["path"].with_name(
+                        item["path"].name + ".tmp-" + uuid.uuid4().hex)
+                    Image.fromarray(array, "L").save(temporary, "PNG", compress_level=1)
+                    os.replace(temporary, item["path"])
+                    self.profiler.add("mask_png_write", time.perf_counter() - started)
+            except BaseException as error:
+                self.error = error
+            finally:
+                item["gpu"] = item["event"] = item["begin"] = item["producer"] = None
+                item["timings"] = []
+                self.available.put(item)
+                self.pending.task_done()
+
+    def flush(self):
+        self.pending.join(); self._raise()
+
+    def close(self):
+        failure = None
+        try: self.flush()
+        except BaseException as error: failure = error
+        self.pending.put(None); self.pending.join(); self.thread.join()
+        if failure is not None: raise failure
+        self._raise()
 
 
 def correction_limits(frame, correction_frames, total):
     return (max((value for value in correction_frames if value < frame), default=0),
             min((value for value in correction_frames if value > frame), default=total - 1))
-
-
-def compiled_vos_worthwhile(frame_count):
-    return frame_count >= VOS_MIN_FRAMES
-
-
-def use_optimized_vos(torch, device, frame_count):
-    forced = os.environ.get("IQP_SAM2_FORCE_VOS")
-    if forced is not None:
-        return forced == "1" and sam2_vos_optimized(torch, device)
-    return sam2_vos_optimized(torch, device) and compiled_vos_worthwhile(frame_count)
 
 
 def propagation_range(start, total, reverse, max_frames):
@@ -69,8 +356,7 @@ def interactive_forwards(predictor):
     for component in (predictor.sam_prompt_encoder, predictor.sam_mask_decoder):
         compiled = component.forward
         eager = getattr(compiled, "_torchdynamo_orig_callable", None)
-        if eager is not None:
-            forwards.append((component, compiled, eager))
+        if eager is not None: forwards.append((component, compiled, eager))
     return forwards
 
 
@@ -82,48 +368,265 @@ def use_compiled_interactive_forwards(forwards, enabled):
 def remember_prompt_preview(state, baselines, frame, obj_id=1):
     obj = state["obj_id_to_idx"][obj_id]
     if frame not in baselines:
-        points = state["point_inputs_per_obj"][obj]
-        masks = state["mask_inputs_per_obj"][obj]
-        baselines[frame] = (frame in points, points.get(frame),
-                            frame in masks, masks.get(frame))
+        points, masks = state["point_inputs_per_obj"][obj], state["mask_inputs_per_obj"][obj]
+        baselines[frame] = (frame in points, points.get(frame), frame in masks,
+                            masks.get(frame))
 
 
 def clear_prompt_preview(state, baselines, frame, obj_id=1):
     obj = state["obj_id_to_idx"][obj_id]
     had_points, old_points, had_mask, old_mask = baselines.pop(
         frame, (False, None, False, None))
-    points = state["point_inputs_per_obj"][obj]
-    masks = state["mask_inputs_per_obj"][obj]
+    points, masks = state["point_inputs_per_obj"][obj], state["mask_inputs_per_obj"][obj]
     if had_points: points[frame] = old_points
     else: points.pop(frame, None)
     if had_mask: masks[frame] = old_mask
     else: masks.pop(frame, None)
-    for outputs in state["temp_output_dict_per_obj"][obj].values():
-        outputs.pop(frame, None)
+    for outputs in state["temp_output_dict_per_obj"][obj].values(): outputs.pop(frame, None)
     outputs = state["output_dict_per_obj"][obj]
     original = outputs["cond_frame_outputs"].get(frame)
     return original if original is not None else outputs["non_cond_frame_outputs"].get(frame)
 
 
-def propagate(predictor, state, mask_folder, start, total, reverse, progress_start,
-              progress_size, message, max_frames=None, mark_step=None):
+def policy_key(torch, device, model):
+    gpu = torch.cuda.get_device_name() if device == "cuda" else "cpu"
+    driver = torch.cuda.driver_version() if device == "cuda" and \
+        hasattr(torch.cuda, "driver_version") else "unknown"
+    return "|".join((gpu, str(driver), torch.__version__, str(torch.version.cuda),
+                     SAM2_COMMIT, model))
+
+
+def load_policy(runtime):
+    path = runtime / "sam2-performance-policy-v1.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if value.get("schemaVersion") == POLICY_SCHEMA else {}
+    except (OSError, ValueError): return {}
+
+
+def choose_extraction(args, runtime, torch, device):
+    if args.extraction_mode != "auto": return args.extraction_mode
+    entry = load_policy(runtime).get("entries", {}).get(
+        policy_key(torch, device, args.model), {})
+    result = entry.get("extraction", {})
+    mode = result.get("mode", "standard")
+    return mode if result.get("enabled") and mode in {
+        "bicubic", "bilinear", "jpeg3", "nvdec"} else "standard"
+
+
+def choose_execution(args, runtime, torch, device, frames):
+    default_compile = os.environ.get("IQP_SAM2_COMPILE_MODE", "max-autotune")
+    if args.execution != "auto":
+        return args.execution, 3.0, default_compile, args.gpu_feature_cache_frames
+    if device != "cuda": return "eager", 3.0, default_compile, 0
+    policy = load_policy(runtime)
+    entry = policy.get("entries", {}).get(policy_key(torch, device, args.model), {})
+    factor = max(1.0, float(entry.get("expectedWorkMultiplier", 3.0)))
+    expected = frames * factor
+    choices = []
+    for mode in ("encoder", "vos"):
+        result = entry.get(mode, {})
+        speedup = float(result.get("warmSpeedup", 0))
+        break_even = float(result.get("breakEvenFrames", math.inf))
+        if result.get("enabled") and speedup >= .10 and expected >= break_even * 1.2:
+            choices.append((speedup, mode,
+                result.get("compileMode", default_compile)))
+    if not choices:
+        mode, compile_mode = "eager", default_compile
+    else:
+        _, mode, compile_mode = max(choices)
+    feature = entry.get("gpuFeatureCache", {})
+    feature_frames = int(feature.get("frames", 0)) if feature.get("enabled") and \
+        float(feature.get("warmSpeedup", 0)) >= .02 else 0
+    return mode, factor, compile_mode, max(0, feature_frames)
+
+
+def update_work_multiplier(runtime, torch, device, model, actual):
+    """Refine the expected correction workload without inventing speed results."""
+    path = runtime / "sam2-performance-policy-v1.json"
+    policy = load_policy(runtime)
+    if not policy: return
+    entries = policy.setdefault("entries", {})
+    entry = entries.setdefault(policy_key(torch, device, model), {})
+    previous = float(entry.get("expectedWorkMultiplier", 3.0))
+    entry["expectedWorkMultiplier"] = round(max(1.0, min(8.0,
+        previous * .75 + actual * .25)), 4)
+    try: atomic_json(path, policy)
+    except OSError: pass
+
+
+def invalidate_policy_mode(runtime, torch, device, model, execution, message):
+    if execution == "eager": return
+    path = runtime / "sam2-performance-policy-v1.json"
+    policy = load_policy(runtime)
+    entry = policy.get("entries", {}).get(policy_key(torch, device, model))
+    if not isinstance(entry, dict) or not isinstance(entry.get(execution), dict): return
+    entry[execution]["enabled"] = False
+    entry[execution]["invalidatedUtc"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    entry[execution]["failure"] = str(message)[:500]
+    try: atomic_json(path, policy)
+    except OSError: pass
+
+
+def clear_stale_memory(predictor, state, frame):
+    clear = getattr(predictor, "_clear_non_cond_mem_around_input", None)
+    if clear is not None:
+        clear(state, frame)
+        return
+    # The compiled VOS class omits this helper, although it uses the same state.
+    from sam2.sam2_video_predictor import SAM2VideoPredictor
+    SAM2VideoPredictor._clear_non_cond_mem_around_input(predictor, state, frame)
+
+
+def physical_memory_bytes():
+    if hasattr(os, "sysconf"):
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    try:
+        import ctypes
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [("length", ctypes.c_ulong), ("memoryLoad", ctypes.c_ulong),
+                ("totalPhysical", ctypes.c_ulonglong),
+                ("availablePhysical", ctypes.c_ulonglong),
+                ("totalPageFile", ctypes.c_ulonglong),
+                ("availablePageFile", ctypes.c_ulonglong),
+                ("totalVirtual", ctypes.c_ulonglong),
+                ("availableVirtual", ctypes.c_ulonglong),
+                ("availableExtendedVirtual", ctypes.c_ulonglong)]
+        status = MemoryStatus(); status.length = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.totalPhysical)
+    except (AttributeError, OSError):
+        pass
+    return 8 * 1024 ** 3
+
+
+def add_feature_profiler(predictor, profiler, torch, device, enabled):
+    if not enabled: return
+    original = predictor.forward_image
+    original_feature = predictor._get_image_feature
+    def profiled(image):
+        wall = time.perf_counter()
+        if device == "cuda":
+            begin = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            begin.record()
+        result = original(image)
+        if device == "cuda":
+            end.record(); profiler.add_gpu("image_encoding_gpu", begin, end)
+        profiler.add("image_encoding_dispatch", time.perf_counter() - wall)
+        return result
+    predictor.forward_image = profiled
+    def profiled_feature(inference_state, frame_idx, batch_size):
+        wall = time.perf_counter()
+        result = original_feature(inference_state, frame_idx, batch_size)
+        profiler.add("frame_upload_feature_dispatch", time.perf_counter() - wall)
+        return result
+    predictor._get_image_feature = profiled_feature
+
+
+def install_gpu_feature_cache(predictor, state, torch, maximum, profiler):
+    if maximum <= 0: return
+    from collections import OrderedDict
+    original, retained = predictor._get_image_feature, OrderedDict()
+    headroom = 4 * 1024 ** 3
+    def cached(inference_state, frame_idx, batch_size):
+        if frame_idx in retained:
+            value = retained.pop(frame_idx); retained[frame_idx] = value
+            inference_state["cached_features"] = {frame_idx: value}
+            profiler.count("gpuFeatureCacheHits")
+            return original(inference_state, frame_idx, batch_size)
+        profiler.count("gpuFeatureCacheMisses")
+        result = original(inference_state, frame_idx, batch_size)
+        value = inference_state["cached_features"].get(frame_idx)
+        if value is not None:
+            total = torch.cuda.get_device_properties(0).total_memory
+            while retained and (len(retained) >= maximum or
+                    total - torch.cuda.memory_allocated() < headroom):
+                retained.popitem(last=False)
+            if total - torch.cuda.memory_allocated() >= headroom:
+                retained[frame_idx] = value
+                profiler.count("gpuFeatureCacheStores")
+        return result
+    predictor._get_image_feature = cached
+
+
+def peak_process_memory_bytes():
+    try:
+        import resource
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return int(value if sys.platform == "darwin" else value * 1024)
+    except ImportError:
+        pass
+    try:
+        import ctypes
+        from ctypes import wintypes
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t)]
+        counters = Counters(); counters.cb = ctypes.sizeof(counters)
+        process = ctypes.windll.kernel32.GetCurrentProcess()
+        if ctypes.windll.psapi.GetProcessMemoryInfo(
+                process, ctypes.byref(counters), counters.cb):
+            return int(counters.PeakWorkingSetSize)
+    except (AttributeError, OSError):
+        pass
+    return 0
+
+
+class ProgressThrottle:
+    def __init__(self): self.last_time, self.last_percent = 0.0, -1.0
+    def emit(self, percent, message, frame, range_start, range_end, reverse, force=False):
+        now = time.monotonic()
+        if not force and now - self.last_time < PROGRESS_INTERVAL and \
+                percent < self.last_percent + .5:
+            return
+        self.last_time, self.last_percent = now, percent
+        send(status="progress", percent=percent, message=message, frameIndex=frame,
+             completedStart=min(frame, range_end if reverse else range_start),
+             completedEnd=max(frame, range_end if reverse else range_start),
+             rangeStart=range_start, rangeEnd=range_end, reverse=reverse)
+
+
+def propagate(predictor, state, writer, folder, start, total, reverse,
+              progress_start, progress_size, message, profiler, max_frames=None,
+              mark_step=None, skip_start=False):
     maximum = (start + 1 if reverse else total - start) if max_frames is None \
         else max_frames + 1
-    count = 0
+    written, seen = 0, 0
     range_start, range_end = propagation_range(start, total, reverse, max_frames)
-    iterator = iter(predictor.propagate_in_video(
-        state, start_frame_idx=start, reverse=reverse,
-        max_frame_num_to_track=max_frames))
+    throttle = ProgressThrottle()
+    iterator = iter(predictor.propagate_in_video(state, start_frame_idx=start,
+        reverse=reverse, max_frame_num_to_track=max_frames))
     while True:
         if mark_step: mark_step()
-        try: frame_index, object_ids, logits = next(iterator)
+        timings = []
+        if writer.device == "cuda":
+            begin, end = writer.torch.cuda.Event(True), writer.torch.cuda.Event(True)
+            begin.record()
+        wall = time.perf_counter()
+        try: frame, object_ids, logits = next(iterator)
         except StopIteration: break
-        mask_from_logits(object_ids, logits, frame_index, mask_folder)
-        count += 1
-        send(status="progress",
-             percent=progress_start + count * progress_size / max(1, maximum),
-             message=f"{message} {count}/{maximum} frames", frameIndex=frame_index,
-             rangeStart=range_start, rangeEnd=range_end, reverse=reverse)
+        profiler.add("propagation_dispatch", time.perf_counter() - wall)
+        if writer.device == "cuda":
+            end.record(); timings.append(("propagation_gpu", begin, end))
+        seen += 1
+        if skip_start and frame == start:
+            continue
+        writer.submit(object_ids, logits, frame, folder, timings)
+        written += 1
+        percent = progress_start + seen * progress_size / max(1, maximum)
+        throttle.emit(percent, f"{message} {seen}/{maximum} frames", frame,
+                      range_start, range_end, reverse,
+                      force=seen == 1 or seen == maximum)
+    return written
 
 
 def process(args):
@@ -131,11 +634,11 @@ def process(args):
     import torch
     from PIL import Image
 
-    source, runtime = args.source.resolve(), args.runtime.resolve()
-    frames, masks = args.frames.resolve(), args.masks.resolve()
-    shutil.rmtree(frames, ignore_errors=True)
-    shutil.rmtree(masks, ignore_errors=True)
-    frames.mkdir(parents=True); masks.mkdir(parents=True)
+    profiler = Profiler(args.profile_log.resolve() if args.profile_log else None)
+    source, runtime, masks = args.source.resolve(), args.runtime.resolve(), args.masks.resolve()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    args.extraction_mode = choose_extraction(args, runtime, torch, device)
+    shutil.rmtree(masks, ignore_errors=True); masks.mkdir(parents=True)
     width, height, rate, fps, source_duration = probe(source)
     start, end = args.start_ms / 1000, args.end_ms / 1000
     if start < 0 or end <= start or end > source_duration + .1:
@@ -143,175 +646,260 @@ def process(args):
     duration = min(end, source_duration) - start
     expected = max(1, round(duration * fps))
     review_width, review_height = model_size(width, height)
-    extract_frames(source, frames, start, duration, rate,
-                   review_width, review_height, expected)
-    frame_files = sorted(frames.glob("*.jpg"))
+    frames, cache_hit, cache_entry = prepare_frames(args, source, start, duration,
+        rate, review_width, review_height, expected, profiler)
+    args.active_cache_entry = cache_entry
+    frame_files = sorted(frames.glob("*.jpg"), key=lambda path: int(path.stem))
     if not frame_files: raise RuntimeError("The clip has no review frames")
     total = len(frame_files)
     initial = np.asarray(Image.open(args.mask).convert("L").resize(
         (review_width, review_height), Image.Resampling.NEAREST)) >= 128
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     bf16 = device == "cuda" and torch.cuda.get_device_capability()[0] >= 8
-    optimized = use_optimized_vos(torch, device, total)
-    first_compile = optimized and not sam2_vos_cache_marker(runtime).is_file()
-    if optimized:
-        send(status="progress", percent=15,
-             message="Compiling optimized SAM2 (one-time cache build; later processing "
-             "reuses it). This may take several minutes..." if first_compile else
-             "Loading cached optimized SAM2; initializing this worker...")
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
+        torch.cuda.reset_peak_memory_stats()
+    execution, expected_factor, compile_mode, feature_cache_frames = choose_execution(
+        args, runtime, torch, device, total)
+    args.resolved_execution = execution
+    args.resolved_device = device
+    args.ready_sent = False
+    optimized = execution == "vos" and sam2_vos_optimized(torch, device)
+    encoder_compiled = execution == "encoder" and sam2_vos_optimized(torch, device)
+    if execution != "eager" and not (optimized or encoder_compiled): execution = "eager"
+    marker = sam2_vos_cache_marker(runtime, args.model, execution, compile_mode)
+    first_compile = execution != "eager" and not marker.is_file()
+    if first_compile:
+        send(status="progress", percent=15, message=
+             f"Compiling SAM2 {execution} optimization for {args.model} (one-time cache generation; subsequent sessions reuse it)...")
+    elif execution != "eager":
+        send(status="progress", percent=15, message=
+             f"Loading cached SAM2 {execution} optimization; initializing this worker...")
     else:
-        send(status="progress", percent=15,
-             message=f"Loading SAM2 on {device.upper()}...")
-    predictor = load_sam2(runtime, torch, device, optimized=optimized)
-    # Later corrections must remain anchors; otherwise propagation immediately
-    # recomputes the corrected frame.
+        send(status="progress", percent=15, message=f"Loading SAM2 {args.model} on {device.upper()}...")
+    loaded = time.perf_counter()
+    model_info, _ = sam2_model(runtime, args.model)
+    predictor = load_sam2(runtime, torch, device, optimized=optimized,
+                          model_name=args.model, encoder_compiled=encoder_compiled,
+                          compile_mode=compile_mode)
+    profiler.add("model_load", time.perf_counter() - loaded)
+    add_feature_profiler(predictor, profiler, torch, device, args.detailed_profile)
     predictor.add_all_frames_to_correct_as_cond = True
-    mark_step = torch.compiler.cudagraph_mark_step_begin \
-        if optimized and sam2_vos_uses_cudagraphs() else None
-    use_on_demand_sam2_frames(frames, torch)
-    with torch.inference_mode(), torch.autocast(device_type=device,
-            dtype=torch.bfloat16, enabled=bf16):
-        if mark_step: mark_step()
-        state = predictor.init_state(str(frames), offload_video_to_cpu=True,
-                                     offload_state_to_cpu=device != "cuda")
-        if mark_step: mark_step()
-        predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
-        correction_frames = {0}
-        propagate(predictor, state, masks, 0, total, False, 15, 85,
-                  "Tracked", mark_step=mark_step)
-        if optimized: sam2_vos_cache_marker(runtime).touch()
-        prompt_forwards = interactive_forwards(predictor) if optimized else []
-        use_compiled_interactive_forwards(prompt_forwards, False)
-        send(status="ready", frameCount=total, fps=fps,
-             width=review_width, height=review_height, device=device,
-             precision="BF16" if bf16 else "FP32", optimized=optimized,
-             checkpoint="SAM2.1 Hiera Base+")
-        preview_baselines = {}
-        for line in sys.stdin:
-            request = json.loads(line)
-            if request.get("command") == "quit": break
-            command = request.get("command")
-            if command not in ("prompt", "auto", "reset", "update"):
-                send(status="error", message="Unknown SAM2 editor command")
-                continue
-            frame = int(request["frame"])
-            if not 0 <= frame < total:
-                send(status="error", message="Correction frame is outside the clip")
-                continue
-            if command != "update":
-                if command == "reset":
-                    original = clear_prompt_preview(state, preview_baselines, frame)
-                    if original is None:
-                        raise RuntimeError("The original tracked mask is unavailable")
-                    _, logits = predictor._get_orig_video_res_output(
-                        state, original["pred_masks"].to(device, non_blocking=True))
-                    mask_from_logits(state["obj_ids"], logits, frame, masks)
-                    send(status="preview", frame=frame, automatic=False)
-                    continue
-                points = np.asarray(request.get("points", []), np.float32)
-                labels = np.asarray(request.get("labels", []), np.int32)
-                if len(points) != len(labels) or command == "prompt" and len(points) == 0:
-                    send(status="error", message="Add at least one correction click")
-                    continue
-                remember_prompt_preview(state, preview_baselines, frame)
-                if command == "auto":
-                    frame_image = np.asarray(Image.open(frame_files[frame]).convert("RGB"))
-                    if mark_step: mark_step()
-                    automatic, candidate_count = automatic_foreground(
-                        predictor, frame_image, points, labels, torch, device, bf16)
-                    if mark_step: mark_step()
-                    _, object_ids, logits = predictor.add_new_mask(
-                        state, frame_idx=frame, obj_id=1, mask=automatic)
-                else:
-                    if mark_step: mark_step()
-                    _, object_ids, logits = predictor.add_new_points_or_box(
-                        state, frame_idx=frame, obj_id=1, points=points, labels=labels,
-                        clear_old_points=True)
-                    candidate_count = None
-                mask_from_logits(object_ids, logits, frame, masks)
-                send(status="preview", frame=frame,
-                     candidates=candidate_count, automatic=command == "auto")
-                continue
-            # Meta's optimized predictor calls a missing per-object helper when its
-            # automatic stale-memory option is enabled. This worker has one combined
-            # foreground object, so its working all-object helper is equivalent.
-            predictor._clear_non_cond_mem_around_input(state, frame)
-            previous, following = correction_limits(frame, correction_frames, total)
-            use_compiled_interactive_forwards(prompt_forwards, True)
-            try:
-                if frame > previous:
-                    propagate(predictor, state, masks, frame, total, True, 0, 50,
-                              "Updated backward", frame - previous, mark_step)
-                propagate(predictor, state, masks, frame, total, False,
-                          50 if frame > previous else 0, 50 if frame > previous else 100,
-                          "Updated forward", following - frame, mark_step)
-            finally:
-                use_compiled_interactive_forwards(prompt_forwards, False)
-            correction_frames.add(frame)
-            preview_baselines.pop(frame, None)
-            send(status="ready", frameCount=total, fps=fps,
-                 width=review_width, height=review_height, device=device,
-                 precision="BF16" if bf16 else "FP32", optimized=optimized,
-                 checkpoint="SAM2.1 Hiera Base+")
+    mark_step = torch.compiler.cudagraph_mark_step_begin if optimized and \
+        sam2_vos_uses_cudagraphs(compile_mode) else None
+    physical = physical_memory_bytes()
+    memory_cache = min(512 * 1024 ** 2, int(physical * .05))
+    cache_stats = {}
+    use_on_demand_sam2_frames(frames, torch, memory_cache, cache_stats)
+    writer = MaskWriter(torch, device, profiler)
+    correction_frames, propagated_frames = {0}, total
+    try:
+        with torch.inference_mode(), torch.autocast(device_type=device,
+                dtype=torch.bfloat16, enabled=bf16):
+            if mark_step: mark_step()
+            state = predictor.init_state(str(frames), offload_video_to_cpu=True,
+                                         offload_state_to_cpu=device != "cuda")
+            if device == "cuda":
+                install_gpu_feature_cache(predictor, state, torch,
+                                          feature_cache_frames, profiler)
+            if mark_step: mark_step()
+            prompted = time.perf_counter()
+            predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
+            profiler.add("initial_prompt", time.perf_counter() - prompted)
+            propagate(predictor, state, writer, masks, 0, total, False, 15, 85,
+                      "Tracked", profiler, mark_step=mark_step)
+            writer.flush()
+            if execution != "eager": marker.parent.mkdir(parents=True, exist_ok=True); marker.touch()
+            prompt_forwards = interactive_forwards(predictor) if optimized else []
+            use_compiled_interactive_forwards(prompt_forwards, False)
+            ready = dict(status="ready", frameCount=total, fps=fps,
+                width=review_width, height=review_height, device=device,
+                precision="BF16" if bf16 else "FP32", optimized=optimized,
+                execution=execution, checkpoint=model_info["label"], model=args.model,
+                gpuFeatureCacheFrames=feature_cache_frames,
+                frameCacheHit=cache_hit, framesFolder=str(frames))
+            send(**ready)
+            args.ready_sent = True
+            preview_baselines, auto_cache = {}, {}
+            for line in sys.stdin:
+                request = json.loads(line)
+                if request.get("command") == "quit": break
+                command = request.get("command")
+                if command not in ("prompt", "auto", "reset", "update"):
+                    send(status="error", message="Unknown SAM2 editor command"); continue
+                frame = int(request["frame"])
+                if not 0 <= frame < total:
+                    send(status="error", message="Correction frame is outside the clip"); continue
+                if command != "update":
+                    if command == "reset":
+                        original = clear_prompt_preview(state, preview_baselines, frame)
+                        if original is None: raise RuntimeError("The original tracked mask is unavailable")
+                        _, logits = predictor._get_orig_video_res_output(
+                            state, original["pred_masks"].to(device, non_blocking=True))
+                        writer.submit(state["obj_ids"], logits, frame, masks); writer.flush()
+                        send(status="preview", frame=frame, automatic=False); continue
+                    points = np.asarray(request.get("points", []), np.float32)
+                    labels = np.asarray(request.get("labels", []), np.int32)
+                    if len(points) != len(labels) or command == "prompt" and len(points) == 0:
+                        send(status="error", message="Add at least one correction click"); continue
+                    remember_prompt_preview(state, preview_baselines, frame)
+                    if command == "auto":
+                        if auto_cache.get("frame") == frame:
+                            candidates = auto_cache["candidates"]
+                            profiler.count("automaticMaskCacheHits")
+                        else:
+                            auto_image = np.asarray(Image.open(
+                                frame_files[frame]).convert("RGB"))
+                            generated = time.perf_counter()
+                            candidates = automatic_candidates(predictor, auto_image,
+                                torch, device, bf16)
+                            profiler.add("automatic_mask_generation",
+                                         time.perf_counter() - generated)
+                            auto_cache = {"frame": frame, "imageShape": auto_image.shape,
+                                          "candidates": candidates}
+                            profiler.count("automaticMaskCacheMisses")
+                        selected = time.perf_counter()
+                        automatic, candidate_count = select_automatic_foreground(
+                            candidates, auto_cache["imageShape"], points, labels)
+                        profiler.add("automatic_mask_selection",
+                                     time.perf_counter() - selected)
+                        prompted = time.perf_counter()
+                        _, object_ids, logits = predictor.add_new_mask(
+                            state, frame_idx=frame, obj_id=1, mask=automatic)
+                    else:
+                        prompted = time.perf_counter()
+                        _, object_ids, logits = predictor.add_new_points_or_box(
+                            state, frame_idx=frame, obj_id=1, points=points, labels=labels,
+                            clear_old_points=True)
+                        candidate_count = None
+                    profiler.add("correction_prompt", time.perf_counter() - prompted)
+                    writer.submit(object_ids, logits, frame, masks); writer.flush()
+                    send(status="preview", frame=frame, candidates=candidate_count,
+                         automatic=command == "auto"); continue
+                clear_stale_memory(predictor, state, frame)
+                previous, following = correction_limits(frame, correction_frames, total)
+                use_compiled_interactive_forwards(prompt_forwards, True)
+                try:
+                    if frame > previous:
+                        propagated_frames += frame - previous + 1
+                        propagate(predictor, state, writer, masks, frame, total, True,
+                            0, 50, "Updated backward", profiler, frame - previous, mark_step)
+                    propagated_frames += following - frame
+                    propagate(predictor, state, writer, masks, frame, total, False,
+                        50 if frame > previous else 0, 50 if frame > previous else 100,
+                        "Updated forward", profiler, following - frame, mark_step,
+                        skip_start=frame > previous)
+                    writer.flush()
+                finally:
+                    use_compiled_interactive_forwards(prompt_forwards, False)
+                correction_frames.add(frame); preview_baselines.pop(frame, None)
+                send(**ready)
+    finally:
+        try: writer.close()
+        finally:
+            if cache_entry is not None:
+                try: active_lock(cache_entry).unlink()
+                except OSError: pass
+            peak = torch.cuda.max_memory_allocated() if device == "cuda" else 0
+            total_vram = torch.cuda.get_device_properties(0).total_memory \
+                if device == "cuda" else 0
+            profiler.report(model=args.model, execution=execution, device=device,
+                compileMode=compile_mode,
+                gpuFeatureCacheFrames=feature_cache_frames,
+                precision="BF16" if bf16 else "FP32", frames=total,
+                propagatedFrames=propagated_frames, expectedWorkMultiplier=expected_factor,
+                frameCacheHit=cache_hit, frameCacheStats=cache_stats,
+                peakVramBytes=peak, peakRamBytes=peak_process_memory_bytes(),
+                totalVramBytes=total_vram,
+                frameCacheBytes=directory_size(cache_entry) if cache_entry else 0,
+                maskBytes=directory_size(masks), reviewWidth=review_width,
+                reviewHeight=review_height, extractionMode=args.extraction_mode)
+            if getattr(args, "ready_sent", False):
+                update_work_multiplier(runtime, torch, device, args.model,
+                                       propagated_frames / max(1, total))
 
 
 def self_test():
-    class Component: pass
-    class Predictor: pass
-    def eager(): return "eager"
-    def compiled(): return "compiled"
-    compiled._torchdynamo_orig_callable = eager
-    predictor = Predictor()
-    predictor.sam_prompt_encoder = Component()
-    predictor.sam_mask_decoder = Component()
-    predictor.sam_prompt_encoder.forward = compiled
-    predictor.sam_mask_decoder.forward = lambda: "plain"
-    forwards = interactive_forwards(predictor)
-    use_compiled_interactive_forwards(forwards, False)
-    assert predictor.sam_prompt_encoder.forward is eager
-    use_compiled_interactive_forwards(forwards, True)
-    assert predictor.sam_prompt_encoder.forward is compiled
     assert model_size(1920, 1080) == (1024, 576)
-    assert model_size(1080, 1920) == (576, 1024)
     assert correction_limits(75, {0, 50, 100}, 150) == (50, 100)
     assert propagation_range(75, 150, True, 25) == (50, 75)
     assert propagation_range(75, 150, False, 25) == (75, 100)
-    original = {"pred_masks": "original"}
-    old_points, old_mask, baselines = [1], [2], {}
-    state = {"obj_id_to_idx": {1: 0}, "point_inputs_per_obj": {0: {4: old_points}},
-             "mask_inputs_per_obj": {0: {4: old_mask}},
-             "temp_output_dict_per_obj": {0: {"cond_frame_outputs": {4: "temp"},
-                                                    "non_cond_frame_outputs": {}}},
-             "output_dict_per_obj": {0: {"cond_frame_outputs": {4: original},
-                                               "non_cond_frame_outputs": {}}}}
-    remember_prompt_preview(state, baselines, 4)
-    state["point_inputs_per_obj"][0][4] = [3]
-    state["mask_inputs_per_obj"][0].pop(4)
-    assert clear_prompt_preview(state, baselines, 4) is original
-    assert state["point_inputs_per_obj"][0][4] is old_points
-    assert state["mask_inputs_per_obj"][0][4] is old_mask
-    assert 4 not in state["temp_output_dict_per_obj"][0]["cond_frame_outputs"]
-    assert not compiled_vos_worthwhile(VOS_MIN_FRAMES - 1)
-    assert compiled_vos_worthwhile(VOS_MIN_FRAMES)
+    assert set(SAM2_MODELS) == {"base-plus", "small", "tiny"}
+    try:
+        import torch
+        from PIL import Image
+        with tempfile.TemporaryDirectory(prefix="sam2-writer-test-") as value:
+            folder = Path(value)
+            devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+            for device_index, device in enumerate(devices):
+                writer = MaskWriter(torch, device, Profiler(None))
+                for frame in range(6):
+                    logits = torch.tensor([[[1., -1.], [-1., 1.]]], device=device)
+                    ids = torch.tensor([1], device=device)
+                    writer.submit(ids, logits, device_index * 6 + frame, folder)
+                writer.close()
+            for saved_path in folder.glob("*.png"):
+                with Image.open(saved_path) as saved:
+                    values = {index for index, count in enumerate(
+                        saved.histogram()) if count}
+                    assert values <= {0, 255}
+            assert not list(folder.glob("*.tmp-*"))
+    except ImportError:
+        pass
     print("SAM2 refinement worker self-test passed")
+
+
+def run_with_adaptive_fallback(args):
+    try:
+        process(args)
+    except Exception as error:
+        cache_entry = getattr(args, "active_cache_entry", None)
+        if cache_entry is not None:
+            try: active_lock(cache_entry).unlink()
+            except OSError: pass
+        execution = getattr(args, "resolved_execution", "eager")
+        if args.execution != "auto" or execution == "eager" or \
+                getattr(args, "ready_sent", False):
+            raise
+        import torch
+        device = getattr(args, "resolved_device",
+            "cuda" if torch.cuda.is_available() else "cpu")
+        invalidate_policy_mode(args.runtime.resolve(), torch, device, args.model,
+                               execution, error)
+        send(status="progress", percent=15,
+             message=f"SAM2 {execution} optimization failed; invalidated its policy entry and retrying in eager mode...")
+        args.execution = "eager"
+        process(args)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=Path)
-    parser.add_argument("--runtime", type=Path)
-    parser.add_argument("--mask", type=Path)
-    parser.add_argument("--frames", type=Path)
-    parser.add_argument("--masks", type=Path)
-    parser.add_argument("--start-ms", type=int, default=0)
-    parser.add_argument("--end-ms", type=int)
+    parser.add_argument("--source", type=Path); parser.add_argument("--runtime", type=Path)
+    parser.add_argument("--mask", type=Path); parser.add_argument("--frames", type=Path)
+    parser.add_argument("--masks", type=Path); parser.add_argument("--start-ms", type=int, default=0)
+    parser.add_argument("--end-ms", type=int); parser.add_argument("--model",
+        choices=tuple(SAM2_MODELS), default="base-plus")
+    parser.add_argument("--execution", choices=("auto", "eager", "encoder", "vos"),
+                        default="auto")
+    parser.add_argument("--cache-root", type=Path)
+    parser.add_argument("--cache-limit-bytes", type=int, default=0)
+    parser.add_argument("--profile-log", type=Path)
+    parser.add_argument("--detailed-profile", action="store_true")
+    parser.add_argument("--gpu-feature-cache-frames", type=int, default=0)
+    parser.add_argument("--extraction-mode",
+        choices=("auto", "standard", "bicubic", "bilinear", "jpeg3", "nvdec"),
+        default="auto")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.gpu_feature_cache_frames < 0:
+        parser.error("--gpu-feature-cache-frames cannot be negative")
     if args.self_test: self_test()
     elif not all((args.source, args.runtime, args.mask, args.frames,
                   args.masks, args.end_ms is not None)):
         parser.error("--source, --runtime, --mask, --frames, --masks, and --end-ms are required")
-    else: process(args)
+    else: run_with_adaptive_fallback(args)
 
 
 if __name__ == "__main__":

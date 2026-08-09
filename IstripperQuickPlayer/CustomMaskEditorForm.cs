@@ -15,6 +15,7 @@ internal sealed class CustomMaskEditorForm : Form
     readonly long durationMs;
     readonly double frameDurationMs;
     readonly bool allowFrameSelection;
+    readonly string sam2Model;
     readonly string temporary = Path.Combine(Path.GetTempPath(),
         "iqp-mask-" + Guid.NewGuid().ToString("N"));
     readonly PictureBox image = new() { Dock = DockStyle.Fill,
@@ -62,13 +63,14 @@ internal sealed class CustomMaskEditorForm : Form
     internal CustomMaskEditorForm(string videoPath,
         CustomShowConfiguration configuration, long startMs, long endMs,
         string? clipLabel = null, string algorithm = "MatAnyone 2",
-        bool allowFrameSelection = false)
+        bool allowFrameSelection = false, string sam2Model = "base-plus")
     {
         this.videoPath = videoPath;
         this.configuration = configuration;
         this.startMs = startMs;
         this.endMs = endMs;
         this.allowFrameSelection = allowFrameSelection;
+        this.sam2Model = sam2Model;
         durationMs = Math.Max(1, endMs - startMs);
         try
         {
@@ -202,7 +204,8 @@ internal sealed class CustomMaskEditorForm : Form
                 RedirectStandardError = true
             };
             foreach (string argument in new[] { workerPath, "--runtime", runtime,
-                "--image", FramePath, "--mask", MaskPath, "--preview", PreviewPath })
+                "--image", FramePath, "--mask", MaskPath, "--preview", PreviewPath,
+                "--model", sam2Model })
                 start.ArgumentList.Add(argument);
             worker = Process.Start(start) ??
                 throw new InvalidOperationException("Python could not be started.");

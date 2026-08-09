@@ -68,6 +68,9 @@
     <Content Include="..\tools\custom-shows\benchmark_matanyone2.py" Link="custom-shows\benchmark_matanyone2.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\custom-shows\benchmark_sam2_workflows.py" Link="custom-shows\benchmark_sam2_workflows.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\tools\custom-shows\setup.ps1" Link="custom-shows\setup.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

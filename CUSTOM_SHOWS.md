@@ -9,6 +9,10 @@ custom shows use QuickPlayer's RGB/alpha player.
 For exact installation commands, pinned revisions, hashes, file schemas, and
 licensing details, see the [technical custom-show reference](docs/custom-shows.md).
 
+Each new conversion records its processing method and reproducibility-relevant
+parameters in the optional `processing` section of the show's `show.json`.
+These saved details are visible when editing the custom show's metadata.
+
 ## 1. Install the processing tools
 
 Choose **File > Custom Shows > Install / Update Processing Tools...**. Robust
@@ -31,6 +35,10 @@ FFmpeg, write access, and one-frame inference.
 An NVIDIA CUDA GPU is strongly recommended. CPU/FP32 fallback works but is much
 slower. QuickPlayer uses FP16 where the GPU supports it and falls back safely on
 older CUDA hardware.
+
+When any SAM2-backed option is selected, setup installs and verifies SAM2.1
+Base+, Small, and Tiny. Existing checkpoints whose SHA-256 still matches are
+retained, so rerunning setup does not download them again.
 
 ## 2. Create the card and model profile
 
@@ -115,10 +123,27 @@ being regenerated, and green means regenerated masks. Undo removes correction
 clicks from the history; when none remain, playback is unlocked and updating is
 disabled.
 
-Compiled SAM2 VOS is only worthwhile for long clips. Its first use can spend
-several minutes compiling and recording shapes; the dialog identifies this as a
-one-time cache build. Shorter clips use eager prediction to avoid that startup
-cost. Keep the compilation cache if you do not want to pay the cost again.
+Choose the **SAM2 mask model** beside the processing algorithm. Base+ is the
+default and most robust; Small is balanced; Tiny is fastest. Only verified
+installed checkpoints appear. The selected model produces the accepted mask
+sequence directly, with no hidden Base+ rerun.
+
+Review frames are cached under
+`%LOCALAPPDATA%\IStripperQuickPlayer\sam2-frame-cache`. The default limit is
+10 GB; change it in **Custom Shows > Settings**, where current usage and a
+**Clear cache** action are also shown. Setting 0 disables persistent caching.
+The key includes source identity, clip range, frame rate, dimensions, and
+extraction settings. An in-session decoded-frame LRU avoids repeated JPEG decode
+and preprocessing when correction passes revisit frames.
+
+QuickPlayer uses `sam2-performance-policy-v1.json` instead of a fixed clip-length
+rule. The policy is keyed by GPU, driver, PyTorch/CUDA, SAM2 commit, model, and
+compile mode. A bounded GPU feature cache qualifies at 2% measured end-to-end
+improvement with at least 4 GiB VRAM headroom. Compiled encoder or VOS execution
+still requires at least 10% improvement, and expected initial plus correction
+work must exceed break-even by a 20% safety margin. Unknown or invalid policy
+data uses eager mode. The dialog distinguishes one-time compiler cache
+generation, cached compiled loading, and per-worker/CUDA-graph setup.
 
 ## 6. Performance findings and recommendations
 
@@ -161,13 +186,40 @@ resizing improved throughput by less than 5%, while changing inference input
 pixels exceeded the alpha-equivalence limit. The shipped defaults therefore keep
 CUDA autocast with FP32/CPU fallback and Pillow resizing.
 
-A controlled 1,000-frame, 1024×576 SAM2 test including a full midpoint
-correction averaged 241.2 seconds eager, 245.2 seconds with full `max-autotune`,
-and 271.9 seconds with cached `max-autotune-no-cudagraphs`. QuickPlayer therefore
-uses eager propagation below 16,000 frames. Full compilation is deferred until
-the first longer clip; it took about nine minutes once on the reference machine,
-after which the compiler cache was reused. `max-autotune-no-cudagraphs` is not the
-default because it was slower in the measured initial-and-correction workload.
+A previous controlled 1,000-frame, 1024×576 SAM2 Base+ test including a full
+midpoint correction averaged 241.2 seconds eager, 245.2 seconds with full
+`max-autotune`, and 271.9 seconds with cached
+`max-autotune-no-cudagraphs`; both compiled modes are therefore rejected for
+that workload. The current benchmark repeats eager, supported encoder-only, and
+full VOS modes for Base+, Small, and Tiny on 1080p and 4K fixtures, including
+cold/cached startup and two correction-equivalent passes. Only qualifying
+results enter the adaptive policy. Smaller extracted review frames do not
+materially accelerate SAM2 because it still uses a fixed 1024×1024 internal
+input.
+
+The current corrected-output benchmark uses 1,000 1080p source frames plus two
+correction passes (2,667 propagated frame visits). Median eager totals on the
+RTX 4080 were 158.4 seconds for Base+, 151.3 seconds for Small, and 142.0
+seconds for Tiny. GPU feature caches of 1, 4, 8, 16, 64, and 256 frames were
+screened; the workflow produced only three feature hits, and larger capacities
+only consumed more VRAM. Three-run one-frame-cache medians changed throughput by
+-0.3%, +1.9%, and +0.5% respectively, so none met the 2% gate.
+
+For Base+, cached 1,000-frame totals were 162.9 seconds for encoder-only
+`max-autotune-no-cudagraphs`, 172.1 seconds for encoder-only `max-autotune`,
+168.3 seconds for full VOS without CUDA graphs, and 179.8 seconds for full VOS
+with `max-autotune`. None met the 10% compilation gate, so eager remains the
+automatic choice. Tiny likewise measured 154.5 seconds for encoder-only and
+147.6 seconds for full VOS without CUDA graphs versus its 142.0-second eager
+median. With both ends of the model range losing end-to-end, Small remains eager
+instead of inheriting a speculative compiled choice. The compiler paths remain
+benchmarkable for future PyTorch/driver/model combinations.
+
+Mask output uses three bounded slots: thresholded GPU masks copy asynchronously
+to pinned CPU buffers while a dedicated writer saves atomic binary PNGs at
+compression level 1. Progress is throttled while covered-range events continue
+updating the correction timeline. Automatic-mask candidates are retained for
+the current frame, so refining clicks does not regenerate them.
 
 Practical recommendations:
 
@@ -184,7 +236,10 @@ Practical recommendations:
 
 The reproducible RVM and MatAnyone2 scripts are
 `tools/custom-shows/benchmark_rvm.py` and `benchmark_matanyone2.py`. The SAM2
-workflow benchmark is `tools/custom-shows/benchmark_sam2_workflows.py`.
+workflow benchmark is `tools/custom-shows/benchmark_sam2_workflows.py`. Its
+structured extraction, decode/preprocess, image-encoding, propagation,
+mask-transfer, PNG-writing, prompt, automatic-mask, correction, RAM/VRAM, and
+cache records go to `processing.log`, not the processing dialog.
 
 ## 7. Monitor, review, and accept
 

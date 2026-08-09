@@ -38,8 +38,12 @@ internal sealed class CustomShowEditorForm : Form
     readonly Button coverTitleColor = new() { AutoSize = true,
         BackColor = Color.DeepPink, UseVisualStyleBackColor = false };
     readonly ComboBox preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox sam2Model = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox mattingDetail = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sequenceChunk = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly TextBox processingDetails = new() { ReadOnly = true, Multiline = true,
+        Height = 88, ScrollBars = ScrollBars.Vertical, TabStop = false,
+        Text = "Recorded in show.json after processing completes." };
     readonly Button save = new() { Text = "Process and Preview", AutoSize = true };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     List<CustomPerformerProfile> profiles = [];
@@ -103,6 +107,18 @@ internal sealed class CustomShowEditorForm : Form
             preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
         preset.SelectedIndex = 0;
         AddRow(table, "Processing algorithm", preset);
+        foreach (string model in CustomShowProcessor.InstalledSam2Models(configuration))
+            sam2Model.Items.Add(model switch
+            {
+                "small" => "Small (balanced)",
+                "tiny" => "Tiny (fastest)",
+                _ => "Base+ (best robustness)"
+            });
+        if (sam2Model.Items.Count > 0)
+            sam2Model.SelectedIndex = sam2Model.Items.Cast<string>().ToList().FindIndex(
+                value => value.StartsWith("Base+", StringComparison.Ordinal)) is int index &&
+                index >= 0 ? index : 0;
+        AddRow(table, "SAM2 mask model", sam2Model);
         mattingDetail.Items.AddRange([
             "Very Low (256 px)", "Low (384 px)",
             "Standard (512 px - recommended)", "High (768 px)",
@@ -112,6 +128,7 @@ internal sealed class CustomShowEditorForm : Form
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12]);
         sequenceChunk.SelectedItem = 3;
         AddRow(table, "Processing batch size", sequenceChunk);
+        AddRow(table, "Created using", processingDetails);
         FlowLayoutPanel buttons = Flow(save, cancel);
         AddRow(table, "", buttons);
         AcceptButton = save;
@@ -158,12 +175,22 @@ internal sealed class CustomShowEditorForm : Form
         bool rvm = selected is "quality" or "fast";
         mattingDetail.Enabled = (rvm || selected == "matanyone2") && showId == null;
         sequenceChunk.Enabled = (rvm || UsesSam2(selected)) && showId == null;
+        sam2Model.Enabled = (selected == "matanyone2" || UsesSam2(selected)) &&
+            showId == null && sam2Model.Items.Count > 0;
     }
 
     int SelectedMattingResolution() => mattingDetail.SelectedIndex switch
     {
         0 => 256, 1 => 384, 3 => 768, 4 => 1024, 5 => 0, _ => 512
     };
+
+    string SelectedSam2Model()
+    {
+        string selected = sam2Model.SelectedItem?.ToString() ?? "Base+";
+        if (selected.StartsWith("Small", StringComparison.Ordinal)) return "small";
+        if (selected.StartsWith("Tiny", StringComparison.Ordinal)) return "tiny";
+        return "base-plus";
+    }
 
     string SelectedPreset()
     {
@@ -211,7 +238,32 @@ internal sealed class CustomShowEditorForm : Form
             clipTypes.SetItemChecked(i, show.ClipTypes.Contains(clipTypes.Items[i]!.ToString()));
         performer.SelectedItem = profiles.FirstOrDefault(profile => profile.Id == show.PerformerId);
         showClips = show.Clips;
+        if (show.Processing is CustomShowProcessing processing)
+        {
+            processingDetails.Text = DescribeProcessing(processing);
+            processingDetails.Visible = true;
+        }
         UpdateClipButton();
+    }
+
+    static string DescribeProcessing(CustomShowProcessing value)
+    {
+        string algorithm = value.Algorithm switch
+        {
+            "quality" => "RVM Quality (ResNet50)",
+            "fast" => "RVM Fast (MobileNetV3)",
+            "matanyone2" => "MatAnyone 2",
+            "videomama" => "VideoMaMa",
+            "vitmatte-s" => "ViTMatte S",
+            "vitmatte-b" => "ViTMatte B",
+            _ => value.Algorithm
+        };
+        string detail = value.MattingDetailPx == 0 ? "full resolution" :
+            $"{value.MattingDetailPx} px";
+        string sam2 = value.Sam2Model == null ? "" :
+            $"; SAM2 {value.Sam2Model}";
+        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{sam2}\r\n" +
+            $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
     void EditClips(object? sender, EventArgs e)
@@ -321,7 +373,10 @@ internal sealed class CustomShowEditorForm : Form
                 Dictionary<string, long> initialMaskFrames = [];
                 Dictionary<string, string> sam2Masks = [];
                 string selectedPreset = SelectedPreset();
+                string selectedSam2Model = SelectedSam2Model();
                 int detail = SelectedMattingResolution();
+                string log = Path.Combine(staging, "processing.log");
+                if (File.Exists(log)) File.Delete(log);
                 if (selectedPreset == "matanyone2" || UsesSam2(selectedPreset))
                 {
                     CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included).ToArray();
@@ -337,7 +392,8 @@ internal sealed class CustomShowEditorForm : Form
                                 "vitmatte-s" => "ViTMatte S",
                                 "vitmatte-b" => "ViTMatte B",
                                 _ => "MatAnyone 2"
-                            }, allowFrameSelection: selectedPreset == "matanyone2");
+                            }, allowFrameSelection: selectedPreset == "matanyone2",
+                            sam2Model: selectedSam2Model);
                         if (maskEditor.ShowDialog(this) != DialogResult.OK)
                         {
                             discardStaging = true;
@@ -372,7 +428,8 @@ internal sealed class CustomShowEditorForm : Form
                             using CustomVideoMaskEditorForm refinement = new(input,
                                 configuration, clip.StartMs, clip.EndMs, mask, maskSequence,
                                 clipsToMask.Length == 1 ? null :
-                                $"Clip {index + 1} of {clipsToMask.Length}");
+                                $"Clip {index + 1} of {clipsToMask.Length}",
+                                selectedSam2Model, log);
                             if (refinement.ShowDialog(this) != DialogResult.OK)
                             {
                                 discardStaging = true;
@@ -388,8 +445,6 @@ internal sealed class CustomShowEditorForm : Form
                     using CustomShowProcessingForm processing = new(async (progress, token) =>
                     {
                         int chunk = (int)(sequenceChunk.SelectedItem ?? 3);
-                        string log = Path.Combine(staging, "processing.log");
-                        if (File.Exists(log)) File.Delete(log);
                         CustomShowClip[] included = showClips.Where(clip => clip.Included).ToArray();
                         long totalDuration = included.Sum(clip =>
                             Math.Max(1, clip.EndMs - clip.StartMs));
@@ -403,7 +458,7 @@ internal sealed class CustomShowEditorForm : Form
                                     clip.StartMs, clip.EndMs)).ToArray();
                             first = await CustomShowProcessor.RunAsync(
                                 configuration, input, staging, selectedPreset,
-                                null, null, detail, chunk, 0, null, log, false,
+                                null, null, detail, chunk, 0, null, log, File.Exists(log),
                                 progress, token, jobs);
                             for (int index = 0; index < included.Length; index++)
                             {
@@ -453,7 +508,8 @@ internal sealed class CustomShowEditorForm : Form
                                 configuration, input, output, selectedPreset,
                                 initialMasks.GetValueOrDefault(clip.Id),
                                 sam2Masks.GetValueOrDefault(clip.Id), detail, chunk,
-                                clip.StartMs, clip.EndMs, log, index > 0, aggregate, token,
+                                clip.StartMs, clip.EndMs, log,
+                                index > 0 || File.Exists(log), aggregate, token,
                                 maskFrameMs: initialMaskFrames.GetValueOrDefault(
                                     clip.Id, clip.StartMs));
                             clip.Media = new()
@@ -509,6 +565,30 @@ internal sealed class CustomShowEditorForm : Form
                         CustomShowStore.ValidateClips(showClips, media.DurationMs);
                     }
                     show.Clips = showClips;
+                    int processingBatchSize = (int)(sequenceChunk.SelectedItem ?? 3);
+                    bool usesSam2 = selectedPreset == "matanyone2" || UsesSam2(selectedPreset);
+                    show.Processing = new()
+                    {
+                        Algorithm = selectedPreset,
+                        MattingDetailPx = detail,
+                        BatchSize = processingBatchSize,
+                        Sam2Model = usesSam2 ? selectedSam2Model : null,
+                        ExecutionPolicy = "auto",
+                        PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
+                        RecurrentRefinementSteps = selectedPreset == "matanyone2" ? 11 : 0,
+                        ProcessedUtc = DateTime.UtcNow,
+                        QuickPlayerVersion = Application.ProductVersion,
+                        ToolRevisions = ReadProcessingRevisions(selectedPreset),
+                        Clips = showClips.Where(clip => clip.Included).Select(clip =>
+                            new CustomClipProcessing
+                            {
+                                ClipId = clip.Id,
+                                InitialMaskFrameMs = usesSam2
+                                    ? initialMaskFrames.GetValueOrDefault(clip.Id, clip.StartMs)
+                                    : null,
+                                Sam2MaskTracking = UsesSam2(selectedPreset)
+                            }).ToArray()
+                    };
                     if (!string.IsNullOrWhiteSpace(cover.Text))
                         SaveCover(cover.Text, Path.Combine(staging, show.Media.Cover));
                     else await CustomShowProcessor.GenerateCoverAsync(input,
@@ -554,6 +634,32 @@ internal sealed class CustomShowEditorForm : Form
         }
         finally { save.Enabled = true; }
         await Task.CompletedTask;
+    }
+
+    Dictionary<string, string> ReadProcessingRevisions(string selectedPreset)
+    {
+        string[] markers = selectedPreset switch
+        {
+            "quality" or "fast" => ["RVM_COMMIT"],
+            "matanyone2" => ["MATANYONE2_COMMIT", "SAM2_COMMIT"],
+            "videomama" => ["VIDEOMAMA_COMMIT", "VIDEOMAMA_SVD_REVISION",
+                "VIDEOMAMA_MODEL_REVISION", "SAM2_COMMIT"],
+            "vitmatte-s" => ["VITMATTE_S_REVISION", "SAM2_COMMIT"],
+            "vitmatte-b" => ["VITMATTE_B_REVISION", "SAM2_COMMIT"],
+            _ => []
+        };
+        Dictionary<string, string> revisions = [];
+        string runtime;
+        try { runtime = CustomShowProcessor.RuntimeRoot(configuration); }
+        catch { return revisions; }
+        foreach (string marker in markers)
+        {
+            string path = Path.Combine(runtime, marker);
+            if (!File.Exists(path)) continue;
+            string value = File.ReadAllText(path).Trim();
+            if (value.Length > 0) revisions[marker] = value;
+        }
+        return revisions;
     }
 
     internal static async Task DeleteDirectoryWhenReleasedAsync(string path)
@@ -1004,6 +1110,11 @@ internal sealed class CustomModelManagerForm : Form
 internal sealed class CustomShowSettingsForm : Form
 {
     readonly TextBox root = new(), python = new();
+    readonly NumericUpDown sam2CacheSize = new()
+    {
+        Minimum = 0, Maximum = 100, DecimalPlaces = 0, Width = 90
+    };
+    readonly Label sam2CacheUsage = new() { AutoSize = true };
     readonly Label validation = new() { AutoSize = true };
     CancellationTokenSource? validationCancellation;
     internal CustomShowConfiguration Configuration { get; }
@@ -1015,18 +1126,36 @@ internal sealed class CustomShowSettingsForm : Form
             PythonExecutable = current.PythonExecutable,
             SmallPlayerVolume = current.SmallPlayerVolume,
             LargePlayerVolume = current.LargePlayerVolume,
-            FullOpacityThreshold = current.FullOpacityThreshold
+            FullOpacityThreshold = current.FullOpacityThreshold,
+            Sam2FrameCacheSizeGb = current.Sam2FrameCacheSizeGb
         };
-        Text = "Custom Show Settings"; ClientSize = new Size(700, 210);
+        Text = "Custom Show Settings"; ClientSize = new Size(700, 280);
         TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(12) };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); Controls.Add(table);
         AddPath(table, "Library folder", root, true); AddPath(table, "Python executable", python, false);
+        int cacheRow = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label { Text = "SAM2 frame cache (GB)", AutoSize = true,
+            Anchor = AnchorStyles.Left }, 0, cacheRow);
+        FlowLayoutPanel cacheControls = new() { AutoSize = true, WrapContents = false };
+        Button clearCache = new() { Text = "Clear SAM2 frame cache", AutoSize = true };
+        cacheControls.Controls.AddRange([sam2CacheSize, clearCache, sam2CacheUsage]);
+        table.Controls.Add(cacheControls, 1, cacheRow); table.SetColumnSpan(cacheControls, 2);
         Button validate = new() { Text = "Validate setup", AutoSize = true };
         Button ok = new() { Text = "OK", AutoSize = true };
         Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
         FlowLayoutPanel buttons = new() { AutoSize = true }; buttons.Controls.AddRange([validate, ok, cancel]);
-        table.Controls.Add(validation, 1, 2); table.SetColumnSpan(validation, 2); table.Controls.Add(buttons, 1, 3); table.SetColumnSpan(buttons, 2);
+        int validationRow = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(validation, 1, validationRow); table.SetColumnSpan(validation, 2);
+        int buttonRow = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(buttons, 1, buttonRow); table.SetColumnSpan(buttons, 2);
         root.Text = Configuration.LibraryRoot; python.Text = Configuration.PythonExecutable;
+        sam2CacheSize.Value = Math.Clamp(Configuration.Sam2FrameCacheSizeGb, 0, 100);
+        sam2CacheUsage.Text = "Calculating usage...";
+        Shown += async (_, _) => await UpdateCacheUsageAsync();
+        clearCache.Click += async (_, _) => await ClearSam2CacheAsync(clearCache);
         validate.Click += async (_, _) => await ValidateSetup(validate);
         ok.Click += SaveSettings;
         FormClosed += (_, _) => validationCancellation?.Cancel();
@@ -1062,6 +1191,7 @@ internal sealed class CustomShowSettingsForm : Form
                 throw new FileNotFoundException("Select the Python executable created by setup.", python.Text);
             Configuration.LibraryRoot = Path.GetFullPath(root.Text);
             Configuration.PythonExecutable = Path.GetFullPath(python.Text);
+            Configuration.Sam2FrameCacheSizeGb = (int)sam2CacheSize.Value;
             Directory.CreateDirectory(Configuration.LibraryRoot);
             DialogResult = DialogResult.OK;
             Close();
@@ -1071,6 +1201,48 @@ internal sealed class CustomShowSettingsForm : Form
             MessageBox.Show(this, error.Message, Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    async Task UpdateCacheUsageAsync()
+    {
+        try
+        {
+            long bytes = await Task.Run(() =>
+                Directory.Exists(CustomShowProcessor.Sam2FrameCacheRoot)
+                    ? Directory.EnumerateFiles(CustomShowProcessor.Sam2FrameCacheRoot, "*",
+                        SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length) : 0);
+            if (IsDisposed) return;
+            sam2CacheUsage.Text = $"Used: {bytes / (1024d * 1024 * 1024):0.00} GB";
+        }
+        catch { sam2CacheUsage.Text = "Usage unavailable"; }
+    }
+
+    async Task ClearSam2CacheAsync(Button button)
+    {
+        button.Enabled = false;
+        sam2CacheUsage.Text = "Clearing inactive entries...";
+        await Task.Run(() =>
+        {
+            string root = CustomShowProcessor.Sam2FrameCacheRoot;
+            if (!Directory.Exists(root)) return;
+            foreach (string entry in Directory.EnumerateDirectories(root))
+            {
+                bool inUse = false;
+                try
+                {
+                    foreach (string active in Directory.EnumerateFiles(entry, ".active*"))
+                    {
+                        if (!int.TryParse(File.ReadAllText(active), out int pid)) continue;
+                        using Process process = Process.GetProcessById(pid);
+                        if (!process.HasExited) { inUse = true; break; }
+                    }
+                }
+                catch { }
+                if (!inUse) try { Directory.Delete(entry, true); } catch { }
+            }
+        });
+        button.Enabled = true;
+        await UpdateCacheUsageAsync();
     }
     static void AddPath(TableLayoutPanel table, string label, TextBox box, bool folder)
     {
@@ -1087,7 +1259,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
         AutoSize = true, Checked = true };
     readonly CheckBox matAnyone = new() { Text =
-        "MatAnyone 2 + SAM2 interactive masking (~520 MB)", AutoSize = true,
+        "MatAnyone 2 + SAM2 Base+/Small/Tiny interactive masking (~900 MB)", AutoSize = true,
         Checked = true };
     readonly CheckBox videoMaMa = new() { Text =
         "VideoMaMa high-quality matting + SAM2 (~8 GB, NVIDIA CUDA required)",
