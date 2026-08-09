@@ -249,6 +249,48 @@ in the creation form. If a chunk exceeds GPU memory, it is retried automatically
 as smaller sequential chunks without restarting the show.
 The same batch selector controls ViTMatte inference and VideoMaMa groups.
 
+### MatAnyone2 pipeline performance
+
+MatAnyone2's recurrent inference is necessarily sequential, but QuickPlayer
+overlaps the work around it. A three-slot bounded pipeline reads and resizes the
+next source frame while the GPU propagates the current matte and an output worker
+downloads/upscales alpha, creates RGBA, updates the preview, and writes the
+previous frame to FFmpeg. Input and output queues are limited to two entries, so
+long clips do not accumulate frames in RAM or VRAM and output order remains
+strictly chronological. Middle-frame propagation stores backward alpha in one
+preallocated temporary memory-mapped array instead of thousands of PNG files.
+The mapping is removed after success, cancellation, or failure.
+
+On the reference Ryzen 7 7800X3D/RTX 4080, a 1,000-frame 1920x1080 clip at
+Standard (512 px) detail improved from 11.19 FPS in the former serial path to
+16.21 FPS with previews enabled: a 31.0% whole-job improvement. Disabling
+previews increased the bounded result only from 16.21 to 16.31 FPS, so the
+resizable input/composite preview is not a material processing bottleneck.
+Profiling attributed only about 5-6% of wall time to FFmpeg decode/read, below
+the threshold at which NVDEC was worth its extra codec, transfer, fallback, and
+frame-parity complexity. QuickPlayer therefore keeps the more portable software
+decode path.
+
+At 4K output, the initial bounded implementation measured 8.29 FPS with previews
+and 9.38 FPS without them. QuickPlayer now composes the capped 960x540 preview
+directly from the retained 910x512 inference RGB/alpha at Standard detail instead
+of downscaling the already-upscaled 4K buffers again. Three repeated runs improved
+preview-on throughput to 8.88 FPS (112.6 seconds for 1,000 frames), a further 6.7%
+whole-job gain, while leaving inference and published media unchanged. A 4K
+midpoint-mask run measured 7.03 FPS before this preview-only refinement and used
+about 253 MB of temporary alpha mapping.
+
+The development worker also tested OpenCV resizing, explicit `model.half()`, and
+partial `torch.compile` of MatAnyone2's fixed-shape image-feature modules. OpenCV
+output-only resizing improved the whole job by less than 5%; changing inference
+input resizing altered alpha beyond the acceptance limit. Explicit half precision
+is incompatible with MatAnyone2's intentional FP32 paths. Cached partial compile
+was slightly slower end-to-end and still recompiled a graph in each worker, despite
+making the recurrent step faster. These variants are therefore not enabled in
+normal processing. CUDA autocast FP16 with FP32/CPU fallback and Pillow resizing
+remain the quality-preserving defaults. Detailed structured stage records are
+written only to `processing.log`; they do not add UI traffic.
+
 - `clips/<clip-id>/foreground.mp4`: H.264/YUV420P with AAC source audio when present. NVENC quality encoding is preferred; libx264 is the fallback.
 - `clips/<clip-id>/alpha.mkv`: near-lossless H.264/YUV420P alpha at CQ/CRF 10. This is substantially smaller than the previous FFV1 alpha while retaining clean matte edges.
 
@@ -347,6 +389,13 @@ MatAnyone2 warm-up per clip measured 1.50 seconds on CUDA versus 32.88 seconds
 on CPU. These numbers include tensor upload and output download but exclude
 FFmpeg video decoding and RGB/alpha encoding. Re-run them with
 `tools/custom-shows/benchmark_rvm.py` and `benchmark_matanyone2.py`.
+
+The newer full-pipeline MatAnyone2 benchmark includes model loading and warm-up,
+source decode, resizing, recurrent inference, alpha download/upscale, previews,
+and foreground/alpha encoding. Its median bounded result was 61.69 seconds for
+1,000 1080p frames at Standard detail with previews enabled (16.21 FPS). This is
+the more representative planning figure for complete QuickPlayer conversions;
+the tensor-path number above remains useful when comparing devices in isolation.
 - **Checkpoint validation failed**: delete only the named file in `<runtime>\checkpoints` and rerun setup. Do not bypass the hash check.
 - **MatAnyone2/SAM unavailable**: rerun processing-tools setup with MatAnyone2 checked. It is one option because SAM is required to create the initial mask.
 - **VideoMaMa unavailable**: rerun setup with VideoMaMa checked. It remains hidden until VideoMaMa, SAM2, and all required model files are installed. CUDA is mandatory.

@@ -138,6 +138,29 @@ they exclude source decoding, audio, preview snapshots, and foreground/alpha
 encoding, so complete conversion runs below the table's FPS. RVM Fast may not be
 noticeably faster when those shared pipeline stages are the bottleneck.
 
+A full 1,000-frame 1080p MatAnyone2 conversion at 512 px detail measured 11.19
+FPS in the old serial path and 16.21 FPS in the bounded path with previews on,
+a 31.0% whole-job gain. Turning previews off changed the bounded result only to
+16.31 FPS. Decode/read contributed about 5-6% of wall time, so GPU decoding is
+not enabled: its transfer, codec, fallback, and exact-frame-parity costs would
+outweigh the available gain in this pipeline. QuickPlayer instead overlaps
+software decode/resize, sequential recurrent inference, and alpha/preview/encode
+work in three bounded reusable slots.
+
+At 4K output the bounded path measured 9.38 FPS without previews. Reusing the
+Standard-detail inference buffers for the capped preview improved preview-on
+throughput from 8.29 to 8.88 FPS without changing published RGB or alpha media.
+A midpoint mask adds a backward pass and temporary alpha mapping; the measured
+4K midpoint case ran at 7.03 FPS and used about 253 MB of temporary mapping.
+
+Development tests also rejected partial MatAnyone2 `torch.compile`, explicit
+`model.half()`, and OpenCV resizing as production defaults. Cached partial
+compilation was slightly slower over the complete job and still recompiled a
+graph; explicit half conflicted with required FP32 paths; output-only OpenCV
+resizing improved throughput by less than 5%, while changing inference input
+pixels exceeded the alpha-equivalence limit. The shipped defaults therefore keep
+CUDA autocast with FP32/CPU fallback and Pillow resizing.
+
 A controlled 1,000-frame, 1024×576 SAM2 test including a full midpoint
 correction averaged 241.2 seconds eager, 245.2 seconds with full `max-autotune`,
 and 271.9 seconds with cached `max-autotune-no-cudagraphs`. QuickPlayer therefore
