@@ -684,7 +684,9 @@ public partial class Form1
         Rectangle? initialBounds = customPlayerBounds;
         LogCustomPlayerPosition("handoff initial=" +
             FormatCustomPlayerBounds(initialBounds));
-        int size = previous?.SizePercent ?? (playerMode == 1 ? 80 : 40);
+        int mode = Volatile.Read(ref playerMode);
+        int size = PlayerSizeForAnimation(
+            animationPath, mode, mode == 1 ? 80 : 40);
         CustomPlayerForm player = new(clip.customForegroundPath,
             clip.customAlphaPath, size,
             CustomPlayerVolume(playerMode == 1), clip.customAlphaThreshold,
@@ -698,6 +700,12 @@ public partial class Form1
         {
             if (customPlayer == player)
                 SetCustomPlayerVolume(playerMode == 1, percent, false);
+        });
+        player.SizePercentChanged += percent => BeginInvoke(() =>
+        {
+            if (customPlayer == player)
+                RememberCustomPlayerSize(
+                    animationPath, Volatile.Read(ref playerMode), percent);
         });
         player.LocationChanged += (_, _) =>
         {
@@ -820,6 +828,7 @@ public partial class Form1
             catch { }
         }
         customResumeIstripper = false;
+        QueueConfiguredPlayerSize(mode: Volatile.Read(ref playerMode));
     }
 
     void ResumeHiddenIStripperForTransition()

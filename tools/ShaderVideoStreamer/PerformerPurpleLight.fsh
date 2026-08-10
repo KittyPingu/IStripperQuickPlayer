@@ -35,9 +35,12 @@ void main(void)
     vec3 purpleLight = vec3(0.85, 0.0, 1.85);
 
     // Keep a very small amount of ambient light at zero, then use a curved
-    // response so the useful middle of the slider does not feel too dark.
+    // response so the useful middle stays controlled while the upper end
+    // can produce a deliberately intense stage light.
     float illumination = mix(0.08, 1.0, sqrt(brightness));
-    performer.rgb *= illumination * (1.0 + brightness * 0.32);
+    float highBrightnessBoost = pow(brightness, 4.0) * 1.70;
+    performer.rgb *= illumination *
+        (1.0 + brightness * 0.32 + highBrightnessBoost);
     float tintStrength = purpleness *
         mix(0.78, 0.98, sqrt(brightness));
     performer.rgb = mix(

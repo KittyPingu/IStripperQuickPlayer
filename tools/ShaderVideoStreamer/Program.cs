@@ -1,5 +1,6 @@
 using OpenCvSharp;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.MemoryMappedFiles;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -51,6 +52,9 @@ internal static class Program
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", token);
 
+            PlaybackCommandReader playbackCommands = new();
+            playbackCommands.Start(stopped.Token);
+
             using VideoCapture capture = new(options.VideoPath);
             if (!capture.IsOpened())
                 throw new InvalidDataException(
@@ -71,7 +75,12 @@ internal static class Program
                 ? options.FramesPerSecond
                 : double.IsFinite(sourceFps) && sourceFps > 0
                     ? sourceFps : 30;
-
+            double frameCount = capture.Get(
+                VideoCaptureProperties.FrameCount);
+            double mediaDurationSeconds =
+                double.IsFinite(frameCount) && frameCount > 0 &&
+                double.IsFinite(sourceFps) && sourceFps > 0
+                    ? frameCount / sourceFps : 0;
             using SharedTexturePublisher publisher =
                 await SharedTexturePublisher.ConnectAsync(
                     client, options.TextureName, width, height,
@@ -86,7 +95,8 @@ internal static class Program
                 $"Shader sampler: u_QuickPlayerTexture_{options.TextureName}");
 
             return Stream(capture, publisher, width, height,
-                fps, options.Loop, stopped);
+                fps, mediaDurationSeconds, options.Loop,
+                playbackCommands, stopped);
         }
         catch (OperationCanceledException)
         {
@@ -104,7 +114,9 @@ internal static class Program
 
     private static int Stream(VideoCapture capture,
         SharedTexturePublisher publisher, int width, int height,
-        double fps, bool loop, CancellationTokenSource stopped)
+        double fps, double mediaDurationSeconds, bool loop,
+        PlaybackCommandReader playbackCommands,
+        CancellationTokenSource stopped)
     {
         CancellationToken cancellationToken = stopped.Token;
         long intervalTicks = Math.Max(1,
@@ -118,6 +130,7 @@ internal static class Program
         double windowConversionMilliseconds = 0;
         double windowPublishMilliseconds = 0;
         Stopwatch report = Stopwatch.StartNew();
+        Stopwatch progressReport = Stopwatch.StartNew();
 
         using Mat decoded = new();
         using Mat resized = new();
@@ -125,6 +138,17 @@ internal static class Program
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (playbackCommands.TryTakeSeek(out double seekSeconds))
+            {
+                double clampedSeek = mediaDurationSeconds > 0
+                    ? Math.Clamp(seekSeconds, 0, mediaDurationSeconds)
+                    : Math.Max(0, seekSeconds);
+                capture.Set(VideoCaptureProperties.PosMsec,
+                    clampedSeek * 1000);
+                nextDue = Stopwatch.GetTimestamp();
+                WriteProgress(clampedSeek, mediaDurationSeconds);
+            }
+
             WaitUntil(nextDue, cancellationToken);
             nextDue += intervalTicks;
 
@@ -134,6 +158,7 @@ internal static class Program
                     break;
                 capture.Set(VideoCaptureProperties.PosFrames, 0);
                 nextDue = Stopwatch.GetTimestamp();
+                WriteProgress(0, mediaDurationSeconds);
                 continue;
             }
 
@@ -168,6 +193,14 @@ internal static class Program
                 windowSkipped++;
             }
 
+            if (progressReport.ElapsedMilliseconds >= 100)
+            {
+                double positionSeconds = capture.Get(
+                    VideoCaptureProperties.PosMsec) / 1000;
+                WriteProgress(positionSeconds, mediaDurationSeconds);
+                progressReport.Restart();
+            }
+
             if (report.ElapsedMilliseconds >= 1_000)
             {
                 double seconds = report.Elapsed.TotalSeconds;
@@ -190,6 +223,16 @@ internal static class Program
         Console.WriteLine(
             $"Finished: {published} frames published, {skipped} skipped.");
         return 0;
+    }
+
+    private static void WriteProgress(
+        double positionSeconds, double durationSeconds)
+    {
+        Console.WriteLine("QP_PROGRESS|" +
+            Math.Max(0, positionSeconds).ToString(
+                "R", CultureInfo.InvariantCulture) + "|" +
+            Math.Max(0, durationSeconds).ToString(
+                "R", CultureInfo.InvariantCulture));
     }
 
     private static void ConvertToRgba(Mat source, Mat destination)
@@ -231,6 +274,50 @@ internal static class Program
                 Thread.Sleep(Math.Max(1, (int)milliseconds - 1));
             else
                 Thread.SpinWait(128);
+        }
+    }
+}
+
+internal sealed class PlaybackCommandReader
+{
+    private long pendingSeekBits = BitConverter.DoubleToInt64Bits(double.NaN);
+
+    public void Start(CancellationToken cancellationToken)
+    {
+        if (!Console.IsInputRedirected)
+            return;
+        _ = Task.Run(() => ReadCommands(cancellationToken),
+            CancellationToken.None);
+    }
+
+    public bool TryTakeSeek(out double seconds)
+    {
+        long bits = Interlocked.Exchange(ref pendingSeekBits,
+            BitConverter.DoubleToInt64Bits(double.NaN));
+        seconds = BitConverter.Int64BitsToDouble(bits);
+        return double.IsFinite(seconds) && seconds >= 0;
+    }
+
+    private void ReadCommands(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            string? line = Console.ReadLine();
+            if (line == null)
+                return;
+            line = line.TrimStart('\uFEFF');
+            int commandStart = line.IndexOf(
+                "SEEK ", StringComparison.OrdinalIgnoreCase);
+            if (commandStart < 0)
+                continue;
+            if (double.TryParse(line.AsSpan(commandStart + 5),
+                NumberStyles.Float, CultureInfo.InvariantCulture,
+                out double seconds) &&
+                double.IsFinite(seconds) && seconds >= 0)
+            {
+                Interlocked.Exchange(ref pendingSeekBits,
+                    BitConverter.DoubleToInt64Bits(seconds));
+            }
         }
     }
 }

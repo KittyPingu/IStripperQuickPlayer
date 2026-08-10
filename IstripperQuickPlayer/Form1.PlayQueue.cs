@@ -99,6 +99,8 @@ namespace IStripperQuickPlayer
         private int? normalLargePlayerSizePercent;
         private bool smallPlayerSizeOverrideActive;
         private bool largePlayerSizeOverrideActive;
+        private readonly Dictionary<string, int> manualPlayerSizes =
+            new(StringComparer.OrdinalIgnoreCase);
         private long playerSizeRequestVersion;
         private readonly ToolStripMenuItem tooltipDelayToolStripMenuItem =
             new("Tooltip delay");
@@ -906,21 +908,24 @@ namespace IStripperQuickPlayer
             sizes.TryGetValue(key, out int percent) &&
             percent is >= 1 and <= 200 ? percent : 0;
 
-        private int ConfiguredPlayerSizePercent(string animationPath, int mode,
-            IReadOnlyDictionary<string, int> sizes)
+        private string? PlayerSizeKey(string animationPath, int mode)
         {
             string[] parts = animationPath.Replace('/', '\\').Split('\\', 2);
             if (parts.Length != 2)
-                return 0;
+                return null;
             ModelCard? card = Datastore.findCardByTag(
                 parts[0].Split('-')[0]);
             ModelClip? clip = card?.clips?.FirstOrDefault(item =>
                 string.Equals(item.clipName, parts[1],
                     StringComparison.OrdinalIgnoreCase));
             string? type = PlayerSizeClipType(clip?.clipType);
-            string key = type + (mode == 1 ? "Large" : "Small");
-            return type == null ? 0 : PlayerSizePercent(sizes, key);
+            return type == null ? null :
+                type + (mode == 1 ? "Large" : "Small");
         }
+
+        internal static int? PlayerSizeTarget(int configured,
+            int? normal, int? manuallySelected) => manuallySelected ??
+            (configured > 0 ? configured : normal);
 
         private static int? ReadNormalPlayerSizePercent(bool large)
         {
@@ -951,6 +956,27 @@ namespace IStripperQuickPlayer
             }
         }
 
+        private int PlayerSizeForAnimation(
+            string animationPath, int mode, int fallback)
+        {
+            CaptureNormalPlayerSizes();
+            string? sizeKey = PlayerSizeKey(animationPath, mode);
+            Dictionary<string, int> sizes = ParseClipTypePlayerSizes(
+                Properties.Settings.Default.ClipTypePlayerSizes);
+            int configured = sizeKey == null
+                ? 0 : PlayerSizePercent(sizes, sizeKey);
+            lock (playerSizeLock)
+            {
+                int? normal = mode == 1
+                    ? normalLargePlayerSizePercent
+                    : normalSmallPlayerSizePercent;
+                int? manual = sizeKey != null &&
+                    manualPlayerSizes.TryGetValue(sizeKey, out int percent)
+                        ? percent : null;
+                return PlayerSizeTarget(configured, normal, manual) ?? fallback;
+            }
+        }
+
         private int SetVghdPlayerSizePercent(int mode, int percent)
         {
             if (!playerLockBridgeLoaded || vghd_procID == 0 ||
@@ -975,22 +1001,24 @@ namespace IStripperQuickPlayer
                 CaptureNormalPlayerSizes();
                 Dictionary<string, int> sizes = ParseClipTypePlayerSizes(
                     Properties.Settings.Default.ClipTypePlayerSizes);
-                int configured = ConfiguredPlayerSizePercent(
-                    path, requestedMode, sizes);
+                string? sizeKey = PlayerSizeKey(path, requestedMode);
+                int configured = sizeKey == null
+                    ? 0 : PlayerSizePercent(sizes, sizeKey);
                 lock (playerSizeLock)
                 {
                     if (request != Volatile.Read(
                             ref playerSizeRequestVersion) ||
                         !playerLockBridgeLoaded)
                         return;
-                    bool active = requestedMode == 1
-                        ? largePlayerSizeOverrideActive
-                        : smallPlayerSizeOverrideActive;
                     int? normal = requestedMode == 1
                         ? normalLargePlayerSizePercent
                         : normalSmallPlayerSizePercent;
-                    int? target = configured > 0
-                        ? configured : active ? normal : null;
+                    int? manuallySelected = sizeKey != null &&
+                        manualPlayerSizes.TryGetValue(
+                            sizeKey, out int manualPercent)
+                                ? manualPercent : null;
+                    int? target = PlayerSizeTarget(
+                        configured, normal, manuallySelected);
                     if (target == null)
                         return;
                     int result = SetVghdPlayerSizePercent(
@@ -1002,23 +1030,50 @@ namespace IStripperQuickPlayer
                         return;
                     }
                     if (requestedMode == 1)
-                        largePlayerSizeOverrideActive = configured > 0;
+                        largePlayerSizeOverrideActive =
+                            sizeKey != null &&
+                            (manuallySelected != null || configured > 0);
                     else
-                        smallPlayerSizeOverrideActive = configured > 0;
+                        smallPlayerSizeOverrideActive =
+                            sizeKey != null &&
+                            (manuallySelected != null || configured > 0);
                 }
             });
         }
 
-        private void RememberNormalPlayerSizeFromWheel(int mode, int percent)
+        private void RememberManualPlayerSize(
+            string animationPath, int mode, int percent)
         {
+            if (percent is < 1 or > 200)
+                return;
+            string? sizeKey = PlayerSizeKey(animationPath, mode);
             lock (playerSizeLock)
             {
-                if (mode == 1 && !largePlayerSizeOverrideActive)
+                if (sizeKey != null)
+                {
+                    manualPlayerSizes[sizeKey] = percent;
+                    if (mode == 1)
+                        largePlayerSizeOverrideActive = true;
+                    else if (mode == 2)
+                        smallPlayerSizeOverrideActive = true;
+                    return;
+                }
+                if (mode == 1)
+                {
                     normalLargePlayerSizePercent = percent;
-                else if (mode == 2 && !smallPlayerSizeOverrideActive)
+                    largePlayerSizeOverrideActive = false;
+                }
+                else if (mode == 2)
+                {
                     normalSmallPlayerSizePercent = percent;
+                    smallPlayerSizeOverrideActive = false;
+                }
             }
         }
+
+        private void RememberCustomPlayerSize(
+            string animationPath, int mode, int percent) =>
+            RememberManualPlayerSize(animationPath, mode, percent);
 
         private void RestoreNormalPlayerSizes()
         {
@@ -1162,6 +1217,10 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.ClipTypePlayerSizes =
                 JsonSerializer.Serialize(saved);
             Properties.Settings.Default.Save();
+            lock (playerSizeLock)
+            {
+                manualPlayerSizes.Clear();
+            }
             QueueConfiguredPlayerSize();
         }
 

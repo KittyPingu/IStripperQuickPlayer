@@ -273,8 +273,11 @@ namespace IStripperQuickPlayer
         {
             if (customPlayer != null)
             {
-                playerMode = large ? 1 : 2;
-                customPlayer.SetSizePercent(large ? 80 : 40, large ? 60 : 10);
+                int mode = large ? 1 : 2;
+                playerMode = mode;
+                customPlayer.SetSizePercent(PlayerSizeForAnimation(
+                    customPlayerAnimationPath, mode, large ? 80 : 40),
+                    large ? 60 : 10, notifyChange: false);
                 customPlayer.SetVolumePercent(CustomPlayerVolume(large));
                 return;
             }
@@ -2797,7 +2800,8 @@ namespace IStripperQuickPlayer
             if (message.Msg == WheelResizeMessage)
             {
                 int percent = message.WParam.ToInt32();
-                RememberNormalPlayerSizeFromWheel(
+                RememberManualPlayerSize(
+                    GetCurrentAnimationPath(),
                     Volatile.Read(ref playerMode), percent);
                 if (Properties.Settings.Default.EnablePlayerWheelResize &&
                     percent is >= 10 and <= 200)

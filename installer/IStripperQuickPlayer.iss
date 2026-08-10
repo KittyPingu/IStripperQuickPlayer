@@ -51,3 +51,59 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\ShaderVideoStreamer"
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\ShaderVideoStreamer"
+
+[Code]
+function CreateHardLinkW(
+  NewFileName, ExistingFileName: String;
+  SecurityAttributes: Integer): Boolean;
+  external 'CreateHardLinkW@kernel32.dll stdcall';
+
+procedure CreatePlayerHardLinks;
+var
+  ManifestPath: String;
+  RelativePaths: TArrayOfString;
+  RelativePath: String;
+  LinkPath: String;
+  TargetPath: String;
+  I: Integer;
+begin
+  ManifestPath := ExpandConstant(
+    '{app}\ShaderVideoStreamer\hardlinks.manifest');
+  if not LoadStringsFromFile(ManifestPath, RelativePaths) then
+    RaiseException('The ShaderVideoStreamer hard-link manifest is missing.');
+
+  for I := 0 to GetArrayLength(RelativePaths) - 1 do
+  begin
+    RelativePath := Trim(RelativePaths[I]);
+    if (RelativePath = '') or (Pos('..', RelativePath) > 0) or
+       (Pos(':', RelativePath) > 0) then
+      RaiseException('The ShaderVideoStreamer hard-link manifest is invalid.');
+
+    LinkPath := ExpandConstant(
+      '{app}\ShaderVideoStreamer\' + RelativePath);
+    TargetPath := ExpandConstant('{app}\' + RelativePath);
+    if not FileExists(TargetPath) then
+      RaiseException('A shared runtime file is missing: ' + TargetPath);
+    if not ForceDirectories(ExtractFileDir(LinkPath)) then
+      RaiseException('Could not create directory: ' + ExtractFileDir(LinkPath));
+    if FileExists(LinkPath) and not DeleteFile(LinkPath) then
+      RaiseException('Could not replace existing file: ' + LinkPath);
+    if not CreateHardLinkW(LinkPath, TargetPath, 0) then
+      RaiseException('Could not create hard link: ' + LinkPath);
+  end;
+
+  Log(Format('Created %d ShaderVideoStreamer hard links.',
+    [GetArrayLength(RelativePaths)]));
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    CreatePlayerHardLinks;
+end;

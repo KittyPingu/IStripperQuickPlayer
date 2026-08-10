@@ -6,10 +6,13 @@ shared-memory texture channel and controls lighting in a fullscreen scene.
 The compact UI contains only:
 
 - video filename and **Browse**;
-- **Start**, **Stop**, and **Loop**;
+- **Start**, **Stop**, **Loop**, and a seekable playback timeline;
 - video brightness and black-and-white amount;
 - whole-scene brightness, with the video composited above it;
 - brightness, purpleness, and **Next card** for each of three performers.
+
+The loop and appearance/lighting slider values are saved under the current
+Windows user and restored when the controller is opened again.
 
 The three next-card buttons call the source-specific fullscreen routes
 `GirlLeft`, `GirlCentre`, and `GirlRight`. A scene using different clip

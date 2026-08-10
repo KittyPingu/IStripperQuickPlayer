@@ -19,7 +19,21 @@ internal sealed class CustomPlayerForm : Form
         WsExLayered = 0x80000, WsExToolWindow = 0x80, WsExNoActivate = 0x08000000;
     const int GwlExStyle = -20, WmNcHitTest = 0x84, WmMouseWheel = 0x20A,
         WmEnterSizeMove = 0x231, WmExitSizeMove = 0x232,
-        HtTransparent = -1, HtClient = 1, HtCaption = 2;
+        HtTransparent = -1, HtClient = 1, HtCaption = 2,
+        WhMouseLl = 14, HcAction = 0, VkControl = 0x11;
+    delegate IntPtr LowLevelMouseProc(int code, IntPtr message, IntPtr data);
+    [StructLayout(LayoutKind.Sequential)]
+    struct LowLevelMouseData
+    {
+        internal Point Point;
+        internal uint MouseData;
+        internal uint Flags;
+        internal uint Time;
+        internal UIntPtr ExtraInfo;
+    }
+    static readonly LowLevelMouseProc globalWheelProc = GlobalWheelCallback;
+    static IntPtr globalWheelHook;
+    static CustomPlayerForm? globalWheelOwner;
     readonly string foregroundPath, alphaPath;
     readonly bool suppressErrorDialog;
     readonly double rangeStartSeconds, requestedRangeEndSeconds;
@@ -54,6 +68,7 @@ internal sealed class CustomPlayerForm : Form
     internal event EventHandler? PlaybackCompleted;
     internal event EventHandler<Exception>? PlaybackFailed;
     internal event Action<int>? VolumeChanged;
+    internal event Action<int>? SizePercentChanged;
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
@@ -62,6 +77,18 @@ internal sealed class CustomPlayerForm : Form
     [DllImport("user32.dll")]
     static extern bool SetWindowPos(IntPtr window, IntPtr after,
         int x, int y, int width, int height, int flags);
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr SetWindowsHookEx(int hook, LowLevelMouseProc callback,
+        IntPtr module, uint threadId);
+    [DllImport("user32.dll")]
+    static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [DllImport("user32.dll")]
+    static extern IntPtr CallNextHookEx(IntPtr hook, int code,
+        IntPtr message, IntPtr data);
+    [DllImport("user32.dll")]
+    static extern short GetKeyState(int key);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr GetModuleHandle(string? moduleName);
 
     internal CustomPlayerForm(string foregroundPath, string alphaPath,
         int playerSizePercent = 40, int volumePercent = 100,
@@ -87,9 +114,14 @@ internal sealed class CustomPlayerForm : Form
         TopMost = true;
         ClientSize = new Size(2, 2);
         SetStyle(ControlStyles.Opaque, true);
-        Shown += (_, _) => playbackTask = Task.Run(PlayAsync);
+        Shown += (_, _) =>
+        {
+            UpdateGlobalWheelHook();
+            playbackTask = Task.Run(PlayAsync);
+        };
         FormClosed += (_, _) =>
         {
+            ReleaseGlobalWheelHook();
             cancellation.Cancel();
             settleTimer.Dispose();
         };
@@ -203,9 +235,24 @@ internal sealed class CustomPlayerForm : Form
     internal void SeekBy(double seconds) => SeekTo(CurrentSeconds + seconds);
     internal void SetRate(double rate) => Interlocked.Exchange(ref requestedRateBits,
         BitConverter.DoubleToInt64Bits(Math.Clamp(rate, .25, 4)));
-    internal void SetLocked(bool value) { locked = value; UpdateMouseTransparency(); }
-    internal void SetClickThroughLocked(bool value) { clickThroughLocked = value; UpdateMouseTransparency(); }
-    internal void SetWheelResize(bool value) { wheelResize = value; wheelDelta = 0; }
+    internal void SetLocked(bool value)
+    {
+        locked = value;
+        UpdateMouseTransparency();
+        UpdateGlobalWheelHook();
+    }
+    internal void SetClickThroughLocked(bool value)
+    {
+        clickThroughLocked = value;
+        UpdateMouseTransparency();
+        UpdateGlobalWheelHook();
+    }
+    internal void SetWheelResize(bool value)
+    {
+        wheelResize = value;
+        wheelDelta = 0;
+        UpdateGlobalWheelHook();
+    }
     internal void SetVolumePercent(int percent)
     {
         volumePercent = Math.Clamp(percent, 0, 100);
@@ -222,19 +269,26 @@ internal sealed class CustomPlayerForm : Form
         fullOpacityThreshold = Math.Clamp(value, 1, 255);
         renderer?.SetFullOpacityThreshold(fullOpacityThreshold);
     }
-    internal void SetSizePercent(int percent, int minimumPercent = 10)
+    internal void SetSizePercent(int percent, int minimumPercent = 10,
+        bool notifyChange = true)
     {
         settleTimer.Stop();
-        sizePercent = Math.Clamp(percent, minimumPercent, 200);
-        if (renderer == null) return;
-        Rectangle work = Screen.FromHandle(Handle).WorkingArea;
-        double scale = work.Height * sizePercent / 100d / renderer.Height;
-        int width = Math.Max(2, (int)Math.Round(renderer.Width * scale));
-        int height = Math.Max(2, (int)Math.Round(renderer.Height * scale));
-        SetWindowPos(Handle, new IntPtr(-1), Left + (Width - width) / 2,
-            work.Bottom - height, width, height, 0x10 | 0x40);
-        renderer.ResizeOutput(width, height);
-        LockStateOverlay.ShowTextForWindow(this, $"{sizePercent}%");
+        int next = Math.Clamp(percent, minimumPercent, 200);
+        if (next == sizePercent) return;
+        sizePercent = next;
+        if (renderer != null)
+        {
+            Rectangle work = Screen.FromHandle(Handle).WorkingArea;
+            double scale = work.Height * sizePercent / 100d / renderer.Height;
+            int width = Math.Max(2, (int)Math.Round(renderer.Width * scale));
+            int height = Math.Max(2, (int)Math.Round(renderer.Height * scale));
+            SetWindowPos(Handle, new IntPtr(-1), Left + (Width - width) / 2,
+                work.Bottom - height, width, height, 0x10 | 0x40);
+            renderer.ResizeOutput(width, height);
+            LockStateOverlay.ShowTextForWindow(this, $"{sizePercent}%");
+        }
+        if (notifyChange)
+            SizePercentChanged?.Invoke(sizePercent);
     }
     internal void ClosePlayer() { if (!IsDisposed) BeginInvoke(Close); }
     internal async Task ClosePlayerAsync()
@@ -279,6 +333,73 @@ internal sealed class CustomPlayerForm : Form
             SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
                 0x1 | 0x2 | 0x4 | 0x10 | 0x20);
         }
+    }
+
+    void UpdateGlobalWheelHook()
+    {
+        bool needed = locked && clickThroughLocked && IsHandleCreated &&
+            Visible && !IsDisposed;
+        if (!needed)
+        {
+            ReleaseGlobalWheelHook();
+            return;
+        }
+        globalWheelOwner = this;
+        if (globalWheelHook == IntPtr.Zero)
+            globalWheelHook = SetWindowsHookEx(
+                WhMouseLl, globalWheelProc, GetModuleHandle(null), 0);
+    }
+
+    void ReleaseGlobalWheelHook()
+    {
+        if (globalWheelOwner != this) return;
+        globalWheelOwner = null;
+        if (globalWheelHook == IntPtr.Zero) return;
+        UnhookWindowsHookEx(globalWheelHook);
+        globalWheelHook = IntPtr.Zero;
+    }
+
+    static IntPtr GlobalWheelCallback(int code, IntPtr message, IntPtr data)
+    {
+        CustomPlayerForm? player = globalWheelOwner;
+        if (code == HcAction && message.ToInt64() == WmMouseWheel &&
+            player is { IsDisposed: false, Visible: true })
+        {
+            LowLevelMouseData mouse = Marshal.PtrToStructure<LowLevelMouseData>(data);
+            if (player.RectangleToScreen(player.ClientRectangle).Contains(mouse.Point))
+            {
+                int delta = (short)((mouse.MouseData >> 16) & 0xffff);
+                bool control = (GetKeyState(VkControl) & 0x8000) != 0;
+                if (player.HandleWheel(delta, control))
+                    return new IntPtr(1);
+            }
+        }
+        return CallNextHookEx(globalWheelHook, code, message, data);
+    }
+
+    bool HandleWheel(int delta, bool control)
+    {
+        if (control)
+        {
+            volumeWheelDelta += delta;
+            int steps = volumeWheelDelta / 120;
+            volumeWheelDelta -= steps * 120;
+            if (steps != 0)
+            {
+                int next = Math.Clamp(volumePercent + steps * 5, 0, 100);
+                SetVolumePercent(next);
+                LockStateOverlay.ShowTextForWindow(this, $"Volume {next}%");
+                VolumeChanged?.Invoke(next);
+            }
+            return true;
+        }
+        if (!wheelResize) return false;
+        wheelDelta += delta;
+        int resizeSteps = wheelDelta / 120;
+        wheelDelta -= resizeSteps * 120;
+        if (resizeSteps != 0)
+            SetSizePercent(sizePercent + resizeSteps * 2);
+        return true;
     }
 
     void StartSettle()
@@ -340,26 +461,8 @@ internal sealed class CustomPlayerForm : Form
         {
             long value = message.WParam.ToInt64();
             int delta = (short)((value >> 16) & 0xffff);
-            if ((value & 0xffff & 0x0008) != 0)
-            {
-                volumeWheelDelta += delta;
-                int steps = volumeWheelDelta / 120;
-                volumeWheelDelta -= steps * 120;
-                if (steps != 0)
-                {
-                    int next = Math.Clamp(volumePercent + steps * 5, 0, 100);
-                    SetVolumePercent(next);
-                    LockStateOverlay.ShowTextForWindow(this, $"Volume {next}%");
-                    VolumeChanged?.Invoke(next);
-                }
+            if (HandleWheel(delta, (value & 0xffff & 0x0008) != 0))
                 return;
-            }
-            if (wheelResize && !locked)
-            {
-                wheelDelta += delta; int steps = wheelDelta / 120;
-                wheelDelta -= steps * 120; if (steps != 0) SetSizePercent(sizePercent + steps * 2);
-                return;
-            }
         }
         if (message.Msg == WmEnterSizeMove)
         {

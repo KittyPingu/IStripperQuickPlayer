@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 
 namespace ShaderVideoStreamer;
 
@@ -14,6 +16,10 @@ internal sealed class VideoStreamerForm : Form
         Environment.GetFolderPath(
             Environment.SpecialFolder.LocalApplicationData),
         "IStripperQuickPlayer", "shader-video-path.txt");
+    private static string ControlSettingsPath => Path.Combine(
+        Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData),
+        "IStripperQuickPlayer", "shader-video-settings.json");
 
     private readonly Options defaults;
     private readonly TextBox videoPath = new() { Dock = DockStyle.Fill };
@@ -31,6 +37,27 @@ internal sealed class VideoStreamerForm : Form
         Text = "Stop",
         AutoSize = true,
         Enabled = false
+    };
+    private readonly TrackBar playbackTimeline = new()
+    {
+        Minimum = 0,
+        Maximum = 10_000,
+        Value = 0,
+        TickStyle = TickStyle.None,
+        AutoSize = false,
+        Height = 30,
+        Dock = DockStyle.Fill,
+        Enabled = false,
+        Margin = new Padding(12, 2, 8, 0)
+    };
+    private readonly Label playbackTime = new()
+    {
+        Text = "0:00 / 0:00",
+        AutoSize = true,
+        Anchor = AnchorStyles.Right,
+        MinimumSize = new Size(92, 0),
+        TextAlign = ContentAlignment.MiddleRight,
+        Margin = new Padding(0, 7, 0, 0)
     };
     private readonly TrackBar[] brightness =
         [Slider(50), Slider(50), Slider(50)];
@@ -52,25 +79,21 @@ internal sealed class VideoStreamerForm : Form
         new() { Text = "Next card", AutoSize = true },
         new() { Text = "Next card", AutoSize = true }
     ];
-    private readonly Label status = new()
-    {
-        Text = "Connecting to QuickPlayer...",
-        AutoSize = true,
-        ForeColor = SystemColors.GrayText,
-        Margin = new Padding(18, 8, 0, 0)
-    };
     private readonly System.Windows.Forms.Timer lightingUpdateTimer = new()
     {
         Interval = 40
     };
-    private readonly System.Windows.Forms.Timer statusResetTimer = new()
+    private readonly System.Windows.Forms.Timer settingsSaveTimer = new()
     {
-        Interval = 2500
+        Interval = 300
     };
     private readonly SemaphoreSlim lightingUpdateLock = new(1, 1);
     private Process? streamer;
     private HttpClient? apiClient;
     private bool apiReady;
+    private double playbackDurationSeconds;
+    private bool timelineDragging;
+    private bool updatingTimeline;
 
     public VideoStreamerForm(Options defaults)
     {
@@ -81,6 +104,7 @@ internal sealed class VideoStreamerForm : Form
         Size = new Size(987, 663);
 
         loop.Checked = defaults.Loop;
+        LoadControlSettings();
         try
         {
             if (File.Exists(RecentVideoPath))
@@ -93,7 +117,16 @@ internal sealed class VideoStreamerForm : Form
         start.Click += StartClicked;
         stop.Click += (_, _) => StopStreamer();
         lightingUpdateTimer.Tick += LightingUpdateTimerTick;
-        statusResetTimer.Tick += (_, _) => ResetTransientStatus();
+        settingsSaveTimer.Tick += (_, _) => SaveControlSettings();
+        playbackTimeline.MouseDown += (_, _) => timelineDragging = true;
+        playbackTimeline.MouseUp += (_, _) =>
+        {
+            timelineDragging = false;
+            SeekToTimeline();
+        };
+        playbackTimeline.Scroll += (_, _) => TimelineScrolled();
+        playbackTimeline.KeyUp += (_, _) => SeekToTimeline();
+        loop.CheckedChanged += (_, _) => QueueSettingsSave();
         videoBrightness.ValueChanged += (_, _) => VideoControlsChanged();
         videoBlackAndWhite.ValueChanged += (_, _) => VideoControlsChanged();
         sceneBrightness.ValueChanged += (_, _) => VideoControlsChanged();
@@ -109,7 +142,11 @@ internal sealed class VideoStreamerForm : Form
                 await NextCardAsync(girlIndex);
             UpdateValueLabels(index);
         }
-        FormClosing += (_, _) => StopStreamer();
+        FormClosing += (_, _) =>
+        {
+            SaveControlSettings();
+            StopStreamer();
+        };
         Shown += FormShown;
     }
 
@@ -148,18 +185,32 @@ internal sealed class VideoStreamerForm : Form
         fields.Controls.Add(videoPath, 1, 0);
         fields.Controls.Add(browse, 2, 0);
 
-        FlowLayoutPanel playback = new()
+        TableLayoutPanel playback = SectionTable(2, 1);
+        playback.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        playback.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        playback.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        playback.Margin = new Padding(0, 6, 0, 0);
+
+        FlowLayoutPanel buttons = new()
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Margin = new Padding(0, 6, 0, 0)
+            Margin = Padding.Empty
         };
-        playback.Controls.Add(start);
-        playback.Controls.Add(stop);
-        playback.Controls.Add(loop);
-        playback.Controls.Add(status);
+        buttons.Controls.Add(start);
+        buttons.Controls.Add(stop);
+        buttons.Controls.Add(loop);
+        playback.Controls.Add(buttons, 0, 0);
+
+        TableLayoutPanel timeline = SectionTable(2, 1);
+        timeline.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        timeline.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        timeline.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        timeline.Controls.Add(playbackTimeline, 0, 0);
+        timeline.Controls.Add(playbackTime, 1, 0);
+        playback.Controls.Add(timeline, 1, 0);
         fields.Controls.Add(playback, 0, 1);
         fields.SetColumnSpan(playback, 3);
         return Section("Video", fields);
@@ -321,11 +372,10 @@ internal sealed class VideoStreamerForm : Form
                 new AuthenticationHeaderValue("Bearer", token);
             apiReady = true;
             await SendLightingAsync();
-            SetStatus("Ready");
         }
         catch (Exception exception)
         {
-            SetStatus("API: " + exception.Message, error: true);
+            ShowError("QuickPlayer API: " + exception.Message);
         }
     }
 
@@ -343,7 +393,7 @@ internal sealed class VideoStreamerForm : Form
         }
         catch (Exception exception)
         {
-            SetStatus("Browse: " + exception.Message, error: true);
+            ShowError("Browse: " + exception.Message);
         }
         finally
         {
@@ -408,6 +458,7 @@ internal sealed class VideoStreamerForm : Form
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
@@ -426,12 +477,12 @@ internal sealed class VideoStreamerForm : Form
                 StartInfo = info,
                 EnableRaisingEvents = true
             };
-            process.OutputDataReceived += (_, _) => { };
+            process.OutputDataReceived += (_, args) =>
+                ProcessOutputData(args.Data);
             process.ErrorDataReceived += (_, args) =>
             {
                 if (!string.IsNullOrWhiteSpace(args.Data))
-                    SafeBeginInvoke(() => SetStatus(
-                        args.Data!, error: true));
+                    SafeBeginInvoke(() => ShowError(args.Data!));
             };
             process.Exited += (_, _) => SafeBeginInvoke(() =>
                 StreamerExited(process));
@@ -439,15 +490,15 @@ internal sealed class VideoStreamerForm : Form
                 throw new InvalidOperationException(
                     "The streamer did not start.");
             streamer = process;
+            process.StandardInput.AutoFlush = true;
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             start.Enabled = false;
             stop.Enabled = true;
-            SetStatus("Streaming " + Path.GetFileName(path));
         }
         catch (Exception exception)
         {
-            SetStatus("Start: " + exception.Message, error: true);
+            ShowError("Start: " + exception.Message);
         }
     }
 
@@ -469,9 +520,163 @@ internal sealed class VideoStreamerForm : Form
         catch { }
     }
 
+    private void LoadControlSettings()
+    {
+        try
+        {
+            if (!File.Exists(ControlSettingsPath))
+                return;
+            ControlSettings? settings = JsonSerializer.Deserialize<ControlSettings>(
+                File.ReadAllText(ControlSettingsPath));
+            if (settings == null)
+                return;
+
+            SetSavedValue(videoBrightness, settings.VideoBrightness);
+            SetSavedValue(videoBlackAndWhite, settings.VideoBlackAndWhite);
+            SetSavedValue(sceneBrightness, settings.SceneBrightness);
+            for (int index = 0; index < GirlSources.Length; index++)
+            {
+                if (index < settings.PerformerBrightness.Length)
+                    SetSavedValue(brightness[index],
+                        settings.PerformerBrightness[index]);
+                if (index < settings.PerformerPurpleness.Length)
+                    SetSavedValue(purpleness[index],
+                        settings.PerformerPurpleness[index]);
+            }
+            loop.Checked = settings.Loop;
+        }
+        catch { }
+    }
+
+    private static void SetSavedValue(TrackBar slider, int value) =>
+        slider.Value = Math.Clamp(value, slider.Minimum, slider.Maximum);
+
+    private void QueueSettingsSave()
+    {
+        settingsSaveTimer.Stop();
+        settingsSaveTimer.Start();
+    }
+
+    private void SaveControlSettings()
+    {
+        settingsSaveTimer.Stop();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(
+                ControlSettingsPath)!);
+            ControlSettings settings = new()
+            {
+                Loop = loop.Checked,
+                VideoBrightness = videoBrightness.Value,
+                VideoBlackAndWhite = videoBlackAndWhite.Value,
+                SceneBrightness = sceneBrightness.Value,
+                PerformerBrightness = brightness.Select(
+                    slider => slider.Value).ToArray(),
+                PerformerPurpleness = purpleness.Select(
+                    slider => slider.Value).ToArray()
+            };
+            File.WriteAllText(ControlSettingsPath,
+                JsonSerializer.Serialize(settings,
+                    new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { }
+    }
+
+    private void ProcessOutputData(string? line)
+    {
+        if (line == null || !line.StartsWith("QP_PROGRESS|",
+            StringComparison.Ordinal))
+            return;
+        string[] parts = line.Split('|');
+        if (parts.Length != 3 ||
+            !double.TryParse(parts[1], NumberStyles.Float,
+                CultureInfo.InvariantCulture, out double position) ||
+            !double.TryParse(parts[2], NumberStyles.Float,
+                CultureInfo.InvariantCulture, out double duration))
+            return;
+        SafeBeginInvoke(() => UpdatePlaybackTimeline(position, duration));
+    }
+
+    private void UpdatePlaybackTimeline(double position, double duration)
+    {
+        if (!double.IsFinite(duration) || duration <= 0)
+            return;
+        playbackDurationSeconds = duration;
+        playbackTimeline.Enabled = streamer != null;
+        if (!timelineDragging)
+        {
+            updatingTimeline = true;
+            playbackTimeline.Value = Math.Clamp((int)Math.Round(
+                position / duration * playbackTimeline.Maximum),
+                playbackTimeline.Minimum, playbackTimeline.Maximum);
+            updatingTimeline = false;
+        }
+        UpdatePlaybackTimeLabel(timelineDragging
+            ? TimelineSeconds() : position);
+    }
+
+    private void TimelineScrolled()
+    {
+        UpdatePlaybackTimeLabel(TimelineSeconds());
+        if (!timelineDragging && !updatingTimeline)
+            SeekToTimeline();
+    }
+
+    private double TimelineSeconds() => playbackDurationSeconds <= 0
+        ? 0
+        : playbackTimeline.Value / (double)playbackTimeline.Maximum *
+            playbackDurationSeconds;
+
+    private void SeekToTimeline()
+    {
+        if (updatingTimeline || playbackDurationSeconds <= 0)
+            return;
+        Process? process = streamer;
+        if (process == null)
+            return;
+        try
+        {
+            if (process.HasExited)
+                return;
+            double seconds = TimelineSeconds();
+            process.StandardInput.WriteLine("SEEK " + seconds.ToString(
+                "R", CultureInfo.InvariantCulture));
+            UpdatePlaybackTimeLabel(seconds);
+        }
+        catch (Exception exception) when (exception is IOException or
+            InvalidOperationException or ObjectDisposedException)
+        {
+            ShowError("Seek: " + exception.Message);
+        }
+    }
+
+    private void UpdatePlaybackTimeLabel(double position) =>
+        playbackTime.Text = FormatTime(position) + " / " +
+            FormatTime(playbackDurationSeconds);
+
+    private static string FormatTime(double seconds)
+    {
+        TimeSpan time = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return time.TotalHours >= 1
+            ? time.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
+            : time.ToString(@"m\:ss", CultureInfo.InvariantCulture);
+    }
+
+    private void ResetPlaybackTimeline()
+    {
+        playbackDurationSeconds = 0;
+        timelineDragging = false;
+        updatingTimeline = true;
+        playbackTimeline.Value = 0;
+        playbackTimeline.Enabled = false;
+        updatingTimeline = false;
+        playbackTime.Text = "0:00 / 0:00";
+    }
+
     private void LightingChanged(int girlIndex)
     {
         UpdateValueLabels(girlIndex);
+        QueueSettingsSave();
         if (!apiReady)
             return;
         lightingUpdateTimer.Stop();
@@ -481,6 +686,7 @@ internal sealed class VideoStreamerForm : Form
     private void VideoControlsChanged()
     {
         UpdateVideoValueLabels();
+        QueueSettingsSave();
         if (!apiReady)
             return;
         lightingUpdateTimer.Stop();
@@ -509,7 +715,7 @@ internal sealed class VideoStreamerForm : Form
         try { await SendLightingAsync(); }
         catch (Exception exception)
         {
-            SetStatus("Lighting: " + exception.Message, error: true);
+            ShowError("Lighting: " + exception.Message);
         }
     }
 
@@ -564,7 +770,7 @@ internal sealed class VideoStreamerForm : Form
     {
         if (apiClient == null)
         {
-            SetStatus("QuickPlayer API is not connected.", error: true);
+            ShowError("QuickPlayer API is not connected.");
             return;
         }
         Button button = nextCard[girlIndex];
@@ -576,12 +782,10 @@ internal sealed class VideoStreamerForm : Form
                 "fullscreen/source/" + Uri.EscapeDataString(source) +
                     "/next", null);
             response.EnsureSuccessStatusCode();
-            SetTransientStatus("Next " + GirlLabels[girlIndex] +
-                " card requested");
         }
         catch (Exception exception)
         {
-            SetStatus("Next card: " + exception.Message, error: true);
+            ShowError("Next card: " + exception.Message);
         }
         finally
         {
@@ -608,8 +812,7 @@ internal sealed class VideoStreamerForm : Form
         }
         start.Enabled = true;
         stop.Enabled = false;
-        if (!IsDisposed)
-            SetStatus(apiReady ? "Stopped" : "Connecting to QuickPlayer...");
+        ResetPlaybackTimeline();
     }
 
     private void StreamerExited(Process process)
@@ -619,28 +822,16 @@ internal sealed class VideoStreamerForm : Form
         process.Dispose();
         start.Enabled = true;
         stop.Enabled = false;
-        SetStatus("Stopped");
+        ResetPlaybackTimeline();
     }
 
-    private void SetStatus(string text, bool error = false)
+    private void ShowError(string message)
     {
-        statusResetTimer.Stop();
-        status.Text = text;
-        status.ForeColor = error ? Color.Firebrick : SystemColors.GrayText;
-    }
-
-    private void SetTransientStatus(string text)
-    {
-        SetStatus(text);
-        statusResetTimer.Start();
-    }
-
-    private void ResetTransientStatus()
-    {
-        statusResetTimer.Stop();
-        SetStatus(streamer != null
-            ? "Streaming " + Path.GetFileName(videoPath.Text)
-            : "Ready");
+        if (IsDisposed || Disposing)
+            return;
+        MessageBox.Show(this, message,
+            "QuickPlayer Video and Scene Lighting",
+            MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
     private void SafeBeginInvoke(Action action)
@@ -657,10 +848,20 @@ internal sealed class VideoStreamerForm : Form
         {
             StopStreamer();
             lightingUpdateTimer.Dispose();
-            statusResetTimer.Dispose();
+            settingsSaveTimer.Dispose();
             apiClient?.Dispose();
             lightingUpdateLock.Dispose();
         }
         base.Dispose(disposing);
     }
+}
+
+internal sealed class ControlSettings
+{
+    public bool Loop { get; set; } = true;
+    public int VideoBrightness { get; set; } = 100;
+    public int VideoBlackAndWhite { get; set; } = 100;
+    public int SceneBrightness { get; set; } = 100;
+    public int[] PerformerBrightness { get; set; } = [50, 50, 50];
+    public int[] PerformerPurpleness { get; set; } = [75, 75, 75];
 }

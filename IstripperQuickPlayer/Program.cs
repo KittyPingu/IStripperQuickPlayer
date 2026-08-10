@@ -161,6 +161,9 @@ namespace IStripperQuickPlayer
                     !Form1.TryParseHotKey("Windows+Control+N",
                         out modifiers, out key) ||
                     modifiers != 0x400A || key != (uint)Keys.N ||
+                    Form1.PlayerSizeTarget(25, 40, 55) != 55 ||
+                    Form1.PlayerSizeTarget(25, 40, null) != 25 ||
+                    Form1.PlayerSizeTarget(0, 40, null) != 40 ||
                     !PlaybackBridgeClient.VerifyProtocol())
                 {
                     Environment.ExitCode = 1;

@@ -115,6 +115,17 @@ jobs:
           if (-not (Test-Path "$publishDir\ShaderVideoStreamer.exe")) {
             throw "ShaderVideoStreamer.exe was not published."
           }
+          & "$publishDir\ShaderVideoStreamer.exe" --help
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Deduplicate shader video streamer runtime
+        shell: pwsh
+        run: |
+          .\tools\Prepare-ShaderVideoStreamerPackage.ps1 `
+            -MainPublishDirectory "$env:GITHUB_WORKSPACE\artifacts\publish" `
+            -PlayerPublishDirectory "$env:GITHUB_WORKSPACE\artifacts\publish\ShaderVideoStreamer"
 
       - name: Smoke-test WinForms controls
         shell: pwsh
