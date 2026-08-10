@@ -19,6 +19,27 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          lfs: true
+
+      - name: Verify packaged binary dependencies
+        shell: pwsh
+        run: |
+          $binaryFiles = Get-ChildItem "IstripperQuickPlayer\dependencies" -File |
+            Where-Object { $_.Extension -in ".dll", ".exe" }
+          if (-not $binaryFiles) {
+            throw "No packaged binary dependencies were found."
+          }
+          foreach ($file in $binaryFiles) {
+            $stream = [System.IO.File]::OpenRead($file.FullName)
+            try {
+              if ($stream.Length -lt 2 -or $stream.ReadByte() -ne 0x4d -or $stream.ReadByte() -ne 0x5a) {
+                throw "$($file.Name) is not a Windows PE file. Git LFS content may be missing."
+              }
+            } finally {
+              $stream.Dispose()
+            }
+          }
+          Write-Host "Verified $($binaryFiles.Count) packaged PE dependencies."
 
       - name: Verify local development versioning
         shell: pwsh
