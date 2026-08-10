@@ -98,8 +98,7 @@ begin
       RaiseException('Could not create hard link: ' + LinkPath);
   end;
 
-  Log(Format('Created %d ShaderVideoStreamer hard links.',
-    [GetArrayLength(RelativePaths)]));
+  Log(Format('Created %d ShaderVideoStreamer hard links.', [GetArrayLength(RelativePaths)]));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
