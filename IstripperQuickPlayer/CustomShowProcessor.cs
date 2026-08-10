@@ -15,6 +15,7 @@ internal sealed class CustomShowProcessResult
     public int Height { get; set; }
     public string FrameRate { get; set; } = "";
     public long DurationMs { get; set; }
+    public string? ForegroundMode { get; set; }
     public int? RequestedSequenceChunk { get; set; }
     public int? EffectiveSequenceChunk { get; set; }
     public string? ExecutionMode { get; set; }
