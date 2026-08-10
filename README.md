@@ -153,6 +153,10 @@ QuickPlayer requires 64-bit Windows and an existing iStripper installation.
 4. Select a clip to play it, or use **Show Model**.
 5. Use **File > Reload Models** after adding cards to iStripper.
 
+The installer also adds the **Midnight Gallery Club** fullscreen scene to
+iStripper and installs its companion video/lighting example under
+`ShaderVideoStreamer` in the QuickPlayer application folder.
+
 The File menu also contains playlist/filter import, queue save/load, backup,
 restore and update commands.
 

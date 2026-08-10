@@ -1,0 +1,148 @@
+splash: logo/logo-large.png
+logo: logo/logo-small.png
+text: description.txt
+minVersion: 1.2.1.44
+
+clip {
+    id: GirlLeft
+    allow: pole
+    deny: table, top, cage, inout
+}
+
+clip {
+    id: GirlCentre
+    allow: pole
+    deny: table, top, cage, inout
+}
+
+clip {
+    id: GirlRight
+    allow: pole
+    deny: table, top, cage, inout
+}
+
+texture {
+    id: ClubBackground
+    source: background-no-poles-1920.png
+}
+
+// Official iStripper logo, available to the scene if it is needed as a sprite.
+texture {
+    id: iSLogo
+    source: ../Data/logo_istripper.png
+}
+
+camera {
+    type: 2D
+    pos: 0, 0
+    size: 1920, 1080
+    ambient: 1.0, 1.0, 1.0
+
+    sprite {
+        source: ClubBackground
+        shader: fragment, MidnightGalleryVideo.fsh
+        size: 1920, 1080
+        hotspot: 0.5, 0.5
+        pos: 960, 540
+        blend: false
+    }
+
+    // Restrained floor reflections sit behind the live dancers.
+    clipSprite {
+        source: GirlLeft
+        pos: 582, 910
+        standingHeight: 560
+        scale: -1.0, -1.0
+        opacity: 0.14
+        color: 0.25, 0.16, 0.42
+        blend: true
+        shader: fragment, PerformerPurpleLight.fsh
+        uniform: lightIndex, float, 0
+    }
+
+    clipSprite {
+        source: GirlCentre
+        pos: 976, 910
+        standingHeight: 580
+        scale: -1.0, -1.0
+        opacity: 0.14
+        color: 0.25, 0.16, 0.42
+        blend: true
+        shader: fragment, PerformerPurpleLight.fsh
+        uniform: lightIndex, float, 1
+    }
+
+    clipSprite {
+        source: GirlRight
+        pos: 1402, 910
+        standingHeight: 560
+        scale: -1.0, -1.0
+        opacity: 0.14
+        color: 0.25, 0.16, 0.42
+        blend: true
+        shader: fragment, PerformerPurpleLight.fsh
+        uniform: lightIndex, float, 2
+    }
+
+    clipSprite {
+        source: GirlLeft
+        pos: 582, 910
+        standingHeight: 560
+        scale: -1.0, 1.0
+        blend: true
+        shader: fragment, PerformerPurpleLight.fsh
+        uniform: lightIndex, float, 0
+    }
+
+    clipSprite {
+        source: GirlCentre
+        pos: 976, 910
+        standingHeight: 580
+        scale: -1.0, 1.0
+        blend: true
+        shader: fragment, PerformerPurpleLight.fsh
+        uniform: lightIndex, float, 1
+    }
+
+    clipSprite {
+        source: GirlRight
+        pos: 1402, 910
+        standingHeight: 560
+        scale: -1.0, 1.0
+        blend: true
+        shader: fragment, PerformerPurpleLight.fsh
+        uniform: lightIndex, float, 2
+    }
+
+    clipNameSprite {
+        source: GirlLeft
+        pos: 582, 1035
+        scale: 0.55
+        hotspot: 0.5, 1.0
+    }
+
+    clipNameSprite {
+        source: GirlCentre
+        pos: 976, 1035
+        scale: 0.55
+        hotspot: 0.5, 1.0
+    }
+
+    clipNameSprite {
+        source: GirlRight
+        pos: 1402, 1035
+        scale: 0.55
+        hotspot: 0.5, 1.0
+    }
+
+    // Show the official logo for ten seconds, once per minute.
+    sprite {
+        source: iSLogo
+        size: 300, 80
+        hotspot: 1.0, 1.0
+        pos: 1890, 1050
+        blend: true
+        opacity: 10
+        animate: 60, loopforward, linear, opacity, -60
+    }
+}

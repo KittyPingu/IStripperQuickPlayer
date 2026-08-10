@@ -10,6 +10,9 @@
 #ifndef OutputDir
   #define OutputDir "..\artifacts\installer"
 #endif
+#ifndef SceneSourceDir
+  #define SceneSourceDir "..\scenes\Midnight Gallery Club"
+#endif
 
 [Setup]
 AppId={{BBDE0DB6-A7D5-4E5E-8A66-780A6D372CCC}
@@ -37,6 +40,7 @@ WizardStyle=modern
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "BridgeProbe.exe"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SceneSourceDir}\*"; DestDir: "{localappdata}\vghd\data\scenes\Midnight Gallery Club"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked

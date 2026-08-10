@@ -97,6 +97,25 @@ jobs:
           }
           Copy-Item "IstripperQuickPlayer\dependencies\*" $publishDir -Force
 
+      - name: Publish shader video streamer example
+        shell: pwsh
+        run: |
+          $project = "tools\ShaderVideoStreamer\ShaderVideoStreamer.csproj"
+          $publishDir = "$env:GITHUB_WORKSPACE\artifacts\publish\ShaderVideoStreamer"
+          dotnet restore $project --runtime win-x64
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          dotnet publish $project --configuration Release --runtime win-x64 `
+            --self-contained true --no-restore --output $publishDir `
+            -p:Version=$env:APP_VERSION -p:DebugType=None -p:DebugSymbols=false
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          if (-not (Test-Path "$publishDir\ShaderVideoStreamer.exe")) {
+            throw "ShaderVideoStreamer.exe was not published."
+          }
+
       - name: Smoke-test WinForms controls
         shell: pwsh
         run: |
@@ -119,6 +138,7 @@ jobs:
           & $iscc installer\IStripperQuickPlayer.iss `
             "/DAppVersion=$env:APP_VERSION" `
             "/DSourceDir=$env:GITHUB_WORKSPACE\artifacts\publish" `
+            "/DSceneSourceDir=$env:GITHUB_WORKSPACE\scenes\Midnight Gallery Club" `
             "/DOutputDir=$env:GITHUB_WORKSPACE\artifacts\installer"
           if ($LASTEXITCODE) {
             exit $LASTEXITCODE

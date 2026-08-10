@@ -64,3 +64,4 @@
 
 IstripperQuickPlayer/dependencies/*.dll filter=lfs diff=lfs merge=lfs -text
 IstripperQuickPlayer/dependencies/*.exe filter=lfs diff=lfs merge=lfs -text
+"scenes/Midnight Gallery Club/background-no-poles-1920.png" filter=lfs diff=lfs merge=lfs -text

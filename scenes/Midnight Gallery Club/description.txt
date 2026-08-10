@@ -1,0 +1,5 @@
+Midnight Gallery Club
+
+An original three-performer club scene with a live QuickPlayer video frame.
+Stream the named texture video1 with ShaderVideoStreamer to animate the large
+left-wall portrait. The remaining gallery artwork is static and original.
