@@ -212,8 +212,8 @@ def benchmark_model(args, preset, fixtures, work, total_vram):
             f"preview off {preview_off:.2f} FPS")
         if bounded < serial * .98:
             raise RuntimeError(f"Bounded {preset} pipeline regressed by more than 2% at {resolution[0]}px")
-        if variants["serial-preview-True"][0].get("rawRgbaSha256") != \
-                variants["bounded-preview-True"][0].get("rawRgbaSha256"):
+        if variants["serial-preview-True"][0].get("rawAlphaSha256") != \
+                variants["bounded-preview-True"][0].get("rawAlphaSha256"):
             raise RuntimeError(
                 f"Bounded {preset} output differs from serial output at {resolution[0]}px")
 

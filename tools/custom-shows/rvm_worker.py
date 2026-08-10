@@ -194,13 +194,13 @@ class LatestPreviewWriter:
                 name="RVM preview writer", daemon=True)
             self.thread.start()
 
-    def submit(self, source, rgba):
+    def submit(self, source, alpha):
         if not self.enabled:
             return
         with self.condition:
             if self.error:
                 raise self.error
-            self.pending = (source.copy(), rgba.copy())
+            self.pending = (source.copy(), alpha.copy())
             self.condition.notify()
 
     def _run(self):
@@ -213,7 +213,7 @@ class LatestPreviewWriter:
                         self.condition.wait()
                     if self.pending is None and self.stopping:
                         return
-                    source, rgba = self.pending
+                    source, alpha = self.pending
                     self.pending = None
                     self.condition.notify_all()
                 started = time.perf_counter()
@@ -222,19 +222,19 @@ class LatestPreviewWriter:
                 preview_size = (max(1, round(width * scale)),
                                 max(1, round(height * scale)))
                 source_image = Image.fromarray(source, "RGB")
-                rgba_image = Image.fromarray(rgba, "RGBA")
+                alpha_image = Image.fromarray(alpha, "L")
                 if preview_size != (width, height):
                     source_image = source_image.resize(preview_size, Image.Resampling.BILINEAR)
-                    rgba_image = rgba_image.resize(preview_size, Image.Resampling.BILINEAR)
+                    alpha_image = alpha_image.resize(preview_size, Image.Resampling.BILINEAR)
                 source_small = np.asarray(source_image, dtype=np.uint8)
-                rgba_small = np.asarray(rgba_image, dtype=np.uint8)
+                alpha_small = np.asarray(alpha_image, dtype=np.uint8)
                 preview_height, preview_width = source_small.shape[:2]
                 yy, xx = np.indices((preview_height, preview_width))
                 checker = np.where((((xx // 16) + (yy // 16)) & 1)[..., None],
                                    190, 125).astype(np.uint8)
-                alpha = rgba_small[:, :, 3:4].astype(np.float32) / 255
-                composite = np.rint(rgba_small[:, :, :3] * alpha +
-                                     checker * (1 - alpha)).astype(np.uint8)
+                opacity = alpha_small[:, :, None].astype(np.float32) / 255
+                composite = np.rint(source_small * opacity +
+                                     checker * (1 - opacity)).astype(np.uint8)
                 for name, image in (("preview-source.jpg", source_small),
                                     ("preview-composite.jpg", composite)):
                     temporary = self.output / (name + ".tmp")
@@ -265,7 +265,7 @@ class FrameSlot:
         pinned = device.type == "cuda"
         self.host = torch.empty((chunk, height, width, 3), dtype=torch.uint8,
                                 pin_memory=pinned)
-        self.output = torch.empty((chunk, height, width, 4), dtype=torch.uint8,
+        self.output = torch.empty((chunk, height, width), dtype=torch.uint8,
                                   pin_memory=pinned)
         self.gpu = torch.empty((1, chunk, 3, height, width), device=device,
                                dtype=dtype) if pinned else None
@@ -463,28 +463,39 @@ def process(args, execution, report=emit):
         "-c:v", "libx264", "-preset", "medium", "-crf", "10"]
     execution.encoder = "h264_nvenc" if nvenc else "libx264"
     execution.encoder_preset = args.encoder_preset if nvenc else "slow/medium"
-    encode = subprocess.Popen([ffmpeg, "-y", "-v", "warning", "-f", "rawvideo",
-        "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-r", frame_rate,
-        "-i", "pipe:0", "-ss", f"{start:.6f}", "-t", f"{duration:.6f}",
-        "-i", str(source), "-filter_complex",
-        "[0:v]split=2[rgb][rgba];[rgb]format=yuv420p[vout];"
-        "[rgba]alphaextract,format=yuv420p[aout]",
-        "-map", "[vout]", "-map", "1:a:0?", *video_codec, "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-shortest", str(output / "foreground.mp4"),
-        "-map", "[aout]", *alpha_codec, "-pix_fmt", "yuv420p",
-        str(output / "alpha.mkv")], stdin=subprocess.PIPE)
+    downsample = 1 if args.matting_resolution == 0 else min(
+        args.matting_resolution / max(width, height), 1)
+    model_width = max(1, int(width * downsample))
+    model_height = max(1, int(height * downsample))
+    normalized = (f"[0:v:0]fps={frame_rate},scale={width}:{height}:flags=lanczos,"
+                  "setsar=1,split=2[video][python]")
+    if (model_width, model_height) == (width, height):
+        normalized += ";[python]format=rgb24[raw]"
+    else:
+        normalized += (f";[python]format=rgb24,scale={model_width}:{model_height}:"
+                       "flags=bilinear[raw]")
+    decode = subprocess.Popen([ffmpeg, "-y", "-v", "warning", "-ss", f"{start:.6f}",
+        "-i", str(source), "-filter_complex", normalized,
+        "-map", "[raw]", "-t", f"{duration:.6f}", "-frames:v", str(total),
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        "-map", "[video]", "-map", "0:a:0?", "-t", f"{duration:.6f}",
+        "-frames:v", str(total), *video_codec, "-pix_fmt", "yuv420p",
+        "-r", frame_rate, "-fps_mode", "cfr", "-c:a", "aac",
+        str(output / "foreground.mp4")], stdout=subprocess.PIPE)
     try:
-        decode = subprocess.Popen([ffmpeg, "-v", "error", "-ss", f"{start:.6f}",
-            "-i", str(source), "-t", f"{duration:.6f}", "-map", "0:v:0",
-            "-vf", f"fps={frame_rate},scale={width}:{height}:flags=lanczos,setsar=1",
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
-            stdout=subprocess.PIPE)
+        encode = subprocess.Popen([ffmpeg, "-y", "-v", "warning", "-f", "rawvideo",
+            "-pix_fmt", "gray", "-s", f"{model_width}x{model_height}",
+            "-r", frame_rate, "-i", "pipe:0", "-vf",
+            f"scale={width}:{height}:flags=bilinear,format=yuv420p",
+            "-frames:v", str(total),
+            *alpha_codec, "-pix_fmt", "yuv420p", "-r", frame_rate,
+            "-fps_mode", "cfr", str(output / "alpha.mkv")], stdin=subprocess.PIPE)
     except BaseException:
-        encode.kill()
+        decode.kill()
         raise
 
-    frame_bytes = width * height * 3
-    slot_bytes = args.sequence_chunk * width * height * 7
+    frame_bytes = model_width * model_height * 3
+    slot_bytes = args.sequence_chunk * model_width * model_height * 4
     memory_limit = min(2 * 1024 ** 3, int(physical_memory_bytes() * .125))
     slot_count = 1 if args.pipeline == "serial" else min(3,
         max(1, memory_limit // max(1, slot_bytes)))
@@ -496,8 +507,6 @@ def process(args, execution, report=emit):
         torch.backends.cudnn.deterministic = args.verify_raw_hash
         torch.set_float32_matmul_precision("high")
         torch.cuda.reset_peak_memory_stats(device)
-    downsample = 1 if args.matting_resolution == 0 else min(
-        args.matting_resolution / max(width, height), 1)
     timings = StageTimings()
     preview = None
     try:
@@ -507,7 +516,7 @@ def process(args, execution, report=emit):
         output_slots = queue.Queue(maxsize=max(1, slot_count - 1))
         errors = queue.Queue()
         stop = threading.Event()
-        slots = [FrameSlot(torch, args.sequence_chunk, height, width,
+        slots = [FrameSlot(torch, args.sequence_chunk, model_height, model_width,
                            device, tensor_dtype) for _ in range(slot_count)]
         for slot in slots:
             free_slots.put(slot)
@@ -524,7 +533,7 @@ def process(args, execution, report=emit):
     started_processing = time.perf_counter()
     encoded_count = 0
     last_preview_time = 0.0
-    raw_rgba_hash = hashlib.sha256() if args.verify_raw_hash else None
+    raw_alpha_hash = hashlib.sha256() if args.verify_raw_hash else None
 
     def fail(error):
         if errors.empty():
@@ -600,10 +609,10 @@ def process(args, execution, report=emit):
                     for first, last in slot.download_events:
                         timings.add("d2h", first.elapsed_time(last) / 1000)
                 timings.add("output_wait", time.perf_counter() - wait_started)
-                output_array = slot.output[:slot.count].numpy()
-                if raw_rgba_hash is not None:
-                    raw_rgba_hash.update(output_array.tobytes())
-                encoder_write(output_array)
+                alpha_array = slot.output[:slot.count].numpy()
+                if raw_alpha_hash is not None:
+                    raw_alpha_hash.update(alpha_array.tobytes())
+                encoder_write(alpha_array)
                 now = time.monotonic()
                 if preview.enabled and (slot.final or now - last_preview_time >= .5):
                     preview.submit(slot.host[slot.count - 1].numpy(),
@@ -630,7 +639,7 @@ def process(args, execution, report=emit):
     output_thread.start()
     recurrent = [None] * 4
     bootstrap = True
-    report("inference", 0, f"Starting foreground inference on {device.type.upper()} in "
+    report("inference", 0, f"Starting alpha inference on {device.type.upper()} in "
            f"{'FP16' if fp16 else 'FP32'}; chunk {execution.safe_chunk}; "
            f"pipeline depth {slot_count}; {execution.encoder} {execution.encoder_preset}...")
 
@@ -670,10 +679,9 @@ def process(args, execution, report=emit):
             compile_started = time.perf_counter() if first_compiled_call else None
             with torch.inference_mode(), torch.autocast(device_type=device.type,
                     dtype=torch.float16, enabled=fp16):
-                foreground, alpha, *next_state = selected_model(
-                    tensor, *state, downsample_ratio=downsample)
-                rgba = torch.cat((foreground, alpha), 2).clamp_(0, 1).mul_(255).byte()[0]
-                rgba = rgba.permute(0, 2, 3, 1).contiguous()
+                _foreground, alpha, *next_state = selected_model(
+                    tensor, *state, downsample_ratio=1)
+                alpha_bytes = alpha.clamp_(0, 1).mul_(255).byte()[0, :, 0].contiguous()
             if first_compiled_call:
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
@@ -698,15 +706,16 @@ def process(args, execution, report=emit):
                 with torch.cuda.stream(download_stream):
                     download_stream.wait_event(cuda_end)
                     download_start.record(download_stream)
-                    slot.output[offset:offset + length].copy_(rgba, non_blocking=True)
+                    slot.output[offset:offset + length].copy_(alpha_bytes,
+                                                              non_blocking=True)
                     download_end.record(download_stream)
-                    rgba.record_stream(download_stream)
+                    alpha_bytes.record_stream(download_stream)
                 slot.download_events.append((download_start, download_end))
                 slot.download_end = download_end
             else:
                 timings.add("inference", time.perf_counter() - inference_started)
                 download_started = time.perf_counter()
-                slot.output[offset:offset + length].copy_(rgba)
+                slot.output[offset:offset + length].copy_(alpha_bytes)
                 timings.add("d2h", time.perf_counter() - download_started)
             return next_state
         except torch.OutOfMemoryError:
@@ -728,7 +737,7 @@ def process(args, execution, report=emit):
             compiled = None
             if not bootstrap and length == execution.requested_chunk and \
                     execution.safe_chunk == execution.requested_chunk:
-                compiled = execution.compiled(report, width, height)
+                compiled = execution.compiled(report, model_width, model_height)
             try:
                 state = run_slice(slot, offset, length, state, compiled)
                 bootstrap = False
@@ -814,6 +823,7 @@ def process(args, execution, report=emit):
 
     elapsed = max(.001, time.perf_counter() - started_processing)
     context = {"preset": args.preset, "width": width, "height": height,
+               "modelWidth": model_width, "modelHeight": model_height,
                "frames": encoded_count}
     timings.emit(**context)
     profile_record("rvm_summary", **context, seconds=elapsed,
@@ -825,11 +835,13 @@ def process(args, execution, report=emit):
         peakRamBytes=peak_rss_bytes(), executionMode=execution.resolved_mode,
         encoder=execution.encoder, encoderPreset=execution.encoder_preset,
         previewEnabled=preview.enabled,
-        rawRgbaSha256=raw_rgba_hash.hexdigest() if raw_rgba_hash is not None else None)
+        rawAlphaSha256=raw_alpha_hash.hexdigest() if raw_alpha_hash is not None else None,
+        foregroundMode="source")
     result = {"width": width, "height": height, "frameRate": frame_rate,
-        "durationMs": round(encoded_count * 1000 / fps), **execution.metadata()}
+        "durationMs": round(encoded_count * 1000 / fps), "foregroundMode": "source",
+        **execution.metadata()}
     (output / "result.json").write_text(json.dumps(result, indent=2))
-    report("complete", 100, "Foreground and alpha are ready for preview")
+    report("complete", 100, "Source foreground and alpha are ready for preview")
     return result
 
 

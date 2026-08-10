@@ -378,13 +378,23 @@ The same batch selector controls ViTMatte inference and VideoMaMa groups.
 
 ### RVM pipeline performance
 
+RVM uses the normalized source stream directly for `foreground.mp4`, asks
+FFmpeg to provide Python with only the selected matting-detail resolution, and
+sends only the single-channel alpha result back for FFmpeg to upscale. This
+avoids piping full-resolution RGB input or constructing, downloading, and
+piping full-resolution RGBA output. It also means RVM's reconstructed foreground
+colour is not retained; the original
+source supplies foreground colour, matching the MatAnyone2 and ViTMatte output
+path and trading some possible edge-colour cleanup for substantially lower
+transfer and CPU overhead.
+
 RVM uses up to three reusable slots with queues limited to two items. The slot
-count is reduced automatically so pinned input/output memory stays below the
-smaller of 2 GiB or 12.5% of physical RAM. CUDA uploads and downloads use
-dedicated streams and events; source previews come from the decoded CPU buffer,
-and a latest-frame-only worker creates previews no more than twice per second at
-up to 960x540. A final preview is drained before review begins. CPU and FP32
-fallbacks use the same ordered pipeline.
+count is reduced automatically so pinned RGB input and alpha output memory stays
+below the smaller of 2 GiB or 12.5% of physical RAM. CUDA uploads and downloads
+use dedicated streams and events; source previews come from the decoded CPU
+buffer, and a latest-frame-only worker creates previews no more than twice per
+second at up to 960x540. A final preview is drained before review begins. CPU
+and FP32 fallbacks use the same ordered pipeline.
 
 **Custom Shows > Settings** stores separate preferred chunks for Quality and
 Fast and a global custom-show NVENC effort preset from `p1` (fastest) through
