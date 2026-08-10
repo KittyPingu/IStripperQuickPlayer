@@ -373,6 +373,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/Form1.LibraryCleanup.cs
 !/IstripperQuickPlayer/Form1.RestApi.cs
+!/IstripperQuickPlayer/Form1.CustomShows.cs
 !/IstripperQuickPlayer/LockStateOverlay.cs
 !/IstripperQuickPlayer/PlaybackBridgeClient.cs
 !/IstripperQuickPlayer/Controls/
@@ -387,6 +388,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/CustomShowForms.cs
 !/IstripperQuickPlayer/CustomShowProcessor.cs
 !/IstripperQuickPlayer/CustomShows.cs
+!/IstripperQuickPlayer/CustomWatermarkRemovalForm.cs
 !/IstripperQuickPlayer/FfmpegCpuDecoder.cs
 !/IstripperQuickPlayer/InternalAudioPlayer.cs
 !/IstripperQuickPlayer/Program.cs
