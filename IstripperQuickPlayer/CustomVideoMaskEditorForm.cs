@@ -6,8 +6,8 @@ namespace IStripperQuickPlayer;
 
 internal sealed class CustomVideoMaskEditorForm : Form
 {
-    readonly string sourcePath, initialMask, maskFolder, sam2Model, profileLog,
-        statePath;
+    readonly string sourcePath, initialMask, maskFolder, sam2Model, maskEngine,
+        profileLog, statePath;
     readonly CustomShowConfiguration configuration;
     readonly long startMs, endMs;
     readonly string temporary = Path.Combine(Path.GetTempPath(),
@@ -53,6 +53,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     int pendingFrame = -1;
     bool pendingRemoval;
     bool loadedDraftState;
+    bool supportsCorrections;
     string pendingMode = "prompt";
     string workerStatus = "";
     string framesFolder;
@@ -63,7 +64,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
         CustomShowConfiguration configuration, long startMs, long endMs,
         string initialMask, string maskFolder,
         string? clipLabel = null, string sam2Model = "base-plus",
-        string? profileLog = null, string? statePath = null)
+        string? profileLog = null, string? statePath = null,
+        string maskEngine = "sam2")
     {
         this.sourcePath = sourcePath;
         this.configuration = configuration;
@@ -72,14 +74,19 @@ internal sealed class CustomVideoMaskEditorForm : Form
         this.initialMask = initialMask;
         this.maskFolder = maskFolder;
         this.sam2Model = sam2Model;
+        this.maskEngine = maskEngine;
+        supportsCorrections = maskEngine != "rvm";
         this.profileLog = profileLog ?? Path.Combine(
             Path.GetDirectoryName(maskFolder)!, "processing.log");
         this.statePath = statePath ?? Path.Combine(
             Path.GetDirectoryName(maskFolder)!, "sam2-corrections.json");
         framesFolder = Path.Combine(temporary, "frames");
         LoadDraftState();
-        Text = clipLabel == null ? "Review and Correct SAM2 Masks" :
-            $"Review and Correct SAM2 Masks - {clipLabel}";
+        string engineName = maskEngine switch { "rvm" => "RVM", "edgetam" => "EdgeTAM", _ => "SAM2" };
+        image.AccessibleName = $"{engineName} tracked foreground mask";
+        if (maskEngine == "rvm") accept.Text = "Use RVM masks";
+        Text = clipLabel == null ? $"Review {engineName} Masks" :
+            $"Review {engineName} Masks - {clipLabel}";
         ClientSize = new Size(1200, 900);
         MinimumSize = new Size(760, 620);
         StartPosition = FormStartPosition.CenterParent;
@@ -218,9 +225,9 @@ internal sealed class CustomVideoMaskEditorForm : Form
         try
         {
             Directory.CreateDirectory(temporary);
-            workerStatus = File.Exists(statePath)
-                ? "Loading saved SAM2 masks and correction history..."
-                : "Extracting review frames and running the initial SAM2 pass...";
+            workerStatus = maskEngine == "rvm" ? "Generating RVM person masks..." :
+                File.Exists(statePath) ? $"Loading saved {maskEngine.ToUpperInvariant()} masks and correction history..."
+                : $"Extracting review frames and running the initial {maskEngine.ToUpperInvariant()} pass...";
             workerElapsed.Restart(); workerClock.Start(); UpdateWorkerStatus();
             ProcessStartInfo start = new(configuration.PythonExecutable)
             {
@@ -228,30 +235,35 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 RedirectStandardInput = true, RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            string workerScript = maskEngine == "rvm" ? "rvm_mask_worker.py" :
+                "sam2_refine_worker.py";
             foreach (string argument in new[] {
-                Path.Combine(AppContext.BaseDirectory, "custom-shows", "sam2_refine_worker.py"),
+                Path.Combine(AppContext.BaseDirectory, "custom-shows", workerScript),
                 "--source", sourcePath, "--runtime", CustomShowProcessor.RuntimeRoot(configuration),
-                "--mask", initialMask, "--frames", FramesFolder, "--masks", maskFolder,
+                "--frames", FramesFolder, "--masks", maskFolder,
                 "--start-ms", startMs.ToString(CultureInfo.InvariantCulture),
                 "--end-ms", endMs.ToString(CultureInfo.InvariantCulture),
-                "--model", sam2Model,
+                "--profile-log", this.profileLog })
+                start.ArgumentList.Add(argument);
+            if (maskEngine != "rvm")
+                foreach (string argument in new[] { "--mask", initialMask,
+                "--model", sam2Model, "--engine", maskEngine,
                 "--compile-cutoff-frames", Math.Max(1,
                     configuration.Sam2CompileCutoffFrames(sam2Model))
                     .ToString(CultureInfo.InvariantCulture),
                 "--cache-root", CustomShowProcessor.Sam2FrameCacheRoot,
                 "--cache-limit-bytes", checked((long)Math.Clamp(
                     configuration.Sam2FrameCacheSizeGb, 0, 100) * 1024 * 1024 * 1024)
-                    .ToString(CultureInfo.InvariantCulture),
-                "--profile-log", this.profileLog })
-                start.ArgumentList.Add(argument);
-            if (File.Exists(statePath))
+                    .ToString(CultureInfo.InvariantCulture) })
+                    start.ArgumentList.Add(argument);
+            if (maskEngine != "rvm" && File.Exists(statePath))
             {
                 start.ArgumentList.Add("--resume-state");
                 start.ArgumentList.Add(statePath);
             }
             start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
             start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
-            worker = Process.Start(start) ?? throw new InvalidOperationException("SAM2 did not start.");
+            worker = Process.Start(start) ?? throw new InvalidOperationException("Mask worker did not start.");
             workerError = worker.StandardError.ReadToEndAsync();
             await ReadUntilAsync("ready");
             workerClock.Stop(); workerElapsed.Stop(); progress.Style = ProgressBarStyle.Blocks;
@@ -263,7 +275,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
             RefreshTimelineRanges();
             ConfigurePlaybackInterval();
             image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
-                slowMotion.Enabled = automatic.Enabled = accept.Enabled = true;
+                slowMotion.Enabled = accept.Enabled = true;
+            automatic.Enabled = supportsCorrections;
             progress.Value = 100;
             LoadPreview(); UpdatePosition();
         }
@@ -272,7 +285,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             workerClock.Stop(); workerElapsed.Stop();
             if (!closing && !IsDisposed && !Disposing)
             {
-                status.Text = "SAM2 mask review failed.";
+                status.Text = "Mask review failed.";
                 MessageBox.Show(this, error.Message, Text,
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -294,6 +307,9 @@ internal sealed class CustomVideoMaskEditorForm : Form
             {
                 if (kind == "ready")
                 {
+                    if (response.TryGetProperty("supportsCorrections",
+                        out JsonElement correctionsValue))
+                        supportsCorrections = correctionsValue.GetBoolean();
                     frameCount = response.GetProperty("frameCount").GetInt32();
                     fps = response.GetProperty("fps").GetDouble();
                     reviewWidth = response.TryGetProperty("width", out JsonElement widthValue)
@@ -331,9 +347,9 @@ internal sealed class CustomVideoMaskEditorForm : Form
             {
                 double value = response.GetProperty("percent").GetDouble();
                 workerStatus = response.GetProperty("message").GetString() ?? "Updating masks...";
-                bool compiling = workerStatus.StartsWith("Compiling SAM2",
+                bool compiling = workerStatus.StartsWith("Compiling ",
                     StringComparison.Ordinal) || workerStatus.StartsWith(
-                    "Loading cached SAM2", StringComparison.Ordinal);
+                    "Loading cached ", StringComparison.Ordinal);
                 progress.Style = compiling ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
                 if (!compiling && (value >= displayed + .5 || value >= 100))
                 {
@@ -358,7 +374,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
 
     async void Image_MouseClick(object? sender, MouseEventArgs e)
     {
-        if (updating || image.Image == null || e.Button is not
+        if (!supportsCorrections || updating || image.Image == null || e.Button is not
             (MouseButtons.Left or MouseButtons.Right)) return;
         PointF? point = ImagePoint(e.Location);
         if (point == null) return;
@@ -376,6 +392,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
 
     async Task UndoClickAsync()
     {
+        if (!supportsCorrections) return;
         int frame = CurrentFrame;
         if (updating || !points.TryGetValue(frame, out List<PointF>? framePoints) ||
             framePoints.Count == 0) return;
@@ -405,7 +422,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     async Task PreviewCorrectionAsync(int frame, bool useAutomatic = false,
         bool reset = false, bool removeAnchor = false)
     {
-        if (worker == null || worker.HasExited || updating) return;
+        if (!supportsCorrections || worker == null || worker.HasExited || updating) return;
         points.TryGetValue(frame, out List<PointF>? framePoints);
         labels.TryGetValue(frame, out List<int>? frameLabels);
         updating = true;
@@ -452,7 +469,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
             updating = false;
             if (!closing && !IsDisposed)
             {
-                image.Enabled = automatic.Enabled = true;
+                image.Enabled = true;
+                automatic.Enabled = supportsCorrections;
                 bool canMove = pendingFrame < 0;
                 timeline.Enabled = canMove;
                 previous.Enabled = play.Enabled = next.Enabled = slowMotion.Enabled = canMove;
@@ -465,7 +483,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
 
     async Task ApplyCorrectionAsync()
     {
-        if (pendingFrame < 0 || worker == null || worker.HasExited || updating) return;
+        if (!supportsCorrections || pendingFrame < 0 || worker == null ||
+            worker.HasExited || updating) return;
         int frame = pendingFrame;
         activeRange = CorrectionRange(frame);
         activeAnchor = frame;
@@ -522,8 +541,11 @@ internal sealed class CustomVideoMaskEditorForm : Form
         {
             updating = false;
             if (!closing && !IsDisposed)
+            {
                 timeline.Enabled = image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
-                    slowMotion.Enabled = automatic.Enabled = accept.Enabled = true;
+                    slowMotion.Enabled = accept.Enabled = true;
+                automatic.Enabled = supportsCorrections;
+            }
         }
     }
 

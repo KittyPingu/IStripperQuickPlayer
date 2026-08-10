@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """QuickPlayer VideoMaMa worker. Stdout is NDJSON progress only."""
-import argparse, gc, json, os, shutil, subprocess, sys, time
+import argparse, concurrent.futures, gc, json, os, shutil, subprocess, sys
+import threading, time
 from collections import OrderedDict
 from pathlib import Path
 
@@ -101,7 +102,8 @@ def load_sam2(runtime, torch, device="cuda", optimized=True,
 
 
 def use_on_demand_sam2_frames(frame_folder, torch, cache_limit_bytes=0,
-                              cache_stats=None):
+                              cache_stats=None, prefetch_depth=2,
+                              prefetch_to_device=False):
     import sam2.sam2_video_predictor as predictor_module
     import numpy as np
     from PIL import Image
@@ -123,16 +125,25 @@ def use_on_demand_sam2_frames(frame_folder, torch, cache_limit_bytes=0,
             def __init__(self):
                 self.cache = OrderedDict()
                 self.cache_bytes = 0
+                self.lock = threading.RLock()
+                self.futures = {}
+                self.last_index = None
+                self.direction = 1
+                self.prefetch_depth = max(0, int(prefetch_depth))
+                self.executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="SAM-frame-prefetch") \
+                    if self.prefetch_depth else None
+                self.upload_stream = torch.cuda.Stream(device=compute_device) \
+                    if prefetch_to_device and compute_device is not None and \
+                    str(compute_device).startswith("cuda") else None
             def __len__(self): return len(paths)
-            def __getitem__(self, index):
-                if index in self.cache:
-                    image = self.cache.pop(index)
-                    self.cache[index] = image
-                    if cache_stats is not None:
-                        cache_stats["hits"] = cache_stats.get("hits", 0) + 1
-                    return image
+
+            def _count(self, name, value=1):
                 if cache_stats is not None:
-                    cache_stats["misses"] = cache_stats.get("misses", 0) + 1
+                    with self.lock:
+                        cache_stats[name] = cache_stats.get(name, 0) + value
+
+            def _prepare(self, index):
                 with Image.open(paths[index]) as opened:
                     decoded_at = time.perf_counter()
                     decoded = opened.convert("RGB")
@@ -141,35 +152,92 @@ def use_on_demand_sam2_frames(frame_folder, torch, cache_limit_bytes=0,
                     pixels = np.array(decoded.resize((image_size, image_size)))
                 if pixels.dtype != np.uint8:
                     raise RuntimeError(f"Unknown image dtype: {pixels.dtype}")
-                # Dividing the uint8 NumPy array by a Python float promotes the
-                # entire 1024x1024 RGB frame to float64. SAM2 converts it back
-                # to float32 before the image encoder, so doing that work here
-                # only doubles the temporary bandwidth and cache footprint.
                 image = torch.from_numpy(pixels).permute(2, 0, 1).to(torch.float32)
                 image.div_(255.0).sub_(mean).div_(std)
-                if cache_stats is not None:
-                    cache_stats["decodePreprocessCount"] = \
-                        cache_stats.get("decodePreprocessCount", 0) + 1
-                    cache_stats["jpegDecodeSeconds"] = \
-                        cache_stats.get("jpegDecodeSeconds", 0.0) + decoded_seconds
-                    cache_stats["preprocessSeconds"] = \
-                        cache_stats.get("preprocessSeconds", 0.0) + \
-                        time.perf_counter() - prepared_at
-                if offload_video_to_cpu and compute_device is not None and \
+                self._count("decodePreprocessCount")
+                self._count("jpegDecodeSeconds", decoded_seconds)
+                self._count("preprocessSeconds", time.perf_counter() - prepared_at)
+                if self.upload_stream is not None:
+                    image = image.pin_memory()
+                    uploaded_at = time.perf_counter()
+                    with torch.cuda.device(compute_device), \
+                            torch.cuda.stream(self.upload_stream):
+                        uploaded = image.to(compute_device, non_blocking=True)
+                        completed = torch.cuda.Event()
+                        completed.record(self.upload_stream)
+                    completed.synchronize()
+                    image = uploaded
+                    self._count("gpuUploadCount")
+                    self._count("gpuUploadBytes", image.nelement() * image.element_size())
+                    self._count("gpuUploadSeconds", time.perf_counter() - uploaded_at)
+                elif offload_video_to_cpu and compute_device is not None and \
                         str(compute_device).startswith("cuda"):
                     image = image.pin_memory()
                 elif not offload_video_to_cpu:
                     image = image.to(compute_device)
-                if cache_limit_bytes > 0:
-                    size = image.nelement() * image.element_size()
-                    while self.cache and self.cache_bytes + size > cache_limit_bytes:
+                return image
+
+            def _remember(self, index, image):
+                effective_limit = min(cache_limit_bytes, 128 * 1024 ** 2) \
+                    if self.upload_stream is not None else cache_limit_bytes
+                if effective_limit <= 0:
+                    return
+                size = image.nelement() * image.element_size()
+                with self.lock:
+                    while self.cache and self.cache_bytes + size > effective_limit:
                         _, removed = self.cache.popitem(last=False)
                         self.cache_bytes -= removed.nelement() * removed.element_size()
-                    if size <= cache_limit_bytes:
+                    if size <= effective_limit:
                         self.cache[index] = image
                         self.cache_bytes += size
                         if cache_stats is not None:
                             cache_stats["bytes"] = self.cache_bytes
+
+            def _schedule(self, index):
+                if self.executor is None:
+                    return
+                if self.last_index is not None and index != self.last_index:
+                    self.direction = 1 if index > self.last_index else -1
+                self.last_index = index
+                wanted = []
+                for distance in range(1, self.prefetch_depth + 1):
+                    candidate = index + self.direction * distance
+                    if 0 <= candidate < len(paths):
+                        wanted.append(candidate)
+                with self.lock:
+                    for stale in list(self.futures):
+                        if stale not in wanted:
+                            self.futures.pop(stale).cancel()
+                    for candidate in wanted:
+                        if candidate not in self.cache and candidate not in self.futures:
+                            self.futures[candidate] = self.executor.submit(
+                                self._prepare, candidate)
+                            self._count("prefetchScheduled")
+
+            def __getitem__(self, index):
+                with self.lock:
+                    if index in self.cache:
+                        image = self.cache.pop(index)
+                        self.cache[index] = image
+                    else:
+                        image = None
+                    future = self.futures.pop(index, None)
+                if image is not None:
+                    if cache_stats is not None:
+                        self._count("hits")
+                    self._schedule(index)
+                    return image
+                self._count("misses")
+                if future is not None:
+                    waited = time.perf_counter()
+                    image = future.result()
+                    self._count("prefetchHits")
+                    self._count("prefetchWaitSeconds", time.perf_counter() - waited)
+                else:
+                    self._count("synchronousLoads")
+                    image = self._prepare(index)
+                self._remember(index, image)
+                self._schedule(index)
                 return image
 
         with Image.open(paths[0]) as first:

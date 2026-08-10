@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Persistent SAM2 propagation/correction worker. Stdout is NDJSON UI protocol."""
-import argparse, hashlib, json, math, os, queue, shutil, subprocess, sys
+import argparse, concurrent.futures, contextlib, hashlib, json, math, os, queue, shutil
+import subprocess, sys
 import tempfile, threading, time, uuid
 from collections import defaultdict
 from pathlib import Path
@@ -600,6 +601,171 @@ def install_gpu_feature_cache(predictor, state, torch, maximum, profiler):
     predictor._get_image_feature = cached
 
 
+def install_edgetam_embedding_batches(predictor, state, torch, profiler,
+                                      batch_size=4, maximum=8):
+    """Encode one future batch concurrently with recurrent temporal tracking."""
+    from collections import OrderedDict
+    original = predictor._get_image_feature
+    # init_state has already warmed frame zero; retain it instead of encoding it
+    # again as part of the first batch.
+    retained = OrderedDict(state.get("cached_features", {}))
+    frame_count = int(state["num_frames"])
+    last_frame = None
+    batch_disabled = False
+    async_disabled = os.environ.get("IQP_EDGETAM_ASYNC_EMBEDDINGS", "1") == "0"
+    headroom = 3 * 1024 ** 3
+    prefetch_stream = torch.cuda.Stream(device=state["device"])
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="EdgeTAM-embedding-prefetch")
+    pending = None
+
+    def one_frame(value, offset, encoded_size):
+        if torch.is_tensor(value):
+            return value[offset:offset + 1] if value.ndim and \
+                value.shape[0] == encoded_size else value
+        if isinstance(value, list):
+            return [one_frame(item, offset, encoded_size) for item in value]
+        if isinstance(value, tuple):
+            return tuple(one_frame(item, offset, encoded_size) for item in value)
+        if isinstance(value, dict):
+            return {key: one_frame(item, offset, encoded_size)
+                    for key, item in value.items()}
+        return value
+
+    def publish_cache(inference_state):
+        inference_state["cached_features"] = dict(retained)
+
+    def batch_indices(start, direction):
+        result = []
+        for distance in range(batch_size):
+            candidate = start + direction * distance
+            if 0 <= candidate < frame_count and candidate not in retained:
+                result.append(candidate)
+        return result
+
+    def encode(inference_state, indices, stream=None):
+        images = [inference_state["images"][index] for index in indices]
+        image_batch = torch.stack(images).to(inference_state["device"],
+                                               non_blocking=True).float()
+        real_size = len(indices)
+        if real_size < batch_size:
+            padding = image_batch[-1:].expand(batch_size - real_size, -1, -1, -1)
+            image_batch = torch.cat((image_batch, padding), dim=0)
+        context = torch.cuda.stream(stream) if stream is not None else \
+            contextlib.nullcontext()
+        started = time.perf_counter()
+        with torch.inference_mode(), torch.autocast(device_type="cuda",
+                dtype=torch.bfloat16), context:
+            backbone_batch = predictor.forward_image(image_batch)
+            completed = torch.cuda.Event()
+            completed.record(stream) if stream is not None else completed.record()
+        profiler.add("embedding_batch_dispatch", time.perf_counter() - started)
+        profiler.count("embeddingBatches")
+        profiler.count("embeddingFramesEncoded", real_size)
+        return indices, image_batch, backbone_batch, completed
+
+    def record_stream(value, stream):
+        if torch.is_tensor(value):
+            value.record_stream(stream)
+        elif isinstance(value, (list, tuple)):
+            for item in value: record_stream(item, stream)
+        elif isinstance(value, dict):
+            for item in value.values(): record_stream(item, stream)
+
+    def retain_encoded(result):
+        indices, image_batch, backbone_batch, completed = result
+        current_stream = torch.cuda.current_stream(state["device"])
+        current_stream.wait_event(completed)
+        record_stream(image_batch, current_stream)
+        record_stream(backbone_batch, current_stream)
+        for offset, index in enumerate(indices):
+            image = image_batch[offset:offset + 1]
+            backbone = one_frame(backbone_batch, offset, batch_size)
+            retained[index] = (image, backbone)
+        while len(retained) > maximum:
+            retained.popitem(last=False)
+
+    def schedule(inference_state, start, direction):
+        nonlocal pending
+        if async_disabled or pending is not None:
+            return
+        indices = batch_indices(start, direction)
+        if not indices:
+            return
+        free, _ = torch.cuda.mem_get_info()
+        if free < headroom:
+            profiler.count("embeddingAsyncLowMemorySkips")
+            return
+        future = executor.submit(encode, inference_state, indices, prefetch_stream)
+        pending = (tuple(indices), direction, future)
+        profiler.count("embeddingAsyncBatchesScheduled")
+
+    def batched(inference_state, frame_idx, object_batch_size):
+        nonlocal last_frame, batch_disabled, async_disabled, pending
+        direction = -1 if last_frame is not None and frame_idx < last_frame else 1
+        if pending is not None and pending[1] != direction:
+            pending[2].cancel()
+            pending = None
+            profiler.count("embeddingAsyncDirectionChanges")
+        if frame_idx in retained:
+            value = retained.pop(frame_idx)
+            retained[frame_idx] = value
+            publish_cache(inference_state)
+            profiler.count("embeddingBatchCacheHits")
+            last_frame = frame_idx
+            schedule(inference_state, frame_idx + direction, direction)
+            return original(inference_state, frame_idx, object_batch_size)
+        if batch_disabled:
+            return original(inference_state, frame_idx, object_batch_size)
+
+        try:
+            if pending is not None and frame_idx in pending[0]:
+                waited = time.perf_counter()
+                future = pending[2]
+                pending = None
+                retain_encoded(future.result())
+                wait_seconds = time.perf_counter() - waited
+                profiler.add("embedding_async_wait", wait_seconds)
+                profiler.count("embeddingAsyncBatchesConsumed")
+            if frame_idx not in retained:
+                free, _ = torch.cuda.mem_get_info()
+                if free < headroom:
+                    profiler.count("embeddingBatchLowMemoryFallbacks")
+                    last_frame = frame_idx
+                    return original(inference_state, frame_idx, object_batch_size)
+                indices = batch_indices(frame_idx, direction) or [frame_idx]
+                retain_encoded(encode(inference_state, indices))
+            publish_cache(inference_state)
+            last_frame = frame_idx
+            schedule(inference_state, frame_idx + direction * batch_size, direction)
+            return original(inference_state, frame_idx, object_batch_size)
+        except RuntimeError:
+            # Retry synchronously after a concurrent-stream failure. If that also
+            # fails, the existing single-frame implementation remains available.
+            if pending is not None:
+                pending[2].cancel()
+                pending = None
+            if not async_disabled:
+                async_disabled = True
+                profiler.count("embeddingAsyncFallbacks")
+                try:
+                    indices = batch_indices(frame_idx, direction) or [frame_idx]
+                    retain_encoded(encode(inference_state, indices))
+                    publish_cache(inference_state)
+                    last_frame = frame_idx
+                    return original(inference_state, frame_idx, object_batch_size)
+                except RuntimeError:
+                    pass
+            retained.clear()
+            inference_state["cached_features"] = {}
+            batch_disabled = True
+            profiler.count("embeddingBatchFallbacks")
+            torch.cuda.empty_cache()
+            return original(inference_state, frame_idx, object_batch_size)
+
+    predictor._get_image_feature = batched
+
+
 def peak_process_memory_bytes():
     try:
         import resource
@@ -715,29 +881,52 @@ def process(args):
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
         torch.cuda.reset_peak_memory_stats()
-    execution, expected_factor, compile_mode, feature_cache_frames = choose_execution(
-        args, runtime, torch, device, total)
+    if args.engine == "sam2":
+        execution, expected_factor, compile_mode, feature_cache_frames = \
+            choose_execution(args, runtime, torch, device, total)
+    else:
+        can_compile = device == "cuda" and args.compile_cutoff_frames > 0 and \
+            total >= args.compile_cutoff_frames and sam2_vos_optimized(torch, device)
+        execution, expected_factor, compile_mode, feature_cache_frames = \
+            ("encoder" if can_compile else "eager", 1.0, "max-autotune", 0)
     args.resolved_execution = execution
     args.resolved_device = device
     args.ready_sent = False
     optimized = execution == "vos" and sam2_vos_optimized(torch, device)
     encoder_compiled = execution == "encoder" and sam2_vos_optimized(torch, device)
     if execution != "eager" and not (optimized or encoder_compiled): execution = "eager"
-    marker = sam2_vos_cache_marker(runtime, args.model, execution, compile_mode)
+    marker = (runtime / "torchinductor-cache" /
+        f"edgetam-{execution}-{compile_mode}.ready") if args.engine == "edgetam" else \
+        sam2_vos_cache_marker(runtime, args.model, execution, compile_mode)
     first_compile = execution != "eager" and not marker.is_file()
     if first_compile:
+        label = "EdgeTAM" if args.engine == "edgetam" else f"SAM2 {args.model}"
         send(status="progress", percent=15, message=
-             f"Compiling SAM2 {execution} optimization for {args.model} (one-time cache generation; subsequent sessions reuse it)...")
+             f"Compiling {label} {execution} optimization (one-time cache generation; subsequent sessions reuse it)...")
     elif execution != "eager":
+        label = "EdgeTAM" if args.engine == "edgetam" else f"SAM2 {args.model}"
         send(status="progress", percent=15, message=
-             f"Loading cached SAM2 {execution} optimization; initializing this worker...")
+             f"Loading cached {label} {execution} optimization; initializing this worker...")
     else:
-        send(status="progress", percent=15, message=f"Loading SAM2 {args.model} on {device.upper()}...")
+        label = "EdgeTAM" if args.engine == "edgetam" else f"SAM2 {args.model}"
+        send(status="progress", percent=15, message=f"Loading {label} on {device.upper()}...")
     loaded = time.perf_counter()
-    model_info, _ = sam2_model(runtime, args.model)
-    predictor = load_sam2(runtime, torch, device, optimized=optimized,
-                          model_name=args.model, encoder_compiled=encoder_compiled,
-                          compile_mode=compile_mode)
+    if args.engine == "edgetam":
+        repository = runtime / "edgetam"
+        checkpoint = repository / "checkpoints" / "edgetam.pt"
+        if not (runtime / "EDGETAM_COMMIT").is_file() or not checkpoint.is_file():
+            raise RuntimeError("EdgeTAM is not installed; run Processing Tools setup")
+        sys.path.insert(0, str(repository))
+        from sam2.build_sam import build_sam2_video_predictor
+        overrides = ["++model.compile_image_encoder=True"] if encoder_compiled else []
+        predictor = build_sam2_video_predictor("configs/edgetam.yaml",
+            str(checkpoint), device=device, hydra_overrides_extra=overrides)
+        model_info = {"label": "EdgeTAM"}
+    else:
+        model_info, _ = sam2_model(runtime, args.model)
+        predictor = load_sam2(runtime, torch, device, optimized=optimized,
+                              model_name=args.model, encoder_compiled=encoder_compiled,
+                              compile_mode=compile_mode)
     profiler.add("model_load", time.perf_counter() - loaded)
     add_feature_profiler(predictor, profiler, torch, device, args.detailed_profile)
     predictor.add_all_frames_to_correct_as_cond = True
@@ -746,7 +935,10 @@ def process(args):
     physical = physical_memory_bytes()
     memory_cache = min(512 * 1024 ** 2, int(physical * .05))
     cache_stats = {}
-    use_on_demand_sam2_frames(frames, torch, memory_cache, cache_stats)
+    edge_embedding_batch = 4 if args.engine == "edgetam" and device == "cuda" else 1
+    use_on_demand_sam2_frames(frames, torch, memory_cache, cache_stats,
+        prefetch_depth=max(2, edge_embedding_batch + 2),
+        prefetch_to_device=device == "cuda")
     writer = MaskWriter(torch, device, profiler)
     correction_frames = {0}
     if resume is not None:
@@ -759,7 +951,11 @@ def process(args):
             if mark_step: mark_step()
             state = predictor.init_state(str(frames), offload_video_to_cpu=True,
                                          offload_state_to_cpu=device != "cuda")
-            if device == "cuda":
+            if device == "cuda" and args.engine == "edgetam":
+                install_edgetam_embedding_batches(predictor, state, torch, profiler,
+                    batch_size=edge_embedding_batch,
+                    maximum=max(8, feature_cache_frames))
+            elif device == "cuda":
                 install_gpu_feature_cache(predictor, state, torch,
                                           feature_cache_frames, profiler)
             if mark_step: mark_step()
@@ -786,12 +982,16 @@ def process(args):
                 precision="BF16" if bf16 else "FP32", optimized=optimized,
                 execution=execution, checkpoint=model_info["label"], model=args.model,
                 gpuFeatureCacheFrames=feature_cache_frames,
+                embeddingBatchSize=edge_embedding_batch,
                 frameCacheHit=cache_hit, framesFolder=str(frames))
             ready["resumed"] = resume is not None
+            ready["supportsCorrections"] = True
+            ready["engine"] = args.engine
             send(**ready)
             args.ready_sent = True
             preview_baselines, auto_cache = {}, {}
             for line in sys.stdin:
+                if not line.strip(): continue
                 request = json.loads(line)
                 if request.get("command") == "quit": break
                 command = request.get("command")
@@ -899,6 +1099,7 @@ def process(args):
             profiler.report(model=args.model, execution=execution, device=device,
                 compileMode=compile_mode,
                 gpuFeatureCacheFrames=feature_cache_frames,
+                embeddingBatchSize=edge_embedding_batch,
                 precision="BF16" if bf16 else "FP32", frames=total,
                 propagatedFrames=propagated_frames, expectedWorkMultiplier=expected_factor,
                 frameCacheHit=cache_hit, frameCacheStats=cache_stats,
@@ -982,6 +1183,7 @@ def main():
     parser.add_argument("--masks", type=Path); parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int); parser.add_argument("--model",
         choices=tuple(SAM2_MODELS), default="base-plus")
+    parser.add_argument("--engine", choices=("sam2", "edgetam"), default="sam2")
     parser.add_argument("--resume-state", type=Path)
     parser.add_argument("--execution", choices=("auto", "eager", "encoder", "vos"),
                         default="auto")

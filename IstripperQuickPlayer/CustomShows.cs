@@ -174,6 +174,7 @@ internal sealed class CustomShowProcessing
     public int MattingDetailPx { get; set; }
     public int BatchSize { get; set; } = 3;
     public string? Sam2Model { get; set; }
+    public string? MaskEngine { get; set; }
     public string ExecutionPolicy { get; set; } = "auto";
     public string? ResolvedExecutionMode { get; set; }
     public int? EffectiveBatchSize { get; set; }
@@ -395,6 +396,79 @@ internal sealed class CustomShowStore
                 RecycleOption.SendToRecycleBin);
     }
 
+    internal string? DeleteClip(string showId, string clipId,
+        bool recycleMedia = true)
+    {
+        ValidateId(showId, "show");
+        ValidateId(clipId, "clip");
+        CustomShowManifest show = LoadManifest(showId);
+        CustomShowClip clip = show.Clips.FirstOrDefault(value =>
+            string.Equals(value.Id, clipId, StringComparison.OrdinalIgnoreCase)) ??
+            throw new InvalidDataException("The custom clip no longer exists.");
+        if (!clip.Included || clip.Media == null)
+            throw new InvalidDataException("The custom clip is not playable.");
+        if (show.Clips.Count(value => value.Included) <= 1)
+            throw new InvalidOperationException(
+                "The final clip must be removed by deleting the custom show.");
+
+        string showFolder = Path.Combine(ShowsFolder, show.Id);
+        string foreground = ResolveRelative(showFolder, clip.Media.Foreground);
+        string alpha = ResolveRelative(showFolder, clip.Media.Alpha);
+        clip.Included = false;
+        clip.Media = null;
+        if (show.Processing != null)
+            show.Processing.Clips = show.Processing.Clips.Where(value =>
+                !string.Equals(value.ClipId, clipId,
+                    StringComparison.OrdinalIgnoreCase)).ToArray();
+        SaveManifest(show);
+
+        try
+        {
+            DeleteClipMedia(showFolder, clipId, foreground, alpha,
+                recycleMedia);
+            return null;
+        }
+        catch (Exception error)
+        {
+            return error.Message;
+        }
+    }
+
+    static void DeleteClipMedia(string showFolder, string clipId,
+        string foreground, string alpha, bool recycle)
+    {
+        string? foregroundFolder = Path.GetDirectoryName(foreground);
+        string? alphaFolder = Path.GetDirectoryName(alpha);
+        string clipsFolder = Path.GetFullPath(Path.Combine(showFolder, "clips"))
+            .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (foregroundFolder != null && string.Equals(foregroundFolder,
+                alphaFolder, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(Path.GetFileName(foregroundFolder), clipId,
+                StringComparison.OrdinalIgnoreCase) &&
+            (Path.GetFullPath(foregroundFolder) + Path.DirectorySeparatorChar)
+                .StartsWith(clipsFolder, StringComparison.OrdinalIgnoreCase) &&
+            Directory.Exists(foregroundFolder))
+        {
+            if (recycle)
+                FileSystem.DeleteDirectory(foregroundFolder,
+                    UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
+            else
+                Directory.Delete(foregroundFolder, true);
+            return;
+        }
+
+        foreach (string path in new[] { foreground, alpha }
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!File.Exists(path)) continue;
+            if (recycle)
+                FileSystem.DeleteFile(path, UIOption.OnlyErrorDialogs,
+                    RecycleOption.SendToRecycleBin);
+            else
+                File.Delete(path);
+        }
+    }
+
     internal static void WriteJsonAtomic<T>(string path, T value)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
@@ -504,12 +578,19 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Unknown matting-detail resolution.");
         if (!BatchSizeValues.Contains(processing.BatchSize))
             throw new InvalidDataException("Unknown processing batch size.");
-        bool usesSam2 = processing.Algorithm is
-            "matanyone2" or "videomama" or "vitmatte-s" or "vitmatte-b";
-        if (usesSam2 && (processing.Sam2Model == null ||
+        bool trackedMasks = processing.Algorithm is
+            "videomama" or "vitmatte-s" or "vitmatte-b";
+        string? maskEngine = trackedMasks ? processing.MaskEngine ?? "sam2" : null;
+        if (trackedMasks && maskEngine is not ("sam2" or "rvm" or "edgetam"))
+            throw new InvalidDataException("Unknown mask-generation algorithm.");
+        if (!trackedMasks && processing.MaskEngine != null)
+            throw new InvalidDataException("Mask-engine metadata is not valid for this algorithm.");
+        bool needsSam2 = processing.Algorithm == "matanyone2" ||
+            trackedMasks && maskEngine != "rvm";
+        if (needsSam2 && (processing.Sam2Model == null ||
             !Sam2Models.Contains(processing.Sam2Model)))
             throw new InvalidDataException("A valid SAM2 model is required for this algorithm.");
-        if (!usesSam2 && processing.Sam2Model != null)
+        if (!needsSam2 && processing.Sam2Model != null)
             throw new InvalidDataException("SAM2 model metadata is not valid for this algorithm.");
         if (processing.ExecutionPolicy != "auto" ||
             string.IsNullOrWhiteSpace(processing.PrecisionPolicy))
@@ -550,8 +631,10 @@ internal sealed class CustomShowStore
             if (item.InitialMaskFrameMs is long frame &&
                 (frame < clip.StartMs || frame >= clip.EndMs))
                 throw new InvalidDataException("Initial mask frame lies outside its clip.");
-            if (!usesSam2 && (item.InitialMaskFrameMs != null || item.Sam2MaskTracking))
+            if (!needsSam2 && (item.InitialMaskFrameMs != null || item.Sam2MaskTracking))
                 throw new InvalidDataException("Mask metadata is not valid for this algorithm.");
+            if (item.Sam2MaskTracking && maskEngine != "sam2")
+                throw new InvalidDataException("SAM2 tracking metadata conflicts with the mask engine.");
         }
         if (seen.Count != included.Count)
             throw new InvalidDataException("Processing metadata is required for every included clip.");
@@ -1006,6 +1089,27 @@ internal sealed class CustomShowStore
             if (store.LoadCards(false).Single().modelName != "Updated Model")
             {
                 Console.Error.WriteLine("Custom performer propagation check failed.");
+                return false;
+            }
+            string removedClipId = roundTrip.Clips[0].Id;
+            string removedClipFolder = Path.Combine(folder, "clips",
+                removedClipId);
+            string? cleanupWarning = store.DeleteClip(show.Id,
+                removedClipId, recycleMedia: false);
+            CustomShowManifest afterDeletion = store.LoadManifest(show.Id);
+            IReadOnlyList<ModelCard> afterDeletionCards =
+                store.LoadCards(false);
+            if (cleanupWarning != null || Directory.Exists(removedClipFolder) ||
+                afterDeletion.Clips.Single(value => value.Id == removedClipId)
+                    .Included ||
+                afterDeletion.Clips.Single(value => value.Id == removedClipId)
+                    .Media != null ||
+                afterDeletion.Processing?.Clips.Any(value =>
+                    value.ClipId == removedClipId) != false ||
+                afterDeletionCards.Single().clips?.Count != 1)
+            {
+                Console.Error.WriteLine("Custom clip deletion check failed: " +
+                    cleanupWarning);
                 return false;
             }
             CustomShowManifest invalid = new()

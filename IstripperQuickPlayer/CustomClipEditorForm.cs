@@ -36,6 +36,17 @@ internal sealed class CustomClipEditorForm : Form
         MultiSelect = true, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill };
     readonly ComboBox hotness = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly CheckedListBox clipTypes = new() { CheckOnClick = true, Height = 120 };
+    readonly Controls.PlaybackSeekBar alphaThreshold = new()
+    {
+        Minimum = 0, Maximum = 255, SmallChange = 1, LargeChange = 10,
+        Dock = DockStyle.Fill, Height = 32,
+        AccessibleName = "Selected clip minimum alpha"
+    };
+    readonly TextBox alphaThresholdText = new()
+    {
+        Width = 48, MaxLength = 3,
+        TextAlign = HorizontalAlignment.Right
+    };
     readonly CheckBox include = new() { Text = "Include this segment as a playable clip",
         AutoSize = true, Checked = true, ThreeState = true, AutoCheck = false };
     readonly Label position = new() { AutoSize = true, Padding = new Padding(6, 8, 6, 0) };
@@ -123,12 +134,27 @@ internal sealed class CustomClipEditorForm : Form
         details.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
         details.Controls.Add(grid, 0, 0);
         TableLayoutPanel metadata = new() { Dock = DockStyle.Fill,
-            ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
+            ColumnCount = 1, RowCount = 7, Padding = new Padding(8) };
         metadata.Controls.Add(include);
         metadata.Controls.Add(new Label { Text = "Selected clip hotness", AutoSize = true });
         metadata.Controls.Add(hotness);
         metadata.Controls.Add(new Label { Text = "Selected clip types", AutoSize = true });
         metadata.Controls.Add(clipTypes);
+        Label alphaThresholdLabel = new()
+        {
+            Text = "Selected clip minimum alpha (0–255)", AutoSize = true
+        };
+        TableLayoutPanel alphaThresholdRow = new()
+        {
+            Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2
+        };
+        alphaThresholdRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        alphaThresholdRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+        alphaThresholdRow.Controls.Add(alphaThreshold, 0, 0);
+        alphaThresholdRow.Controls.Add(alphaThresholdText, 1, 0);
+        alphaThresholdLabel.Visible = alphaThresholdRow.Visible = usesPerClipMedia;
+        metadata.Controls.Add(alphaThresholdLabel);
+        metadata.Controls.Add(alphaThresholdRow);
         details.Controls.Add(metadata, 1, 0);
         root.Controls.Add(details, 0, 3);
 
@@ -169,6 +195,8 @@ internal sealed class CustomClipEditorForm : Form
         grid.Columns.Add("length", "Length");
         grid.Columns.Add("heat", "Hotness");
         grid.Columns.Add("types", "Clip types");
+        grid.Columns.Add("alpha", "Min alpha");
+        grid.Columns["alpha"]!.Visible = usesPerClipMedia;
         hotness.Items.AddRange(HotnessValues);
         clipTypes.Items.AddRange(ClipTypeValues);
         timeline.DurationMs = durationMs;
@@ -205,6 +233,15 @@ internal sealed class CustomClipEditorForm : Form
             if (!loadingMetadata) BeginInvoke(() => ApplyClipType(
                 e.Index, e.NewValue == CheckState.Checked));
         };
+        alphaThreshold.Scroll += (_, _) =>
+            ApplyAlphaThreshold(alphaThreshold.Value);
+        alphaThresholdText.TextChanged += (_, _) =>
+        {
+            if (int.TryParse(alphaThresholdText.Text, out int value))
+                ApplyAlphaThreshold(value);
+        };
+        alphaThresholdText.Leave += (_, _) =>
+            LoadSelectedAlphaThreshold();
         addDivider.Click += (_, _) => AddDivider();
         removeDivider.Click += (_, _) => RemoveDivider();
         autoDetect.Click += async (_, _) => await AutoDetectAsync();
@@ -272,7 +309,10 @@ internal sealed class CustomClipEditorForm : Form
                 string.Join(", ", clip.DetectionLabels),
                 Format(clip.StartMs), Format(clip.EndMs),
                 Format(clip.EndMs - clip.StartMs), clip.Hotness,
-                string.Join(", ", clip.ClipTypes));
+                string.Join(", ", clip.ClipTypes),
+                clip.Included && clip.Media != null
+                    ? clip.AlphaThreshold.ToString(CultureInfo.InvariantCulture)
+                    : "");
         }
         if (grid.Rows.Count > 0)
             grid.Rows[Math.Clamp(selected, 0, grid.Rows.Count - 1)].Selected = true;
@@ -301,8 +341,47 @@ internal sealed class CustomClipEditorForm : Form
         for (int i = 0; i < clipTypes.Items.Count; i++)
             clipTypes.SetItemChecked(i, selected.All(clip =>
                 clip.ClipTypes.Contains(clipTypes.Items[i]!.ToString())));
+        LoadSelectedAlphaThreshold(selected);
         loadingMetadata = false;
         hotness.Enabled = clipTypes.Enabled = true;
+    }
+
+    void LoadSelectedAlphaThreshold(CustomShowClip[]? selected = null)
+    {
+        selected ??= SelectedIndexes.Select(index => clips[index]).ToArray();
+        bool enabled = usesPerClipMedia && selected.Length > 0 &&
+            selected.All(clip => clip.Included && clip.Media != null);
+        alphaThreshold.Enabled = alphaThresholdText.Enabled = enabled;
+        if (!enabled)
+        {
+            alphaThresholdText.Text = "";
+            return;
+        }
+        int[] values = selected.Select(clip => clip.AlphaThreshold)
+            .Distinct().ToArray();
+        alphaThreshold.Value = values[0];
+        alphaThresholdText.Text = values.Length == 1
+            ? values[0].ToString(CultureInfo.InvariantCulture) : "";
+    }
+
+    void ApplyAlphaThreshold(int value)
+    {
+        if (loadingMetadata || !usesPerClipMedia) return;
+        int[] indexes = SelectedIndexes;
+        if (indexes.Length == 0 || indexes.Any(index =>
+                !clips[index].Included || clips[index].Media == null))
+            return;
+        value = Math.Clamp(value, alphaThreshold.Minimum,
+            alphaThreshold.Maximum);
+        loadingMetadata = true;
+        alphaThreshold.Value = value;
+        alphaThresholdText.Text = value.ToString(CultureInfo.InvariantCulture);
+        foreach (int index in indexes)
+        {
+            clips[index].AlphaThreshold = value;
+            UpdateGridMetadata(index);
+        }
+        loadingMetadata = false;
     }
 
     void SaveSelectedMetadata()
@@ -347,6 +426,10 @@ internal sealed class CustomClipEditorForm : Form
         grid.Rows[index].Cells[2].Value = string.Join(", ", clips[index].DetectionLabels);
         grid.Rows[index].Cells[6].Value = clips[index].Hotness;
         grid.Rows[index].Cells[7].Value = string.Join(", ", clips[index].ClipTypes);
+        grid.Rows[index].Cells[8].Value = clips[index].Included &&
+            clips[index].Media != null
+                ? clips[index].AlphaThreshold.ToString(CultureInfo.InvariantCulture)
+                : "";
     }
 
     void UpdateGridTimes()

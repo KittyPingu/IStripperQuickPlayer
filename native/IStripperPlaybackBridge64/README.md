@@ -88,12 +88,17 @@ injected bridge cannot leave iStripper waiting on the UI process.
    ownership so pause and seek operations control the same audio stream that
    vghd opened for the clip.
 
-Fullscreen shader data does not use a fixed vghd RVA or object offset. At
-startup the bridge resolves `QOpenGLShaderProgram::bind`, `uniformLocation`,
-and `setUniformValue` from the loaded `Qt5Gui.dll` export table. The bind hook
-sets `u_QuickPlayerData` and `u_QuickPlayerSequence` only for linked programs
-that declare those uniforms. Missing or incompatible Qt exports make
-fullscreen hook setup fail closed.
+Fullscreen shader data and textures do not use a fixed vghd RVA or object
+offset. At startup the bridge resolves `QOpenGLShaderProgram::bind`,
+`uniformLocation`, and `setUniformValue` from the loaded `Qt5Gui.dll` export
+table, and resolves core texture calls from `opengl32.dll`. The current
+context's `glActiveTexture` entry point is obtained dynamically through
+`wglGetProcAddress` on the render thread. The bind hook sets
+`u_QuickPlayerData`, `u_QuickPlayerSequence`, `u_QuickPlayerTexture`,
+`u_QuickPlayerTextureSize`, and `u_QuickPlayerTextureSequence` only for linked
+programs that declare them. Texture objects and uploads are context-specific
+and run only on the OpenGL render thread. Missing or incompatible Qt/OpenGL
+exports make fullscreen hook setup fail closed.
 
 The resolver produced this profile for the 2.4.0.0 baseline:
 

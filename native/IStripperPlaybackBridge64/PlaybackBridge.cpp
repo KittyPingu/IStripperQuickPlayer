@@ -11,6 +11,9 @@
 #include <cwchar>
 #include <cstring>
 #include <float.h>
+#include <memory>
+#include <mutex>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -125,6 +128,7 @@ namespace
     constexpr int PlayingState = 3;
     constexpr int PausedState = 4;
     constexpr HRESULT BridgeSuccess = 1;
+    bool IsWritable(const void* address, std::size_t length);
     constexpr HRESULT WmvInvalidRequest =
         static_cast<HRESULT>(0xC00D002B);
     constexpr unsigned ExpectedAvformatVersion =
@@ -243,8 +247,30 @@ namespace
         const void* program, const char* name);
     using QOpenGLShaderSetUniform1 = void(__fastcall*)(
         void* program, int location, float value);
+    using QOpenGLShaderSetUniformInt = void(__fastcall*)(
+        void* program, int location, int value);
+    using QOpenGLShaderSetUniform2 = void(__fastcall*)(
+        void* program, int location, float x, float y);
     using QOpenGLShaderSetUniform4 = void(__fastcall*)(
         void* program, int location, float x, float y, float z, float w);
+
+    using WglGetCurrentContext = HGLRC(WINAPI*)();
+    using WglGetProcAddress = PROC(WINAPI*)(LPCSTR);
+    using GlActiveTexture = void(APIENTRY*)(unsigned int texture);
+    using GlGenTextures = void(APIENTRY*)(int count, unsigned int* textures);
+    using GlBindTexture = void(APIENTRY*)(
+        unsigned int target, unsigned int texture);
+    using GlIsTexture = unsigned char(APIENTRY*)(unsigned int texture);
+    using GlGetIntegerv = void(APIENTRY*)(unsigned int name, int* value);
+    using GlPixelStorei = void(APIENTRY*)(unsigned int name, int value);
+    using GlTexParameteri = void(APIENTRY*)(
+        unsigned int target, unsigned int name, int value);
+    using GlTexImage2D = void(APIENTRY*)(unsigned int target, int level,
+        int internalFormat, int width, int height, int border,
+        unsigned int format, unsigned int type, const void* pixels);
+    using GlTexSubImage2D = void(APIENTRY*)(unsigned int target, int level,
+        int x, int y, int width, int height, unsigned int format,
+        unsigned int type, const void* pixels);
 
     struct FullScreenShaderDataPacket
     {
@@ -253,6 +279,41 @@ namespace
     };
 
     static_assert(sizeof(FullScreenShaderDataPacket) == 20);
+
+    constexpr std::uint32_t FullScreenShaderTextureMagic = 0x58545051;
+    constexpr std::uint32_t MaximumFullScreenShaderTextureDimension = 1024;
+    constexpr std::size_t MaximumFullScreenShaderTextureBytes =
+        MaximumFullScreenShaderTextureDimension *
+        MaximumFullScreenShaderTextureDimension * 4;
+    struct FullScreenShaderTexturePacket
+    {
+        std::uint32_t magic = FullScreenShaderTextureMagic;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint32_t sequence = 0;
+        std::uint32_t byteLength = 0;
+    };
+
+    static_assert(sizeof(FullScreenShaderTexturePacket) == 20);
+
+    struct FullScreenShaderTextureState
+    {
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint32_t sequence = 0;
+        std::uint64_t generation = 0;
+        std::shared_ptr<const std::vector<unsigned char>> rgba;
+    };
+
+    struct FullScreenShaderGlTexture
+    {
+        HGLRC context = nullptr;
+        unsigned int texture = 0;
+        int textureUnit = -1;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::uint64_t generation = 0;
+    };
 
     PVOID volatile g_activeMovie = nullptr;
     PVOID volatile g_activeAnimation = nullptr;
@@ -317,13 +378,33 @@ namespace
     PVOID volatile g_originalQOpenGLShaderProgramBind = nullptr;
     QOpenGLShaderUniformLocation g_qOpenGLShaderUniformLocation = nullptr;
     QOpenGLShaderSetUniform1 g_qOpenGLShaderSetUniform1 = nullptr;
+    QOpenGLShaderSetUniformInt g_qOpenGLShaderSetUniformInt = nullptr;
+    QOpenGLShaderSetUniform2 g_qOpenGLShaderSetUniform2 = nullptr;
     QOpenGLShaderSetUniform4 g_qOpenGLShaderSetUniform4 = nullptr;
+    WglGetCurrentContext g_wglGetCurrentContext = nullptr;
+    WglGetProcAddress g_wglGetProcAddress = nullptr;
+    GlGenTextures g_glGenTextures = nullptr;
+    GlBindTexture g_glBindTexture = nullptr;
+    GlIsTexture g_glIsTexture = nullptr;
+    GlGetIntegerv g_glGetIntegerv = nullptr;
+    GlPixelStorei g_glPixelStorei = nullptr;
+    GlTexParameteri g_glTexParameteri = nullptr;
+    GlTexImage2D g_glTexImage2D = nullptr;
+    GlTexSubImage2D g_glTexSubImage2D = nullptr;
     SRWLOCK g_fullScreenStateLock = SRWLOCK_INIT;
     SRWLOCK g_fullScreenHookLock = SRWLOCK_INIT;
     SRWLOCK g_fullScreenQueueOperationLock = SRWLOCK_INIT;
     SRWLOCK g_fullScreenShaderDataLock = SRWLOCK_INIT;
     FullScreenShaderDataPacket g_fullScreenShaderData;
     LONG volatile g_fullScreenShaderDataSet = 0;
+    SRWLOCK g_fullScreenShaderTextureLock = SRWLOCK_INIT;
+    FullScreenShaderTextureState g_fullScreenShaderTexture;
+    LONG volatile g_fullScreenShaderTextureSet = 0;
+    std::mutex g_fullScreenShaderGlTextureLock;
+    std::vector<FullScreenShaderGlTexture> g_fullScreenShaderGlTextures;
+    std::mutex g_fullScreenShaderPixelPoolLock;
+    std::vector<std::shared_ptr<std::vector<unsigned char>>>
+        g_fullScreenShaderPixelPool;
     std::vector<std::string> g_fullScreenClips;
     struct FullScreenQueueEntry
     {
@@ -1271,38 +1352,339 @@ namespace
         return returned;
     }
 
+    GlActiveTexture ResolveGlActiveTexture()
+    {
+        if (g_wglGetProcAddress == nullptr)
+            return nullptr;
+        PROC address = g_wglGetProcAddress("glActiveTexture");
+        const std::uintptr_t value = reinterpret_cast<std::uintptr_t>(address);
+        if (value <= 3 || value == static_cast<std::uintptr_t>(-1))
+            return nullptr;
+        return reinterpret_cast<GlActiveTexture>(address);
+    }
+
+    bool ApplyFullScreenShaderTexture(void* program)
+    {
+        constexpr unsigned int GlTexture2D = 0x0DE1;
+        constexpr unsigned int GlActiveTextureName = 0x84E0;
+        constexpr unsigned int GlTexture0 = 0x84C0;
+        constexpr unsigned int GlMaxTextureImageUnits = 0x8872;
+        constexpr unsigned int GlMaxCombinedTextureImageUnits = 0x8B4D;
+        constexpr unsigned int GlUnpackAlignment = 0x0CF5;
+        constexpr unsigned int GlRgba = 0x1908;
+        constexpr unsigned int GlUnsignedByte = 0x1401;
+        constexpr unsigned int GlTextureMinFilter = 0x2801;
+        constexpr unsigned int GlTextureMagFilter = 0x2800;
+        constexpr unsigned int GlTextureWrapS = 0x2802;
+        constexpr unsigned int GlTextureWrapT = 0x2803;
+        constexpr int GlLinear = 0x2601;
+        constexpr int GlClampToEdge = 0x812F;
+
+        if (InterlockedCompareExchange(
+                &g_fullScreenShaderTextureSet, 0, 0) == 0 ||
+            g_qOpenGLShaderUniformLocation == nullptr ||
+            g_qOpenGLShaderSetUniformInt == nullptr ||
+            g_qOpenGLShaderSetUniform2 == nullptr ||
+            g_qOpenGLShaderSetUniform1 == nullptr)
+            return false;
+        const int samplerLocation = g_qOpenGLShaderUniformLocation(
+            program, "u_QuickPlayerTexture");
+        if (samplerLocation < 0 || g_wglGetCurrentContext == nullptr ||
+            g_glGenTextures == nullptr || g_glBindTexture == nullptr ||
+            g_glIsTexture == nullptr || g_glGetIntegerv == nullptr ||
+            g_glPixelStorei == nullptr || g_glTexParameteri == nullptr ||
+            g_glTexImage2D == nullptr || g_glTexSubImage2D == nullptr)
+            return false;
+
+        HGLRC context = g_wglGetCurrentContext();
+        GlActiveTexture glActiveTexture = ResolveGlActiveTexture();
+        if (context == nullptr || glActiveTexture == nullptr)
+            return false;
+
+        try
+        {
+            std::lock_guard<std::mutex> guard(
+                g_fullScreenShaderGlTextureLock);
+            auto found = std::find_if(
+                g_fullScreenShaderGlTextures.begin(),
+                g_fullScreenShaderGlTextures.end(),
+                [context](const FullScreenShaderGlTexture& texture)
+                {
+                    return texture.context == context;
+                });
+            if (found == g_fullScreenShaderGlTextures.end())
+            {
+                if (g_fullScreenShaderGlTextures.size() >= 16)
+                    return false;
+                g_fullScreenShaderGlTextures.push_back({});
+                found = g_fullScreenShaderGlTextures.end() - 1;
+                found->context = context;
+            }
+
+            FullScreenShaderTextureState snapshot;
+            AcquireSRWLockShared(&g_fullScreenShaderTextureLock);
+            snapshot.width = g_fullScreenShaderTexture.width;
+            snapshot.height = g_fullScreenShaderTexture.height;
+            snapshot.sequence = g_fullScreenShaderTexture.sequence;
+            snapshot.generation = g_fullScreenShaderTexture.generation;
+            try
+            {
+                if (found->generation != snapshot.generation)
+                    snapshot.rgba = g_fullScreenShaderTexture.rgba;
+            }
+            catch (...)
+            {
+                ReleaseSRWLockShared(&g_fullScreenShaderTextureLock);
+                throw;
+            }
+            ReleaseSRWLockShared(&g_fullScreenShaderTextureLock);
+            if (snapshot.width == 0 || snapshot.height == 0)
+                return false;
+
+            if (found->textureUnit < 0)
+            {
+                int unitCount = 0;
+                g_glGetIntegerv(GlMaxCombinedTextureImageUnits, &unitCount);
+                if (unitCount <= 0)
+                    g_glGetIntegerv(GlMaxTextureImageUnits, &unitCount);
+                if (unitCount <= 1)
+                    return false;
+                found->textureUnit = unitCount - 1;
+            }
+
+            int previousActiveTexture = static_cast<int>(GlTexture0);
+            g_glGetIntegerv(GlActiveTextureName, &previousActiveTexture);
+            glActiveTexture(GlTexture0 + found->textureUnit);
+            if (found->texture != 0 && !g_glIsTexture(found->texture))
+            {
+                found->texture = 0;
+                found->generation = 0;
+                found->width = 0;
+                found->height = 0;
+            }
+            if (found->texture == 0)
+            {
+                g_glGenTextures(1, &found->texture);
+                if (found->texture == 0)
+                {
+                    glActiveTexture(previousActiveTexture);
+                    return false;
+                }
+            }
+
+            g_glBindTexture(GlTexture2D, found->texture);
+            if (found->generation != snapshot.generation)
+            {
+                const std::size_t expected =
+                    static_cast<std::size_t>(snapshot.width) *
+                    snapshot.height * 4;
+                if (snapshot.rgba == nullptr ||
+                    snapshot.rgba->size() != expected)
+                {
+                    glActiveTexture(previousActiveTexture);
+                    return false;
+                }
+
+                int previousUnpackAlignment = 4;
+                g_glGetIntegerv(GlUnpackAlignment,
+                    &previousUnpackAlignment);
+                g_glPixelStorei(GlUnpackAlignment, 1);
+                if (found->width != snapshot.width ||
+                    found->height != snapshot.height)
+                {
+                    g_glTexImage2D(GlTexture2D, 0, GlRgba,
+                        static_cast<int>(snapshot.width),
+                        static_cast<int>(snapshot.height), 0, GlRgba,
+                        GlUnsignedByte, snapshot.rgba->data());
+                }
+                else
+                {
+                    g_glTexSubImage2D(GlTexture2D, 0, 0, 0,
+                        static_cast<int>(snapshot.width),
+                        static_cast<int>(snapshot.height), GlRgba,
+                        GlUnsignedByte, snapshot.rgba->data());
+                }
+                g_glPixelStorei(GlUnpackAlignment,
+                    previousUnpackAlignment);
+                g_glTexParameteri(GlTexture2D,
+                    GlTextureMinFilter, GlLinear);
+                g_glTexParameteri(GlTexture2D,
+                    GlTextureMagFilter, GlLinear);
+                g_glTexParameteri(GlTexture2D,
+                    GlTextureWrapS, GlClampToEdge);
+                g_glTexParameteri(GlTexture2D,
+                    GlTextureWrapT, GlClampToEdge);
+                found->width = snapshot.width;
+                found->height = snapshot.height;
+                found->generation = snapshot.generation;
+            }
+            glActiveTexture(previousActiveTexture);
+
+            g_qOpenGLShaderSetUniformInt(program, samplerLocation,
+                found->textureUnit);
+            const int sizeLocation = g_qOpenGLShaderUniformLocation(
+                program, "u_QuickPlayerTextureSize");
+            if (sizeLocation >= 0)
+            {
+                g_qOpenGLShaderSetUniform2(program, sizeLocation,
+                    static_cast<float>(snapshot.width),
+                    static_cast<float>(snapshot.height));
+            }
+            const int sequenceLocation = g_qOpenGLShaderUniformLocation(
+                program, "u_QuickPlayerTextureSequence");
+            if (sequenceLocation >= 0)
+            {
+                g_qOpenGLShaderSetUniform1(program, sequenceLocation,
+                    static_cast<float>(snapshot.sequence));
+            }
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    HRESULT SetFullScreenShaderTexture(SIZE_T packetAddress)
+    {
+        try
+        {
+            auto packet = reinterpret_cast<FullScreenShaderTexturePacket*>(
+                packetAddress);
+            if (!IsWritable(packet, sizeof(*packet)) ||
+                packet->magic != FullScreenShaderTextureMagic ||
+                packet->width == 0 ||
+                packet->width > MaximumFullScreenShaderTextureDimension ||
+                packet->height == 0 ||
+                packet->height > MaximumFullScreenShaderTextureDimension)
+                return E_INVALIDARG;
+            const std::size_t byteLength =
+                static_cast<std::size_t>(packet->width) *
+                packet->height * 4;
+            if (byteLength > MaximumFullScreenShaderTextureBytes ||
+                packet->byteLength != byteLength ||
+                !IsWritable(packet, sizeof(*packet) + byteLength))
+                return E_INVALIDARG;
+            if (InterlockedCompareExchangePointer(
+                    &g_originalQOpenGLShaderProgramBind,
+                    nullptr, nullptr) == nullptr)
+                return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+
+            const auto pixels = reinterpret_cast<const unsigned char*>(
+                packet + 1);
+            std::shared_ptr<std::vector<unsigned char>> writableRgba;
+            {
+                std::lock_guard<std::mutex> poolGuard(
+                    g_fullScreenShaderPixelPoolLock);
+                const auto available = std::find_if(
+                    g_fullScreenShaderPixelPool.begin(),
+                    g_fullScreenShaderPixelPool.end(),
+                    [](const auto& candidate)
+                    {
+                        return candidate.use_count() == 1;
+                    });
+                if (available != g_fullScreenShaderPixelPool.end())
+                {
+                    writableRgba = *available;
+                }
+                else
+                {
+                    writableRgba = std::make_shared<
+                        std::vector<unsigned char>>();
+                    if (g_fullScreenShaderPixelPool.size() < 4)
+                    {
+                        g_fullScreenShaderPixelPool.push_back(writableRgba);
+                    }
+                }
+                writableRgba->assign(pixels, pixels + byteLength);
+            }
+            std::shared_ptr<const std::vector<unsigned char>> rgba =
+                writableRgba;
+            AcquireSRWLockExclusive(&g_fullScreenShaderTextureLock);
+            const std::uint32_t sequence =
+                g_fullScreenShaderTexture.sequence >= 0x00FFFFFF
+                ? 0 : g_fullScreenShaderTexture.sequence + 1;
+            std::uint64_t generation =
+                g_fullScreenShaderTexture.generation + 1;
+            if (generation == 0)
+                generation = 1;
+            g_fullScreenShaderTexture.width = packet->width;
+            g_fullScreenShaderTexture.height = packet->height;
+            g_fullScreenShaderTexture.sequence = sequence;
+            g_fullScreenShaderTexture.generation = generation;
+            g_fullScreenShaderTexture.rgba = std::move(rgba);
+            ReleaseSRWLockExclusive(&g_fullScreenShaderTextureLock);
+            packet->sequence = sequence;
+            InterlockedExchange(&g_fullScreenShaderTextureSet, 1);
+            return BridgeSuccess;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return E_OUTOFMEMORY;
+        }
+        catch (...)
+        {
+            return E_UNEXPECTED;
+        }
+    }
+
+    HRESULT GetFullScreenShaderTexture(SIZE_T packetAddress)
+    {
+        auto packet = reinterpret_cast<FullScreenShaderTexturePacket*>(
+            packetAddress);
+        if (!IsWritable(packet, sizeof(*packet)))
+            return E_INVALIDARG;
+        FullScreenShaderTexturePacket current;
+        AcquireSRWLockShared(&g_fullScreenShaderTextureLock);
+        current.width = g_fullScreenShaderTexture.width;
+        current.height = g_fullScreenShaderTexture.height;
+        current.sequence = g_fullScreenShaderTexture.sequence;
+            current.byteLength = g_fullScreenShaderTexture.rgba == nullptr
+                ? 0
+                : static_cast<std::uint32_t>(
+                    g_fullScreenShaderTexture.rgba->size());
+        ReleaseSRWLockShared(&g_fullScreenShaderTextureLock);
+        *packet = current;
+        return BridgeSuccess;
+    }
+
     bool __fastcall CapturingQOpenGLShaderProgramBind(void* program)
     {
         const auto original = reinterpret_cast<QOpenGLShaderProgramBind>(
             InterlockedCompareExchangePointer(
                 &g_originalQOpenGLShaderProgramBind, nullptr, nullptr));
         const bool bound = original != nullptr && original(program);
-        if (!bound || InterlockedCompareExchange(
-                &g_fullScreenShaderDataSet, 0, 0) == 0)
+        if (!bound)
             return bound;
-
-        FullScreenShaderDataPacket packet;
-        AcquireSRWLockShared(&g_fullScreenShaderDataLock);
-        packet = g_fullScreenShaderData;
-        ReleaseSRWLockShared(&g_fullScreenShaderDataLock);
-
-        const int dataLocation = g_qOpenGLShaderUniformLocation == nullptr
-            ? -1 : g_qOpenGLShaderUniformLocation(
-                program, "u_QuickPlayerData");
-        if (dataLocation >= 0 && g_qOpenGLShaderSetUniform4 != nullptr)
+        if (InterlockedCompareExchange(
+                &g_fullScreenShaderDataSet, 0, 0) != 0)
         {
-            g_qOpenGLShaderSetUniform4(program, dataLocation,
-                packet.values[0], packet.values[1],
-                packet.values[2], packet.values[3]);
+            FullScreenShaderDataPacket packet;
+            AcquireSRWLockShared(&g_fullScreenShaderDataLock);
+            packet = g_fullScreenShaderData;
+            ReleaseSRWLockShared(&g_fullScreenShaderDataLock);
+
+            const int dataLocation = g_qOpenGLShaderUniformLocation == nullptr
+                ? -1 : g_qOpenGLShaderUniformLocation(
+                    program, "u_QuickPlayerData");
+            if (dataLocation >= 0 && g_qOpenGLShaderSetUniform4 != nullptr)
+            {
+                g_qOpenGLShaderSetUniform4(program, dataLocation,
+                    packet.values[0], packet.values[1],
+                    packet.values[2], packet.values[3]);
+            }
+            const int sequenceLocation =
+                g_qOpenGLShaderUniformLocation == nullptr
+                ? -1 : g_qOpenGLShaderUniformLocation(
+                    program, "u_QuickPlayerSequence");
+            if (sequenceLocation >= 0 &&
+                g_qOpenGLShaderSetUniform1 != nullptr)
+            {
+                g_qOpenGLShaderSetUniform1(program, sequenceLocation,
+                    static_cast<float>(packet.sequence));
+            }
         }
-        const int sequenceLocation = g_qOpenGLShaderUniformLocation == nullptr
-            ? -1 : g_qOpenGLShaderUniformLocation(
-                program, "u_QuickPlayerSequence");
-        if (sequenceLocation >= 0 && g_qOpenGLShaderSetUniform1 != nullptr)
-        {
-            g_qOpenGLShaderSetUniform1(program, sequenceLocation,
-                static_cast<float>(packet.sequence));
-        }
+        ApplyFullScreenShaderTexture(program);
         return bound;
     }
 
@@ -1478,6 +1860,7 @@ namespace
         }
         const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
         const HMODULE gui = GetModuleHandleW(L"Qt5Gui.dll");
+        const HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
         void* target = core == nullptr ? nullptr : GetProcAddress(core,
             "?activate@QMetaObject@@SAXPEAVQObject@@PEBU1@HPEAPEAX@Z");
         void* shaderBind = gui == nullptr ? nullptr : GetProcAddress(gui,
@@ -1488,9 +1871,45 @@ namespace
         g_qOpenGLShaderSetUniform1 = gui == nullptr ? nullptr :
             reinterpret_cast<QOpenGLShaderSetUniform1>(GetProcAddress(gui,
                 "?setUniformValue@QOpenGLShaderProgram@@QEAAXHM@Z"));
+        g_qOpenGLShaderSetUniformInt = gui == nullptr ? nullptr :
+            reinterpret_cast<QOpenGLShaderSetUniformInt>(GetProcAddress(gui,
+                "?setUniformValue@QOpenGLShaderProgram@@QEAAXHH@Z"));
+        g_qOpenGLShaderSetUniform2 = gui == nullptr ? nullptr :
+            reinterpret_cast<QOpenGLShaderSetUniform2>(GetProcAddress(gui,
+                "?setUniformValue@QOpenGLShaderProgram@@QEAAXHMM@Z"));
         g_qOpenGLShaderSetUniform4 = gui == nullptr ? nullptr :
             reinterpret_cast<QOpenGLShaderSetUniform4>(GetProcAddress(gui,
                 "?setUniformValue@QOpenGLShaderProgram@@QEAAXHMMMM@Z"));
+        g_wglGetCurrentContext = openGl == nullptr ? nullptr :
+            reinterpret_cast<WglGetCurrentContext>(GetProcAddress(openGl,
+                "wglGetCurrentContext"));
+        g_wglGetProcAddress = openGl == nullptr ? nullptr :
+            reinterpret_cast<WglGetProcAddress>(GetProcAddress(openGl,
+                "wglGetProcAddress"));
+        g_glGenTextures = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlGenTextures>(GetProcAddress(openGl,
+                "glGenTextures"));
+        g_glBindTexture = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlBindTexture>(GetProcAddress(openGl,
+                "glBindTexture"));
+        g_glIsTexture = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlIsTexture>(GetProcAddress(openGl,
+                "glIsTexture"));
+        g_glGetIntegerv = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlGetIntegerv>(GetProcAddress(openGl,
+                "glGetIntegerv"));
+        g_glPixelStorei = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlPixelStorei>(GetProcAddress(openGl,
+                "glPixelStorei"));
+        g_glTexParameteri = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlTexParameteri>(GetProcAddress(openGl,
+                "glTexParameteri"));
+        g_glTexImage2D = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlTexImage2D>(GetProcAddress(openGl,
+                "glTexImage2D"));
+        g_glTexSubImage2D = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlTexSubImage2D>(GetProcAddress(openGl,
+                "glTexSubImage2D"));
         void* startNextShow = FindUniqueFunction(
             FsClipNodeStartNextShowSignature,
             sizeof(FsClipNodeStartNextShowSignature), -1);
@@ -1507,7 +1926,19 @@ namespace
         if (target == nullptr || shaderBind == nullptr ||
             g_qOpenGLShaderUniformLocation == nullptr ||
             g_qOpenGLShaderSetUniform1 == nullptr ||
+            g_qOpenGLShaderSetUniformInt == nullptr ||
+            g_qOpenGLShaderSetUniform2 == nullptr ||
             g_qOpenGLShaderSetUniform4 == nullptr ||
+            g_wglGetCurrentContext == nullptr ||
+            g_wglGetProcAddress == nullptr ||
+            g_glGenTextures == nullptr ||
+            g_glBindTexture == nullptr ||
+            g_glIsTexture == nullptr ||
+            g_glGetIntegerv == nullptr ||
+            g_glPixelStorei == nullptr ||
+            g_glTexParameteri == nullptr ||
+            g_glTexImage2D == nullptr ||
+            g_glTexSubImage2D == nullptr ||
             startNextShow == nullptr ||
             nextShowClip == nullptr ||
             !layoutResolved ||
@@ -1588,7 +2019,19 @@ namespace
                 &g_originalQOpenGLShaderProgramBind, nullptr);
             g_qOpenGLShaderUniformLocation = nullptr;
             g_qOpenGLShaderSetUniform1 = nullptr;
+            g_qOpenGLShaderSetUniformInt = nullptr;
+            g_qOpenGLShaderSetUniform2 = nullptr;
             g_qOpenGLShaderSetUniform4 = nullptr;
+            g_wglGetCurrentContext = nullptr;
+            g_wglGetProcAddress = nullptr;
+            g_glGenTextures = nullptr;
+            g_glBindTexture = nullptr;
+            g_glIsTexture = nullptr;
+            g_glGetIntegerv = nullptr;
+            g_glPixelStorei = nullptr;
+            g_glTexParameteri = nullptr;
+            g_glTexImage2D = nullptr;
+            g_glTexSubImage2D = nullptr;
         }
         ReleaseSRWLockExclusive(&g_fullScreenHookLock);
         return result;
@@ -9006,6 +9449,32 @@ IStripperGetFullscreenShaderData(SIZE_T packetAddress)
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetFullscreenShaderTexture(SIZE_T packetAddress)
+{
+    __try
+    {
+        return SetFullScreenShaderTexture(packetAddress);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperGetFullscreenShaderTexture(SIZE_T packetAddress)
+{
+    __try
+    {
+        return GetFullScreenShaderTexture(packetAddress);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperFullscreenNext()
 {
     return InvokeQtSingleton(g_fullScreenVtableRva, &g_fullScreenObject,
@@ -9120,7 +9589,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 89;
+    return 90;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

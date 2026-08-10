@@ -15,7 +15,8 @@ internal sealed class CustomShowMaskDraft
     CustomShowMaskDraft(string root) => this.root = root;
 
     internal static CustomShowMaskDraft Open(CustomShowStore store, string source,
-        string algorithm, string sam2Model, IReadOnlyList<CustomShowClip> clips)
+        string algorithm, string sam2Model, string maskEngine,
+        IReadOnlyList<CustomShowClip> clips)
     {
         string fullSource = Path.GetFullPath(source);
         FileInfo file = new(fullSource);
@@ -26,6 +27,7 @@ internal sealed class CustomShowMaskDraft
             SourceLastWriteUtcTicks = file.LastWriteTimeUtc.Ticks,
             Algorithm = algorithm,
             Sam2Model = sam2Model,
+            MaskEngine = maskEngine,
             Clips = clips.Select((clip, index) => new CustomShowMaskDraftClip
             {
                 Index = index,
@@ -102,6 +104,7 @@ internal sealed class CustomShowMaskDraftManifest
     public long SourceLastWriteUtcTicks { get; set; }
     public string Algorithm { get; set; } = "";
     public string Sam2Model { get; set; } = "";
+    public string MaskEngine { get; set; } = "sam2";
     public CustomShowMaskDraftClip[] Clips { get; set; } = [];
 }
 

@@ -39,6 +39,7 @@ internal sealed class CustomShowEditorForm : Form
     readonly Button coverTitleColor = new() { AutoSize = true,
         BackColor = Color.DeepPink, UseVisualStyleBackColor = false };
     readonly ComboBox preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox maskEngine = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sam2Model = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox mattingDetail = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sequenceChunk = new() { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -109,6 +110,13 @@ internal sealed class CustomShowEditorForm : Form
             preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
         preset.SelectedIndex = 0;
         AddRow(table, "Processing algorithm", preset);
+        maskEngine.Items.Add("RVM ResNet50 (fast, person-only)");
+        if (CustomShowProcessor.InstalledSam2Models(configuration).Count > 0)
+            maskEngine.Items.Insert(0, "SAM2 (editable, best robustness)");
+        if (CustomShowProcessor.IsEdgeTamInstalled(configuration))
+            maskEngine.Items.Add("EdgeTAM (editable, faster)");
+        maskEngine.SelectedIndex = 0;
+        AddRow(table, "Mask generation", maskEngine);
         foreach (string model in CustomShowProcessor.InstalledSam2Models(configuration))
             sam2Model.Items.Add(model switch
             {
@@ -137,6 +145,7 @@ internal sealed class CustomShowEditorForm : Form
         CancelButton = cancel;
         save.Click += Save;
         preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
+        maskEngine.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
         newPerformer.Click += (_, _) => OpenPerformer(null);
         editPerformer.Click += (_, _) => OpenPerformer(selectedProfile);
         editClips.Click += EditClips;
@@ -194,7 +203,9 @@ internal sealed class CustomShowEditorForm : Form
         bool rvm = selected is "quality" or "fast";
         mattingDetail.Enabled = (rvm || selected == "matanyone2") && showId == null;
         sequenceChunk.Enabled = (rvm || UsesSam2(selected)) && showId == null;
-        sam2Model.Enabled = (selected == "matanyone2" || UsesSam2(selected)) &&
+        maskEngine.Enabled = UsesSam2(selected) && showId == null;
+        sam2Model.Enabled = (selected == "matanyone2" ||
+            (UsesSam2(selected) && SelectedMaskEngine() != "rvm")) &&
             showId == null && sam2Model.Items.Count > 0;
     }
 
@@ -209,6 +220,14 @@ internal sealed class CustomShowEditorForm : Form
         if (selected.StartsWith("Small", StringComparison.Ordinal)) return "small";
         if (selected.StartsWith("Tiny", StringComparison.Ordinal)) return "tiny";
         return "base-plus";
+    }
+
+    string SelectedMaskEngine()
+    {
+        string selected = maskEngine.SelectedItem?.ToString() ?? "RVM";
+        if (selected.StartsWith("EdgeTAM", StringComparison.Ordinal)) return "edgetam";
+        if (selected.StartsWith("SAM2", StringComparison.Ordinal)) return "sam2";
+        return "rvm";
     }
 
     string SelectedPreset()
@@ -233,7 +252,7 @@ internal sealed class CustomShowEditorForm : Form
         performer.DataSource = profiles;
         if (showId == null) return;
         CustomShowManifest show = store.LoadManifest(showId);
-        copySource.Enabled = preset.Enabled =
+        copySource.Enabled = preset.Enabled = maskEngine.Enabled =
             mattingDetail.Enabled = sequenceChunk.Enabled = false;
         source.Text = SourceVideo(show);
         save.Text = "Save Metadata";
@@ -282,13 +301,15 @@ internal sealed class CustomShowEditorForm : Form
             $"{value.MattingDetailPx} px";
         string sam2 = value.Sam2Model == null ? "" :
             $"; SAM2 {value.Sam2Model}";
+        string mask = value.MaskEngine == null ? "" :
+            $"; masks {value.MaskEngine}";
         string effective = value.EffectiveBatchSize is int batch && batch != value.BatchSize ?
             $" (effective {batch})" : "";
         string execution = value.ResolvedExecutionMode == null ? "" :
             $"; {value.ResolvedExecutionMode}";
         string encoder = value.Encoder == null ? "" :
             $"; {value.Encoder} {value.EncoderPreset}";
-        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{effective}{sam2}{execution}{encoder}\r\n" +
+        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{effective}{sam2}{mask}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -405,6 +426,8 @@ internal sealed class CustomShowEditorForm : Form
                 Dictionary<string, string> sam2Masks = [];
                 string selectedPreset = SelectedPreset();
                 string selectedSam2Model = SelectedSam2Model();
+                string selectedMaskEngine = UsesSam2(selectedPreset) ?
+                    SelectedMaskEngine() : "sam2";
                 int detail = SelectedMattingResolution();
                 string log = Path.Combine(staging, "processing.log");
                 if (File.Exists(log)) File.Delete(log);
@@ -412,11 +435,30 @@ internal sealed class CustomShowEditorForm : Form
                 {
                     CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included).ToArray();
                     maskDraft = CustomShowMaskDraft.Open(store, source.Text,
-                        selectedPreset, selectedSam2Model, clipsToMask);
+                        selectedPreset, selectedSam2Model, selectedMaskEngine,
+                        clipsToMask);
                     for (int index = 0; index < clipsToMask.Length; index++)
                     {
                         CustomShowClip clip = clipsToMask[index];
                         string draftClip = maskDraft.ClipFolder(index);
+                        if (UsesSam2(selectedPreset) && selectedMaskEngine == "rvm")
+                        {
+                            string maskSequence = Path.Combine(draftClip, "rvm-masks");
+                            using CustomVideoMaskEditorForm refinement = new(input,
+                                configuration, clip.StartMs, clip.EndMs, "", maskSequence,
+                                clipsToMask.Length == 1 ? null :
+                                $"Clip {index + 1} of {clipsToMask.Length}",
+                                selectedSam2Model, log,
+                                Path.Combine(draftClip, "rvm-review.json"),
+                                selectedMaskEngine);
+                            if (refinement.ShowDialog(this) != DialogResult.OK)
+                            {
+                                discardStaging = true;
+                                return;
+                            }
+                            sam2Masks[clip.Id] = maskSequence;
+                            continue;
+                        }
                         using CustomMaskEditorForm maskEditor = new(input, configuration,
                             clip.StartMs, clip.EndMs, clipsToMask.Length == 1 ? null :
                             $"Clip {index + 1} of {clipsToMask.Length}",
@@ -462,7 +504,8 @@ internal sealed class CustomShowEditorForm : Form
                                 configuration, clip.StartMs, clip.EndMs, mask, maskSequence,
                                 clipsToMask.Length == 1 ? null :
                                 $"Clip {index + 1} of {clipsToMask.Length}",
-                                selectedSam2Model, log, correctionState);
+                                selectedSam2Model, log, correctionState,
+                                selectedMaskEngine);
                             if (refinement.ShowDialog(this) != DialogResult.OK)
                             {
                                 discardStaging = true;
@@ -606,13 +649,15 @@ internal sealed class CustomShowEditorForm : Form
                     }
                     show.Clips = showClips;
                     int processingBatchSize = (int)(sequenceChunk.SelectedItem ?? 3);
-                    bool usesSam2 = selectedPreset == "matanyone2" || UsesSam2(selectedPreset);
+                    bool usesSam2 = selectedPreset == "matanyone2" ||
+                        (UsesSam2(selectedPreset) && selectedMaskEngine != "rvm");
                     show.Processing = new()
                     {
                         Algorithm = selectedPreset,
                         MattingDetailPx = detail,
                         BatchSize = processingBatchSize,
                         Sam2Model = usesSam2 ? selectedSam2Model : null,
+                        MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null,
                         ExecutionPolicy = "auto",
                         ResolvedExecutionMode = media.ExecutionMode,
                         EffectiveBatchSize = media.EffectiveSequenceChunk,
@@ -623,7 +668,8 @@ internal sealed class CustomShowEditorForm : Form
                         RecurrentRefinementSteps = selectedPreset == "matanyone2" ? 11 : 0,
                         ProcessedUtc = DateTime.UtcNow,
                         QuickPlayerVersion = Application.ProductVersion,
-                        ToolRevisions = ReadProcessingRevisions(selectedPreset),
+                        ToolRevisions = ReadProcessingRevisions(selectedPreset,
+                            selectedMaskEngine),
                         Clips = showClips.Where(clip => clip.Included).Select(clip =>
                             new CustomClipProcessing
                             {
@@ -631,7 +677,8 @@ internal sealed class CustomShowEditorForm : Form
                                 InitialMaskFrameMs = usesSam2
                                     ? initialMaskFrames.GetValueOrDefault(clip.Id, clip.StartMs)
                                     : null,
-                                Sam2MaskTracking = UsesSam2(selectedPreset)
+                                Sam2MaskTracking = UsesSam2(selectedPreset) &&
+                                    selectedMaskEngine == "sam2"
                             }).ToArray()
                     };
                     if (!string.IsNullOrWhiteSpace(cover.Text))
@@ -695,7 +742,8 @@ internal sealed class CustomShowEditorForm : Form
         await Task.CompletedTask;
     }
 
-    Dictionary<string, string> ReadProcessingRevisions(string selectedPreset)
+    Dictionary<string, string> ReadProcessingRevisions(string selectedPreset,
+        string maskEngine)
     {
         string[] markers = selectedPreset switch
         {
@@ -707,6 +755,14 @@ internal sealed class CustomShowEditorForm : Form
             "vitmatte-b" => ["VITMATTE_B_REVISION", "SAM2_COMMIT"],
             _ => []
         };
+        if (UsesSam2(selectedPreset))
+            markers = maskEngine switch
+            {
+                "edgetam" => [.. markers, "EDGETAM_COMMIT"],
+                "rvm" => [.. markers.Where(value => value != "SAM2_COMMIT"),
+                    "RVM_COMMIT"],
+                _ => markers
+            };
         Dictionary<string, string> revisions = [];
         string runtime;
         try { runtime = CustomShowProcessor.RuntimeRoot(configuration); }
@@ -1938,6 +1994,9 @@ internal sealed class CustomShowSetupOptionsForm : Form
         AutoSize = true };
     readonly CheckBox vitMatte = new() { Text =
         "ViTMatte S + B with editable SAM2 video masks (~900 MB)", AutoSize = true };
+    readonly CheckBox edgeTam = new() { Text =
+        "EdgeTAM fast editable video masks (~60 MB, NVIDIA CUDA recommended)",
+        AutoSize = true };
     readonly CheckBox proPainter = new() { Text =
         "ProPainter video object removal (~200 MB, NVIDIA CUDA recommended)",
         AutoSize = true };
@@ -1946,17 +2005,20 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallMatAnyone2 => matAnyone.Checked;
     internal bool InstallVideoMaMa => videoMaMa.Checked;
     internal bool InstallViTMatte => vitMatte.Checked;
+    internal bool InstallEdgeTam => edgeTam.Checked;
     internal bool InstallProPainter => proPainter.Checked;
 
     internal CustomShowSetupOptionsForm()
     {
         Text = "Choose Custom Show Processing Tools";
-        ClientSize = new Size(720, 470);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = MinimizeBox = false;
+        ClientSize = new Size(860, 650);
+        MinimumSize = new Size(760, 560);
+        AutoScroll = true;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
         StartPosition = FormStartPosition.CenterParent;
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(16),
-            ColumnCount = 1, RowCount = 15 };
+        TableLayoutPanel layout = new() { Dock = DockStyle.Top, AutoSize = true,
+            Padding = new Padding(16), ColumnCount = 1, RowCount = 16 };
         layout.Controls.Add(new Label { Text =
             "Robust Video Matting is always installed. Select optional tools:", AutoSize = true });
         layout.Controls.Add(transNet);
@@ -1964,9 +2026,12 @@ internal sealed class CustomShowSetupOptionsForm : Form
         layout.Controls.Add(matAnyone);
         layout.Controls.Add(videoMaMa);
         layout.Controls.Add(vitMatte);
+        layout.Controls.Add(edgeTam);
         layout.Controls.Add(proPainter);
         layout.Controls.Add(new Label { Text =
-            "MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; ViTMatte and SAM2 permit commercial use.", AutoSize = true });
+            "MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; " +
+            "ViTMatte, SAM2, and EdgeTAM permit commercial use.",
+            AutoSize = true, MaximumSize = new Size(810, 0) });
         LinkLabel omniLicence = new() { Text = "Read the OmniShotCut MIT licence", AutoSize = true };
         omniLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/UVA-Computer-Vision-Lab/OmniShotCut/blob/23ad6fb41b296fb9258b0e7825125a914573b906/LICENSE") { UseShellExecute = true });
@@ -1983,6 +2048,10 @@ internal sealed class CustomShowSetupOptionsForm : Form
         vitMatteLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/hustvl/ViTMatte/blob/main/LICENSE") { UseShellExecute = true });
         layout.Controls.Add(vitMatteLicence);
+        LinkLabel edgeTamLicence = new() { Text = "Read the EdgeTAM Apache 2.0 licence", AutoSize = true };
+        edgeTamLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/facebookresearch/EdgeTAM/blob/7711e012a30a2402c4eaab637bdb00a521302c91/LICENSE") { UseShellExecute = true });
+        layout.Controls.Add(edgeTamLicence);
         LinkLabel proPainterLicence = new() { Text = "Read the ProPainter licence", AutoSize = true };
         proPainterLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/sczhou/ProPainter/blob/main/LICENSE") { UseShellExecute = true });
@@ -1997,7 +2066,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         AcceptButton = (Button)buttons.Controls[0];
         CancelButton = (Button)buttons.Controls[1];
         AppTheme.Apply(this);
-        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor =
+        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor = edgeTamLicence.LinkColor =
             proPainterLicence.LinkColor =
             Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
     }
@@ -2006,7 +2075,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     {
         using CustomShowSetupOptionsForm form = new();
         return form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
-            !form.InstallVideoMaMa && !form.InstallViTMatte &&
+            !form.InstallVideoMaMa && !form.InstallViTMatte && !form.InstallEdgeTam &&
             !form.InstallProPainter;
     }
 }
@@ -2019,6 +2088,7 @@ internal sealed class CustomShowSetupForm : Form
     readonly bool installMatAnyone2;
     readonly bool installVideoMaMa;
     readonly bool installViTMatte;
+    readonly bool installEdgeTam;
     readonly bool installProPainter;
     readonly TextBox output = new()
     {
@@ -2033,7 +2103,7 @@ internal sealed class CustomShowSetupForm : Form
     internal CustomShowSetupForm(string script, bool installTransNetV2,
         bool installOmniShotCut,
         bool installMatAnyone2, bool installVideoMaMa, bool installViTMatte,
-        bool installProPainter)
+        bool installProPainter, bool installEdgeTam)
     {
         this.script = script;
         this.installTransNetV2 = installTransNetV2;
@@ -2042,6 +2112,7 @@ internal sealed class CustomShowSetupForm : Form
         this.installVideoMaMa = installVideoMaMa;
         this.installViTMatte = installViTMatte;
         this.installProPainter = installProPainter;
+        this.installEdgeTam = installEdgeTam;
         Text = "Install Custom Show Processing Tools";
         ClientSize = new Size(900, 520);
         Controls.Add(output);
@@ -2080,6 +2151,8 @@ internal sealed class CustomShowSetupForm : Form
                 start.ArgumentList.Add("-InstallVideoMaMa");
             if (installViTMatte)
                 start.ArgumentList.Add("-InstallViTMatte");
+            if (installEdgeTam)
+                start.ArgumentList.Add("-InstallEdgeTam");
             if (installProPainter)
                 start.ArgumentList.Add("-InstallProPainter");
             process = Process.Start(start) ??

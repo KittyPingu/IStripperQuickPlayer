@@ -125,6 +125,9 @@ Calls are synchronous because `Open` uses `false`. Change the port in
 | `GET` | `/api/v1/fullscreen` | Get active fullscreen clips and iStripper's observed next queue. |
 | `GET` | `/api/v1/fullscreen/shader-data` | Read the current external fullscreen shader values and sequence. |
 | `PUT` | `/api/v1/fullscreen/shader-data` | Publish four external values to fullscreen shaders. |
+| `GET` | `/api/v1/fullscreen/shader-texture` | Read the current external shader texture metadata. |
+| `PUT` | `/api/v1/fullscreen/shader-texture` | Publish a PNG, JPEG, or raw RGBA8 texture to fullscreen shaders. |
+| `GET` | `/api/v1/fullscreen/shader-texture/shared-memory` | Discover the optional local shared-memory texture channel. |
 | `GET` | `/api/v1/fullscreen/queue` | Get iStripper's native next queue. |
 | `POST` | `/api/v1/fullscreen/queue/insert` | Insert a card or exact clip at the start of the native next queue. |
 | `POST` | `/api/v1/fullscreen/queue/add` | Add a card or exact clip at the end of the native next queue. |
@@ -434,6 +437,118 @@ The endpoint is a latest-value register, not a queue. If several updates are
 sent between rendered frames, the shader may observe only the newest one. For
 guaranteed command delivery, wait for the shader to return the observed
 sequence through an acknowledgment channel before sending the next command.
+
+### External shader texture
+
+Fullscreen shaders can display a persistent image supplied by an external
+application by declaring these optional uniforms:
+
+```glsl
+uniform sampler2D u_QuickPlayerTexture;
+uniform vec2 u_QuickPlayerTextureSize;
+uniform float u_QuickPlayerTextureSequence;
+```
+
+Upload a PNG or JPEG directly. Its dimensions are read from the image:
+
+```powershell
+Invoke-RestMethod `
+  http://127.0.0.1:17871/api/v1/fullscreen/shader-texture `
+  -Method Put -Headers $headers -ContentType image/png `
+  -InFile "C:\path\scoreboard.png"
+```
+
+The maximum decoded size is 1024 by 1024 pixels. PNG alpha is preserved. The
+response describes the persistent RGBA8 texture and its new sequence:
+
+```json
+{
+  "sequence": 1,
+  "width": 320,
+  "height": 180,
+  "format": "rgba8",
+  "byteLength": 230400
+}
+```
+
+Raw RGBA8 bytes are also accepted. Supply the dimensions in the query string;
+pixels are row-major from the top-left, with four bytes per pixel in red,
+green, blue, alpha order:
+
+```powershell
+Invoke-RestMethod `
+  "http://127.0.0.1:17871/api/v1/fullscreen/shader-texture?width=320&height=180" `
+  -Method Put -Headers $headers -ContentType application/octet-stream `
+  -Body $rgbaBytes
+```
+
+Sample the uploaded image normally in GLSL. QuickPlayer converts input rows to
+OpenGL's orientation, so `(0, 0)` is the image's lower-left in the shader:
+
+```glsl
+vec4 scene = texture2D(texture0, uv);
+vec4 image = texture2D(u_QuickPlayerTexture, uv);
+gl_FragColor = mix(scene, image, image.a);
+```
+
+Each successful upload increments `u_QuickPlayerTextureSequence`, including
+when identical pixels are uploaded. The sequence uses the same exactly
+representable `0` through `16777215` range as the float data channel. Read the
+current width, height, byte length, and sequence without returning the pixel
+body or changing state with:
+
+```powershell
+Invoke-RestMethod `
+  http://127.0.0.1:17871/api/v1/fullscreen/shader-texture `
+  -Headers $headers
+```
+
+The REST thread retains only the latest image. The bridge creates one OpenGL
+texture per active rendering context and performs creation or `glTexSubImage2D`
+updates on that context's render thread. Shaders that do not declare
+`u_QuickPlayerTexture` are unaffected. Image updates are intended for
+occasional or low-rate graphics rather than full-frame-rate video.
+
+#### Shared-memory texture channel
+
+Local applications that publish large or frequent frames can retain the REST
+endpoint for occasional uploads and use a named shared-memory channel as an
+alternative transport. Discover the channel after authenticating normally:
+
+```powershell
+$channel = Invoke-RestMethod `
+  http://127.0.0.1:17871/api/v1/fullscreen/shader-texture/shared-memory `
+  -Headers $headers
+```
+
+The response supplies random process-lifetime `mappingName` and `eventName`
+values along with all sizes and offsets needed to open the Windows memory-mapped
+file. The mapping has a 64-byte header followed by two 4 MiB RGBA8 slots. It
+supports any dimensions from 1 through 1024 independently on every frame.
+
+The channel is a single-producer, latest-frame register. Publish a frame in
+this order:
+
+1. Choose the other slot and write an odd value to `publishedGeneration` to
+   mark an update in progress.
+2. Write top-left-origin RGBA8 pixels at
+   `pixels + publishedSlot * slotCapacity`.
+3. Write `publishedSlot`, `width`, `height`, `byteLength`, and the optional
+   `producerSequence`.
+4. Issue a memory barrier, write the next even nonzero generation, then signal
+   the named auto-reset event.
+
+QuickPlayer copies a consistent frame, converts its row orientation, and sends
+only the newest available generation to the existing shader texture bridge.
+After the bridge accepts it, QuickPlayer writes that even generation to
+`consumedGeneration`. A producer can observe this field for acknowledgements
+and latency measurement. Event signals and intermediate frames may coalesce
+when the producer is faster than the consumer; commands requiring guaranteed
+delivery should continue to use a separate acknowledged channel.
+
+Mapping and event names change whenever QuickPlayer restarts. Call the discovery
+endpoint again after reconnecting. The mapping is local to the current Windows
+session and disappears when QuickPlayer closes.
 
 ### Native iStripper queue
 

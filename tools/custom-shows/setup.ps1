@@ -7,6 +7,7 @@ param(
     [switch]$InstallMatAnyone2,
     [switch]$InstallVideoMaMa,
     [switch]$InstallViTMatte,
+    [switch]$InstallEdgeTam,
     [switch]$InstallProPainter
 )
 $ErrorActionPreference = 'Stop'
@@ -170,6 +171,29 @@ print("SAM2 compiler verified")
     [System.IO.File]::WriteAllText($sam2Marker, $sam2Commit)
 }
 if ($InstallMatAnyone2 -or $InstallVideoMaMa -or $InstallViTMatte) { Install-Sam2 }
+if ($InstallEdgeTam) {
+    $edgeTamCommit = '7711e012a30a2402c4eaab637bdb00a521302c91'
+    $edgeTam = Join-Path $runtime 'edgetam'
+    $edgeTamMarker = Join-Path $runtime 'EDGETAM_COMMIT'
+    Remove-Item -LiteralPath $edgeTamMarker -Force -ErrorAction SilentlyContinue
+    Write-Host 'Installing optional EdgeTAM video mask tracking...'
+    & $python -m pip install timm==1.0.15 iopath==0.1.10 hydra-core==1.3.2 tqdm==4.67.1
+    if ($LASTEXITCODE -ne 0) { throw 'EdgeTAM dependency installation failed.' }
+    if (-not (Test-Path (Join-Path $edgeTam '.git'))) {
+        git clone https://github.com/facebookresearch/EdgeTAM.git $edgeTam
+    }
+    git -C $edgeTam fetch --depth 1 origin $edgeTamCommit
+    git -C $edgeTam checkout --detach $edgeTamCommit
+    if ($LASTEXITCODE -ne 0) { throw 'EdgeTAM checkout failed.' }
+    $edgeCheckpoint = Join-Path $edgeTam 'checkpoints\edgetam.pt'
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $edgeCheckpoint).Hash -ne
+        'ED2D4850B8792C239689B043C47046EC239B6E808A3D9B6AE676C803FD8780DF') {
+        throw 'EdgeTAM checkpoint SHA-256 validation failed.'
+    }
+    & $python -c "import sys; sys.path.insert(0, sys.argv[1]); from sam2.build_sam import build_sam2_video_predictor; print('EdgeTAM import verified')" $edgeTam
+    if ($LASTEXITCODE -ne 0) { throw 'EdgeTAM verification failed.' }
+    [System.IO.File]::WriteAllText($edgeTamMarker, $edgeTamCommit)
+}
 if ($InstallTransNetV2) {
     $transNetCommit = '85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed'
     $transNet = Join-Path $runtime 'transnetv2'

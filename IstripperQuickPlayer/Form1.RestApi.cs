@@ -2,7 +2,9 @@ using IStripperQuickPlayer.DataModel;
 using IStripperQuickPlayer.Interop;
 using Microsoft.Win32;
 using System.Diagnostics;
+using System.Drawing.Imaging;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -12,13 +14,22 @@ namespace IStripperQuickPlayer
     public partial class Form1
     {
         private const int RestApiMaxBodyLength = 16 * 1024;
+        private const int RestApiMaxTextureDimension = 1024;
+        private const int RestApiMaxTextureEncodedLength = 8 * 1024 * 1024;
         private static readonly JsonSerializerOptions RestApiJson =
             new(JsonSerializerDefaults.Web);
         private HttpListener? restApiListener;
         private CancellationTokenSource? restApiLifetime;
+        private Task? restApiTask;
         private string restApiToken = "";
+        private readonly object sharedShaderTextureChannelLock = new();
+        private SharedShaderTextureChannel? sharedShaderTextureChannel;
+        private readonly UnmanagedTextureBuffer restApiTextureBuffer =
+            new(RestApiMaxTextureDimension *
+                RestApiMaxTextureDimension * 4);
 
-        private sealed record ApiResult(int StatusCode, object Body);
+        private sealed record ApiResult(
+            int StatusCode, object Body, string? ServerTiming = null);
         private sealed record ApiQueueEntryRequest(
             string? CardTag, string? CardName, string? ClipName,
             int? ClipNumber, int? Index);
@@ -79,7 +90,7 @@ namespace IStripperQuickPlayer
                 restApiListener.Prefixes.Add(
                     $"http://127.0.0.1:{restApiPort}/");
                 restApiListener.Start();
-                _ = Task.Run(() => RunRestApiAsync(
+                restApiTask = Task.Run(() => RunRestApiAsync(
                     restApiListener, restApiLifetime.Token));
                 Debug.WriteLine(
                     $"REST API listening on http://127.0.0.1:{restApiPort}/");
@@ -117,8 +128,16 @@ namespace IStripperQuickPlayer
             restApiLifetime?.Cancel();
             restApiListener?.Close();
             restApiListener = null;
+            try { restApiTask?.Wait(5_000); } catch { }
+            restApiTask = null;
             restApiLifetime?.Dispose();
             restApiLifetime = null;
+            lock (sharedShaderTextureChannelLock)
+            {
+                sharedShaderTextureChannel?.Dispose();
+                sharedShaderTextureChannel = null;
+            }
+            restApiTextureBuffer.Dispose();
         }
 
         private static string LoadOrCreateRestApiToken()
@@ -142,8 +161,8 @@ namespace IStripperQuickPlayer
         private async Task RunRestApiAsync(HttpListener listener,
             CancellationToken cancellationToken)
         {
-            // ponytail: requests are serialized because every mutation
-            // ultimately runs on the single WinForms UI thread.
+            // Preserve request ordering and avoid queuing stale playback or
+            // shader updates behind concurrent requests.
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
@@ -236,6 +255,9 @@ namespace IStripperQuickPlayer
                         "GET /api/v1/fullscreen",
                         "GET /api/v1/fullscreen/shader-data",
                         "PUT /api/v1/fullscreen/shader-data",
+                        "GET /api/v1/fullscreen/shader-texture",
+                        "PUT /api/v1/fullscreen/shader-texture",
+                        "GET /api/v1/fullscreen/shader-texture/shared-memory",
                         "POST /api/v1/fullscreen/play",
                         "POST /api/v1/fullscreen/next",
                         "POST /api/v1/fullscreen/slots/{slotId}/next",
@@ -284,7 +306,7 @@ namespace IStripperQuickPlayer
             if (method == "GET" &&
                 Matches(parts, "fullscreen", "shader-data"))
             {
-                return await InvokeAsync(GetRestApiFullscreenShaderData);
+                return GetRestApiFullscreenShaderData();
             }
 
             if (method == "PUT" &&
@@ -293,8 +315,36 @@ namespace IStripperQuickPlayer
                 ApiShaderDataRequest body =
                     await ReadRestApiJsonAsync<ApiShaderDataRequest>(
                         request, cancellationToken);
-                return await InvokeAsync(() =>
-                    SetRestApiFullscreenShaderData(body));
+                return SetRestApiFullscreenShaderData(body);
+            }
+
+            if (method == "GET" &&
+                Matches(parts, "fullscreen", "shader-texture"))
+            {
+                return GetRestApiFullscreenShaderTexture();
+            }
+
+            if (method == "PUT" &&
+                Matches(parts, "fullscreen", "shader-texture"))
+            {
+                if (RestApiContentType(request) ==
+                    "application/octet-stream")
+                {
+                    return SetRestApiFullscreenShaderTextureFromRawRequest(
+                        request, cancellationToken);
+                }
+                (int width, int height, byte[] rgba) =
+                    await ReadRestApiShaderTextureAsync(
+                        request, cancellationToken);
+                return SetRestApiFullscreenShaderTexture(
+                    width, height, rgba);
+            }
+
+            if (method == "GET" &&
+                Matches(parts, "fullscreen", "shader-texture",
+                    "shared-memory"))
+            {
+                return GetRestApiSharedShaderTextureChannel();
             }
 
             if (method == "GET" &&
@@ -706,14 +756,18 @@ namespace IStripperQuickPlayer
 
         private ApiResult GetRestApiFullscreenShaderData()
         {
-            if (playbackBridgeClient?.IsConnected != true)
-                return Error(409, "The iStripper bridge is not connected.");
-            int result = playbackBridgeClient.GetFullscreenShaderData(
-                out float[] values, out uint sequence);
-            return result < 0
-                ? Error(409, "Fullscreen shader data is unavailable " +
-                    $"(0x{result:X8}).")
-                : new ApiResult(200, new { sequence, values });
+            lock (playbackApiLock)
+            {
+                if (playbackBridgeClient?.IsConnected != true)
+                    return Error(409,
+                        "The iStripper bridge is not connected.");
+                int result = playbackBridgeClient.GetFullscreenShaderData(
+                    out float[] values, out uint sequence);
+                return result < 0
+                    ? Error(409, "Fullscreen shader data is unavailable " +
+                        $"(0x{result:X8}).")
+                    : new ApiResult(200, new { sequence, values });
+            }
         }
 
         private ApiResult SetRestApiFullscreenShaderData(
@@ -725,17 +779,151 @@ namespace IStripperQuickPlayer
                     value < -float.MaxValue || value > float.MaxValue))
                 return Error(400, "Every shader value must be a finite " +
                     "32-bit floating-point number.");
-            if (playbackBridgeClient?.IsConnected != true)
-                return Error(409, "The iStripper bridge is not connected.");
-
             float[] values = request.Values.Select(value => (float)value)
                 .ToArray();
-            int result = playbackBridgeClient.SetFullscreenShaderData(
-                values, out uint sequence);
-            return result < 0
-                ? Error(409, "Fullscreen shader data could not be updated " +
-                    $"(0x{result:X8}).")
-                : new ApiResult(200, new { sequence, values });
+            lock (playbackApiLock)
+            {
+                if (playbackBridgeClient?.IsConnected != true)
+                    return Error(409,
+                        "The iStripper bridge is not connected.");
+                int result = playbackBridgeClient.SetFullscreenShaderData(
+                    values, out uint sequence);
+                return result < 0
+                    ? Error(409,
+                        "Fullscreen shader data could not be updated " +
+                        $"(0x{result:X8}).")
+                    : new ApiResult(200, new { sequence, values });
+            }
+        }
+
+        private ApiResult GetRestApiFullscreenShaderTexture()
+        {
+            lock (playbackApiLock)
+            {
+                if (playbackBridgeClient?.IsConnected != true)
+                    return Error(409,
+                        "The iStripper bridge is not connected.");
+                int result = playbackBridgeClient.GetFullscreenShaderTexture(
+                    out int width, out int height, out uint sequence);
+                return result < 0
+                    ? Error(409,
+                        "Fullscreen shader texture data is unavailable " +
+                        $"(0x{result:X8}).")
+                    : new ApiResult(200, new
+                    {
+                        sequence,
+                        width,
+                        height,
+                        format = "rgba8",
+                        byteLength = checked(width * height * 4)
+                    });
+            }
+        }
+
+        private ApiResult SetRestApiFullscreenShaderTexture(
+            int width, int height, byte[] rgba)
+        {
+            lock (playbackApiLock)
+            {
+                if (playbackBridgeClient?.IsConnected != true)
+                    return Error(409,
+                        "The iStripper bridge is not connected.");
+                int result = playbackBridgeClient.SetFullscreenShaderTexture(
+                    width, height, rgba, out uint sequence);
+                return result < 0
+                    ? Error(409,
+                        "Fullscreen shader texture could not be updated " +
+                        $"(0x{result:X8}).")
+                    : new ApiResult(200, new
+                    {
+                        sequence,
+                        width,
+                        height,
+                        format = "rgba8",
+                        byteLength = rgba.Length
+                    });
+            }
+        }
+
+        private ApiResult SetRestApiFullscreenShaderTextureFromRawRequest(
+            HttpListenerRequest request,
+            CancellationToken cancellationToken)
+        {
+            (int width, int height) =
+                ReadRestApiRawShaderTextureDimensions(request);
+            int byteLength = checked(width * height * 4);
+            lock (restApiTextureBuffer)
+            {
+                long readStarted = Stopwatch.GetTimestamp();
+                Span<byte> rgba = restApiTextureBuffer.Span(byteLength);
+                ReadRestApiExactBinary(request, rgba, cancellationToken);
+                long flipStarted = Stopwatch.GetTimestamp();
+                FlipRgbaRows(rgba, width, height);
+                long bridgeStarted = Stopwatch.GetTimestamp();
+                lock (playbackApiLock)
+                {
+                    if (playbackBridgeClient?.IsConnected != true)
+                        return Error(409,
+                            "The iStripper bridge is not connected.");
+                    int result = playbackBridgeClient
+                        .SetFullscreenShaderTexture(width, height,
+                            restApiTextureBuffer.Pointer, byteLength,
+                            out uint sequence, out PlaybackBridgeClient
+                                .BufferCallTimings bridgeTimings);
+                    long completed = Stopwatch.GetTimestamp();
+                    string timing = string.Format(
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        "qp-read;dur={0:F3}, qp-flip;dur={1:F3}, " +
+                        "qp-write;dur={2:F3}, qp-command;dur={3:F3}, " +
+                        "qp-readback;dur={4:F3}, qp-server;dur={5:F3}",
+                        Stopwatch.GetElapsedTime(readStarted, flipStarted)
+                            .TotalMilliseconds,
+                        Stopwatch.GetElapsedTime(flipStarted, bridgeStarted)
+                            .TotalMilliseconds,
+                        bridgeTimings.WriteMilliseconds,
+                        bridgeTimings.CommandMilliseconds,
+                        bridgeTimings.ReadBackMilliseconds,
+                        Stopwatch.GetElapsedTime(readStarted, completed)
+                            .TotalMilliseconds);
+                    return result < 0
+                        ? Error(409, "Fullscreen shader texture could not " +
+                            $"be updated (0x{result:X8}).")
+                        : new ApiResult(200, new
+                        {
+                            sequence,
+                            width,
+                            height,
+                            format = "rgba8",
+                            byteLength
+                        }, timing);
+                }
+            }
+        }
+
+        private ApiResult GetRestApiSharedShaderTextureChannel()
+        {
+            lock (sharedShaderTextureChannelLock)
+            {
+                sharedShaderTextureChannel ??=
+                    new SharedShaderTextureChannel(
+                        ApplySharedShaderTextureFrame);
+                return new ApiResult(200,
+                    sharedShaderTextureChannel.Description);
+            }
+        }
+
+        private bool ApplySharedShaderTextureFrame(
+            int width, int height, nint rgba, int byteLength)
+        {
+            lock (playbackApiLock)
+            {
+                if (playbackBridgeClient?.IsConnected != true)
+                    return false;
+                int result = playbackBridgeClient
+                    .SetFullscreenShaderTexture(width, height,
+                        rgba, byteLength, out _);
+                return result >= 0;
+            }
         }
 
         private object CreateRestApiFullscreenQueue()
@@ -1645,6 +1833,225 @@ namespace IStripperQuickPlayer
                     400, "A JSON request body is required.");
         }
 
+        private static async Task<(int Width, int Height, byte[] Rgba)>
+            ReadRestApiShaderTextureAsync(HttpListenerRequest request,
+                CancellationToken cancellationToken)
+        {
+            string contentType = RestApiContentType(request);
+
+            if (contentType is not ("image/png" or "image/jpeg"))
+                throw new ApiRequestException(415,
+                    "Use image/png, image/jpeg, or application/octet-stream.");
+
+            byte[] encoded = await ReadRestApiBinaryAsync(request,
+                RestApiMaxTextureEncodedLength, cancellationToken);
+            if (encoded.Length == 0)
+                throw new ApiRequestException(400,
+                    "An image request body is required.");
+            try
+            {
+                using MemoryStream stream = new(encoded, writable: false);
+                using Image image = Image.FromStream(stream,
+                    useEmbeddedColorManagement: false,
+                    validateImageData: true);
+                if (image.Width is < 1 or > RestApiMaxTextureDimension ||
+                    image.Height is < 1 or > RestApiMaxTextureDimension)
+                {
+                    throw new ApiRequestException(400,
+                        $"Texture dimensions must be from 1 through " +
+                        $"{RestApiMaxTextureDimension}.");
+                }
+
+                using Bitmap bitmap = new(image.Width, image.Height,
+                    PixelFormat.Format32bppArgb);
+                using (Graphics graphics = Graphics.FromImage(bitmap))
+                {
+                    graphics.CompositingMode =
+                        System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                    graphics.DrawImage(image, 0, 0, image.Width, image.Height);
+                }
+
+                Rectangle bounds = new(0, 0, bitmap.Width, bitmap.Height);
+                BitmapData data = bitmap.LockBits(bounds,
+                    ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                try
+                {
+                    byte[] rgba = new byte[checked(
+                        bitmap.Width * bitmap.Height * 4)];
+                    byte[] row = new byte[bitmap.Width * 4];
+                    for (int sourceY = 0; sourceY < bitmap.Height; sourceY++)
+                    {
+                        Marshal.Copy(data.Scan0 + sourceY * data.Stride,
+                            row, 0, row.Length);
+                        int destinationY = bitmap.Height - 1 - sourceY;
+                        int destination = destinationY * row.Length;
+                        for (int x = 0; x < bitmap.Width; x++)
+                        {
+                            int source = x * 4;
+                            int target = destination + source;
+                            rgba[target] = row[source + 2];
+                            rgba[target + 1] = row[source + 1];
+                            rgba[target + 2] = row[source];
+                            rgba[target + 3] = row[source + 3];
+                        }
+                    }
+                    return (bitmap.Width, bitmap.Height, rgba);
+                }
+                finally
+                {
+                    bitmap.UnlockBits(data);
+                }
+            }
+            catch (ApiRequestException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is ArgumentException or
+                ExternalException or OutOfMemoryException)
+            {
+                throw new ApiRequestException(400,
+                    "The request body is not a valid supported image.");
+            }
+        }
+
+        private static async Task<byte[]> ReadRestApiBinaryAsync(
+            HttpListenerRequest request, int maximumLength,
+            CancellationToken cancellationToken)
+        {
+            if (request.ContentLength64 > maximumLength)
+                throw new ApiRequestException(
+                    413, "The request body is too large.");
+
+            using MemoryStream body = new();
+            byte[] buffer = new byte[64 * 1024];
+            while (true)
+            {
+                int read = await request.InputStream.ReadAsync(
+                    buffer, cancellationToken);
+                if (read == 0)
+                    break;
+                if (body.Length + read > maximumLength)
+                    throw new ApiRequestException(
+                        413, "The request body is too large.");
+                body.Write(buffer, 0, read);
+            }
+            return body.ToArray();
+        }
+
+        private static (int Width, int Height)
+            ReadRestApiRawShaderTextureDimensions(
+                HttpListenerRequest request)
+        {
+            if (!int.TryParse(request.QueryString["width"], out int width) ||
+                !int.TryParse(request.QueryString["height"], out int height) ||
+                width is < 1 or > RestApiMaxTextureDimension ||
+                height is < 1 or > RestApiMaxTextureDimension)
+            {
+                throw new ApiRequestException(400,
+                    $"Raw RGBA8 uploads require width and height from 1 " +
+                    $"through {RestApiMaxTextureDimension}.");
+            }
+            return (width, height);
+        }
+
+        private static void ReadRestApiExactBinary(
+            HttpListenerRequest request, Span<byte> body,
+            CancellationToken cancellationToken)
+        {
+            if (request.ContentLength64 >= 0 &&
+                request.ContentLength64 != body.Length)
+                throw RawShaderTextureLengthError(body.Length);
+            int offset = 0;
+            while (offset < body.Length)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int read = request.InputStream.Read(body[offset..]);
+                if (read == 0)
+                    throw RawShaderTextureLengthError(body.Length);
+                offset += read;
+            }
+
+            if (request.ContentLength64 < 0)
+            {
+                Span<byte> trailingByte = stackalloc byte[1];
+                if (request.InputStream.Read(trailingByte) != 0)
+                    throw RawShaderTextureLengthError(body.Length);
+            }
+        }
+
+        private static ApiRequestException RawShaderTextureLengthError(
+            int expectedLength) => new(400,
+                $"The raw RGBA8 body must contain exactly " +
+                $"{expectedLength} bytes.");
+
+        private static string RestApiContentType(
+            HttpListenerRequest request) => (request.ContentType ?? "")
+                .Split(';', 2)[0].Trim().ToLowerInvariant();
+
+        private static void FlipRgbaRows(
+            Span<byte> rgba, int width, int height)
+        {
+            int rowLength = checked(width * 4);
+            Span<byte> row = stackalloc byte[rowLength];
+            for (int top = 0; top < height / 2; top++)
+            {
+                int bottom = height - 1 - top;
+                Span<byte> topRow = rgba.Slice(top * rowLength, rowLength);
+                Span<byte> bottomRow = rgba.Slice(
+                    bottom * rowLength, rowLength);
+                topRow.CopyTo(row);
+                bottomRow.CopyTo(topRow);
+                row.CopyTo(bottomRow);
+            }
+        }
+
+        private sealed unsafe class UnmanagedTextureBuffer(int capacity) :
+            IDisposable
+        {
+            private nint pointer;
+            private bool disposed;
+
+            public nint Pointer
+            {
+                get
+                {
+                    ObjectDisposedException.ThrowIf(disposed, this);
+                    EnsureAllocated();
+                    return pointer;
+                }
+            }
+
+            public Span<byte> Span(int length)
+            {
+                ObjectDisposedException.ThrowIf(disposed, this);
+                if (length < 0 || length > capacity)
+                    throw new ArgumentOutOfRangeException(nameof(length));
+                EnsureAllocated();
+                return new Span<byte>((void*)pointer, length);
+            }
+
+            private void EnsureAllocated()
+            {
+                if (pointer != 0)
+                    return;
+                pointer = (nint)NativeMemory.Alloc((nuint)capacity);
+                if (pointer == 0)
+                    throw new OutOfMemoryException();
+            }
+
+            public void Dispose()
+            {
+                if (disposed)
+                    return;
+                disposed = true;
+                if (pointer != 0)
+                {
+                    NativeMemory.Free((void*)pointer);
+                    pointer = 0;
+                }
+            }
+        }
+
         private static async Task WriteRestApiResponseAsync(
             HttpListenerResponse response, ApiResult result,
             CancellationToken cancellationToken)
@@ -1655,6 +2062,8 @@ namespace IStripperQuickPlayer
             response.ContentType = "application/json; charset=utf-8";
             response.ContentLength64 = body.Length;
             response.Headers["Cache-Control"] = "no-store";
+            if (!string.IsNullOrEmpty(result.ServerTiming))
+                response.Headers["Server-Timing"] = result.ServerTiming;
             response.Headers["X-Content-Type-Options"] = "nosniff";
             try
             {

@@ -101,6 +101,18 @@ internal static class CustomShowProcessor
         Path.GetFullPath(Path.Combine(
             Path.GetDirectoryName(configuration.PythonExecutable)!, "..", ".."));
 
+    internal static bool IsEdgeTamInstalled(CustomShowConfiguration configuration)
+    {
+        try
+        {
+            FileInfo checkpoint = new(Path.Combine(RuntimeRoot(configuration),
+                "edgetam", "checkpoints", "edgetam.pt"));
+            return OptionalToolInstalled(configuration, "EDGETAM_COMMIT", "edgetam") &&
+                checkpoint.Exists && checkpoint.Length == 56116523L;
+        }
+        catch { return false; }
+    }
+
     internal static bool IsTransNetV2Installed(CustomShowConfiguration configuration) =>
         OptionalToolInstalled(configuration, "TRANSNETV2_COMMIT", "transnetv2");
 

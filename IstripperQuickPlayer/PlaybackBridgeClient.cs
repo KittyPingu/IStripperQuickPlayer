@@ -8,9 +8,20 @@ namespace IStripperQuickPlayer.Interop;
 
 public sealed class PlaybackBridgeClient : IDisposable
 {
+    public readonly record struct BufferCallTimings(
+        double WriteMilliseconds,
+        double CommandMilliseconds,
+        double ReadBackMilliseconds);
+
     private const uint CommandMagic = 0x5142434D;
     private const uint EventMagic = 0x51424556;
+    private const uint ShaderTextureMagic = 0x58545051;
     private const uint ProtocolVersion = 1;
+    private const int ShaderTextureHeaderLength = 20;
+    private const int MaximumShaderTextureDimension = 1024;
+    private const int MaximumBridgeBufferLength =
+        ShaderTextureHeaderLength +
+        MaximumShaderTextureDimension * MaximumShaderTextureDimension * 4;
     private const int ConnectTimeoutMilliseconds = 5_000;
     private const uint ProcessAccess =
         0x0002 | 0x0400 | 0x0008 | 0x0020 | 0x0010;
@@ -27,6 +38,8 @@ public sealed class PlaybackBridgeClient : IDisposable
     private NamedPipeClientStream? commandPipe;
     private BinaryReader? commandReader;
     private BinaryWriter? commandWriter;
+    private nint bufferProcess;
+    private nint remoteBuffer;
 
     private PlaybackBridgeClient(int processId,
         Func<string, byte[], bool> registryWrite)
@@ -112,7 +125,7 @@ public sealed class PlaybackBridgeClient : IDisposable
         byte[] data = Encoding.UTF8.GetBytes(value + "\0");
         if (data.Length > 4 * 1024)
             throw new ArgumentOutOfRangeException(nameof(value));
-        return CallBuffer(apiName, data, readBack: false);
+        return CallBuffer(apiName, data, readBackLength: 0);
     }
 
     public int SetFullscreenShaderData(float[] values, out uint sequence)
@@ -123,7 +136,8 @@ public sealed class PlaybackBridgeClient : IDisposable
                 "Exactly four shader values are required.", nameof(values));
         byte[] packet = CreateFullscreenShaderDataPacket(values);
         int result = CallBuffer(
-            "IStripperSetFullscreenShaderData", packet, readBack: true);
+            "IStripperSetFullscreenShaderData", packet,
+            readBackLength: packet.Length);
         sequence = result < 0 ? 0 : BitConverter.ToUInt32(packet, 16);
         return result;
     }
@@ -133,7 +147,8 @@ public sealed class PlaybackBridgeClient : IDisposable
     {
         byte[] packet = new byte[20];
         int result = CallBuffer(
-            "IStripperGetFullscreenShaderData", packet, readBack: true);
+            "IStripperGetFullscreenShaderData", packet,
+            readBackLength: packet.Length);
         values = result < 0 ? [] : Enumerable.Range(0, 4)
             .Select(index => BitConverter.ToSingle(packet, index * 4))
             .ToArray();
@@ -141,38 +156,162 @@ public sealed class PlaybackBridgeClient : IDisposable
         return result;
     }
 
-    private int CallBuffer(string apiName, byte[] data, bool readBack)
+    public unsafe int SetFullscreenShaderTexture(int width, int height,
+        byte[] rgba, out uint sequence)
     {
+        ArgumentNullException.ThrowIfNull(rgba);
+        if (width is < 1 or > MaximumShaderTextureDimension ||
+            height is < 1 or > MaximumShaderTextureDimension ||
+            rgba.Length != checked(width * height * 4))
+        {
+            throw new ArgumentException(
+                "The shader texture must be a valid RGBA8 image.",
+                nameof(rgba));
+        }
+
+        fixed (byte* pixels = rgba)
+        {
+            return SetFullscreenShaderTexture(width, height,
+                (nint)pixels, rgba.Length, out sequence);
+        }
+    }
+
+    public int SetFullscreenShaderTexture(int width, int height,
+        nint rgba, int byteLength, out uint sequence)
+    {
+        return SetFullscreenShaderTexture(width, height, rgba,
+            byteLength, out sequence, out _);
+    }
+
+    public int SetFullscreenShaderTexture(int width, int height,
+        nint rgba, int byteLength, out uint sequence,
+        out BufferCallTimings timings)
+    {
+        if (width is < 1 or > MaximumShaderTextureDimension ||
+            height is < 1 or > MaximumShaderTextureDimension ||
+            rgba == 0 || byteLength != checked(width * height * 4))
+        {
+            throw new ArgumentException(
+                "The shader texture must be a valid RGBA8 image.",
+                nameof(rgba));
+        }
+
+        byte[] header = CreateFullscreenShaderTextureHeader(
+            width, height, byteLength);
+        int result = CallBuffer(
+            "IStripperSetFullscreenShaderTexture", header,
+            readBackLength: ShaderTextureHeaderLength, out timings,
+            payload: rgba, payloadLength: byteLength);
+        sequence = result < 0 ? 0 : BitConverter.ToUInt32(header, 12);
+        return result;
+    }
+
+    public int GetFullscreenShaderTexture(
+        out int width, out int height, out uint sequence)
+    {
+        byte[] packet = new byte[ShaderTextureHeaderLength];
+        int result = CallBuffer(
+            "IStripperGetFullscreenShaderTexture", packet,
+            readBackLength: packet.Length);
+        bool valid = result >= 0 &&
+            BitConverter.ToUInt32(packet, 0) == ShaderTextureMagic;
+        width = valid ? checked((int)BitConverter.ToUInt32(packet, 4)) : 0;
+        height = valid ? checked((int)BitConverter.ToUInt32(packet, 8)) : 0;
+        sequence = valid ? BitConverter.ToUInt32(packet, 12) : 0;
+        return valid ? result : result < 0 ? result : unchecked((int)0x80004005);
+    }
+
+    private int CallBuffer(string apiName, byte[] data, int readBackLength,
+        nint payload = 0, int payloadLength = 0)
+    {
+        return CallBuffer(apiName, data, readBackLength, out _,
+            payload, payloadLength);
+    }
+
+    private int CallBuffer(string apiName, byte[] data, int readBackLength,
+        out BufferCallTimings timings,
+        nint payload = 0, int payloadLength = 0)
+    {
+        timings = default;
         ArgumentNullException.ThrowIfNull(data);
-        if (data.Length == 0 || data.Length > 4 * 1024)
+        int totalLength = checked(data.Length + payloadLength);
+        if (data.Length == 0 || totalLength > MaximumBridgeBufferLength)
             throw new ArgumentOutOfRangeException(nameof(data));
-        nint process = OpenProcess(ProcessAccess, false, processId);
-        if (process == 0)
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        nint remoteValue = 0;
-        try
+        if (readBackLength < 0 || readBackLength > data.Length)
+            throw new ArgumentOutOfRangeException(nameof(readBackLength));
+        if (payloadLength < 0 || (payloadLength > 0) != (payload != 0))
+            throw new ArgumentOutOfRangeException(nameof(payloadLength));
+
+        lock (commandLock)
         {
-            remoteValue = VirtualAllocEx(process, 0, (nuint)data.Length,
-                MemCommitReserve, PageReadWrite);
-            if (remoteValue == 0 ||
-                !WriteProcessMemory(process, remoteValue, data,
+            try
+            {
+                long writeStarted = Stopwatch.GetTimestamp();
+                EnsureRemoteBuffer();
+                if (!WriteProcessMemory(bufferProcess, remoteBuffer, data,
                     (nuint)data.Length, out nuint written) ||
-                written != (nuint)data.Length)
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            int result = Call(apiName, (ulong)(nuint)remoteValue);
-            if (result >= 0 && readBack &&
-                (!ReadProcessMemory(process, remoteValue, data,
-                    (nuint)data.Length, out nuint read) ||
-                 read != (nuint)data.Length))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            return result;
+                    written != (nuint)data.Length)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (payloadLength > 0 &&
+                    (!WriteProcessMemoryPointer(bufferProcess,
+                        remoteBuffer + data.Length, payload,
+                        (nuint)payloadLength, out written) ||
+                     written != (nuint)payloadLength))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                long commandStarted = Stopwatch.GetTimestamp();
+                int result = Call(apiName,
+                    (ulong)(nuint)remoteBuffer);
+                long readBackStarted = Stopwatch.GetTimestamp();
+                if (result >= 0 && readBackLength > 0 &&
+                    (!ReadProcessMemory(bufferProcess, remoteBuffer, data,
+                        (nuint)readBackLength, out nuint read) ||
+                     read != (nuint)readBackLength))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                long completed = Stopwatch.GetTimestamp();
+                timings = new(
+                    Stopwatch.GetElapsedTime(
+                        writeStarted, commandStarted).TotalMilliseconds,
+                    Stopwatch.GetElapsedTime(
+                        commandStarted, readBackStarted).TotalMilliseconds,
+                    Stopwatch.GetElapsedTime(
+                        readBackStarted, completed).TotalMilliseconds);
+                return result;
+            }
+            catch
+            {
+                ReleaseRemoteBuffer();
+                throw;
+            }
         }
-        finally
+    }
+
+    private void EnsureRemoteBuffer()
+    {
+        if (bufferProcess != 0 && remoteBuffer != 0)
+            return;
+        bufferProcess = OpenProcess(ProcessAccess, false, processId);
+        if (bufferProcess == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        remoteBuffer = VirtualAllocEx(bufferProcess, 0,
+            (nuint)MaximumBridgeBufferLength,
+            MemCommitReserve, PageReadWrite);
+        if (remoteBuffer == 0)
         {
-            if (remoteValue != 0)
-                VirtualFreeEx(process, remoteValue, 0, 0x8000);
-            CloseHandle(process);
+            int error = Marshal.GetLastWin32Error();
+            CloseHandle(bufferProcess);
+            bufferProcess = 0;
+            throw new Win32Exception(error);
         }
+    }
+
+    private void ReleaseRemoteBuffer()
+    {
+        if (remoteBuffer != 0 && bufferProcess != 0)
+            VirtualFreeEx(bufferProcess, remoteBuffer, 0, 0x8000);
+        remoteBuffer = 0;
+        if (bufferProcess != 0)
+            CloseHandle(bufferProcess);
+        bufferProcess = 0;
     }
 
     public int StartRegistryHook() => Call("IStripperStartRegistryHook");
@@ -186,6 +325,9 @@ public sealed class PlaybackBridgeClient : IDisposable
         using var reader = new BinaryReader(stream);
         float[] shaderValues = [12.5f, 3f, -0.75f, 900f];
         byte[] shaderPacket = CreateFullscreenShaderDataPacket(shaderValues);
+        byte[] texturePixels = [255, 0, 0, 255, 0, 255, 0, 255];
+        byte[] texturePacket = CreateFullscreenShaderTexturePacket(
+            2, 1, texturePixels);
         return reader.ReadUInt32() == CommandMagic &&
             reader.ReadUInt32() == ProtocolVersion &&
             reader.ReadUInt32() == 4 &&
@@ -196,7 +338,15 @@ public sealed class PlaybackBridgeClient : IDisposable
             Enumerable.Range(0, 4).All(index =>
                 BitConverter.ToSingle(shaderPacket, index * 4) ==
                     shaderValues[index]) &&
-            BitConverter.ToUInt32(shaderPacket, 16) == 0;
+            BitConverter.ToUInt32(shaderPacket, 16) == 0 &&
+            texturePacket.Length == ShaderTextureHeaderLength + 8 &&
+            BitConverter.ToUInt32(texturePacket, 0) == ShaderTextureMagic &&
+            BitConverter.ToUInt32(texturePacket, 4) == 2 &&
+            BitConverter.ToUInt32(texturePacket, 8) == 1 &&
+            BitConverter.ToUInt32(texturePacket, 12) == 0 &&
+            BitConverter.ToUInt32(texturePacket, 16) == 8 &&
+            texturePacket.AsSpan(ShaderTextureHeaderLength)
+                .SequenceEqual(texturePixels);
     }
 
     private static byte[] CreateFullscreenShaderDataPacket(float[] values)
@@ -204,6 +354,29 @@ public sealed class PlaybackBridgeClient : IDisposable
         byte[] packet = new byte[20];
         for (int index = 0; index < 4; index++)
             BitConverter.GetBytes(values[index]).CopyTo(packet, index * 4);
+        return packet;
+    }
+
+    private static byte[] CreateFullscreenShaderTexturePacket(
+        int width, int height, byte[] rgba)
+    {
+        byte[] packet = new byte[checked(ShaderTextureHeaderLength +
+            rgba.Length)];
+        CreateFullscreenShaderTextureHeader(width, height, rgba.Length)
+            .CopyTo(packet, 0);
+        rgba.CopyTo(packet, ShaderTextureHeaderLength);
+        return packet;
+    }
+
+    private static byte[] CreateFullscreenShaderTextureHeader(
+        int width, int height, int byteLength)
+    {
+        byte[] packet = new byte[ShaderTextureHeaderLength];
+        BitConverter.GetBytes(ShaderTextureMagic).CopyTo(packet, 0);
+        BitConverter.GetBytes((uint)width).CopyTo(packet, 4);
+        BitConverter.GetBytes((uint)height).CopyTo(packet, 8);
+        BitConverter.GetBytes(0u).CopyTo(packet, 12);
+        BitConverter.GetBytes((uint)byteLength).CopyTo(packet, 16);
         return packet;
     }
 
@@ -361,7 +534,10 @@ public sealed class PlaybackBridgeClient : IDisposable
     {
         lifetime.Cancel();
         lock (commandLock)
+        {
+            ReleaseRemoteBuffer();
             DisconnectCommands();
+        }
         try { eventTask.Wait(500); } catch { }
         eventReady.Dispose();
         lifetime.Dispose();
@@ -388,6 +564,11 @@ public sealed class PlaybackBridgeClient : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool WriteProcessMemory(nint process, nint address,
         byte[] buffer, nuint size, out nuint written);
+
+    [DllImport("kernel32.dll", SetLastError = true,
+        EntryPoint = "WriteProcessMemory")]
+    private static extern bool WriteProcessMemoryPointer(nint process,
+        nint address, nint buffer, nuint size, out nuint written);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool ReadProcessMemory(nint process, nint address,

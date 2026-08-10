@@ -21,11 +21,33 @@ public partial class Form1
         { Minimum = 0, Maximum = 255, Width = 70 };
     readonly ToolStripMenuItem editCustomShowMenu = new("Edit Custom Show Metadata...");
     readonly ToolStripMenuItem deleteCustomShowMenu = new("Delete Custom Show");
+    readonly ContextMenuStrip customClipContextMenu = new();
+    readonly ToolStripMenuItem deleteCustomClipMenu =
+        new("Delete Custom Clip...");
+    readonly Controls.PlaybackSeekBar customClipAlphaSlider = new()
+    {
+        Minimum = 0, Maximum = 255, SmallChange = 1, LargeChange = 10,
+        Dock = DockStyle.Fill, Height = 32,
+        AccessibleName = "Custom clip minimum alpha"
+    };
+    readonly TextBox customClipAlphaText = new()
+    {
+        Width = 46, MaxLength = 3,
+        TextAlign = HorizontalAlignment.Right
+    };
+    readonly System.Windows.Forms.Timer customClipAlphaSaveTimer = new()
+        { Interval = 250 };
+    ToolStripControlHost? customClipAlphaHost;
+    ModelCard? customClipAlphaCard;
+    ModelClip? customClipAlphaClip;
     CustomShowConfiguration customShowConfiguration = CustomShowConfiguration.Load();
     CustomPlayerForm? customPlayer;
     ModelCard? customPlayerCard;
     ModelClip? customPlayerClip;
     bool loadingCustomAlphaThreshold;
+    bool loadingCustomClipAlphaThreshold;
+    bool customClipAlphaDirty;
+    bool selectingClipForContextMenu;
     string customPlayerAnimationPath = "";
     IntPtr customHiddenMovieWindow;
     Rectangle? customPlayerBounds;
@@ -81,6 +103,71 @@ public partial class Form1
             deleteCustomShowMenu.Visible = custom;
             deleteFromDiskToolStripMenuItem.Visible = !custom;
         };
+
+        TableLayoutPanel alphaPanel = new()
+        {
+            AutoSize = false, Size = new System.Drawing.Size(310, 62),
+            ColumnCount = 2, RowCount = 2, Padding = new Padding(6, 3, 6, 3)
+        };
+        alphaPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        alphaPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+        Label alphaLabel = new()
+        {
+            Text = "Minimum alpha (0–255)", AutoSize = true,
+            Margin = new Padding(3, 2, 3, 0)
+        };
+        alphaPanel.Controls.Add(alphaLabel, 0, 0);
+        alphaPanel.SetColumnSpan(alphaLabel, 2);
+        alphaPanel.Controls.Add(customClipAlphaSlider, 0, 1);
+        alphaPanel.Controls.Add(customClipAlphaText, 1, 1);
+        customClipAlphaHost = new ToolStripControlHost(alphaPanel)
+        {
+            AutoSize = false, Size = alphaPanel.Size, Margin = Padding.Empty
+        };
+        customClipAlphaSlider.Scroll += (_, _) =>
+            ChangeContextClipAlphaThreshold(customClipAlphaSlider.Value);
+        customClipAlphaText.TextChanged += (_, _) =>
+        {
+            if (int.TryParse(customClipAlphaText.Text, out int value))
+                ChangeContextClipAlphaThreshold(value);
+        };
+        customClipAlphaText.Leave += (_, _) =>
+            customClipAlphaText.Text = customClipAlphaSlider.Value.ToString();
+        customClipAlphaSaveTimer.Tick += (_, _) =>
+        {
+            customClipAlphaSaveTimer.Stop();
+            PersistContextClipAlphaThreshold();
+        };
+        deleteCustomClipMenu.Click += async (_, _) =>
+        {
+            PersistContextClipAlphaThreshold();
+            await DeleteSelectedCustomClipAsync();
+        };
+        customClipContextMenu.Items.AddRange([
+            customClipAlphaHost, new ToolStripSeparator(),
+            deleteCustomClipMenu]);
+        customClipContextMenu.Opening += (sender, eventArgs) =>
+        {
+            bool custom = TryGetSelectedCustomClip(
+                out ModelCard card, out ModelClip clip);
+            customClipAlphaCard = custom ? card : null;
+            customClipAlphaClip = custom ? clip : null;
+            loadingCustomClipAlphaThreshold = true;
+            customClipAlphaSlider.Value = custom
+                ? Math.Clamp(clip.customAlphaThreshold, 0, 255) : 0;
+            customClipAlphaText.Text = custom
+                ? customClipAlphaSlider.Value.ToString() : "";
+            loadingCustomClipAlphaThreshold = false;
+            customClipAlphaDirty = false;
+            customClipAlphaHost.Visible = custom;
+            deleteCustomClipMenu.Visible = custom;
+            eventArgs.Cancel = !custom;
+        };
+        customClipContextMenu.Closed += (_, _) =>
+            PersistContextClipAlphaThreshold();
+        listClips.ContextMenuStrip = customClipContextMenu;
+        listClips.MouseDown += listClips_MouseDownForCustomContext;
+        AppTheme.Apply(alphaPanel);
     }
 
     void SetupCustomPlayerVolumeMenu()
@@ -188,6 +275,60 @@ public partial class Form1
         }
     }
 
+    void ChangeContextClipAlphaThreshold(int value)
+    {
+        if (loadingCustomClipAlphaThreshold || customClipAlphaCard == null ||
+            customClipAlphaClip == null) return;
+        value = Math.Clamp(value, 0, 255);
+        loadingCustomClipAlphaThreshold = true;
+        customClipAlphaSlider.Value = value;
+        customClipAlphaText.Text = value.ToString();
+        loadingCustomClipAlphaThreshold = false;
+        customClipAlphaClip.customAlphaThreshold = value;
+        customClipAlphaDirty = true;
+        customClipAlphaSaveTimer.Stop();
+        customClipAlphaSaveTimer.Start();
+
+        if (!string.Equals(customPlayerAnimationPath,
+                GetAnimationPath(customClipAlphaClip),
+                StringComparison.OrdinalIgnoreCase)) return;
+        customPlayer?.SetAlphaThreshold(value);
+        if (customPlayerClip != null)
+            customPlayerClip.customAlphaThreshold = value;
+        loadingCustomAlphaThreshold = true;
+        customAlphaThresholdInput.Value = value;
+        loadingCustomAlphaThreshold = false;
+    }
+
+    void PersistContextClipAlphaThreshold()
+    {
+        customClipAlphaSaveTimer.Stop();
+        if (!customClipAlphaDirty || customClipAlphaCard == null ||
+            customClipAlphaClip == null ||
+            customClipAlphaCard.customShowId == null) return;
+        customClipAlphaDirty = false;
+        try
+        {
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            CustomShowManifest show = store.LoadManifest(
+                customClipAlphaCard.customShowId);
+            int index = customClipAlphaCard.clips!.IndexOf(customClipAlphaClip);
+            CustomShowClip[] included = show.Clips.Where(value =>
+                value.Included).ToArray();
+            if (index < 0 || index >= included.Length)
+                throw new InvalidDataException(
+                    "The selected clip no longer matches the saved show.");
+            included[index].AlphaThreshold =
+                customClipAlphaClip.customAlphaThreshold;
+            store.SaveManifest(show);
+        }
+        catch (Exception error)
+        {
+            SetPlaybackStatus("Could not save alpha threshold: " +
+                error.Message);
+        }
+    }
+
     void SelectCustomAlphaThreshold(ModelCard card, ModelClip clip)
     {
         customPlayerCard = card;
@@ -245,7 +386,10 @@ public partial class Form1
             new CustomShowStore(customShowConfiguration.LibraryRoot),
             customShowConfiguration, showId);
         if (form.ShowDialog(this) == DialogResult.OK)
+        {
             ReloadCustomCards();
+            RebindCurrentCustomPlayback();
+        }
     }
 
     void ManageCustomModels()
@@ -286,7 +430,7 @@ public partial class Form1
                 options.InstallTransNetV2, options.InstallOmniShotCut,
                 options.InstallMatAnyone2,
                 options.InstallVideoMaMa, options.InstallViTMatte,
-                options.InstallProPainter);
+                options.InstallProPainter, options.InstallEdgeTam);
             if (form.ShowDialog(this) != DialogResult.OK) return;
             string python = CustomShowConfiguration.FindPythonExecutable();
             if (!File.Exists(python) ||
@@ -324,6 +468,164 @@ public partial class Form1
             return;
         new CustomShowStore(customShowConfiguration.LibraryRoot).DeleteShow(showId);
         ReloadCustomCards();
+    }
+
+    void listClips_MouseDownForCustomContext(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Right) return;
+        ListViewItem? item = listClips.HitTest(e.Location).Item;
+        if (item == null) return;
+        selectingClipForContextMenu = true;
+        try
+        {
+            listClips.SelectedItems.Clear();
+            item.Selected = true;
+            item.Focused = true;
+        }
+        finally
+        {
+            selectingClipForContextMenu = false;
+        }
+    }
+
+    bool TryGetSelectedCustomClip(out ModelCard card, out ModelClip clip)
+    {
+        card = null!;
+        clip = null!;
+        if (listClips.SelectedItems.Count != 1) return false;
+        card = Datastore.findCardByTag(clipListTag)!;
+        if (card?.IsCustom != true || card.clips == null) return false;
+        string clipName = listClips.SelectedItems[0].SubItems[1].Text;
+        clip = card.clips.FirstOrDefault(value => string.Equals(
+            value.clipName, clipName, StringComparison.OrdinalIgnoreCase))!;
+        return clip != null;
+    }
+
+    async Task DeleteSelectedCustomClipAsync()
+    {
+        if (!TryGetSelectedCustomClip(out ModelCard card,
+                out ModelClip modelClip) || card.customShowId == null ||
+            string.IsNullOrWhiteSpace(modelClip.clipName))
+            return;
+
+        string animationPath = GetAnimationPath(modelClip);
+        bool finalClip = card.clips?.Count == 1;
+        string prompt = finalClip
+            ? $"'{card.outfit}' has only one clip. Deleting it will move the " +
+              "entire custom show to the Recycle Bin. Continue?"
+            : $"Delete clip {modelClip.clipNumber} from '{card.outfit}' and " +
+              "move its processed foreground and alpha files to the Recycle Bin?";
+        if (MessageBox.Show(this, prompt, "Delete Custom Clip",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) !=
+            DialogResult.Yes)
+            return;
+
+        try
+        {
+            if (string.Equals(customPlayerAnimationPath, animationPath,
+                    StringComparison.OrdinalIgnoreCase))
+                await AdvanceBeforeDeletingCustomClipAsync(animationPath);
+
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            string? cleanupWarning;
+            if (finalClip)
+            {
+                store.DeleteShow(card.customShowId);
+                cleanupWarning = null;
+                RemoveCustomClipQueueEntries(card.name!, null);
+            }
+            else
+            {
+                CustomShowManifest show = store.LoadManifest(card.customShowId);
+                CustomShowClip[] included = show.Clips.Where(value =>
+                    value.Included).ToArray();
+                int index = card.clips!.IndexOf(modelClip);
+                if (index < 0 || index >= included.Length)
+                    throw new InvalidDataException(
+                        "The selected clip no longer matches the saved show.");
+                cleanupWarning = store.DeleteClip(card.customShowId,
+                    included[index].Id);
+                RemoveCustomClipQueueEntries(card.name!, animationPath);
+            }
+
+            selectingClipForContextMenu = true;
+            try
+            {
+                ReloadCustomCards();
+                RebindCurrentCustomPlayback();
+                if (!finalClip && Datastore.findCardByTag(card.name!) != null)
+                    loadListClips(card.name!);
+            }
+            finally
+            {
+                selectingClipForContextMenu = false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(cleanupWarning))
+                MessageBox.Show(this,
+                    "The clip was removed from the library, but its processed " +
+                    "files could not be moved to the Recycle Bin:\n" +
+                    cleanupWarning,
+                    "Delete Custom Clip", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Delete Custom Clip",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    async Task AdvanceBeforeDeletingCustomClipAsync(string animationPath)
+    {
+        CustomPlayerForm? previous = customPlayer;
+        GetNextClip(null, animationPath, useQueue: false);
+        if (previous != null)
+            await previous.ClosePlayerAsync();
+
+        if (!string.Equals(customPlayerAnimationPath, animationPath,
+                StringComparison.OrdinalIgnoreCase))
+            return;
+        CustomPlayerForm? repeated = customPlayer;
+        StopCustomPlayback(restoreIstripper: true);
+        if (repeated != null && repeated != previous)
+            await repeated.ClosePlayerAsync();
+    }
+
+    void RemoveCustomClipQueueEntries(string cardTag, string? clipName)
+    {
+        bool Matches(PlayQueueEntry entry) => string.Equals(entry.CardTag,
+                cardTag, StringComparison.OrdinalIgnoreCase) &&
+            (clipName == null || string.Equals(entry.ClipName, clipName,
+                StringComparison.OrdinalIgnoreCase));
+        manualPlayQueue.RemoveAll(entry => Matches(entry));
+        automaticPlayQueue.RemoveAll(entry => Matches(entry));
+        if (activeManualQueueEntry != null && Matches(activeManualQueueEntry))
+            activeManualQueueEntry = null;
+        if (activeAutomaticQueueEntry != null &&
+            Matches(activeAutomaticQueueEntry))
+            activeAutomaticQueueEntry = null;
+        if (activeQueuedCard != null && Matches(activeQueuedCard))
+            activeQueuedCard = null;
+        SavePreviousQueue();
+        RenderPlayQueues();
+    }
+
+    void RebindCurrentCustomPlayback()
+    {
+        if (string.IsNullOrEmpty(customPlayerAnimationPath)) return;
+        ModelCard? card = Datastore.findCardByTag(
+            GetCardTagFromAnimationPath(customPlayerAnimationPath));
+        ModelClip? clip = card?.clips?.FirstOrDefault(value => string.Equals(
+            value.clipName, customPlayerAnimationPath,
+            StringComparison.OrdinalIgnoreCase));
+        if (card == null || clip == null) return;
+        customPlayerCard = card;
+        customPlayerClip = clip;
+        customPlayer?.SetAlphaThreshold(clip.customAlphaThreshold);
+        loadingCustomAlphaThreshold = true;
+        customAlphaThresholdInput.Value = clip.customAlphaThreshold;
+        loadingCustomAlphaThreshold = false;
     }
 
     bool RequestAnimationPlayback(string animationPath)

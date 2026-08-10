@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 89;
+        private const int PlaybackBridgeVersion = 90;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -2266,6 +2266,7 @@ namespace IStripperQuickPlayer
         private string lastchosen = "";
         private void listClips_SelectedIndexChanged(object sender, EventArgs e)
         {
+            if (selectingClipForContextMenu) return;
             if (listClips.SelectedItems.Count == 0) return;
             if (lastchosen == listClips.SelectedItems[0].SubItems[1].Text || clickingNowPlaying)
             {
@@ -5066,6 +5067,8 @@ namespace IStripperQuickPlayer
             }
             playbackTimelineTimer.Dispose();
             cardOverlayTimer.Dispose();
+            PersistContextClipAlphaThreshold();
+            customClipAlphaSaveTimer.Dispose();
             playbackLifetime.Cancel();
             UnregisterHotKeys();
             timerhook?.Dispose();
@@ -5151,6 +5154,8 @@ namespace IStripperQuickPlayer
             apiOnlyContextMenu = null;
             playbackTimelineTimer.Dispose();
             cardOverlayTimer.Dispose();
+            PersistContextClipAlphaThreshold();
+            customClipAlphaSaveTimer.Dispose();
             clipSelectionPlaybackTimer.Dispose();
             playQueueResizeTimer.Dispose();
         }
