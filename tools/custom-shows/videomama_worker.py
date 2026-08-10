@@ -141,8 +141,12 @@ def use_on_demand_sam2_frames(frame_folder, torch, cache_limit_bytes=0,
                     pixels = np.array(decoded.resize((image_size, image_size)))
                 if pixels.dtype != np.uint8:
                     raise RuntimeError(f"Unknown image dtype: {pixels.dtype}")
-                image = torch.from_numpy(pixels / 255.0).permute(2, 0, 1)
-                image.sub_(mean).div_(std)
+                # Dividing the uint8 NumPy array by a Python float promotes the
+                # entire 1024x1024 RGB frame to float64. SAM2 converts it back
+                # to float32 before the image encoder, so doing that work here
+                # only doubles the temporary bandwidth and cache footprint.
+                image = torch.from_numpy(pixels).permute(2, 0, 1).to(torch.float32)
+                image.div_(255.0).sub_(mean).div_(std)
                 if cache_stats is not None:
                     cache_stats["decodePreprocessCount"] = \
                         cache_stats.get("decodePreprocessCount", 0) + 1
@@ -279,25 +283,60 @@ def propagate_masks(runtime, frame_files, mask_path, mask_folder, output, total,
     if optimized: sam2_vos_cache_marker(runtime).touch()
 
 
-def encoder(ffmpeg, source, output, start, duration, frame_rate, width, height):
+def output_codecs(ffmpeg, width, height, force_software=False, preset="p5"):
     encoders = subprocess.check_output([ffmpeg, "-hide_banner", "-encoders"],
         text=True, errors="replace")
-    nvenc = "h264_nvenc" in encoders and subprocess.run([ffmpeg, "-v", "error",
+    nvenc = not force_software and width >= 256 and height >= 128 and \
+        "h264_nvenc" in encoders and subprocess.run([ffmpeg, "-v", "error",
         "-f", "lavfi", "-i", "color=size=256x256:duration=0.1", "-frames:v", "1",
         "-c:v", "h264_nvenc", "-f", "null", "-"], stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL).returncode == 0
-    video_codec = ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-cq", "19"] \
+    video_codec = ["-c:v", "h264_nvenc", "-preset", preset, "-tune", "hq", "-cq", "19"] \
         if nvenc else ["-c:v", "libx264", "-preset", "slow", "-crf", "18"]
-    alpha_codec = ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-cq", "10"] \
+    alpha_codec = ["-c:v", "h264_nvenc", "-preset", preset, "-tune", "hq", "-cq", "10"] \
         if nvenc else ["-c:v", "libx264", "-preset", "medium", "-crf", "10"]
+    return video_codec, alpha_codec, "h264_nvenc" if nvenc else "libx264"
+
+
+def source_and_foreground_encoder(ffmpeg, source, output, start, duration,
+                                  frame_rate, width, height, total, video_codec,
+                                  raw_width=None, raw_height=None,
+                                  raw_scale="bilinear"):
+    """Decode source RGB once, sharing it with Python and foreground encoding."""
+    raw_width = width if raw_width is None else raw_width
+    raw_height = height if raw_height is None else raw_height
+    normalized = (f"[0:v:0]fps={frame_rate},scale={width}:{height}:flags=lanczos,"
+                  "setsar=1,split=2[video][python]")
+    if (raw_width, raw_height) == (width, height):
+        normalized += ";[python]null[raw]"
+    else:
+        # Match the former Python path: convert the normalized frame to RGB,
+        # then resize that RGB image before inference.
+        normalized += (f";[python]format=rgb24,scale={raw_width}:{raw_height}:"
+                       f"flags={raw_scale}[raw]")
+    return subprocess.Popen([ffmpeg, "-y", "-v", "warning", "-ss", f"{start:.6f}",
+        "-i", str(source), "-filter_complex", normalized,
+        "-map", "[raw]", "-t", f"{duration:.6f}", "-frames:v", str(total),
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        "-map", "[video]", "-map", "0:a:0?", "-t", f"{duration:.6f}",
+        "-frames:v", str(total), *video_codec, "-pix_fmt", "yuv420p",
+        "-r", frame_rate, "-fps_mode", "cfr", "-c:a", "aac",
+        str(output / "foreground.mp4")], stdout=subprocess.PIPE)
+
+
+def alpha_encoder(ffmpeg, output, frame_rate, width, height, total,
+                  alpha_width, alpha_height, alpha_codec, scale="bilinear"):
+    """Encode low-resolution gray masks, scaling them inside FFmpeg."""
+    filters = []
+    if (alpha_width, alpha_height) != (width, height):
+        filters.append(f"scale={width}:{height}:flags={scale}")
+    filters.append("format=yuv420p")
     return subprocess.Popen([ffmpeg, "-y", "-v", "warning", "-f", "rawvideo",
-        "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-r", frame_rate, "-i", "pipe:0",
-        "-ss", f"{start:.6f}", "-t", f"{duration:.6f}", "-i", str(source),
-        "-filter_complex", "[0:v]split=2[rgb][rgba];[rgb]format=yuv420p[vout];[rgba]alphaextract,format=yuv420p[aout]",
-        "-map", "[vout]", "-map", "1:a:0?", *video_codec, "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-shortest", str(output / "foreground.mp4"),
-        "-map", "[aout]", *alpha_codec, "-pix_fmt", "yuv420p",
-        str(output / "alpha.mkv")], stdin=subprocess.PIPE)
+        "-pix_fmt", "gray", "-s", f"{alpha_width}x{alpha_height}",
+        "-r", frame_rate, "-i", "pipe:0", "-vf", ",".join(filters),
+        "-frames:v", str(total), *alpha_codec, "-pix_fmt", "yuv420p",
+        "-r", frame_rate, "-fps_mode", "cfr", str(output / "alpha.mkv")],
+        stdin=subprocess.PIPE)
 
 
 def process(args):
@@ -337,12 +376,15 @@ def process(args):
         pipeline.unet.enable_forward_chunking(chunk_size=1, dim=1)
         batch_size = max(1, min(args.batch_size, 12))
         emit("startup", 35, f"VideoMaMa model loaded; first {batch_size}-frame batch is running...")
-        decode = subprocess.Popen([ffmpeg, "-v", "error", "-ss", f"{start:.6f}",
-            "-i", str(source), "-t", f"{duration:.6f}", "-map", "0:v:0", "-vf",
-            f"fps={frame_rate},scale={width}:{height}:flags=lanczos,setsar=1",
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
-        encode = encoder(ffmpeg, source, output, start, duration, frame_rate, width, height)
-        frame_bytes, count, last_preview = width * height * 3, 0, 0
+        video_codec, alpha_codec, encoder_name = output_codecs(
+            ffmpeg, width, height, preset=args.encoder_preset)
+        emit("startup", 35, f"Encoding with {encoder_name} {args.encoder_preset if encoder_name == 'h264_nvenc' else 'fallback'}")
+        decode = source_and_foreground_encoder(ffmpeg, source, output, start,
+            duration, frame_rate, width, height, total, video_codec,
+            model_width, model_height)
+        encode = alpha_encoder(ffmpeg, output, frame_rate, width, height, total,
+            model_width, model_height, alpha_codec, scale="lanczos")
+        frame_bytes, count, last_preview = model_width * model_height * 3, 0, 0
 
         def read_source():
             value, received = bytearray(frame_bytes), 0
@@ -353,12 +395,16 @@ def process(args):
                 received += size
             if received != frame_bytes:
                 raise RuntimeError("source decoder ended before VideoMaMa output")
-            return np.frombuffer(value, np.uint8).reshape(height, width, 3)
+            return np.frombuffer(value, np.uint8).reshape(
+                model_height, model_width, 3)
 
         def preview(source_frame, alpha, force=False):
             nonlocal last_preview
             now = time.monotonic()
             if not force and now - last_preview < .5: return
+            if source_frame.shape[:2] != alpha.shape:
+                source_frame = np.asarray(Image.fromarray(source_frame, "RGB").resize(
+                    (alpha.shape[1], alpha.shape[0]), Image.Resampling.BILINEAR))
             write_preview(output, source_frame, alpha)
             last_preview = now
 
@@ -375,10 +421,9 @@ def process(args):
                 for matte in mattes:
                     source_frame = read_source()
                     alpha = np.asarray(matte.convert("L").resize(
-                        (width, height), Image.Resampling.LANCZOS), dtype=np.uint8)
-                    rgba = np.empty((height, width, 4), dtype=np.uint8)
-                    rgba[:, :, :3], rgba[:, :, 3] = source_frame, alpha
-                    output_bytes = memoryview(rgba).cast("B")
+                        (model_width, model_height), Image.Resampling.LANCZOS),
+                        dtype=np.uint8)
+                    output_bytes = memoryview(alpha).cast("B")
                     while output_bytes:
                         written = encode.stdin.write(output_bytes)
                         if not written:
@@ -391,8 +436,9 @@ def process(args):
                          f"Processed {count}/{total} frames")
             if last_source is not None: preview(last_source, last_alpha, force=True)
             encode.stdin.close(); decode.stdout.close()
-            if decode.wait() != 0: raise RuntimeError("source normalization failed")
-            if encode.wait() != 0: raise RuntimeError("FFmpeg output encoding failed")
+            if decode.wait() != 0:
+                raise RuntimeError("source normalization/foreground encoding failed")
+            if encode.wait() != 0: raise RuntimeError("FFmpeg alpha encoding failed")
         except BaseException:
             decode.kill(); encode.kill(); raise
         (output / "result.json").write_text(json.dumps({"width": width, "height": height,
@@ -411,6 +457,8 @@ def main():
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int)
     parser.add_argument("--batch-size", type=int, default=3)
+    parser.add_argument("--encoder-preset", choices=tuple(f"p{i}" for i in range(1, 8)),
+                        default="p5")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:

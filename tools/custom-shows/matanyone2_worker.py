@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 
 from rvm_worker import digest, emit, executable, fast_fp16, probe, replace_preview
+from videomama_worker import (alpha_encoder, output_codecs,
+                              source_and_foreground_encoder)
 
 COMMIT = "0079197acd6d16a741f71558809c06c586c579e0"
 WEIGHTS_HASH = "5e9821e4087231427376b437c85bb6e072b41e582314f06fd524f75bc4af5914"
@@ -636,35 +638,15 @@ def _process_once(args, compile_enabled):
         decode = encode = None
         count = 0
         try:
-            decode = subprocess.Popen([ffmpeg, "-v", "error", "-ss", f"{start:.6f}",
-                "-i", str(source), "-t", f"{duration:.6f}", "-map", "0:v:0",
-                "-vf", f"fps={frame_rate},scale={width}:{height}:flags=lanczos,setsar=1",
-                "-frames:v", str(total), "-f", "rawvideo", "-pix_fmt", "rgb24",
-                "pipe:1"], stdout=subprocess.PIPE)
-            encoders = subprocess.check_output([ffmpeg, "-hide_banner", "-encoders"],
-                                               text=True, errors="replace")
-            nvenc = (not args.force_software_encode and width >= 256 and
-                height >= 128 and "h264_nvenc" in encoders and subprocess.run(
-                [ffmpeg, "-v", "error", "-f", "lavfi", "-i",
-                 "color=size=256x256:duration=0.1", "-frames:v", "1", "-c:v", "h264_nvenc",
-                 "-f", "null", "-"], stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL).returncode == 0)
-            video_codec = ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-cq", "19"] \
-                if nvenc else ["-c:v", "libx264", "-preset", "slow", "-crf", "18"]
-            alpha_codec = ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-cq", "10"] \
-                if nvenc else ["-c:v", "libx264", "-preset", "medium", "-crf", "10"]
-            encode = subprocess.Popen([ffmpeg, "-y", "-v", "warning", "-f", "rawvideo",
-                "-pix_fmt", "rgba", "-s", f"{width}x{height}", "-r", frame_rate,
-                "-i", "pipe:0", "-ss", f"{start:.6f}", "-t", f"{duration:.6f}",
-                "-i", str(source), "-filter_complex",
-                "[0:v]split=2[rgb][rgba];[rgb]format=yuv420p[vout];[rgba]alphaextract,format=yuv420p[aout]",
-                "-map", "[vout]", "-map", "1:a:0?", *video_codec, "-pix_fmt", "yuv420p",
-                "-r", frame_rate, "-fps_mode", "cfr", "-c:a", "aac", "-shortest",
-                str(output / "foreground.mp4"),
-                "-map", "[aout]", *alpha_codec, "-pix_fmt", "yuv420p",
-                "-r", frame_rate, "-fps_mode", "cfr",
-                str(output / "alpha.mkv")], stdin=subprocess.PIPE)
-            frame_bytes = width * height * 3
+            video_codec, alpha_codec, encoder_name = output_codecs(
+                ffmpeg, width, height, args.force_software_encode,
+                args.encoder_preset)
+            decode = source_and_foreground_encoder(ffmpeg, source, output, start,
+                duration, frame_rate, width, height, total, video_codec,
+                process_width, process_height, "bilinear")
+            encode = alpha_encoder(ffmpeg, output, frame_rate, width, height, total,
+                process_width, process_height, alpha_codec, scale="bilinear")
+            frame_bytes = process_width * process_height * 3
 
             def forward_items():
                 for index in range(total):
@@ -681,13 +663,16 @@ def _process_once(args, compile_enabled):
                         return
                     if received != frame_bytes:
                         raise RuntimeError("source decoder returned a partial frame")
-                    yield index, np.frombuffer(value, np.uint8).reshape(height, width, 3)
+                    yield index, np.frombuffer(value, np.uint8).reshape(
+                        process_height, process_width, 3)
 
             def prepare_forward(slot, item):
                 index, frame = item
-                slot.index, slot.frame = index, frame
+                slot.index = index
                 started = time.perf_counter()
-                if (width, height) == (process_width, process_height):
+                needs_resize = (frame.shape[1], frame.shape[0]) != \
+                    (process_width, process_height)
+                if not needs_resize:
                     resized = frame
                 else:
                     resized = resize_array(frame, (process_width, process_height))
@@ -701,7 +686,8 @@ def _process_once(args, compile_enabled):
                 else:
                     slot.preview_frame = frame
                 slot.input_cpu.copy_(torch.from_numpy(resized.copy()))
-                profiler.add("resize", time.perf_counter() - started)
+                profiler.add("resize" if needs_resize else "input_copy",
+                             time.perf_counter() - started)
 
             forward = new_processor()
 
@@ -729,18 +715,10 @@ def _process_once(args, compile_enabled):
                                   else slot.alpha_cpu.numpy())
                 if raw_alpha is not None:
                     raw_alpha[slot.index] = internal_alpha
-                alpha = internal_alpha
-                started = time.perf_counter()
-                if alpha.shape != (height, width):
-                    alpha = resize_array(alpha, (width, height), True)
-                rgba = np.empty((height, width, 4), dtype=np.uint8)
-                rgba[:, :, :3] = slot.frame
-                rgba[:, :, 3] = alpha
-                profiler.add("alpha_upscale_rgba", time.perf_counter() - started)
                 save_preview(slot.preview_frame, internal_alpha,
                              force=slot.index == total - 1)
                 started = time.perf_counter()
-                output_bytes = memoryview(rgba).cast("B")
+                output_bytes = memoryview(internal_alpha).cast("B")
                 while output_bytes:
                     written = encode.stdin.write(output_bytes)
                     if not written:
@@ -757,9 +735,9 @@ def _process_once(args, compile_enabled):
             encode.stdin.close()
             decode.stdout.close()
             if decode.wait() != 0:
-                raise RuntimeError("source normalization failed")
+                raise RuntimeError("source normalization/foreground encoding failed")
             if encode.wait() != 0:
-                raise RuntimeError("FFmpeg output encoding failed")
+                raise RuntimeError("FFmpeg alpha encoding failed")
             profiler.add("encoder_finalize", time.perf_counter() - finalize_started)
         except BaseException:
             if decode is not None:
@@ -809,6 +787,10 @@ def _process_once(args, compile_enabled):
         "detail": args.max_size,
         "resizeBackend": args.resize_backend,
         "precisionMode": args.precision_mode,
+        "encoder": encoder_name,
+        "encoderPreset": args.encoder_preset if encoder_name == "h264_nvenc" else "slow/medium",
+        "sourceResize": "ffmpeg-bilinear",
+        "alphaResize": "ffmpeg-bilinear",
         "selectedFrame": selected_index,
     }, compile_stats)
     emit("complete", 100, "MatAnyone 2 foreground and alpha are ready for preview")
@@ -875,6 +857,8 @@ def main():
     parser.add_argument("--raw-alpha-output", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--force-software-encode", action="store_true",
                         help=argparse.SUPPRESS)
+    parser.add_argument("--encoder-preset", choices=tuple(f"p{i}" for i in range(1, 8)),
+                        default="p5")
     parser.add_argument("--temporary-space-limit-bytes", type=int,
                         help=argparse.SUPPRESS)
     parser.add_argument("--self-test", action="store_true")

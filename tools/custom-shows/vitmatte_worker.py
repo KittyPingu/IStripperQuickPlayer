@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rvm_worker import emit, executable, probe
-from videomama_worker import encoder, write_preview
+from videomama_worker import (alpha_encoder, output_codecs,
+                              source_and_foreground_encoder, write_preview)
 
 MODELS = {
     "s": ("vitmatte-s", "VITMATTE_S_REVISION",
@@ -229,11 +230,12 @@ def process(args):
 
     output.mkdir(parents=True, exist_ok=True)
     ffmpeg = executable("ffmpeg")
-    decode = subprocess.Popen([ffmpeg, "-v", "error", "-ss", f"{start:.6f}",
-        "-i", str(source), "-t", f"{duration:.6f}", "-map", "0:v:0", "-vf",
-        f"fps={frame_rate},scale={width}:{height}:flags=lanczos,setsar=1",
-        "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
-    encode = encoder(ffmpeg, source, output, start, duration, frame_rate, width, height)
+    video_codec, alpha_codec, encoder_name = output_codecs(
+        ffmpeg, width, height, preset=args.encoder_preset)
+    decode = source_and_foreground_encoder(ffmpeg, source, output, start, duration,
+        frame_rate, width, height, len(masks), video_codec)
+    encode = alpha_encoder(ffmpeg, output, frame_rate, width, height, len(masks),
+        width, height, alpha_codec)
     frame_bytes = width * height * 3
     requested_batch = max(1, args.batch_size)
     active_batch = {"size": requested_batch}
@@ -321,7 +323,6 @@ def process(args):
             value = value[written:]
 
     def output_worker():
-        rgba = np.empty((height, width, 4), np.uint8)
         try:
             while not stop.is_set():
                 try:
@@ -347,10 +348,9 @@ def process(args):
                     stage = time.perf_counter()
                     alpha[trimap == 0] = 0
                     alpha[trimap == 255] = 255
-                    rgba[:, :, :3], rgba[:, :, 3] = source_frame, alpha
-                    timings.add("rgbaBuild", time.perf_counter() - stage)
+                    timings.add("alphaConstraint", time.perf_counter() - stage)
                     stage = time.perf_counter()
-                    write_all(rgba)
+                    write_all(alpha)
                     timings.add("encoderWrite", time.perf_counter() - stage)
                     counters["written"] += 1
                     count = counters["written"]
@@ -548,9 +548,9 @@ def process(args):
                 f"source decoding ended after {counters['written']}/{len(masks)} frames")
         encode.stdin.close(); decode.stdout.close()
         if decode.wait() != 0:
-            raise RuntimeError("source normalization failed")
+            raise RuntimeError("source normalization/foreground encoding failed")
         if encode.wait() != 0:
-            raise RuntimeError("FFmpeg output encoding failed")
+            raise RuntimeError("FFmpeg alpha encoding failed")
         if not args.no_preview and last_result["source"] is not None:
             preview_frame(output, last_result["source"], last_result["alpha"], cv2)
         (output / "result.json").write_text(json.dumps({"width": width,
@@ -572,6 +572,8 @@ def process(args):
             "peakVramBytes": peak_vram, "peakRamBytes": peak_ram,
             "temporaryDiskBytes": 0, "timings": timings.summary(),
             "policyKey": policy_key["value"],
+            "encoder": encoder_name,
+            "encoderPreset": args.encoder_preset if encoder_name == "h264_nvenc" else "slow/medium",
             "channelsLast": memory_optimizations["channelsLast"],
             "explicitHalf": memory_optimizations["explicitHalf"]}
         print(json.dumps(profile), file=sys.stderr, flush=True)
@@ -618,6 +620,8 @@ def main():
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int)
     parser.add_argument("--batch-size", type=int, default=3)
+    parser.add_argument("--encoder-preset", choices=tuple(f"p{i}" for i in range(1, 8)),
+                        default="p5")
     parser.add_argument("--compile-cutoff-frames", type=int, default=16000)
     parser.add_argument("--execution-mode", choices=("auto", "eager", "compile"),
                         default="auto")

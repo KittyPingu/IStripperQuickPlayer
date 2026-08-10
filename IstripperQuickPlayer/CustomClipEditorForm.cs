@@ -820,7 +820,20 @@ internal static class CustomSceneDetector
         };
         foreach (string argument in new[]
         {
-            WorkerPath, "--source", source, "--runtime", runtime
+            WorkerPath, "--source", source, "--runtime", runtime,
+            "--batch-size", Math.Clamp(configuration.TransNetPreferredBatchSize, 1, 64)
+                .ToString(CultureInfo.InvariantCulture),
+            "--compile-cutoff-frames", Math.Max(1, configuration.TransNetCompileCutoffFrames)
+                .ToString(CultureInfo.InvariantCulture),
+            "--execution-mode", "auto",
+            "--decode-mode", configuration.TransNetDecodeMode?.ToLowerInvariant() switch
+            {
+                "legacy" => "legacy",
+                "cpu" => "cpu",
+                _ => "auto"
+            },
+            "--profile-log", Path.Combine(configuration.LibraryRoot, ".logs",
+                "transnetv2.ndjson")
         }) start.ArgumentList.Add(argument);
         start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");

@@ -75,6 +75,24 @@ They remain visible in the grid and can be re-enabled manually. Likewise, any
 transition buffer remains editable. Skipped segments are not processed and do
 not become playable clips.
 
+Accurate detection streams bounded 100-frame windows instead of retaining the
+whole decoded source in memory, overlaps FFmpeg decode with inference, and runs
+several windows together. The shipped CUDA default is batch 8. On the development
+RTX 4080, batch 8 measured 357.6 windows/s versus 98.6 at batch 1; batch 16 was
+effectively tied at 357.3 windows/s while using more VRAM. Because decode can then
+become the bottleneck, a larger batch is not automatically faster end to end.
+
+**Custom Shows > Settings > Benchmark TransNetV2...** manually tests batch sizes,
+eager execution, `max-autotune-no-cudagraphs`, CUDA Graph compilation, and decoder
+paths. Compilation is enabled only when cached whole-pipeline throughput improves
+by at least 5% and detected divider frame numbers are identical. Its first run can
+spend substantial time generating a PyTorch compiler cache; later processing
+reuses that cache. Automatic decode is codec-aware: compatible CPU decode is used
+for H.264, while HEVC/H.265, VP9, and AV1 use CUDA-first decode with CPU fallback.
+The optional `fast_bilinear` scaler remains benchmark-only because it shifted four
+divider frames in a 600-second fixture. TensorRT is not used. The benchmark is
+never started automatically.
+
 Each included segment is processed independently. This deliberately resets RVM
 recurrent state, MatAnyone2 state, and SAM2 tracking at scene boundaries.
 
@@ -102,10 +120,11 @@ alpha media retain the source display resolution. Standard 512 px is the default
 If processing exhausts dedicated VRAM or spills heavily into shared memory, use
 384 px or 256 px and reduce the processing batch size.
 
-Batch size defaults to 3. Small values reduce peak memory; large values can
-improve throughput but may become dramatically slower after VRAM exhaustion.
-MatAnyone2 advances recurrently one frame at a time, so batch size does not apply
-to it.
+RVM Quality and Fast default to 12-frame chunks. Small values reduce peak memory;
+large values can improve throughput but may become dramatically slower after
+VRAM exhaustion. ViTMatte and VideoMaMa retain their own smaller recommended
+batch values. MatAnyone2 advances recurrently one frame at a time, so batch size
+does not apply to it.
 
 ## 5. Create and correct SAM2 masks
 
@@ -178,6 +197,25 @@ they exclude source decoding, audio, preview snapshots, and foreground/alpha
 encoding, so complete conversion runs below the table's FPS. RVM Fast may not be
 noticeably faster when those shared pipeline stages are the bottleneck.
 
+RVM now overlaps decode, pinned-memory upload, recurrent inference, asynchronous
+download, preview preparation, and FFmpeg writes in up to three bounded reusable
+slots. The depth shrinks automatically to keep pinned memory below the smaller of
+2 GiB or 12.5% of physical RAM. Preview JPEGs are capped at 960x540 and generated
+by a latest-frame-only worker, so stale previews cannot queue behind inference.
+An OOM halves the inference chunk once and carries the safe size across the rest
+of a multi-clip show.
+
+Use **Custom Shows > Settings > Benchmark RVM...** to measure full 1,000-frame
+1080p and 4K jobs for both RVM models, available chunks, preview overhead, bounded
+versus serial execution, and optional compilation. Compilation ships disabled
+(cutoff 0) and is accepted only after cached end-to-end gains reach 5% at both
+resolutions with equivalent alpha. The global custom-show NVENC effort is `p5`
+by default; `p1` is faster and `p7` spends more encoder effort. It applies to
+RVM, MatAnyone2, ViTMatte, and VideoMaMa. The manual benchmark writes results
+to the form only when **Use results** is chosen, and Settings must then be saved.
+Detailed stage timings and resolved chunk/pipeline/encoder values go only to
+`processing.log`.
+
 A full 1,000-frame 1080p MatAnyone2 conversion at 512 px detail measured 11.19
 FPS in the old serial path and 16.21 FPS in the bounded path with previews on,
 a 31.0% whole-job gain. Turning previews off changed the bounded result only to
@@ -186,6 +224,14 @@ not enabled: its transfer, codec, fallback, and exact-frame-parity costs would
 outweigh the available gain in this pipeline. QuickPlayer instead overlaps
 software decode/resize, sequential recurrent inference, and alpha/preview/encode
 work in three bounded reusable slots.
+
+FFmpeg now shares one normalized source decode between foreground encoding and
+a model-resolution RGB branch for Python inference. Python sends only
+model-resolution grayscale alpha, which FFmpeg scales and encodes. This avoids
+4K RGB pipe traffic, Python input/alpha resizing, RGBA allocation, and roughly
+33 MB of RGBA pipe traffic for every 4K frame. ViTMatte and VideoMaMa use the
+same split foreground/alpha output path; VideoMaMa also receives only its
+model-resolution RGB, while full-resolution ViTMatte retains full-resolution input.
 
 At 4K output the bounded path measured 9.38 FPS without previews. Reusing the
 Standard-detail inference buffers for the capped preview improved preview-on
@@ -238,10 +284,12 @@ the current frame, so refining clicks does not regenerate them.
 
 Practical recommendations:
 
-- Start with 512 px detail and batch size 3.
+- Start RVM at 512 px detail and its 12-frame preferred chunk. Start mask-guided
+  methods at their model-specific saved batch recommendation.
 - Reduce detail to 384 px or 256 px before reducing output resolution; exported
   dimensions remain unchanged.
-- Use batch size 1–3 on 12–16 GB GPUs. Try 4–6 only with clear VRAM headroom.
+- For ViTMatte and VideoMaMa, use batch size 1–3 on 12–16 GB GPUs and try 4–6
+  only with clear VRAM headroom. RVM's OOM recovery reduces its chunk automatically.
 - Avoid VideoMaMa batches of 8–12 on a 16 GB card. A 12-frame, 1024×576 test
   exhausted 16 GB of dedicated VRAM and spilled about 6.5 GB into shared memory,
   making the first batch extremely slow.

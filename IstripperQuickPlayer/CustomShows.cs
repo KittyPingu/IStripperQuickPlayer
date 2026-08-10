@@ -22,6 +22,14 @@ internal sealed class CustomShowConfiguration
     public int LargePlayerVolume { get; set; } = 100;
     public int FullOpacityThreshold { get; set; } = 255;
     public int Sam2FrameCacheSizeGb { get; set; } = 10;
+    public int TransNetPreferredBatchSize { get; set; } = 8;
+    public int TransNetCompileCutoffFrames { get; set; } = 16000;
+    public string TransNetDecodeMode { get; set; } = "auto";
+    public int RvmQualityPreferredChunk { get; set; } = 12;
+    public int RvmFastPreferredChunk { get; set; } = 12;
+    public int RvmQualityCompileCutoffFrames { get; set; }
+    public int RvmFastCompileCutoffFrames { get; set; }
+    public string RvmNvencPreset { get; set; } = "p5";
     public int MatAnyone2CompileCutoffFrames { get; set; } = 16000;
     public int Sam2BasePlusCompileCutoffFrames { get; set; } = 16000;
     public int Sam2SmallCompileCutoffFrames { get; set; } = 16000;
@@ -47,6 +55,18 @@ internal sealed class CustomShowConfiguration
                     File.ReadAllText(FilePath), CustomShowStore.JsonOptions) ?? new();
             if (string.IsNullOrWhiteSpace(configuration.PythonExecutable))
                 configuration.PythonExecutable = FindPythonExecutable();
+            int[] rvmChunks = [1, 2, 3, 4, 6, 8, 12, 16, 24];
+            if (!rvmChunks.Contains(configuration.RvmQualityPreferredChunk))
+                configuration.RvmQualityPreferredChunk = 12;
+            if (!rvmChunks.Contains(configuration.RvmFastPreferredChunk))
+                configuration.RvmFastPreferredChunk = 12;
+            configuration.RvmQualityCompileCutoffFrames = Math.Max(0,
+                configuration.RvmQualityCompileCutoffFrames);
+            configuration.RvmFastCompileCutoffFrames = Math.Max(0,
+                configuration.RvmFastCompileCutoffFrames);
+            if (configuration.RvmNvencPreset is not
+                ("p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7"))
+                configuration.RvmNvencPreset = "p5";
             return configuration;
         }
         catch { return new(); }
@@ -138,6 +158,11 @@ internal sealed class CustomShowProcessing
     public int BatchSize { get; set; } = 3;
     public string? Sam2Model { get; set; }
     public string ExecutionPolicy { get; set; } = "auto";
+    public string? ResolvedExecutionMode { get; set; }
+    public int? EffectiveBatchSize { get; set; }
+    public int? PipelineDepth { get; set; }
+    public string? Encoder { get; set; }
+    public string? EncoderPreset { get; set; }
     public string PrecisionPolicy { get; set; } = "fp16-autocast-fp32-cpu-fallback";
     public int RecurrentRefinementSteps { get; set; }
     public DateTime ProcessedUtc { get; set; } = DateTime.UtcNow;
@@ -211,7 +236,7 @@ internal sealed class CustomShowStore
     static readonly HashSet<string> ProcessingAlgorithms =
         ["quality", "fast", "matanyone2", "videomama", "vitmatte-s", "vitmatte-b"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
-    static readonly HashSet<int> BatchSizeValues = [1, 2, 3, 4, 6, 8, 12];
+    static readonly HashSet<int> BatchSizeValues = [1, 2, 3, 4, 6, 8, 12, 16, 24];
     static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
 
     readonly string root;
@@ -449,6 +474,19 @@ internal sealed class CustomShowStore
         if (processing.ExecutionPolicy != "auto" ||
             string.IsNullOrWhiteSpace(processing.PrecisionPolicy))
             throw new InvalidDataException("Invalid processing execution policy.");
+        if (processing.EffectiveBatchSize is < 1 or > 24)
+            throw new InvalidDataException("Invalid effective processing batch size.");
+        if (processing.PipelineDepth is < 1 or > 3)
+            throw new InvalidDataException("Invalid processing pipeline depth.");
+        if (processing.ResolvedExecutionMode is string mode &&
+            mode is not ("eager" or "compiled" or "eager-fallback"))
+            throw new InvalidDataException("Invalid resolved processing execution mode.");
+        if (processing.Encoder is string encoder &&
+            encoder is not ("h264_nvenc" or "libx264"))
+            throw new InvalidDataException("Invalid processing encoder.");
+        if (processing.EncoderPreset is string encoderPreset &&
+            encoderPreset is not ("p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7" or "slow/medium"))
+            throw new InvalidDataException("Invalid processing encoder preset.");
         if (processing.RecurrentRefinementSteps is < 0 or > 100)
             throw new InvalidDataException("Invalid recurrent-refinement step count.");
         if (processing.ProcessedUtc == default ||
@@ -798,6 +836,11 @@ internal sealed class CustomShowStore
                 Algorithm = "matanyone2", MattingDetailPx = 512,
                 BatchSize = 3, Sam2Model = "small",
                 ExecutionPolicy = "auto",
+                ResolvedExecutionMode = "eager",
+                EffectiveBatchSize = 3,
+                PipelineDepth = 3,
+                Encoder = "libx264",
+                EncoderPreset = "slow/medium",
                 PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
                 RecurrentRefinementSteps = 11,
                 ProcessedUtc = DateTime.UtcNow,
@@ -818,6 +861,11 @@ internal sealed class CustomShowStore
             if (roundTrip.Processing?.Algorithm != "matanyone2" ||
                 roundTrip.Processing.MattingDetailPx != 512 ||
                 roundTrip.Processing.Sam2Model != "small" ||
+                roundTrip.Processing.ResolvedExecutionMode != "eager" ||
+                roundTrip.Processing.EffectiveBatchSize != 3 ||
+                roundTrip.Processing.PipelineDepth != 3 ||
+                roundTrip.Processing.Encoder != "libx264" ||
+                roundTrip.Processing.EncoderPreset != "slow/medium" ||
                 roundTrip.Processing.Clips.Length != 2)
             {
                 Console.Error.WriteLine("Custom processing provenance round-trip failed.");

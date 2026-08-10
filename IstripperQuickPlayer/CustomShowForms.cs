@@ -126,8 +126,8 @@ internal sealed class CustomShowEditorForm : Form
             "Very High (1024 px)", "Full resolution (slowest)"]);
         mattingDetail.SelectedIndex = 2;
         AddRow(table, "Matting detail", mattingDetail);
-        sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12]);
-        sequenceChunk.SelectedItem = 3;
+        sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12, 16, 24]);
+        sequenceChunk.SelectedItem = 12;
         AddRow(table, "Processing batch size", sequenceChunk);
         AddRow(table, "Created using", processingDetails);
         FlowLayoutPanel buttons = Flow(save, cancel);
@@ -148,6 +148,7 @@ internal sealed class CustomShowEditorForm : Form
             editPerformer.Enabled = selectedProfile != null;
         };
         LoadData();
+        UpdateProcessingOptions();
         Color selectedCoverColor = coverTitleColor.BackColor;
         AppTheme.Apply(this);
         coverTitleColor.BackColor = selectedCoverColor;
@@ -173,7 +174,14 @@ internal sealed class CustomShowEditorForm : Form
     void UpdateProcessingOptions()
     {
         string selected = SelectedPreset();
-        if (showId == null && selected is "vitmatte-s" or "vitmatte-b")
+        if (showId == null && selected is "quality" or "fast")
+        {
+            int preferred = selected == "fast" ? configuration.RvmFastPreferredChunk :
+                configuration.RvmQualityPreferredChunk;
+            sequenceChunk.SelectedItem = sequenceChunk.Items.Cast<int>()
+                .OrderBy(value => Math.Abs(value - preferred)).First();
+        }
+        else if (showId == null && selected is "vitmatte-s" or "vitmatte-b")
         {
             int recommended = selected == "vitmatte-b" ?
                 configuration.VitMatteBasePreferredBatchSize :
@@ -272,7 +280,13 @@ internal sealed class CustomShowEditorForm : Form
             $"{value.MattingDetailPx} px";
         string sam2 = value.Sam2Model == null ? "" :
             $"; SAM2 {value.Sam2Model}";
-        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{sam2}\r\n" +
+        string effective = value.EffectiveBatchSize is int batch && batch != value.BatchSize ?
+            $" (effective {batch})" : "";
+        string execution = value.ResolvedExecutionMode == null ? "" :
+            $"; {value.ResolvedExecutionMode}";
+        string encoder = value.Encoder == null ? "" :
+            $"; {value.Encoder} {value.EncoderPreset}";
+        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{effective}{sam2}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -499,7 +513,13 @@ internal sealed class CustomShowEditorForm : Form
                             {
                                 Width = first.Width, Height = first.Height,
                                 FrameRate = first.FrameRate,
-                                DurationMs = showClips[^1].EndMs
+                                DurationMs = showClips[^1].EndMs,
+                                RequestedSequenceChunk = first.RequestedSequenceChunk,
+                                EffectiveSequenceChunk = first.EffectiveSequenceChunk,
+                                ExecutionMode = first.ExecutionMode,
+                                PipelineDepth = first.PipelineDepth,
+                                Encoder = first.Encoder,
+                                EncoderPreset = first.EncoderPreset
                             };
                         }
                         for (int index = 0; index < included.Length; index++)
@@ -589,6 +609,11 @@ internal sealed class CustomShowEditorForm : Form
                         BatchSize = processingBatchSize,
                         Sam2Model = usesSam2 ? selectedSam2Model : null,
                         ExecutionPolicy = "auto",
+                        ResolvedExecutionMode = media.ExecutionMode,
+                        EffectiveBatchSize = media.EffectiveSequenceChunk,
+                        PipelineDepth = media.PipelineDepth,
+                        Encoder = media.Encoder,
+                        EncoderPreset = media.EncoderPreset,
                         PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
                         RecurrentRefinementSteps = selectedPreset == "matanyone2" ? 11 : 0,
                         ProcessedUtc = DateTime.UtcNow,
@@ -1144,6 +1169,19 @@ internal sealed class CustomShowSettingsForm : Form
         Minimum = 0, Maximum = 100, DecimalPlaces = 0, Width = 90
     };
     readonly Label sam2CacheUsage = new() { AutoSize = true };
+    readonly NumericUpDown transNetBatch = new()
+    {
+        Minimum = 1, Maximum = 64, DecimalPlaces = 0, Width = 90
+    };
+    readonly NumericUpDown transNetCutoff = CutoffInput();
+    readonly ComboBox transNetDecode = new() { DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 240 };
+    readonly ComboBox rvmQualityChunk = RvmChunkInput();
+    readonly ComboBox rvmFastChunk = RvmChunkInput();
+    readonly NumericUpDown rvmQualityCutoff = CompileCutoffInput();
+    readonly NumericUpDown rvmFastCutoff = CompileCutoffInput();
+    readonly ComboBox rvmNvencPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 90 };
     readonly NumericUpDown matAnyoneCutoff = CutoffInput();
     readonly NumericUpDown sam2BaseCutoff = CutoffInput();
     readonly NumericUpDown sam2SmallCutoff = CutoffInput();
@@ -1165,6 +1203,14 @@ internal sealed class CustomShowSettingsForm : Form
             LargePlayerVolume = current.LargePlayerVolume,
             FullOpacityThreshold = current.FullOpacityThreshold,
             Sam2FrameCacheSizeGb = current.Sam2FrameCacheSizeGb,
+            TransNetPreferredBatchSize = current.TransNetPreferredBatchSize,
+            TransNetCompileCutoffFrames = current.TransNetCompileCutoffFrames,
+            TransNetDecodeMode = current.TransNetDecodeMode,
+            RvmQualityPreferredChunk = current.RvmQualityPreferredChunk,
+            RvmFastPreferredChunk = current.RvmFastPreferredChunk,
+            RvmQualityCompileCutoffFrames = current.RvmQualityCompileCutoffFrames,
+            RvmFastCompileCutoffFrames = current.RvmFastCompileCutoffFrames,
+            RvmNvencPreset = current.RvmNvencPreset,
             MatAnyone2CompileCutoffFrames = current.MatAnyone2CompileCutoffFrames,
             Sam2BasePlusCompileCutoffFrames = current.Sam2BasePlusCompileCutoffFrames,
             Sam2SmallCompileCutoffFrames = current.Sam2SmallCompileCutoffFrames,
@@ -1174,8 +1220,8 @@ internal sealed class CustomShowSettingsForm : Form
             VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
             VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize
         };
-        Text = "Custom Show Settings"; ClientSize = new Size(920, 740);
-        MinimumSize = new Size(820, 680);
+        Text = "Custom Show Settings"; ClientSize = new Size(920, 940);
+        MinimumSize = new Size(820, 820);
         TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 3,
             Padding = new Padding(12), AutoScroll = true };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); Controls.Add(table);
@@ -1188,6 +1234,35 @@ internal sealed class CustomShowSettingsForm : Form
         Button clearCache = new() { Text = "Clear SAM2 frame cache", AutoSize = true };
         cacheControls.Controls.AddRange([sam2CacheSize, clearCache, sam2CacheUsage]);
         table.Controls.Add(cacheControls, 1, cacheRow); table.SetColumnSpan(cacheControls, 2);
+        AddChoice(table, "TransNetV2 preferred window batch", transNetBatch);
+        AddCutoff(table, "TransNetV2 compile cutoff", transNetCutoff);
+        transNetDecode.Items.AddRange(["Auto (codec-aware, exact-compatible)",
+            "Legacy CUDA-first", "CPU fallback (manual)"]);
+        AddChoice(table, "TransNetV2 decode mode", transNetDecode);
+        Button benchmarkTransNet = new() { Text = "Benchmark TransNetV2...", AutoSize = true };
+        Label transNetHelp = new() { AutoSize = true,
+            Text = "Manual; tests batch, compilation, CUDA graphs, decode speed, and exact divider compatibility." };
+        FlowLayoutPanel transNetActions = new() { AutoSize = true, WrapContents = true };
+        transNetActions.Controls.AddRange([benchmarkTransNet, transNetHelp]);
+        int transNetActionRow = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(transNetActions, 1, transNetActionRow);
+        table.SetColumnSpan(transNetActions, 2);
+        AddChoice(table, "RVM Quality preferred chunk", rvmQualityChunk);
+        AddChoice(table, "RVM Fast preferred chunk", rvmFastChunk);
+        AddChoice(table, "RVM Quality compile cutoff", rvmQualityCutoff);
+        AddChoice(table, "RVM Fast compile cutoff", rvmFastCutoff);
+        rvmNvencPreset.Items.AddRange(["p1", "p2", "p3", "p4", "p5", "p6", "p7"]);
+        AddChoice(table, "Custom show NVENC preset", rvmNvencPreset);
+        Button benchmarkRvm = new() { Text = "Benchmark RVM...", AutoSize = true };
+        Label rvmHelp = new() { AutoSize = true,
+            Text = "Manual; tests Quality/Fast chunks, bounded pipeline, previews, and optional compilation." };
+        FlowLayoutPanel rvmActions = new() { AutoSize = true, WrapContents = true };
+        rvmActions.Controls.AddRange([benchmarkRvm, rvmHelp]);
+        int rvmActionRow = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(rvmActions, 1, rvmActionRow);
+        table.SetColumnSpan(rvmActions, 2);
         AddCutoff(table, "MatAnyone2 compile cutoff", matAnyoneCutoff);
         AddCutoff(table, "SAM2 Base+ compile cutoff", sam2BaseCutoff);
         AddCutoff(table, "SAM2 Small compile cutoff", sam2SmallCutoff);
@@ -1218,6 +1293,15 @@ internal sealed class CustomShowSettingsForm : Form
         table.Controls.Add(buttons, 1, buttonRow); table.SetColumnSpan(buttons, 2);
         root.Text = Configuration.LibraryRoot; python.Text = Configuration.PythonExecutable;
         sam2CacheSize.Value = Math.Clamp(Configuration.Sam2FrameCacheSizeGb, 0, 100);
+        transNetBatch.Value = Math.Clamp(Configuration.TransNetPreferredBatchSize, 1, 64);
+        transNetCutoff.Value = ClampCutoff(Configuration.TransNetCompileCutoffFrames);
+        transNetDecode.SelectedIndex = DecodeModeIndex(Configuration.TransNetDecodeMode);
+        rvmQualityChunk.SelectedItem = ClosestRvmChunk(Configuration.RvmQualityPreferredChunk);
+        rvmFastChunk.SelectedItem = ClosestRvmChunk(Configuration.RvmFastPreferredChunk);
+        rvmQualityCutoff.Value = ClampCompileCutoff(Configuration.RvmQualityCompileCutoffFrames);
+        rvmFastCutoff.Value = ClampCompileCutoff(Configuration.RvmFastCompileCutoffFrames);
+        rvmNvencPreset.SelectedItem = CustomShowProcessor.ValidNvencPreset(
+            Configuration.RvmNvencPreset);
         matAnyoneCutoff.Value = ClampCutoff(Configuration.MatAnyone2CompileCutoffFrames);
         sam2BaseCutoff.Value = ClampCutoff(Configuration.Sam2BasePlusCompileCutoffFrames);
         sam2SmallCutoff.Value = ClampCutoff(Configuration.Sam2SmallCompileCutoffFrames);
@@ -1229,6 +1313,8 @@ internal sealed class CustomShowSettingsForm : Form
         sam2CacheUsage.Text = "Calculating usage...";
         Shown += async (_, _) => await UpdateCacheUsageAsync();
         clearCache.Click += async (_, _) => await ClearSam2CacheAsync(clearCache);
+        benchmarkTransNet.Click += (_, _) => BenchmarkTransNet();
+        benchmarkRvm.Click += (_, _) => BenchmarkRvm();
         benchmark.Click += (_, _) => BenchmarkCutoffs();
         validate.Click += async (_, _) => await ValidateSetup(validate);
         ok.Click += SaveSettings;
@@ -1266,6 +1352,14 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.LibraryRoot = Path.GetFullPath(root.Text);
             Configuration.PythonExecutable = Path.GetFullPath(python.Text);
             Configuration.Sam2FrameCacheSizeGb = (int)sam2CacheSize.Value;
+            Configuration.TransNetPreferredBatchSize = (int)transNetBatch.Value;
+            Configuration.TransNetCompileCutoffFrames = (int)transNetCutoff.Value;
+            Configuration.TransNetDecodeMode = DecodeModeValue(transNetDecode.SelectedIndex);
+            Configuration.RvmQualityPreferredChunk = RvmChunkValue(rvmQualityChunk);
+            Configuration.RvmFastPreferredChunk = RvmChunkValue(rvmFastChunk);
+            Configuration.RvmQualityCompileCutoffFrames = (int)rvmQualityCutoff.Value;
+            Configuration.RvmFastCompileCutoffFrames = (int)rvmFastCutoff.Value;
+            Configuration.RvmNvencPreset = rvmNvencPreset.SelectedItem?.ToString() ?? "p5";
             Configuration.MatAnyone2CompileCutoffFrames = (int)matAnyoneCutoff.Value;
             Configuration.Sam2BasePlusCompileCutoffFrames = (int)sam2BaseCutoff.Value;
             Configuration.Sam2SmallCompileCutoffFrames = (int)sam2SmallCutoff.Value;
@@ -1324,6 +1418,84 @@ internal sealed class CustomShowSettingsForm : Form
         validation.Text = "Benchmark completed; review the recalculated cutoffs and click OK to save them.";
     }
 
+    void BenchmarkTransNet()
+    {
+        if (!File.Exists(python.Text))
+        {
+            MessageBox.Show(this, "Select the processing-environment Python executable first.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (MessageBox.Show(this,
+            "This benchmark runs TransNetV2 batch, compilation, CUDA-graph, and decoder tests. " +
+            "It uses the GPU heavily, may perform one-time compilation, and changes no settings " +
+            "until you accept its results.\n\nRun it now?",
+            "Benchmark TransNetV2", MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information) != DialogResult.Yes) return;
+        CustomShowConfiguration benchmarkConfiguration = new()
+        {
+            LibraryRoot = root.Text,
+            PythonExecutable = python.Text,
+            TransNetPreferredBatchSize = (int)transNetBatch.Value,
+            TransNetCompileCutoffFrames = (int)transNetCutoff.Value,
+            TransNetDecodeMode = DecodeModeValue(transNetDecode.SelectedIndex)
+        };
+        using CustomShowTransNetBenchmarkForm form = new(benchmarkConfiguration);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
+        transNetBatch.Value = Math.Clamp(form.Result.TransNetPreferredBatchSize, 1, 64);
+        transNetCutoff.Value = ClampCutoff(form.Result.TransNetCompileCutoffFrames);
+        transNetDecode.SelectedIndex = DecodeModeIndex(form.Result.TransNetDecodeMode);
+        validation.Text = "TransNetV2 benchmark completed; review the values and click OK to save them.";
+    }
+
+    void BenchmarkRvm()
+    {
+        if (!File.Exists(python.Text))
+        {
+            MessageBox.Show(this, "Select the processing-environment Python executable first.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (MessageBox.Show(this,
+            "This benchmark generates 1080p and 4K fixtures and tests both RVM models, " +
+            "chunk sizes, the bounded pipeline, previews, and compilation. It uses the GPU " +
+            "heavily and can take a long time. Settings are unchanged until you accept the results.\n\nRun it now?",
+            "Benchmark RVM", MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information) != DialogResult.Yes) return;
+        CustomShowConfiguration benchmarkConfiguration = new()
+        {
+            LibraryRoot = root.Text,
+            PythonExecutable = python.Text,
+            RvmQualityPreferredChunk = RvmChunkValue(rvmQualityChunk),
+            RvmFastPreferredChunk = RvmChunkValue(rvmFastChunk),
+            RvmQualityCompileCutoffFrames = (int)rvmQualityCutoff.Value,
+            RvmFastCompileCutoffFrames = (int)rvmFastCutoff.Value,
+            RvmNvencPreset = rvmNvencPreset.SelectedItem?.ToString() ?? "p5"
+        };
+        using CustomShowRvmBenchmarkForm form = new(benchmarkConfiguration);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
+        rvmQualityChunk.SelectedItem = ClosestRvmChunk(form.Result.RvmQualityPreferredChunk);
+        rvmFastChunk.SelectedItem = ClosestRvmChunk(form.Result.RvmFastPreferredChunk);
+        rvmQualityCutoff.Value = ClampCompileCutoff(
+            form.Result.RvmQualityCompileCutoffFrames);
+        rvmFastCutoff.Value = ClampCompileCutoff(form.Result.RvmFastCompileCutoffFrames);
+        validation.Text = "RVM benchmark completed; review the values and click OK to save them.";
+    }
+
+    static int DecodeModeIndex(string? value) => value?.ToLowerInvariant() switch
+    {
+        "legacy" => 1,
+        "cpu" => 2,
+        _ => 0
+    };
+
+    static string DecodeModeValue(int index) => index switch
+    {
+        1 => "legacy",
+        2 => "cpu",
+        _ => "auto"
+    };
+
     static NumericUpDown CutoffInput() => new()
     {
         Minimum = 1, Maximum = 10_000_000, Increment = 1000,
@@ -1331,6 +1503,27 @@ internal sealed class CustomShowSettingsForm : Form
     };
 
     static decimal ClampCutoff(int value) => Math.Clamp(value, 1, 10_000_000);
+
+    static NumericUpDown CompileCutoffInput() => new()
+    {
+        Minimum = 0, Maximum = 10_000_000, Increment = 1000,
+        ThousandsSeparator = true, Width = 130
+    };
+
+    static decimal ClampCompileCutoff(int value) => Math.Clamp(value, 0, 10_000_000);
+
+    static readonly int[] RvmChunks = [1, 2, 3, 4, 6, 8, 12, 16, 24];
+
+    static ComboBox RvmChunkInput()
+    {
+        ComboBox input = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
+        input.Items.AddRange(RvmChunks.Cast<object>().ToArray());
+        return input;
+    }
+
+    static int ClosestRvmChunk(int value) => RvmChunks.MinBy(chunk => Math.Abs(chunk - value));
+
+    static int RvmChunkValue(ComboBox input) => input.SelectedItem is int value ? value : 12;
 
     static NumericUpDown BatchInput() => new()
     {
@@ -1353,6 +1546,15 @@ internal sealed class CustomShowSettingsForm : Form
         int row = table.RowCount++;
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         table.Controls.Add(new Label { Text = label + " (frames)", AutoSize = true,
+            Anchor = AnchorStyles.Left }, 0, row);
+        table.Controls.Add(input, 1, row);
+    }
+
+    static void AddChoice(TableLayoutPanel table, string label, Control input)
+    {
+        int row = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label { Text = label, AutoSize = true,
             Anchor = AnchorStyles.Left }, 0, row);
         table.Controls.Add(input, 1, row);
     }
@@ -1475,6 +1677,208 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
                 await File.ReadAllTextAsync(resultPath), CustomShowStore.JsonOptions) ??
                 throw new InvalidDataException("The benchmark did not return cutoff values.");
             Append("Benchmark completed. The measured values will be copied into Settings.");
+        }
+        catch (Exception error)
+        {
+            if (!IsDisposed) Append("Benchmark failed: " + error.Message);
+        }
+        finally
+        {
+            complete = true;
+            if (!IsDisposed) close.Text = Result == null ? "Close" : "Use results";
+            try { File.Delete(resultPath); } catch { }
+        }
+    }
+
+    async Task PumpAsync(StreamReader reader)
+    {
+        while (await reader.ReadLineAsync() is string line) Append(line);
+    }
+
+    void Append(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
+        output.AppendText(text + Environment.NewLine);
+    }
+
+    void CloseBenchmark()
+    {
+        if (!complete)
+        {
+            try { process?.Kill(true); } catch { }
+            DialogResult = DialogResult.Cancel;
+        }
+        else if (Result != null) DialogResult = DialogResult.OK;
+        Close();
+    }
+}
+
+internal sealed class CustomShowRvmBenchmarkForm : Form
+{
+    readonly CustomShowConfiguration configuration;
+    readonly TextBox output = new()
+    {
+        Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Both, WordWrap = false
+    };
+    readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
+    Process? process;
+    bool complete;
+    internal CustomShowConfiguration? Result { get; private set; }
+
+    internal CustomShowRvmBenchmarkForm(CustomShowConfiguration configuration)
+    {
+        this.configuration = configuration;
+        Text = "Benchmark RVM";
+        ClientSize = new Size(920, 560);
+        Controls.Add(output); Controls.Add(close);
+        close.Click += (_, _) => CloseBenchmark();
+        FormClosing += (_, _) => { if (!complete) try { process?.Kill(true); } catch { } };
+        Shown += async (_, _) => await RunAsync();
+        AppTheme.Apply(this);
+    }
+
+    async Task RunAsync()
+    {
+        string resultPath = Path.Combine(Path.GetTempPath(),
+            "iqp-rvm-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            Append("Preparing full-pipeline RVM benchmarks. Settings are not changed until you use the results.");
+            Append("Compilation can incur a one-time PyTorch compiler cost; later jobs reuse its cache.");
+            ProcessStartInfo start = new(configuration.PythonExecutable)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            foreach (string argument in new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "custom-shows", "benchmark_rvm.py"),
+                "--runtime", CustomShowProcessor.RuntimeRoot(configuration),
+                "--worker", Path.Combine(AppContext.BaseDirectory, "custom-shows", "rvm_worker.py"),
+                "--ffmpeg", Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"),
+                "--ffprobe", Path.Combine(AppContext.BaseDirectory, "ffprobe.exe"),
+                "--output", resultPath,
+                "--quality-chunk-default", configuration.RvmQualityPreferredChunk.ToString(),
+                "--fast-chunk-default", configuration.RvmFastPreferredChunk.ToString(),
+                "--quality-cutoff-default", configuration.RvmQualityCompileCutoffFrames.ToString(),
+                "--fast-cutoff-default", configuration.RvmFastCompileCutoffFrames.ToString(),
+                "--encoder-preset", CustomShowProcessor.ValidNvencPreset(
+                    configuration.RvmNvencPreset)
+            }) start.ArgumentList.Add(argument);
+            process = Process.Start(start) ??
+                throw new InvalidOperationException("Python could not start the RVM benchmark.");
+            Task standardOutput = PumpAsync(process.StandardOutput);
+            Task standardError = PumpAsync(process.StandardError);
+            await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"RVM benchmark failed with exit code {process.ExitCode}.");
+            Result = JsonSerializer.Deserialize<CustomShowConfiguration>(
+                await File.ReadAllTextAsync(resultPath), CustomShowStore.JsonOptions) ??
+                throw new InvalidDataException("The benchmark did not return RVM settings.");
+            Append("Benchmark completed. Review the measured settings before saving them.");
+        }
+        catch (Exception error)
+        {
+            if (!IsDisposed) Append("Benchmark failed: " + error.Message);
+        }
+        finally
+        {
+            complete = true;
+            if (!IsDisposed) close.Text = Result == null ? "Close" : "Use results";
+            try { File.Delete(resultPath); } catch { }
+        }
+    }
+
+    async Task PumpAsync(StreamReader reader)
+    {
+        while (await reader.ReadLineAsync() is string line) Append(line);
+    }
+
+    void Append(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
+        output.AppendText(text + Environment.NewLine);
+    }
+
+    void CloseBenchmark()
+    {
+        if (!complete)
+        {
+            try { process?.Kill(true); } catch { }
+            DialogResult = DialogResult.Cancel;
+        }
+        else if (Result != null) DialogResult = DialogResult.OK;
+        Close();
+    }
+}
+
+internal sealed class CustomShowTransNetBenchmarkForm : Form
+{
+    readonly CustomShowConfiguration configuration;
+    readonly TextBox output = new()
+    {
+        Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Both, WordWrap = false
+    };
+    readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
+    Process? process;
+    bool complete;
+    internal CustomShowConfiguration? Result { get; private set; }
+
+    internal CustomShowTransNetBenchmarkForm(CustomShowConfiguration configuration)
+    {
+        this.configuration = configuration;
+        Text = "Benchmark TransNetV2";
+        ClientSize = new Size(920, 560);
+        Controls.Add(output); Controls.Add(close);
+        close.Click += (_, _) => CloseBenchmark();
+        FormClosing += (_, _) => { if (!complete) try { process?.Kill(true); } catch { } };
+        Shown += async (_, _) => await RunAsync();
+        AppTheme.Apply(this);
+    }
+
+    async Task RunAsync()
+    {
+        string resultPath = Path.Combine(Path.GetTempPath(),
+            "iqp-transnetv2-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            Append("Preparing TransNetV2 benchmarks. QuickPlayer settings are not changed until you use the results.");
+            Append("Compilation tests can incur a one-time PyTorch compiler cost; cached later runs do not repeat it.");
+            ProcessStartInfo start = new(configuration.PythonExecutable)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            foreach (string argument in new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "custom-shows", "benchmark_transnetv2.py"),
+                "--runtime", CustomShowProcessor.RuntimeRoot(configuration),
+                "--worker", Path.Combine(AppContext.BaseDirectory, "custom-shows", "transnetv2_worker.py"),
+                "--ffmpeg", Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"),
+                "--ffprobe", Path.Combine(AppContext.BaseDirectory, "ffprobe.exe"),
+                "--output", resultPath,
+                "--batch-default", configuration.TransNetPreferredBatchSize.ToString(),
+                "--cutoff-default", configuration.TransNetCompileCutoffFrames.ToString()
+            }) start.ArgumentList.Add(argument);
+            process = Process.Start(start) ??
+                throw new InvalidOperationException("Python could not start the TransNetV2 benchmark.");
+            Task standardOutput = PumpAsync(process.StandardOutput);
+            Task standardError = PumpAsync(process.StandardError);
+            await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"TransNetV2 benchmark failed with exit code {process.ExitCode}.");
+            Result = JsonSerializer.Deserialize<CustomShowConfiguration>(
+                await File.ReadAllTextAsync(resultPath), CustomShowStore.JsonOptions) ??
+                throw new InvalidDataException("The benchmark did not return settings.");
+            Append("Benchmark completed. Review the measured settings before saving them.");
         }
         catch (Exception error)
         {

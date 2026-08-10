@@ -160,7 +160,45 @@ processed independently into its own foreground/alpha pair. This resets RVM or
 MatAnyone2 recurrent state and VideoMaMa/SAM2 tracking at every clip boundary; skipped segments are not
 processed.
 
-The **Quality** preset uses RVM ResNet50 and is the default. **Fast** uses MobileNetV3. QuickPlayer normalizes display rotation, variable frame rate, square pixels, and odd dimensions while FFmpeg streams frames to RVM. RVM then streams RGBA into one FFmpeg encoder process:
+TransNetV2 detection uses a bounded streaming pipeline rather than decoding the
+complete source into RAM. It preserves the original 100-frame window, 50-frame
+stride, 25-frame padding, raw-logit threshold, peak selection, and divider-frame
+semantics while overlapping FFmpeg decode, pinned-memory upload, and batched
+inference. The shipped CUDA batch is 8. On the RTX 4080 development machine, the
+fixed-window FP16 sweep measured 98.6 windows/s at batch 1, 348.4 at batch 4,
+357.6 at batch 8, and 357.3 at batch 16; batch 8 was selected because it matched
+peak throughput with less VRAM. A 300-second decode test measured 6.09 seconds for
+the compatible CPU scaler, 4.57 seconds for fast-bilinear CPU scaling, and 8.56
+seconds for the existing NVDEC path, but fast-bilinear shifted four dividers by
+one frame in the 600-second compatibility fixture. It therefore remains
+benchmark-only.
+
+Codec-specific 1080p tests found CUDA-first decode faster for HEVC/H.265
+(1.60 versus 3.03 seconds), AV1 (2.30 versus 11.10 seconds), and VP9 (1.85 versus
+2.24 seconds). CPU decode was substantially faster for the real H.264 test
+(42.41 versus 63.60 seconds), with identical divider frames on two real sources.
+Auto consequently uses compatible CPU decode for H.264 and CUDA-first decode for
+HEVC, AV1, and VP9. CUDA failure still restarts on compatible CPU decode.
+
+Custom Show Settings exposes the preferred TransNetV2 window batch, compilation
+cutoff, and decode policy. **Benchmark TransNetV2...** is an explicit, cancellable
+GPU-heavy test; QuickPlayer never runs it during setup or normal detection. It
+benchmarks eager, `max-autotune-no-cudagraphs`, and CUDA-Graph `max-autotune`,
+records the one-time compilation cost and cached throughput, checks exact divider
+frames, and writes `<runtime>\transnetv2-performance-policy-v1.json` atomically.
+A compiled mode is used only after at least 5% projected whole-pipeline gain and
+after its measured break-even frame count. A compiler failure falls back to eager.
+Manual benchmark results can override the codec-specific choice only after the
+fixture returns identical divider frames. Detailed normal runs append to
+`<custom-library>\.logs\transnetv2.ndjson`. TensorRT remains deferred and is not
+installed or used.
+
+The **Quality** preset uses RVM ResNet50 and is the default. **Fast** uses
+MobileNetV3. QuickPlayer normalizes display rotation, variable frame rate, square
+pixels, and odd dimensions while a bounded pipeline overlaps FFmpeg decoding,
+pinned-memory transfers, recurrent RVM inference, output transfers, preview
+generation, and FFmpeg encoding. Published frames remain strictly ordered and
+each included clip starts with fresh recurrent state.
 
 The optional **MatAnyone 2** algorithm opens an initial-mask editor for every
 included clip before processing. Play, scrub, use 0.25x slow motion, or step a
@@ -331,18 +369,56 @@ foreground or alpha output. RVM's official HD baseline is
 approximately 480 px internally (`downsample_ratio=0.25` at 1920 px wide).
 
 QuickPlayer processes configurable temporal chunks through RVM while retaining
-recurrent state. The default is 3 frames, with 1, 2, 3, 4, 6, 8, and 12 available
-in the creation form. If a chunk exceeds GPU memory, it is retried automatically
-as smaller sequential chunks without restarting the show.
+recurrent state. Quality and Fast each default to 12 frames, following the
+official RVM conversion guidance. Values 1, 2, 3, 4, 6, 8, 12, 16, and 24 are
+available. If a chunk exceeds GPU memory, QuickPlayer halves it and remembers the
+successful size for every remaining chunk and clip in that job instead of
+repeatedly retrying the oversized allocation.
 The same batch selector controls ViTMatte inference and VideoMaMa groups.
+
+### RVM pipeline performance
+
+RVM uses up to three reusable slots with queues limited to two items. The slot
+count is reduced automatically so pinned input/output memory stays below the
+smaller of 2 GiB or 12.5% of physical RAM. CUDA uploads and downloads use
+dedicated streams and events; source previews come from the decoded CPU buffer,
+and a latest-frame-only worker creates previews no more than twice per second at
+up to 960x540. A final preview is drained before review begins. CPU and FP32
+fallbacks use the same ordered pipeline.
+
+**Custom Shows > Settings** stores separate preferred chunks for Quality and
+Fast and a global custom-show NVENC effort preset from `p1` (fastest) through
+`p7` (most encoding effort); `p5` is the default. It applies to RVM, MatAnyone2,
+ViTMatte, and VideoMaMa. The existing CQ values are unchanged, and libx264
+remains the automatic fallback when NVENC is unavailable. Use
+**Benchmark RVM...** to run the cancellable 1,000-frame 1080p/4K full-pipeline
+sweep. Results are copied into the form only after **Use results**, and the
+Settings dialog must still be accepted to save them.
+
+RVM compilation is disabled by default (cutoff 0). The manual benchmark tests
+cached `max-autotune-no-cudagraphs` at Standard 512 px detail and accepts it only
+when both resolutions improve by at least 5%, no tested case regresses by more
+than 2%, and alpha remains equivalent. Automatic use also requires the included
+frame count to exceed the measured break-even point by 20%. The first recurrent
+chunk and final partial chunk stay eager. One-time compiler artefacts live under
+`<runtime>\torchinductor-rvm`; a compiler or runtime failure falls back to eager.
+
+Detailed `PROFILE` records in `processing.log` cover model/compile time,
+decode/read and queue waits, H2D, inference, D2H, encoder blocking, preview work,
+total FPS, RAM, pinned memory, peak VRAM, effective chunk, pipeline depth,
+encoder, and NVENC preset. These diagnostics do not add traffic to the processing
+dialog.
 
 ### MatAnyone2 pipeline performance
 
 MatAnyone2's recurrent inference is necessarily sequential, but QuickPlayer
 overlaps the work around it. A three-slot bounded pipeline reads and resizes the
 next source frame while the GPU propagates the current matte and an output worker
-downloads/upscales alpha, creates RGBA, updates the preview, and writes the
-previous frame to FFmpeg. Input and output queues are limited to two entries, so
+downloads alpha, updates the preview, and writes the previous low-resolution
+grayscale mask to FFmpeg. FFmpeg shares the normalized source decode with
+foreground encoding, sends a model-resolution RGB branch to Python, and scales
+alpha to the published resolution. Python no longer reads 4K RGB merely to
+downscale it or creates and pipes a full-resolution RGBA frame. Input and output queues are limited to two entries, so
 long clips do not accumulate frames in RAM or VRAM and output order remains
 strictly chronological. Middle-frame propagation stores backward alpha in one
 preallocated temporary memory-mapped array instead of thousands of PNG files.
@@ -366,6 +442,14 @@ preview-on throughput to 8.88 FPS (112.6 seconds for 1,000 frames), a further 6.
 whole-job gain, while leaving inference and published media unchanged. A 4K
 midpoint-mask run measured 7.03 FPS before this preview-only refinement and used
 about 253 MB of temporary alpha mapping.
+
+A focused 100-frame 4K validation of the split FFmpeg path reduced median source
+delivery from 43.99 ms to 0.77 ms and the Python resize/copy from 40.49 ms to
+0.66 ms. The active section improved from approximately 9.2 to 17.6 FPS including
+pipeline ramp and previews; recurrent inference then became the limiting stage
+at a 37.07 ms median. Decoded foreground was pixel-identical (SSIM 1.0), while
+decoded alpha measured 0.999984 luma SSIM and 65.84 dB luma PSNR against the
+former Pillow-input path.
 
 The development worker also tested OpenCV resizing, explicit `model.half()`, and
 partial `torch.compile` of MatAnyone2's fixed-shape image-feature modules. OpenCV

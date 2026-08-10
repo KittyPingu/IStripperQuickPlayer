@@ -15,6 +15,12 @@ internal sealed class CustomShowProcessResult
     public int Height { get; set; }
     public string FrameRate { get; set; } = "";
     public long DurationMs { get; set; }
+    public int? RequestedSequenceChunk { get; set; }
+    public int? EffectiveSequenceChunk { get; set; }
+    public string? ExecutionMode { get; set; }
+    public int? PipelineDepth { get; set; }
+    public string? Encoder { get; set; }
+    public string? EncoderPreset { get; set; }
 }
 
 internal sealed record CustomShowProcessJob(string Output, long StartMs, long EndMs);
@@ -229,10 +235,19 @@ internal static class CustomShowProcessor
         }
         else
         {
+            int preferredChunk = preset == "fast" ?
+                configuration.RvmFastPreferredChunk :
+                configuration.RvmQualityPreferredChunk;
+            int compileCutoff = preset == "fast" ?
+                configuration.RvmFastCompileCutoffFrames :
+                configuration.RvmQualityCompileCutoffFrames;
+            if (mattingResolution != 512 || sequenceChunk != preferredChunk)
+                compileCutoff = 0;
             foreach (string argument in new[]
             {
                 "--preset", preset, "--matting-resolution", mattingResolution.ToString(),
-                "--sequence-chunk", Math.Clamp(sequenceChunk, 1, 24).ToString()
+                "--sequence-chunk", Math.Clamp(sequenceChunk, 1, 24).ToString(),
+                "--compile-cutoff-frames", Math.Max(0, compileCutoff).ToString()
             }) start.ArgumentList.Add(argument);
             if (jobs != null)
                 foreach (CustomShowProcessJob job in jobs)
@@ -246,6 +261,8 @@ internal static class CustomShowProcessor
                     }));
                 }
         }
+        start.ArgumentList.Add("--encoder-preset");
+        start.ArgumentList.Add(ValidNvencPreset(configuration.RvmNvencPreset));
         if (jobs == null)
         {
             start.ArgumentList.Add("--start-ms");
@@ -297,8 +314,7 @@ internal static class CustomShowProcessor
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
                     $"Foreground processing failed (exit code {process.ExitCode}). See processing.log.");
-            string resultPath = Path.Combine(jobs?.FirstOrDefault()?.Output ??
-                stagingFolder, "result.json");
+            string resultPath = Path.Combine(stagingFolder, "result.json");
             return JsonSerializer.Deserialize<CustomShowProcessResult>(
                 await File.ReadAllTextAsync(resultPath, cancellationToken),
                 CustomShowStore.JsonOptions) ??
@@ -318,6 +334,9 @@ internal static class CustomShowProcessor
                 try { File.Delete(Path.Combine(stagingFolder, preview)); } catch { }
         }
     }
+
+    internal static string ValidNvencPreset(string? value) => value is
+        "p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7" ? value : "p5";
 
     internal static async Task GenerateCoverAsync(string source, string destination,
         long durationMs, string modelName, string showTitle, Color titleColor,
