@@ -26,6 +26,10 @@ internal sealed class CustomShowConfiguration
     public int Sam2BasePlusCompileCutoffFrames { get; set; } = 16000;
     public int Sam2SmallCompileCutoffFrames { get; set; } = 16000;
     public int Sam2TinyCompileCutoffFrames { get; set; } = 16000;
+    public int VitMatteSmallCompileCutoffFrames { get; set; } = 16000;
+    public int VitMatteBaseCompileCutoffFrames { get; set; } = 16000;
+    public int VitMatteSmallPreferredBatchSize { get; set; } = 2;
+    public int VitMatteBasePreferredBatchSize { get; set; } = 1;
 
     internal int Sam2CompileCutoffFrames(string model) => model switch
     {

@@ -221,6 +221,10 @@ internal static class CustomShowProcessor
             {
                 start.ArgumentList.Add("--model");
                 start.ArgumentList.Add(preset[^1..]);
+                start.ArgumentList.Add("--compile-cutoff-frames");
+                start.ArgumentList.Add(Math.Max(1, preset.EndsWith("-b",
+                    StringComparison.Ordinal) ? configuration.VitMatteBaseCompileCutoffFrames :
+                    configuration.VitMatteSmallCompileCutoffFrames).ToString());
             }
         }
         else

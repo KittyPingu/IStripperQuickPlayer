@@ -111,30 +111,80 @@ def sam_cutoffs(args, source, mask, work, defaults):
     return defaults
 
 
+def vitmatte_cutoffs(args, source, mask, work, defaults, batches):
+    installed = []
+    for model, marker, folder in (("s", "VITMATTE_S_REVISION", "vitmatte-s"),
+                                  ("b", "VITMATTE_B_REVISION", "vitmatte-b")):
+        if (args.runtime / marker).is_file() and (args.runtime / folder).is_dir():
+            installed.append(model)
+    if not installed:
+        say("ViTMatte is not installed; retaining the current ViTMatte cutoffs.")
+        return defaults, batches
+    benchmark = Path(__file__).with_name("benchmark_vitmatte.py")
+    report = work / "vitmatte-report.json"
+    run([sys.executable, str(benchmark), "--runtime", str(args.runtime),
+        "--worker", str(args.vitmatte_worker), "--ffmpeg", str(args.ffmpeg),
+        "--ffprobe", str(args.ffprobe), "--source", str(source), "--mask", str(mask),
+        "--models", *installed, "--frames", "300", "--runs", "2",
+        "--report", str(report)],
+        "Benchmarking installed ViTMatte models, batch sizes, and compilation...")
+    values = json.loads(report.read_text(encoding="utf-8"))
+    for result in values.get("results", []):
+        model = result.get("model")
+        if model not in defaults:
+            continue
+        batches[model] = max(1, min(12,
+            int(result.get("batchSize", batches[model]))))
+        say(f"Measured ViTMatte-{model.upper()} preferred batch: {batches[model]}")
+        if not result.get("compiledEnabled"):
+            say(f"ViTMatte-{model.upper()} compilation did not pass its gate; "
+                "retaining the current cutoff.")
+            continue
+        defaults[model] = max(1, int(result.get("breakEvenFrames", defaults[model])))
+        say(f"Measured ViTMatte-{model.upper()} compile cutoff: "
+            f"{defaults[model]:,} frames")
+    return defaults, batches
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--ffmpeg", type=Path, required=True)
     parser.add_argument("--ffprobe", type=Path, required=True)
     parser.add_argument("--sam-worker", type=Path, required=True)
+    parser.add_argument("--vitmatte-worker", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--matanyone-default", type=int, default=16000)
     parser.add_argument("--sam-base-default", type=int, default=16000)
     parser.add_argument("--sam-small-default", type=int, default=16000)
     parser.add_argument("--sam-tiny-default", type=int, default=16000)
+    parser.add_argument("--vitmatte-small-default", type=int, default=16000)
+    parser.add_argument("--vitmatte-base-default", type=int, default=16000)
+    parser.add_argument("--vitmatte-small-batch-default", type=int, default=2)
+    parser.add_argument("--vitmatte-base-batch-default", type=int, default=1)
     args = parser.parse_args()
     args.runtime = args.runtime.resolve()
     defaults = {"base-plus": args.sam_base_default,
                 "small": args.sam_small_default, "tiny": args.sam_tiny_default}
+    vitmatte_defaults = {"s": args.vitmatte_small_default,
+                         "b": args.vitmatte_base_default}
+    vitmatte_batches = {"s": args.vitmatte_small_batch_default,
+                        "b": args.vitmatte_base_batch_default}
     with tempfile.TemporaryDirectory(prefix="iqp-cutoff-benchmark-") as value:
         work = Path(value)
         source, mask = make_fixture(args.ffmpeg.resolve(), work / "fixture")
         matanyone = matanyone_cutoff(args, source, mask, work)
         defaults = sam_cutoffs(args, source, mask, work, defaults)
+        vitmatte_defaults, vitmatte_batches = vitmatte_cutoffs(
+            args, source, mask, work, vitmatte_defaults, vitmatte_batches)
     result = {"matAnyone2CompileCutoffFrames": matanyone,
         "sam2BasePlusCompileCutoffFrames": defaults["base-plus"],
         "sam2SmallCompileCutoffFrames": defaults["small"],
-        "sam2TinyCompileCutoffFrames": defaults["tiny"]}
+        "sam2TinyCompileCutoffFrames": defaults["tiny"],
+        "vitMatteSmallCompileCutoffFrames": vitmatte_defaults["s"],
+        "vitMatteBaseCompileCutoffFrames": vitmatte_defaults["b"],
+        "vitMatteSmallPreferredBatchSize": vitmatte_batches["s"],
+        "vitMatteBasePreferredBatchSize": vitmatte_batches["b"]}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
     temporary.write_text(json.dumps(result, indent=2), encoding="utf-8")

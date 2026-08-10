@@ -231,14 +231,25 @@ invalidates the attempted choice and falls back to eager. The UI separately iden
 generation, cached compiled loading, and per-worker/CUDA-graph setup. Accepted
 compile artefacts remain in `<runtime>\torchinductor-cache`.
 
-Custom Show Settings exposes the minimum source-frame cutoff for MatAnyone2 and
-SAM2 Base+, Small, and Tiny. The shipped value is a conservative 16,000 frames
+Custom Show Settings exposes the minimum source-frame cutoff for MatAnyone2,
+SAM2 Base+/Small/Tiny, and ViTMatte S/B. The shipped value is a conservative
+16,000 frames
 for each model. A compiled path must pass both this user-visible cutoff and its
 hardware-specific performance-policy gate. Use **Benchmark and recalculate
-cutoffs...** to test the installed models and update the fields; QuickPlayer
+cutoffs...** to test the installed models, calibrate ViTMatte batch sizes, and
+update the fields; QuickPlayer
 never starts these GPU-heavy benchmarks automatically. The run can take many
 minutes, shows live output, supports cancellation, and preserves the current
 value when a compiled variant is not faster and mask-equivalent.
+The same run writes separate preferred batch sizes for ViTMatte S and B. New
+Create Show dialogs apply the selected model's saved recommendation when that
+ViTMatte algorithm is chosen; the per-show batch selector can still override it.
+The shipped RTX 4080 defaults are based on three-run, 300-frame, 1920x1080
+end-to-end eager sweeps: batch 2 for ViTMatte S (7.38 median FPS, 6.51 GiB peak
+VRAM) and batch 1 for ViTMatte B (4.34 median FPS, 6.71 GiB peak VRAM). S batch
+3 was slightly slower at 7.31 FPS while using 9.71 GiB, and S batch 4 plus B
+batch 2 or higher entered severe shared-memory pressure. These are starting
+values rather than universal limits; use the manual benchmark for other GPUs.
 
 A historical 1,000-frame, 1024x576 Base+ test with a full midpoint correction
 averaged 241.2 seconds eager, 245.2 seconds full `max-autotune`, and 271.9 seconds
@@ -284,9 +295,31 @@ ViTMatte turns the corrected SAM2 masks into trimaps and predicts soft alpha per
 frame. S is the smaller/faster model; B uses the larger backbone for higher
 quality. Both are slow, and B can take several times as long as S, so S is the
 recommended starting point. Both support CUDA FP16 with FP32/CPU fallback and automatic batch
-splitting on CUDA out-of-memory. Corrected review masks remain resumable draft data
+splitting on CUDA out-of-memory. A three-stage bounded pipeline overlaps
+source/mask preparation, GPU inference, asynchronous pinned-memory alpha
+download, FFmpeg output, and the capped 960x540 preview. NumPy frames go
+directly to the official Hugging Face processor, trimap morphology kernels are
+reused, and preview/progress work is throttled. Corrected review masks remain resumable draft data
 until successful publication or explicit discard; the generated RGB/alpha clips
 are retained in the published show.
+
+ViTMatte permanently reduces its batch size after the first CUDA out-of-memory
+failure instead of retrying the same oversized batch throughout the clip. The
+safe size is remembered per GPU, driver, PyTorch/CUDA version, model, padded
+dimensions, precision, and requested batch size. The manual cutoff benchmark
+tests batches 1, 2, 3, 4, 6, 8, and 12, measures whole-job throughput and peak
+VRAM, and stores
+the best safe size in `vitmatte-performance-policy-v1.json`. It also compares
+eager execution with full-model `max-autotune` compilation. Compiled execution
+is used only when that machine's cached run is at least 5% faster, binary alpha
+IoU is at least 0.9999, and the clip exceeds both the measured break-even and
+the user-visible cutoff. A compiler/runtime problem invalidates the entry and
+continues with eager inference. One-time artefacts are stored under
+`<runtime>\torchinductor-vitmatte`. Structured stage timings, throughput,
+selected batch, execution mode, and peak VRAM are written to `processing.log`.
+The same manual run tests channels-last tensors and explicit FP16 weights
+separately; either is enabled only with at least 5% additional whole-job gain
+and the same alpha-equivalence gate. Autocast FP16 remains the default.
 
 **Matting detail** controls RVM and MatAnyone2's internal inference resolution
 per show: Very Low (256 px), Low (384 px), Standard (512 px, recommended), High

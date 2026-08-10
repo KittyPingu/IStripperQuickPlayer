@@ -173,6 +173,15 @@ internal sealed class CustomShowEditorForm : Form
     void UpdateProcessingOptions()
     {
         string selected = SelectedPreset();
+        if (showId == null && selected is "vitmatte-s" or "vitmatte-b")
+        {
+            int recommended = selected == "vitmatte-b" ?
+                configuration.VitMatteBasePreferredBatchSize :
+                configuration.VitMatteSmallPreferredBatchSize;
+            int closest = sequenceChunk.Items.Cast<int>()
+                .OrderBy(value => Math.Abs(value - recommended)).First();
+            sequenceChunk.SelectedItem = closest;
+        }
         bool rvm = selected is "quality" or "fast";
         mattingDetail.Enabled = (rvm || selected == "matanyone2") && showId == null;
         sequenceChunk.Enabled = (rvm || UsesSam2(selected)) && showId == null;
@@ -1139,6 +1148,10 @@ internal sealed class CustomShowSettingsForm : Form
     readonly NumericUpDown sam2BaseCutoff = CutoffInput();
     readonly NumericUpDown sam2SmallCutoff = CutoffInput();
     readonly NumericUpDown sam2TinyCutoff = CutoffInput();
+    readonly NumericUpDown vitMatteSmallCutoff = CutoffInput();
+    readonly NumericUpDown vitMatteBaseCutoff = CutoffInput();
+    readonly NumericUpDown vitMatteSmallBatch = BatchInput();
+    readonly NumericUpDown vitMatteBaseBatch = BatchInput();
     readonly Label validation = new() { AutoSize = true };
     CancellationTokenSource? validationCancellation;
     internal CustomShowConfiguration Configuration { get; }
@@ -1155,10 +1168,14 @@ internal sealed class CustomShowSettingsForm : Form
             MatAnyone2CompileCutoffFrames = current.MatAnyone2CompileCutoffFrames,
             Sam2BasePlusCompileCutoffFrames = current.Sam2BasePlusCompileCutoffFrames,
             Sam2SmallCompileCutoffFrames = current.Sam2SmallCompileCutoffFrames,
-            Sam2TinyCompileCutoffFrames = current.Sam2TinyCompileCutoffFrames
+            Sam2TinyCompileCutoffFrames = current.Sam2TinyCompileCutoffFrames,
+            VitMatteSmallCompileCutoffFrames = current.VitMatteSmallCompileCutoffFrames,
+            VitMatteBaseCompileCutoffFrames = current.VitMatteBaseCompileCutoffFrames,
+            VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
+            VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize
         };
-        Text = "Custom Show Settings"; ClientSize = new Size(920, 560);
-        MinimumSize = new Size(820, 540);
+        Text = "Custom Show Settings"; ClientSize = new Size(920, 740);
+        MinimumSize = new Size(820, 680);
         TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 3,
             Padding = new Padding(12), AutoScroll = true };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); Controls.Add(table);
@@ -1175,6 +1192,10 @@ internal sealed class CustomShowSettingsForm : Form
         AddCutoff(table, "SAM2 Base+ compile cutoff", sam2BaseCutoff);
         AddCutoff(table, "SAM2 Small compile cutoff", sam2SmallCutoff);
         AddCutoff(table, "SAM2 Tiny compile cutoff", sam2TinyCutoff);
+        AddCutoff(table, "ViTMatte S compile cutoff", vitMatteSmallCutoff);
+        AddCutoff(table, "ViTMatte B compile cutoff", vitMatteBaseCutoff);
+        AddBatch(table, "ViTMatte S preferred batch", vitMatteSmallBatch);
+        AddBatch(table, "ViTMatte B preferred batch", vitMatteBaseBatch);
         Button benchmark = new() { Text = "Benchmark and recalculate cutoffs...",
             AutoSize = true };
         Label cutoffHelp = new() { AutoSize = true,
@@ -1201,6 +1222,10 @@ internal sealed class CustomShowSettingsForm : Form
         sam2BaseCutoff.Value = ClampCutoff(Configuration.Sam2BasePlusCompileCutoffFrames);
         sam2SmallCutoff.Value = ClampCutoff(Configuration.Sam2SmallCompileCutoffFrames);
         sam2TinyCutoff.Value = ClampCutoff(Configuration.Sam2TinyCompileCutoffFrames);
+        vitMatteSmallCutoff.Value = ClampCutoff(Configuration.VitMatteSmallCompileCutoffFrames);
+        vitMatteBaseCutoff.Value = ClampCutoff(Configuration.VitMatteBaseCompileCutoffFrames);
+        vitMatteSmallBatch.Value = ClampBatch(Configuration.VitMatteSmallPreferredBatchSize);
+        vitMatteBaseBatch.Value = ClampBatch(Configuration.VitMatteBasePreferredBatchSize);
         sam2CacheUsage.Text = "Calculating usage...";
         Shown += async (_, _) => await UpdateCacheUsageAsync();
         clearCache.Click += async (_, _) => await ClearSam2CacheAsync(clearCache);
@@ -1245,6 +1270,10 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.Sam2BasePlusCompileCutoffFrames = (int)sam2BaseCutoff.Value;
             Configuration.Sam2SmallCompileCutoffFrames = (int)sam2SmallCutoff.Value;
             Configuration.Sam2TinyCompileCutoffFrames = (int)sam2TinyCutoff.Value;
+            Configuration.VitMatteSmallCompileCutoffFrames = (int)vitMatteSmallCutoff.Value;
+            Configuration.VitMatteBaseCompileCutoffFrames = (int)vitMatteBaseCutoff.Value;
+            Configuration.VitMatteSmallPreferredBatchSize = (int)vitMatteSmallBatch.Value;
+            Configuration.VitMatteBasePreferredBatchSize = (int)vitMatteBaseBatch.Value;
             Directory.CreateDirectory(Configuration.LibraryRoot);
             DialogResult = DialogResult.OK;
             Close();
@@ -1265,7 +1294,7 @@ internal sealed class CustomShowSettingsForm : Form
             return;
         }
         if (MessageBox.Show(this,
-            "This benchmark loads and compiles the installed MatAnyone2 and SAM2 models. " +
+            "This benchmark loads and compiles the installed MatAnyone2, SAM2, and ViTMatte models. " +
             "It can take many minutes, uses the GPU heavily, and runs only when you continue.\n\nRun it now?",
             "Benchmark model cutoffs", MessageBoxButtons.YesNo,
             MessageBoxIcon.Information) != DialogResult.Yes) return;
@@ -1276,7 +1305,11 @@ internal sealed class CustomShowSettingsForm : Form
             MatAnyone2CompileCutoffFrames = (int)matAnyoneCutoff.Value,
             Sam2BasePlusCompileCutoffFrames = (int)sam2BaseCutoff.Value,
             Sam2SmallCompileCutoffFrames = (int)sam2SmallCutoff.Value,
-            Sam2TinyCompileCutoffFrames = (int)sam2TinyCutoff.Value
+            Sam2TinyCompileCutoffFrames = (int)sam2TinyCutoff.Value,
+            VitMatteSmallCompileCutoffFrames = (int)vitMatteSmallCutoff.Value,
+            VitMatteBaseCompileCutoffFrames = (int)vitMatteBaseCutoff.Value,
+            VitMatteSmallPreferredBatchSize = (int)vitMatteSmallBatch.Value,
+            VitMatteBasePreferredBatchSize = (int)vitMatteBaseBatch.Value
         };
         using CustomShowCutoffBenchmarkForm form = new(benchmarkConfiguration);
         if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
@@ -1284,6 +1317,10 @@ internal sealed class CustomShowSettingsForm : Form
         sam2BaseCutoff.Value = ClampCutoff(form.Result.Sam2BasePlusCompileCutoffFrames);
         sam2SmallCutoff.Value = ClampCutoff(form.Result.Sam2SmallCompileCutoffFrames);
         sam2TinyCutoff.Value = ClampCutoff(form.Result.Sam2TinyCompileCutoffFrames);
+        vitMatteSmallCutoff.Value = ClampCutoff(form.Result.VitMatteSmallCompileCutoffFrames);
+        vitMatteBaseCutoff.Value = ClampCutoff(form.Result.VitMatteBaseCompileCutoffFrames);
+        vitMatteSmallBatch.Value = ClampBatch(form.Result.VitMatteSmallPreferredBatchSize);
+        vitMatteBaseBatch.Value = ClampBatch(form.Result.VitMatteBasePreferredBatchSize);
         validation.Text = "Benchmark completed; review the recalculated cutoffs and click OK to save them.";
     }
 
@@ -1295,7 +1332,23 @@ internal sealed class CustomShowSettingsForm : Form
 
     static decimal ClampCutoff(int value) => Math.Clamp(value, 1, 10_000_000);
 
+    static NumericUpDown BatchInput() => new()
+    {
+        Minimum = 1, Maximum = 12, Increment = 1, Width = 90
+    };
+
+    static decimal ClampBatch(int value) => Math.Clamp(value, 1, 12);
+
     static void AddCutoff(TableLayoutPanel table, string label, NumericUpDown input)
+    {
+        int row = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label { Text = label + " (frames)", AutoSize = true,
+            Anchor = AnchorStyles.Left }, 0, row);
+        table.Controls.Add(input, 1, row);
+    }
+
+    static void AddBatch(TableLayoutPanel table, string label, NumericUpDown input)
     {
         int row = table.RowCount++;
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1399,11 +1452,16 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
                 "--ffmpeg", Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"),
                 "--ffprobe", Path.Combine(AppContext.BaseDirectory, "ffprobe.exe"),
                 "--sam-worker", Path.Combine(AppContext.BaseDirectory, "custom-shows", "sam2_refine_worker.py"),
+                "--vitmatte-worker", Path.Combine(AppContext.BaseDirectory, "custom-shows", "vitmatte_worker.py"),
                 "--output", resultPath,
                 "--matanyone-default", configuration.MatAnyone2CompileCutoffFrames.ToString(),
                 "--sam-base-default", configuration.Sam2BasePlusCompileCutoffFrames.ToString(),
                 "--sam-small-default", configuration.Sam2SmallCompileCutoffFrames.ToString(),
-                "--sam-tiny-default", configuration.Sam2TinyCompileCutoffFrames.ToString()
+                "--sam-tiny-default", configuration.Sam2TinyCompileCutoffFrames.ToString(),
+                "--vitmatte-small-default", configuration.VitMatteSmallCompileCutoffFrames.ToString(),
+                "--vitmatte-base-default", configuration.VitMatteBaseCompileCutoffFrames.ToString(),
+                "--vitmatte-small-batch-default", configuration.VitMatteSmallPreferredBatchSize.ToString(),
+                "--vitmatte-base-batch-default", configuration.VitMatteBasePreferredBatchSize.ToString()
             }) start.ArgumentList.Add(argument);
             process = Process.Start(start) ??
                 throw new InvalidOperationException("Python could not start the benchmark.");
