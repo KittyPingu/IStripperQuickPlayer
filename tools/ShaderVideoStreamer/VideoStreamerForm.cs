@@ -22,7 +22,7 @@ internal sealed class VideoStreamerForm : Form
     private readonly NumericUpDown resizeStep = Number(
         0.1m, 1080, 1, 1, 0.1m);
     private readonly NumericUpDown fps = Number(0, 240, 0, 3, 1);
-    private readonly NumericUpDown maxDimension = Number(1, 1024, 1024, 0, 16);
+    private readonly NumericUpDown maxDimension = Number(1, 4096, 4096, 0, 16);
     private readonly CheckBox loop = new() { Text = "Loop", Checked = true, AutoSize = true };
     private readonly Button browse = new() { Text = "Browse…", AutoSize = true };
     private readonly Button start = new() { Text = "Start", AutoSize = true };

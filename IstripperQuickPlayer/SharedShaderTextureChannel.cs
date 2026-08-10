@@ -10,11 +10,10 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
     public const uint ProtocolVersion = 1;
     public const int HeaderLength = 64;
     public const int SlotCount = 2;
-    public const int MaximumDimension = 1024;
-    public const int SlotCapacity =
-        MaximumDimension * MaximumDimension * 4;
-    public const long MappingLength =
-        HeaderLength + (long)SlotCount * SlotCapacity;
+    public const int DefaultMaximumDimension = 1024;
+    public const int AbsoluteMaximumDimension = 4096;
+    public const int AbsoluteMaximumSlotCapacity =
+        AbsoluteMaximumDimension * AbsoluteMaximumDimension * 4;
 
     public const int MagicOffset = 0;
     public const int VersionOffset = 4;
@@ -41,9 +40,20 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
 
     public SharedShaderTextureChannel(
         string textureName,
+        int maximumWidth,
+        int maximumHeight,
         Func<int, int, nint, int, bool> apply)
     {
+        if (maximumWidth is < 1 or > AbsoluteMaximumDimension)
+            throw new ArgumentOutOfRangeException(nameof(maximumWidth));
+        if (maximumHeight is < 1 or > AbsoluteMaximumDimension)
+            throw new ArgumentOutOfRangeException(nameof(maximumHeight));
         TextureName = textureName;
+        MaximumWidth = maximumWidth;
+        MaximumHeight = maximumHeight;
+        SlotCapacity = checked(maximumWidth * maximumHeight * 4);
+        MappingLength = checked(HeaderLength +
+            (long)SlotCount * SlotCapacity);
         this.apply = apply;
         string suffix = $"{Environment.ProcessId}." +
             Convert.ToHexString(RandomNumberGenerator.GetBytes(12));
@@ -71,6 +81,10 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
     public string MappingName { get; }
     public string EventName { get; }
     public string TextureName { get; }
+    public int MaximumWidth { get; }
+    public int MaximumHeight { get; }
+    public int SlotCapacity { get; }
+    public long MappingLength { get; }
 
     public object Description => new
     {
@@ -88,8 +102,8 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
         headerLength = HeaderLength,
         slotCount = SlotCount,
         slotCapacity = SlotCapacity,
-        maximumWidth = MaximumDimension,
-        maximumHeight = MaximumDimension,
+        maximumWidth = MaximumWidth,
+        maximumHeight = MaximumHeight,
         format = "rgba8",
         orientation = "top-left",
         offsets = new
@@ -117,7 +131,7 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
         WriteUInt32(VersionOffset, ProtocolVersion);
         WriteUInt32(HeaderLengthOffset, HeaderLength);
         WriteUInt32(SlotCountOffset, SlotCount);
-        WriteUInt32(SlotCapacityOffset, SlotCapacity);
+        WriteUInt32(SlotCapacityOffset, (uint)SlotCapacity);
         WriteUInt32(PublishedSlotOffset, uint.MaxValue);
         Thread.MemoryBarrier();
     }
@@ -180,8 +194,8 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
             uint frameHeight = ReadUInt32(HeightOffset);
             uint frameByteLength = ReadUInt32(ByteLengthOffset);
             if (slot >= SlotCount || frameWidth == 0 ||
-                frameWidth > MaximumDimension || frameHeight == 0 ||
-                frameHeight > MaximumDimension ||
+                frameWidth > MaximumWidth || frameHeight == 0 ||
+                frameHeight > MaximumHeight ||
                 frameByteLength != frameWidth * frameHeight * 4 ||
                 frameByteLength > SlotCapacity)
                 return false;

@@ -33,3 +33,7 @@ The defaults are three 1024 by 512 textures, a 10 ms interval, and full opacity.
 Use `--textures 1` through `--textures 16` to change the texture count. The tool
 reads the normal QuickPlayer API token from Local AppData and sets
 `u_QuickPlayerData.x` to the requested `--opacity` before testing.
+Widths and heights from 32 through 4096 are accepted. In shared-memory mode the
+tool declares the requested test dimensions during channel discovery; omitting
+capacity parameters in your own client still gives the API's 1024 by 1024
+default channel.

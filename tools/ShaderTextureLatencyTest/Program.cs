@@ -70,7 +70,8 @@ internal static class Program
                 for (int index = 0; index < publishers.Length; index++)
                     publishers[index] =
                         await SharedTexturePublisher.ConnectAsync(client,
-                            $"texture{index + 1}", stopped.Token);
+                            $"texture{index + 1}", options.Width,
+                            options.Height, stopped.Token);
                 Console.WriteLine("Warming the shared-memory channel...");
                 for (int index = 0; index < publishers.Length; index++)
                     publishers[index].Publish(options.Width, options.Height,
@@ -495,12 +496,15 @@ internal sealed class SharedTexturePublisher : IDisposable
     }
 
     public static async Task<SharedTexturePublisher> ConnectAsync(
-        HttpClient client, string textureName,
+        HttpClient client, string textureName, int maximumWidth,
+        int maximumHeight,
         CancellationToken cancellationToken)
     {
         using HttpResponseMessage response = await client.GetAsync(
             "fullscreen/shader-texture/shared-memory?name=" +
-                Uri.EscapeDataString(textureName),
+                Uri.EscapeDataString(textureName) +
+                "&maxWidth=" + maximumWidth +
+                "&maxHeight=" + maximumHeight,
             cancellationToken);
         response.EnsureSuccessStatusCode();
         await using Stream stream = await response.Content.ReadAsStreamAsync(
@@ -823,9 +827,9 @@ internal sealed record Options(
         if (!baseUrl.EndsWith('/')) baseUrl += '/';
         if (interval <= 0 || interval > 60_000)
             throw new ArgumentOutOfRangeException(nameof(interval));
-        if (width is < 32 or > 1024 || height is < 32 or > 1024)
+        if (width is < 32 or > 4096 || height is < 32 or > 4096)
             throw new ArgumentOutOfRangeException(
-                "width/height", "Dimensions must be 32 through 1024.");
+                "width/height", "Dimensions must be 32 through 4096.");
         if (duration < 0)
             throw new ArgumentOutOfRangeException(nameof(duration));
         if (!float.IsFinite(opacity) || opacity is < 0 or > 1)

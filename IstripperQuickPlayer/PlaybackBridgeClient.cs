@@ -20,10 +20,11 @@ public sealed class PlaybackBridgeClient : IDisposable
     private const int ShaderTextureNameCapacity = 32;
     private const int ShaderTextureHeaderLength = 24 +
         ShaderTextureNameCapacity;
-    private const int MaximumShaderTextureDimension = 1024;
-    private const int MaximumBridgeBufferLength =
-        ShaderTextureHeaderLength +
+    private const int MaximumShaderTextureDimension = 4096;
+    private const int MaximumShaderTextureByteLength =
         MaximumShaderTextureDimension * MaximumShaderTextureDimension * 4;
+    private const int MaximumBridgeBufferLength =
+        ShaderTextureHeaderLength + MaximumShaderTextureByteLength;
     private const int ConnectTimeoutMilliseconds = 5_000;
     private const uint ProcessAccess =
         0x0002 | 0x0400 | 0x0008 | 0x0020 | 0x0010;
@@ -42,6 +43,7 @@ public sealed class PlaybackBridgeClient : IDisposable
     private BinaryWriter? commandWriter;
     private nint bufferProcess;
     private nint remoteBuffer;
+    private int remoteBufferCapacity;
 
     private PlaybackBridgeClient(int processId,
         Func<string, byte[], bool> registryWrite)
@@ -251,7 +253,7 @@ public sealed class PlaybackBridgeClient : IDisposable
             try
             {
                 long writeStarted = Stopwatch.GetTimestamp();
-                EnsureRemoteBuffer();
+                EnsureRemoteBuffer(totalLength);
                 if (!WriteProcessMemory(bufferProcess, remoteBuffer, data,
                     (nuint)data.Length, out nuint written) ||
                     written != (nuint)data.Length)
@@ -289,23 +291,34 @@ public sealed class PlaybackBridgeClient : IDisposable
         }
     }
 
-    private void EnsureRemoteBuffer()
+    private void EnsureRemoteBuffer(int requiredLength)
     {
-        if (bufferProcess != 0 && remoteBuffer != 0)
+        if (bufferProcess != 0 && remoteBuffer != 0 &&
+            remoteBufferCapacity >= requiredLength)
             return;
-        bufferProcess = OpenProcess(ProcessAccess, false, processId);
         if (bufferProcess == 0)
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        remoteBuffer = VirtualAllocEx(bufferProcess, 0,
-            (nuint)MaximumBridgeBufferLength,
+        {
+            bufferProcess = OpenProcess(ProcessAccess, false, processId);
+            if (bufferProcess == 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        const int allocationGranularity = 64 * 1024;
+        int capacity = Math.Min(MaximumBridgeBufferLength,
+            checked((requiredLength + allocationGranularity - 1) /
+                allocationGranularity * allocationGranularity));
+        nint replacement = VirtualAllocEx(bufferProcess, 0,
+            (nuint)capacity,
             MemCommitReserve, PageReadWrite);
-        if (remoteBuffer == 0)
+        if (replacement == 0)
         {
             int error = Marshal.GetLastWin32Error();
-            CloseHandle(bufferProcess);
-            bufferProcess = 0;
             throw new Win32Exception(error);
         }
+        if (remoteBuffer != 0)
+            VirtualFreeEx(bufferProcess, remoteBuffer, 0, 0x8000);
+        remoteBuffer = replacement;
+        remoteBufferCapacity = capacity;
     }
 
     private void ReleaseRemoteBuffer()
@@ -313,6 +326,7 @@ public sealed class PlaybackBridgeClient : IDisposable
         if (remoteBuffer != 0 && bufferProcess != 0)
             VirtualFreeEx(bufferProcess, remoteBuffer, 0, 0x8000);
         remoteBuffer = 0;
+        remoteBufferCapacity = 0;
         if (bufferProcess != 0)
             CloseHandle(bufferProcess);
         bufferProcess = 0;

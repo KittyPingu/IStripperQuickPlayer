@@ -74,7 +74,8 @@ internal static class Program
 
             using SharedTexturePublisher publisher =
                 await SharedTexturePublisher.ConnectAsync(
-                    client, options.TextureName, stopped.Token);
+                    client, options.TextureName, width, height,
+                    stopped.Token);
             PositionController position =
                 await PositionController.CreateAsync(client,
                     options.PositionX, options.PositionY,
@@ -272,7 +273,7 @@ internal sealed record Options(
             Environment.GetFolderPath(
                 Environment.SpecialFolder.LocalApplicationData),
             "IStripperQuickPlayer", "api-token.txt");
-        int maximumDimension = 1024;
+        int maximumDimension = 4096;
         double framesPerSecond = 0;
         double durationSeconds = 0;
         double positionX = 0.5;
@@ -335,7 +336,7 @@ internal sealed record Options(
             throw new FileNotFoundException("The video was not found.",
                 videoPath);
         ValidateTextureName(textureName);
-        if (maximumDimension is < 1 or > 1024)
+        if (maximumDimension is < 1 or > 4096)
             throw new ArgumentOutOfRangeException(nameof(maximumDimension));
         if (!double.IsFinite(framesPerSecond) ||
             framesPerSecond < 0 || framesPerSecond > 240)
@@ -385,7 +386,7 @@ internal sealed record Options(
 
             Options:
               --name <name>          Texture name (default video1)
-              --max-dimension <px>   Resize limit, 1..1024 (default 1024)
+              --max-dimension <px>   Resize limit, 1..4096 (default 4096)
               --fps <rate>           Override source FPS (maximum 240)
               --duration <seconds>   Stop automatically; 0 means Ctrl+C
               --x <0..1>             Initial horizontal centre (default 0.5)
@@ -566,12 +567,16 @@ internal sealed class SharedTexturePublisher : IDisposable
     }
 
     public static async Task<SharedTexturePublisher> ConnectAsync(
-        HttpClient client, string textureName,
+        HttpClient client, string textureName, int maximumWidth,
+        int maximumHeight,
         CancellationToken cancellationToken)
     {
         using HttpResponseMessage response = await client.GetAsync(
             "fullscreen/shader-texture/shared-memory?name=" +
-                Uri.EscapeDataString(textureName), cancellationToken);
+                Uri.EscapeDataString(textureName) +
+                "&maxWidth=" + maximumWidth +
+                "&maxHeight=" + maximumHeight,
+            cancellationToken);
         response.EnsureSuccessStatusCode();
         await using Stream stream = await response.Content.ReadAsStreamAsync(
             cancellationToken);

@@ -4,7 +4,10 @@ This example decodes a video with OpenCV, converts each frame to RGBA8, and
 publishes it to QuickPlayer's named shared-memory texture channel. It preserves
 the source frame rate, loops by default, drops decoded frames when necessary to
 stay near real time, and proportionally resizes videos whose largest dimension
-exceeds 1024 pixels.
+exceeds the selected maximum dimension. The UI and `--max-dimension` default
+to 4096 pixels, so UHD and DCI 4K sources retain their native dimensions. The streamer
+declares the resulting width and height when it discovers its shared-memory
+channel, so the mapping is only as large as the video output requires.
 
 Publish the self-contained Windows executable:
 

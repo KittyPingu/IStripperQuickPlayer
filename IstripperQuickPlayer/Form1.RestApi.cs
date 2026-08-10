@@ -14,8 +14,14 @@ namespace IStripperQuickPlayer
     public partial class Form1
     {
         private const int RestApiMaxBodyLength = 16 * 1024;
-        private const int RestApiMaxTextureDimension = 1024;
-        private const int RestApiMaxTextureEncodedLength = 8 * 1024 * 1024;
+        private const int RestApiDefaultTextureCapacity =
+            SharedShaderTextureChannel.DefaultMaximumDimension;
+        private const int RestApiMaxTextureDimension =
+            SharedShaderTextureChannel.AbsoluteMaximumDimension;
+        private const int RestApiMaxTextureByteLength =
+            SharedShaderTextureChannel.AbsoluteMaximumSlotCapacity;
+        private const int RestApiMaxTextureEncodedLength =
+            RestApiMaxTextureByteLength;
         private const int RestApiMaxShaderTextures = 16;
         private const int RestApiMaxShaderTextureNameLength = 32;
         private const string RestApiDefaultShaderTextureName = "texture1";
@@ -29,8 +35,7 @@ namespace IStripperQuickPlayer
         private readonly Dictionary<string, SharedShaderTextureChannel>
             sharedShaderTextureChannels = new(StringComparer.Ordinal);
         private readonly UnmanagedTextureBuffer restApiTextureBuffer =
-            new(RestApiMaxTextureDimension *
-                RestApiMaxTextureDimension * 4);
+            new(RestApiMaxTextureByteLength);
 
         private sealed record ApiResult(
             int StatusCode, object Body, string? ServerTiming = null);
@@ -902,25 +907,68 @@ namespace IStripperQuickPlayer
             HttpListenerRequest request)
         {
             string textureName = RestApiShaderTextureName(request);
+            int maximumWidth = RestApiTextureCapacity(
+                request, "maxWidth");
+            int maximumHeight = RestApiTextureCapacity(
+                request, "maxHeight");
             lock (sharedShaderTextureChannelLock)
             {
-                if (!sharedShaderTextureChannels.TryGetValue(
-                    textureName, out SharedShaderTextureChannel? channel))
+                bool exists = sharedShaderTextureChannels.TryGetValue(
+                    textureName, out SharedShaderTextureChannel? channel);
+                if (exists && (channel!.MaximumWidth < maximumWidth ||
+                    channel.MaximumHeight < maximumHeight))
+                {
+                    maximumWidth = Math.Max(
+                        maximumWidth, channel.MaximumWidth);
+                    maximumHeight = Math.Max(
+                        maximumHeight, channel.MaximumHeight);
+                    SharedShaderTextureChannel replacement =
+                        CreateSharedShaderTextureChannel(textureName,
+                            maximumWidth, maximumHeight);
+                    sharedShaderTextureChannels[textureName] = replacement;
+                    channel.Dispose();
+                    channel = replacement;
+                }
+                else if (!exists)
                 {
                     if (sharedShaderTextureChannels.Count >=
                         RestApiMaxShaderTextures)
                         return Error(409,
                             "The maximum number of shared shader texture " +
                             "channels has been reached.");
-                    channel = new SharedShaderTextureChannel(textureName,
-                        (width, height, rgba, byteLength) =>
-                            ApplySharedShaderTextureFrame(textureName,
-                                width, height, rgba, byteLength));
+                    channel = CreateSharedShaderTextureChannel(textureName,
+                        maximumWidth, maximumHeight);
                     sharedShaderTextureChannels.Add(textureName, channel);
                 }
                 return new ApiResult(200,
-                    channel.Description);
+                    channel!.Description);
             }
+        }
+
+        private SharedShaderTextureChannel CreateSharedShaderTextureChannel(
+            string textureName, int maximumWidth, int maximumHeight) =>
+            new(textureName, maximumWidth, maximumHeight,
+                (width, height, rgba, byteLength) =>
+                    ApplySharedShaderTextureFrame(textureName,
+                        width, height, rgba, byteLength));
+
+        private static int RestApiTextureCapacity(
+            HttpListenerRequest request, string parameter)
+        {
+            string? text = request.QueryString[parameter];
+            if (string.IsNullOrWhiteSpace(text))
+                return RestApiDefaultTextureCapacity;
+            if (!int.TryParse(text,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out int value) ||
+                value is < 1 or > RestApiMaxTextureDimension)
+            {
+                throw new ApiRequestException(400,
+                    $"'{parameter}' must be from 1 through " +
+                    $"{RestApiMaxTextureDimension}.");
+            }
+            return value;
         }
 
         private bool ApplySharedShaderTextureFrame(
@@ -2060,18 +2108,24 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private sealed unsafe class UnmanagedTextureBuffer(int capacity) :
-            IDisposable
+        private sealed unsafe class UnmanagedTextureBuffer : IDisposable
         {
+            private readonly int maximumCapacity;
             private nint pointer;
+            private int capacity;
             private bool disposed;
+
+            public UnmanagedTextureBuffer(int maximumCapacity)
+            {
+                this.maximumCapacity = maximumCapacity;
+            }
 
             public nint Pointer
             {
                 get
                 {
                     ObjectDisposedException.ThrowIf(disposed, this);
-                    EnsureAllocated();
+                    EnsureCapacity(1);
                     return pointer;
                 }
             }
@@ -2079,19 +2133,26 @@ namespace IStripperQuickPlayer
             public Span<byte> Span(int length)
             {
                 ObjectDisposedException.ThrowIf(disposed, this);
-                if (length < 0 || length > capacity)
+                if (length < 0 || length > maximumCapacity)
                     throw new ArgumentOutOfRangeException(nameof(length));
-                EnsureAllocated();
+                EnsureCapacity(length);
                 return new Span<byte>((void*)pointer, length);
             }
 
-            private void EnsureAllocated()
+            private void EnsureCapacity(int requiredCapacity)
             {
-                if (pointer != 0)
+                if (capacity >= requiredCapacity)
                     return;
-                pointer = (nint)NativeMemory.Alloc((nuint)capacity);
-                if (pointer == 0)
+                const int allocationGranularity = 64 * 1024;
+                int replacementCapacity = Math.Min(maximumCapacity,
+                    checked((requiredCapacity + allocationGranularity - 1) /
+                        allocationGranularity * allocationGranularity));
+                void* replacement = NativeMemory.Realloc(
+                    (void*)pointer, (nuint)replacementCapacity);
+                if (replacement == null)
                     throw new OutOfMemoryException();
+                pointer = (nint)replacement;
+                capacity = replacementCapacity;
             }
 
             public void Dispose()
@@ -2103,6 +2164,7 @@ namespace IStripperQuickPlayer
                 {
                     NativeMemory.Free((void*)pointer);
                     pointer = 0;
+                    capacity = 0;
                 }
             }
         }

@@ -463,8 +463,10 @@ Invoke-RestMethod `
   -InFile "C:\path\scoreboard.png"
 ```
 
-The maximum decoded size is 1024 by 1024 pixels. PNG alpha is preserved. The
-response describes the persistent RGBA8 texture and its new sequence:
+The maximum decoded size is 4096 by 4096 pixels (64 MiB as RGBA8). PNG alpha
+is preserved. Internal transfer buffers grow on demand rather than reserving
+that maximum for ordinary small uploads. The response describes the persistent
+RGBA8 texture and its new sequence:
 
 ```json
 {
@@ -535,8 +537,28 @@ $channel = Invoke-RestMethod `
 Each texture name receives its own channel. The response includes `name`, the
 generated uniform names, random process-lifetime `mappingName` and `eventName`
 values, and all sizes and offsets needed to open the Windows memory-mapped file.
-Each mapping has a 64-byte header followed by two 4 MiB RGBA8 slots and supports
-dimensions from 1 through 1024 independently on every frame.
+If no capacity is requested, the mapping has a 64-byte header followed by two
+4 MiB RGBA8 slots and supports dimensions through 1024 by 1024, preserving the
+default behavior. A producer that needs more can declare its maximum dimensions
+during discovery:
+
+```powershell
+$channel = Invoke-RestMethod `
+  "http://127.0.0.1:17871/api/v1/fullscreen/shader-texture/shared-memory?name=scoreboard&maxWidth=1920&maxHeight=1080" `
+  -Headers $headers
+```
+
+`maxWidth` and `maxHeight` may each be 1 through 4096 and independently default
+to 1024 when omitted. Each of the mapping's two slots is sized to
+`maxWidth * maxHeight * 4`; every published frame may choose any dimensions
+within those declared bounds. The response's `maximumWidth`, `maximumHeight`,
+`slotCapacity`, and `mappingLength` are authoritative.
+
+If the named channel already exists with enough capacity, discovery reuses it.
+Requesting a larger bound replaces that name's mapping, so an existing producer
+must reopen the newly returned mapping and event names. Capacity is never
+implicitly reduced by a later request. The per-channel 4096 by 4096 ceiling is
+also the REST upload safety ceiling.
 
 The channel is a single-producer, latest-frame register. Publish a frame in
 this order:
@@ -565,11 +587,11 @@ session and disappears when QuickPlayer closes.
 #### Video streaming example
 
 [`tools/ShaderVideoStreamer`](../../tools/ShaderVideoStreamer) contains a
-self-contained console example that decodes a video, converts frames to RGBA8,
-resizes within the 1024-pixel limit, and publishes them through a named
-shared-memory texture channel at the source frame rate. It includes a complete
-fragment shader and supports looping, a frame-rate override, and bounded test
-runs.
+self-contained Windows UI and console example that decodes a video, converts
+frames to RGBA8, requests a shared-memory channel sized for its output, and
+publishes at the source frame rate. It includes a complete fragment shader and
+supports a configurable resize limit through 4096, looping, a frame-rate
+override, positioning, sizing, and bounded test runs.
 
 ### Native iStripper queue
 

@@ -281,7 +281,7 @@ namespace
     static_assert(sizeof(FullScreenShaderDataPacket) == 20);
 
     constexpr std::uint32_t FullScreenShaderTextureMagic = 0x58545051;
-    constexpr std::uint32_t MaximumFullScreenShaderTextureDimension = 1024;
+    constexpr std::uint32_t MaximumFullScreenShaderTextureDimension = 4096;
     constexpr std::size_t FullScreenShaderTextureNameCapacity = 32;
     constexpr std::size_t MaximumFullScreenShaderTextures = 16;
     constexpr std::size_t MaximumFullScreenShaderTextureBytes =
@@ -9700,7 +9700,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 92;
+    return 93;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
