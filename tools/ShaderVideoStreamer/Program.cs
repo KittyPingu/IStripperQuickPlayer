@@ -76,11 +76,6 @@ internal static class Program
                 await SharedTexturePublisher.ConnectAsync(
                     client, options.TextureName, width, height,
                     stopped.Token);
-            PositionController position =
-                await PositionController.CreateAsync(client,
-                    options.PositionX, options.PositionY,
-                    options.PanelWidth, options.PanelHeight,
-                    options.MoveStep, options.ResizeStep, stopped.Token);
 
             Console.WriteLine(
                 $"Streaming {Path.GetFileName(options.VideoPath)}");
@@ -89,13 +84,9 @@ internal static class Program
                 $"{fps:F3} fps, texture '{options.TextureName}'.");
             Console.WriteLine(
                 $"Shader sampler: u_QuickPlayerTexture_{options.TextureName}");
-            Console.WriteLine(
-                $"Position: ({position.X:F3}, {position.Y:F3}), " +
-                $"display {position.Width:F0}x{position.Height:F0}. " +
-                "Use arrow keys to move; Q or Ctrl+C stops.\n");
 
             return Stream(capture, publisher, width, height,
-                fps, options.Loop, position, stopped);
+                fps, options.Loop, stopped);
         }
         catch (OperationCanceledException)
         {
@@ -113,8 +104,7 @@ internal static class Program
 
     private static int Stream(VideoCapture capture,
         SharedTexturePublisher publisher, int width, int height,
-        double fps, bool loop, PositionController position,
-        CancellationTokenSource stopped)
+        double fps, bool loop, CancellationTokenSource stopped)
     {
         CancellationToken cancellationToken = stopped.Token;
         long intervalTicks = Math.Max(1,
@@ -170,8 +160,6 @@ internal static class Program
             windowPublished++;
             windowConversionMilliseconds += conversionMilliseconds;
             windowPublishMilliseconds += publishMilliseconds;
-            position.PollKeyboard(stopped);
-
             long now = Stopwatch.GetTimestamp();
             while (now >= nextDue + intervalTicks && capture.Grab())
             {
@@ -255,12 +243,6 @@ internal sealed record Options(
     int MaximumDimension,
     double FramesPerSecond,
     double DurationSeconds,
-    double PositionX,
-    double PositionY,
-    double PanelWidth,
-    double PanelHeight,
-    double MoveStep,
-    double ResizeStep,
     bool Loop,
     bool ShowHelp)
 {
@@ -276,12 +258,6 @@ internal sealed record Options(
         int maximumDimension = 4096;
         double framesPerSecond = 0;
         double durationSeconds = 0;
-        double positionX = 0.5;
-        double positionY = 0.5;
-        double panelWidth = 512;
-        double panelHeight = 256;
-        double moveStep = 0.001;
-        double resizeStep = 1;
         bool loop = true;
         bool help = false;
 
@@ -304,18 +280,6 @@ internal sealed record Options(
                 case "--fps": framesPerSecond = double.Parse(Value(),
                     System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--duration": durationSeconds = double.Parse(Value(),
-                    System.Globalization.CultureInfo.InvariantCulture); break;
-                case "--x": positionX = double.Parse(Value(),
-                    System.Globalization.CultureInfo.InvariantCulture); break;
-                case "--y": positionY = double.Parse(Value(),
-                    System.Globalization.CultureInfo.InvariantCulture); break;
-                case "--display-width": panelWidth = double.Parse(Value(),
-                    System.Globalization.CultureInfo.InvariantCulture); break;
-                case "--display-height": panelHeight = double.Parse(Value(),
-                    System.Globalization.CultureInfo.InvariantCulture); break;
-                case "--move-step": moveStep = double.Parse(Value(),
-                    System.Globalization.CultureInfo.InvariantCulture); break;
-                case "--resize-step": resizeStep = double.Parse(Value(),
                     System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--no-loop": loop = false; break;
                 default:
@@ -343,25 +307,12 @@ internal sealed record Options(
             throw new ArgumentOutOfRangeException(nameof(framesPerSecond));
         if (!double.IsFinite(durationSeconds) || durationSeconds < 0)
             throw new ArgumentOutOfRangeException(nameof(durationSeconds));
-        if (!double.IsFinite(positionX) || positionX is < 0 or > 1 ||
-            !double.IsFinite(positionY) || positionY is < 0 or > 1)
-            throw new ArgumentOutOfRangeException("x/y",
-                "Positions must be from 0 through 1.");
-        if (!double.IsFinite(panelWidth) || panelWidth is < 1 or > 2200 ||
-            !double.IsFinite(panelHeight) || panelHeight is < 1 or > 1080)
-            throw new ArgumentOutOfRangeException("display width/height");
-        if (!double.IsFinite(moveStep) || moveStep is <= 0 or > 1)
-            throw new ArgumentOutOfRangeException(nameof(moveStep));
-        if (!double.IsFinite(resizeStep) ||
-            resizeStep is <= 0 or > 1080)
-            throw new ArgumentOutOfRangeException(nameof(resizeStep));
         if (!baseUrl.EndsWith('/'))
             baseUrl += '/';
 
         return new(videoPath, textureName, baseUrl, tokenPath,
             maximumDimension, framesPerSecond, durationSeconds,
-            positionX, positionY, panelWidth, panelHeight,
-            moveStep, resizeStep, loop, help);
+            loop, help);
     }
 
     private static void ValidateTextureName(string name)
@@ -389,12 +340,6 @@ internal sealed record Options(
               --max-dimension <px>   Resize limit, 1..4096 (default 4096)
               --fps <rate>           Override source FPS (maximum 240)
               --duration <seconds>   Stop automatically; 0 means Ctrl+C
-              --x <0..1>             Initial horizontal centre (default 0.5)
-              --y <0..1>             Initial vertical centre (default 0.5)
-              --display-width <px>   Scene width (default 512)
-              --display-height <px>  Scene height (default 256)
-              --move-step <0..1>     Arrow-key movement (default 0.001)
-              --resize-step <px>     Shift+arrow resize (default 1)
               --no-loop              Stop at the end instead of looping
               --base-url <url>       QuickPlayer API v1 base URL
               --token <path>         QuickPlayer API token file
@@ -402,128 +347,6 @@ internal sealed record Options(
             """);
     }
 }
-
-internal sealed class PositionController
-{
-    private readonly HttpClient client;
-    private readonly double[] values;
-    private readonly double moveStep;
-    private readonly double resizeStep;
-
-    private PositionController(HttpClient client, double[] values,
-        double moveStep, double resizeStep)
-    {
-        this.client = client;
-        this.values = values;
-        this.moveStep = moveStep;
-        this.resizeStep = resizeStep;
-    }
-
-    public double X => values[0];
-    public double Y => values[1];
-    public double Width => values[2];
-    public double Height => values[3];
-
-    public static async Task<PositionController> CreateAsync(
-        HttpClient client, double x, double y, double width, double height,
-        double moveStep, double resizeStep,
-        CancellationToken cancellationToken)
-    {
-        ShaderDataResponse current = await client.GetFromJsonAsync<
-            ShaderDataResponse>("fullscreen/shader-data",
-                cancellationToken) ??
-            throw new InvalidDataException(
-                "QuickPlayer returned no shader data.");
-        if (current.Values is not { Length: 4 })
-            throw new InvalidDataException(
-                "QuickPlayer returned invalid shader data.");
-        double[] values = current.Values.ToArray();
-        values[0] = x;
-        values[1] = y;
-        values[2] = width;
-        values[3] = height;
-        PositionController controller = new(
-            client, values, moveStep, resizeStep);
-        await controller.SendAsync(cancellationToken);
-        return controller;
-    }
-
-    public void PollKeyboard(CancellationTokenSource stopped)
-    {
-        if (Console.IsInputRedirected)
-            return;
-        bool changed = false;
-        while (Console.KeyAvailable)
-        {
-            ConsoleKeyInfo key = Console.ReadKey(intercept: true);
-            bool shift = (key.Modifiers & ConsoleModifiers.Shift) != 0;
-            if (shift)
-            {
-                switch (key.Key)
-                {
-                    case ConsoleKey.LeftArrow:
-                        values[2] = Math.Max(1,
-                            values[2] - resizeStep);
-                        changed = true;
-                        break;
-                    case ConsoleKey.RightArrow:
-                        values[2] = Math.Min(2200,
-                            values[2] + resizeStep);
-                        changed = true;
-                        break;
-                    case ConsoleKey.UpArrow:
-                        values[3] = Math.Min(1080,
-                            values[3] + resizeStep);
-                        changed = true;
-                        break;
-                    case ConsoleKey.DownArrow:
-                        values[3] = Math.Max(1,
-                            values[3] - resizeStep);
-                        changed = true;
-                        break;
-                }
-                continue;
-            }
-            switch (key.Key)
-            {
-                case ConsoleKey.LeftArrow:
-                    values[0] = Math.Max(0, values[0] - moveStep);
-                    changed = true;
-                    break;
-                case ConsoleKey.RightArrow:
-                    values[0] = Math.Min(1, values[0] + moveStep);
-                    changed = true;
-                    break;
-                case ConsoleKey.UpArrow:
-                    values[1] = Math.Max(0, values[1] - moveStep);
-                    changed = true;
-                    break;
-                case ConsoleKey.DownArrow:
-                    values[1] = Math.Min(1, values[1] + moveStep);
-                    changed = true;
-                    break;
-                case ConsoleKey.Q:
-                    stopped.Cancel();
-                    return;
-            }
-        }
-        if (!changed)
-            return;
-        SendAsync(stopped.Token).GetAwaiter().GetResult();
-        Console.WriteLine(
-            $"Position ({X:F3}, {Y:F3}), display " +
-            $"{Width:F0}x{Height:F0}");
-    }
-
-    private async Task SendAsync(CancellationToken cancellationToken)
-    {
-        using HttpResponseMessage response = await client.PutAsJsonAsync(
-            "fullscreen/shader-data", new { values }, cancellationToken);
-        response.EnsureSuccessStatusCode();
-    }
-}
-
-internal sealed record ShaderDataResponse(double[] Values);
 
 internal sealed class SharedTexturePublisher : IDisposable
 {
