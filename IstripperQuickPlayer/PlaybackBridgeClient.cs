@@ -17,7 +17,9 @@ public sealed class PlaybackBridgeClient : IDisposable
     private const uint EventMagic = 0x51424556;
     private const uint ShaderTextureMagic = 0x58545051;
     private const uint ProtocolVersion = 1;
-    private const int ShaderTextureHeaderLength = 20;
+    private const int ShaderTextureNameCapacity = 32;
+    private const int ShaderTextureHeaderLength = 24 +
+        ShaderTextureNameCapacity;
     private const int MaximumShaderTextureDimension = 1024;
     private const int MaximumBridgeBufferLength =
         ShaderTextureHeaderLength +
@@ -156,8 +158,8 @@ public sealed class PlaybackBridgeClient : IDisposable
         return result;
     }
 
-    public unsafe int SetFullscreenShaderTexture(int width, int height,
-        byte[] rgba, out uint sequence)
+    public unsafe int SetFullscreenShaderTexture(string textureName,
+        int width, int height, byte[] rgba, out uint sequence)
     {
         ArgumentNullException.ThrowIfNull(rgba);
         if (width is < 1 or > MaximumShaderTextureDimension ||
@@ -171,20 +173,21 @@ public sealed class PlaybackBridgeClient : IDisposable
 
         fixed (byte* pixels = rgba)
         {
-            return SetFullscreenShaderTexture(width, height,
+            return SetFullscreenShaderTexture(textureName, width, height,
                 (nint)pixels, rgba.Length, out sequence);
         }
     }
 
-    public int SetFullscreenShaderTexture(int width, int height,
-        nint rgba, int byteLength, out uint sequence)
+    public int SetFullscreenShaderTexture(string textureName,
+        int width, int height, nint rgba, int byteLength,
+        out uint sequence)
     {
-        return SetFullscreenShaderTexture(width, height, rgba,
+        return SetFullscreenShaderTexture(textureName, width, height, rgba,
             byteLength, out sequence, out _);
     }
 
-    public int SetFullscreenShaderTexture(int width, int height,
-        nint rgba, int byteLength, out uint sequence,
+    public int SetFullscreenShaderTexture(string textureName,
+        int width, int height, nint rgba, int byteLength, out uint sequence,
         out BufferCallTimings timings)
     {
         if (width is < 1 or > MaximumShaderTextureDimension ||
@@ -197,7 +200,7 @@ public sealed class PlaybackBridgeClient : IDisposable
         }
 
         byte[] header = CreateFullscreenShaderTextureHeader(
-            width, height, byteLength);
+            textureName, width, height, byteLength);
         int result = CallBuffer(
             "IStripperSetFullscreenShaderTexture", header,
             readBackLength: ShaderTextureHeaderLength, out timings,
@@ -206,10 +209,11 @@ public sealed class PlaybackBridgeClient : IDisposable
         return result;
     }
 
-    public int GetFullscreenShaderTexture(
+    public int GetFullscreenShaderTexture(string textureName,
         out int width, out int height, out uint sequence)
     {
-        byte[] packet = new byte[ShaderTextureHeaderLength];
+        byte[] packet = CreateFullscreenShaderTextureHeader(
+            textureName, 0, 0, 0);
         int result = CallBuffer(
             "IStripperGetFullscreenShaderTexture", packet,
             readBackLength: packet.Length);
@@ -327,7 +331,7 @@ public sealed class PlaybackBridgeClient : IDisposable
         byte[] shaderPacket = CreateFullscreenShaderDataPacket(shaderValues);
         byte[] texturePixels = [255, 0, 0, 255, 0, 255, 0, 255];
         byte[] texturePacket = CreateFullscreenShaderTexturePacket(
-            2, 1, texturePixels);
+            "scoreboard", 2, 1, texturePixels);
         return reader.ReadUInt32() == CommandMagic &&
             reader.ReadUInt32() == ProtocolVersion &&
             reader.ReadUInt32() == 4 &&
@@ -345,6 +349,9 @@ public sealed class PlaybackBridgeClient : IDisposable
             BitConverter.ToUInt32(texturePacket, 8) == 1 &&
             BitConverter.ToUInt32(texturePacket, 12) == 0 &&
             BitConverter.ToUInt32(texturePacket, 16) == 8 &&
+            BitConverter.ToUInt32(texturePacket, 20) == 10 &&
+            Encoding.ASCII.GetString(texturePacket, 24, 10) ==
+                "scoreboard" &&
             texturePacket.AsSpan(ShaderTextureHeaderLength)
                 .SequenceEqual(texturePixels);
     }
@@ -358,25 +365,33 @@ public sealed class PlaybackBridgeClient : IDisposable
     }
 
     private static byte[] CreateFullscreenShaderTexturePacket(
-        int width, int height, byte[] rgba)
+        string textureName, int width, int height, byte[] rgba)
     {
         byte[] packet = new byte[checked(ShaderTextureHeaderLength +
             rgba.Length)];
-        CreateFullscreenShaderTextureHeader(width, height, rgba.Length)
-            .CopyTo(packet, 0);
+        CreateFullscreenShaderTextureHeader(
+            textureName, width, height, rgba.Length).CopyTo(packet, 0);
         rgba.CopyTo(packet, ShaderTextureHeaderLength);
         return packet;
     }
 
     private static byte[] CreateFullscreenShaderTextureHeader(
-        int width, int height, int byteLength)
+        string textureName, int width, int height, int byteLength)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(textureName);
+        if (textureName.Any(character => character > 0x7F))
+            throw new ArgumentOutOfRangeException(nameof(textureName));
+        byte[] name = Encoding.ASCII.GetBytes(textureName);
+        if (name.Length is < 1 or > ShaderTextureNameCapacity)
+            throw new ArgumentOutOfRangeException(nameof(textureName));
         byte[] packet = new byte[ShaderTextureHeaderLength];
         BitConverter.GetBytes(ShaderTextureMagic).CopyTo(packet, 0);
         BitConverter.GetBytes((uint)width).CopyTo(packet, 4);
         BitConverter.GetBytes((uint)height).CopyTo(packet, 8);
         BitConverter.GetBytes(0u).CopyTo(packet, 12);
         BitConverter.GetBytes((uint)byteLength).CopyTo(packet, 16);
+        BitConverter.GetBytes((uint)name.Length).CopyTo(packet, 20);
+        name.CopyTo(packet, 24);
         return packet;
     }
 

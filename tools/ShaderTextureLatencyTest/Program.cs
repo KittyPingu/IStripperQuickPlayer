@@ -53,22 +53,31 @@ internal static class Program
 
             await SetOpacityAsync(client, options.Opacity, stopped.Token);
 
-            RgbaStopwatchRenderer renderer = new(
-                options.Width, options.Height);
-            renderer.Render(TimeSpan.Zero, 0);
+            RgbaStopwatchRenderer[] renderers = Enumerable.Range(
+                0, options.TextureCount)
+                .Select(index => new RgbaStopwatchRenderer(
+                    options.Width, options.Height, index))
+                .ToArray();
+            foreach (RgbaStopwatchRenderer renderer in renderers)
+                renderer.Render(TimeSpan.Zero, 0);
             if (options.SharedMemory)
             {
                 if (!OperatingSystem.IsWindows())
                     throw new PlatformNotSupportedException(
                         "Shared-memory mode requires Windows.");
-                using SharedTexturePublisher publisher =
-                    await SharedTexturePublisher.ConnectAsync(
-                        client, stopped.Token);
+                SharedTexturePublisher[] publishers =
+                    new SharedTexturePublisher[options.TextureCount];
+                for (int index = 0; index < publishers.Length; index++)
+                    publishers[index] =
+                        await SharedTexturePublisher.ConnectAsync(client,
+                            $"texture{index + 1}", stopped.Token);
                 Console.WriteLine("Warming the shared-memory channel...");
-                publisher.Publish(options.Width, options.Height,
-                    renderer.Pixels, 0);
+                for (int index = 0; index < publishers.Length; index++)
+                    publishers[index].Publish(options.Width, options.Height,
+                        renderers[index].Pixels, 0);
                 Console.WriteLine(
-                    $"Publishing {options.Width}x{options.Height} RGBA8 " +
+                    $"Publishing {options.TextureCount} named " +
+                    $"{options.Width}x{options.Height} RGBA8 textures " +
                     $"through shared memory at a " +
                     $"{options.IntervalMilliseconds:0.###} ms target interval.");
                 Console.WriteLine("Press Ctrl+C to stop.\n");
@@ -78,29 +87,35 @@ internal static class Program
                 timeBeginPeriod(1);
                 try
                 {
-                    return RunShared(publisher, renderer, options,
+                    return RunShared(publishers, renderers, options,
                         stopped.Token);
                 }
                 finally
                 {
                     timeEndPeriod(1);
                     GCSettings.LatencyMode = sharedPreviousLatency;
+                    foreach (SharedTexturePublisher publisher in publishers)
+                        publisher.Dispose();
                 }
             }
 
-            Uri textureUri = new(
-                $"fullscreen/shader-texture?width={options.Width}" +
-                $"&height={options.Height}", UriKind.Relative);
+            Uri[] textureUris = Enumerable.Range(1, options.TextureCount)
+                .Select(index => new Uri(
+                    $"fullscreen/shader-texture?width={options.Width}" +
+                    $"&height={options.Height}&name=texture{index}",
+                    UriKind.Relative)).ToArray();
 
             Console.WriteLine("Warming the API connection...");
-            await SendTextureAsync(client, textureUri,
-                renderer.Pixels, stopped.Token);
+            for (int index = 0; index < textureUris.Length; index++)
+                await SendTextureAsync(client, textureUris[index],
+                    renderers[index].Pixels, stopped.Token);
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
 
             Console.WriteLine(
-                $"Sending {options.Width}x{options.Height} RGBA8 at a " +
+                $"Sending {options.TextureCount} named " +
+                $"{options.Width}x{options.Height} RGBA8 textures at a " +
                 $"{options.IntervalMilliseconds:0.###} ms target interval.");
             Console.WriteLine("Press Ctrl+C to stop.\n");
 
@@ -109,7 +124,7 @@ internal static class Program
             timeBeginPeriod(1);
             try
             {
-                return await RunAsync(client, textureUri, renderer,
+                return await RunAsync(client, textureUris, renderers,
                     options, stopped.Token);
             }
             finally
@@ -130,8 +145,8 @@ internal static class Program
     }
 
     [SupportedOSPlatform("windows")]
-    private static int RunShared(SharedTexturePublisher publisher,
-        RgbaStopwatchRenderer renderer, Options options,
+    private static int RunShared(SharedTexturePublisher[] publishers,
+        RgbaStopwatchRenderer[] renderers, Options options,
         CancellationToken cancellationToken)
     {
         long intervalTicks = Math.Max(1, (long)Math.Round(
@@ -140,7 +155,7 @@ internal static class Program
         long frame = 1;
         long totalPublished = 0;
         long totalMissed = 0;
-        long lastConsumed = publisher.ConsumedFrame;
+        long lastConsumed = publishers.Sum(item => item.ConsumedFrame);
         long windowPublished = 0;
         long windowMissed = 0;
         double totalPublishMilliseconds = 0;
@@ -170,12 +185,15 @@ internal static class Program
             nextDue += intervalTicks;
 
             long renderStarted = Stopwatch.GetTimestamp();
-            renderer.Render(runtime.Elapsed, frame);
+            foreach (RgbaStopwatchRenderer renderer in renderers)
+                renderer.Render(runtime.Elapsed, frame);
             double renderMilliseconds = Stopwatch.GetElapsedTime(
                 renderStarted).TotalMilliseconds;
             long publishStarted = Stopwatch.GetTimestamp();
-            publisher.Publish(options.Width, options.Height,
-                renderer.Pixels, (uint)(frame & 0x00FFFFFF));
+            for (int index = 0; index < publishers.Length; index++)
+                publishers[index].Publish(options.Width, options.Height,
+                    renderers[index].Pixels,
+                    (uint)(frame & 0x00FFFFFF));
             double publishMilliseconds = Stopwatch.GetElapsedTime(
                 publishStarted).TotalMilliseconds;
             frame++;
@@ -199,11 +217,12 @@ internal static class Program
 
             if (reportClock.ElapsedMilliseconds >= 1_000)
             {
-                long consumed = publisher.ConsumedFrame;
+                long consumed = publishers.Sum(item => item.ConsumedFrame);
                 PrintSharedWindow(reportClock.Elapsed, windowPublished,
                     consumed - lastConsumed, windowLatencies,
                     windowRenderLatencies, windowMissed,
-                    publisher.PendingFrames);
+                    publishers.Sum(item => item.PendingFrames),
+                    publishers.Length);
                 lastConsumed = consumed;
                 reportClock.Restart();
                 windowPublished = 0;
@@ -215,14 +234,15 @@ internal static class Program
 
         if (windowPublished > 0)
         {
-            long consumed = publisher.ConsumedFrame;
+            long consumed = publishers.Sum(item => item.ConsumedFrame);
             PrintSharedWindow(reportClock.Elapsed, windowPublished,
                 consumed - lastConsumed, windowLatencies,
                 windowRenderLatencies, windowMissed,
-                publisher.PendingFrames);
+                publishers.Sum(item => item.PendingFrames),
+                publishers.Length);
         }
         Stopwatch finalAcknowledgement = Stopwatch.StartNew();
-        while (publisher.PendingFrames > 0 &&
+        while (publishers.Sum(item => item.PendingFrames) > 0 &&
             finalAcknowledgement.ElapsedMilliseconds < 500)
             Thread.SpinWait(128);
         Console.WriteLine();
@@ -235,17 +255,21 @@ internal static class Program
             $"average render {totalRenderMilliseconds /
                 Math.Max(1, totalPublished):F3} ms, " +
             $"maximum {maximumPublishMilliseconds:F3} ms, " +
-            $"missed {totalMissed}, pending {publisher.PendingFrames}.");
+            $"missed {totalMissed}, pending " +
+            $"{publishers.Sum(item => item.PendingFrames)}.");
         return 0;
     }
 
     private static void PrintSharedWindow(TimeSpan elapsed,
         long published, long consumed, List<double> latencies,
-        List<double> renderLatencies, long missed, long pending)
+        List<double> renderLatencies, long missed, long pending,
+        int textureCount)
     {
         latencies.Sort();
         Console.WriteLine(
-            $"Published {published / elapsed.TotalSeconds,6:F1}/s | " +
+            $"Sets {published / elapsed.TotalSeconds,6:F1}/s " +
+            $"({published * textureCount / elapsed.TotalSeconds,6:F1} " +
+            "textures/s) | " +
             $"consumed {consumed / elapsed.TotalSeconds,6:F1}/s | " +
             $"publish ms avg {latencies.Average(),6:F3}  " +
             $"render {renderLatencies.Average(),6:F3}  " +
@@ -255,7 +279,8 @@ internal static class Program
     }
 
     private static async Task<int> RunAsync(HttpClient client,
-        Uri textureUri, RgbaStopwatchRenderer renderer, Options options,
+        Uri[] textureUris, RgbaStopwatchRenderer[] renderers,
+        Options options,
         CancellationToken cancellationToken)
     {
         long intervalTicks = Math.Max(1, (long)Math.Round(
@@ -289,10 +314,12 @@ internal static class Program
             WaitUntil(nextDue, cancellationToken);
             nextDue += intervalTicks;
 
-            renderer.Render(runtime.Elapsed, frame);
+            foreach (RgbaStopwatchRenderer renderer in renderers)
+                renderer.Render(runtime.Elapsed, frame);
             long requestStart = Stopwatch.GetTimestamp();
-            await SendTextureAsync(client, textureUri,
-                renderer.Pixels, cancellationToken);
+            for (int index = 0; index < textureUris.Length; index++)
+                await SendTextureAsync(client, textureUris[index],
+                    renderers[index].Pixels, cancellationToken);
             double latency = Stopwatch.GetElapsedTime(requestStart)
                 .TotalMilliseconds;
 
@@ -314,7 +341,7 @@ internal static class Program
             if (reportClock.ElapsedMilliseconds >= 1_000)
             {
                 PrintWindow(reportClock.Elapsed, windowLatencies,
-                    windowMissed);
+                    windowMissed, textureUris.Length);
                 reportClock.Restart();
                 windowLatencies.Clear();
                 windowMissed = 0;
@@ -322,7 +349,8 @@ internal static class Program
         }
 
         if (windowLatencies.Count > 0)
-            PrintWindow(reportClock.Elapsed, windowLatencies, windowMissed);
+            PrintWindow(reportClock.Elapsed, windowLatencies, windowMissed,
+                textureUris.Length);
         Console.WriteLine();
         Console.WriteLine(
             $"Total: {totalSent} sent in {runtime.Elapsed.TotalSeconds:F2}s " +
@@ -333,12 +361,14 @@ internal static class Program
     }
 
     private static void PrintWindow(TimeSpan elapsed,
-        List<double> latencies, long missed)
+        List<double> latencies, long missed, int textureCount)
     {
         latencies.Sort();
         double average = latencies.Average();
         Console.WriteLine(
-            $"Sent {latencies.Count / elapsed.TotalSeconds,6:F1}/s | " +
+            $"Sets {latencies.Count / elapsed.TotalSeconds,6:F1}/s " +
+            $"({latencies.Count * textureCount /
+                elapsed.TotalSeconds,6:F1} textures/s) | " +
             $"HTTP ms avg {average,6:F3}  " +
             $"p50 {Percentile(latencies, 0.50),6:F3}  " +
             $"p95 {Percentile(latencies, 0.95),6:F3}  " +
@@ -465,10 +495,12 @@ internal sealed class SharedTexturePublisher : IDisposable
     }
 
     public static async Task<SharedTexturePublisher> ConnectAsync(
-        HttpClient client, CancellationToken cancellationToken)
+        HttpClient client, string textureName,
+        CancellationToken cancellationToken)
     {
         using HttpResponseMessage response = await client.GetAsync(
-            "fullscreen/shader-texture/shared-memory",
+            "fullscreen/shader-texture/shared-memory?name=" +
+                Uri.EscapeDataString(textureName),
             cancellationToken);
         response.EnsureSuccessStatusCode();
         await using Stream stream = await response.Content.ReadAsStreamAsync(
@@ -615,11 +647,27 @@ internal sealed class RgbaStopwatchRenderer
     private readonly int width;
     private readonly int height;
     private readonly byte[] background;
+    private readonly byte foregroundRed;
+    private readonly byte foregroundGreen;
+    private readonly byte foregroundBlue;
+    private readonly byte accentRed;
+    private readonly byte accentGreen;
+    private readonly byte accentBlue;
 
-    public RgbaStopwatchRenderer(int width, int height)
+    public RgbaStopwatchRenderer(int width, int height, int palette)
     {
         this.width = width;
         this.height = height;
+        (foregroundRed, foregroundGreen, foregroundBlue,
+            accentRed, accentGreen, accentBlue) = (palette % 3) switch
+        {
+            0 => ((byte)70, (byte)225, (byte)255,
+                (byte)255, (byte)90, (byte)155),
+            1 => ((byte)255, (byte)205, (byte)70,
+                (byte)90, (byte)255, (byte)150),
+            _ => ((byte)205, (byte)125, (byte)255,
+                (byte)255, (byte)145, (byte)55)
+        };
         Pixels = new byte[checked(width * height * 4)];
         background = new byte[Pixels.Length];
         for (int y = 0; y < height; y++)
@@ -651,7 +699,7 @@ internal sealed class RgbaStopwatchRenderer
             Math.Max(1, (height / 2 - 8) / 7)));
         int timeWidth = (time.Length * 6 - 1) * timeScale;
         DrawText(time, (width - timeWidth) / 2, 10,
-            timeScale, 245, 245, 250);
+            timeScale, foregroundRed, foregroundGreen, foregroundBlue);
 
         string frameText = (frame % 100_000_000).ToString("D8");
         int frameScale = Math.Max(1, Math.Min(
@@ -661,10 +709,11 @@ internal sealed class RgbaStopwatchRenderer
         DrawText(frameText, (width - frameWidth) / 2,
             Math.Max(10 + 7 * timeScale + 8,
                 height - 7 * frameScale - 14),
-            frameScale, 180, 185, 195);
+            frameScale, accentRed, accentGreen, accentBlue);
 
         int progress = (int)((long)(width - 4) * milliseconds / 999);
-        FillRectangle(2, height - 5, progress, 3, 245, 245, 250);
+        FillRectangle(2, height - 5, progress, 3,
+            foregroundRed, foregroundGreen, foregroundBlue);
     }
 
     private void DrawText(string text, int x, int y, int scale,
@@ -724,6 +773,7 @@ internal sealed record Options(
     double DurationSeconds,
     float Opacity,
     bool SharedMemory,
+    int TextureCount,
     bool ShowHelp)
 {
     public static Options Parse(string[] args)
@@ -734,11 +784,12 @@ internal sealed record Options(
                 Environment.SpecialFolder.LocalApplicationData),
             "IStripperQuickPlayer", "api-token.txt");
         double interval = 10;
-        int width = 256;
-        int height = 128;
+        int width = 1024;
+        int height = 512;
         double duration = 0;
         float opacity = 1;
         bool sharedMemory = false;
+        int textureCount = 3;
         bool help = false;
 
         for (int index = 0; index < args.Length; index++)
@@ -763,6 +814,7 @@ internal sealed record Options(
                 case "--opacity": opacity = float.Parse(Value(),
                     System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--shared-memory": sharedMemory = true; break;
+                case "--textures": textureCount = int.Parse(Value()); break;
                 default: throw new ArgumentException(
                     $"Unknown argument '{argument}'.");
             }
@@ -778,9 +830,11 @@ internal sealed record Options(
             throw new ArgumentOutOfRangeException(nameof(duration));
         if (!float.IsFinite(opacity) || opacity is < 0 or > 1)
             throw new ArgumentOutOfRangeException(nameof(opacity));
+        if (textureCount is < 1 or > 16)
+            throw new ArgumentOutOfRangeException(nameof(textureCount));
 
         return new(baseUrl, tokenPath, interval, width, height,
-            duration, opacity, sharedMemory, help);
+            duration, opacity, sharedMemory, textureCount, help);
     }
 
     public static void PrintHelp()
@@ -790,8 +844,9 @@ internal sealed record Options(
 
             Options:
               --interval-ms <ms>  Target interval (default 10)
-              --width <pixels>    Texture width (default 256)
-              --height <pixels>   Texture height (default 128)
+              --width <pixels>    Texture width (default 1024)
+              --height <pixels>   Texture height (default 512)
+              --textures <count>  Named textures texture1...N (default 3)
               --duration <sec>    Stop automatically; 0 means Ctrl+C
               --opacity <0..1>    u_QuickPlayerData.x (default 1)
               --shared-memory     Use the shared-memory texture channel

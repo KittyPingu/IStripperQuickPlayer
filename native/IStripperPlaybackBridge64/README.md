@@ -94,11 +94,12 @@ offset. At startup the bridge resolves `QOpenGLShaderProgram::bind`,
 table, and resolves core texture calls from `opengl32.dll`. The current
 context's `glActiveTexture` entry point is obtained dynamically through
 `wglGetProcAddress` on the render thread. The bind hook sets
-`u_QuickPlayerData`, `u_QuickPlayerSequence`, `u_QuickPlayerTexture`,
-`u_QuickPlayerTextureSize`, and `u_QuickPlayerTextureSequence` only for linked
-programs that declare them. Texture objects and uploads are context-specific
-and run only on the OpenGL render thread. Missing or incompatible Qt/OpenGL
-exports make fullscreen hook setup fail closed.
+`u_QuickPlayerData`, `u_QuickPlayerSequence`, and the named
+`u_QuickPlayerTexture_<name>`, `u_QuickPlayerTextureSize_<name>`, and
+`u_QuickPlayerTextureSequence_<name>` uniforms only for linked programs that
+declare them. Texture objects and uploads are context-specific and run only on
+the OpenGL render thread. Missing or incompatible Qt/OpenGL exports make
+fullscreen hook setup fail closed.
 
 The resolver produced this profile for the 2.4.0.0 baseline:
 

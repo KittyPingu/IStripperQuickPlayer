@@ -440,20 +440,25 @@ sequence through an acknowledgment channel before sending the next command.
 
 ### External shader texture
 
-Fullscreen shaders can display a persistent image supplied by an external
-application by declaring these optional uniforms:
+Fullscreen shaders can display up to 16 independently updated persistent
+images. Select one with the optional `name` query parameter. For example,
+`name=scoreboard` deterministically creates these uniforms:
 
 ```glsl
-uniform sampler2D u_QuickPlayerTexture;
-uniform vec2 u_QuickPlayerTextureSize;
-uniform float u_QuickPlayerTextureSequence;
+uniform sampler2D u_QuickPlayerTexture_scoreboard;
+uniform vec2 u_QuickPlayerTextureSize_scoreboard;
+uniform float u_QuickPlayerTextureSequence_scoreboard;
 ```
+
+Names are case-sensitive, contain 1-32 ASCII letters, digits, or underscores,
+and must start with a letter. If `name` is omitted or empty, it defaults to
+`texture1`.
 
 Upload a PNG or JPEG directly. Its dimensions are read from the image:
 
 ```powershell
 Invoke-RestMethod `
-  http://127.0.0.1:17871/api/v1/fullscreen/shader-texture `
+  "http://127.0.0.1:17871/api/v1/fullscreen/shader-texture?name=scoreboard" `
   -Method Put -Headers $headers -ContentType image/png `
   -InFile "C:\path\scoreboard.png"
 ```
@@ -463,11 +468,17 @@ response describes the persistent RGBA8 texture and its new sequence:
 
 ```json
 {
+  "name": "scoreboard",
   "sequence": 1,
   "width": 320,
   "height": 180,
   "format": "rgba8",
-  "byteLength": 230400
+  "byteLength": 230400,
+  "uniforms": {
+    "sampler": "u_QuickPlayerTexture_scoreboard",
+    "size": "u_QuickPlayerTextureSize_scoreboard",
+    "sequence": "u_QuickPlayerTextureSequence_scoreboard"
+  }
 }
 ```
 
@@ -477,7 +488,7 @@ green, blue, alpha order:
 
 ```powershell
 Invoke-RestMethod `
-  "http://127.0.0.1:17871/api/v1/fullscreen/shader-texture?width=320&height=180" `
+  "http://127.0.0.1:17871/api/v1/fullscreen/shader-texture?name=scoreboard&width=320&height=180" `
   -Method Put -Headers $headers -ContentType application/octet-stream `
   -Body $rgbaBytes
 ```
@@ -487,26 +498,26 @@ OpenGL's orientation, so `(0, 0)` is the image's lower-left in the shader:
 
 ```glsl
 vec4 scene = texture2D(texture0, uv);
-vec4 image = texture2D(u_QuickPlayerTexture, uv);
+vec4 image = texture2D(u_QuickPlayerTexture_scoreboard, uv);
 gl_FragColor = mix(scene, image, image.a);
 ```
 
-Each successful upload increments `u_QuickPlayerTextureSequence`, including
+Each successful upload increments that name's independent sequence, including
 when identical pixels are uploaded. The sequence uses the same exactly
-representable `0` through `16777215` range as the float data channel. Read the
-current width, height, byte length, and sequence without returning the pixel
-body or changing state with:
+representable `0` through `16777215` range as the float data channel. Read one
+name's current width, height, byte length, sequence, and generated uniform names
+without returning the pixel body or changing state with:
 
 ```powershell
 Invoke-RestMethod `
-  http://127.0.0.1:17871/api/v1/fullscreen/shader-texture `
+  "http://127.0.0.1:17871/api/v1/fullscreen/shader-texture?name=scoreboard" `
   -Headers $headers
 ```
 
-The REST thread retains only the latest image. The bridge creates one OpenGL
-texture per active rendering context and performs creation or `glTexSubImage2D`
-updates on that context's render thread. Shaders that do not declare
-`u_QuickPlayerTexture` are unaffected. Image updates are intended for
+The REST thread retains only the latest image for each name. The bridge creates
+one OpenGL texture per name and active rendering context, and performs creation
+or `glTexSubImage2D` updates on that context's render thread. Shaders that do
+not declare a generated sampler uniform are unaffected. Image updates are intended for
 occasional or low-rate graphics rather than full-frame-rate video.
 
 #### Shared-memory texture channel
@@ -517,14 +528,15 @@ alternative transport. Discover the channel after authenticating normally:
 
 ```powershell
 $channel = Invoke-RestMethod `
-  http://127.0.0.1:17871/api/v1/fullscreen/shader-texture/shared-memory `
+  "http://127.0.0.1:17871/api/v1/fullscreen/shader-texture/shared-memory?name=scoreboard" `
   -Headers $headers
 ```
 
-The response supplies random process-lifetime `mappingName` and `eventName`
-values along with all sizes and offsets needed to open the Windows memory-mapped
-file. The mapping has a 64-byte header followed by two 4 MiB RGBA8 slots. It
-supports any dimensions from 1 through 1024 independently on every frame.
+Each texture name receives its own channel. The response includes `name`, the
+generated uniform names, random process-lifetime `mappingName` and `eventName`
+values, and all sizes and offsets needed to open the Windows memory-mapped file.
+Each mapping has a 64-byte header followed by two 4 MiB RGBA8 slots and supports
+dimensions from 1 through 1024 independently on every frame.
 
 The channel is a single-producer, latest-frame register. Publish a frame in
 this order:

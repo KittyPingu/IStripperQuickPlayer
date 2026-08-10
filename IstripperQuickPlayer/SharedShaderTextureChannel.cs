@@ -40,8 +40,10 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
     private bool disposed;
 
     public SharedShaderTextureChannel(
+        string textureName,
         Func<int, int, nint, int, bool> apply)
     {
+        TextureName = textureName;
         this.apply = apply;
         string suffix = $"{Environment.ProcessId}." +
             Convert.ToHexString(RandomNumberGenerator.GetBytes(12));
@@ -68,9 +70,17 @@ internal sealed unsafe class SharedShaderTextureChannel : IDisposable
 
     public string MappingName { get; }
     public string EventName { get; }
+    public string TextureName { get; }
 
     public object Description => new
     {
+        name = TextureName,
+        uniforms = new
+        {
+            sampler = $"u_QuickPlayerTexture_{TextureName}",
+            size = $"u_QuickPlayerTextureSize_{TextureName}",
+            sequence = $"u_QuickPlayerTextureSequence_{TextureName}"
+        },
         protocolVersion = ProtocolVersion,
         mappingName = MappingName,
         eventName = EventName,

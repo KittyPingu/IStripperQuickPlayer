@@ -282,6 +282,8 @@ namespace
 
     constexpr std::uint32_t FullScreenShaderTextureMagic = 0x58545051;
     constexpr std::uint32_t MaximumFullScreenShaderTextureDimension = 1024;
+    constexpr std::size_t FullScreenShaderTextureNameCapacity = 32;
+    constexpr std::size_t MaximumFullScreenShaderTextures = 16;
     constexpr std::size_t MaximumFullScreenShaderTextureBytes =
         MaximumFullScreenShaderTextureDimension *
         MaximumFullScreenShaderTextureDimension * 4;
@@ -292,12 +294,15 @@ namespace
         std::uint32_t height = 0;
         std::uint32_t sequence = 0;
         std::uint32_t byteLength = 0;
+        std::uint32_t nameLength = 0;
+        char name[FullScreenShaderTextureNameCapacity] = {};
     };
 
-    static_assert(sizeof(FullScreenShaderTexturePacket) == 20);
+    static_assert(sizeof(FullScreenShaderTexturePacket) == 56);
 
     struct FullScreenShaderTextureState
     {
+        std::string name;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         std::uint32_t sequence = 0;
@@ -308,6 +313,7 @@ namespace
     struct FullScreenShaderGlTexture
     {
         HGLRC context = nullptr;
+        std::string name;
         unsigned int texture = 0;
         int textureUnit = -1;
         std::uint32_t width = 0;
@@ -398,7 +404,7 @@ namespace
     FullScreenShaderDataPacket g_fullScreenShaderData;
     LONG volatile g_fullScreenShaderDataSet = 0;
     SRWLOCK g_fullScreenShaderTextureLock = SRWLOCK_INIT;
-    FullScreenShaderTextureState g_fullScreenShaderTexture;
+    std::vector<FullScreenShaderTextureState> g_fullScreenShaderTextures;
     LONG volatile g_fullScreenShaderTextureSet = 0;
     std::mutex g_fullScreenShaderGlTextureLock;
     std::vector<FullScreenShaderGlTexture> g_fullScreenShaderGlTextures;
@@ -1363,6 +1369,27 @@ namespace
         return reinterpret_cast<GlActiveTexture>(address);
     }
 
+    bool TryReadFullScreenShaderTextureName(
+        const FullScreenShaderTexturePacket& packet, std::string& name)
+    {
+        if (packet.nameLength == 0 ||
+            packet.nameLength > FullScreenShaderTextureNameCapacity)
+            return false;
+        for (std::uint32_t index = 0; index < packet.nameLength; ++index)
+        {
+            const unsigned char character =
+                static_cast<unsigned char>(packet.name[index]);
+            const bool letter = (character >= 'A' && character <= 'Z') ||
+                (character >= 'a' && character <= 'z');
+            const bool digit = character >= '0' && character <= '9';
+            if ((index == 0 && !letter) ||
+                (index > 0 && !letter && !digit && character != '_'))
+                return false;
+        }
+        name.assign(packet.name, packet.nameLength);
+        return true;
+    }
+
     bool ApplyFullScreenShaderTexture(void* program)
     {
         constexpr unsigned int GlTexture2D = 0x0DE1;
@@ -1387,9 +1414,7 @@ namespace
             g_qOpenGLShaderSetUniform2 == nullptr ||
             g_qOpenGLShaderSetUniform1 == nullptr)
             return false;
-        const int samplerLocation = g_qOpenGLShaderUniformLocation(
-            program, "u_QuickPlayerTexture");
-        if (samplerLocation < 0 || g_wglGetCurrentContext == nullptr ||
+        if (g_wglGetCurrentContext == nullptr ||
             g_glGenTextures == nullptr || g_glBindTexture == nullptr ||
             g_glIsTexture == nullptr || g_glGetIntegerv == nullptr ||
             g_glPixelStorei == nullptr || g_glTexParameteri == nullptr ||
@@ -1403,34 +1428,11 @@ namespace
 
         try
         {
-            std::lock_guard<std::mutex> guard(
-                g_fullScreenShaderGlTextureLock);
-            auto found = std::find_if(
-                g_fullScreenShaderGlTextures.begin(),
-                g_fullScreenShaderGlTextures.end(),
-                [context](const FullScreenShaderGlTexture& texture)
-                {
-                    return texture.context == context;
-                });
-            if (found == g_fullScreenShaderGlTextures.end())
-            {
-                if (g_fullScreenShaderGlTextures.size() >= 16)
-                    return false;
-                g_fullScreenShaderGlTextures.push_back({});
-                found = g_fullScreenShaderGlTextures.end() - 1;
-                found->context = context;
-            }
-
-            FullScreenShaderTextureState snapshot;
+            std::vector<FullScreenShaderTextureState> snapshots;
             AcquireSRWLockShared(&g_fullScreenShaderTextureLock);
-            snapshot.width = g_fullScreenShaderTexture.width;
-            snapshot.height = g_fullScreenShaderTexture.height;
-            snapshot.sequence = g_fullScreenShaderTexture.sequence;
-            snapshot.generation = g_fullScreenShaderTexture.generation;
             try
             {
-                if (found->generation != snapshot.generation)
-                    snapshot.rgba = g_fullScreenShaderTexture.rgba;
+                snapshots = g_fullScreenShaderTextures;
             }
             catch (...)
             {
@@ -1438,106 +1440,156 @@ namespace
                 throw;
             }
             ReleaseSRWLockShared(&g_fullScreenShaderTextureLock);
-            if (snapshot.width == 0 || snapshot.height == 0)
-                return false;
 
-            if (found->textureUnit < 0)
-            {
-                int unitCount = 0;
-                g_glGetIntegerv(GlMaxCombinedTextureImageUnits, &unitCount);
-                if (unitCount <= 0)
-                    g_glGetIntegerv(GlMaxTextureImageUnits, &unitCount);
-                if (unitCount <= 1)
-                    return false;
-                found->textureUnit = unitCount - 1;
-            }
-
+            std::lock_guard<std::mutex> guard(
+                g_fullScreenShaderGlTextureLock);
             int previousActiveTexture = static_cast<int>(GlTexture0);
             g_glGetIntegerv(GlActiveTextureName, &previousActiveTexture);
-            glActiveTexture(GlTexture0 + found->textureUnit);
-            if (found->texture != 0 && !g_glIsTexture(found->texture))
+            bool applied = false;
+            for (const auto& snapshot : snapshots)
             {
-                found->texture = 0;
-                found->generation = 0;
-                found->width = 0;
-                found->height = 0;
-            }
-            if (found->texture == 0)
-            {
-                g_glGenTextures(1, &found->texture);
+                if (snapshot.width == 0 || snapshot.height == 0)
+                    continue;
+                const std::string samplerName =
+                    "u_QuickPlayerTexture_" + snapshot.name;
+                const std::string sizeName =
+                    "u_QuickPlayerTextureSize_" + snapshot.name;
+                const std::string sequenceName =
+                    "u_QuickPlayerTextureSequence_" + snapshot.name;
+                const int samplerLocation =
+                    g_qOpenGLShaderUniformLocation(
+                        program, samplerName.c_str());
+                if (samplerLocation < 0)
+                    continue;
+
+                auto found = std::find_if(
+                    g_fullScreenShaderGlTextures.begin(),
+                    g_fullScreenShaderGlTextures.end(),
+                    [context, &snapshot](
+                        const FullScreenShaderGlTexture& texture)
+                    {
+                        return texture.context == context &&
+                            texture.name == snapshot.name;
+                    });
+                if (found == g_fullScreenShaderGlTextures.end())
+                {
+                    if (g_fullScreenShaderGlTextures.size() >=
+                        MaximumFullScreenShaderTextures * 16)
+                        continue;
+                    g_fullScreenShaderGlTextures.push_back({});
+                    found = g_fullScreenShaderGlTextures.end() - 1;
+                    found->context = context;
+                    found->name = snapshot.name;
+                }
+
+                if (found->textureUnit < 0)
+                {
+                    int unitCount = 0;
+                    g_glGetIntegerv(
+                        GlMaxCombinedTextureImageUnits, &unitCount);
+                    if (unitCount <= 0)
+                        g_glGetIntegerv(
+                            GlMaxTextureImageUnits, &unitCount);
+                    for (int unit = unitCount - 1; unit > 0; --unit)
+                    {
+                        const bool used = std::any_of(
+                            g_fullScreenShaderGlTextures.begin(),
+                            g_fullScreenShaderGlTextures.end(),
+                            [context, unit](
+                                const FullScreenShaderGlTexture& texture)
+                            {
+                                return texture.context == context &&
+                                    texture.textureUnit == unit;
+                            });
+                        if (!used)
+                        {
+                            found->textureUnit = unit;
+                            break;
+                        }
+                    }
+                    if (found->textureUnit < 0)
+                        continue;
+                }
+
+                glActiveTexture(GlTexture0 + found->textureUnit);
+                if (found->texture != 0 &&
+                    !g_glIsTexture(found->texture))
+                {
+                    found->texture = 0;
+                    found->generation = 0;
+                    found->width = 0;
+                    found->height = 0;
+                }
                 if (found->texture == 0)
                 {
-                    glActiveTexture(previousActiveTexture);
-                    return false;
-                }
-            }
-
-            g_glBindTexture(GlTexture2D, found->texture);
-            if (found->generation != snapshot.generation)
-            {
-                const std::size_t expected =
-                    static_cast<std::size_t>(snapshot.width) *
-                    snapshot.height * 4;
-                if (snapshot.rgba == nullptr ||
-                    snapshot.rgba->size() != expected)
-                {
-                    glActiveTexture(previousActiveTexture);
-                    return false;
+                    g_glGenTextures(1, &found->texture);
+                    if (found->texture == 0)
+                        continue;
                 }
 
-                int previousUnpackAlignment = 4;
-                g_glGetIntegerv(GlUnpackAlignment,
-                    &previousUnpackAlignment);
-                g_glPixelStorei(GlUnpackAlignment, 1);
-                if (found->width != snapshot.width ||
-                    found->height != snapshot.height)
+                g_glBindTexture(GlTexture2D, found->texture);
+                if (found->generation != snapshot.generation)
                 {
-                    g_glTexImage2D(GlTexture2D, 0, GlRgba,
-                        static_cast<int>(snapshot.width),
-                        static_cast<int>(snapshot.height), 0, GlRgba,
-                        GlUnsignedByte, snapshot.rgba->data());
+                    const std::size_t expected =
+                        static_cast<std::size_t>(snapshot.width) *
+                        snapshot.height * 4;
+                    if (snapshot.rgba == nullptr ||
+                        snapshot.rgba->size() != expected)
+                        continue;
+
+                    int previousUnpackAlignment = 4;
+                    g_glGetIntegerv(GlUnpackAlignment,
+                        &previousUnpackAlignment);
+                    g_glPixelStorei(GlUnpackAlignment, 1);
+                    if (found->width != snapshot.width ||
+                        found->height != snapshot.height)
+                    {
+                        g_glTexImage2D(GlTexture2D, 0, GlRgba,
+                            static_cast<int>(snapshot.width),
+                            static_cast<int>(snapshot.height), 0, GlRgba,
+                            GlUnsignedByte, snapshot.rgba->data());
+                    }
+                    else
+                    {
+                        g_glTexSubImage2D(GlTexture2D, 0, 0, 0,
+                            static_cast<int>(snapshot.width),
+                            static_cast<int>(snapshot.height), GlRgba,
+                            GlUnsignedByte, snapshot.rgba->data());
+                    }
+                    g_glPixelStorei(GlUnpackAlignment,
+                        previousUnpackAlignment);
+                    g_glTexParameteri(GlTexture2D,
+                        GlTextureMinFilter, GlLinear);
+                    g_glTexParameteri(GlTexture2D,
+                        GlTextureMagFilter, GlLinear);
+                    g_glTexParameteri(GlTexture2D,
+                        GlTextureWrapS, GlClampToEdge);
+                    g_glTexParameteri(GlTexture2D,
+                        GlTextureWrapT, GlClampToEdge);
+                    found->width = snapshot.width;
+                    found->height = snapshot.height;
+                    found->generation = snapshot.generation;
                 }
-                else
-                {
-                    g_glTexSubImage2D(GlTexture2D, 0, 0, 0,
-                        static_cast<int>(snapshot.width),
-                        static_cast<int>(snapshot.height), GlRgba,
-                        GlUnsignedByte, snapshot.rgba->data());
-                }
-                g_glPixelStorei(GlUnpackAlignment,
-                    previousUnpackAlignment);
-                g_glTexParameteri(GlTexture2D,
-                    GlTextureMinFilter, GlLinear);
-                g_glTexParameteri(GlTexture2D,
-                    GlTextureMagFilter, GlLinear);
-                g_glTexParameteri(GlTexture2D,
-                    GlTextureWrapS, GlClampToEdge);
-                g_glTexParameteri(GlTexture2D,
-                    GlTextureWrapT, GlClampToEdge);
-                found->width = snapshot.width;
-                found->height = snapshot.height;
-                found->generation = snapshot.generation;
+
+                g_qOpenGLShaderSetUniformInt(program,
+                    samplerLocation, found->textureUnit);
+                const int sizeLocation =
+                    g_qOpenGLShaderUniformLocation(
+                        program, sizeName.c_str());
+                if (sizeLocation >= 0)
+                    g_qOpenGLShaderSetUniform2(program, sizeLocation,
+                        static_cast<float>(snapshot.width),
+                        static_cast<float>(snapshot.height));
+                const int sequenceLocation =
+                    g_qOpenGLShaderUniformLocation(
+                        program, sequenceName.c_str());
+                if (sequenceLocation >= 0)
+                    g_qOpenGLShaderSetUniform1(program, sequenceLocation,
+                        static_cast<float>(snapshot.sequence));
+                applied = true;
             }
             glActiveTexture(previousActiveTexture);
-
-            g_qOpenGLShaderSetUniformInt(program, samplerLocation,
-                found->textureUnit);
-            const int sizeLocation = g_qOpenGLShaderUniformLocation(
-                program, "u_QuickPlayerTextureSize");
-            if (sizeLocation >= 0)
-            {
-                g_qOpenGLShaderSetUniform2(program, sizeLocation,
-                    static_cast<float>(snapshot.width),
-                    static_cast<float>(snapshot.height));
-            }
-            const int sequenceLocation = g_qOpenGLShaderUniformLocation(
-                program, "u_QuickPlayerTextureSequence");
-            if (sequenceLocation >= 0)
-            {
-                g_qOpenGLShaderSetUniform1(program, sequenceLocation,
-                    static_cast<float>(snapshot.sequence));
-            }
-            return true;
+            return applied;
         }
         catch (...)
         {
@@ -1551,8 +1603,11 @@ namespace
         {
             auto packet = reinterpret_cast<FullScreenShaderTexturePacket*>(
                 packetAddress);
+            std::string textureName;
             if (!IsWritable(packet, sizeof(*packet)) ||
                 packet->magic != FullScreenShaderTextureMagic ||
+                !TryReadFullScreenShaderTextureName(
+                    *packet, textureName) ||
                 packet->width == 0 ||
                 packet->width > MaximumFullScreenShaderTextureDimension ||
                 packet->height == 0 ||
@@ -1601,18 +1656,47 @@ namespace
             std::shared_ptr<const std::vector<unsigned char>> rgba =
                 writableRgba;
             AcquireSRWLockExclusive(&g_fullScreenShaderTextureLock);
-            const std::uint32_t sequence =
-                g_fullScreenShaderTexture.sequence >= 0x00FFFFFF
-                ? 0 : g_fullScreenShaderTexture.sequence + 1;
-            std::uint64_t generation =
-                g_fullScreenShaderTexture.generation + 1;
-            if (generation == 0)
-                generation = 1;
-            g_fullScreenShaderTexture.width = packet->width;
-            g_fullScreenShaderTexture.height = packet->height;
-            g_fullScreenShaderTexture.sequence = sequence;
-            g_fullScreenShaderTexture.generation = generation;
-            g_fullScreenShaderTexture.rgba = std::move(rgba);
+            std::uint32_t sequence = 0;
+            try
+            {
+                auto found = std::find_if(
+                    g_fullScreenShaderTextures.begin(),
+                    g_fullScreenShaderTextures.end(),
+                    [&textureName](
+                        const FullScreenShaderTextureState& texture)
+                    {
+                        return texture.name == textureName;
+                    });
+                if (found == g_fullScreenShaderTextures.end())
+                {
+                    if (g_fullScreenShaderTextures.size() >=
+                        MaximumFullScreenShaderTextures)
+                    {
+                        ReleaseSRWLockExclusive(
+                            &g_fullScreenShaderTextureLock);
+                        return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_QUOTA);
+                    }
+                    g_fullScreenShaderTextures.push_back({});
+                    found = g_fullScreenShaderTextures.end() - 1;
+                    found->name = textureName;
+                }
+                sequence = found->sequence >= 0x00FFFFFF
+                    ? 0 : found->sequence + 1;
+                std::uint64_t generation = found->generation + 1;
+                if (generation == 0)
+                    generation = 1;
+                found->width = packet->width;
+                found->height = packet->height;
+                found->sequence = sequence;
+                found->generation = generation;
+                found->rgba = std::move(rgba);
+            }
+            catch (...)
+            {
+                ReleaseSRWLockExclusive(
+                    &g_fullScreenShaderTextureLock);
+                throw;
+            }
             ReleaseSRWLockExclusive(&g_fullScreenShaderTextureLock);
             packet->sequence = sequence;
             InterlockedExchange(&g_fullScreenShaderTextureSet, 1);
@@ -1630,22 +1714,49 @@ namespace
 
     HRESULT GetFullScreenShaderTexture(SIZE_T packetAddress)
     {
-        auto packet = reinterpret_cast<FullScreenShaderTexturePacket*>(
-            packetAddress);
-        if (!IsWritable(packet, sizeof(*packet)))
-            return E_INVALIDARG;
-        FullScreenShaderTexturePacket current;
-        AcquireSRWLockShared(&g_fullScreenShaderTextureLock);
-        current.width = g_fullScreenShaderTexture.width;
-        current.height = g_fullScreenShaderTexture.height;
-        current.sequence = g_fullScreenShaderTexture.sequence;
-            current.byteLength = g_fullScreenShaderTexture.rgba == nullptr
-                ? 0
-                : static_cast<std::uint32_t>(
-                    g_fullScreenShaderTexture.rgba->size());
-        ReleaseSRWLockShared(&g_fullScreenShaderTextureLock);
-        *packet = current;
-        return BridgeSuccess;
+        try
+        {
+            auto packet = reinterpret_cast<FullScreenShaderTexturePacket*>(
+                packetAddress);
+            std::string textureName;
+            if (!IsWritable(packet, sizeof(*packet)) ||
+                packet->magic != FullScreenShaderTextureMagic ||
+                !TryReadFullScreenShaderTextureName(*packet, textureName))
+                return E_INVALIDARG;
+            FullScreenShaderTexturePacket current;
+            current.nameLength = packet->nameLength;
+            std::memcpy(current.name, packet->name,
+                FullScreenShaderTextureNameCapacity);
+            AcquireSRWLockShared(&g_fullScreenShaderTextureLock);
+            const auto found = std::find_if(
+                g_fullScreenShaderTextures.begin(),
+                g_fullScreenShaderTextures.end(),
+                [&textureName](
+                    const FullScreenShaderTextureState& texture)
+                {
+                    return texture.name == textureName;
+                });
+            if (found != g_fullScreenShaderTextures.end())
+            {
+                current.width = found->width;
+                current.height = found->height;
+                current.sequence = found->sequence;
+                current.byteLength = found->rgba == nullptr
+                    ? 0
+                    : static_cast<std::uint32_t>(found->rgba->size());
+            }
+            ReleaseSRWLockShared(&g_fullScreenShaderTextureLock);
+            *packet = current;
+            return BridgeSuccess;
+        }
+        catch (const std::bad_alloc&)
+        {
+            return E_OUTOFMEMORY;
+        }
+        catch (...)
+        {
+            return E_UNEXPECTED;
+        }
     }
 
     bool __fastcall CapturingQOpenGLShaderProgramBind(void* program)
@@ -9589,7 +9700,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 90;
+    return 92;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

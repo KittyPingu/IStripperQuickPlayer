@@ -16,6 +16,9 @@ namespace IStripperQuickPlayer
         private const int RestApiMaxBodyLength = 16 * 1024;
         private const int RestApiMaxTextureDimension = 1024;
         private const int RestApiMaxTextureEncodedLength = 8 * 1024 * 1024;
+        private const int RestApiMaxShaderTextures = 16;
+        private const int RestApiMaxShaderTextureNameLength = 32;
+        private const string RestApiDefaultShaderTextureName = "texture1";
         private static readonly JsonSerializerOptions RestApiJson =
             new(JsonSerializerDefaults.Web);
         private HttpListener? restApiListener;
@@ -23,7 +26,8 @@ namespace IStripperQuickPlayer
         private Task? restApiTask;
         private string restApiToken = "";
         private readonly object sharedShaderTextureChannelLock = new();
-        private SharedShaderTextureChannel? sharedShaderTextureChannel;
+        private readonly Dictionary<string, SharedShaderTextureChannel>
+            sharedShaderTextureChannels = new(StringComparer.Ordinal);
         private readonly UnmanagedTextureBuffer restApiTextureBuffer =
             new(RestApiMaxTextureDimension *
                 RestApiMaxTextureDimension * 4);
@@ -134,8 +138,10 @@ namespace IStripperQuickPlayer
             restApiLifetime = null;
             lock (sharedShaderTextureChannelLock)
             {
-                sharedShaderTextureChannel?.Dispose();
-                sharedShaderTextureChannel = null;
+                foreach (SharedShaderTextureChannel channel in
+                    sharedShaderTextureChannels.Values)
+                    channel.Dispose();
+                sharedShaderTextureChannels.Clear();
             }
             restApiTextureBuffer.Dispose();
         }
@@ -321,7 +327,7 @@ namespace IStripperQuickPlayer
             if (method == "GET" &&
                 Matches(parts, "fullscreen", "shader-texture"))
             {
-                return GetRestApiFullscreenShaderTexture();
+                return GetRestApiFullscreenShaderTexture(request);
             }
 
             if (method == "PUT" &&
@@ -337,14 +343,14 @@ namespace IStripperQuickPlayer
                     await ReadRestApiShaderTextureAsync(
                         request, cancellationToken);
                 return SetRestApiFullscreenShaderTexture(
-                    width, height, rgba);
+                    RestApiShaderTextureName(request), width, height, rgba);
             }
 
             if (method == "GET" &&
                 Matches(parts, "fullscreen", "shader-texture",
                     "shared-memory"))
             {
-                return GetRestApiSharedShaderTextureChannel();
+                return GetRestApiSharedShaderTextureChannel(request);
             }
 
             if (method == "GET" &&
@@ -796,32 +802,31 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private ApiResult GetRestApiFullscreenShaderTexture()
+        private ApiResult GetRestApiFullscreenShaderTexture(
+            HttpListenerRequest request)
         {
+            string textureName = RestApiShaderTextureName(request);
             lock (playbackApiLock)
             {
                 if (playbackBridgeClient?.IsConnected != true)
                     return Error(409,
                         "The iStripper bridge is not connected.");
                 int result = playbackBridgeClient.GetFullscreenShaderTexture(
-                    out int width, out int height, out uint sequence);
+                    textureName, out int width, out int height,
+                    out uint sequence);
                 return result < 0
                     ? Error(409,
                         "Fullscreen shader texture data is unavailable " +
                         $"(0x{result:X8}).")
-                    : new ApiResult(200, new
-                    {
-                        sequence,
-                        width,
-                        height,
-                        format = "rgba8",
-                        byteLength = checked(width * height * 4)
-                    });
+                    : new ApiResult(200,
+                        RestApiShaderTextureDescription(textureName,
+                            sequence, width, height,
+                            checked(width * height * 4)));
             }
         }
 
         private ApiResult SetRestApiFullscreenShaderTexture(
-            int width, int height, byte[] rgba)
+            string textureName, int width, int height, byte[] rgba)
         {
             lock (playbackApiLock)
             {
@@ -829,19 +834,14 @@ namespace IStripperQuickPlayer
                     return Error(409,
                         "The iStripper bridge is not connected.");
                 int result = playbackBridgeClient.SetFullscreenShaderTexture(
-                    width, height, rgba, out uint sequence);
+                    textureName, width, height, rgba, out uint sequence);
                 return result < 0
                     ? Error(409,
                         "Fullscreen shader texture could not be updated " +
                         $"(0x{result:X8}).")
-                    : new ApiResult(200, new
-                    {
-                        sequence,
-                        width,
-                        height,
-                        format = "rgba8",
-                        byteLength = rgba.Length
-                    });
+                    : new ApiResult(200,
+                        RestApiShaderTextureDescription(textureName,
+                            sequence, width, height, rgba.Length));
             }
         }
 
@@ -849,6 +849,7 @@ namespace IStripperQuickPlayer
             HttpListenerRequest request,
             CancellationToken cancellationToken)
         {
+            string textureName = RestApiShaderTextureName(request);
             (int width, int height) =
                 ReadRestApiRawShaderTextureDimensions(request);
             int byteLength = checked(width * height * 4);
@@ -866,9 +867,10 @@ namespace IStripperQuickPlayer
                         return Error(409,
                             "The iStripper bridge is not connected.");
                     int result = playbackBridgeClient
-                        .SetFullscreenShaderTexture(width, height,
-                            restApiTextureBuffer.Pointer, byteLength,
-                            out uint sequence, out PlaybackBridgeClient
+                        .SetFullscreenShaderTexture(textureName,
+                            width, height, restApiTextureBuffer.Pointer,
+                            byteLength, out uint sequence,
+                            out PlaybackBridgeClient
                                 .BufferCallTimings bridgeTimings);
                     long completed = Stopwatch.GetTimestamp();
                     string timing = string.Format(
@@ -888,43 +890,96 @@ namespace IStripperQuickPlayer
                     return result < 0
                         ? Error(409, "Fullscreen shader texture could not " +
                             $"be updated (0x{result:X8}).")
-                        : new ApiResult(200, new
-                        {
-                            sequence,
-                            width,
-                            height,
-                            format = "rgba8",
-                            byteLength
-                        }, timing);
+                        : new ApiResult(200,
+                            RestApiShaderTextureDescription(textureName,
+                                sequence, width, height, byteLength),
+                            timing);
                 }
             }
         }
 
-        private ApiResult GetRestApiSharedShaderTextureChannel()
+        private ApiResult GetRestApiSharedShaderTextureChannel(
+            HttpListenerRequest request)
         {
+            string textureName = RestApiShaderTextureName(request);
             lock (sharedShaderTextureChannelLock)
             {
-                sharedShaderTextureChannel ??=
-                    new SharedShaderTextureChannel(
-                        ApplySharedShaderTextureFrame);
+                if (!sharedShaderTextureChannels.TryGetValue(
+                    textureName, out SharedShaderTextureChannel? channel))
+                {
+                    if (sharedShaderTextureChannels.Count >=
+                        RestApiMaxShaderTextures)
+                        return Error(409,
+                            "The maximum number of shared shader texture " +
+                            "channels has been reached.");
+                    channel = new SharedShaderTextureChannel(textureName,
+                        (width, height, rgba, byteLength) =>
+                            ApplySharedShaderTextureFrame(textureName,
+                                width, height, rgba, byteLength));
+                    sharedShaderTextureChannels.Add(textureName, channel);
+                }
                 return new ApiResult(200,
-                    sharedShaderTextureChannel.Description);
+                    channel.Description);
             }
         }
 
         private bool ApplySharedShaderTextureFrame(
-            int width, int height, nint rgba, int byteLength)
+            string textureName, int width, int height,
+            nint rgba, int byteLength)
         {
             lock (playbackApiLock)
             {
                 if (playbackBridgeClient?.IsConnected != true)
                     return false;
                 int result = playbackBridgeClient
-                    .SetFullscreenShaderTexture(width, height,
+                    .SetFullscreenShaderTexture(textureName, width, height,
                         rgba, byteLength, out _);
                 return result >= 0;
             }
         }
+
+        private static string RestApiShaderTextureName(
+            HttpListenerRequest request)
+        {
+            string name = request.QueryString["name"]?.Trim() ?? "";
+            if (name.Length == 0)
+                return RestApiDefaultShaderTextureName;
+            if (name.Length > RestApiMaxShaderTextureNameLength ||
+                !IsAsciiLetter(name[0]) ||
+                name.Skip(1).Any(character =>
+                    !IsAsciiLetter(character) &&
+                    (character < '0' || character > '9') &&
+                    character != '_'))
+            {
+                throw new ApiRequestException(400,
+                    "Texture name must be 1-32 ASCII characters, start " +
+                    "with a letter, and contain only letters, digits, " +
+                    "or underscores.");
+            }
+            return name;
+        }
+
+        private static bool IsAsciiLetter(char character) =>
+            (character >= 'A' && character <= 'Z') ||
+            (character >= 'a' && character <= 'z');
+
+        private static object RestApiShaderTextureDescription(
+            string name, uint sequence, int width, int height,
+            int byteLength) => new
+            {
+                name,
+                sequence,
+                width,
+                height,
+                format = "rgba8",
+                byteLength,
+                uniforms = new
+                {
+                    sampler = $"u_QuickPlayerTexture_{name}",
+                    size = $"u_QuickPlayerTextureSize_{name}",
+                    sequence = $"u_QuickPlayerTextureSequence_{name}"
+                }
+            };
 
         private object CreateRestApiFullscreenQueue()
         {
