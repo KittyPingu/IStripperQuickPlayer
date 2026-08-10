@@ -631,7 +631,8 @@ public partial class Form1
     bool RequestAnimationPlayback(string animationPath)
     {
         if (animationPath.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
-            return StartCustomPlayback(animationPath);
+            return PlaybackSourceAllowed(IsFullscreenModeActive(), custom: true) &&
+                StartCustomPlayback(animationPath);
         bool customTransition = customIstripperSuspended;
         StopCustomPlayback(restoreIstripper: !customTransition);
         using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
@@ -651,6 +652,16 @@ public partial class Form1
         }
         return true;
     }
+
+    private bool IsFullscreenModeActive() =>
+        Volatile.Read(ref playerMode) == 3 ||
+        ReadRegistryInteger(@"Software\Totem\vghd\player", "playingMode") == 3;
+
+    internal static bool PlaybackSourceAllowed(bool fullscreen, bool custom) =>
+        !fullscreen || !custom;
+
+    private bool PlaybackCardAllowed(ModelCard? card) => card != null &&
+        PlaybackSourceAllowed(IsFullscreenModeActive(), card.IsCustom);
 
     bool StartCustomPlayback(string animationPath)
     {

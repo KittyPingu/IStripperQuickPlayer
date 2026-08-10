@@ -378,6 +378,12 @@ namespace IStripperQuickPlayer
 #if DEBUG
             if (!apiOnlyMode)
             {
+            System.Diagnostics.Debug.Assert(
+                PlaybackSourceAllowed(fullscreen: true, custom: false));
+            System.Diagnostics.Debug.Assert(
+                !PlaybackSourceAllowed(fullscreen: true, custom: true));
+            System.Diagnostics.Debug.Assert(
+                PlaybackSourceAllowed(fullscreen: false, custom: true));
             System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
             System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
             DateTime replacementCheck = DateTime.UtcNow;
@@ -4415,7 +4421,7 @@ namespace IStripperQuickPlayer
             {
                 ModelCard? card = Datastore.findCardByTag(
                     item.Tag?.ToString() ?? "");
-                if (card?.clips == null)
+                if (!PlaybackCardAllowed(card) || card!.clips == null)
                     continue;
 
                 List<ModelClip> clips = FilterClipList(card.clips);
@@ -4470,6 +4476,8 @@ namespace IStripperQuickPlayer
                         Volatile.Write(ref playerMode, (int)mode);
                         if (!apiOnlyMode)
                         {
+                            if (IsHandleCreated)
+                                BeginInvoke((Action)RebuildAutomaticQueue);
                             ThreadPool.QueueUserWorkItem(_ =>
                             {
                                 try
@@ -5285,16 +5293,21 @@ namespace IStripperQuickPlayer
             }
             else
             {
+                ListViewItem[] playableItems = items.Where(item =>
+                    PlaybackCardAllowed(Datastore.findCardByTag(
+                        item.Tag?.ToString() ?? ""))).ToArray();
+                if (playableItems.Length == 0)
+                    return;
                 //find the current card
                 int i = 0;
-                for (i = 0; i < items.Length; i++)
+                for (i = 0; i < playableItems.Length; i++)
                 {
-                    if (items[i].Text.ToString() == newtag)
+                    if (playableItems[i].Text.ToString() == newtag)
                         break;
                 }
                 i++;
-                if (i > items.Length - 1) i = 0;
-                newtag = items[i].Text;
+                if (i > playableItems.Length - 1) i = 0;
+                newtag = playableItems[i].Text;
             }
             listModelsNew.ClearSelection();
             int? index = items.ToList().FindIndex(x => x.Text == newtag);

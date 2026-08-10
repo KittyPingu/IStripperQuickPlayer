@@ -562,6 +562,15 @@ Mapping and event names change whenever QuickPlayer restarts. Call the discovery
 endpoint again after reconnecting. The mapping is local to the current Windows
 session and disappears when QuickPlayer closes.
 
+#### Video streaming example
+
+[`tools/ShaderVideoStreamer`](../../tools/ShaderVideoStreamer) contains a
+self-contained console example that decodes a video, converts frames to RGBA8,
+resizes within the 1024-pixel limit, and publishes them through a named
+shared-memory texture channel at the source frame rate. It includes a complete
+fragment shader and supports looping, a frame-rate override, and bounded test
+runs.
+
 ### Native iStripper queue
 
 Read iStripper's native fullscreen queue, insert an entry at its start, add

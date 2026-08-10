@@ -2070,7 +2070,8 @@ namespace IStripperQuickPlayer
                 ModelCard? card = Datastore.findCardByTag(tag);
                 if (string.IsNullOrEmpty(tag) || manualCards.Contains(tag) ||
                     !seen.Add(tag) ||
-                    card?.clips == null || FilterClipList(card.clips).Count == 0)
+                    !PlaybackCardAllowed(card) || card!.clips == null ||
+                    FilterClipList(card.clips).Count == 0)
                     continue;
                 int relaxation = SmartQueueRelaxation(
                     cooldownCards.Contains(tag),
@@ -2415,9 +2416,17 @@ namespace IStripperQuickPlayer
                     manualPlayQueue.Count, completedManualItemRequeued);
                 if (selectableCount == 0)
                     break;
+                List<int> selectableIndexes = Enumerable.Range(0,
+                        selectableCount)
+                    .Where(index => QueueEntryAllowedForPlayback(
+                        manualPlayQueue[index])).ToList();
+                if (selectableIndexes.Count == 0)
+                    break;
                 int index = Properties.Settings.Default
                     .RandomManualQueueSelection
-                        ? Random.Shared.Next(selectableCount) : 0;
+                        ? selectableIndexes[Random.Shared.Next(
+                            selectableIndexes.Count)]
+                        : selectableIndexes[0];
                 PlayQueueEntry entry = manualPlayQueue[index];
                 manualPlayQueue.RemoveAt(index);
                 if (TryResolveQueueEntry(entry, out animationPath,
@@ -2437,8 +2446,12 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.EnforceCardFilter &&
                 automaticPlayQueue.Count > 0)
             {
-                PlayQueueEntry entry = automaticPlayQueue[0];
-                automaticPlayQueue.RemoveAt(0);
+                int index = automaticPlayQueue.FindIndex(
+                    QueueEntryAllowedForPlayback);
+                if (index < 0)
+                    break;
+                PlayQueueEntry entry = automaticPlayQueue[index];
+                automaticPlayQueue.RemoveAt(index);
                 FillAutomaticQueue(entry.CardTag);
                 if (TryResolveQueueEntry(entry, out animationPath))
                 {
@@ -2460,7 +2473,8 @@ namespace IStripperQuickPlayer
         {
             animationPath = "";
             ModelCard? card = Datastore.findCardByTag(entry.CardTag);
-            if (card?.clips == null || card.clips.Count == 0)
+            if (!PlaybackCardAllowed(card) || card!.clips == null ||
+                card.clips.Count == 0)
                 return false;
 
             if (!string.IsNullOrEmpty(entry.ClipName))
@@ -2527,6 +2541,9 @@ namespace IStripperQuickPlayer
             return !string.IsNullOrEmpty(animationPath);
         }
 
+        private bool QueueEntryAllowedForPlayback(PlayQueueEntry entry) =>
+            PlaybackCardAllowed(Datastore.findCardByTag(entry.CardTag));
+
         private bool TryContinueQueuedCard(out string animationPath,
             out string cardTag)
         {
@@ -2534,7 +2551,8 @@ namespace IStripperQuickPlayer
             cardTag = "";
             if (activeQueuedCard == null)
                 return false;
-            if (!ShouldContinueQueuedCard(activeQueuedCardStartedAt,
+            if (!QueueEntryAllowedForPlayback(activeQueuedCard) ||
+                !ShouldContinueQueuedCard(activeQueuedCardStartedAt,
                     Environment.TickCount64, ReadShowDurationMinutes()) ||
                 !TryResolveQueueEntry(activeQueuedCard, out animationPath,
                     activeQueuedCardLastAnimationPath,
