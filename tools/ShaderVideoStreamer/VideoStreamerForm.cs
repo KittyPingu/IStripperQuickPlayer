@@ -364,6 +364,12 @@ internal sealed class VideoStreamerForm : Form
 
     protected override void OnKeyDown(KeyEventArgs eventArgs)
     {
+        if (ActiveControl is TextBoxBase or NumericUpDown)
+        {
+            base.OnKeyDown(eventArgs);
+            return;
+        }
+
         decimal move = moveStep.Value;
         decimal resize = resizeStep.Value;
         if (eventArgs.Control)
@@ -386,7 +392,10 @@ internal sealed class VideoStreamerForm : Form
                 displayHeight.Value = Math.Max(displayHeight.Minimum,
                     displayHeight.Value - resize);
             else
+            {
                 base.OnKeyDown(eventArgs);
+                return;
+            }
         }
         else if (eventArgs.KeyCode == Keys.Left)
             positionX.Value = Math.Max(positionX.Minimum, positionX.Value - move);
@@ -399,7 +408,10 @@ internal sealed class VideoStreamerForm : Form
         else if (eventArgs.KeyCode == Keys.Q)
             StopStreamer();
         else
+        {
             base.OnKeyDown(eventArgs);
+            return;
+        }
         eventArgs.Handled = true;
         eventArgs.SuppressKeyPress = true;
     }
