@@ -50,6 +50,7 @@ internal sealed class CustomShowEditorForm : Form
     List<CustomPerformerProfile> profiles = [];
     CustomPerformerProfile? selectedProfile;
     CustomShowClip[] showClips = [];
+    CustomShowClipDetection? clipDetection;
 
     internal CustomShowEditorForm(CustomShowStore store,
         CustomShowConfiguration configuration, string? showId)
@@ -256,6 +257,7 @@ internal sealed class CustomShowEditorForm : Form
             clipTypes.SetItemChecked(i, show.ClipTypes.Contains(clipTypes.Items[i]!.ToString()));
         performer.SelectedItem = profiles.FirstOrDefault(profile => profile.Id == show.PerformerId);
         showClips = show.Clips;
+        clipDetection = show.ClipDetection;
         if (show.Processing is CustomShowProcessing processing)
         {
             processingDetails.Text = DescribeProcessing(processing);
@@ -308,9 +310,11 @@ internal sealed class CustomShowEditorForm : Form
         using CustomClipEditorForm form = new(video, showClips,
             hotness.SelectedItem?.ToString() ?? "NoNudity",
             overallTypes.Length == 0 ? ["Standing"] : overallTypes,
-            configuration, allowBoundaryEditing: showId == null);
+            configuration, allowBoundaryEditing: showId == null,
+            existingDetection: clipDetection);
         if (form.ShowDialog(this) != DialogResult.OK) return;
         showClips = form.Clips;
+        clipDetection = form.Detection;
         UpdateClipButton();
     }
 
@@ -328,13 +332,14 @@ internal sealed class CustomShowEditorForm : Form
         using CustomPerformerForm form = new(profile);
         if (form.ShowDialog(this) != DialogResult.OK) return;
         selectedProfile = form.Profile;
+        string selectedProfileId = selectedProfile.Id;
         int index = profiles.FindIndex(profile => profile.Id == selectedProfile.Id);
         if (index >= 0) profiles[index] = selectedProfile; else profiles.Add(selectedProfile);
         performer.DataSource = null;
         performer.DisplayMember = nameof(CustomPerformerProfile.ModelName);
         performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
         performer.SelectedItem = performer.Items.Cast<CustomPerformerProfile>()
-            .First(profile => profile.Id == selectedProfile.Id);
+            .First(profile => profile.Id == selectedProfileId);
     }
 
     async void Save(object? sender, EventArgs e)
@@ -811,6 +816,7 @@ internal sealed class CustomShowEditorForm : Form
         show.ClipTypes = clipTypes.CheckedItems.Cast<object>()
             .Select(item => item.ToString()!).ToArray();
         show.Clips = showClips;
+        show.ClipDetection = clipDetection;
         show.Media.CoverTitleColor = ColorHex(coverTitleColor.BackColor);
         if (string.IsNullOrWhiteSpace(show.Title)) throw new InvalidDataException("Show title is required.");
     }
@@ -1206,6 +1212,7 @@ internal sealed class CustomShowSettingsForm : Form
             TransNetPreferredBatchSize = current.TransNetPreferredBatchSize,
             TransNetCompileCutoffFrames = current.TransNetCompileCutoffFrames,
             TransNetDecodeMode = current.TransNetDecodeMode,
+            LastClipDetector = current.LastClipDetector,
             RvmQualityPreferredChunk = current.RvmQualityPreferredChunk,
             RvmFastPreferredChunk = current.RvmFastPreferredChunk,
             RvmQualityCompileCutoffFrames = current.RvmQualityCompileCutoffFrames,
@@ -1236,7 +1243,7 @@ internal sealed class CustomShowSettingsForm : Form
         table.Controls.Add(cacheControls, 1, cacheRow); table.SetColumnSpan(cacheControls, 2);
         AddChoice(table, "TransNetV2 preferred window batch", transNetBatch);
         AddCutoff(table, "TransNetV2 compile cutoff", transNetCutoff);
-        transNetDecode.Items.AddRange(["Auto (codec-aware, exact-compatible)",
+        transNetDecode.Items.AddRange(["Auto (codec/resolution-aware, exact-compatible)",
             "Legacy CUDA-first", "CPU fallback (manual)"]);
         AddChoice(table, "TransNetV2 decode mode", transNetDecode);
         Button benchmarkTransNet = new() { Text = "Benchmark TransNetV2...", AutoSize = true };
@@ -1920,6 +1927,9 @@ internal sealed class CustomShowSetupOptionsForm : Form
 {
     readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
         AutoSize = true, Checked = true };
+    readonly CheckBox omniShotCut = new() { Text =
+        "OmniShotCut modern transition detection (~170 MB, NVIDIA CUDA required)",
+        AutoSize = true };
     readonly CheckBox matAnyone = new() { Text =
         "MatAnyone 2 + SAM2 Base+/Small/Tiny interactive masking (~900 MB)", AutoSize = true,
         Checked = true };
@@ -1932,6 +1942,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         "ProPainter video object removal (~200 MB, NVIDIA CUDA recommended)",
         AutoSize = true };
     internal bool InstallTransNetV2 => transNet.Checked;
+    internal bool InstallOmniShotCut => omniShotCut.Checked;
     internal bool InstallMatAnyone2 => matAnyone.Checked;
     internal bool InstallVideoMaMa => videoMaMa.Checked;
     internal bool InstallViTMatte => vitMatte.Checked;
@@ -1940,21 +1951,26 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal CustomShowSetupOptionsForm()
     {
         Text = "Choose Custom Show Processing Tools";
-        ClientSize = new Size(680, 420);
+        ClientSize = new Size(720, 470);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
         TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(16),
-            ColumnCount = 1, RowCount = 13 };
+            ColumnCount = 1, RowCount = 15 };
         layout.Controls.Add(new Label { Text =
             "Robust Video Matting is always installed. Select optional tools:", AutoSize = true });
         layout.Controls.Add(transNet);
+        layout.Controls.Add(omniShotCut);
         layout.Controls.Add(matAnyone);
         layout.Controls.Add(videoMaMa);
         layout.Controls.Add(vitMatte);
         layout.Controls.Add(proPainter);
         layout.Controls.Add(new Label { Text =
             "MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; ViTMatte and SAM2 permit commercial use.", AutoSize = true });
+        LinkLabel omniLicence = new() { Text = "Read the OmniShotCut MIT licence", AutoSize = true };
+        omniLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/UVA-Computer-Vision-Lab/OmniShotCut/blob/23ad6fb41b296fb9258b0e7825125a914573b906/LICENSE") { UseShellExecute = true });
+        layout.Controls.Add(omniLicence);
         LinkLabel matAnyoneLicence = new() { Text = "Read the MatAnyone 2 licence", AutoSize = true };
         matAnyoneLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/pq-yang/MatAnyone2/blob/main/LICENSE.txt") { UseShellExecute = true });
@@ -1981,7 +1997,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         AcceptButton = (Button)buttons.Controls[0];
         CancelButton = (Button)buttons.Controls[1];
         AppTheme.Apply(this);
-        matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor =
+        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor =
             proPainterLicence.LinkColor =
             Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
     }
@@ -1989,7 +2005,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal static bool VerifyDefaults()
     {
         using CustomShowSetupOptionsForm form = new();
-        return form.InstallTransNetV2 && form.InstallMatAnyone2 &&
+        return form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
             !form.InstallVideoMaMa && !form.InstallViTMatte &&
             !form.InstallProPainter;
     }
@@ -1999,6 +2015,7 @@ internal sealed class CustomShowSetupForm : Form
 {
     readonly string script;
     readonly bool installTransNetV2;
+    readonly bool installOmniShotCut;
     readonly bool installMatAnyone2;
     readonly bool installVideoMaMa;
     readonly bool installViTMatte;
@@ -2014,11 +2031,13 @@ internal sealed class CustomShowSetupForm : Form
     internal bool Succeeded { get; private set; }
 
     internal CustomShowSetupForm(string script, bool installTransNetV2,
+        bool installOmniShotCut,
         bool installMatAnyone2, bool installVideoMaMa, bool installViTMatte,
         bool installProPainter)
     {
         this.script = script;
         this.installTransNetV2 = installTransNetV2;
+        this.installOmniShotCut = installOmniShotCut;
         this.installMatAnyone2 = installMatAnyone2;
         this.installVideoMaMa = installVideoMaMa;
         this.installViTMatte = installViTMatte;
@@ -2053,6 +2072,8 @@ internal sealed class CustomShowSetupForm : Form
             start.ArgumentList.Add(script);
             if (installTransNetV2)
                 start.ArgumentList.Add("-InstallTransNetV2");
+            if (installOmniShotCut)
+                start.ArgumentList.Add("-InstallOmniShotCut");
             if (installMatAnyone2)
                 start.ArgumentList.Add("-InstallMatAnyone2");
             if (installVideoMaMa)

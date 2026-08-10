@@ -7,6 +7,12 @@ using System.Text.Json;
 
 namespace IStripperQuickPlayer;
 
+internal sealed record SceneDetectionRange(long StartMs, long EndMs,
+    string IntraLabel, string InterLabel);
+
+internal sealed record SceneDetectionResult(string Method, long[] BoundariesMs,
+    SceneDetectionRange[] Ranges, string? ToolRevision = null, int? OverlapFrames = null);
+
 internal sealed class CustomClipEditorForm : Form
 {
     static readonly string[] HotnessValues =
@@ -20,6 +26,7 @@ internal sealed class CustomClipEditorForm : Form
     readonly double frameDurationMs;
     readonly List<CustomShowClip> clips;
     readonly bool usesPerClipMedia;
+    CustomShowClipDetection? clipDetection;
     readonly PictureBox preview = new() { Dock = DockStyle.Fill,
         SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill, Height = 60 };
@@ -61,11 +68,13 @@ internal sealed class CustomClipEditorForm : Form
     bool resumeAfterScrub;
 
     internal CustomShowClip[] Clips => clips.Select(Clone).ToArray();
+    internal CustomShowClipDetection? Detection => CloneDetection(clipDetection);
 
     internal CustomClipEditorForm(string videoPath,
         IReadOnlyList<CustomShowClip> existing, string defaultHotness,
         string[] defaultTypes, CustomShowConfiguration? configuration = null,
-        bool allowBoundaryEditing = true)
+        bool allowBoundaryEditing = true,
+        CustomShowClipDetection? existingDetection = null)
     {
         this.videoPath = videoPath;
         this.configuration = configuration;
@@ -82,6 +91,7 @@ internal sealed class CustomClipEditorForm : Form
                 Hotness = defaultHotness, ClipTypes = [.. defaultTypes] }]
             : existing.Select(Clone).ToList();
         usesPerClipMedia = !allowBoundaryEditing && existing.Any(clip => clip.Media != null);
+        clipDetection = CloneDetection(existingDetection);
         clips[^1].EndMs = durationMs;
         CustomShowStore.ValidateClips([.. clips], durationMs);
 
@@ -130,7 +140,19 @@ internal sealed class CustomClipEditorForm : Form
         if (configuration != null &&
             CustomShowProcessor.IsTransNetV2Installed(configuration))
             detector.Items.Add("Accurate (TransNetV2)");
-        detector.SelectedIndex = detector.Items.Count - 1;
+        if (configuration != null &&
+            CustomShowProcessor.IsOmniShotCutInstalled(configuration))
+            detector.Items.Add("Modern/Quality (OmniShotCut)");
+        string preferred = configuration?.LastClipDetector ?? "transnetv2";
+        int preferredIndex = detector.Items.Cast<string>().ToList().FindIndex(item =>
+            DetectorId(item) == preferred);
+        if (preferredIndex < 0)
+            preferredIndex = detector.Items.Cast<string>().ToList().FindIndex(item =>
+                DetectorId(item) == "transnetv2");
+        if (preferredIndex < 0)
+            preferredIndex = detector.Items.Cast<string>().ToList().FindIndex(item =>
+                DetectorId(item) == "omnishotcut");
+        detector.SelectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
         actions.Controls.AddRange([addDivider, removeDivider,
             detector, skipTransitions, transitionSeconds,
             transitionSecondsLabel, autoDetect, ok, cancel]);
@@ -141,6 +163,7 @@ internal sealed class CustomClipEditorForm : Form
 
         grid.Columns.Add("number", "Segment");
         grid.Columns.Add("included", "Use");
+        grid.Columns.Add("detected", "Detected as");
         grid.Columns.Add("start", "Start");
         grid.Columns.Add("end", "End");
         grid.Columns.Add("length", "Length");
@@ -166,10 +189,10 @@ internal sealed class CustomClipEditorForm : Form
             if (resumeAfterScrub) StartPlayback(); else RequestPreview();
             resumeAfterScrub = false;
         };
-        timeline.DividerMoved += _ => UpdateGridTimes();
+        timeline.DividerMoved += _ => { MarkDetectionManuallyEdited(); UpdateGridTimes(); };
         grid.SelectionChanged += (_, _) => LoadSelectedMetadata();
         grid.CellDoubleClick += (_, e) => SeekToSegment(
-            e.RowIndex, e.ColumnIndex == 3);
+            e.RowIndex, e.ColumnIndex == 4);
         include.Click += (_, _) =>
         {
             if (loadingMetadata || !include.Enabled) return;
@@ -185,6 +208,7 @@ internal sealed class CustomClipEditorForm : Form
         addDivider.Click += (_, _) => AddDivider();
         removeDivider.Click += (_, _) => RemoveDivider();
         autoDetect.Click += async (_, _) => await AutoDetectAsync();
+        detector.SelectedIndexChanged += (_, _) => SaveDetectorPreference();
         skipTransitions.CheckedChanged += (_, _) =>
             transitionSeconds.Enabled = skipTransitions.Checked;
         ok.Click += (_, _) => AcceptClips();
@@ -218,6 +242,7 @@ internal sealed class CustomClipEditorForm : Form
         second.StartMs = at;
         first.EndMs = at;
         clips.Insert(index + 1, second);
+        MarkDetectionManuallyEdited();
         timeline.Invalidate();
         RefreshGrid(index + 1);
     }
@@ -227,8 +252,11 @@ internal sealed class CustomClipEditorForm : Form
         int index = SelectedIndex;
         if (index <= 0 || index >= clips.Count) return;
         clips[index - 1].EndMs = clips[index].EndMs;
+        clips[index - 1].DetectionLabels = clips[index - 1].DetectionLabels
+            .Concat(clips[index].DetectionLabels).Distinct(StringComparer.Ordinal).ToArray();
         clips[index - 1].Media = null;
         clips.RemoveAt(index);
+        MarkDetectionManuallyEdited();
         timeline.Invalidate();
         RefreshGrid(index - 1);
     }
@@ -241,6 +269,7 @@ internal sealed class CustomClipEditorForm : Form
         {
             CustomShowClip clip = clips[i];
             grid.Rows.Add(i + 1, clip.Included ? "Clip" : "Skip",
+                string.Join(", ", clip.DetectionLabels),
                 Format(clip.StartMs), Format(clip.EndMs),
                 Format(clip.EndMs - clip.StartMs), clip.Hotness,
                 string.Join(", ", clip.ClipTypes));
@@ -315,17 +344,18 @@ internal sealed class CustomClipEditorForm : Form
     void UpdateGridMetadata(int index)
     {
         grid.Rows[index].Cells[1].Value = clips[index].Included ? "Clip" : "Skip";
-        grid.Rows[index].Cells[5].Value = clips[index].Hotness;
-        grid.Rows[index].Cells[6].Value = string.Join(", ", clips[index].ClipTypes);
+        grid.Rows[index].Cells[2].Value = string.Join(", ", clips[index].DetectionLabels);
+        grid.Rows[index].Cells[6].Value = clips[index].Hotness;
+        grid.Rows[index].Cells[7].Value = string.Join(", ", clips[index].ClipTypes);
     }
 
     void UpdateGridTimes()
     {
         for (int i = 0; i < clips.Count && i < grid.Rows.Count; i++)
         {
-            grid.Rows[i].Cells[2].Value = Format(clips[i].StartMs);
-            grid.Rows[i].Cells[3].Value = Format(clips[i].EndMs);
-            grid.Rows[i].Cells[4].Value = Format(clips[i].EndMs - clips[i].StartMs);
+            grid.Rows[i].Cells[3].Value = Format(clips[i].StartMs);
+            grid.Rows[i].Cells[4].Value = Format(clips[i].EndMs);
+            grid.Rows[i].Cells[5].Value = Format(clips[i].EndMs - clips[i].StartMs);
         }
     }
 
@@ -342,11 +372,31 @@ internal sealed class CustomClipEditorForm : Form
         Close();
     }
 
+    static string DetectorId(string? label) => label switch
+    {
+        string value when value.StartsWith("Accurate", StringComparison.Ordinal) => "transnetv2",
+        string value when value.StartsWith("Modern/Quality", StringComparison.Ordinal) => "omnishotcut",
+        _ => "ffmpeg"
+    };
+
+    void SaveDetectorPreference()
+    {
+        if (configuration == null || detector.SelectedItem == null) return;
+        string selected = DetectorId(detector.SelectedItem.ToString());
+        if (configuration.LastClipDetector == selected) return;
+        configuration.LastClipDetector = selected;
+        configuration.Save();
+    }
+
+    void MarkDetectionManuallyEdited()
+    {
+        if (clipDetection != null) clipDetection.ManuallyEdited = true;
+    }
+
     async Task AutoDetectAsync()
     {
-        bool transNet = detector.SelectedItem?.ToString()?.StartsWith(
-            "Accurate", StringComparison.Ordinal) == true;
-        if (transNet && configuration == null) return;
+        string detectorId = DetectorId(detector.SelectedItem?.ToString());
+        if (detectorId != "ffmpeg" && configuration == null) return;
         if (clips.Count > 1 && MessageBox.Show(this,
                 "Replace the current dividers with automatically detected scene changes?",
                 Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
@@ -367,14 +417,25 @@ internal sealed class CustomClipEditorForm : Form
                 if (acceptingProgress)
                     autoDetect.Text = $"Detecting... {Math.Clamp(value, 0, 100)}%";
             });
-            long[] dividers = transNet
-                ? await CustomSceneDetector.DetectTransNetAsync(configuration!,
-                    videoPath, progress, detectionCancellation.Token)
-                : await CustomSceneDetector.DetectFastAsync(videoPath, durationMs,
-                    progress, detectionCancellation.Token);
-            long[] validDividers = dividers.Where(value => value > 250 && value < durationMs - 250)
+            SceneDetectionResult result = detectorId switch
+            {
+                "transnetv2" => await CustomSceneDetector.DetectTransNetAsync(configuration!,
+                    videoPath, progress, detectionCancellation.Token),
+                "omnishotcut" => await CustomSceneDetector.DetectOmniShotCutAsync(configuration!,
+                    videoPath, progress, detectionCancellation.Token),
+                _ => await CustomSceneDetector.DetectFastAsync(videoPath, durationMs,
+                    progress, detectionCancellation.Token)
+            };
+            long[] validDividers = result.BoundariesMs
+                .Where(value => value > 250 && value < durationMs - 250)
                 .Distinct().Order().ToArray();
-            if (validDividers.Length == 0)
+            SceneDetectionRange[] validRanges = result.Ranges.Where(range =>
+                range.EndMs > range.StartMs && range.EndMs > 0 && range.StartMs < durationMs)
+                .Select(range => range with { StartMs = Math.Clamp(range.StartMs, 0, durationMs),
+                    EndMs = Math.Clamp(range.EndMs, 0, durationMs) }).ToArray();
+            result = result with { BoundariesMs = validDividers, Ranges = validRanges };
+            if (validDividers.Length == 0 && !validRanges.Any(range =>
+                    range.IntraLabel != "General"))
             {
                 MessageBox.Show(this, "No scene changes were found.",
                     Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -384,10 +445,20 @@ internal sealed class CustomClipEditorForm : Form
             long bufferMs = skipTransitions.Checked
                 ? checked((long)Math.Round(transitionSeconds.Value * 1000)) : 0;
             CustomShowClip[] detected = BuildDetectedClips(
-                seed, validDividers, durationMs, bufferMs);
+                seed, result, durationMs, bufferMs);
             clips.Clear();
             clips.AddRange(detected);
-            timeline.PositionMs = validDividers[0];
+            clipDetection = new()
+            {
+                Method = result.Method,
+                ToolRevision = result.ToolRevision,
+                OverlapFrames = result.OverlapFrames,
+                TransitionBufferMs = bufferMs,
+                MinimumClipMs = 10_000,
+                ManuallyEdited = false
+            };
+            timeline.PositionMs = validDividers.FirstOrDefault(
+                validRanges.FirstOrDefault()?.StartMs ?? 0);
             timeline.Invalidate();
             RefreshGrid(0);
         }
@@ -636,6 +707,7 @@ internal sealed class CustomClipEditorForm : Form
         Included = clip.Included, Hotness = clip.Hotness,
         AlphaThreshold = clip.AlphaThreshold,
         ClipTypes = [.. clip.ClipTypes],
+        DetectionLabels = [.. clip.DetectionLabels],
         Media = clip.Media == null ? null : new()
         {
             Foreground = clip.Media.Foreground, Alpha = clip.Media.Alpha,
@@ -643,6 +715,17 @@ internal sealed class CustomClipEditorForm : Form
             FrameRate = clip.Media.FrameRate, DurationMs = clip.Media.DurationMs
         }
     };
+
+    static CustomShowClipDetection? CloneDetection(CustomShowClipDetection? value) =>
+        value == null ? null : new()
+        {
+            Method = value.Method,
+            ToolRevision = value.ToolRevision,
+            OverlapFrames = value.OverlapFrames,
+            TransitionBufferMs = value.TransitionBufferMs,
+            MinimumClipMs = value.MinimumClipMs,
+            ManuallyEdited = value.ManuallyEdited
+        };
 
     static string Format(long milliseconds) =>
         TimeSpan.FromMilliseconds(milliseconds).ToString(
@@ -659,37 +742,109 @@ internal sealed class CustomClipEditorForm : Form
 
     internal static CustomShowClip[] BuildDetectedClips(CustomShowClip seed,
         IEnumerable<long> dividers, long durationMs, long bufferMs)
+        => BuildDetectedClips(seed, new SceneDetectionResult("ffmpeg",
+            dividers.ToArray(), []), durationMs, bufferMs);
+
+    internal static CustomShowClip[] BuildDetectedClips(CustomShowClip seed,
+        SceneDetectionResult detection, long durationMs, long bufferMs)
     {
         const long minimumClipMs = 10_000;
-        List<(long Start, long End)> skipped = [];
-        foreach (long divider in dividers.Where(value => value > 0 && value < durationMs)
-                     .Distinct().Order())
+        string[] gradual = ["Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway"];
+        string[] intra = ["General", .. gradual, "Padding"];
+        string[] inter = ["New_Start", "Hard_Cut", "Transition_Source", "Transition",
+            "Sudden_Jump", "Padding"];
+        if (detection.Ranges.Any(range => !intra.Contains(range.IntraLabel) ||
+                !inter.Contains(range.InterLabel)))
+            throw new InvalidDataException("OmniShotCut returned an unknown classification label.");
+
+        List<long> cuts = [0, durationMs];
+        List<(long Start, long End, string Label, bool Exact)> skipped = [];
+        foreach (SceneDetectionRange range in detection.Ranges)
         {
-            long start = Math.Max(0, divider - Math.Max(0, bufferMs));
-            long end = Math.Min(durationMs, divider + Math.Max(0, bufferMs));
-            if (skipped.Count > 0 && start <= skipped[^1].End)
-                skipped[^1] = (skipped[^1].Start, Math.Max(skipped[^1].End, end));
-            else skipped.Add((start, end));
+            long start = Math.Clamp(range.StartMs, 0, durationMs);
+            long end = Math.Clamp(range.EndMs, 0, durationMs);
+            if (end <= start) continue;
+            cuts.Add(start);
+            cuts.Add(end);
+            if (range.IntraLabel == "Padding" || range.InterLabel == "Padding")
+            {
+                skipped.Add((start, end, "Padding", true));
+                continue;
+            }
+            if (gradual.Contains(range.IntraLabel))
+            {
+                skipped.Add((start, end, range.IntraLabel, true));
+                if (bufferMs > 0)
+                    skipped.Add((Math.Max(0, start - bufferMs),
+                        Math.Min(durationMs, end + bufferMs), range.IntraLabel + " buffer", false));
+            }
+            if (range.InterLabel is "Hard_Cut" or "Sudden_Jump" && start > 0)
+            {
+                cuts.Add(start);
+                if (bufferMs > 0)
+                    skipped.Add((Math.Max(0, start - bufferMs),
+                        Math.Min(durationMs, start + bufferMs),
+                        range.InterLabel == "Hard_Cut" ? "Hard Cut buffer" :
+                            "Sudden Jump buffer", false));
+            }
         }
-        List<(long Start, long End, bool Included)> ranges = [];
-        long cursor = 0;
-        foreach ((long start, long end) in skipped)
+        foreach (long divider in detection.BoundariesMs.Where(value => value > 0 && value < durationMs))
         {
-            if (cursor < start) ranges.Add((cursor, start, true));
-            if (start < end) ranges.Add((start, end, false));
-            cursor = end;
+            if (bufferMs == 0) cuts.Add(divider);
+            else if (detection.Ranges.Length == 0)
+                skipped.Add((Math.Max(0, divider - bufferMs),
+                    Math.Min(durationMs, divider + bufferMs), "Scene change buffer", false));
         }
-        if (cursor < durationMs) ranges.Add((cursor, durationMs, true));
-        return ranges.Select(range =>
+        foreach ((long start, long end, _, _) in skipped)
         {
+            cuts.Add(start);
+            cuts.Add(end);
+        }
+        long[] points = cuts.Distinct().Order().ToArray();
+        List<CustomShowClip> result = [];
+        for (int index = 0; index + 1 < points.Length; index++)
+        {
+            long start = points[index], end = points[index + 1];
+            if (end <= start) continue;
+            long midpoint = start + (end - start) / 2;
+            SceneDetectionRange? sourceRange = detection.Ranges.FirstOrDefault(range =>
+                midpoint >= range.StartMs && midpoint < range.EndMs &&
+                range.IntraLabel != "Padding" && range.InterLabel != "Padding");
+            string[] exactLabels = skipped.Where(value => value.Exact &&
+                    start >= value.Start && end <= value.End)
+                .Select(value => value.Label).Distinct(StringComparer.Ordinal).ToArray();
+            string[] bufferLabels = skipped.Where(value => !value.Exact &&
+                    start >= value.Start && end <= value.End)
+                .Select(value => value.Label).Distinct(StringComparer.Ordinal).ToArray();
+            bool isSkipped = exactLabels.Length > 0 || bufferLabels.Length > 0;
+            List<string> labels = [];
+            if (exactLabels.Length > 0) labels.AddRange(exactLabels);
+            else if (bufferLabels.Length > 0) labels.AddRange(bufferLabels);
+            else if (sourceRange != null)
+            {
+                labels.Add(sourceRange.IntraLabel);
+                if (sourceRange.InterLabel == "Hard_Cut") labels.Add("Hard Cut");
+                if (sourceRange.InterLabel == "Sudden_Jump") labels.Add("Sudden Jump");
+            }
             CustomShowClip clip = Clone(seed);
             clip.Id = Guid.NewGuid().ToString("N");
-            clip.StartMs = range.Start;
-            clip.EndMs = range.End;
-            clip.Included = range.Included && range.End - range.Start >= minimumClipMs;
+            clip.StartMs = start;
+            clip.EndMs = end;
+            clip.Included = !isSkipped && end - start >= minimumClipMs;
+            if (!isSkipped && end - start < minimumClipMs) labels.Add("Short (<10s)");
+            clip.DetectionLabels = labels.Distinct(StringComparer.Ordinal).ToArray();
             clip.Media = null;
-            return clip;
-        }).ToArray();
+            if (result.Count > 0 && !clip.Included && !result[^1].Included &&
+                !clip.DetectionLabels.Contains("Short (<10s)") &&
+                !result[^1].DetectionLabels.Contains("Short (<10s)"))
+            {
+                result[^1].EndMs = clip.EndMs;
+                result[^1].DetectionLabels = result[^1].DetectionLabels
+                    .Concat(clip.DetectionLabels).Distinct(StringComparer.Ordinal).ToArray();
+            }
+            else result.Add(clip);
+        }
+        return [.. result];
     }
 
     internal static long FrameStep(long position, int direction,
@@ -714,6 +869,12 @@ internal sealed class CustomClipEditorForm : Form
             seed, [15_000, 30_000], 40_000, 1_000);
         CustomShowClip[] unbuffered = BuildDetectedClips(
             seed, [12_000], 30_000, 0);
+        SceneDetectionResult omni = new("omnishotcut", [12_000, 14_000],
+            [new(0, 12_000, "General", "New_Start"),
+             new(12_000, 14_000, "Fade", "Transition"),
+             new(14_000, 40_000, "General", "Hard_Cut")], "revision", 20);
+        CustomShowClip[] transitionAware = BuildDetectedClips(seed, omni, 40_000, 0);
+        CustomShowClip[] transitionBuffered = BuildDetectedClips(seed, omni, 40_000, 1_000);
         return first.EndMs == second.StartMs && second.EndMs == 1_000 &&
             first.Id != second.Id && !second.Included &&
             ClipIndexAt([first, second], 399) == 0 &&
@@ -735,17 +896,56 @@ internal sealed class CustomClipEditorForm : Form
             detected[4].StartMs == 31_000 && detected[4].EndMs == 40_000 &&
             unbuffered.Length == 2 && unbuffered.All(clip => clip.Included) &&
             unbuffered[0].EndMs == 12_000 && unbuffered[1].StartMs == 12_000 &&
+            transitionAware.Length == 3 && transitionAware[0].Included &&
+            !transitionAware[1].Included && transitionAware[1].StartMs == 12_000 &&
+            transitionAware[1].EndMs == 14_000 &&
+            transitionAware[1].DetectionLabels.SequenceEqual(["Fade"]) &&
+            transitionAware[2].Included &&
+            transitionAware[2].DetectionLabels.Contains("Hard Cut") &&
+            transitionBuffered.First().EndMs == 11_000 &&
+            transitionBuffered.Last().StartMs == 15_000 &&
+            transitionBuffered.Where(clip => !clip.Included).Any(clip =>
+                clip.DetectionLabels.Contains("Fade buffer")) &&
+            VerifyOmniShotCutPolicies() &&
             CustomSceneDetector.MonotonicProgress(18, 5) == 18 &&
             CustomSceneDetector.MonotonicProgress(18, 20) == 20;
+    }
+
+    static bool VerifyOmniShotCutPolicies()
+    {
+        CustomShowClip seed = new();
+        foreach (string label in new[]
+            { "Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway" })
+        {
+            SceneDetectionResult detection = new("omnishotcut", [12_000, 14_000],
+                [new(0, 12_000, "General", "New_Start"),
+                 new(12_000, 14_000, label, "Transition"),
+                 new(14_000, 30_000, "General", "Transition_Source")]);
+            CustomShowClip[] values = BuildDetectedClips(seed, detection, 30_000, 0);
+            if (!values.Any(clip => !clip.Included &&
+                    clip.DetectionLabels.Contains(label))) return false;
+        }
+        SceneDetectionResult special = new("omnishotcut", [1_000, 12_000],
+            [new(0, 1_000, "Padding", "Padding"),
+             new(1_000, 12_000, "General", "New_Start"),
+             new(12_000, 30_000, "General", "Sudden_Jump")]);
+        CustomShowClip[] specialValues = BuildDetectedClips(seed, special, 30_000, 500);
+        return specialValues.Any(clip => !clip.Included &&
+                clip.DetectionLabels.Contains("Padding")) &&
+            specialValues.Any(clip => !clip.Included &&
+                clip.DetectionLabels.Contains("Sudden Jump buffer")) &&
+            specialValues.All(clip => clip.EndMs > clip.StartMs);
     }
 }
 
 internal static class CustomSceneDetector
 {
-    static string WorkerPath => Path.Combine(AppContext.BaseDirectory,
+    static string TransNetWorkerPath => Path.Combine(AppContext.BaseDirectory,
         "custom-shows", "transnetv2_worker.py");
+    static string OmniShotCutWorkerPath => Path.Combine(AppContext.BaseDirectory,
+        "custom-shows", "omnishotcut_worker.py");
 
-    internal static async Task<long[]> DetectFastAsync(string source, long durationMs,
+    internal static async Task<SceneDetectionResult> DetectFastAsync(string source, long durationMs,
         IProgress<int>? progress, CancellationToken token)
     {
         string ffmpeg = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
@@ -795,17 +995,17 @@ internal static class CustomSceneDetector
         foreach (long cut in cuts.Where(value => value >= 250 && value <= durationMs - 250)
                      .Distinct().Order())
             if (result.Count == 0 || cut - result[^1] >= 500) result.Add(cut);
-        return [.. result];
+        return new SceneDetectionResult("ffmpeg", [.. result], []);
     }
 
-    internal static async Task<long[]> DetectTransNetAsync(CustomShowConfiguration configuration,
+    internal static async Task<SceneDetectionResult> DetectTransNetAsync(CustomShowConfiguration configuration,
         string source, IProgress<int>? progress, CancellationToken token)
     {
         if (!File.Exists(configuration.PythonExecutable))
             throw new FileNotFoundException("Configure the custom-show Python environment first.",
                 configuration.PythonExecutable);
-        if (!File.Exists(WorkerPath))
-            throw new FileNotFoundException("The TransNetV2 worker is missing.", WorkerPath);
+        if (!File.Exists(TransNetWorkerPath))
+            throw new FileNotFoundException("The TransNetV2 worker is missing.", TransNetWorkerPath);
         string runtime = Path.GetFullPath(Path.Combine(
             Path.GetDirectoryName(configuration.PythonExecutable)!, "..", ".."));
         if (!File.Exists(Path.Combine(runtime, "TRANSNETV2_COMMIT")))
@@ -820,7 +1020,7 @@ internal static class CustomSceneDetector
         };
         foreach (string argument in new[]
         {
-            WorkerPath, "--source", source, "--runtime", runtime,
+            TransNetWorkerPath, "--source", source, "--runtime", runtime,
             "--batch-size", Math.Clamp(configuration.TransNetPreferredBatchSize, 1, 64)
                 .ToString(CultureInfo.InvariantCulture),
             "--compile-cutoff-frames", Math.Max(1, configuration.TransNetCompileCutoffFrames)
@@ -872,8 +1072,124 @@ internal static class CustomSceneDetector
         if (process.ExitCode != 0)
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(errorText)
                 ? $"TransNetV2 failed with exit code {process.ExitCode}." : errorText.Trim());
-        return dividers ?? throw new InvalidDataException(
-            "TransNetV2 did not return scene boundaries.");
+        return new SceneDetectionResult("transnetv2", dividers ??
+            throw new InvalidDataException("TransNetV2 did not return scene boundaries."), [],
+            ReadRevision(runtime, "TRANSNETV2_COMMIT"));
+    }
+
+    internal static async Task<SceneDetectionResult> DetectOmniShotCutAsync(
+        CustomShowConfiguration configuration, string source,
+        IProgress<int>? progress, CancellationToken token)
+    {
+        if (!File.Exists(configuration.PythonExecutable))
+            throw new FileNotFoundException("Configure the custom-show Python environment first.",
+                configuration.PythonExecutable);
+        if (!File.Exists(OmniShotCutWorkerPath))
+            throw new FileNotFoundException("The OmniShotCut worker is missing.",
+                OmniShotCutWorkerPath);
+        string runtime = CustomShowProcessor.RuntimeRoot(configuration);
+        if (!CustomShowProcessor.IsOmniShotCutInstalled(configuration))
+            throw new InvalidOperationException(
+                "OmniShotCut is not installed. Run Install / Update Processing Tools and select OmniShotCut.");
+        ProcessStartInfo start = new(configuration.PythonExecutable)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        foreach (string argument in new[]
+        {
+            OmniShotCutWorkerPath, "--source", source, "--runtime", runtime,
+            "--profile-log", Path.Combine(configuration.LibraryRoot, ".logs",
+                "omnishotcut.ndjson")
+        }) start.ArgumentList.Add(argument);
+        start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
+        start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
+        using Process process = Process.Start(start) ??
+            throw new InvalidOperationException("Python could not be started.");
+        using CancellationTokenRegistration registration = token.Register(() =>
+        {
+            try { if (!process.HasExited) process.Kill(true); } catch { }
+        });
+        Task<string> error = process.StandardError.ReadToEndAsync(token);
+        SceneDetectionRange[]? ranges = null;
+        string? revision = null;
+        int? overlap = null;
+        int displayedProgress = 0;
+        try
+        {
+            while (await process.StandardOutput.ReadLineAsync(token) is string line)
+            {
+                try
+                {
+                    using JsonDocument json = JsonDocument.Parse(line);
+                    JsonElement root = json.RootElement;
+                    if (root.TryGetProperty("percent", out JsonElement percent))
+                    {
+                        int next = MonotonicProgress(displayedProgress, percent.GetDouble());
+                        if (next > displayedProgress)
+                        {
+                            displayedProgress = next;
+                            progress?.Report(next);
+                        }
+                    }
+                    if (root.TryGetProperty("revision", out JsonElement revisionValue))
+                        revision = revisionValue.GetString();
+                    if (root.TryGetProperty("overlapFrames", out JsonElement overlapValue))
+                        overlap = overlapValue.GetInt32();
+                    if (!root.TryGetProperty("ranges", out JsonElement rangeValues)) continue;
+                    List<SceneDetectionRange> parsed = [];
+                    foreach (JsonElement value in rangeValues.EnumerateArray())
+                    {
+                        string intra = value.GetProperty("intraLabel").GetString() ?? "";
+                        string inter = value.GetProperty("interLabel").GetString() ?? "";
+                        if (!KnownIntraLabels.Contains(intra) || !KnownInterLabels.Contains(inter))
+                            throw new InvalidDataException(
+                                "OmniShotCut returned an unknown classification label.");
+                        parsed.Add(new(value.GetProperty("startMs").GetInt64(),
+                            value.GetProperty("endMs").GetInt64(), intra, inter));
+                    }
+                    ranges = [.. parsed];
+                }
+                catch (JsonException errorJson)
+                {
+                    throw new InvalidDataException("OmniShotCut returned malformed JSON.", errorJson);
+                }
+            }
+        }
+        catch
+        {
+            try { if (!process.HasExited) process.Kill(true); } catch { }
+            try { await process.WaitForExitAsync(CancellationToken.None); } catch { }
+            try { await error; } catch { }
+            throw;
+        }
+        await process.WaitForExitAsync(token);
+        string errorText = await error;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(errorText)
+                ? $"OmniShotCut failed with exit code {process.ExitCode}." : errorText.Trim());
+        if (ranges == null)
+            throw new InvalidDataException("OmniShotCut did not return shot ranges.");
+        long[] dividers = ranges.SelectMany(value => new[] { value.StartMs, value.EndMs })
+            .Where(value => value > 0).Distinct().Order().ToArray();
+        progress?.Report(100);
+        return new SceneDetectionResult("omnishotcut", dividers, ranges,
+            revision ?? ReadRevision(runtime, "OMNISHOTCUT_COMMIT"), overlap ?? 20);
+    }
+
+    static readonly HashSet<string> KnownIntraLabels =
+        ["General", "Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway", "Padding"];
+    static readonly HashSet<string> KnownInterLabels =
+        ["New_Start", "Hard_Cut", "Transition_Source", "Transition", "Sudden_Jump", "Padding"];
+
+    static string? ReadRevision(string runtime, string marker)
+    {
+        string path = Path.Combine(runtime, marker);
+        if (!File.Exists(path)) return null;
+        string value = File.ReadAllText(path).Trim();
+        return value.Length == 0 ? null : value;
     }
 
     internal static int MonotonicProgress(int current, double reported) =>

@@ -59,10 +59,21 @@ original video. You can:
 Double-click a segment to seek to its start without autoplaying. Double-click
 its **End** cell to seek to its final frame.
 
-**Accurate (TransNetV2)** is the default automatic detector when installed;
-otherwise use **Fast (FFmpeg)**. You can create a skipped buffer around each
-detected transition and adjust the dividers afterwards. Auto-detected segments
-shorter than 10 seconds are skipped by default but can be re-enabled.
+Three automatic detectors are available:
+
+- **Fast (FFmpeg)** is always available and finds simple visual cuts.
+- **Accurate (TransNetV2)** is the default when installed.
+- **Modern/Quality (OmniShotCut)** is an optional CUDA detector that also finds
+  complete fades, dissolves, wipes, pushes, slides, zooms, and doorway
+  transitions.
+
+The last selected detector is remembered. If it is unavailable, QuickPlayer
+falls back to TransNetV2, then OmniShotCut, then FFmpeg. OmniShotCut skips the
+whole gradual-transition range by default and labels the result in the
+**Detected as** column. **Skip transition ± seconds** adds a safety margin to
+those ranges and creates skipped buffers around hard cuts and sudden jumps.
+You can still change inclusion or move dividers afterwards. Auto-detected
+segments shorter than 10 seconds are skipped by default but can be re-enabled.
 
 Skipped segments are neither processed nor published as playable clips. Every
 included clip is processed independently so state does not carry across scene

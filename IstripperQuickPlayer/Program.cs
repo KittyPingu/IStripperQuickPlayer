@@ -39,6 +39,7 @@ namespace IStripperQuickPlayer
                     ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),
                     ("card index refresh", Datastore.VerifyTagIndexReplacement()),
                     ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),
+                    ("worker result contract", CustomShowProcessor.VerifyResultContract()),
                     ("FFmpeg runtime", FfmpegCpuDecoder.VerifyRuntime())
                 ];
                 foreach ((string name, bool passed) in checks)

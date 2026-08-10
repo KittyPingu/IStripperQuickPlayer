@@ -23,6 +23,7 @@ QuickPlayer pins:
 - RVM MobileNetV3 SHA-256 `3C7C1D92033F7C38D6577C481D13A195D7D80A159B960F4F3119AC7B534CF4F8`.
 - RVM ResNet50 SHA-256 `C191A807251164C073DCE5FA408E7A816070D539B882B2A3150330A9FEC112CE`.
 - Optional [TransNetV2](https://github.com/soCzech/TransNetV2) PyTorch source commit `85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed` and converted-weight SHA-256 `46520D66D4BF60414A4D82E0E94A92442FF950E34517A3718B2E54815E642B53`.
+- Optional [OmniShotCut](https://github.com/UVA-Computer-Vision-Lab/OmniShotCut) commit `23ad6fb41b296fb9258b0e7825125a914573b906`, official checkpoint revision `7f646c4ff4bb843e18c013481fb5d9ed2b068c6b`, and checkpoint SHA-256 `5948EA78E00626C0E6C5E742E64873EF872CF4A5071D2A0841AED51C3E686CFA`.
 - Optional [MatAnyone2](https://github.com/pq-yang/MatAnyone2) commit `0079197acd6d16a741f71558809c06c586c579e0` and checkpoint SHA-256 `5E9821E4087231427376B437C85BB6E072B41E582314F06FD524F75BC4AF5914`.
 - Optional [VideoMaMa](https://github.com/cvlab-kaist/VideoMaMa) commit `d5cce3e0ffe3b6429c147e658bb28bcfb576374c`, model revision `e289a7acc8403c4fbe4dea2a1de5a9749ebc9bf5`, and inference UNet SHA-256 `F2442BF16EDEDAD25C1C272AE7535B6411C43CEE5C27B012BB6F7FDA72D07B8C`.
 - VideoMaMa's SVD inference components use revision `9e43909513c6714f1bc78bcb44d96e733cd242aa`; every mask-guided algorithm uses [SAM2](https://github.com/facebookresearch/sam2) commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`. Setup verifies Hiera Base+ SHA-256 `A2345AEDE8715AB1D5D31B4A509FB160C5A4AF1970F199D9054CCFB746C004C5`, Small `6D1AA6F30DE5C92224F8172114DE081D104BBD23DD9DC5C58996F0CAD5DC4D38`, and Tiny `7402E0D864FA82708A20FBD15BC84245C2F26DFF0EB43A4B5B93452DEB34BE69`.
@@ -52,6 +53,14 @@ Add `-InstallTransNetV2` to install and verify the optional PyTorch scene detect
 
 ```powershell
 .\custom-shows\setup.ps1 -InstallTransNetV2
+```
+
+Add `-InstallOmniShotCut` to install and verify the optional CUDA-only modern
+transition detector. Setup checks the pinned source revision, official
+checkpoint hash, CUDA model loading, and a synthetic 100-frame inference:
+
+```powershell
+.\custom-shows\setup.ps1 -InstallOmniShotCut
 ```
 
 Add `-InstallMatAnyone2` to install and verify MatAnyone2 together with SAM2;
@@ -87,9 +96,9 @@ The default isolated runtime is `%LOCALAPPDATA%\IStripperQuickPlayer\rvm-runtime
 .\custom-shows\setup.ps1 -RuntimeRoot 'D:\QuickPlayer-RVM' -PythonLauncher 'C:\Windows\py.exe'
 ```
 
-The script creates `venv`, checks out exact commits, downloads verified weights, and rejects mismatched checkpoints. Optional TransNetV2 is installed under `<runtime>\transnetv2`; MatAnyone2 uses `<runtime>\matanyone2`; VideoMaMa uses `<runtime>\videomama*`; shared SAM2 uses `<runtime>\sam2`; streaming ProPainter uses `<runtime>\propainter-streaming` and `<runtime>\propainter-streaming-weights`. TensorFlow and VideoMaMa training dependencies are not installed. Rerunning setup retains every existing source or weight file whose hash already matches. Legacy `<runtime>\segment-anything` files are no longer used and may be deleted. It prints download progress and the Python executable to select in QuickPlayer.
+The script creates `venv`, checks out exact commits, downloads verified weights, and rejects mismatched checkpoints. Optional TransNetV2 is installed under `<runtime>\transnetv2`; OmniShotCut uses `<runtime>\omnishotcut` and `<runtime>\checkpoints\OmniShotCut_ckpt.pth`; MatAnyone2 uses `<runtime>\matanyone2`; VideoMaMa uses `<runtime>\videomama*`; shared SAM2 uses `<runtime>\sam2`; streaming ProPainter uses `<runtime>\propainter-streaming` and `<runtime>\propainter-streaming-weights`. TensorFlow and research/demo-only OmniShotCut and VideoMaMa dependencies are not installed. Rerunning setup retains every existing source or weight file whose hash already matches. Legacy `<runtime>\segment-anything` files are no longer used and may be deleted. It prints download progress and the Python executable to select in QuickPlayer.
 
-QuickPlayer only lists TransNetV2, MatAnyone2, VideoMaMa, ViTMatte, and ProPainter in operational
+QuickPlayer only lists TransNetV2, OmniShotCut, MatAnyone2, VideoMaMa, ViTMatte, and ProPainter in operational
 selectors when their installation markers, source folders, workers, and required
 model files are present. The setup choices remain visible so missing tools can be installed.
 
@@ -143,13 +152,19 @@ Before processing, choose **Split into clips...** to open the clip editor on the
 original source. Scrub or play the preview, place dividers, and drag only their
 gold triangle handles below the timeline; scrubbing across divider lines no
 longer moves them. Select each resulting segment to set its hotness and clip types.
-Choose **Fast (FFmpeg)** for lightweight built-in scene-score detection or
-**Accurate (TransNetV2)** for neural detection. Accurate is selected by default
-when installed. Click **Auto-detect clips** to replace current dividers. Enable
-**Skip transition ±** to turn the selected number of seconds on both sides of
-each detected cut into a skipped segment; overlapping transition buffers are
-merged. Auto-detected playable segments shorter than 10 seconds are also
-skipped by default. Both kinds remain visible and can be re-enabled manually.
+Choose **Fast (FFmpeg)** for lightweight built-in scene-score detection,
+**Accurate (TransNetV2)** for neural cut detection, or optional CUDA-only
+**Modern/Quality (OmniShotCut)** for typed hard cuts, sudden jumps, fades,
+dissolves, wipes, pushes, slides, zooms, and doorway transitions. The last
+choice is persisted; an unavailable choice falls back in order to TransNetV2,
+OmniShotCut, then FFmpeg. Click **Auto-detect clips** to replace current
+dividers. OmniShotCut discards `Padding`, keeps `General`, skips complete gradual
+transition ranges, and splits at the start of `Hard_Cut` and `Sudden_Jump`
+ranges. Enable **Skip transition ±** to expand gradual ranges and add symmetric
+buffers around instantaneous cuts; overlapping skipped ranges are merged.
+Auto-detected playable segments shorter than 10 seconds are also skipped by
+default. Detection labels remain visible on each segment and survive manual
+inclusion and metadata edits.
 TransNet inference runs on CUDA when available and FFmpeg
 uses CUDA decode/scale where the source codec supports it, with automatic CPU
 decode fallback. Clear **Include this segment as a playable
@@ -159,6 +174,40 @@ main creation form remain overall card metadata. Every included segment is
 processed independently into its own foreground/alpha pair. This resets RVM or
 MatAnyone2 recurrent state and VideoMaMa/SAM2 tracking at every clip boundary; skipped segments are not
 processed.
+
+OmniShotCut decodes directly through bundled FFmpeg at the checkpoint's
+128×96 input size. Its bounded worker decodes into three reusable pinned frame
+and normalized-input slots, carries the 20-frame overlap without rebuilding a
+window from individual allocations, and uploads from pinned memory
+asynchronously. Decode/preprocessing for the next window runs while CUDA is
+processing the current window. The upstream 100-frame window, validation
+normalization, valid-region split, and two-frame boundary deduplication remain
+unchanged; label/range tensors are transferred from CUDA together.
+
+The automatic decoder is deliberately codec and resolution aware rather than
+assuming that GPU decode is always quicker. Deterministic 1080p and 4K tests on
+the development RTX 4080 produced identical typed ranges for the compatible
+CPU and CUDA paths. CPU decode was faster for H.264 and VP9 and effectively tied
+for HEVC. CUDA decode/scale materially helped 4K AV1 (about 3.31 seconds versus
+4.77 seconds for the complete 300-frame job), so auto uses it for 4K AV1 and
+uses CPU decode otherwise. A failed CUDA path retries on CPU. The bounded H.264
+pipeline improved the warm 600-frame test from 3.06 to 2.70 seconds while
+preserving identical output. cuDNN autotuning is intentionally disabled: it
+added about 4.6 seconds to the first fixed-shape inference without a useful
+whole-job gain.
+
+Batching four independent windows reduced model-only time by about 30% in a
+6,000-frame test, but decode became the bottleneck and complete-job time stayed
+effectively unchanged (4.39 versus 4.38 seconds), while peak model VRAM rose
+from about 0.41 GB to 1.16 GB. Production therefore retains one-window
+inference; hidden serial/bounded, decoder, and window-batch switches remain for
+repeatable development profiling. OmniShotCut runs eager FP32 in this version.
+Frame indices are converted with the probed rational frame rate;
+variable-frame-rate sources use the average rate and log a warning. Progress
+and final typed ranges use newline-delimited JSON. Detailed model-load,
+decode/read, overlap-copy, preprocessing, queue-wait, transfer, inference,
+result-transfer, RAM, pinned-memory, and VRAM timings are appended to
+`<custom-library>\.logs\omnishotcut.ndjson`.
 
 TransNetV2 detection uses a bounded streaming pipeline rather than decoding the
 complete source into RAM. It preserves the original 100-frame window, 50-frame
@@ -171,7 +220,10 @@ peak throughput with less VRAM. A 300-second decode test measured 6.09 seconds f
 the compatible CPU scaler, 4.57 seconds for fast-bilinear CPU scaling, and 8.56
 seconds for the existing NVDEC path, but fast-bilinear shifted four dividers by
 one frame in the 600-second compatibility fixture. It therefore remains
-benchmark-only.
+benchmark-only. Auto is the default decode setting. Its policy is
+resolution-aware: the manual benchmark tests standard and 4K fixtures
+separately, uses compatible CPU divider frames as the reference, and selects
+the fastest CPU or NVDEC path whose divider list matches exactly in each bucket.
 
 Codec-specific 1080p tests found CUDA-first decode faster for HEVC/H.265
 (1.60 versus 3.03 seconds), AV1 (2.30 versus 11.10 seconds), and VP9 (1.85 versus
@@ -539,6 +591,12 @@ Every show has a `clips` array. Each entry contains a UUID `id`, contiguous sour
 `startMs`/`endMs`, `hotness`, `clipTypes`, and per-clip media metadata when
 included. Ranges start at zero and cover the complete source without gaps or
 overlaps. Skipped entries have no required media and never become playable clips.
+An optional `detectionLabels` array records the typed reason for each generated
+range. An optional root `clipDetection` object records the detector, pinned tool
+revision, overlap, transition-buffer duration, 10-second minimum, and whether a
+divider was manually changed. In OmniShotCut output, `intraLabel` classifies the
+range itself and `interLabel` classifies its relationship to the preceding
+range. Unknown worker or manifest labels are rejected rather than guessed.
 
 New conversions also include an optional `processing` object in `show.json`.
 It records the algorithm, matting-detail resolution, processing batch size,
@@ -600,4 +658,4 @@ the tensor-path number above remains useful when comparing devices in isolation.
 
 ## Licensing
 
-Robust Video Matting is GPL-3.0; its repository and weights are fetched directly from the upstream project. MatAnyone2 and ProPainter use the S-Lab License 1.0 and are limited to non-commercial use unless their authors grant permission. VideoMaMa code is CC BY-NC 4.0 and its checkpoint is subject to the Stability AI Community License. ViTMatte is MIT; SAM and SAM2 are Apache 2.0. The custom player uses FFmpeg 8, FFmpeg.AutoGen, NAudio, Direct3D 11, and DirectComposition. QuickPlayer distributions must retain the bundled FFmpeg/GPL library licence and version notices. No proprietary HD3/SSV parser, decryption, or rights code is used by custom shows.
+Robust Video Matting is GPL-3.0; its repository and weights are fetched directly from the upstream project. OmniShotCut is MIT and setup retains its checked-out `LICENSE` plus `OMNISHOTCUT_COMMIT` revision marker. MatAnyone2 and ProPainter use the S-Lab License 1.0 and are limited to non-commercial use unless their authors grant permission. VideoMaMa code is CC BY-NC 4.0 and its checkpoint is subject to the Stability AI Community License. ViTMatte is MIT; SAM and SAM2 are Apache 2.0. The custom player uses FFmpeg 8, FFmpeg.AutoGen, NAudio, Direct3D 11, and DirectComposition. QuickPlayer distributions must retain the bundled FFmpeg/GPL library licence and version notices. No proprietary HD3/SSV parser, decryption, or rights code is used by custom shows.

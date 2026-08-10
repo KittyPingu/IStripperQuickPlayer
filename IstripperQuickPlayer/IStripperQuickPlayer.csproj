@@ -44,6 +44,9 @@
     <Content Include="..\tools\custom-shows\transnetv2_worker.py" Link="custom-shows\transnetv2_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\custom-shows\omnishotcut_worker.py" Link="custom-shows\omnishotcut_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\tools\custom-shows\benchmark_transnetv2.py" Link="custom-shows\benchmark_transnetv2.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

@@ -25,6 +25,7 @@ internal sealed class CustomShowConfiguration
     public int TransNetPreferredBatchSize { get; set; } = 8;
     public int TransNetCompileCutoffFrames { get; set; } = 16000;
     public string TransNetDecodeMode { get; set; } = "auto";
+    public string LastClipDetector { get; set; } = "transnetv2";
     public int RvmQualityPreferredChunk { get; set; } = 12;
     public int RvmFastPreferredChunk { get; set; } = 12;
     public int RvmQualityCompileCutoffFrames { get; set; }
@@ -67,6 +68,11 @@ internal sealed class CustomShowConfiguration
             if (configuration.RvmNvencPreset is not
                 ("p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7"))
                 configuration.RvmNvencPreset = "p5";
+            if (configuration.TransNetDecodeMode is not ("auto" or "legacy" or "cpu"))
+                configuration.TransNetDecodeMode = "auto";
+            if (configuration.LastClipDetector is not
+                ("ffmpeg" or "transnetv2" or "omnishotcut"))
+                configuration.LastClipDetector = "transnetv2";
             return configuration;
         }
         catch { return new(); }
@@ -149,6 +155,17 @@ internal sealed class CustomShowManifest
     public CustomShowSource Source { get; set; } = new();
     public CustomShowMedia Media { get; set; } = new();
     public CustomShowProcessing? Processing { get; set; }
+    public CustomShowClipDetection? ClipDetection { get; set; }
+}
+
+internal sealed class CustomShowClipDetection
+{
+    public string Method { get; set; } = "";
+    public string? ToolRevision { get; set; }
+    public int? OverlapFrames { get; set; }
+    public long TransitionBufferMs { get; set; }
+    public long MinimumClipMs { get; set; } = 10_000;
+    public bool ManuallyEdited { get; set; }
 }
 
 internal sealed class CustomShowProcessing
@@ -187,6 +204,7 @@ internal sealed class CustomShowClip
     public string Hotness { get; set; } = "NoNudity";
     public string[] ClipTypes { get; set; } = ["Standing"];
     public int AlphaThreshold { get; set; } = 25;
+    public string[] DetectionLabels { get; set; } = [];
     public CustomClipMedia? Media { get; set; }
 }
 
@@ -238,6 +256,13 @@ internal sealed class CustomShowStore
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
     static readonly HashSet<int> BatchSizeValues = [1, 2, 3, 4, 6, 8, 12, 16, 24];
     static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
+    static readonly HashSet<string> ClipDetectionMethods =
+        ["ffmpeg", "transnetv2", "omnishotcut"];
+    static readonly HashSet<string> DetectionLabels =
+        ["General", "Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway", "Padding",
+         "Hard Cut", "Sudden Jump", "Scene change buffer", "Hard Cut buffer",
+         "Sudden Jump buffer", "Dissolve buffer", "Wipes buffer", "Push buffer",
+         "Slide buffer", "Zoom buffer", "Fade buffer", "Doorway buffer", "Short (<10s)"];
 
     readonly string root;
     internal string Root => root;
@@ -429,6 +454,7 @@ internal sealed class CustomShowStore
         ValidateMediaFields(show.Media.Width, show.Media.Height,
             show.Media.FrameRate, show.Media.DurationMs, "Show media");
         ValidateClips(show.Clips, show.Media.DurationMs);
+        ValidateClipDetection(show.ClipDetection);
         ValidateProcessing(show.Processing, show.Clips);
         foreach (CustomShowClip clip in show.Clips)
         {
@@ -452,6 +478,20 @@ internal sealed class CustomShowStore
             throw new FileNotFoundException("The copied source video is missing.");
         if (show.Source.Mode == "reference" && string.IsNullOrWhiteSpace(show.Source.Path))
             throw new InvalidDataException("The referenced source path is required.");
+    }
+
+    static void ValidateClipDetection(CustomShowClipDetection? detection)
+    {
+        if (detection == null) return;
+        if (!ClipDetectionMethods.Contains(detection.Method))
+            throw new InvalidDataException("Unknown clip-detection method.");
+        if (detection.ToolRevision is string revision &&
+            (string.IsNullOrWhiteSpace(revision) || revision.Length > 200))
+            throw new InvalidDataException("Invalid clip-detection tool revision.");
+        if (detection.OverlapFrames is < 0 or > 10_000 ||
+            detection.TransitionBufferMs is < 0 or > 30_000 ||
+            detection.MinimumClipMs is < 0 or > 3_600_000)
+            throw new InvalidDataException("Invalid clip-detection parameters.");
     }
 
     static void ValidateProcessing(CustomShowProcessing? processing,
@@ -542,6 +582,11 @@ internal sealed class CustomShowStore
             if (!HotnessValues.Contains(clip.Hotness)) throw new InvalidDataException("Unknown clip hotness value.");
             if (clip.AlphaThreshold is < 0 or > 255)
                 throw new InvalidDataException("Clip alpha threshold must be 0–255.");
+            if (clip.DetectionLabels == null ||
+                clip.DetectionLabels.Any(label => !DetectionLabels.Contains(label)) ||
+                clip.DetectionLabels.Distinct(StringComparer.Ordinal).Count() !=
+                    clip.DetectionLabels.Length)
+                throw new InvalidDataException("Invalid clip-detection labels.");
             if (clip.ClipTypes == null || clip.ClipTypes.Length == 0 ||
                 clip.ClipTypes.Any(type => !ClipTypeValues.Contains(type)))
                 throw new InvalidDataException("Every clip needs at least one valid clip type.");
@@ -787,6 +832,15 @@ internal sealed class CustomShowStore
             {
                 PerformerId = profile.Id, Title = "Test Show",
                 AgeAtReleaseOverride = 24,
+                ClipDetection = new()
+                {
+                    Method = "omnishotcut",
+                    ToolRevision = "test-omni-revision",
+                    OverlapFrames = 20,
+                    TransitionBufferMs = 250,
+                    MinimumClipMs = 10_000,
+                    ManuallyEdited = true
+                },
                 Media = new() { Width = 64, Height = 64,
                     FrameRate = "10/1", DurationMs = 1000 },
                 Source = new() { Mode = "reference", Path = "test-source.mp4" },
@@ -794,11 +848,13 @@ internal sealed class CustomShowStore
                 [
                     new() { StartMs = 0, EndMs = 400, Hotness = "NoNudity",
                         AlphaThreshold = 24,
-                        ClipTypes = ["Standing"] },
+                        ClipTypes = ["Standing"], DetectionLabels = ["General"] },
                     new() { StartMs = 400, EndMs = 600, Included = false,
-                        Hotness = "NoNudity", ClipTypes = ["Standing"] },
+                        Hotness = "NoNudity", ClipTypes = ["Standing"],
+                        DetectionLabels = ["Fade"] },
                     new() { StartMs = 600, EndMs = 1000, Hotness = "Topless",
-                        ClipTypes = ["Table"] }
+                        ClipTypes = ["Table"],
+                        DetectionLabels = ["General", "Hard Cut"] }
                 ]
             };
             string folder = Path.Combine(store.ShowsFolder, show.Id);
@@ -866,7 +922,12 @@ internal sealed class CustomShowStore
                 roundTrip.Processing.PipelineDepth != 3 ||
                 roundTrip.Processing.Encoder != "libx264" ||
                 roundTrip.Processing.EncoderPreset != "slow/medium" ||
-                roundTrip.Processing.Clips.Length != 2)
+                roundTrip.Processing.Clips.Length != 2 ||
+                roundTrip.ClipDetection?.Method != "omnishotcut" ||
+                roundTrip.ClipDetection.OverlapFrames != 20 ||
+                !roundTrip.ClipDetection.ManuallyEdited ||
+                !roundTrip.Clips[1].DetectionLabels.SequenceEqual(["Fade"]) ||
+                !roundTrip.Clips[2].DetectionLabels.Contains("Hard Cut"))
             {
                 Console.Error.WriteLine("Custom processing provenance round-trip failed.");
                 return false;

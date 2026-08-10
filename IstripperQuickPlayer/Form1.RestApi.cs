@@ -27,6 +27,7 @@ namespace IStripperQuickPlayer
         private sealed record ApiSeekRequest(
             int? ElapsedMilliseconds, double? Position);
         private sealed record ApiSpeedRequest(double? Speed);
+        private sealed record ApiShaderDataRequest(double[]? Values);
         private sealed record FullscreenBridgeSlot(
             int Id, string Source, string Card, string Clip);
         private sealed record FullscreenBridgeQueueEntry(
@@ -233,6 +234,8 @@ namespace IStripperQuickPlayer
                         "GET /api/v1/library?search=&limit=",
                         "GET /api/v1/queue",
                         "GET /api/v1/fullscreen",
+                        "GET /api/v1/fullscreen/shader-data",
+                        "PUT /api/v1/fullscreen/shader-data",
                         "POST /api/v1/fullscreen/play",
                         "POST /api/v1/fullscreen/next",
                         "POST /api/v1/fullscreen/slots/{slotId}/next",
@@ -277,6 +280,22 @@ namespace IStripperQuickPlayer
 
             if (method == "GET" && Matches(parts, "fullscreen"))
                 return Ok(await InvokeAsync(CreateRestApiFullscreen));
+
+            if (method == "GET" &&
+                Matches(parts, "fullscreen", "shader-data"))
+            {
+                return await InvokeAsync(GetRestApiFullscreenShaderData);
+            }
+
+            if (method == "PUT" &&
+                Matches(parts, "fullscreen", "shader-data"))
+            {
+                ApiShaderDataRequest body =
+                    await ReadRestApiJsonAsync<ApiShaderDataRequest>(
+                        request, cancellationToken);
+                return await InvokeAsync(() =>
+                    SetRestApiFullscreenShaderData(body));
+            }
 
             if (method == "GET" &&
                 Matches(parts, "fullscreen", "queue"))
@@ -683,6 +702,40 @@ namespace IStripperQuickPlayer
                 }).ToList(),
                 queue = CreateRestApiFullscreenQueueEntries(state)
             };
+        }
+
+        private ApiResult GetRestApiFullscreenShaderData()
+        {
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+            int result = playbackBridgeClient.GetFullscreenShaderData(
+                out float[] values, out uint sequence);
+            return result < 0
+                ? Error(409, "Fullscreen shader data is unavailable " +
+                    $"(0x{result:X8}).")
+                : new ApiResult(200, new { sequence, values });
+        }
+
+        private ApiResult SetRestApiFullscreenShaderData(
+            ApiShaderDataRequest request)
+        {
+            if (request.Values is not { Length: 4 })
+                return Error(400, "'values' must contain exactly four numbers.");
+            if (request.Values.Any(value => !double.IsFinite(value) ||
+                    value < -float.MaxValue || value > float.MaxValue))
+                return Error(400, "Every shader value must be a finite " +
+                    "32-bit floating-point number.");
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+
+            float[] values = request.Values.Select(value => (float)value)
+                .ToArray();
+            int result = playbackBridgeClient.SetFullscreenShaderData(
+                values, out uint sequence);
+            return result < 0
+                ? Error(409, "Fullscreen shader data could not be updated " +
+                    $"(0x{result:X8}).")
+                : new ApiResult(200, new { sequence, values });
         }
 
         private object CreateRestApiFullscreenQueue()

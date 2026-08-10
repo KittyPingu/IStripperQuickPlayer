@@ -123,6 +123,8 @@ Calls are synchronous because `Open` uses `false`. Change the port in
 | `GET` | `/api/v1/library` | Search the local card and clip library. |
 | `GET` | `/api/v1/queue` | Get manual and automatic queues. |
 | `GET` | `/api/v1/fullscreen` | Get active fullscreen clips and iStripper's observed next queue. |
+| `GET` | `/api/v1/fullscreen/shader-data` | Read the current external fullscreen shader values and sequence. |
+| `PUT` | `/api/v1/fullscreen/shader-data` | Publish four external values to fullscreen shaders. |
 | `GET` | `/api/v1/fullscreen/queue` | Get iStripper's native next queue. |
 | `POST` | `/api/v1/fullscreen/queue/insert` | Insert a card or exact clip at the start of the native next queue. |
 | `POST` | `/api/v1/fullscreen/queue/add` | Add a card or exact clip at the end of the native next queue. |
@@ -371,6 +373,67 @@ selected logical slot is replaced.
 
 The targeted play endpoints create iStripper's native `PlayableCard` and give
 it to the selected scene node.
+
+### External shader data
+
+Fullscreen shaders can declare two optional uniforms:
+
+```glsl
+uniform vec4 u_QuickPlayerData;
+uniform float u_QuickPlayerSequence;
+```
+
+Publish four arbitrary values from an external application:
+
+```powershell
+$body = @{ values = @(12.5, 3, -0.75, 900) } | ConvertTo-Json
+
+Invoke-RestMethod `
+  http://127.0.0.1:17871/api/v1/fullscreen/shader-data `
+  -Method Put -Headers $headers -ContentType application/json -Body $body
+```
+
+The response contains the stored values and the automatically incremented
+sequence:
+
+```json
+{
+  "sequence": 1,
+  "values": [12.5, 3, -0.75, 900]
+}
+```
+
+QuickPlayer does not assign meanings to the four values. Backstage and the
+shader can use them as commands, arguments, flags, positions, scores, or any
+other finite 32-bit floating-point data. Each successful `PUT` increments
+`u_QuickPlayerSequence`, including when the four values are unchanged. The
+sequence runs from `0` through `16777215` and then wraps to `0`, so every value
+is represented exactly by a shader float.
+
+The bridge supplies both uniforms whenever an OpenGL shader program declaring
+them is bound. An update is therefore normally visible on the next rendered
+frame. Programs that do not declare the uniforms are unaffected. Read the
+current state without changing its sequence with:
+
+```powershell
+Invoke-RestMethod `
+  http://127.0.0.1:17871/api/v1/fullscreen/shader-data `
+  -Headers $headers
+```
+
+A shader can use the sequence to process an update once:
+
+```glsl
+if (u_QuickPlayerSequence != lastProcessedSequence) {
+    lastProcessedSequence = u_QuickPlayerSequence;
+    processExternalData(u_QuickPlayerData);
+}
+```
+
+The endpoint is a latest-value register, not a queue. If several updates are
+sent between rendered frames, the shader may observe only the newest one. For
+guaranteed command delivery, wait for the shader to return the observed
+sequence through an acknowledgment channel before sending the next command.
 
 ### Native iStripper queue
 

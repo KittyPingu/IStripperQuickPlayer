@@ -3,6 +3,7 @@ param(
     [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'IStripperQuickPlayer\rvm-runtime'),
     [string]$PythonLauncher = 'py',
     [switch]$InstallTransNetV2,
+    [switch]$InstallOmniShotCut,
     [switch]$InstallMatAnyone2,
     [switch]$InstallVideoMaMa,
     [switch]$InstallViTMatte,
@@ -162,7 +163,9 @@ if torch.cuda.is_available():
 print("SAM2 compiler verified")
 '@
     $env:TORCHINDUCTOR_CACHE_DIR = Join-Path $runtime 'torchinductor-cache'
-    & $python -c $compileTest
+    # Feed multiline verification code on stdin. Passing a here-string to
+    # `python -c` lets Windows PowerShell strip embedded quotes.
+    $compileTest | & $python -
     if ($LASTEXITCODE -ne 0) { throw 'SAM2 compiler verification failed.' }
     [System.IO.File]::WriteAllText($sam2Marker, $sam2Commit)
 }
@@ -185,6 +188,52 @@ if ($InstallTransNetV2) {
     $transNetWeights = Join-Path $transNet 'transnetv2-pytorch-weights.pth'
     & $python -c "import sys, torch; sys.path.insert(0, sys.argv[1]); from transnetv2_pytorch import TransNetV2; model=TransNetV2(); model.load_state_dict(torch.load(sys.argv[2], map_location='cpu', weights_only=True)); print('TransNetV2 model verified')" $transNet $transNetWeights
     if ($LASTEXITCODE -ne 0) { throw 'TransNetV2 model verification failed.' }
+}
+if ($InstallOmniShotCut) {
+    $omniCommit = '23ad6fb41b296fb9258b0e7825125a914573b906'
+    $omniRevision = '7f646c4ff4bb843e18c013481fb5d9ed2b068c6b'
+    $omni = Join-Path $runtime 'omnishotcut'
+    $omniMarker = Join-Path $runtime 'OMNISHOTCUT_COMMIT'
+    Remove-Item -LiteralPath $omniMarker -Force -ErrorAction SilentlyContinue
+    Write-Host 'Installing optional OmniShotCut modern transition detection...'
+    & $python -m pip install ffmpeg-python==0.2.0 opencv-python-headless==5.0.0.93 `
+        huggingface_hub==0.36.2 Pillow==12.2.0 packaging==26.3
+    if ($LASTEXITCODE -ne 0) { throw 'OmniShotCut Python dependency installation failed.' }
+    if (-not (Test-Path (Join-Path $omni '.git'))) {
+        git clone https://github.com/UVA-Computer-Vision-Lab/OmniShotCut.git $omni
+        if ($LASTEXITCODE -ne 0) { throw 'OmniShotCut repository clone failed.' }
+    }
+    git -C $omni fetch --depth 1 origin $omniCommit
+    if ($LASTEXITCODE -ne 0) { throw 'OmniShotCut repository fetch failed.' }
+    git -C $omni checkout --detach $omniCommit
+    if ($LASTEXITCODE -ne 0) { throw 'OmniShotCut repository checkout failed.' }
+    $omniHead = (git -C $omni rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $omniHead -ne $omniCommit) {
+        throw "OmniShotCut revision validation failed: $omniHead"
+    }
+    & $python -m pip install --no-deps --editable $omni
+    if ($LASTEXITCODE -ne 0) { throw 'OmniShotCut package installation failed.' }
+    $omniCheckpoint = Join-Path $checkpoints 'OmniShotCut_ckpt.pth'
+    Get-VerifiedDownload `
+        "https://huggingface.co/uva-cv-lab/OmniShotCut/resolve/$omniRevision/OmniShotCut_ckpt.pth?download=true" `
+        $omniCheckpoint '5948EA78E00626C0E6C5E742E64873EF872CF4A5071D2A0841AED51C3E686CFA'
+    $omniTest = @'
+import sys, numpy as np, torch
+if not torch.cuda.is_available():
+    raise RuntimeError("OmniShotCut currently requires NVIDIA CUDA")
+sys.path.insert(0, sys.argv[1])
+from omnishotcut.engine import load_model, _run_on_numpy
+model, args = load_model(sys.argv[2])
+frames = np.zeros((args.max_process_window_length, args.process_height, args.process_width, 3), dtype=np.uint8)
+ranges, intra, inter = _run_on_numpy(frames, model, args, 20)
+assert len(ranges) == len(intra) == len(inter)
+print("OmniShotCut CUDA inference verified")
+'@
+    # stdin preserves the Python string literals under Windows PowerShell;
+    # `python -c $omniTest` strips their double quotes during native binding.
+    $omniTest | & $python - $omni $omniCheckpoint
+    if ($LASTEXITCODE -ne 0) { throw 'OmniShotCut model verification failed.' }
+    [System.IO.File]::WriteAllText($omniMarker, $omniCommit)
 }
 if ($InstallMatAnyone2) {
     $matAnyoneCommit = '0079197acd6d16a741f71558809c06c586c579e0'

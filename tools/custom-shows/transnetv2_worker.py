@@ -161,6 +161,13 @@ def compile_model(model, mode, runtime):
 def resolve_decode_mode(args, policy_entry, cuda_available, info):
     if args.decode_mode != "auto": return args.decode_mode
     codec = str(info.get("codec") or "unknown").lower()
+    bucket = resolution_bucket(info)
+    resolution_modes = policy_entry.get("decodeModesByResolution", {}).get(codec, {})
+    resolution_exact = policy_entry.get("decodeExactByResolution", {}).get(codec, {})
+    candidate = resolution_modes.get(bucket)
+    if (resolution_exact.get(bucket) and
+            candidate in ("legacy", "cpu", "cpu-fast")):
+        return candidate
     candidate = policy_entry.get("decodeModes", {}).get(codec)
     if (policy_entry.get("decodeExact", {}).get(codec) and
             candidate in ("legacy", "cpu", "cpu-fast")):
@@ -170,6 +177,14 @@ def resolve_decode_mode(args, policy_entry, cuda_available, info):
     # while HEVC, AV1 and VP9 all benefited from NVDEC. Compatible CPU scaling
     # matched legacy divider frames on the tested real H.264 sources.
     return "cpu" if codec in ("h264", "avc1") else "legacy"
+
+
+def resolution_bucket(info):
+    width = max(0, int(info.get("width") or 0))
+    height = max(0, int(info.get("height") or 0))
+    # Include DCI 4K and common ultrawide variants without treating 1440p as 4K.
+    return "4k" if (width * height >= 7_000_000 or
+                     max(width, height) >= 3800 and min(width, height) >= 1600) else "standard"
 
 
 def decode_command(ffmpeg, source, mode):
@@ -462,6 +477,17 @@ def self_test():
     predictions = np.array([-2, 1, 3, 1, -2, -1, 2, 4, -1], np.float32)
     assert dividers(predictions, 10) == [700]
     automatic = SimpleNamespace(decode_mode="auto")
+    assert resolution_bucket({"width": 3840, "height": 2160}) == "4k"
+    assert resolution_bucket({"width": 2160, "height": 3840}) == "4k"
+    assert resolution_bucket({"width": 2560, "height": 1440}) == "standard"
+    resolution_policy = {
+        "decodeModesByResolution": {"h264": {"4k": "legacy"}},
+        "decodeExactByResolution": {"h264": {"4k": True}}}
+    assert resolve_decode_mode(automatic, resolution_policy, True,
+        {"codec": "h264", "width": 3840, "height": 2160}) == "legacy"
+    resolution_policy["decodeExactByResolution"]["h264"]["4k"] = False
+    assert resolve_decode_mode(automatic, resolution_policy, True,
+        {"codec": "h264", "width": 3840, "height": 2160}) == "cpu"
     assert resolve_decode_mode(automatic, {}, True, {"codec": "h264"}) == "cpu"
     for codec in ("hevc", "vp9", "av1"):
         assert resolve_decode_mode(automatic, {}, True, {"codec": codec}) == "legacy"
@@ -569,6 +595,7 @@ def main():
         "compileOrCacheSeconds": compile_seconds,
         "batchSizeRequested": args.batch_size, "batchSizeUsed": batch,
         "precision": precision, "device": str(device), "decodeMode": decode_mode,
+        "decodeResolutionBucket": resolution_bucket(info),
         "policyKey": key, "source": info, "dividerCount": len(cuts)})
     profile.update(memory_profile(torch, device))
     append_profile(args.profile_log, profile)

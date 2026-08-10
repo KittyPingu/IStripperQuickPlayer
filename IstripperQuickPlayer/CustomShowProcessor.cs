@@ -22,12 +22,17 @@ internal sealed class CustomShowProcessResult
     public int? PipelineDepth { get; set; }
     public string? Encoder { get; set; }
     public string? EncoderPreset { get; set; }
+    public CustomShowProcessResult[]? Clips { get; set; }
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
 }
 
 internal sealed record CustomShowProcessJob(string Output, long StartMs, long EndMs);
 
 internal static class CustomShowProcessor
 {
+    internal const string OmniShotCutRevision =
+        "23ad6fb41b296fb9258b0e7825125a914573b906";
     internal static string WorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "rvm_worker.py");
     internal static string MatAnyoneWorkerPath => Path.Combine(
@@ -38,10 +43,37 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "vitmatte_worker.py");
     internal static string ProPainterWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "propainter_worker.py");
+    internal static string OmniShotCutWorkerPath => Path.Combine(
+        AppContext.BaseDirectory, "custom-shows", "omnishotcut_worker.py");
 
     internal static string Sam2FrameCacheRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "IStripperQuickPlayer", "sam2-frame-cache");
+
+    internal static bool VerifyResultContract()
+    {
+        const string json = """
+            {
+              "width": 1280,
+              "height": 720,
+              "frameRate": "30/1",
+              "durationMs": 1000,
+              "foregroundMode": "source",
+              "clips": [{
+                "width": 1280,
+                "height": 720,
+                "frameRate": "30/1",
+                "durationMs": 1000,
+                "foregroundMode": "source"
+              }],
+              "futureWorkerMetadata": true
+            }
+            """;
+        CustomShowProcessResult? result = JsonSerializer.Deserialize<CustomShowProcessResult>(
+            json, CustomShowStore.JsonOptions);
+        return result?.ForegroundMode == "source" && result.Clips?.Length == 1 &&
+            result.AdditionalProperties?.ContainsKey("futureWorkerMetadata") == true;
+    }
 
     internal static IReadOnlyList<string> InstalledSam2Models(
         CustomShowConfiguration configuration)
@@ -71,6 +103,12 @@ internal static class CustomShowProcessor
 
     internal static bool IsTransNetV2Installed(CustomShowConfiguration configuration) =>
         OptionalToolInstalled(configuration, "TRANSNETV2_COMMIT", "transnetv2");
+
+    internal static bool IsOmniShotCutInstalled(CustomShowConfiguration configuration) =>
+        OptionalToolInstalled(configuration, "OMNISHOTCUT_COMMIT", "omnishotcut") &&
+        MarkerMatches(configuration, "OMNISHOTCUT_COMMIT", OmniShotCutRevision) &&
+        File.Exists(Path.Combine(RuntimeRoot(configuration), "checkpoints",
+            "OmniShotCut_ckpt.pth")) && File.Exists(OmniShotCutWorkerPath);
 
     internal static bool IsMatAnyone2Installed(CustomShowConfiguration configuration) =>
         OptionalToolInstalled(configuration, "MATANYONE2_COMMIT", "matanyone2") &&
@@ -116,6 +154,18 @@ internal static class CustomShowProcessor
         catch { return false; }
     }
 
+    static bool MarkerMatches(CustomShowConfiguration configuration,
+        string marker, string expected)
+    {
+        try
+        {
+            return string.Equals(File.ReadAllText(Path.Combine(
+                RuntimeRoot(configuration), marker)).Trim(), expected,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
     internal static bool VerifyOptionalToolDetection()
     {
         string runtime = Path.Combine(Path.GetTempPath(),
@@ -126,12 +176,12 @@ internal static class CustomShowProcessor
             {
                 PythonExecutable = Path.Combine(runtime, "venv", "Scripts", "python.exe")
             };
-            if (IsTransNetV2Installed(configuration) ||
+            if (IsTransNetV2Installed(configuration) || IsOmniShotCutInstalled(configuration) ||
                 IsMatAnyone2Installed(configuration) || IsVideoMaMaInstalled(configuration) ||
                 IsViTMatteSmallInstalled(configuration) ||
                 IsViTMatteBaseInstalled(configuration) || IsProPainterInstalled(configuration))
                 return false;
-            foreach (string directory in new[] { "transnetv2", "matanyone2",
+            foreach (string directory in new[] { "checkpoints", "transnetv2", "omnishotcut", "matanyone2",
                 "videomama", "sam2", "vitmatte-s", "vitmatte-b",
                 "propainter-streaming",
                 Path.Combine("videomama-base", "image_encoder"),
@@ -139,11 +189,13 @@ internal static class CustomShowProcessor
                 Path.Combine("videomama-model", "unet"),
                 "propainter-streaming-weights" })
                 Directory.CreateDirectory(Path.Combine(runtime, directory));
-            foreach (string marker in new[] { "TRANSNETV2_COMMIT", "MATANYONE2_COMMIT",
+            foreach (string marker in new[] { "TRANSNETV2_COMMIT", "OMNISHOTCUT_COMMIT", "MATANYONE2_COMMIT",
                 "VIDEOMAMA_COMMIT", "SAM2_COMMIT",
                 "VITMATTE_S_REVISION", "VITMATTE_B_REVISION",
                 "PROPAINTER_STREAMING_COMMIT" })
                 File.WriteAllText(Path.Combine(runtime, marker), "installed");
+            File.WriteAllText(Path.Combine(runtime, "OMNISHOTCUT_COMMIT"),
+                OmniShotCutRevision);
             foreach (string model in new[] {
                 Path.Combine("videomama-base", "image_encoder", "model.fp16.safetensors"),
                 Path.Combine("videomama-base", "vae", "diffusion_pytorch_model.fp16.safetensors"),
@@ -153,7 +205,9 @@ internal static class CustomShowProcessor
                 "propainter-0000-5f3cc1e7.pth"), []);
             File.WriteAllBytes(Path.Combine(runtime, "vitmatte-s", "model.safetensors"), []);
             File.WriteAllBytes(Path.Combine(runtime, "vitmatte-b", "pytorch_model.bin"), []);
+            File.WriteAllBytes(Path.Combine(runtime, "checkpoints", "OmniShotCut_ckpt.pth"), []);
             return IsTransNetV2Installed(configuration) &&
+                IsOmniShotCutInstalled(configuration) &&
                 IsMatAnyone2Installed(configuration) && IsVideoMaMaInstalled(configuration) &&
                 IsViTMatteSmallInstalled(configuration) &&
                 IsViTMatteBaseInstalled(configuration) &&

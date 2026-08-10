@@ -112,6 +112,40 @@ public sealed class PlaybackBridgeClient : IDisposable
         byte[] data = Encoding.UTF8.GetBytes(value + "\0");
         if (data.Length > 4 * 1024)
             throw new ArgumentOutOfRangeException(nameof(value));
+        return CallBuffer(apiName, data, readBack: false);
+    }
+
+    public int SetFullscreenShaderData(float[] values, out uint sequence)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        if (values.Length != 4)
+            throw new ArgumentException(
+                "Exactly four shader values are required.", nameof(values));
+        byte[] packet = CreateFullscreenShaderDataPacket(values);
+        int result = CallBuffer(
+            "IStripperSetFullscreenShaderData", packet, readBack: true);
+        sequence = result < 0 ? 0 : BitConverter.ToUInt32(packet, 16);
+        return result;
+    }
+
+    public int GetFullscreenShaderData(
+        out float[] values, out uint sequence)
+    {
+        byte[] packet = new byte[20];
+        int result = CallBuffer(
+            "IStripperGetFullscreenShaderData", packet, readBack: true);
+        values = result < 0 ? [] : Enumerable.Range(0, 4)
+            .Select(index => BitConverter.ToSingle(packet, index * 4))
+            .ToArray();
+        sequence = result < 0 ? 0 : BitConverter.ToUInt32(packet, 16);
+        return result;
+    }
+
+    private int CallBuffer(string apiName, byte[] data, bool readBack)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        if (data.Length == 0 || data.Length > 4 * 1024)
+            throw new ArgumentOutOfRangeException(nameof(data));
         nint process = OpenProcess(ProcessAccess, false, processId);
         if (process == 0)
             throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -125,7 +159,13 @@ public sealed class PlaybackBridgeClient : IDisposable
                     (nuint)data.Length, out nuint written) ||
                 written != (nuint)data.Length)
                 throw new Win32Exception(Marshal.GetLastWin32Error());
-            return Call(apiName, (ulong)(nuint)remoteValue);
+            int result = Call(apiName, (ulong)(nuint)remoteValue);
+            if (result >= 0 && readBack &&
+                (!ReadProcessMemory(process, remoteValue, data,
+                    (nuint)data.Length, out nuint read) ||
+                 read != (nuint)data.Length))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return result;
         }
         finally
         {
@@ -144,12 +184,27 @@ public sealed class PlaybackBridgeClient : IDisposable
             WriteCommand(writer, Encoding.UTF8.GetBytes("Test"), 42);
         stream.Position = 0;
         using var reader = new BinaryReader(stream);
+        float[] shaderValues = [12.5f, 3f, -0.75f, 900f];
+        byte[] shaderPacket = CreateFullscreenShaderDataPacket(shaderValues);
         return reader.ReadUInt32() == CommandMagic &&
             reader.ReadUInt32() == ProtocolVersion &&
             reader.ReadUInt32() == 4 &&
             reader.ReadUInt32() == 1 &&
             reader.ReadUInt64() == 42 &&
-            Encoding.UTF8.GetString(reader.ReadBytes(4)) == "Test";
+            Encoding.UTF8.GetString(reader.ReadBytes(4)) == "Test" &&
+            shaderPacket.Length == 20 &&
+            Enumerable.Range(0, 4).All(index =>
+                BitConverter.ToSingle(shaderPacket, index * 4) ==
+                    shaderValues[index]) &&
+            BitConverter.ToUInt32(shaderPacket, 16) == 0;
+    }
+
+    private static byte[] CreateFullscreenShaderDataPacket(float[] values)
+    {
+        byte[] packet = new byte[20];
+        for (int index = 0; index < 4; index++)
+            BitConverter.GetBytes(values[index]).CopyTo(packet, index * 4);
+        return packet;
     }
 
     private static void WriteCommand(BinaryWriter writer, byte[] name,
@@ -333,6 +388,10 @@ public sealed class PlaybackBridgeClient : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool WriteProcessMemory(nint process, nint address,
         byte[] buffer, nuint size, out nuint written);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ReadProcessMemory(nint process, nint address,
+        byte[] buffer, nuint size, out nuint read);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern nint CreateRemoteThread(nint process,

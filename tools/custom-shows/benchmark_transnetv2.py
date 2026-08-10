@@ -131,15 +131,15 @@ def compile_sweep(worker, torch, eager, device, batch, use_fp16, runtime):
             if viable else None), eager_seconds, results
 
 
-def create_fixture(ffmpeg, folder):
-    target = folder / "transnet-fixture.mp4"
+def create_fixture(ffmpeg, folder, label, size, duration):
+    target = folder / f"transnet-fixture-{label}.mp4"
     # Repeated hard visual changes plus motion exercise both scene and non-scene frames.
     vf = ("drawbox=x=0:y=0:w=iw:h=ih:color=red:t=fill:"
-          "enable='between(t,10,15)+between(t,30,35)+between(t,50,55)',"
+          "enable='between(t,4,7)+between(t,12,15)+between(t,20,23)',"
           "drawbox=x=0:y=0:w=iw:h=ih:color=blue:t=fill:"
-          "enable='between(t,20,25)+between(t,40,45)'")
+          "enable='between(t,8,11)+between(t,16,19)'")
     command = [ffmpeg, "-v", "error", "-f", "lavfi", "-i",
-               "testsrc2=size=1280x720:rate=30:duration=60", "-vf", vf,
+               f"testsrc2=size={size}:rate=30:duration={duration}", "-vf", vf,
                "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
                "-pix_fmt", "yuv420p", "-y", str(target)]
     subprocess.run(command, check=True)
@@ -169,6 +169,38 @@ def run_worker(python, worker_path, runtime, ffmpeg, ffprobe, source, batch, dec
             "dividersMs": complete["dividersMs"], "profile": complete.get("profile", {})}
 
 
+def benchmark_decoders(args, fixture, label, batch):
+    results = []
+    for mode in ("legacy", "cpu", "cpu-fast"):
+        try:
+            say(f"Testing {label} {mode} decode and divider frames...")
+            result = run_worker(sys.executable, args.worker, args.runtime,
+                                args.ffmpeg, args.ffprobe, fixture, batch, mode)
+            results.append(result)
+            say(f"  {result['wallSeconds']:.2f}s; {len(result['dividersMs'])} dividers")
+        except Exception as error:
+            results.append({"mode": mode, "error": str(error)[:500]})
+            say(f"  unavailable: {str(error).splitlines()[0]}")
+    # The compatible CPU scaler is the reference used by normal H.264 detection.
+    baseline = next((item for item in results
+                     if item["mode"] == "cpu" and "dividersMs" in item), None)
+    if baseline is None:
+        raise RuntimeError(f"Compatible CPU decoding failed for the {label} fixture")
+    for item in results:
+        item["dividerExact"] = item.get("dividersMs") == baseline["dividersMs"]
+    # Fast-bilinear remains diagnostic-only: it has shifted divider frames on
+    # longer compatibility footage even when a short fixture happens to match.
+    exact = [item for item in results
+             if item.get("dividerExact") and item["mode"] != "cpu-fast"]
+    def decode_seconds(item):
+        profile = item.get("profile", {})
+        return float(profile.get("decodeReadSeconds",
+                                 profile.get("producerSeconds", item["wallSeconds"])))
+    chosen = min(exact, key=decode_seconds)["mode"]
+    say(f"Fastest exact-compatible {label} decoder: {chosen}.")
+    return chosen, results, baseline
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", type=Path, required=True)
@@ -191,31 +223,17 @@ def main():
 
     temporary = Path(tempfile.mkdtemp(prefix="iqp-transnet-benchmark-"))
     try:
-        say("Generating the deterministic decoder/divider fixture...")
-        fixture = create_fixture(str(args.ffmpeg), temporary)
-        decode_results = []
-        for mode in ("legacy", "cpu", "cpu-fast"):
-            try:
-                say(f"Testing {mode} decode and divider frames...")
-                result = run_worker(sys.executable, args.worker, args.runtime,
-                                    args.ffmpeg, args.ffprobe, fixture, batch, mode)
-                decode_results.append(result)
-                say(f"  {result['wallSeconds']:.2f}s; {len(result['dividersMs'])} dividers")
-            except Exception as error:
-                decode_results.append({"mode": mode, "error": str(error)[:500]})
-                say(f"  unavailable: {str(error).splitlines()[0]}")
-        legacy = next((item for item in decode_results
-                       if item["mode"] == "legacy" and "dividersMs" in item), None)
-        if legacy is None:
-            legacy = next(item for item in decode_results if "dividersMs" in item)
-        for item in decode_results:
-            item["dividerExact"] = (item.get("dividersMs") == legacy.get("dividersMs"))
-        exact = [item for item in decode_results if item.get("dividerExact")]
-        fastest_exact = min(exact, key=lambda item: item["wallSeconds"])["mode"]
-        chosen_decode = fastest_exact
-        say(f"Fastest exact-compatible fixture decoder: {fastest_exact}.")
+        say("Generating deterministic standard and 4K decoder/divider fixtures...")
+        standard_fixture = create_fixture(str(args.ffmpeg), temporary,
+                                          "standard", "1280x720", 24)
+        four_k_fixture = create_fixture(str(args.ffmpeg), temporary,
+                                        "4k", "3840x2160", 24)
+        standard_decode, standard_results, standard_baseline = benchmark_decoders(
+            args, standard_fixture, "standard", batch)
+        four_k_decode, four_k_results, _ = benchmark_decoders(
+            args, four_k_fixture, "4K", batch)
 
-        profile = legacy.get("profile", {})
+        profile = standard_baseline.get("profile", {})
         frames = max(1, int(profile.get("frames", 1800)))
         decode_per_frame = float(profile.get("decodeReadSeconds",
                                               profile.get("producerSeconds", 0))) / frames
@@ -245,15 +263,21 @@ def main():
             "compiledEnabled": compile_enabled,
             "compileMode": compile_mode,
             "breakEvenFrames": break_even,
-            "decodeMode": chosen_decode,
+            "decodeMode": standard_decode,
             "dividerExact": True,
-            "decodeModes": {"h264": chosen_decode},
+            "decodeModes": {"h264": standard_decode},
             "decodeExact": {"h264": True},
+            "decodeModesByResolution": {
+                "h264": {"standard": standard_decode, "4k": four_k_decode}},
+            "decodeExactByResolution": {
+                "h264": {"standard": True, "4k": True}},
             "projectedGainPercent": projected_gain,
             "measuredUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "batchResults": batches,
             "compileResults": compile_results,
-            "decodeResults": decode_results,
+            "decodeResults": standard_results,
+            "decodeResultsByResolution": {
+                "standard": standard_results, "4k": four_k_results},
         }
         atomic_json(policy_path, policy)
         atomic_json(args.output, {

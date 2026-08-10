@@ -238,6 +238,21 @@ namespace
     using VirtualAlloc2Action = PVOID(WINAPI*)(HANDLE process, PVOID baseAddress,
         SIZE_T size, ULONG allocationType, ULONG pageProtection,
         MEM_EXTENDED_PARAMETER* parameters, ULONG parameterCount);
+    using QOpenGLShaderProgramBind = bool(__fastcall*)(void* program);
+    using QOpenGLShaderUniformLocation = int(__fastcall*)(
+        const void* program, const char* name);
+    using QOpenGLShaderSetUniform1 = void(__fastcall*)(
+        void* program, int location, float value);
+    using QOpenGLShaderSetUniform4 = void(__fastcall*)(
+        void* program, int location, float x, float y, float z, float w);
+
+    struct FullScreenShaderDataPacket
+    {
+        float values[4] = {};
+        std::uint32_t sequence = 0;
+    };
+
+    static_assert(sizeof(FullScreenShaderDataPacket) == 20);
 
     PVOID volatile g_activeMovie = nullptr;
     PVOID volatile g_activeAnimation = nullptr;
@@ -299,9 +314,16 @@ namespace
     PVOID volatile g_originalQMetaActivate = nullptr;
     PVOID volatile g_originalFsClipNodeStartNextShow = nullptr;
     PVOID volatile g_originalFsClipNodeNextShowClip = nullptr;
+    PVOID volatile g_originalQOpenGLShaderProgramBind = nullptr;
+    QOpenGLShaderUniformLocation g_qOpenGLShaderUniformLocation = nullptr;
+    QOpenGLShaderSetUniform1 g_qOpenGLShaderSetUniform1 = nullptr;
+    QOpenGLShaderSetUniform4 g_qOpenGLShaderSetUniform4 = nullptr;
     SRWLOCK g_fullScreenStateLock = SRWLOCK_INIT;
     SRWLOCK g_fullScreenHookLock = SRWLOCK_INIT;
     SRWLOCK g_fullScreenQueueOperationLock = SRWLOCK_INIT;
+    SRWLOCK g_fullScreenShaderDataLock = SRWLOCK_INIT;
+    FullScreenShaderDataPacket g_fullScreenShaderData;
+    LONG volatile g_fullScreenShaderDataSet = 0;
     std::vector<std::string> g_fullScreenClips;
     struct FullScreenQueueEntry
     {
@@ -1249,6 +1271,41 @@ namespace
         return returned;
     }
 
+    bool __fastcall CapturingQOpenGLShaderProgramBind(void* program)
+    {
+        const auto original = reinterpret_cast<QOpenGLShaderProgramBind>(
+            InterlockedCompareExchangePointer(
+                &g_originalQOpenGLShaderProgramBind, nullptr, nullptr));
+        const bool bound = original != nullptr && original(program);
+        if (!bound || InterlockedCompareExchange(
+                &g_fullScreenShaderDataSet, 0, 0) == 0)
+            return bound;
+
+        FullScreenShaderDataPacket packet;
+        AcquireSRWLockShared(&g_fullScreenShaderDataLock);
+        packet = g_fullScreenShaderData;
+        ReleaseSRWLockShared(&g_fullScreenShaderDataLock);
+
+        const int dataLocation = g_qOpenGLShaderUniformLocation == nullptr
+            ? -1 : g_qOpenGLShaderUniformLocation(
+                program, "u_QuickPlayerData");
+        if (dataLocation >= 0 && g_qOpenGLShaderSetUniform4 != nullptr)
+        {
+            g_qOpenGLShaderSetUniform4(program, dataLocation,
+                packet.values[0], packet.values[1],
+                packet.values[2], packet.values[3]);
+        }
+        const int sequenceLocation = g_qOpenGLShaderUniformLocation == nullptr
+            ? -1 : g_qOpenGLShaderUniformLocation(
+                program, "u_QuickPlayerSequence");
+        if (sequenceLocation >= 0 && g_qOpenGLShaderSetUniform1 != nullptr)
+        {
+            g_qOpenGLShaderSetUniform1(program, sequenceLocation,
+                static_cast<float>(packet.sequence));
+        }
+        return bound;
+    }
+
     void AppendJsonString(std::string& json, const std::string& value)
     {
         json.push_back('"');
@@ -1420,8 +1477,20 @@ namespace
             return BridgeSuccess;
         }
         const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE gui = GetModuleHandleW(L"Qt5Gui.dll");
         void* target = core == nullptr ? nullptr : GetProcAddress(core,
             "?activate@QMetaObject@@SAXPEAVQObject@@PEBU1@HPEAPEAX@Z");
+        void* shaderBind = gui == nullptr ? nullptr : GetProcAddress(gui,
+            "?bind@QOpenGLShaderProgram@@QEAA_NXZ");
+        g_qOpenGLShaderUniformLocation = gui == nullptr ? nullptr :
+            reinterpret_cast<QOpenGLShaderUniformLocation>(GetProcAddress(gui,
+                "?uniformLocation@QOpenGLShaderProgram@@QEBAHPEBD@Z"));
+        g_qOpenGLShaderSetUniform1 = gui == nullptr ? nullptr :
+            reinterpret_cast<QOpenGLShaderSetUniform1>(GetProcAddress(gui,
+                "?setUniformValue@QOpenGLShaderProgram@@QEAAXHM@Z"));
+        g_qOpenGLShaderSetUniform4 = gui == nullptr ? nullptr :
+            reinterpret_cast<QOpenGLShaderSetUniform4>(GetProcAddress(gui,
+                "?setUniformValue@QOpenGLShaderProgram@@QEAAXHMMMM@Z"));
         void* startNextShow = FindUniqueFunction(
             FsClipNodeStartNextShowSignature,
             sizeof(FsClipNodeStartNextShowSignature), -1);
@@ -1435,7 +1504,11 @@ namespace
         wchar_t profilePath[MAX_PATH] = {};
         if (OffsetProfilePath(profilePath))
             SaveResolvedOffsets(profilePath);
-        if (target == nullptr || startNextShow == nullptr ||
+        if (target == nullptr || shaderBind == nullptr ||
+            g_qOpenGLShaderUniformLocation == nullptr ||
+            g_qOpenGLShaderSetUniform1 == nullptr ||
+            g_qOpenGLShaderSetUniform4 == nullptr ||
+            startNextShow == nullptr ||
             nextShowClip == nullptr ||
             !layoutResolved ||
             PinBridge() < 0)
@@ -1484,10 +1557,25 @@ namespace
             if (status == MH_OK)
                 status = MH_EnableHook(nextShowClip);
         }
+        if (status == MH_OK || status == MH_ERROR_ENABLED)
+        {
+            void* shaderBindOriginal = nullptr;
+            status = MH_CreateHook(shaderBind,
+                reinterpret_cast<void*>(
+                    &CapturingQOpenGLShaderProgramBind),
+                &shaderBindOriginal);
+            if (status == MH_OK)
+                InterlockedExchangePointer(
+                    &g_originalQOpenGLShaderProgramBind,
+                    shaderBindOriginal);
+            if (status == MH_OK)
+                status = MH_EnableHook(shaderBind);
+        }
         const HRESULT result = status == MH_OK || status == MH_ERROR_ENABLED
             ? BridgeSuccess : E_FAIL;
         if (result < 0)
         {
+            MH_DisableHook(shaderBind);
             MH_DisableHook(nextShowClip);
             MH_DisableHook(startNextShow);
             MH_DisableHook(target);
@@ -1496,6 +1584,11 @@ namespace
                 &g_originalFsClipNodeStartNextShow, nullptr);
             InterlockedExchangePointer(
                 &g_originalFsClipNodeNextShowClip, nullptr);
+            InterlockedExchangePointer(
+                &g_originalQOpenGLShaderProgramBind, nullptr);
+            g_qOpenGLShaderUniformLocation = nullptr;
+            g_qOpenGLShaderSetUniform1 = nullptr;
+            g_qOpenGLShaderSetUniform4 = nullptr;
         }
         ReleaseSRWLockExclusive(&g_fullScreenHookLock);
         return result;
@@ -8858,6 +8951,61 @@ IStripperStartFullscreenHook()
     return hook;
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetFullscreenShaderData(SIZE_T packetAddress)
+{
+    __try
+    {
+        auto packet = reinterpret_cast<FullScreenShaderDataPacket*>(
+            packetAddress);
+        if (!IsWritable(packet, sizeof(*packet)))
+            return E_INVALIDARG;
+        if (InterlockedCompareExchangePointer(
+                &g_originalQOpenGLShaderProgramBind,
+                nullptr, nullptr) == nullptr)
+            return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+        FullScreenShaderDataPacket incoming = *packet;
+        for (float value : incoming.values)
+            if (!_finite(value))
+                return E_INVALIDARG;
+
+        AcquireSRWLockExclusive(&g_fullScreenShaderDataLock);
+        incoming.sequence = g_fullScreenShaderData.sequence >= 0x00FFFFFF
+            ? 0 : g_fullScreenShaderData.sequence + 1;
+        g_fullScreenShaderData = incoming;
+        ReleaseSRWLockExclusive(&g_fullScreenShaderDataLock);
+        *packet = incoming;
+        InterlockedExchange(&g_fullScreenShaderDataSet, 1);
+        return BridgeSuccess;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperGetFullscreenShaderData(SIZE_T packetAddress)
+{
+    __try
+    {
+        auto packet = reinterpret_cast<FullScreenShaderDataPacket*>(
+            packetAddress);
+        if (!IsWritable(packet, sizeof(*packet)))
+            return E_INVALIDARG;
+        FullScreenShaderDataPacket current;
+        AcquireSRWLockShared(&g_fullScreenShaderDataLock);
+        current = g_fullScreenShaderData;
+        ReleaseSRWLockShared(&g_fullScreenShaderDataLock);
+        *packet = current;
+        return BridgeSuccess;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperFullscreenNext()
 {
     return InvokeQtSingleton(g_fullScreenVtableRva, &g_fullScreenObject,
@@ -8972,7 +9120,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 88;
+    return 89;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

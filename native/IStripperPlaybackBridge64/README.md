@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v58
+supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v89
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -66,11 +66,12 @@ the installed vghd binary, not from those public Qt documents.
 ## Playback control path
 
 QuickPlayer uses the Windows remote-thread API to load the bridge into
-`vghd.exe`. A bounded named-pipe channel invokes its exported controls, and
-[MinHook](https://github.com/TsudaKageyu/minhook) intercepts only the three
-registry values QuickPlayer observes. Registry callbacks fail open after two
-seconds if QuickPlayer is unavailable, so the injected bridge cannot leave
-iStripper waiting on the UI process.
+`vghd.exe`. A bounded named-pipe channel invokes its exported controls.
+[MinHook](https://github.com/TsudaKageyu/minhook) intercepts the three registry
+values QuickPlayer observes, dynamically resolved fullscreen lifecycle
+functions, and Qt's exported OpenGL shader-program bind method. Registry
+callbacks fail open after two seconds if QuickPlayer is unavailable, so the
+injected bridge cannot leave iStripper waiting on the UI process.
 
 1. Load `IStripperPlaybackBridge64.dll` in the x64 vghd process.
 2. Read the running executable's file version and PE identity.
@@ -86,6 +87,13 @@ iStripper waiting on the UI process.
 6. Resolve the active `VideoFFmpeg` object's `CBpkSound` and `QAudioOutput`
    ownership so pause and seek operations control the same audio stream that
    vghd opened for the clip.
+
+Fullscreen shader data does not use a fixed vghd RVA or object offset. At
+startup the bridge resolves `QOpenGLShaderProgram::bind`, `uniformLocation`,
+and `setUniformValue` from the loaded `Qt5Gui.dll` export table. The bind hook
+sets `u_QuickPlayerData` and `u_QuickPlayerSequence` only for linked programs
+that declare those uniforms. Missing or incompatible Qt exports make
+fullscreen hook setup fail closed.
 
 The resolver produced this profile for the 2.4.0.0 baseline:
 
