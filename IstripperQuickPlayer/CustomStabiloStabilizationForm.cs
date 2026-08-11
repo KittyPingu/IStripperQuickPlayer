@@ -50,16 +50,17 @@ internal sealed class CustomStabiloStabilizationForm : Form
 
         TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(10),
             ColumnCount = 1, RowCount = 5 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        TableLayoutPanel paths = new() { Dock = DockStyle.Top, AutoSize = true,
+        TableLayoutPanel paths = new() { Dock = DockStyle.Fill, AutoSize = true,
             ColumnCount = 3, RowCount = 2 };
-        paths.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        paths.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 95));
         paths.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        paths.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        paths.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
         AddPath(paths, 0, "Source video", sourcePath, BrowseSource);
         AddPath(paths, 1, "Output MP4", outputPath, BrowseOutput);
         layout.Controls.Add(paths, 0, 0);
@@ -118,7 +119,7 @@ internal sealed class CustomStabiloStabilizationForm : Form
         table.Controls.Add(new Label { Text = label, AutoSize = true,
             Anchor = AnchorStyles.Left, Padding = new Padding(0, 6, 8, 0) }, 0, row);
         table.Controls.Add(box, 1, row);
-        Button button = new() { Text = "Browse...", AutoSize = true };
+        Button button = new() { Text = "Browse...", Dock = DockStyle.Fill };
         button.Click += browse;
         table.Controls.Add(button, 2, row);
     }
