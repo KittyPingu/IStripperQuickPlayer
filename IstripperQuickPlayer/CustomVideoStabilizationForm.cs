@@ -175,12 +175,15 @@ internal sealed class CustomVideoStabilizationForm : Form
                 return;
             VideoInfo info = sourceInfo ?? await ProbeAsync(source, CancellationToken.None);
             StabilizationSettings settings = SelectedSettings();
-            File.Copy(SourcePreviewPath, OutputPreviewPath, true);
+            CreateWaitingPreview(OutputPreviewPath);
             using CustomShowProcessingForm processing = new((progress, token) =>
                     StabilizeAsync(configuration, source, output, temporary, TransformPath,
                         SourcePreviewPath, OutputPreviewPath, info, settings,
                         progress, token),
-                "Stabilizing Video (FFmpeg)", "Original frame", "Stabilized frame");
+                "Stabilizing Video (FFmpeg)", "Detected camera motion",
+                "Stabilized frame (available during Step 2)",
+                "Two-step stabilization — overall progress\n" +
+                "Step 1: analyze camera motion   →   Step 2: render stabilized video");
             if (processing.ShowDialog(this) != DialogResult.OK) return;
             if (File.Exists(OutputPreviewPath))
             {
@@ -252,19 +255,26 @@ internal sealed class CustomVideoStabilizationForm : Form
         try
         {
             progress.Report(new("analysis", 0,
-                "Starting motion analysis...", sourcePreview, outputPreview));
+                "Step 1 of 2 — Starting camera-motion analysis...",
+                sourcePreview, outputPreview, "Detected camera motion",
+                "Stabilized frame (available during Step 2)"));
             await RunFfmpegAsync(ffmpeg, work,
                 ["-y", "-hide_banner", "-nostdin", "-v", "warning",
                  "-progress", "pipe:1", "-nostats", "-i", source,
-                 "-map", "0:v:0", "-an", "-sn", "-dn", "-vf",
-                 DetectFilter(settings), "-f", "null", "-"],
-                "Analyzing motion", 0, 45, info, sourcePreview, outputPreview,
+                 "-filter_complex", DetectPreviewFilter(settings),
+                 "-map", "[analysis]", "-an", "-sn", "-dn", "-f", "null", "-",
+                 "-map", "[preview]", "-an", "-f", "image2", "-update", "1",
+                 "-atomic_writing", "1", "-q:v", "3", sourcePreview],
+                "Step 1 of 2 — Analyzing camera motion", 0, 45, info,
+                sourcePreview, outputPreview, "Detected camera motion",
+                "Stabilized frame (available during Step 2)",
                 log, progress, token);
 
             List<string> transformArguments = ["-y", "-hide_banner", "-nostdin",
                 "-v", "warning", "-progress", "pipe:1", "-nostats", "-i", source,
-                "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
-                "-map_chapters", "0", "-vf", TransformFilter(settings)];
+                "-filter_complex", TransformPreviewFilter(settings),
+                "-map", "[encoded]", "-map", "0:a?", "-map_metadata", "0",
+                "-map_chapters", "0"];
             if (nvenc)
                 transformArguments.AddRange(["-c:v", "h264_nvenc", "-preset", preset,
                     "-tune", "hq", "-cq", "19"]);
@@ -273,9 +283,15 @@ internal sealed class CustomVideoStabilizationForm : Form
                     "-crf", "18"]);
             transformArguments.AddRange(["-pix_fmt", "yuv420p", "-c:a", "aac",
                 "-b:a", "192k", "-movflags", "+faststart",
-                "-max_muxing_queue_size", "1024", staged]);
+                "-max_muxing_queue_size", "1024", staged,
+                "-map", "[source_preview]", "-an", "-f", "image2", "-update", "1",
+                "-atomic_writing", "1", "-q:v", "3", sourcePreview,
+                "-map", "[stabilized_preview]", "-an", "-f", "image2",
+                "-update", "1", "-atomic_writing", "1", "-q:v", "3",
+                outputPreview]);
             await RunFfmpegAsync(ffmpeg, work, transformArguments,
-                "Stabilizing video", 45, 53, info, sourcePreview, outputPreview,
+                "Step 2 of 2 — Rendering stabilized video", 45, 53, info,
+                sourcePreview, outputPreview, "Original frame", "Stabilized frame",
                 log, progress, token);
             if (!File.Exists(staged) || new FileInfo(staged).Length == 0)
                 throw new InvalidDataException("FFmpeg did not create a stabilized output file.");
@@ -308,15 +324,30 @@ internal sealed class CustomVideoStabilizationForm : Form
 
     static string DetectFilter(StabilizationSettings settings) =>
         $"vidstabdetect=result=transforms.trf:shakiness={settings.Shakiness}:" +
-        "accuracy=15:stepsize=6:mincontrast=0.25:fileformat=binary";
+        "accuracy=15:stepsize=6:mincontrast=0.25:show=1:fileformat=binary";
+
+    static string DetectPreviewFilter(StabilizationSettings settings) =>
+        $"[0:v]{DetectFilter(settings)},split=2[analysis][preview_input];" +
+        "[preview_input]fps=1/2," + PreviewScale + "[preview]";
 
     static string TransformFilter(StabilizationSettings settings) =>
         $"vidstabtransform=input=transforms.trf:smoothing={settings.Smoothing}:" +
         $"optzoom={settings.OptZoom}:zoomspeed=0.25:crop=black:interpol=bicubic";
 
+    const string PreviewScale =
+        "scale=960:-2:force_original_aspect_ratio=decrease,setsar=1";
+
+    static string TransformPreviewFilter(StabilizationSettings settings) =>
+        "[0:v]split=2[source_preview_input][stabilize_input];" +
+        $"[stabilize_input]{TransformFilter(settings)}," +
+        "split=2[encoded][stabilized_preview_input];" +
+        $"[source_preview_input]fps=1/2,{PreviewScale}[source_preview];" +
+        $"[stabilized_preview_input]fps=1/2,{PreviewScale}[stabilized_preview]";
+
     static async Task RunFfmpegAsync(string ffmpeg, string work,
         IReadOnlyList<string> arguments, string label, double phaseStart,
         double phaseSize, VideoInfo info, string sourcePreview, string outputPreview,
+        string sourceLabel, string outputLabel,
         StringBuilder log, IProgress<CustomShowProgress> progress,
         CancellationToken token)
     {
@@ -343,7 +374,7 @@ internal sealed class CustomVideoStabilizationForm : Form
             long displayedFrame = Math.Clamp(frame, 0, info.EstimatedFrames);
             progress.Report(new(label, phaseStart + phaseSize * fraction,
                 $"{label} — Processed {displayedFrame:N0}/{info.EstimatedFrames:N0} frames",
-                sourcePreview, outputPreview));
+                sourcePreview, outputPreview, sourceLabel, outputLabel));
         }
         await process.WaitForExitAsync(token);
         string error = await errorTask;
@@ -354,7 +385,7 @@ internal sealed class CustomVideoStabilizationForm : Form
                 : error.Trim());
         progress.Report(new(label, phaseStart + phaseSize,
             $"{label} — Processed {info.EstimatedFrames:N0}/{info.EstimatedFrames:N0} frames",
-            sourcePreview, outputPreview));
+            sourcePreview, outputPreview, sourceLabel, outputLabel));
     }
 
     static async Task<bool> CanUseNvencAsync(string ffmpeg, string preset,
@@ -457,6 +488,27 @@ internal sealed class CustomVideoStabilizationForm : Form
         return new Bitmap(image);
     }
 
+    static void CreateWaitingPreview(string path)
+    {
+        using Bitmap bitmap = new(960, 540);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(Color.Black);
+        using Font heading = new(FontFamily.GenericSansSerif, 28,
+            FontStyle.Bold, GraphicsUnit.Pixel);
+        using Font detail = new(FontFamily.GenericSansSerif, 20,
+            FontStyle.Regular, GraphicsUnit.Pixel);
+        using StringFormat format = new()
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center
+        };
+        graphics.DrawString("Stabilized preview", heading, Brushes.White,
+            new RectangleF(0, 200, bitmap.Width, 48), format);
+        graphics.DrawString("Available during Step 2 of 2", detail, Brushes.LightGray,
+            new RectangleF(0, 250, bitmap.Width, 42), format);
+        bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Jpeg);
+    }
+
     static string FormatDuration(long durationMs)
     {
         TimeSpan value = TimeSpan.FromMilliseconds(durationMs);
@@ -469,6 +521,10 @@ internal sealed class CustomVideoStabilizationForm : Form
         StabilizationSettings settings = new(5, 30, 1);
         return DetectFilter(settings).Contains("shakiness=5", StringComparison.Ordinal) &&
             TransformFilter(settings).Contains("smoothing=30:optzoom=1",
+                StringComparison.Ordinal) &&
+            DetectPreviewFilter(settings).Contains("fps=1/2",
+                StringComparison.Ordinal) &&
+            TransformPreviewFilter(settings).Contains("[encoded]",
                 StringComparison.Ordinal) &&
             Math.Abs(ParseRate("30000/1001") - 29.97002997) < .0001 &&
             FormatDuration(65_000) == "1:05";

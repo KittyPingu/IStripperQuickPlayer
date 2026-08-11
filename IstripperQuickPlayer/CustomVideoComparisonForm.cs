@@ -138,7 +138,8 @@ internal sealed class CustomVideoComparisonForm : Form
         previewDelay.Tick += (_, _) =>
         {
             previewDelay.Stop();
-            _ = ShowFrameAsync(timeline.Value);
+            if (!playing)
+                _ = ShowFrameAsync(timeline.Value);
         };
         Shown += (_, _) =>
         {
@@ -187,6 +188,7 @@ internal sealed class CustomVideoComparisonForm : Form
     {
         if (timeline.Value >= timeline.Maximum)
             timeline.Value = 0;
+        previewDelay.Stop();
         CancelDecode();
         playing = true;
         play.Text = "Pause";
@@ -257,6 +259,7 @@ internal sealed class CustomVideoComparisonForm : Form
 
     async Task ShowFrameAsync(long atMs)
     {
+        if (playing) return;
         CancelDecode();
         CancellationTokenSource cancellation = new();
         decodeCancellation = cancellation;

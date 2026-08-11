@@ -127,6 +127,13 @@ the partial staging output, retains the source and any previous completed output
 and writes `<output>.stabilization.log` diagnostics. This standalone operation is
 the initial speed/quality test; it is not yet part of custom-show creation.
 
+The processing window identifies the workflow as two steps and labels each active
+step. During Step 1, the original preview advances and overlays VidStab's accepted
+tracking fields and motion vectors; the output pane explains that no stabilized
+frame exists yet. During Step 2, synchronized original and stabilized preview
+frames update approximately every two seconds of video. FPS is calculated
+independently for each step.
+
 After processing, QuickPlayer opens a synchronized side-by-side reviewer for the
 original and stabilized videos. Both panes are produced by one playback graph so
 they cannot drift independently. Use the shared QuickPlayer time bar, play/pause,

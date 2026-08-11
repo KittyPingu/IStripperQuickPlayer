@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -7,7 +8,8 @@ namespace IStripperQuickPlayer;
 
 internal sealed record CustomShowProgress(
     string Stage, double Percent, string Message,
-    string? PreviewSource = null, string? PreviewComposite = null);
+    string? PreviewSource = null, string? PreviewComposite = null,
+    string? PreviewSourceLabel = null, string? PreviewCompositeLabel = null);
 
 internal sealed class CustomShowProcessResult
 {
@@ -539,12 +541,20 @@ internal static class CustomShowProcessor
 internal sealed class CustomShowProcessingForm : Form
 {
     readonly ProgressBar bar = new() { Dock = DockStyle.Top, Height = 28 };
+    readonly Label processDescription = new()
+    {
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleCenter,
+        Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold)
+    };
     readonly Label status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
     readonly Button cancel = new() { Dock = DockStyle.Bottom, Text = "Cancel", Height = 36 };
     readonly PictureBox source = new() { Dock = DockStyle.Fill,
         SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
     readonly PictureBox composite = new() { Dock = DockStyle.Fill,
         SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+    readonly GroupBox sourceGroup;
+    readonly GroupBox compositeGroup;
     readonly CancellationTokenSource cancellation = new();
     readonly Stopwatch elapsed = new();
     readonly System.Windows.Forms.Timer clock = new() { Interval = 1000 };
@@ -561,7 +571,7 @@ internal sealed class CustomShowProcessingForm : Form
     internal CustomShowProcessingForm(Func<IProgress<CustomShowProgress>,
         CancellationToken, Task<CustomShowProcessResult>> operation,
         string text = "Processing Custom Show", string sourceLabel = "Original input",
-        string compositeLabel = "Composited result")
+        string compositeLabel = "Composited result", string? processDescription = null)
     {
         this.operation = operation;
         Text = text;
@@ -570,21 +580,27 @@ internal sealed class CustomShowProcessingForm : Form
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
         TableLayoutPanel layout = new() { Dock = DockStyle.Fill,
-            RowCount = 4, ColumnCount = 1 };
+            RowCount = 5, ColumnCount = 1 };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,
+            processDescription == null ? 0 : 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        this.processDescription.Text = processDescription ?? "";
         TableLayoutPanel previews = new() { Dock = DockStyle.Fill,
             RowCount = 1, ColumnCount = 2, Padding = new Padding(8) };
         previews.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         previews.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        previews.Controls.Add(PreviewGroup(sourceLabel, source), 0, 0);
-        previews.Controls.Add(PreviewGroup(compositeLabel, composite), 1, 0);
-        layout.Controls.Add(bar, 0, 0);
-        layout.Controls.Add(previews, 0, 1);
-        layout.Controls.Add(status, 0, 2);
-        layout.Controls.Add(cancel, 0, 3);
+        sourceGroup = PreviewGroup(sourceLabel, source);
+        compositeGroup = PreviewGroup(compositeLabel, composite);
+        previews.Controls.Add(sourceGroup, 0, 0);
+        previews.Controls.Add(compositeGroup, 1, 0);
+        layout.Controls.Add(this.processDescription, 0, 0);
+        layout.Controls.Add(bar, 0, 1);
+        layout.Controls.Add(previews, 0, 2);
+        layout.Controls.Add(status, 0, 3);
+        layout.Controls.Add(cancel, 0, 4);
         Controls.Add(layout);
         cancel.Click += (_, _) => { cancel.Enabled = false; status.Text = "Cancelling..."; cancellation.Cancel(); };
         clock.Tick += (_, _) => RefreshStatus();
@@ -614,6 +630,10 @@ internal sealed class CustomShowProcessingForm : Form
                     "Loading cached optimized SAM2", StringComparison.Ordinal);
                 bar.Style = compiling ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
                 if (!compiling) bar.Value = (int)Math.Round(percent);
+                if (!string.IsNullOrWhiteSpace(value.PreviewSourceLabel))
+                    sourceGroup.Text = value.PreviewSourceLabel;
+                if (!string.IsNullOrWhiteSpace(value.PreviewCompositeLabel))
+                    compositeGroup.Text = value.PreviewCompositeLabel;
                 UpdatePreview(value.PreviewSource, value.PreviewComposite);
             });
             Result = await operation(progress, cancellation.Token);
@@ -690,11 +710,11 @@ internal sealed class CustomShowProcessingForm : Form
     void AddFrameSample(string message, double seconds)
     {
         Match match = Regex.Match(message,
-            @"\bProcessed\s+(\d+)\s*/\s*(\d+)\s+frames\b",
+            @"\bProcessed\s+([\d,._\s]+)\s*/\s*([\d,._\s]+)\s+frames\b",
             RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
         if (!match.Success ||
-            !long.TryParse(match.Groups[1].Value, out long frames) ||
-            !long.TryParse(match.Groups[2].Value, out long total)) return;
+            !TryParseFrameCount(match.Groups[1].Value, out long frames) ||
+            !TryParseFrameCount(match.Groups[2].Value, out long total)) return;
         if (total != frameSampleTotal || frameSamples.Count > 0 &&
             frames < frameSamples[^1].Frames)
         {
@@ -706,6 +726,13 @@ internal sealed class CustomShowProcessingForm : Form
         double cutoff = seconds - 30;
         while (frameSamples.Count > 2 && frameSamples[1].Seconds < cutoff)
             frameSamples.RemoveAt(0);
+    }
+
+    static bool TryParseFrameCount(string value, out long result)
+    {
+        string digits = new(value.Where(char.IsDigit).ToArray());
+        return long.TryParse(digits, NumberStyles.None,
+            CultureInfo.InvariantCulture, out result);
     }
 
     static double? EstimateFps(IReadOnlyList<(double Seconds, long Frames)> samples)
@@ -767,6 +794,8 @@ internal sealed class CustomShowProcessingForm : Form
             EstimateRemaining([(5, 20), (10, 30), (15, 40)], 40) == null &&
             EstimateRemaining(fast, 50) is not null &&
             Math.Abs(EstimateFps([(2, 10L), (7, 60L)])!.Value - 10) < .001 &&
+            TryParseFrameCount("8,590", out long formattedFrames) &&
+            formattedFrames == 8_590 &&
             AggregateClipPercent(0, 10_000, 100_000, 100) == 10 &&
             AggregateClipPercent(10_000, 90_000, 100_000, 50) == 55;
     }
