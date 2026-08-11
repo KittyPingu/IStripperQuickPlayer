@@ -299,8 +299,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
         using Process process = new() { StartInfo = start };
         StringBuilder log = new(); process.Start();
-        using CancellationTokenRegistration registration = token.Register(() =>
-        { try { if (!process.HasExited) process.Kill(true); } catch { } });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         Task<string> stderr = process.StandardError.ReadToEndAsync(token);
         while (await process.StandardOutput.ReadLineAsync(token) is string line)
         {

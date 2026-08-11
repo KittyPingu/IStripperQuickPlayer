@@ -35,6 +35,8 @@ internal static class CustomShowProcessor
 {
     internal const string OmniShotCutRevision =
         "23ad6fb41b296fb9258b0e7825125a914573b906";
+    internal const string StabiloRevision =
+        "52ebd524d26fb940b868dc9d7eeb3e2602f895a3";
     internal static string WorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "rvm_worker.py");
     internal static string MatAnyoneWorkerPath => Path.Combine(
@@ -47,6 +49,8 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "propainter_worker.py");
     internal static string OmniShotCutWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "omnishotcut_worker.py");
+    internal static string StabiloWorkerPath => Path.Combine(
+        AppContext.BaseDirectory, "custom-shows", "stabilo_worker.py");
 
     internal static string Sam2FrameCacheRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -156,6 +160,12 @@ internal static class CustomShowProcessor
         File.Exists(Path.Combine(RuntimeRoot(configuration), "propainter-streaming-weights",
             "propainter-0000-5f3cc1e7.pth")) && File.Exists(ProPainterWorkerPath);
 
+    internal static bool IsStabiloInstalled(CustomShowConfiguration configuration) =>
+        OptionalToolInstalled(configuration, "STABILO_COMMIT", "stabilo") &&
+        MarkerMatches(configuration, "STABILO_COMMIT", StabiloRevision) &&
+        OptionalToolInstalled(configuration, "SAM2_COMMIT", "sam2") &&
+        File.Exists(StabiloWorkerPath);
+
     static bool OptionalToolInstalled(CustomShowConfiguration configuration,
         string marker, string folder)
     {
@@ -193,11 +203,12 @@ internal static class CustomShowProcessor
             if (IsTransNetV2Installed(configuration) || IsOmniShotCutInstalled(configuration) ||
                 IsMatAnyone2Installed(configuration) || IsVideoMaMaInstalled(configuration) ||
                 IsViTMatteSmallInstalled(configuration) ||
-                IsViTMatteBaseInstalled(configuration) || IsProPainterInstalled(configuration))
+                IsViTMatteBaseInstalled(configuration) || IsProPainterInstalled(configuration) ||
+                IsStabiloInstalled(configuration))
                 return false;
             foreach (string directory in new[] { "checkpoints", "transnetv2", "omnishotcut", "matanyone2",
                 "videomama", "sam2", "vitmatte-s", "vitmatte-b",
-                "propainter-streaming",
+                "propainter-streaming", "stabilo",
                 Path.Combine("videomama-base", "image_encoder"),
                 Path.Combine("videomama-base", "vae"),
                 Path.Combine("videomama-model", "unet"),
@@ -206,10 +217,12 @@ internal static class CustomShowProcessor
             foreach (string marker in new[] { "TRANSNETV2_COMMIT", "OMNISHOTCUT_COMMIT", "MATANYONE2_COMMIT",
                 "VIDEOMAMA_COMMIT", "SAM2_COMMIT",
                 "VITMATTE_S_REVISION", "VITMATTE_B_REVISION",
-                "PROPAINTER_STREAMING_COMMIT" })
+                "PROPAINTER_STREAMING_COMMIT", "STABILO_COMMIT" })
                 File.WriteAllText(Path.Combine(runtime, marker), "installed");
             File.WriteAllText(Path.Combine(runtime, "OMNISHOTCUT_COMMIT"),
                 OmniShotCutRevision);
+            File.WriteAllText(Path.Combine(runtime, "STABILO_COMMIT"),
+                StabiloRevision);
             foreach (string model in new[] {
                 Path.Combine("videomama-base", "image_encoder", "model.fp16.safetensors"),
                 Path.Combine("videomama-base", "vae", "diffusion_pytorch_model.fp16.safetensors"),
@@ -225,7 +238,7 @@ internal static class CustomShowProcessor
                 IsMatAnyone2Installed(configuration) && IsVideoMaMaInstalled(configuration) &&
                 IsViTMatteSmallInstalled(configuration) &&
                 IsViTMatteBaseInstalled(configuration) &&
-                IsProPainterInstalled(configuration);
+                IsProPainterInstalled(configuration) && IsStabiloInstalled(configuration);
         }
         finally { try { Directory.Delete(runtime, true); } catch { } }
     }
@@ -348,10 +361,8 @@ internal static class CustomShowProcessor
         using Process process = new() { StartInfo = start };
         StringBuilder log = new();
         process.Start();
-        using CancellationTokenRegistration registration = cancellationToken.Register(() =>
-        {
-            try { if (!process.HasExited) process.Kill(true); } catch { }
-        });
+        await using ProcessCancellationScope cancellationScope =
+            new(process, cancellationToken);
         Task stderr = Task.Run(async () =>
         {
             while (await process.StandardError.ReadLineAsync() is string line)

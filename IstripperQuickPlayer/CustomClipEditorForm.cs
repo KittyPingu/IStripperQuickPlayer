@@ -683,10 +683,7 @@ internal sealed class CustomClipEditorForm : Form
                 start.ArgumentList.Add(argument);
             using Process process = Process.Start(start) ??
                 throw new InvalidOperationException("FFmpeg did not start.");
-            using CancellationTokenRegistration registration = token.Register(() =>
-            {
-                try { if (!process.HasExited) process.Kill(true); } catch { }
-            });
+            await using ProcessCancellationScope cancellationScope = new(process, token);
             _ = process.StandardError.ReadToEndAsync(token);
             byte[] frame = new byte[640 * 360 * 4];
             while (!token.IsCancellationRequested)
@@ -755,10 +752,8 @@ internal sealed class CustomClipEditorForm : Form
                 start.ArgumentList.Add(argument);
             using Process process = Process.Start(start) ??
                 throw new InvalidOperationException("FFmpeg did not start.");
-            using CancellationTokenRegistration registration = cancellation.Token.Register(() =>
-            {
-                try { if (!process.HasExited) process.Kill(true); } catch { }
-            });
+            await using ProcessCancellationScope cancellationScope =
+                new(process, cancellation.Token);
             Task<string> error = process.StandardError.ReadToEndAsync(cancellation.Token);
             using MemoryStream bytes = new();
             await process.StandardOutput.BaseStream.CopyToAsync(bytes, cancellation.Token);
@@ -1043,10 +1038,7 @@ internal static class CustomSceneDetector
             start.ArgumentList.Add(argument);
         using Process process = Process.Start(start) ??
             throw new InvalidOperationException("FFmpeg scene detection could not start.");
-        using CancellationTokenRegistration registration = token.Register(() =>
-        {
-            try { if (!process.HasExited) process.Kill(true); } catch { }
-        });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         List<long> cuts = [];
         Task readProgress = Task.Run(async () =>
         {
@@ -1122,10 +1114,7 @@ internal static class CustomSceneDetector
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
         using Process process = Process.Start(start) ??
             throw new InvalidOperationException("Python could not be started.");
-        using CancellationTokenRegistration registration = token.Register(() =>
-        {
-            try { if (!process.HasExited) process.Kill(true); } catch { }
-        });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         Task<string> error = process.StandardError.ReadToEndAsync(token);
         long[]? dividers = null;
         int displayedProgress = 0;
@@ -1191,10 +1180,7 @@ internal static class CustomSceneDetector
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
         using Process process = Process.Start(start) ??
             throw new InvalidOperationException("Python could not be started.");
-        using CancellationTokenRegistration registration = token.Register(() =>
-        {
-            try { if (!process.HasExited) process.Kill(true); } catch { }
-        });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         Task<string> error = process.StandardError.ReadToEndAsync(token);
         SceneDetectionRange[]? ranges = null;
         string? revision = null;

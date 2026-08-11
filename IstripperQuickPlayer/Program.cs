@@ -41,6 +41,8 @@ namespace IStripperQuickPlayer
                     ("card index refresh", Datastore.VerifyTagIndexReplacement()),
                     ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),
                     ("worker result contract", CustomShowProcessor.VerifyResultContract()),
+                    ("process-tree cancellation", Task.Run(
+                        ProcessCancellationScope.VerifyAsync).GetAwaiter().GetResult()),
                     ("FFmpeg runtime", FfmpegCpuDecoder.VerifyRuntime())
                 ];
                 foreach ((string name, bool passed) in checks)

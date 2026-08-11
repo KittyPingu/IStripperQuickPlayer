@@ -71,6 +71,8 @@ public partial class Form1
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
         ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
+        ToolStripMenuItem backgroundLock = new(
+            "Camera / Background Lock (Stabilo + SAM2)...");
         ToolStripMenuItem removeWatermark = new("Remove Video Object / Watermark...");
         ToolStripMenuItem models = new("Manage Models...");
         ToolStripMenuItem setup = new("Install / Update Processing Tools...");
@@ -78,6 +80,7 @@ public partial class Form1
         ToolStripMenuItem open = new("Open Folder");
         create.Click += (_, _) => EditCustomShow(null);
         stabilize.Click += (_, _) => StabilizeVideo();
+        backgroundLock.Click += (_, _) => StabilizeBackgroundVideo();
         removeWatermark.Click += (_, _) => RemoveVideoWatermark();
         models.Click += (_, _) => ManageCustomModels();
         setup.Click += (_, _) => InstallCustomShowTools();
@@ -89,7 +92,7 @@ public partial class Form1
             { UseShellExecute = true });
         };
         customShowsMenu.DropDownItems.AddRange(
-            [create, stabilize, removeWatermark, models, setup, settings, open]);
+            [create, stabilize, backgroundLock, removeWatermark, models, setup, settings, open]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
         editCustomShowMenu.Click += (_, _) =>
@@ -432,7 +435,8 @@ public partial class Form1
                 options.InstallTransNetV2, options.InstallOmniShotCut,
                 options.InstallMatAnyone2,
                 options.InstallVideoMaMa, options.InstallViTMatte,
-                options.InstallProPainter, options.InstallEdgeTam);
+                options.InstallProPainter, options.InstallEdgeTam,
+                options.InstallStabilo);
             if (form.ShowDialog(this) != DialogResult.OK) return;
             string python = CustomShowConfiguration.FindPythonExecutable();
             if (!File.Exists(python) ||
@@ -461,6 +465,12 @@ public partial class Form1
     void StabilizeVideo()
     {
         using CustomVideoStabilizationForm form = new(customShowConfiguration);
+        form.ShowDialog(this);
+    }
+
+    void StabilizeBackgroundVideo()
+    {
+        using CustomStabiloStabilizationForm form = new(customShowConfiguration);
         form.ShowDialog(this);
     }
 

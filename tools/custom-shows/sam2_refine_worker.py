@@ -909,6 +909,8 @@ def process(args):
     start, end = args.start_ms / 1000, args.end_ms / 1000
     if start < 0 or end <= start or end > source_duration + .1:
         raise RuntimeError("clip range is outside the source video")
+    if not start <= args.initial_frame_ms / 1000 <= end:
+        raise RuntimeError("initial mask frame is outside the clip range")
     duration = min(end, source_duration) - start
     expected = max(1, round(duration * fps))
     review_width, review_height = model_size(width, height)
@@ -918,6 +920,8 @@ def process(args):
     frame_files = sorted(frames.glob("*.jpg"), key=lambda path: int(path.stem))
     if not frame_files: raise RuntimeError("The clip has no review frames")
     total = len(frame_files)
+    initial_frame = max(0, min(total - 1, round(
+        (args.initial_frame_ms / 1000 - start) * fps)))
     resume = load_resume_state(args.resume_state.resolve()
         if args.resume_state else None, masks, total, fps,
         review_width, review_height)
@@ -992,7 +996,7 @@ def process(args):
         prefetch_depth=max(2, edge_embedding_batch + 2),
         prefetch_to_device=device == "cuda")
     writer = MaskWriter(torch, device, profiler)
-    correction_frames = {0}
+    correction_frames = {initial_frame}
     if resume is not None:
         correction_frames.update(int(value["frame"])
                                  for value in resume.get("anchors", []))
@@ -1012,7 +1016,8 @@ def process(args):
                                           feature_cache_frames, profiler)
             if mark_step: mark_step()
             prompted = time.perf_counter()
-            predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
+            predictor.add_new_mask(state, frame_idx=initial_frame, obj_id=1,
+                                   mask=initial)
             profiler.add("initial_prompt", time.perf_counter() - prompted)
             commands = getattr(args, "command_inbox", None)
             if commands is None:
@@ -1025,12 +1030,25 @@ def process(args):
                 embeddingBatchSize=edge_embedding_batch,
                 frameCacheHit=cache_hit, framesFolder=str(frames),
                 supportsCorrections=True, engine=args.engine)
+            metadata["initialFrame"] = initial_frame
             available_end, continuation = total - 1, None
             if resume is None:
-                send(status="generation", phase="forward", rangeStart=0,
-                     rangeEnd=total - 1, **metadata)
+                backward_fraction = initial_frame / max(1, total - 1)
+                backward_size = 70 * backward_fraction
+                if initial_frame > 0:
+                    send(status="generation", phase="backward", rangeStart=0,
+                         rangeEnd=initial_frame, **metadata)
+                    written, _, _ = propagate(predictor, state, writer, masks,
+                        initial_frame, total, True, 15, backward_size,
+                        "Tracked backward", profiler, initial_frame, mark_step,
+                        commands=commands, allow_pause=False)
+                    propagated_frames += written
+                    writer.flush()
+                send(status="generation", phase="forward",
+                     rangeStart=initial_frame, rangeEnd=total - 1, **metadata)
                 written, last_frame, paused = propagate(predictor, state, writer,
-                    masks, 0, total, False, 15, 85, "Tracked", profiler,
+                    masks, initial_frame, total, False, 15 + backward_size,
+                    70 - backward_size, "Tracked forward", profiler,
                     mark_step=mark_step, commands=commands, allow_pause=True)
                 propagated_frames += written
                 writer.flush()
@@ -1039,6 +1057,8 @@ def process(args):
                     continuation = dict(target=total - 1, range_start=0,
                                         anchor=None, removing=False)
             else:
+                predictor.add_new_mask(state, frame_idx=initial_frame,
+                                       obj_id=1, mask=initial)
                 for anchor in sorted(resume.get("anchors", []),
                                      key=lambda value: int(value["frame"])):
                     frame = int(anchor["frame"])
@@ -1101,9 +1121,10 @@ def process(args):
                         remember_prompt_preview(state, preview_baselines, frame)
                         result = clear_prompts_in_frame(predictor, state, frame,
                                                        need_output=True)
-                        if frame == 0:
+                        if frame == initial_frame:
                             result = predictor.add_new_mask(
-                                state, frame_idx=0, obj_id=1, mask=initial)
+                                state, frame_idx=initial_frame, obj_id=1,
+                                mask=initial)
                         _, object_ids, logits = result
                         writer.submit(object_ids, logits, frame, masks); writer.flush()
                         send(status="preview", frame=frame, automatic=False,
@@ -1159,10 +1180,10 @@ def process(args):
                     clear_prompts_in_frame(predictor, state, frame,
                                            need_output=False)
                     correction_frames.discard(frame)
-                    if frame == 0:
-                        predictor.add_new_mask(state, frame_idx=0, obj_id=1,
+                    if frame == initial_frame:
+                        predictor.add_new_mask(state, frame_idx=initial_frame, obj_id=1,
                                                mask=initial)
-                        correction_frames.add(0)
+                        correction_frames.add(initial_frame)
                 clear_stale_memory(predictor, state, frame)
                 previous, following = correction_limits(frame, correction_frames, total)
                 use_compiled_interactive_forwards(prompt_forwards, True)
@@ -1298,6 +1319,7 @@ def main():
     parser.add_argument("--masks", type=Path); parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int); parser.add_argument("--model",
         choices=tuple(SAM2_MODELS), default="base-plus")
+    parser.add_argument("--initial-frame-ms", type=int, default=0)
     parser.add_argument("--engine", choices=("sam2", "edgetam"), default="sam2")
     parser.add_argument("--resume-state", type=Path)
     parser.add_argument("--execution", choices=("auto", "eager", "encoder", "vos"),

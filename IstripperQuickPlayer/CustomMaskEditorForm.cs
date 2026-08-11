@@ -320,10 +320,7 @@ internal sealed class CustomMaskEditorForm : Form
                 extracted }) extract.ArgumentList.Add(argument);
             using Process process = Process.Start(extract) ??
                 throw new InvalidOperationException("FFmpeg could not be started.");
-            using CancellationTokenRegistration registration = token.Register(() =>
-            {
-                try { if (!process.HasExited) process.Kill(true); } catch { }
-            });
+            await using ProcessCancellationScope cancellationScope = new(process, token);
             Task<string> error = process.StandardError.ReadToEndAsync(token);
             await process.WaitForExitAsync(token);
             if (process.ExitCode != 0)
@@ -450,10 +447,7 @@ internal sealed class CustomMaskEditorForm : Form
                 start.ArgumentList.Add(argument);
             using Process process = Process.Start(start) ??
                 throw new InvalidOperationException("FFmpeg did not start.");
-            using CancellationTokenRegistration registration = token.Register(() =>
-            {
-                try { if (!process.HasExited) process.Kill(true); } catch { }
-            });
+            await using ProcessCancellationScope cancellationScope = new(process, token);
             _ = process.StandardError.ReadToEndAsync(token);
             byte[] frame = new byte[640 * 360 * 4];
             while (!token.IsCancellationRequested)

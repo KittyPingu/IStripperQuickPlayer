@@ -9,7 +9,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     readonly string sourcePath, initialMask, maskFolder, sam2Model, maskEngine,
         profileLog, statePath;
     readonly CustomShowConfiguration configuration;
-    readonly long startMs, endMs;
+    readonly long startMs, endMs, initialFrameMs;
     readonly string temporary = Path.Combine(Path.GetTempPath(),
         "iqp-sam2-" + Guid.NewGuid().ToString("N"));
     readonly PictureBox image = new() { Dock = DockStyle.Fill,
@@ -60,6 +60,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     bool generationPaused;
     bool generationComplete;
     int availableEnd = -1;
+    int initialFrame = -1;
     long lastGenerationPreview;
     string pendingMode = "prompt";
     string workerStatus = "";
@@ -72,12 +73,13 @@ internal sealed class CustomVideoMaskEditorForm : Form
         string initialMask, string maskFolder,
         string? clipLabel = null, string sam2Model = "base-plus",
         string? profileLog = null, string? statePath = null,
-        string maskEngine = "sam2")
+        string maskEngine = "sam2", long? initialFrameMs = null)
     {
         this.sourcePath = sourcePath;
         this.configuration = configuration;
         this.startMs = startMs;
         this.endMs = endMs;
+        this.initialFrameMs = Math.Clamp(initialFrameMs ?? startMs, startMs, endMs);
         this.initialMask = initialMask;
         this.maskFolder = maskFolder;
         this.sam2Model = sam2Model;
@@ -258,6 +260,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             if (maskEngine != "rvm")
                 foreach (string argument in new[] { "--mask", initialMask,
                 "--model", sam2Model, "--engine", maskEngine,
+                "--initial-frame-ms", initialFrameMs.ToString(CultureInfo.InvariantCulture),
                 "--compile-cutoff-frames", Math.Max(1,
                     configuration.Sam2CompileCutoffFrames(sam2Model))
                     .ToString(CultureInfo.InvariantCulture),
@@ -360,11 +363,17 @@ internal sealed class CustomVideoMaskEditorForm : Form
             correctedFrames.Clear(); correctedRanges.Clear();
             loadedDraftState = false;
         }
+        if (response.TryGetProperty("initialFrame", out JsonElement initialFrameValue))
+        {
+            initialFrame = Math.Clamp(initialFrameValue.GetInt32(), 0,
+                Math.Max(0, frameCount - 1));
+            correctedFrames.Add(initialFrame);
+        }
         if (frameCount <= 0) return;
         long duration = Math.Max(1, checked((long)Math.Round(frameCount * 1000 / fps)));
         timeline.Clips = [new CustomShowClip { StartMs = 0, EndMs = duration }];
         timeline.DurationMs = duration;
-        timeline.FixedMarkers = anchorModes.Keys.Select(FrameTime).ToArray();
+        timeline.FixedMarkers = TimelineMarkers();
         ConfigurePlaybackInterval();
     }
 
@@ -427,7 +436,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             : Math.Max(1, FrameTime(AvailableLastFrame));
         timeline.Clips = [new CustomShowClip { StartMs = 0, EndMs = duration }];
         timeline.DurationMs = duration;
-        timeline.FixedMarkers = anchorModes.Keys.Select(FrameTime).ToArray();
+        timeline.FixedMarkers = TimelineMarkers();
         RefreshTimelineRanges();
         ConfigurePlaybackInterval();
         timeline.Enabled = image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
@@ -642,6 +651,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 labels.Remove(frame);
                 anchorModes.Remove(frame);
                 correctedFrames.Remove(frame);
+                if (frame == initialFrame) correctedFrames.Add(frame);
                 correctedRanges.Remove(frame);
             }
             else
@@ -652,7 +662,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             }
             activeRange = null;
             activeBackward = activeForward = null;
-            timeline.FixedMarkers = anchorModes.Keys.Select(FrameTime).ToArray();
+            timeline.FixedMarkers = TimelineMarkers();
             RefreshTimelineRanges();
             pendingFrame = -1;
             pendingRemoval = false;
@@ -692,6 +702,10 @@ internal sealed class CustomVideoMaskEditorForm : Form
         correctedFrames.Where(value => value > frame).DefaultIfEmpty(frameCount - 1).Min());
 
     long FrameTime(int frame) => checked((long)Math.Round(frame * 1000 / fps));
+
+    long[] TimelineMarkers() => anchorModes.Keys
+        .Concat(initialFrame >= 0 ? [initialFrame] : [])
+        .Distinct().Order().Select(FrameTime).ToArray();
 
     void UpdateTimelineProgress(JsonElement response)
     {

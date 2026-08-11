@@ -376,6 +376,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/SharedShaderTextureChannel.cs
 !/IstripperQuickPlayer/Form1.CustomShows.cs
 !/IstripperQuickPlayer/CustomVideoStabilizationForm.cs
+!/IstripperQuickPlayer/CustomStabiloStabilizationForm.cs
 !/IstripperQuickPlayer/CustomVideoComparisonForm.cs
 !/IstripperQuickPlayer/LockStateOverlay.cs
 !/IstripperQuickPlayer/PlaybackBridgeClient.cs

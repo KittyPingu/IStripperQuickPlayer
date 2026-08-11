@@ -8,6 +8,7 @@ param(
     [switch]$InstallVideoMaMa,
     [switch]$InstallViTMatte,
     [switch]$InstallEdgeTam,
+    [switch]$InstallStabilo,
     [switch]$InstallProPainter
 )
 $ErrorActionPreference = 'Stop'
@@ -170,7 +171,35 @@ print("SAM2 compiler verified")
     if ($LASTEXITCODE -ne 0) { throw 'SAM2 compiler verification failed.' }
     [System.IO.File]::WriteAllText($sam2Marker, $sam2Commit)
 }
-if ($InstallMatAnyone2 -or $InstallVideoMaMa -or $InstallViTMatte) { Install-Sam2 }
+if ($InstallMatAnyone2 -or $InstallVideoMaMa -or $InstallViTMatte -or $InstallStabilo) { Install-Sam2 }
+if ($InstallStabilo) {
+    $stabiloCommit = '52ebd524d26fb940b868dc9d7eeb3e2602f895a3'
+    $stabilo = Join-Path $runtime 'stabilo'
+    $stabiloMarker = Join-Path $runtime 'STABILO_COMMIT'
+    Remove-Item -LiteralPath $stabiloMarker -Force -ErrorAction SilentlyContinue
+    Write-Host 'Installing Stabilo camera/background-lock stabilization...'
+    & $python -m pip install kornia==0.8.3
+    if ($LASTEXITCODE -ne 0) { throw 'Stabilo dependency installation failed.' }
+    if (-not (Test-Path (Join-Path $stabilo '.git'))) {
+        git clone https://github.com/rfonod/stabilo.git $stabilo
+        if ($LASTEXITCODE -ne 0) { throw 'Stabilo clone failed.' }
+    }
+    git -C $stabilo fetch --depth 1 origin $stabiloCommit
+    if ($LASTEXITCODE -ne 0) { throw 'Stabilo revision fetch failed.' }
+    git -C $stabilo checkout --detach $stabiloCommit
+    if ($LASTEXITCODE -ne 0) { throw 'Stabilo checkout failed.' }
+    $stabiloHead = (git -C $stabilo rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $stabiloHead -ne $stabiloCommit) {
+        throw "Stabilo revision validation failed: $stabiloHead"
+    }
+    & $python -m pip install --no-deps --editable $stabilo
+    if ($LASTEXITCODE -ne 0) { throw 'Stabilo installation failed.' }
+    $env:STABILO_DISABLE_UPDATE_CHECK = '1'
+    $env:TORCH_HOME = Join-Path $runtime 'torch-hub'
+    & $python -c "import torch; from stabilo import Stabilizer, __version__; assert __version__ == '1.4.0'; Stabilizer(detector_name='orb', benchmark=True); Stabilizer(detector_name='xfeat', device=('cuda' if torch.cuda.is_available() else 'cpu'), downsample_ratio=.25, benchmark=True); print('Stabilo 1.4.0 ORB/XFeat verified')"
+    if ($LASTEXITCODE -ne 0) { throw 'Stabilo verification failed.' }
+    [System.IO.File]::WriteAllText($stabiloMarker, $stabiloCommit)
+}
 if ($InstallEdgeTam) {
     $edgeTamCommit = '7711e012a30a2402c4eaab637bdb00a521302c91'
     $edgeTam = Join-Path $runtime 'edgetam'

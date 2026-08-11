@@ -2361,6 +2361,9 @@ internal sealed class CustomShowSetupOptionsForm : Form
     readonly CheckBox edgeTam = new() { Text =
         "EdgeTAM fast editable video masks (~60 MB, NVIDIA CUDA recommended)",
         AutoSize = true };
+    readonly CheckBox stabilo = new() { Text =
+        "Stabilo + SAM2 camera/background-lock stabilization (~800 MB if SAM2 is not installed)",
+        AutoSize = true };
     readonly CheckBox proPainter = new() { Text =
         "ProPainter video object removal (~200 MB, NVIDIA CUDA recommended)",
         AutoSize = true };
@@ -2370,6 +2373,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallVideoMaMa => videoMaMa.Checked;
     internal bool InstallViTMatte => vitMatte.Checked;
     internal bool InstallEdgeTam => edgeTam.Checked;
+    internal bool InstallStabilo => stabilo.Checked;
     internal bool InstallProPainter => proPainter.Checked;
 
     internal CustomShowSetupOptionsForm()
@@ -2391,10 +2395,11 @@ internal sealed class CustomShowSetupOptionsForm : Form
         layout.Controls.Add(videoMaMa);
         layout.Controls.Add(vitMatte);
         layout.Controls.Add(edgeTam);
+        layout.Controls.Add(stabilo);
         layout.Controls.Add(proPainter);
         layout.Controls.Add(new Label { Text =
             "MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; " +
-            "ViTMatte, SAM2, and EdgeTAM permit commercial use.",
+            "ViTMatte, SAM2, EdgeTAM, and Stabilo permit commercial use.",
             AutoSize = true, MaximumSize = new Size(810, 0) });
         LinkLabel omniLicence = new() { Text = "Read the OmniShotCut MIT licence", AutoSize = true };
         omniLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
@@ -2416,6 +2421,10 @@ internal sealed class CustomShowSetupOptionsForm : Form
         edgeTamLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/facebookresearch/EdgeTAM/blob/7711e012a30a2402c4eaab637bdb00a521302c91/LICENSE") { UseShellExecute = true });
         layout.Controls.Add(edgeTamLicence);
+        LinkLabel stabiloLicence = new() { Text = "Read the Stabilo MIT licence", AutoSize = true };
+        stabiloLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/rfonod/stabilo/blob/52ebd524d26fb940b868dc9d7eeb3e2602f895a3/LICENSE") { UseShellExecute = true });
+        layout.Controls.Add(stabiloLicence);
         LinkLabel proPainterLicence = new() { Text = "Read the ProPainter licence", AutoSize = true };
         proPainterLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/sczhou/ProPainter/blob/main/LICENSE") { UseShellExecute = true });
@@ -2430,7 +2439,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         AcceptButton = (Button)buttons.Controls[0];
         CancelButton = (Button)buttons.Controls[1];
         AppTheme.Apply(this);
-        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor = edgeTamLicence.LinkColor =
+        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor = edgeTamLicence.LinkColor = stabiloLicence.LinkColor =
             proPainterLicence.LinkColor =
             Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
     }
@@ -2440,7 +2449,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         using CustomShowSetupOptionsForm form = new();
         return form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
             !form.InstallVideoMaMa && !form.InstallViTMatte && !form.InstallEdgeTam &&
-            !form.InstallProPainter;
+            !form.InstallStabilo && !form.InstallProPainter;
     }
 }
 
@@ -2453,6 +2462,7 @@ internal sealed class CustomShowSetupForm : Form
     readonly bool installVideoMaMa;
     readonly bool installViTMatte;
     readonly bool installEdgeTam;
+    readonly bool installStabilo;
     readonly bool installProPainter;
     readonly TextBox output = new()
     {
@@ -2467,7 +2477,7 @@ internal sealed class CustomShowSetupForm : Form
     internal CustomShowSetupForm(string script, bool installTransNetV2,
         bool installOmniShotCut,
         bool installMatAnyone2, bool installVideoMaMa, bool installViTMatte,
-        bool installProPainter, bool installEdgeTam)
+        bool installProPainter, bool installEdgeTam, bool installStabilo)
     {
         this.script = script;
         this.installTransNetV2 = installTransNetV2;
@@ -2477,6 +2487,7 @@ internal sealed class CustomShowSetupForm : Form
         this.installViTMatte = installViTMatte;
         this.installProPainter = installProPainter;
         this.installEdgeTam = installEdgeTam;
+        this.installStabilo = installStabilo;
         Text = "Install Custom Show Processing Tools";
         ClientSize = new Size(900, 520);
         Controls.Add(output);
@@ -2517,6 +2528,8 @@ internal sealed class CustomShowSetupForm : Form
                 start.ArgumentList.Add("-InstallViTMatte");
             if (installEdgeTam)
                 start.ArgumentList.Add("-InstallEdgeTam");
+            if (installStabilo)
+                start.ArgumentList.Add("-InstallStabilo");
             if (installProPainter)
                 start.ArgumentList.Add("-InstallProPainter");
             process = Process.Start(start) ??

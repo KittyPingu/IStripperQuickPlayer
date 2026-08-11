@@ -357,8 +357,7 @@ internal sealed class CustomVideoStabilizationForm : Form
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using Process process = Process.Start(start) ??
             throw new InvalidOperationException("FFmpeg could not be started.");
-        using CancellationTokenRegistration registration = token.Register(() =>
-        { try { if (!process.HasExited) process.Kill(true); } catch { } });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         Task<string> errorTask = process.StandardError.ReadToEndAsync();
         long frame = 0;
         while (await process.StandardOutput.ReadLineAsync(token) is string line)
@@ -400,8 +399,7 @@ internal sealed class CustomVideoStabilizationForm : Form
             start.ArgumentList.Add(argument);
         using Process process = Process.Start(start) ??
             throw new InvalidOperationException("FFmpeg could not be started.");
-        using CancellationTokenRegistration registration = token.Register(() =>
-        { try { if (!process.HasExited) process.Kill(true); } catch { } });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync(token);
         return process.ExitCode == 0;
@@ -418,8 +416,7 @@ internal sealed class CustomVideoStabilizationForm : Form
             "-of", "json", source }) start.ArgumentList.Add(argument);
         using Process process = Process.Start(start) ??
             throw new InvalidOperationException("ffprobe could not be started.");
-        using CancellationTokenRegistration registration = token.Register(() =>
-        { try { if (!process.HasExited) process.Kill(true); } catch { } });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         Task<string> output = process.StandardOutput.ReadToEndAsync();
         Task<string> error = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync(token);
@@ -471,8 +468,7 @@ internal sealed class CustomVideoStabilizationForm : Form
             start.ArgumentList.Add(argument);
         using Process process = Process.Start(start) ??
             throw new InvalidOperationException("FFmpeg could not create the preview.");
-        using CancellationTokenRegistration registration = token.Register(() =>
-        { try { if (!process.HasExited) process.Kill(true); } catch { } });
+        await using ProcessCancellationScope cancellationScope = new(process, token);
         string error = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync(token);
         if (process.ExitCode != 0 || !File.Exists(output))
