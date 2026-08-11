@@ -720,12 +720,7 @@ internal sealed class CustomShowProcessingForm : Form
 
     void AddFrameSample(string message, double seconds)
     {
-        Match match = Regex.Match(message,
-            @"\bProcessed\s+([\d,._\s]+)\s*/\s*([\d,._\s]+)\s+frames\b",
-            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-        if (!match.Success ||
-            !TryParseFrameCount(match.Groups[1].Value, out long frames) ||
-            !TryParseFrameCount(match.Groups[2].Value, out long total)) return;
+        if (!TryParseFrameProgress(message, out long frames, out long total)) return;
         if (total != frameSampleTotal || frameSamples.Count > 0 &&
             frames < frameSamples[^1].Frames)
         {
@@ -744,6 +739,17 @@ internal sealed class CustomShowProcessingForm : Form
         string digits = new(value.Where(char.IsDigit).ToArray());
         return long.TryParse(digits, NumberStyles.None,
             CultureInfo.InvariantCulture, out result);
+    }
+
+    static bool TryParseFrameProgress(string message, out long frames, out long total)
+    {
+        frames = total = 0;
+        Match match = Regex.Match(message,
+            @"\b([\d,._\s]+)\s*/\s*([\d,._\s]+)\s+frames\b",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        return match.Success &&
+            TryParseFrameCount(match.Groups[1].Value, out frames) &&
+            TryParseFrameCount(match.Groups[2].Value, out total);
     }
 
     static double? EstimateFps(IReadOnlyList<(double Seconds, long Frames)> samples)
@@ -807,6 +813,9 @@ internal sealed class CustomShowProcessingForm : Form
             Math.Abs(EstimateFps([(2, 10L), (7, 60L)])!.Value - 10) < .001 &&
             TryParseFrameCount("8,590", out long formattedFrames) &&
             formattedFrames == 8_590 &&
+            TryParseFrameProgress("Removed object from 6,200/14,960 frames",
+                out long removedFrames, out long removalTotal) &&
+            removedFrames == 6_200 && removalTotal == 14_960 &&
             AggregateClipPercent(0, 10_000, 100_000, 100) == 10 &&
             AggregateClipPercent(10_000, 90_000, 100_000, 50) == 55;
     }

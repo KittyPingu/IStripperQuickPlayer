@@ -17,6 +17,12 @@ internal sealed class CustomWatermarkRemovalForm : Form
     readonly PictureBox preview = new() { Dock = DockStyle.Fill,
         SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black,
         AccessibleName = "Video frame used to select the area to remove" };
+    readonly TrackBar timeline = new() { Dock = DockStyle.Fill, Minimum = 0,
+        Maximum = 10_000, TickStyle = TickStyle.None, Enabled = false,
+        AccessibleName = "Preview frame timeline" };
+    readonly Label timelinePosition = new() { AutoSize = true, Text = "0:00 / 0:00",
+        Anchor = AnchorStyles.Right };
+    readonly System.Windows.Forms.Timer previewDelay = new() { Interval = 150 };
     readonly Label status = new() { AutoSize = true, Text = "Choose a source video." };
     readonly ComboBox method = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     readonly ComboBox scale = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
@@ -30,6 +36,8 @@ internal sealed class CustomWatermarkRemovalForm : Form
     Rectangle selectedPixels;
     Point dragStart;
     bool dragging;
+    double durationSeconds;
+    int frameRequest;
 
     string FramePath => Path.Combine(temporary, "selection-frame.png");
     string MaskPath => Path.Combine(temporary, "removal-mask.png");
@@ -44,9 +52,10 @@ internal sealed class CustomWatermarkRemovalForm : Form
         StartPosition = FormStartPosition.CenterParent;
 
         TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(10),
-            ColumnCount = 1, RowCount = 5 };
+            ColumnCount = 1, RowCount = 6 };
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -59,8 +68,15 @@ internal sealed class CustomWatermarkRemovalForm : Form
         AddPath(paths, 1, "Output MP4", outputPath, BrowseOutput);
         layout.Controls.Add(paths, 0, 0);
         layout.Controls.Add(preview, 0, 1);
+        TableLayoutPanel timelineRow = new() { Dock = DockStyle.Fill, AutoSize = true,
+            ColumnCount = 2, RowCount = 1 };
+        timelineRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        timelineRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        timelineRow.Controls.Add(timeline, 0, 0);
+        timelineRow.Controls.Add(timelinePosition, 1, 0);
+        layout.Controls.Add(timelineRow, 0, 2);
         layout.Controls.Add(new Label { AutoSize = true, Padding = new Padding(0, 6, 0, 4),
-            Text = "Drag a rectangle around the static object or watermark to remove. The source is never changed." }, 0, 2);
+            Text = "Scrub to a useful frame, then drag around the object or watermark. The rectangle applies to the entire video; the source is never changed." }, 0, 3);
         FlowLayoutPanel options = new() { AutoSize = true, Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         method.Items.Add("Fast (FFmpeg delogo - recommended)");
@@ -80,13 +96,13 @@ internal sealed class CustomWatermarkRemovalForm : Form
                 Padding = new Padding(0, 6, 0, 0) }, scale,
             new Label { Text = "Temporal window (frames)", AutoSize = true,
                 Padding = new Padding(12, 6, 0, 0) }, subvideo, fp16]);
-        layout.Controls.Add(options, 0, 3);
+        layout.Controls.Add(options, 0, 4);
         FlowLayoutPanel actions = new() { AutoSize = true, Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight };
         Button clear = new() { Text = "Clear selection", AutoSize = true };
         Button cancel = new() { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         actions.Controls.AddRange([clear, run, cancel, status]);
-        layout.Controls.Add(actions, 0, 4);
+        layout.Controls.Add(actions, 0, 5);
         Controls.Add(layout);
         CancelButton = cancel;
 
@@ -95,6 +111,17 @@ internal sealed class CustomWatermarkRemovalForm : Form
         preview.MouseUp += Preview_MouseUp;
         preview.Paint += Preview_Paint;
         method.SelectedIndexChanged += (_, _) => UpdateMethodOptions();
+        timeline.Scroll += (_, _) =>
+        {
+            UpdateTimelinePosition();
+            previewDelay.Stop();
+            previewDelay.Start();
+        };
+        previewDelay.Tick += async (_, _) =>
+        {
+            previewDelay.Stop();
+            await LoadFrameAsync(PreviewPositionSeconds(), false);
+        };
         clear.Click += (_, _) => { selectedPixels = Rectangle.Empty; run.Enabled = false;
             status.Text = "Drag around the area to remove."; preview.Invalidate(); };
         run.Click += async (_, _) => await RunAsync();
@@ -124,10 +151,29 @@ internal sealed class CustomWatermarkRemovalForm : Form
         using OpenFileDialog dialog = new() { Filter =
             "Supported video|*.mp4;*.mov;*.avi|MP4 video|*.mp4|MOV video|*.mov|AVI video|*.avi" };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        sourcePath.Text = dialog.FileName;
-        outputPath.Text = Path.Combine(Path.GetDirectoryName(dialog.FileName)!,
-            Path.GetFileNameWithoutExtension(dialog.FileName) + "-cleaned.mp4");
-        await LoadFrameAsync();
+        try
+        {
+            sourcePath.Text = dialog.FileName;
+            outputPath.Text = Path.Combine(Path.GetDirectoryName(dialog.FileName)!,
+                Path.GetFileNameWithoutExtension(dialog.FileName) + "-cleaned.mp4");
+            selectedPixels = Rectangle.Empty;
+            run.Enabled = false;
+            durationSeconds = await ProbeDurationAsync(dialog.FileName);
+            timeline.Enabled = durationSeconds > 0;
+            timeline.Value = durationSeconds > 0
+                ? Math.Clamp((int)Math.Round(Math.Min(3, durationSeconds) /
+                    durationSeconds * timeline.Maximum), timeline.Minimum, timeline.Maximum)
+                : 0;
+            UpdateTimelinePosition();
+            await LoadFrameAsync(PreviewPositionSeconds(), true);
+        }
+        catch (Exception error)
+        {
+            timeline.Enabled = false;
+            status.Text = "Could not load the video.";
+            MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 
     void BrowseOutput(object? sender, EventArgs e)
@@ -137,8 +183,44 @@ internal sealed class CustomWatermarkRemovalForm : Form
         if (dialog.ShowDialog(this) == DialogResult.OK) outputPath.Text = dialog.FileName;
     }
 
-    async Task LoadFrameAsync()
+    async Task<double> ProbeDurationAsync(string source)
     {
+        ProcessStartInfo start = new(Path.Combine(AppContext.BaseDirectory, "ffprobe.exe"))
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (string argument in new[] { "-v", "error", "-show_entries",
+            "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", source })
+            start.ArgumentList.Add(argument);
+        using Process process = Process.Start(start) ??
+            throw new InvalidOperationException("FFprobe could not be started.");
+        string output = await process.StandardOutput.ReadToEndAsync();
+        string error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        if (process.ExitCode != 0 || !double.TryParse(output.Trim(),
+                NumberStyles.Float, CultureInfo.InvariantCulture, out double duration) ||
+            duration <= 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(error)
+                ? "The video duration could not be read." : error.Trim());
+        return duration;
+    }
+
+    double PreviewPositionSeconds() => durationSeconds <= 0 ? 0 :
+        durationSeconds * timeline.Value / timeline.Maximum;
+
+    void UpdateTimelinePosition() => timelinePosition.Text =
+        $"{FormatTime(PreviewPositionSeconds())} / {FormatTime(durationSeconds)}";
+
+    static string FormatTime(double seconds) =>
+        TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(
+            seconds >= 3600 ? @"h\:mm\:ss" : @"m\:ss", CultureInfo.InvariantCulture);
+
+    async Task LoadFrameAsync(double positionSeconds, bool clearSelection)
+    {
+        int request = Interlocked.Increment(ref frameRequest);
+        string extractedFrame = Path.Combine(temporary,
+            $"selection-frame-{request}.png");
         try
         {
             status.Text = "Extracting a preview frame...";
@@ -148,27 +230,43 @@ internal sealed class CustomWatermarkRemovalForm : Form
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardError = true
             };
-            foreach (string argument in new[] { "-y", "-v", "error", "-ss", "3",
-                "-i", sourcePath.Text, "-frames:v", "1", "-vf", "setsar=1", FramePath })
+            foreach (string argument in new[] { "-y", "-v", "error", "-ss",
+                positionSeconds.ToString("0.###", CultureInfo.InvariantCulture),
+                "-i", sourcePath.Text, "-frames:v", "1", "-vf", "setsar=1",
+                extractedFrame })
                 start.ArgumentList.Add(argument);
             using Process process = Process.Start(start) ??
                 throw new InvalidOperationException("FFmpeg could not be started.");
             string error = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
-            if (process.ExitCode != 0 || !File.Exists(FramePath))
+            if (request != Volatile.Read(ref frameRequest)) return;
+            if (process.ExitCode != 0 || !File.Exists(extractedFrame))
                 throw new InvalidOperationException(error.Trim());
-            using FileStream stream = new(FramePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using FileStream stream = new(extractedFrame, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite);
             using Image loaded = Image.FromStream(stream);
             Bitmap next = new(loaded);
+            File.Copy(extractedFrame, FramePath, true);
             frame?.Dispose(); frame = next; preview.Image = frame;
-            selectedPixels = Rectangle.Empty; run.Enabled = false;
-            status.Text = "Drag around the area to remove.";
+            if (clearSelection)
+            {
+                selectedPixels = Rectangle.Empty;
+                run.Enabled = false;
+            }
+            status.Text = selectedPixels.IsEmpty ? "Drag around the area to remove." :
+                $"Selected {selectedPixels.Width} x {selectedPixels.Height} pixels (applies to the entire video).";
+            preview.Invalidate();
         }
         catch (Exception error)
         {
+            if (request != Volatile.Read(ref frameRequest)) return;
             status.Text = "Could not load the preview.";
             MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+        }
+        finally
+        {
+            try { if (File.Exists(extractedFrame)) File.Delete(extractedFrame); } catch { }
         }
     }
 
@@ -346,6 +444,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
     {
         if (disposing)
         {
+            previewDelay.Dispose();
             preview.Image = null; frame?.Dispose();
             try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
         }
