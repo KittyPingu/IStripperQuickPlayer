@@ -1745,11 +1745,12 @@ internal sealed class CustomShowSettingsForm : Form
         GroupBox videoMaMaGroup = SettingsGroup("VideoMaMa", out TableLayoutPanel videoMaMaTable);
         AddBatch(videoMaMaTable, "Preferred batch", videoMaMaBatch);
         Button benchmarkVideoMaMa = new() { Text = "Benchmark VideoMaMa batch...", AutoSize = true };
-        Label videoMaMaHelp = new() { AutoSize = true,
+        Label videoMaMaHelp = new() { AutoSize = true, MaximumSize = new Size(620, 0),
             Text = "Tests the installed model at 1024x576 and saves the fastest safe batch for this GPU." };
-        FlowLayoutPanel videoMaMaActions = new() { AutoSize = true, WrapContents = true };
-        videoMaMaActions.Controls.AddRange([benchmarkVideoMaMa, videoMaMaHelp]);
-        AddWideControl(videoMaMaTable, videoMaMaActions);
+        FlowLayoutPanel videoMaMaBenchmarkRow = new() { AutoSize = true, WrapContents = false };
+        videoMaMaBenchmarkRow.Controls.Add(benchmarkVideoMaMa);
+        AddWideControl(videoMaMaTable, videoMaMaBenchmarkRow);
+        AddWideControl(videoMaMaTable, videoMaMaHelp);
         AddWideControl(models, videoMaMaGroup);
         Button benchmark = new() { Text = "Benchmark MatAnyone2 + SAM2 + ViTMatte...",
             AutoSize = true };
