@@ -25,6 +25,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
     readonly Button next = new() { Text = "1 frame ▶", AutoSize = true, Enabled = false };
     readonly CheckBox slowMotion = new() { Text = "Slow motion (0.25×)", AutoSize = true,
         Padding = new Padding(8, 6, 0, 0), Enabled = false };
+    readonly Button generation = new() { Text = "Pause generation", AutoSize = true,
+        Enabled = false };
     readonly Button automatic = new() { Text = "Auto mask frame", AutoSize = true,
         Enabled = false };
     readonly Button undo = new() { Text = "Undo click", AutoSize = true, Enabled = false };
@@ -54,6 +56,11 @@ internal sealed class CustomVideoMaskEditorForm : Form
     bool pendingRemoval;
     bool loadedDraftState;
     bool supportsCorrections;
+    bool generationActive;
+    bool generationPaused;
+    bool generationComplete;
+    int availableEnd = -1;
+    long lastGenerationPreview;
     string pendingMode = "prompt";
     string workerStatus = "";
     string framesFolder;
@@ -103,7 +110,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         root.Controls.Add(timeline, 0, 2);
         FlowLayoutPanel precision = new() { AutoSize = true, Dock = DockStyle.Fill,
             WrapContents = false };
-        precision.Controls.AddRange([previous, play, position, next, slowMotion]);
+        precision.Controls.AddRange([previous, play, position, next, slowMotion, generation]);
         root.Controls.Add(precision, 0, 3);
         FlowLayoutPanel actions = new() { AutoSize = true, Dock = DockStyle.Fill,
             WrapContents = false };
@@ -131,9 +138,10 @@ internal sealed class CustomVideoMaskEditorForm : Form
         next.Click += (_, _) => SetFrame(CurrentFrame + 1);
         play.Click += (_, _) => TogglePlayback();
         slowMotion.CheckedChanged += (_, _) => ConfigurePlaybackInterval();
+        generation.Click += async (_, _) => await ToggleGenerationAsync();
         playback.Tick += (_, _) =>
         {
-            if (CurrentFrame >= frameCount - 1) TogglePlayback();
+            if (CurrentFrame >= AvailableLastFrame) TogglePlayback();
             else SetFrame(CurrentFrame + 1);
         };
         image.MouseClick += Image_MouseClick;
@@ -142,7 +150,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         updateMasks.Click += async (_, _) => await ApplyCorrectionAsync();
         accept.Click += async (_, _) =>
         {
-            if (updating) return;
+            if (updating || !generationComplete) return;
             accept.Enabled = false;
             status.Text = "Finishing mask writes and saving profiling data...";
             await StopWorkerAsync(graceful: true);
@@ -217,8 +225,10 @@ internal sealed class CustomVideoMaskEditorForm : Form
         });
     }
 
+    int AvailableLastFrame => Math.Clamp(availableEnd, 0, Math.Max(0, frameCount - 1));
+
     int CurrentFrame => frameCount == 0 ? 0 : Math.Clamp(
-        (int)Math.Round(timeline.PositionMs * fps / 1000), 0, frameCount - 1);
+        (int)Math.Round(timeline.PositionMs * fps / 1000), 0, AvailableLastFrame);
 
     async Task StartWorkerAsync()
     {
@@ -265,20 +275,9 @@ internal sealed class CustomVideoMaskEditorForm : Form
             start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
             worker = Process.Start(start) ?? throw new InvalidOperationException("Mask worker did not start.");
             workerError = worker.StandardError.ReadToEndAsync();
-            await ReadUntilAsync("ready");
+            JsonElement terminal = await ReadUntilAsync("ready", "paused");
             workerClock.Stop(); workerElapsed.Stop(); progress.Style = ProgressBarStyle.Blocks;
-            SaveDraftState();
-            timeline.Clips = [new CustomShowClip { StartMs = 0,
-                EndMs = Math.Max(1, checked((long)Math.Round(frameCount * 1000 / fps))) }];
-            timeline.DurationMs = timeline.Clips[0].EndMs;
-            timeline.FixedMarkers = anchorModes.Keys.Select(FrameTime).ToArray();
-            RefreshTimelineRanges();
-            ConfigurePlaybackInterval();
-            image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
-                slowMotion.Enabled = accept.Enabled = true;
-            automatic.Enabled = supportsCorrections;
-            progress.Value = 100;
-            LoadPreview(); UpdatePosition();
+            ApplyTerminalState(terminal);
         }
         catch (Exception error)
         {
@@ -292,7 +291,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         }
     }
 
-    async Task<JsonElement> ReadUntilAsync(string expected)
+    async Task<JsonElement> ReadUntilAsync(params string[] expected)
     {
         double displayed = -1;
         while (await worker!.StandardOutput.ReadLineAsync() is string line)
@@ -303,42 +302,16 @@ internal sealed class CustomVideoMaskEditorForm : Form
             catch (JsonException) { continue; }
             if (closing) throw new OperationCanceledException();
             string kind = response.GetProperty("status").GetString() ?? "";
-            if (kind == expected)
+            if (kind == "generation")
             {
-                if (kind == "ready")
-                {
-                    if (response.TryGetProperty("supportsCorrections",
-                        out JsonElement correctionsValue))
-                        supportsCorrections = correctionsValue.GetBoolean();
-                    frameCount = response.GetProperty("frameCount").GetInt32();
-                    fps = response.GetProperty("fps").GetDouble();
-                    reviewWidth = response.TryGetProperty("width", out JsonElement widthValue)
-                        ? widthValue.GetInt32() : reviewWidth;
-                    reviewHeight = response.TryGetProperty("height", out JsonElement heightValue)
-                        ? heightValue.GetInt32() : reviewHeight;
-                    if (response.TryGetProperty("framesFolder", out JsonElement frameFolder))
-                        framesFolder = frameFolder.GetString() ?? framesFolder;
-                    string execution = response.TryGetProperty("execution",
-                        out JsonElement executionValue)
-                        ? executionValue.GetString() ?? "eager"
-                        : response.GetProperty("optimized").GetBoolean()
-                            ? "compiled VOS" : "eager";
-                    bool resumed = response.TryGetProperty("resumed",
-                        out JsonElement resumedValue) && resumedValue.GetBoolean();
-                    if (loadedDraftState && !resumed)
-                    {
-                        points.Clear(); labels.Clear(); anchorModes.Clear();
-                        correctedFrames.Clear(); correctedRanges.Clear();
-                        loadedDraftState = false;
-                    }
-                    status.Text = (resumed
-                        ? "Recovered saved masks and correction history · " : "") +
-                        $"{response.GetProperty("checkpoint").GetString()} · " +
-                        $"{response.GetProperty("device").GetString()?.ToUpperInvariant()}/" +
-                        $"{response.GetProperty("precision").GetString()} · {execution}" +
-                        (response.TryGetProperty("frameCacheHit", out JsonElement cacheHit) &&
-                            cacheHit.GetBoolean() ? " · cached frames" : "");
-                }
+                ApplyWorkerMetadata(response, freshGeneration: true);
+                BeginGenerationPhase(response);
+                continue;
+            }
+            if (expected.Contains(kind))
+            {
+                if (kind is "ready" or "paused")
+                    ApplyWorkerMetadata(response, freshGeneration: false);
                 return response;
             }
             if (kind == "error")
@@ -358,11 +331,164 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 }
                 UpdateWorkerStatus();
                 UpdateTimelineProgress(response);
+                UpdateGenerationPreview(response);
             }
         }
         string detail = workerError == null ? "" : (await workerError).Trim();
         throw new InvalidOperationException(string.IsNullOrWhiteSpace(detail)
             ? "The SAM2 mask worker stopped unexpectedly." : detail);
+    }
+
+    void ApplyWorkerMetadata(JsonElement response, bool freshGeneration)
+    {
+        if (response.TryGetProperty("supportsCorrections", out JsonElement correctionsValue))
+            supportsCorrections = correctionsValue.GetBoolean();
+        if (response.TryGetProperty("frameCount", out JsonElement frameCountValue))
+            frameCount = frameCountValue.GetInt32();
+        if (response.TryGetProperty("fps", out JsonElement fpsValue))
+            fps = fpsValue.GetDouble();
+        if (response.TryGetProperty("width", out JsonElement widthValue))
+            reviewWidth = widthValue.GetInt32();
+        if (response.TryGetProperty("height", out JsonElement heightValue))
+            reviewHeight = heightValue.GetInt32();
+        if (response.TryGetProperty("framesFolder", out JsonElement frameFolder))
+            framesFolder = frameFolder.GetString() ?? framesFolder;
+        if (freshGeneration && loadedDraftState && !generationActive &&
+            !generationPaused && !generationComplete)
+        {
+            points.Clear(); labels.Clear(); anchorModes.Clear();
+            correctedFrames.Clear(); correctedRanges.Clear();
+            loadedDraftState = false;
+        }
+        if (frameCount <= 0) return;
+        long duration = Math.Max(1, checked((long)Math.Round(frameCount * 1000 / fps)));
+        timeline.Clips = [new CustomShowClip { StartMs = 0, EndMs = duration }];
+        timeline.DurationMs = duration;
+        timeline.FixedMarkers = anchorModes.Keys.Select(FrameTime).ToArray();
+        ConfigurePlaybackInterval();
+    }
+
+    void BeginGenerationPhase(JsonElement response)
+    {
+        string phase = response.TryGetProperty("phase", out JsonElement phaseValue)
+            ? phaseValue.GetString() ?? "forward" : "forward";
+        generationActive = true;
+        generationPaused = false;
+        generation.Text = phase == "backward" ? "Updating backward…" : "Pause generation";
+        generation.Enabled = supportsCorrections && phase == "forward";
+        playback.Stop(); play.Text = "Play";
+        timeline.Enabled = image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
+            slowMotion.Enabled = automatic.Enabled = undo.Enabled = updateMasks.Enabled =
+            accept.Enabled = false;
+        workerStatus = phase == "backward"
+            ? "Regenerating masks backward from the correction…"
+            : "Generating masks forward…";
+        UpdateWorkerStatus();
+    }
+
+    void UpdateGenerationPreview(JsonElement response)
+    {
+        if (!generationActive || !response.TryGetProperty("previewFrameIndex",
+            out JsonElement previewValue)) return;
+        int frame = previewValue.GetInt32();
+        if (frame < 0 || frame >= frameCount) return;
+        long now = Environment.TickCount64;
+        bool final = response.TryGetProperty("percent", out JsonElement percentValue) &&
+            percentValue.GetDouble() >= 100;
+        if (!final && now - lastGenerationPreview < 400) return;
+        lastGenerationPreview = now;
+        availableEnd = Math.Max(availableEnd, frame);
+        timeline.PositionMs = FrameTime(frame);
+        previewDelay.Stop();
+        LoadPreview(); UpdatePosition();
+    }
+
+    void ApplyTerminalState(JsonElement response)
+    {
+        string kind = response.GetProperty("status").GetString() ?? "";
+        generationActive = false;
+        generationPaused = kind == "paused";
+        generationComplete = kind == "ready";
+        availableEnd = generationComplete ? Math.Max(0, frameCount - 1) :
+            response.TryGetProperty("availableEnd", out JsonElement availableValue)
+                ? availableValue.GetInt32() : availableEnd;
+        if (response.TryGetProperty("anchorFrame", out JsonElement anchorValue) &&
+            response.TryGetProperty("completedStart", out JsonElement startValue) &&
+            response.TryGetProperty("completedEnd", out JsonElement endValue))
+        {
+            int anchor = anchorValue.GetInt32();
+            bool removing = response.TryGetProperty("removing", out JsonElement removingValue) &&
+                removingValue.GetBoolean();
+            if (!removing && anchorModes.ContainsKey(anchor))
+                correctedRanges[anchor] = (startValue.GetInt32(), endValue.GetInt32());
+        }
+        long duration = generationComplete
+            ? Math.Max(1, checked((long)Math.Round(frameCount * 1000 / fps)))
+            : Math.Max(1, FrameTime(AvailableLastFrame));
+        timeline.Clips = [new CustomShowClip { StartMs = 0, EndMs = duration }];
+        timeline.DurationMs = duration;
+        timeline.FixedMarkers = anchorModes.Keys.Select(FrameTime).ToArray();
+        RefreshTimelineRanges();
+        ConfigurePlaybackInterval();
+        timeline.Enabled = image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
+            slowMotion.Enabled = true;
+        automatic.Enabled = supportsCorrections;
+        accept.Enabled = generationComplete;
+        generation.Text = generationPaused ? "Continue generation" : "Generation complete";
+        generation.Enabled = supportsCorrections && generationPaused;
+        progress.Value = generationComplete ? 100 : progress.Value;
+        if (response.TryGetProperty("pauseFrame", out JsonElement pauseValue))
+            timeline.PositionMs = FrameTime(Math.Min(pauseValue.GetInt32(), AvailableLastFrame));
+        previewDelay.Stop();
+        LoadPreview(); UpdatePosition();
+        if (generationComplete)
+        {
+            SaveDraftState();
+            string execution = response.TryGetProperty("execution", out JsonElement executionValue)
+                ? executionValue.GetString() ?? "eager" : "eager";
+            bool resumed = response.TryGetProperty("resumed", out JsonElement resumedValue) &&
+                resumedValue.GetBoolean();
+            status.Text = (resumed ? "Recovered saved masks and correction history · " : "") +
+                $"{response.GetProperty("checkpoint").GetString()} · " +
+                $"{response.GetProperty("device").GetString()?.ToUpperInvariant()}/" +
+                $"{response.GetProperty("precision").GetString()} · {execution}" +
+                (response.TryGetProperty("frameCacheHit", out JsonElement cacheHit) &&
+                    cacheHit.GetBoolean() ? " · cached frames" : "");
+        }
+        else status.Text = "Generation paused. Correct this mask, then update masks, or continue.";
+    }
+
+    async Task ToggleGenerationAsync()
+    {
+        if (!supportsCorrections || worker == null || worker.HasExited) return;
+        if (generationActive)
+        {
+            generation.Enabled = false;
+            generation.Text = "Pausing…";
+            status.Text = "Pausing after the current mask finishes…";
+            await worker.StandardInput.WriteLineAsync("{\"command\":\"pause\"}");
+            await worker.StandardInput.FlushAsync();
+            return;
+        }
+        if (!generationPaused || updating) return;
+        updating = true;
+        workerElapsed.Restart(); workerClock.Start();
+        try
+        {
+            await worker.StandardInput.WriteLineAsync("{\"command\":\"continue\"}");
+            await worker.StandardInput.FlushAsync();
+            JsonElement terminal = await ReadUntilAsync("ready", "paused");
+            workerClock.Stop(); workerElapsed.Stop();
+            ApplyTerminalState(terminal);
+        }
+        catch (Exception error)
+        {
+            workerClock.Stop(); workerElapsed.Stop();
+            if (!closing && !IsDisposed && !Disposing)
+                MessageBox.Show(this, error.Message, Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally { updating = false; }
     }
 
     void UpdateWorkerStatus()
@@ -428,7 +554,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         updating = true;
         playback.Stop(); play.Text = "Play";
         timeline.Enabled = false;
-        image.Enabled = automatic.Enabled = undo.Enabled = false;
+        image.Enabled = automatic.Enabled = undo.Enabled = generation.Enabled = false;
         previous.Enabled = play.Enabled = next.Enabled = slowMotion.Enabled = false;
         status.Text = removeAnchor ? "Previewing this frame without its correction..." :
             reset ? "Restoring this frame's tracked mask..." : useAutomatic ?
@@ -474,7 +600,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 bool canMove = pendingFrame < 0;
                 timeline.Enabled = canMove;
                 previous.Enabled = play.Enabled = next.Enabled = slowMotion.Enabled = canMove;
-                accept.Enabled = canMove;
+                accept.Enabled = canMove && generationComplete;
+                generation.Enabled = canMove && generationPaused;
                 undo.Enabled = points.TryGetValue(CurrentFrame,
                     out List<PointF>? current) && current.Count > 0;
             }
@@ -492,8 +619,10 @@ internal sealed class CustomVideoMaskEditorForm : Form
         lastTimelineProgress = -1;
         RefreshTimelineRanges();
         updating = true;
-        updateMasks.Enabled = image.Enabled = automatic.Enabled = accept.Enabled = false;
+        updateMasks.Enabled = image.Enabled = automatic.Enabled = accept.Enabled =
+            generation.Enabled = false;
         progress.Value = 0;
+        workerElapsed.Restart(); workerClock.Start();
         try
         {
             await worker.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new
@@ -501,7 +630,12 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 command = pendingRemoval ? "remove" : "update", frame
             }));
             await worker.StandardInput.FlushAsync();
-            await ReadUntilAsync("ready");
+            JsonElement terminal = await ReadUntilAsync("ready", "paused");
+            workerClock.Stop(); workerElapsed.Stop();
+            int completedStart = terminal.TryGetProperty("completedStart",
+                out JsonElement startValue) ? startValue.GetInt32() : activeRange!.Value.Start;
+            int completedEnd = terminal.TryGetProperty("completedEnd",
+                out JsonElement endValue) ? endValue.GetInt32() : activeRange!.Value.End;
             if (pendingRemoval)
             {
                 points.Remove(frame);
@@ -514,7 +648,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             {
                 anchorModes[frame] = pendingMode;
                 correctedFrames.Add(frame);
-                correctedRanges[frame] = activeRange!.Value;
+                correctedRanges[frame] = (completedStart, completedEnd);
             }
             activeRange = null;
             activeBackward = activeForward = null;
@@ -522,15 +656,16 @@ internal sealed class CustomVideoMaskEditorForm : Form
             RefreshTimelineRanges();
             pendingFrame = -1;
             pendingRemoval = false;
-            progress.Value = 100;
-            LoadPreview();
-            SaveDraftState();
-            status.Text = anchorModes.ContainsKey(frame)
-                ? "Correction saved as an anchor. Scrub to another frame that needs correction."
-                : "Correction removed and its surrounding masks regenerated.";
+            ApplyTerminalState(terminal);
+            status.Text = generationPaused
+                ? "Forward generation paused. Correct another generated mask, or continue."
+                : anchorModes.ContainsKey(frame)
+                    ? "Correction saved as an anchor. Scrub to another frame that needs correction."
+                    : "Correction removed and its surrounding masks regenerated.";
         }
         catch (Exception error)
         {
+            workerClock.Stop(); workerElapsed.Stop();
             activeRange = activeBackward = activeForward = null;
             RefreshTimelineRanges();
             if (!closing && !IsDisposed && !Disposing)
@@ -542,9 +677,12 @@ internal sealed class CustomVideoMaskEditorForm : Form
             updating = false;
             if (!closing && !IsDisposed)
             {
+                bool canReview = generationPaused || generationComplete;
                 timeline.Enabled = image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
-                    slowMotion.Enabled = accept.Enabled = true;
-                automatic.Enabled = supportsCorrections;
+                    slowMotion.Enabled = canReview;
+                accept.Enabled = generationComplete;
+                automatic.Enabled = supportsCorrections && canReview;
+                generation.Enabled = generationPaused;
             }
         }
     }
@@ -596,7 +734,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (playback.Enabled) { playback.Stop(); play.Text = "Play"; }
         else
         {
-            if (CurrentFrame >= frameCount - 1) SetFrame(0);
+            if (CurrentFrame >= AvailableLastFrame) SetFrame(0);
             playback.Start(); play.Text = "Pause";
         }
     }
@@ -605,7 +743,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     {
         if (frameCount == 0) return;
         timeline.PositionMs = checked((long)Math.Round(
-            Math.Clamp(frame, 0, frameCount - 1) * 1000 / fps));
+            Math.Clamp(frame, 0, AvailableLastFrame) * 1000 / fps));
     }
 
     void UpdatePosition() => position.Text = frameCount == 0 ? "Preparing masks..." :

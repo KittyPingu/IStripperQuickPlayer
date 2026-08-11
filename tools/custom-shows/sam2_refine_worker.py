@@ -251,6 +251,7 @@ class MaskWriter:
         self.torch, self.device, self.profiler = torch, device, profiler
         self.available, self.pending = queue.Queue(), queue.Queue(maxsize=slots)
         self.error = None
+        self.completed_frame = None
         self.transfer = torch.cuda.Stream(device=device) if device == "cuda" else None
         for _ in range(slots): self.available.put({"cpu": None})
         self.thread = threading.Thread(target=self._run, name="sam2-mask-writer",
@@ -320,6 +321,7 @@ class MaskWriter:
                         item["path"].name + ".tmp-" + uuid.uuid4().hex)
                     Image.fromarray(array, "L").save(temporary, "PNG", compress_level=1)
                     os.replace(temporary, item["path"])
+                    self.completed_frame = item["frame"]
                     self.profiler.add("mask_png_write", time.perf_counter() - started)
             except BaseException as error:
                 self.error = error
@@ -798,26 +800,73 @@ def peak_process_memory_bytes():
 
 class ProgressThrottle:
     def __init__(self): self.last_time, self.last_percent = 0.0, -1.0
-    def emit(self, percent, message, frame, range_start, range_end, reverse, force=False):
+    def emit(self, percent, message, frame, range_start, range_end, reverse,
+             preview_frame=None, force=False):
         now = time.monotonic()
         if not force and now - self.last_time < PROGRESS_INTERVAL and \
                 percent < self.last_percent + .5:
             return
         self.last_time, self.last_percent = now, percent
-        send(status="progress", percent=percent, message=message, frameIndex=frame,
-             completedStart=min(frame, range_end if reverse else range_start),
-             completedEnd=max(frame, range_end if reverse else range_start),
-             rangeStart=range_start, rangeEnd=range_end, reverse=reverse)
+        values = dict(status="progress", percent=percent, message=message,
+            frameIndex=frame,
+            completedStart=min(frame, range_end if reverse else range_start),
+            completedEnd=max(frame, range_end if reverse else range_start),
+            rangeStart=range_start, rangeEnd=range_end, reverse=reverse)
+        if preview_frame is not None:
+            values["previewFrameIndex"] = preview_frame
+        send(**values)
+
+
+class StopRequested(Exception):
+    pass
+
+
+class CommandInbox:
+    """Read editor commands while model propagation owns the main thread."""
+    _eof = object()
+
+    def __init__(self):
+        self.pending, self.deferred = queue.Queue(), []
+        self.thread = threading.Thread(target=self._read, name="sam2-command-reader",
+                                       daemon=True)
+        self.thread.start()
+
+    def _read(self):
+        try:
+            for line in sys.stdin:
+                if not line.strip():
+                    continue
+                try: self.pending.put(json.loads(line))
+                except json.JSONDecodeError:
+                    self.pending.put({"command": "invalid"})
+        finally:
+            self.pending.put(self._eof)
+
+    def poll_pause(self, allow_pause):
+        while True:
+            try: request = self.pending.get_nowait()
+            except queue.Empty: return False
+            if request is self._eof or request.get("command") == "quit":
+                raise StopRequested()
+            if request.get("command") == "pause":
+                if allow_pause: return True
+                continue
+            self.deferred.append(request)
+
+    def next(self):
+        request = self.deferred.pop(0) if self.deferred else self.pending.get()
+        return {"command": "quit"} if request is self._eof else request
 
 
 def propagate(predictor, state, writer, folder, start, total, reverse,
               progress_start, progress_size, message, profiler, max_frames=None,
-              mark_step=None, skip_start=False):
+              mark_step=None, skip_start=False, commands=None, allow_pause=False):
     maximum = (start + 1 if reverse else total - start) if max_frames is None \
         else max_frames + 1
-    written, seen = 0, 0
+    written, seen, last_frame = 0, 0, start
     range_start, range_end = propagation_range(start, total, reverse, max_frames)
     throttle = ProgressThrottle()
+    writer.completed_frame = None
     iterator = iter(predictor.propagate_in_video(state, start_frame_idx=start,
         reverse=reverse, max_frame_num_to_track=max_frames))
     while True:
@@ -836,12 +885,15 @@ def propagate(predictor, state, writer, folder, start, total, reverse,
         if skip_start and frame == start:
             continue
         writer.submit(object_ids, logits, frame, folder, timings)
-        written += 1
+        written += 1; last_frame = frame
         percent = progress_start + seen * progress_size / max(1, maximum)
         throttle.emit(percent, f"{message} {seen}/{maximum} frames", frame,
-                      range_start, range_end, reverse,
+                      range_start, range_end, reverse, writer.completed_frame,
                       force=seen == 1 or seen == maximum)
-    return written
+        if commands is not None and commands.poll_pause(
+                allow_pause and frame != range_end):
+            return written, last_frame, True
+    return written, last_frame, False
 
 
 def process(args):
@@ -944,7 +996,7 @@ def process(args):
     if resume is not None:
         correction_frames.update(int(value["frame"])
                                  for value in resume.get("anchors", []))
-    propagated_frames = 0 if resume is not None else total
+    propagated_frames = 0
     try:
         with torch.inference_mode(), torch.autocast(device_type=device,
                 dtype=torch.bfloat16, enabled=bf16):
@@ -962,10 +1014,30 @@ def process(args):
             prompted = time.perf_counter()
             predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=initial)
             profiler.add("initial_prompt", time.perf_counter() - prompted)
+            commands = getattr(args, "command_inbox", None)
+            if commands is None:
+                commands = args.command_inbox = CommandInbox()
+            metadata = dict(frameCount=total, fps=fps,
+                width=review_width, height=review_height, device=device,
+                precision="BF16" if bf16 else "FP32", optimized=optimized,
+                execution=execution, checkpoint=model_info["label"], model=args.model,
+                gpuFeatureCacheFrames=feature_cache_frames,
+                embeddingBatchSize=edge_embedding_batch,
+                frameCacheHit=cache_hit, framesFolder=str(frames),
+                supportsCorrections=True, engine=args.engine)
+            available_end, continuation = total - 1, None
             if resume is None:
-                propagate(predictor, state, writer, masks, 0, total, False, 15, 85,
-                          "Tracked", profiler, mark_step=mark_step)
+                send(status="generation", phase="forward", rangeStart=0,
+                     rangeEnd=total - 1, **metadata)
+                written, last_frame, paused = propagate(predictor, state, writer,
+                    masks, 0, total, False, 15, 85, "Tracked", profiler,
+                    mark_step=mark_step, commands=commands, allow_pause=True)
+                propagated_frames += written
                 writer.flush()
+                available_end = last_frame
+                if paused:
+                    continuation = dict(target=total - 1, range_start=0,
+                                        anchor=None, removing=False)
             else:
                 for anchor in sorted(resume.get("anchors", []),
                                      key=lambda value: int(value["frame"])):
@@ -977,29 +1049,52 @@ def process(args):
             if execution != "eager": marker.parent.mkdir(parents=True, exist_ok=True); marker.touch()
             prompt_forwards = interactive_forwards(predictor) if optimized else []
             use_compiled_interactive_forwards(prompt_forwards, False)
-            ready = dict(status="ready", frameCount=total, fps=fps,
-                width=review_width, height=review_height, device=device,
-                precision="BF16" if bf16 else "FP32", optimized=optimized,
-                execution=execution, checkpoint=model_info["label"], model=args.model,
-                gpuFeatureCacheFrames=feature_cache_frames,
-                embeddingBatchSize=edge_embedding_batch,
-                frameCacheHit=cache_hit, framesFolder=str(frames))
-            ready["resumed"] = resume is not None
-            ready["supportsCorrections"] = True
-            ready["engine"] = args.engine
-            send(**ready)
+            ready = dict(status="ready", resumed=resume is not None, **metadata)
+            if continuation is None:
+                send(**ready)
+            else:
+                send(status="paused", pauseFrame=available_end,
+                     completedStart=0, completedEnd=available_end,
+                     availableEnd=available_end, **metadata)
             args.ready_sent = True
             preview_baselines, auto_cache = {}, {}
-            for line in sys.stdin:
-                if not line.strip(): continue
-                request = json.loads(line)
+            while True:
+                request = commands.next()
                 if request.get("command") == "quit": break
                 command = request.get("command")
+                if command == "pause":
+                    send(**ready); continue
+                if command == "continue":
+                    if continuation is None:
+                        send(**ready); continue
+                    target = continuation["target"]
+                    send(status="generation", phase="forward",
+                         rangeStart=available_end, rangeEnd=target, **metadata)
+                    written, last_frame, paused = propagate(predictor, state, writer,
+                        masks, available_end, total, False, 0, 100,
+                        "Updated forward" if continuation["anchor"] is not None
+                        else "Tracked", profiler, target - available_end, mark_step,
+                        skip_start=True, commands=commands, allow_pause=True)
+                    propagated_frames += written
+                    writer.flush(); available_end = last_frame
+                    terminal = dict(pauseFrame=available_end,
+                        completedStart=continuation["range_start"],
+                        completedEnd=available_end, availableEnd=available_end)
+                    if continuation["anchor"] is not None:
+                        terminal["anchorFrame"] = continuation["anchor"]
+                        terminal["removing"] = continuation["removing"]
+                    if paused:
+                        send(status="paused", **terminal, **metadata)
+                    else:
+                        continuation = None; available_end = total - 1
+                        terminal["availableEnd"] = available_end
+                        send(**ready, **terminal)
+                    continue
                 if command not in ("prompt", "auto", "reset", "update",
                                    "remove-preview", "remove"):
                     send(status="error", message="Unknown SAM2 editor command"); continue
                 frame = int(request["frame"])
-                if not 0 <= frame < total:
+                if not 0 <= frame <= available_end:
                     send(status="error", message="Correction frame is outside the clip"); continue
                 if command not in ("update", "remove"):
                     if command == "remove-preview":
@@ -1073,20 +1168,40 @@ def process(args):
                 use_compiled_interactive_forwards(prompt_forwards, True)
                 try:
                     if frame > previous:
-                        propagated_frames += frame - previous + 1
-                        propagate(predictor, state, writer, masks, frame, total, True,
-                            0, 50, "Updated backward", profiler, frame - previous, mark_step)
-                    propagated_frames += following - frame
-                    propagate(predictor, state, writer, masks, frame, total, False,
+                        send(status="generation", phase="backward",
+                             rangeStart=previous, rangeEnd=frame, **metadata)
+                        written, _, _ = propagate(predictor, state, writer, masks,
+                            frame, total, True, 0, 50, "Updated backward", profiler,
+                            frame - previous, mark_step, commands=commands,
+                            allow_pause=False)
+                        propagated_frames += written
+                        writer.flush()
+                    send(status="generation", phase="forward", rangeStart=frame,
+                         rangeEnd=following, **metadata)
+                    written, last_frame, paused = propagate(predictor, state, writer,
+                        masks, frame, total, False,
                         50 if frame > previous else 0, 50 if frame > previous else 100,
                         "Updated forward", profiler, following - frame, mark_step,
-                        skip_start=frame > previous)
+                        skip_start=frame > previous, commands=commands,
+                        allow_pause=True)
+                    propagated_frames += written
                     writer.flush()
                 finally:
                     use_compiled_interactive_forwards(prompt_forwards, False)
                 if not removing: correction_frames.add(frame)
                 preview_baselines.pop(frame, None)
-                send(**ready)
+                available_end = last_frame
+                terminal = dict(anchorFrame=frame, removing=removing,
+                    completedStart=previous, completedEnd=available_end,
+                    availableEnd=available_end)
+                if paused:
+                    continuation = dict(target=following, range_start=previous,
+                                        anchor=frame, removing=removing)
+                    send(status="paused", **terminal, **metadata)
+                else:
+                    continuation = None; available_end = total - 1
+                    terminal["availableEnd"] = available_end
+                    send(**ready, **terminal)
     finally:
         try: writer.close()
         finally:

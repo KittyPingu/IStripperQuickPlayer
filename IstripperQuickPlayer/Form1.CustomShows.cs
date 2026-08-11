@@ -70,12 +70,14 @@ public partial class Form1
         SetupCustomPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
+        ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
         ToolStripMenuItem removeWatermark = new("Remove Video Object / Watermark...");
         ToolStripMenuItem models = new("Manage Models...");
         ToolStripMenuItem setup = new("Install / Update Processing Tools...");
         ToolStripMenuItem settings = new("Settings...");
         ToolStripMenuItem open = new("Open Folder");
         create.Click += (_, _) => EditCustomShow(null);
+        stabilize.Click += (_, _) => StabilizeVideo();
         removeWatermark.Click += (_, _) => RemoveVideoWatermark();
         models.Click += (_, _) => ManageCustomModels();
         setup.Click += (_, _) => InstallCustomShowTools();
@@ -87,7 +89,7 @@ public partial class Form1
             { UseShellExecute = true });
         };
         customShowsMenu.DropDownItems.AddRange(
-            [create, removeWatermark, models, setup, settings, open]);
+            [create, stabilize, removeWatermark, models, setup, settings, open]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
         editCustomShowMenu.Click += (_, _) =>
@@ -453,6 +455,12 @@ public partial class Form1
     void RemoveVideoWatermark()
     {
         using CustomWatermarkRemovalForm form = new(customShowConfiguration);
+        form.ShowDialog(this);
+    }
+
+    void StabilizeVideo()
+    {
+        using CustomVideoStabilizationForm form = new(customShowConfiguration);
         form.ShowDialog(this);
     }
 

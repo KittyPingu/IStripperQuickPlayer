@@ -17,6 +17,14 @@ from matanyone2_worker import (COMPILE_POLICY, apply_partial_compile, load_model
                                restore_eager)
 from rvm_worker import fast_fp16
 
+PROGRESS_PREFIX = "IQP_BENCHMARK_PROGRESS "
+
+
+def progress(completed, total, message):
+    print(PROGRESS_PREFIX + json.dumps({"completed": completed,
+        "total": max(1, total), "message": message}, separators=(",", ":")),
+        flush=True)
+
 
 def percentile(values, fraction):
     ordered = sorted(values)
@@ -177,6 +185,8 @@ def full_pipeline_benchmark(args):
         results = []
         raw_results = {}
         source_shapes = {}
+        total_runs = len(sources) * len(mask_frames) * len(variants) * args.runs
+        completed_runs = 0
         for source_label, current_source in sources:
             process_width, process_height = __import__(
                 "matanyone2_worker").processing_size(
@@ -187,6 +197,9 @@ def full_pipeline_benchmark(args):
                 for pipeline, compile_mode, previews in variants:
                     samples = []
                     for run in range(args.runs):
+                        description = (f"MatAnyone2 {source_label}: {compile_mode}, "
+                            f"{pipeline} pipeline, run {run + 1}/{args.runs}")
+                        progress(completed_runs, total_runs, description)
                         output = temp / (f"{source_label}-{mask_label}-{pipeline}-"
                                          f"{compile_mode}-{previews}-{run}")
                         output.mkdir()
@@ -197,6 +210,8 @@ def full_pipeline_benchmark(args):
                                            compile_mode, previews,
                                            mask_frame_ms, raw)
                         samples.append(value)
+                        completed_runs += 1
+                        progress(completed_runs, total_runs, description + " complete")
                         for media in ("foreground.mp4", "alpha.mkv"):
                             (output / media).unlink(missing_ok=True)
                         if raw is not None:

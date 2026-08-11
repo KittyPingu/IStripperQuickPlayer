@@ -110,6 +110,30 @@ In QuickPlayer, open **File → Custom Shows → Settings**:
 
 If QuickPlayer reports that an FFmpeg library is missing, repair/reinstall QuickPlayer so its FFmpeg 8 files (`ffmpeg.exe`, `ffprobe.exe`, `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll`, `swresample-6.dll`, and `swscale-9.dll`) are beside `IStripperQuickPlayer.exe`. Do not substitute an incompatible FFmpeg major version.
 
+## Stabilizing a source video
+
+Open **File → Custom Shows → Stabilize Video (FFmpeg)** to run the bundled
+two-pass VidStab workflow on an MP4, MOV, AVI, MKV, or WebM source. The first pass
+measures camera motion; the second smooths the path and writes a new MP4. Light,
+standard, and strong smoothing windows are available, along with static/adaptive
+auto-zoom or uncropped output. Static auto-zoom and standard strength are the
+defaults. The global output NVENC preset is used when hardware encoding is
+available, with automatic `libx264` fallback.
+
+Both phases report frame progress, elapsed time, throughput, and an estimated
+remaining time. Processing writes to a staging MP4 and only replaces the chosen
+destination after both passes and output validation succeed. Cancellation removes
+the partial staging output, retains the source and any previous completed output,
+and writes `<output>.stabilization.log` diagnostics. This standalone operation is
+the initial speed/quality test; it is not yet part of custom-show creation.
+
+After processing, QuickPlayer opens a synchronized side-by-side reviewer for the
+original and stabilized videos. Both panes are produced by one playback graph so
+they cannot drift independently. Use the shared QuickPlayer time bar, play/pause,
+five-second seek buttons, or frame-step buttons to inspect the result. The reviewer
+is muted and can be reopened with **Review input vs output** in the stabilization
+window while both files remain available.
+
 ## Removing a static video object or watermark
 
 Only remove material from video you own or are authorised to modify. Open
@@ -282,12 +306,18 @@ source display dimensions before encoding. It requires NVIDIA CUDA, about 8 GB
 of installed weights, substantial temporary disk space for normalized clip
 frames, and is expected to be much slower than RVM or MatAnyone2.
 
-For **VideoMaMa**, **ViTMatte S**, and **ViTMatte B**, QuickPlayer runs the
-initial SAM2 propagation before matting and opens a resizable review editor.
-Scrub, play, or step one frame at a time through the tracked overlay. Left-click
+For **VideoMaMa**, **ViTMatte S**, and **ViTMatte B**, QuickPlayer opens a
+resizable review editor for the initial SAM2 or EdgeTAM propagation before matting.
+The editor displays sampled tracked overlays while the initial pass runs. Choose
+**Pause generation** to stop after the mask currently being calculated, inspect
+the valid portion of the clip, and correct a problem as soon as it appears.
+Scrub, play, or step one frame at a time through the generated overlay. Left-click
 missing person pixels and right-click background or unwanted pixels. Clicks update
 only that frame's preview; **Update masks** then propagates the accepted prompt
-backward and forward. **Auto mask frame** can replace the current frame prompt with
+backward without interruption and then forward. The forward phase can be paused
+again for another correction; **Continue generation** resumes it without adding a
+correction. **Use corrected masks** becomes available only after the complete clip
+has valid masks. **Auto mask frame** can replace the current frame prompt with
 an automatically generated candidate before updating. Later corrections stop at
 adjacent accepted correction frames instead of needlessly recalculating beyond
 them. Playback includes normal speed, 0.25× slow motion, and frame stepping. Repeat
@@ -312,8 +342,9 @@ Normal processing consults `<runtime>\sam2-performance-policy-v1.json`, keyed by
 GPU, driver, PyTorch/CUDA, SAM2 commit, checkpoint, and compile mode. Eager mode
 is the safe default. Meta's supported `compile_image_encoder=True` encoder path
 or full `vos_optimized=True` path is selected only after the benchmark records at
-least 10% cached end-to-end improvement and the predicted initial pass plus two
-correction-equivalent passes exceeds break-even by 20%. Completed local sessions
+least 10% cached correction-propagation improvement and the predicted initial
+pass plus two correction-equivalent passes exceeds the measured fixed-startup
+break-even by 20%. Completed local sessions
 refine that correction-work estimate. The bounded GPU feature cache qualifies at
 2% end-to-end improvement because it has no compilation startup cost, but still
 requires equivalent masks and at least 4 GiB VRAM headroom. Compiler failure
@@ -378,8 +409,10 @@ uses the smaller of 512 MiB or 5% of physical RAM. Tracking state remains on the
 GPU. Three pinned mask-output slots overlap asynchronous CUDA downloads and
 atomic level-1 PNG writes with subsequent inference. Automatic-mask candidates
 are retained while refining clicks on one frame. Detailed timings and cache hit
-statistics are appended to `processing.log`, while throttled covered-range events
-keep the correction timeline responsive without flooding it.
+statistics are appended to `processing.log`. Covered-range events remain
+throttled, and the editor samples completed mask files at roughly 2.5 previews per
+second, keeping the live preview and correction timeline responsive without
+adding per-frame UI or disk synchronization.
 
 ViTMatte turns the corrected SAM2 masks into trimaps and predicts soft alpha per
 frame. S is the smaller/faster model; B uses the larger backbone for higher
@@ -398,8 +431,10 @@ failure instead of retrying the same oversized batch throughout the clip. The
 safe size is remembered per GPU, driver, PyTorch/CUDA version, model, padded
 dimensions, precision, and requested batch size. The manual cutoff benchmark
 tests batches 1, 2, 3, 4, 6, 8, and 12, measures whole-job throughput and peak
-VRAM, and stores
-the best safe size in `vitmatte-performance-policy-v1.json`. It also compares
+VRAM, and stores the best safe size in `vitmatte-performance-policy-v1.json`.
+During the upward sweep, whole-GPU dedicated-memory usage is monitored; reaching
+the safety limit terminates that candidate immediately and skips every larger
+batch to avoid slow Windows shared-memory spill. It also compares
 eager execution with full-model `max-autotune` compilation. Compiled execution
 is used only when that machine's cached run is at least 5% faster, binary alpha
 IoU is at least 0.9999, and the clip exceeds both the measured break-even and

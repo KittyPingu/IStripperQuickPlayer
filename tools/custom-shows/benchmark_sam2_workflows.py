@@ -6,6 +6,14 @@ from pathlib import Path
 
 from sam2_refine_worker import POLICY_SCHEMA, atomic_json, policy_key
 
+PROGRESS_PREFIX = "IQP_BENCHMARK_PROGRESS "
+
+
+def progress(completed, total, message):
+    print(PROGRESS_PREFIX + json.dumps({"completed": completed,
+        "total": max(1, total), "message": message}, separators=(",", ":")),
+        flush=True)
+
 
 MODES = {
     "eager": ("eager", "max-autotune-no-cudagraphs", 0),
@@ -179,6 +187,19 @@ def run_once(args, fixture, model, mode, repetition, output_root, extraction_mod
 def median(values): return statistics.median(values) if values else math.inf
 
 
+def correction_rate(runs):
+    rates = []
+    for item in runs:
+        profile = item.get("profile", {})
+        propagated = max(0, int(profile.get("propagatedFrames", 0)) -
+                         int(profile.get("frames", 0)))
+        seconds = sum(max(0.0, float(value))
+                      for value in item.get("correctionSeconds", []))
+        if propagated > 0 and seconds > 0:
+            rates.append(seconds / propagated)
+    return statistics.median(rates) if rates else math.inf
+
+
 def write_policy(args, results):
     import torch
     entries = {}
@@ -187,7 +208,7 @@ def write_policy(args, results):
                  item["mode"] == "eager" and item["extractionMode"] == "standard"]
         if not eager: continue
         eager_total = statistics.median(item["totalSeconds"] for item in eager)
-        eager_frames = statistics.median(item["profile"].get("propagatedFrames", 1) for item in eager)
+        eager_correction_rate = correction_rate(eager)
         entry = {"expectedWorkMultiplier": 3.0}
         standard_uncached = [item for item in eager if not
             item["profile"].get("frameCacheHit", False)]
@@ -245,18 +266,23 @@ def write_policy(args, results):
                 if not runs: continue
                 warm = runs[1:] or runs
                 total = statistics.median(item["totalSeconds"] for item in warm)
-                frames = statistics.median(item["profile"].get("propagatedFrames", 1) for item in warm)
-                speedup = (eager_total - total) / eager_total
+                benchmark_speedup = (eager_total - total) / eager_total
                 equivalent = all(item.get("maskEquivalence", {}).get("iou", 1) >= .9999
                     and item.get("maskEquivalence", {}).get("changedFraction", 0) <= .0001
                     for item in runs)
-                eager_rate, compiled_rate = eager_total / eager_frames, total / frames
-                startup = max(0, statistics.median(item["initialSeconds"] for item in runs) -
+                compiled_rate = correction_rate(warm)
+                speedup = ((eager_correction_rate - compiled_rate) /
+                    eager_correction_rate if math.isfinite(eager_correction_rate) and
+                    eager_correction_rate > 0 and math.isfinite(compiled_rate) else -1.0)
+                startup = max(0, statistics.median(item["initialSeconds"] for item in warm) -
                               statistics.median(item["initialSeconds"] for item in eager))
-                saving = eager_rate - compiled_rate
+                saving = eager_correction_rate - compiled_rate
                 break_even = math.ceil(startup / saving) if saving > 0 else 2 ** 31 - 1
                 variants.append((speedup, {"enabled": speedup >= .10 and equivalent,
-                    "warmSpeedup": speedup, "breakEvenFrames": break_even,
+                    "warmSpeedup": speedup, "steadyCorrectionSpeedup": speedup,
+                    "benchmarkEndToEndSpeedup": benchmark_speedup,
+                    "cachedStartupOverheadSeconds": startup,
+                    "breakEvenFrames": break_even,
                     "maskEquivalent": equivalent,
                     "compileMode": MODES[mode][1], "measuredUtc":
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}))
@@ -310,6 +336,9 @@ def main():
         if args.resume and results_path.is_file() else []
     completed = {(item["fixture"], item["model"], item["extractionMode"],
                   item["mode"], item["repetition"]) for item in results}
+    total_runs = len(fixtures) * len(args.models) * len(args.extraction_modes) * \
+        len(args.modes) * args.repetitions
+    completed_runs = len(completed)
     for fixture in fixtures:
         for model in args.models:
             existing_reference = next((item for item in results
@@ -326,6 +355,9 @@ def main():
                         if key in completed:
                             print(f"Skipping completed {key}", flush=True)
                             continue
+                        description = (f"SAM2 {model}, {mode}, {extraction_mode}, "
+                            f"run {repetition + 1}/{args.repetitions}")
+                        progress(completed_runs, total_runs, description)
                         result = run_once(args, fixture, model, mode, repetition,
                                           output, extraction_mode)
                         masks = Path(result["maskFolder"])
@@ -336,6 +368,8 @@ def main():
                             result["maskEquivalence"] = compare_masks(reference, masks)
                         results.append(result)
                         atomic_json(results_path, results)
+                        completed_runs += 1
+                        progress(completed_runs, total_runs, description + " complete")
     if args.write_policy: write_policy(args, results)
     print(f"Results: {results_path}")
 

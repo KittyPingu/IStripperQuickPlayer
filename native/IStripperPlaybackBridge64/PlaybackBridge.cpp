@@ -4720,6 +4720,7 @@ namespace
 
         unsigned char* soundClose = nullptr;
         const unsigned char* outputCheck = nullptr;
+        std::size_t outputOffset = 0;
         for (std::size_t offset = 0; offset + 5 <= 96; offset++)
         {
             auto target = DirectCallTarget(soundDestroy + offset);
@@ -4737,7 +4738,76 @@ namespace
                 {
                     soundClose = target;
                     outputCheck = candidate;
+                    outputOffset = candidate[3];
                     break;
+                }
+
+                // Newer MSVC builds keep zero in a nonvolatile register and
+                // compare the output pointer with that register instead of an
+                // immediate zero. Decode the register and require a nearby
+                // self-XOR before trusting the member displacement.
+                if ((candidate[0] & 0xF8) == 0x48 &&
+                    candidate[1] == 0x39)
+                {
+                    const unsigned char rex = candidate[0];
+                    const unsigned char modrm = candidate[2];
+                    const unsigned int mode = modrm >> 6;
+                    const unsigned int base = (modrm & 7) +
+                        ((rex & 1) != 0 ? 8 : 0);
+                    const unsigned int comparedRegister =
+                        ((modrm >> 3) & 7) +
+                        ((rex & 4) != 0 ? 8 : 0);
+                    const std::size_t instructionLength =
+                        mode == 1 ? 4 : mode == 2 ? 7 : 0;
+                    if (base != 1 || instructionLength == 0)
+                    {
+                        continue;
+                    }
+
+                    bool registerCleared = false;
+                    const std::size_t searchStart = checkOffset > 32
+                        ? checkOffset - 32 : 0;
+                    for (std::size_t clearOffset = searchStart;
+                        clearOffset + 3 <= checkOffset; clearOffset++)
+                    {
+                        const auto clear = target + clearOffset;
+                        if ((clear[0] & 0xF0) != 0x40 ||
+                            (clear[1] != 0x31 && clear[1] != 0x33))
+                        {
+                            continue;
+                        }
+                        const unsigned char clearRex = clear[0];
+                        const unsigned char clearModrm = clear[2];
+                        if ((clearModrm >> 6) != 3)
+                        {
+                            continue;
+                        }
+                        const unsigned int left =
+                            ((clearModrm >> 3) & 7) +
+                            ((clearRex & 4) != 0 ? 8 : 0);
+                        const unsigned int right = (clearModrm & 7) +
+                            ((clearRex & 1) != 0 ? 8 : 0);
+                        if (left == comparedRegister && right == left)
+                        {
+                            registerCleared = true;
+                            break;
+                        }
+                    }
+                    if (!registerCleared)
+                    {
+                        continue;
+                    }
+
+                    outputOffset = mode == 1
+                        ? candidate[3]
+                        : *reinterpret_cast<const std::uint32_t*>(
+                            candidate + 3);
+                    if (outputOffset > 0 && outputOffset <= 0x100)
+                    {
+                        soundClose = target;
+                        outputCheck = candidate;
+                        break;
+                    }
                 }
             }
             if (soundClose != nullptr)
@@ -4751,7 +4821,7 @@ namespace
             return false;
         }
         BpkSoundCloseRva = RvaFromAddress(soundClose);
-        BpkSoundOutputOffset = outputCheck[3];
+        BpkSoundOutputOffset = outputOffset;
         BpkSoundDeviceOffset = BpkSoundOutputOffset + sizeof(void*);
         BpkSoundPendingOffset = BpkSoundDeviceOffset + sizeof(void*);
         mask |= BpkSoundOutputOffset > 0 &&

@@ -1242,7 +1242,7 @@ internal sealed class CustomShowSettingsForm : Form
     readonly ComboBox rvmFastChunk = RvmChunkInput();
     readonly NumericUpDown rvmQualityCutoff = CompileCutoffInput();
     readonly NumericUpDown rvmFastCutoff = CompileCutoffInput();
-    readonly ComboBox rvmNvencPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
+    readonly ComboBox nvencPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 90 };
     readonly NumericUpDown matAnyoneCutoff = CutoffInput();
     readonly NumericUpDown sam2BaseCutoff = CutoffInput();
@@ -1253,6 +1253,11 @@ internal sealed class CustomShowSettingsForm : Form
     readonly NumericUpDown vitMatteSmallBatch = BatchInput();
     readonly NumericUpDown vitMatteBaseBatch = BatchInput();
     readonly Label validation = new() { AutoSize = true };
+    readonly Label transNetStatus = StatusLabel();
+    readonly Label rvmStatus = StatusLabel();
+    readonly Label matAnyoneStatus = StatusLabel();
+    readonly Label sam2Status = StatusLabel();
+    readonly Label vitMatteStatus = StatusLabel();
     CancellationTokenSource? validationCancellation;
     internal CustomShowConfiguration Configuration { get; }
     internal CustomShowSettingsForm(CustomShowConfiguration current)
@@ -1283,77 +1288,117 @@ internal sealed class CustomShowSettingsForm : Form
             VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
             VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize
         };
-        Text = "Custom Show Settings"; ClientSize = new Size(920, 940);
-        MinimumSize = new Size(820, 820);
-        TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 3,
-            Padding = new Padding(12), AutoScroll = true };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); Controls.Add(table);
-        AddPath(table, "Library folder", root, true); AddPath(table, "Python executable", python, false);
-        int cacheRow = table.RowCount++;
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        table.Controls.Add(new Label { Text = "SAM2 frame cache (GB)", AutoSize = true,
+        Text = "Custom Show Settings"; ClientSize = new Size(900, 700);
+        MinimumSize = new Size(780, 620);
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, RowCount = 2 };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        Controls.Add(layout);
+        TabControl tabs = new() { Dock = DockStyle.Fill, Padding = new Point(14, 5) };
+        layout.Controls.Add(tabs, 0, 0);
+
+        TabPage generalTab = new("General");
+        TableLayoutPanel general = SettingsTable();
+        generalTab.Controls.Add(general); tabs.TabPages.Add(generalTab);
+        AddExplanation(general, "Paths and shared cache",
+            "These settings are shared by all custom-show processing tools.");
+        AddPath(general, "Library folder", root, true);
+        AddPath(general, "Python executable", python, false);
+        int cacheRow = general.RowCount++;
+        general.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        general.Controls.Add(new Label { Text = "SAM2 frame cache (GB)", AutoSize = true,
             Anchor = AnchorStyles.Left }, 0, cacheRow);
         FlowLayoutPanel cacheControls = new() { AutoSize = true, WrapContents = false };
-        Button clearCache = new() { Text = "Clear SAM2 frame cache", AutoSize = true };
+        Button clearCache = new() { Text = "Clear frame cache", AutoSize = true };
         cacheControls.Controls.AddRange([sam2CacheSize, clearCache, sam2CacheUsage]);
-        table.Controls.Add(cacheControls, 1, cacheRow); table.SetColumnSpan(cacheControls, 2);
-        AddChoice(table, "TransNetV2 preferred window batch", transNetBatch);
-        AddCutoff(table, "TransNetV2 compile cutoff", transNetCutoff);
+        general.Controls.Add(cacheControls, 1, cacheRow); general.SetColumnSpan(cacheControls, 2);
+        AddExplanation(general, "How compilation is selected",
+            "A cutoff is only a minimum workload. TransNetV2, MatAnyone2, SAM2, and ViTMatte " +
+            "also require a successful benchmark policy for the current hardware and model. " +
+            "RVM is the exception: a nonzero cutoff enables its lazy compiled path directly.");
+        nvencPreset.Items.AddRange(["p1", "p2", "p3", "p4", "p5", "p6", "p7"]);
+        AddChoice(general, "Output NVENC preset", nvencPreset);
+        AddExplanation(general, "Output encoding",
+            "The NVENC preset applies to RVM, MatAnyone2, VideoMaMa, and ViTMatte output. " +
+            "It is not used by scene detection.");
+
+        TabPage transNetTab = new("TransNetV2");
+        TableLayoutPanel transNetTable = SettingsTable();
+        transNetTab.Controls.Add(transNetTable); tabs.TabPages.Add(transNetTab);
+        AddExplanation(transNetTable, "TransNetV2 scene detection",
+            "Only “Benchmark TransNetV2” calibrates these settings. Compilation remains eager " +
+            "unless its hardware-specific benchmark policy approves the selected batch.");
+        AddStatus(transNetTable, transNetStatus);
+        AddChoice(transNetTable, "Preferred window batch", transNetBatch);
+        AddCutoff(transNetTable, "Compile minimum", transNetCutoff);
         transNetDecode.Items.AddRange(["Auto (codec/resolution-aware, exact-compatible)",
             "Legacy CUDA-first", "CPU fallback (manual)"]);
-        AddChoice(table, "TransNetV2 decode mode", transNetDecode);
-        Button benchmarkTransNet = new() { Text = "Benchmark TransNetV2...", AutoSize = true };
+        AddChoice(transNetTable, "Decode mode", transNetDecode);
+        Button benchmarkTransNet = new() { Text = "Benchmark TransNetV2 only...", AutoSize = true };
         Label transNetHelp = new() { AutoSize = true,
-            Text = "Manual; tests batch, compilation, CUDA graphs, decode speed, and exact divider compatibility." };
+            Text = "Tests batches, compilation, CUDA graphs, decoding, and exact cut compatibility." };
         FlowLayoutPanel transNetActions = new() { AutoSize = true, WrapContents = true };
         transNetActions.Controls.AddRange([benchmarkTransNet, transNetHelp]);
-        int transNetActionRow = table.RowCount++;
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        table.Controls.Add(transNetActions, 1, transNetActionRow);
-        table.SetColumnSpan(transNetActions, 2);
-        AddChoice(table, "RVM Quality preferred chunk", rvmQualityChunk);
-        AddChoice(table, "RVM Fast preferred chunk", rvmFastChunk);
-        AddChoice(table, "RVM Quality compile cutoff", rvmQualityCutoff);
-        AddChoice(table, "RVM Fast compile cutoff", rvmFastCutoff);
-        rvmNvencPreset.Items.AddRange(["p1", "p2", "p3", "p4", "p5", "p6", "p7"]);
-        AddChoice(table, "Custom show NVENC preset", rvmNvencPreset);
-        Button benchmarkRvm = new() { Text = "Benchmark RVM...", AutoSize = true };
+        AddWideControl(transNetTable, transNetActions);
+
+        TabPage rvmTab = new("RVM");
+        TableLayoutPanel rvmTable = SettingsTable();
+        rvmTab.Controls.Add(rvmTable); tabs.TabPages.Add(rvmTab);
+        AddExplanation(rvmTable, "Robust Video Matting",
+            "Only “Benchmark RVM” calibrates these settings. Unlike the other engines, RVM " +
+            "does not require a policy file: zero disables compilation; a nonzero cutoff allows it.");
+        AddStatus(rvmTable, rvmStatus);
+        AddChoice(rvmTable, "Quality preferred chunk", rvmQualityChunk);
+        AddChoice(rvmTable, "Fast preferred chunk", rvmFastChunk);
+        AddChoice(rvmTable, "Quality compile minimum", rvmQualityCutoff);
+        AddChoice(rvmTable, "Fast compile minimum", rvmFastCutoff);
+        Button benchmarkRvm = new() { Text = "Benchmark RVM only...", AutoSize = true };
         Label rvmHelp = new() { AutoSize = true,
             Text = "Manual; tests Quality/Fast chunks, bounded pipeline, previews, and optional compilation." };
         FlowLayoutPanel rvmActions = new() { AutoSize = true, WrapContents = true };
         rvmActions.Controls.AddRange([benchmarkRvm, rvmHelp]);
-        int rvmActionRow = table.RowCount++;
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        table.Controls.Add(rvmActions, 1, rvmActionRow);
-        table.SetColumnSpan(rvmActions, 2);
-        AddCutoff(table, "MatAnyone2 compile cutoff", matAnyoneCutoff);
-        AddCutoff(table, "SAM2 Base+ compile cutoff", sam2BaseCutoff);
-        AddCutoff(table, "SAM2 Small compile cutoff", sam2SmallCutoff);
-        AddCutoff(table, "SAM2 Tiny compile cutoff", sam2TinyCutoff);
-        AddCutoff(table, "ViTMatte S compile cutoff", vitMatteSmallCutoff);
-        AddCutoff(table, "ViTMatte B compile cutoff", vitMatteBaseCutoff);
-        AddBatch(table, "ViTMatte S preferred batch", vitMatteSmallBatch);
-        AddBatch(table, "ViTMatte B preferred batch", vitMatteBaseBatch);
-        Button benchmark = new() { Text = "Benchmark and recalculate cutoffs...",
+        AddWideControl(rvmTable, rvmActions);
+
+        TabPage modelsTab = new("Matting && masks");
+        TableLayoutPanel models = SettingsTable();
+        modelsTab.Controls.Add(models); tabs.TabPages.Add(modelsTab);
+        AddExplanation(models, "MatAnyone2, SAM2, and ViTMatte",
+            "The benchmark on this tab tests only these three engines. At or above a displayed " +
+            "minimum, compilation is still used only when the status below says it is available.");
+        GroupBox matAnyoneGroup = SettingsGroup("MatAnyone2", out TableLayoutPanel matAnyoneTable);
+        AddStatus(matAnyoneTable, matAnyoneStatus);
+        AddCutoff(matAnyoneTable, "Compile minimum", matAnyoneCutoff);
+        AddWideControl(models, matAnyoneGroup);
+        GroupBox sam2Group = SettingsGroup("SAM2 mask tracking", out TableLayoutPanel sam2Table);
+        AddStatus(sam2Table, sam2Status);
+        AddCutoff(sam2Table, "Base+ compile minimum", sam2BaseCutoff);
+        AddCutoff(sam2Table, "Small compile minimum", sam2SmallCutoff);
+        AddCutoff(sam2Table, "Tiny compile minimum", sam2TinyCutoff);
+        AddWideControl(models, sam2Group);
+        GroupBox vitMatteGroup = SettingsGroup("ViTMatte", out TableLayoutPanel vitMatteTable);
+        AddStatus(vitMatteTable, vitMatteStatus);
+        AddCutoff(vitMatteTable, "S compile minimum", vitMatteSmallCutoff);
+        AddCutoff(vitMatteTable, "B compile minimum", vitMatteBaseCutoff);
+        AddBatch(vitMatteTable, "S preferred batch", vitMatteSmallBatch);
+        AddBatch(vitMatteTable, "B preferred batch", vitMatteBaseBatch);
+        AddWideControl(models, vitMatteGroup);
+        Button benchmark = new() { Text = "Benchmark MatAnyone2 + SAM2 + ViTMatte...",
             AutoSize = true };
         Label cutoffHelp = new() { AutoSize = true,
-            Text = "Frames below these cutoffs use eager execution. Benchmarking is manual and may take a long time." };
+            Text = "Creates/updates the policies shown above; this can take a long time." };
         FlowLayoutPanel cutoffActions = new() { AutoSize = true, WrapContents = true };
         cutoffActions.Controls.AddRange([benchmark, cutoffHelp]);
-        int cutoffActionRow = table.RowCount++;
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        table.Controls.Add(cutoffActions, 1, cutoffActionRow);
-        table.SetColumnSpan(cutoffActions, 2);
+        AddWideControl(models, cutoffActions);
+        AddWideControl(models, new Panel { Height = 28, Margin = Padding.Empty });
+
         Button validate = new() { Text = "Validate setup", AutoSize = true };
+        Button refresh = new() { Text = "Refresh compilation status", AutoSize = true };
         Button ok = new() { Text = "OK", AutoSize = true };
         Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
-        FlowLayoutPanel buttons = new() { AutoSize = true }; buttons.Controls.AddRange([validate, ok, cancel]);
-        int validationRow = table.RowCount++;
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        table.Controls.Add(validation, 1, validationRow); table.SetColumnSpan(validation, 2);
-        int buttonRow = table.RowCount++;
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        table.Controls.Add(buttons, 1, buttonRow); table.SetColumnSpan(buttons, 2);
+        FlowLayoutPanel buttons = new() { AutoSize = true, Dock = DockStyle.Fill,
+            Padding = new Padding(12, 6, 12, 10), WrapContents = true };
+        buttons.Controls.AddRange([validate, refresh, ok, cancel, validation]);
+        layout.Controls.Add(buttons, 0, 1);
         root.Text = Configuration.LibraryRoot; python.Text = Configuration.PythonExecutable;
         sam2CacheSize.Value = Math.Clamp(Configuration.Sam2FrameCacheSizeGb, 0, 100);
         transNetBatch.Value = Math.Clamp(Configuration.TransNetPreferredBatchSize, 1, 64);
@@ -1363,7 +1408,7 @@ internal sealed class CustomShowSettingsForm : Form
         rvmFastChunk.SelectedItem = ClosestRvmChunk(Configuration.RvmFastPreferredChunk);
         rvmQualityCutoff.Value = ClampCompileCutoff(Configuration.RvmQualityCompileCutoffFrames);
         rvmFastCutoff.Value = ClampCompileCutoff(Configuration.RvmFastCompileCutoffFrames);
-        rvmNvencPreset.SelectedItem = CustomShowProcessor.ValidNvencPreset(
+        nvencPreset.SelectedItem = CustomShowProcessor.ValidNvencPreset(
             Configuration.RvmNvencPreset);
         matAnyoneCutoff.Value = ClampCutoff(Configuration.MatAnyone2CompileCutoffFrames);
         sam2BaseCutoff.Value = ClampCutoff(Configuration.Sam2BasePlusCompileCutoffFrames);
@@ -1374,16 +1419,232 @@ internal sealed class CustomShowSettingsForm : Form
         vitMatteSmallBatch.Value = ClampBatch(Configuration.VitMatteSmallPreferredBatchSize);
         vitMatteBaseBatch.Value = ClampBatch(Configuration.VitMatteBasePreferredBatchSize);
         sam2CacheUsage.Text = "Calculating usage...";
-        Shown += async (_, _) => await UpdateCacheUsageAsync();
+        Shown += async (_, _) => { await UpdateCacheUsageAsync(); RefreshCompilationStatus(); };
         clearCache.Click += async (_, _) => await ClearSam2CacheAsync(clearCache);
         benchmarkTransNet.Click += (_, _) => BenchmarkTransNet();
         benchmarkRvm.Click += (_, _) => BenchmarkRvm();
         benchmark.Click += (_, _) => BenchmarkCutoffs();
         validate.Click += async (_, _) => await ValidateSetup(validate);
+        refresh.Click += (_, _) => RefreshCompilationStatus();
+        tabs.SelectedIndexChanged += (_, _) => RefreshCompilationStatus();
+        python.TextChanged += (_, _) => RefreshCompilationStatus();
+        transNetBatch.ValueChanged += (_, _) => RefreshCompilationStatus();
+        rvmQualityCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
+        rvmFastCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
+        matAnyoneCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
+        sam2BaseCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
+        sam2SmallCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
+        sam2TinyCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
+        vitMatteSmallCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
+        vitMatteBaseCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
         ok.Click += SaveSettings;
         FormClosed += (_, _) => validationCancellation?.Cancel();
         AcceptButton = ok; CancelButton = cancel; AppTheme.Apply(this);
     }
+
+    static Label StatusLabel() => new()
+    {
+        AutoSize = true, Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle,
+        Padding = new Padding(8), Margin = new Padding(3, 4, 3, 8),
+        MaximumSize = new Size(620, 0),
+        Text = "Checking compilation status..."
+    };
+
+    static TableLayoutPanel SettingsTable() => new()
+    {
+        Dock = DockStyle.Fill, ColumnCount = 3, Padding = new Padding(12),
+        AutoScroll = true,
+        ColumnStyles =
+        {
+            new ColumnStyle(SizeType.Absolute, 205),
+            new ColumnStyle(SizeType.Percent, 100),
+            new ColumnStyle(SizeType.AutoSize)
+        }
+    };
+
+    static GroupBox SettingsGroup(string text, out TableLayoutPanel table)
+    {
+        GroupBox group = new() { Text = text, AutoSize = true, Dock = DockStyle.Top,
+            Padding = new Padding(8), Margin = new Padding(0, 4, 0, 8) };
+        table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            ColumnCount = 3, Padding = new Padding(4) };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        group.Controls.Add(table);
+        return group;
+    }
+
+    static void AddExplanation(TableLayoutPanel table, string heading, string text)
+    {
+        FlowLayoutPanel panel = new() { AutoSize = true, FlowDirection = FlowDirection.TopDown,
+            WrapContents = false, Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 8) };
+        panel.Controls.Add(new Label { Text = heading, AutoSize = true,
+            Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) });
+        panel.Controls.Add(new Label { Text = text, AutoSize = true, MaximumSize = new Size(760, 0) });
+        AddWideControl(table, panel);
+    }
+
+    static void AddStatus(TableLayoutPanel table, Label status)
+    {
+        int row = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.Controls.Add(new Label { Text = "Compilation status", AutoSize = true,
+            Anchor = AnchorStyles.Left }, 0, row);
+        table.Controls.Add(status, 1, row);
+        table.SetColumnSpan(status, 2);
+    }
+
+    static void AddWideControl(TableLayoutPanel table, Control control)
+    {
+        int row = table.RowCount++;
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        control.Dock = DockStyle.Top;
+        table.Controls.Add(control, 0, row);
+        table.SetColumnSpan(control, 3);
+    }
+
+    void RefreshCompilationStatus()
+    {
+        string? runtime = RuntimeFromPython();
+        if (runtime == null)
+        {
+            const string unavailable = "Unknown — select a valid processing-environment Python executable.";
+            transNetStatus.Text = rvmStatus.Text = matAnyoneStatus.Text =
+                sam2Status.Text = vitMatteStatus.Text = unavailable;
+            return;
+        }
+
+        IReadOnlyList<(string Key, JsonElement Value)> transNet = ReadPolicyEntries(
+            Path.Combine(runtime, "transnetv2-performance-policy-v1.json"));
+        int selectedBatch = (int)transNetBatch.Value;
+        (string Key, JsonElement Value)[] matchingTransNet = transNet.Where(item =>
+            item.Key.EndsWith($"|{selectedBatch}|FP16", StringComparison.OrdinalIgnoreCase) ||
+            item.Key.EndsWith($"|{selectedBatch}|FP32", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (transNet.Count == 0)
+            transNetStatus.Text = "Not benchmarked — automatic execution uses eager mode. Run “Benchmark TransNetV2 only”.";
+        else if (matchingTransNet.Any(item => Boolean(item.Value, "compiledEnabled")))
+            transNetStatus.Text = $"Available for benchmarked batch {selectedBatch}. Auto may compile at/above " +
+                $"{transNetCutoff.Value:N0} frames when the measured break-even is also met.";
+        else if (matchingTransNet.Length > 0)
+            transNetStatus.Text = $"Benchmarked for batch {selectedBatch}, but compilation was not approved. Auto uses eager mode.";
+        else
+            transNetStatus.Text = $"No benchmark result for batch {selectedBatch}. Auto uses eager mode for this setting.";
+
+        int rvmMarkers = SafeFiles(Path.Combine(runtime, "torchinductor-rvm"),
+            "ready-*.json").Length;
+        rvmStatus.Text = $"Quality: {RvmStatus((int)rvmQualityCutoff.Value)}  " +
+            $"Fast: {RvmStatus((int)rvmFastCutoff.Value)}  " +
+            $"Cached compiled shapes: {rvmMarkers}. RVM does not require a policy file.";
+
+        string matPolicy = Path.Combine(runtime, "matanyone2-compile-policy.json");
+        JsonElement? matAnyone = ReadJson(matPolicy);
+        if (matAnyone == null)
+            matAnyoneStatus.Text = "Not benchmarked — automatic execution uses eager mode.";
+        else if (Boolean(matAnyone.Value, "enabled"))
+            matAnyoneStatus.Text = $"Available. Auto may compile at/above {matAnyoneCutoff.Value:N0} frames.";
+        else
+            matAnyoneStatus.Text = "Benchmarked, but partial compilation was not approved. Auto uses eager mode.";
+
+        IReadOnlyList<(string Key, JsonElement Value)> sam2 = ReadPolicyEntries(
+            Path.Combine(runtime, "sam2-performance-policy-v1.json"));
+        string samCache = Path.Combine(runtime, "torchinductor-cache");
+        string[] samMarkers = SafeFiles(samCache, "SAM2_VOS*_READY*")
+            .Select(Path.GetFileName).OfType<string>().ToArray();
+        sam2Status.Text = sam2.Count == 0
+            ? "Not benchmarked — all editable SAM2 models use eager mode. " +
+                (samMarkers.Length > 0 ? "Cached kernels exist, but auto will not select them without an approved policy. " : "") +
+                "The cutoff values alone do not enable compilation."
+            : string.Join("  ", new[] { ("Base+", "base-plus", sam2BaseCutoff.Value),
+                ("Small", "small", sam2SmallCutoff.Value), ("Tiny", "tiny", sam2TinyCutoff.Value) }
+                .Select(model => Sam2ModelStatus(sam2, model.Item1, model.Item2, model.Item3,
+                    samMarkers.Any(marker => marker.Contains(
+                        model.Item2.Replace("-", "_"), StringComparison.OrdinalIgnoreCase)))));
+
+        IReadOnlyList<(string Key, JsonElement Value)> vitMatte = ReadPolicyEntries(
+            Path.Combine(runtime, "vitmatte-performance-policy-v1.json"));
+        vitMatteStatus.Text = vitMatte.Count == 0
+            ? "Not benchmarked — ViTMatte uses eager mode."
+            : string.Join("  ", new[] { ("S", "|s|", vitMatteSmallCutoff.Value),
+                ("B", "|b|", vitMatteBaseCutoff.Value) }.Select(model =>
+                    ViTMatteModelStatus(vitMatte, model.Item1, model.Item2, model.Item3)));
+    }
+
+    string? RuntimeFromPython()
+    {
+        try
+        {
+            if (!File.Exists(python.Text)) return null;
+            return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(python.Text)!, "..", ".."));
+        }
+        catch { return null; }
+    }
+
+    static string RvmStatus(int cutoff) => cutoff <= 0
+        ? "compilation disabled (cutoff 0)."
+        : $"eligible above approximately {Math.Ceiling(cutoff * 1.2):N0} frames; first use compiles.";
+
+    static string Sam2ModelStatus(IReadOnlyList<(string Key, JsonElement Value)> entries,
+        string label, string model, decimal cutoff, bool cached)
+    {
+        (string Key, JsonElement Value)[] matching = entries.Where(item =>
+            item.Key.EndsWith("|" + model, StringComparison.OrdinalIgnoreCase)).ToArray();
+        bool enabled = matching.Any(item => NestedBoolean(item.Value, "encoder", "enabled") ||
+            NestedBoolean(item.Value, "vos", "enabled"));
+        return matching.Length == 0 ? $"{label}: no current policy; eager."
+            : enabled ? $"{label}: compiled available from {cutoff:N0} frames when break-even is met; " +
+                (cached ? "cache ready." : "first qualifying use will compile.")
+            : $"{label}: benchmarked, compiled disabled; eager.";
+    }
+
+    static string ViTMatteModelStatus(
+        IReadOnlyList<(string Key, JsonElement Value)> entries, string label,
+        string keyPart, decimal cutoff)
+    {
+        (string Key, JsonElement Value)[] matching = entries.Where(item =>
+            item.Key.Contains(keyPart, StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (matching.Length == 0) return $"{label}: no policy; eager.";
+        return matching.Any(item => Boolean(item.Value, "compiledEnabled"))
+            ? $"{label}: compiled available from {cutoff:N0} frames for approved shapes/batches."
+            : $"{label}: calibrated, compiled not approved; eager.";
+    }
+
+    static JsonElement? ReadJson(string path)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            return document.RootElement.Clone();
+        }
+        catch { return null; }
+    }
+
+    static string[] SafeFiles(string folder, string pattern)
+    {
+        try
+        {
+            return Directory.Exists(folder) ? Directory.GetFiles(folder, pattern,
+                SearchOption.TopDirectoryOnly) : [];
+        }
+        catch { return []; }
+    }
+
+    static IReadOnlyList<(string Key, JsonElement Value)> ReadPolicyEntries(string path)
+    {
+        JsonElement? root = ReadJson(path);
+        if (root == null || !root.Value.TryGetProperty("entries", out JsonElement entries) ||
+            entries.ValueKind != JsonValueKind.Object) return [];
+        return entries.EnumerateObject().Select(item => (item.Name, item.Value.Clone())).ToArray();
+    }
+
+    static bool Boolean(JsonElement value, string property) =>
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(property, out JsonElement item) &&
+        item.ValueKind is JsonValueKind.True;
+
+    static bool NestedBoolean(JsonElement value, string group, string property) =>
+        value.ValueKind == JsonValueKind.Object && value.TryGetProperty(group, out JsonElement nested) &&
+        Boolean(nested, property);
+
     async Task ValidateSetup(Button button)
     {
         if (validationCancellation != null)
@@ -1422,7 +1683,7 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.RvmFastPreferredChunk = RvmChunkValue(rvmFastChunk);
             Configuration.RvmQualityCompileCutoffFrames = (int)rvmQualityCutoff.Value;
             Configuration.RvmFastCompileCutoffFrames = (int)rvmFastCutoff.Value;
-            Configuration.RvmNvencPreset = rvmNvencPreset.SelectedItem?.ToString() ?? "p5";
+            Configuration.RvmNvencPreset = nvencPreset.SelectedItem?.ToString() ?? "p5";
             Configuration.MatAnyone2CompileCutoffFrames = (int)matAnyoneCutoff.Value;
             Configuration.Sam2BasePlusCompileCutoffFrames = (int)sam2BaseCutoff.Value;
             Configuration.Sam2SmallCompileCutoffFrames = (int)sam2SmallCutoff.Value;
@@ -1478,6 +1739,7 @@ internal sealed class CustomShowSettingsForm : Form
         vitMatteBaseCutoff.Value = ClampCutoff(form.Result.VitMatteBaseCompileCutoffFrames);
         vitMatteSmallBatch.Value = ClampBatch(form.Result.VitMatteSmallPreferredBatchSize);
         vitMatteBaseBatch.Value = ClampBatch(form.Result.VitMatteBasePreferredBatchSize);
+        RefreshCompilationStatus();
         validation.Text = "Benchmark completed; review the recalculated cutoffs and click OK to save them.";
     }
 
@@ -1508,6 +1770,7 @@ internal sealed class CustomShowSettingsForm : Form
         transNetBatch.Value = Math.Clamp(form.Result.TransNetPreferredBatchSize, 1, 64);
         transNetCutoff.Value = ClampCutoff(form.Result.TransNetCompileCutoffFrames);
         transNetDecode.SelectedIndex = DecodeModeIndex(form.Result.TransNetDecodeMode);
+        RefreshCompilationStatus();
         validation.Text = "TransNetV2 benchmark completed; review the values and click OK to save them.";
     }
 
@@ -1533,7 +1796,7 @@ internal sealed class CustomShowSettingsForm : Form
             RvmFastPreferredChunk = RvmChunkValue(rvmFastChunk),
             RvmQualityCompileCutoffFrames = (int)rvmQualityCutoff.Value,
             RvmFastCompileCutoffFrames = (int)rvmFastCutoff.Value,
-            RvmNvencPreset = rvmNvencPreset.SelectedItem?.ToString() ?? "p5"
+            RvmNvencPreset = nvencPreset.SelectedItem?.ToString() ?? "p5"
         };
         using CustomShowRvmBenchmarkForm form = new(benchmarkConfiguration);
         if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
@@ -1542,6 +1805,7 @@ internal sealed class CustomShowSettingsForm : Form
         rvmQualityCutoff.Value = ClampCompileCutoff(
             form.Result.RvmQualityCompileCutoffFrames);
         rvmFastCutoff.Value = ClampCompileCutoff(form.Result.RvmFastCompileCutoffFrames);
+        RefreshCompilationStatus();
         validation.Text = "RVM benchmark completed; review the values and click OK to save them.";
     }
 
@@ -1675,26 +1939,53 @@ internal sealed class CustomShowSettingsForm : Form
 
 internal sealed class CustomShowCutoffBenchmarkForm : Form
 {
+    const string ProgressPrefix = "IQP_BENCHMARK_PROGRESS ";
     readonly CustomShowConfiguration configuration;
+    readonly Label currentStep = new() { AutoSize = true, Font = new Font(
+        SystemFonts.MessageBoxFont, FontStyle.Bold), Text = "Preparing benchmark..." };
+    readonly ProgressBar progress = new() { Dock = DockStyle.Top, Height = 22,
+        Minimum = 0, Maximum = 1000 };
+    readonly Label progressDetail = new() { AutoSize = true, Text = "Waiting for progress..." };
+    readonly Label timing = new() { AutoSize = true, Text = "Elapsed 00:00" };
     readonly TextBox output = new()
     {
         Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
         ScrollBars = ScrollBars.Both, WordWrap = false
     };
     readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
+    readonly Stopwatch elapsed = new();
+    readonly System.Windows.Forms.Timer clock = new() { Interval = 1000 };
     Process? process;
     bool complete;
+    double completedFraction;
     internal CustomShowConfiguration? Result { get; private set; }
 
     internal CustomShowCutoffBenchmarkForm(CustomShowConfiguration configuration)
     {
         this.configuration = configuration;
         Text = "Benchmark Custom Show Model Cutoffs";
-        ClientSize = new Size(920, 560);
-        Controls.Add(output); Controls.Add(close);
+        ClientSize = new Size(920, 620);
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, RowCount = 4,
+            Padding = new Padding(10) };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        FlowLayoutPanel summary = new() { AutoSize = true, Dock = DockStyle.Top,
+            FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        summary.Controls.Add(currentStep);
+        summary.Controls.Add(progressDetail);
+        summary.Controls.Add(timing);
+        layout.Controls.Add(summary, 0, 0);
+        layout.Controls.Add(progress, 0, 1);
+        layout.Controls.Add(new Label { Text = "Detailed output", AutoSize = true,
+            Margin = new Padding(0, 8, 0, 2) }, 0, 2);
+        layout.Controls.Add(output, 0, 3);
+        Controls.Add(layout); Controls.Add(close);
         close.Click += (_, _) => CloseBenchmark();
         FormClosing += (_, _) => { if (!complete) try { process?.Kill(true); } catch { } };
         Shown += async (_, _) => await RunAsync();
+        clock.Tick += (_, _) => UpdateTiming();
         AppTheme.Apply(this);
     }
 
@@ -1704,6 +1995,7 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
             "iqp-model-cutoffs-" + Guid.NewGuid().ToString("N") + ".json");
         try
         {
+            elapsed.Start(); clock.Start();
             Append("Preparing model cutoff benchmarks. This runs only from this dialog...");
             ProcessStartInfo start = new(configuration.PythonExecutable)
             {
@@ -1739,14 +2031,23 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
             Result = JsonSerializer.Deserialize<CustomShowConfiguration>(
                 await File.ReadAllTextAsync(resultPath), CustomShowStore.JsonOptions) ??
                 throw new InvalidDataException("The benchmark did not return cutoff values.");
+            completedFraction = 1; progress.Value = progress.Maximum;
+            currentStep.Text = "Benchmark complete";
+            progressDetail.Text = "All requested stages completed successfully.";
             Append("Benchmark completed. The measured values will be copied into Settings.");
         }
         catch (Exception error)
         {
-            if (!IsDisposed) Append("Benchmark failed: " + error.Message);
+            if (!IsDisposed)
+            {
+                currentStep.Text = "Benchmark failed";
+                progressDetail.Text = error.Message;
+                Append("Benchmark failed: " + error.Message);
+            }
         }
         finally
         {
+            elapsed.Stop(); clock.Stop(); UpdateTiming();
             complete = true;
             if (!IsDisposed) close.Text = Result == null ? "Close" : "Use results";
             try { File.Delete(resultPath); } catch { }
@@ -1755,8 +2056,71 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
 
     async Task PumpAsync(StreamReader reader)
     {
-        while (await reader.ReadLineAsync() is string line) Append(line);
+        while (await reader.ReadLineAsync() is string line) HandleOutput(line);
     }
+
+    void HandleOutput(string line)
+    {
+        if (!line.StartsWith(ProgressPrefix, StringComparison.Ordinal))
+        {
+            Append(line);
+            return;
+        }
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(line[ProgressPrefix.Length..]);
+            JsonElement value = document.RootElement;
+            int phase = value.GetProperty("phase").GetInt32();
+            int phases = value.GetProperty("phases").GetInt32();
+            int completed = value.GetProperty("completed").GetInt32();
+            int total = Math.Max(1, value.GetProperty("total").GetInt32());
+            string message = value.GetProperty("message").GetString() ?? "Working...";
+            double inner = Math.Clamp(completed / (double)total, 0, 1);
+            double overall = value.TryGetProperty("overallCompleted", out JsonElement overallDone) &&
+                value.TryGetProperty("overallTotal", out JsonElement overallTotal) &&
+                overallTotal.GetDouble() > 0
+                ? Math.Clamp(overallDone.GetDouble() / overallTotal.GetDouble(), 0, 1)
+                : Math.Clamp(((phase - 1) + inner) / Math.Max(1, phases), 0, 1);
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => UpdateProgress(phase, phases, completed, total,
+                    overall, message));
+                return;
+            }
+            UpdateProgress(phase, phases, completed, total, overall, message);
+        }
+        catch
+        {
+            Append(line);
+        }
+    }
+
+    void UpdateProgress(int phase, int phases, int completed, int total,
+        double overall, string message)
+    {
+        completedFraction = overall;
+        progress.Value = Math.Clamp((int)Math.Round(overall * progress.Maximum),
+            progress.Minimum, progress.Maximum);
+        currentStep.Text = message;
+        progressDetail.Text = $"Stage {phase} of {phases} • step {completed:N0} of {total:N0} " +
+            $"• {overall * 100:0}% overall";
+        UpdateTiming();
+    }
+
+    void UpdateTiming()
+    {
+        if (IsDisposed) return;
+        TimeSpan used = elapsed.Elapsed;
+        string estimate = completedFraction >= .02 && completedFraction < 1
+            ? $" • estimated remaining {FormatDuration(TimeSpan.FromSeconds(
+                used.TotalSeconds * (1 - completedFraction) / completedFraction))} (rough)"
+            : completedFraction >= 1 ? "" : " • estimating remaining time...";
+        timing.Text = $"Elapsed {FormatDuration(used)}{estimate}";
+    }
+
+    static string FormatDuration(TimeSpan value) => value.TotalHours >= 1
+        ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}"
+        : $"{value.Minutes:00}:{value.Seconds:00}";
 
     void Append(string text)
     {

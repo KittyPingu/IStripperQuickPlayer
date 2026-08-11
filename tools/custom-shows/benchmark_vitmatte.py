@@ -8,16 +8,66 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
+
+PROGRESS_PREFIX = "IQP_BENCHMARK_PROGRESS "
+PROGRESS = {"completed": 0, "total": 1}
 
 
 def say(message):
     print(message, flush=True)
 
 
+def progress(message, finished=False):
+    if finished:
+        PROGRESS["completed"] += 1
+    say(PROGRESS_PREFIX + json.dumps({"completed": PROGRESS["completed"],
+        "total": PROGRESS["total"], "message": message}, separators=(",", ":")))
+
+
+def skip_progress(count, message):
+    PROGRESS["completed"] += max(0, count)
+    progress(message)
+
+
+class VramPressureError(RuntimeError):
+    pass
+
+
+def gpu_memory_mib():
+    executable = shutil.which("nvidia-smi")
+    if executable is None:
+        return None
+    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    try:
+        output = subprocess.check_output([executable,
+            "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"],
+            text=True, timeout=5, creationflags=creation_flags)
+        total, used = (int(value.strip())
+            for value in output.splitlines()[0].split(",")[:2])
+        return total, used
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+def stop_process_tree(process):
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    elif process.poll() is None:
+        process.kill()
+
+
 def run_worker(args, model, source, masks, output, batch, execution, profile,
-               channels_last="off", explicit_half="off"):
+               channels_last="off", explicit_half="off", monitor_vram=False):
+    description = (f"ViTMatte-{model.upper()} {execution}, batch {batch}: "
+        f"{output.name}")
+    progress(description)
     shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True)
     command = [sys.executable, str(args.worker), "--runtime", str(args.runtime),
@@ -32,6 +82,25 @@ def run_worker(args, model, source, masks, output, batch, execution, profile,
     started = time.perf_counter()
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1, env=environment)
+    monitor_stop = threading.Event()
+    pressure = {}
+
+    def watch_vram():
+        while not monitor_stop.wait(.5):
+            memory = gpu_memory_mib()
+            if memory is None:
+                continue
+            total, used = memory
+            if total > 0 and used / total >= args.vram_stop_percent / 100:
+                pressure.update(total=total, used=used)
+                stop_process_tree(process)
+                return
+
+    monitor = None
+    if monitor_vram and args.vram_stop_percent > 0:
+        monitor = threading.Thread(target=watch_vram,
+            name="vitmatte-vram-monitor", daemon=True)
+        monitor.start()
     tail = []
     try:
         for line in process.stdout:
@@ -41,19 +110,25 @@ def run_worker(args, model, source, masks, output, batch, execution, profile,
             if time.perf_counter() - started > args.worker_timeout:
                 raise TimeoutError(f"exceeded {args.worker_timeout:g}s")
     except TimeoutError as error:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif process.poll() is None:
-            process.kill()
+        stop_process_tree(process)
         process.wait()
         # Windows can retain FFmpeg output handles briefly after taskkill returns.
         time.sleep(1)
         raise RuntimeError(f"ViTMatte benchmark worker timed out: {error}")
-    if process.wait() != 0:
+    finally:
+        monitor_stop.set()
+        if monitor is not None:
+            monitor.join(timeout=2)
+    exit_code = process.wait()
+    if pressure:
+        used, total = pressure["used"], pressure["total"]
+        raise VramPressureError(f"whole-GPU dedicated memory reached {used:,}/"
+            f"{total:,} MiB ({used * 100 / total:.1f}%); shared-memory spill avoided")
+    if exit_code != 0:
         raise RuntimeError("ViTMatte benchmark worker failed:\n" + "\n".join(tail))
     value = json.loads(profile.read_text(encoding="utf-8"))
     value["wallSeconds"] = time.perf_counter() - started
+    progress(description + " complete", finished=True)
     return value
 
 
@@ -119,14 +194,17 @@ def benchmark_batches(args, model, source, masks, work):
     batch_results = []
     say(f"ViTMatte-{model.upper()}: testing eager batch sizes {candidates} "
         f"({args.batch_runs} runs each)...")
-    for batch in candidates:
+    for candidate_index, batch in enumerate(candidates):
         runs = []
         try:
             for run in range(args.batch_runs):
                 result = run_worker(args, model, source, masks,
                     work / f"{model}-batch-{batch}-{run}", batch, "eager",
-                    work / f"{model}-batch-{batch}-{run}.json")
+                    work / f"{model}-batch-{batch}-{run}.json", monitor_vram=True)
                 runs.append(result)
+                if result["batchSizeUsed"] != batch:
+                    raise VramPressureError(f"requested batch {batch} fell back to "
+                        f"batch {result['batchSizeUsed']} after a GPU out-of-memory error")
             used_sizes = sorted({value["batchSizeUsed"] for value in runs})
             fps = median([value["fps"] for value in runs])
             seconds = median([value["totalSeconds"] for value in runs])
@@ -139,6 +217,20 @@ def benchmark_batches(args, model, source, masks, work):
             suffix = "" if stable else f"; OOM fallback used {used_sizes}"
             say(f"  batch {batch}: median {fps:.2f} fps, "
                 f"{peak_vram / 1073741824:.2f} GiB peak VRAM{suffix}")
+        except VramPressureError as error:
+            skipped = args.batch_runs - len(runs) + \
+                (len(candidates) - candidate_index - 1) * args.batch_runs
+            skip_progress(skipped, f"ViTMatte-{model.upper()}: skipped unsafe "
+                f"batch {batch} and all larger batches")
+            batch_results.append({"batchSizeRequested": batch,
+                "stableAtRequestedSize": False, "rejectedForVramPressure": True,
+                "reason": str(error), "runs": runs})
+            say(f"  batch {batch}: stopped ({error}).")
+            remaining = tuple(candidates[candidate_index + 1:])
+            if remaining:
+                say(f"  skipping larger batches {remaining}; their memory demand "
+                    "cannot be safer than the rejected batch.")
+            break
         except RuntimeError as error:
             say(f"  batch {batch}: unavailable ({str(error).splitlines()[-1]})")
     stable_results = [value for value in batch_results
@@ -247,6 +339,9 @@ def main():
     parser.add_argument("--batch-runs", type=int, default=3)
     parser.add_argument("--worker-timeout", type=float, default=600,
         help="Reject one worker run after this many seconds")
+    parser.add_argument("--vram-stop-percent", type=float, default=94.0,
+        help="Stop an eager batch candidate when whole-GPU dedicated memory reaches "
+             "this percentage; 0 disables monitoring")
     parser.add_argument("--batch-only", action="store_true",
         help="Only measure eager batch sizes; do not run compilation/cutoff tests")
     parser.add_argument("--small-batches", type=int, nargs="+",
@@ -257,6 +352,15 @@ def main():
     parser.add_argument("--default-cutoff", type=int, default=16000)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
+    if not 0 <= args.vram_stop_percent <= 100:
+        parser.error("--vram-stop-percent must be between 0 and 100")
+    batches_by_model = {"s": args.small_batches, "b": args.base_batches}
+    if args.batch_only:
+        PROGRESS["total"] = sum(len(batches_by_model[model]) * args.batch_runs
+                                for model in args.models)
+    else:
+        PROGRESS["total"] = sum(len(batches_by_model[model]) * args.batch_runs +
+            args.runs * 2 + 2 for model in args.models)
     with tempfile.TemporaryDirectory(prefix="iqp-vitmatte-benchmark-",
                                      ignore_cleanup_errors=True) as value:
         work = Path(value)

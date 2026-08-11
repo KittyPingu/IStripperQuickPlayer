@@ -31,6 +31,7 @@ namespace IStripperQuickPlayer
                     ("mask frame selection", CustomMaskEditorForm.VerifyFrameSelection()),
                     ("mask draft round trip", CustomShowMaskDraft.VerifyRoundTrip()),
                     ("watermark selection", CustomWatermarkRemovalForm.VerifySelection()),
+                    ("stabilization settings", CustomVideoStabilizationForm.VerifySettings()),
                     ("staging cleanup", CustomShowEditorForm.VerifyStagingCleanup()),
                     ("clip splitting", CustomClipEditorForm.VerifyClipSplitting()),
                     ("divider handles", ClipTimelineControl.VerifyMarkerHitTesting()),
@@ -1001,6 +1002,16 @@ namespace IStripperQuickPlayer
                 case DataGridView grid:
                     ApplyGrid(grid, dark);
                     break;
+                case TabControl tabs:
+                    tabs.DrawItem -= TabControl_DrawItem;
+                    tabs.Appearance = dark
+                        ? TabAppearance.FlatButtons : TabAppearance.Normal;
+                    tabs.DrawMode = dark
+                        ? TabDrawMode.OwnerDrawFixed : TabDrawMode.Normal;
+                    tabs.BackColor = background;
+                    if (dark)
+                        tabs.DrawItem += TabControl_DrawItem;
+                    break;
                 case ToolStrip strip:
                     ApplyToolStrip(strip, dark);
                     break;
@@ -1013,6 +1024,54 @@ namespace IStripperQuickPlayer
                 ApplyControl(child, dark);
             if (control.ContextMenuStrip != null)
                 ApplyToolStrip(control.ContextMenuStrip, dark);
+        }
+
+        private static void TabControl_DrawItem(
+            object? sender, DrawItemEventArgs e)
+        {
+            if (sender is not TabControl tabs || e.Index < 0 ||
+                e.Index >= tabs.TabPages.Count)
+                return;
+            Rectangle bounds = tabs.GetTabRect(e.Index);
+            bool selected = e.Index == tabs.SelectedIndex;
+            int headerBottom = Math.Max(bounds.Bottom,
+                tabs.DisplayRectangle.Top);
+            using Brush strip = new SolidBrush(Color.FromArgb(72, 72, 72));
+            if (e.Index == 0)
+            {
+                e.Graphics.FillRectangle(strip, 0, 0,
+                    tabs.ClientSize.Width, Math.Max(0, bounds.Top));
+                e.Graphics.FillRectangle(strip, 0, bounds.Top,
+                    Math.Max(0, bounds.Left),
+                    Math.Max(0, headerBottom - bounds.Top));
+                e.Graphics.FillRectangle(strip, 0, bounds.Bottom,
+                    tabs.ClientSize.Width,
+                    Math.Max(0, headerBottom - bounds.Bottom));
+            }
+            if (e.Index == tabs.TabPages.Count - 1)
+                e.Graphics.FillRectangle(strip, bounds.Right, bounds.Top,
+                    Math.Max(0, tabs.ClientSize.Width - bounds.Right),
+                    Math.Max(0, headerBottom - bounds.Top));
+            using Brush background = new SolidBrush(
+                selected ? DarkSurface : DarkBackground);
+            e.Graphics.FillRectangle(background, bounds);
+            using Pen border = new(DarkBorder);
+            e.Graphics.DrawRectangle(border, bounds.X, bounds.Y,
+                Math.Max(0, bounds.Width - 1), Math.Max(0, bounds.Height - 1));
+            if (selected)
+            {
+                using Brush accent = new SolidBrush(Color.FromArgb(80, 155, 195));
+                e.Graphics.FillRectangle(accent,
+                    bounds.Left + 1, bounds.Top + 1,
+                    Math.Max(0, bounds.Width - 2), 3);
+            }
+            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text,
+                tabs.Font, bounds, DarkText,
+                TextFormatFlags.HorizontalCenter |
+                TextFormatFlags.VerticalCenter |
+                TextFormatFlags.SingleLine |
+                TextFormatFlags.EndEllipsis |
+                TextFormatFlags.NoPrefix);
         }
 
         private static void Button_Paint(object? sender, PaintEventArgs e)
