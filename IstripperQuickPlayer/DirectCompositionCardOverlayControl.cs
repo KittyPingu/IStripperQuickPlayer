@@ -23,27 +23,6 @@ namespace IStripperQuickPlayer;
 
 internal sealed class DirectCompositionCardOverlayControl : IDisposable
 {
-    // TEMPORARY DIAGNOSTIC: remove after the overlay bitmap failure is fixed.
-    internal static readonly string TemporaryOverlayLogPath = Path.Combine(
-        Path.GetTempPath(), "IstripperQuickPlayer-overlay-debug.log");
-    private static readonly object temporaryOverlayLogLock = new();
-
-    private static void TemporaryOverlayLog(string message)
-    {
-        try
-        {
-            lock (temporaryOverlayLogLock)
-                File.AppendAllText(
-                    TemporaryOverlayLogPath,
-                    $"{DateTime.Now:O} [thread {Environment.CurrentManagedThreadId}] " +
-                    message + Environment.NewLine);
-        }
-        catch
-        {
-            // Diagnostics must never affect rendering.
-        }
-    }
-
     private sealed class SharedOverlaySurface(
         DrawingBitmap image,
         Size size,
@@ -144,11 +123,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 catch (Exception exception)
                 {
                     failedOverlayUploads.Add(card.Frame.Image);
-                    TemporaryOverlayLog(
-                        $"initial overlay FAILED tag={card.Visual.Card.name} " +
-                        $"image={card.Frame.Image.Width}x{card.Frame.Image.Height} " +
-                        $"format={card.Frame.Image.PixelFormat} " +
-                        $"source={card.Frame.Source} exception={exception}");
                     Debug.WriteLine(
                         $"ERROR overlay-upload-skipped " +
                         $"tag={card.Visual.Card.name} {exception}");
@@ -290,13 +264,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             compositionVisual.RemoveVisual(overlay.Visual);
         }
         compositionVisual.AddVisual(promotedCard.Visual, false, null);
-        if (promotedCardIndex != card.Value.Index)
-        {
-            promotedCardIndex = card.Value.Index;
-            TemporaryOverlayLog(
-                $"promoted card topmost index={card.Value.Index} " +
-                $"bounds={bounds}");
-        }
         if (overlay != null)
         {
             compositionVisual.AddVisual(
@@ -313,7 +280,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         compositionVisual?.RemoveVisual(promotedCard.Visual);
         promotedCard.Dispose();
         promotedCard = null;
-        promotedCardIndex = -1;
     }
 
     private void UpdateCardOverlayFrames()
@@ -338,12 +304,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             {
                 failedOverlayUploads.Add(frame.Image);
                 visual.Visual.SetContent(null);
-                TemporaryOverlayLog(
-                    $"animated overlay FAILED index={index} " +
-                    $"tag={card.Card.name} " +
-                    $"image={frame.Image.Width}x{frame.Image.Height} " +
-                    $"format={frame.Image.PixelFormat} " +
-                    $"source={frame.Source} exception={exception}");
                 Debug.WriteLine(
                     $"ERROR animated-overlay-upload-skipped " +
                     $"index={index} {exception}");
@@ -478,7 +438,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, CardOverlayVisual> cardOverlayVisuals = [];
     private PromotedCardVisual? promotedCard;
-    private int promotedCardIndex = -1;
     private readonly Dictionary<(Size Size, float FontSize),
         IDCompositionSurface> playingBannerSurfaces = [];
     private readonly Dictionary<Control, QueueSurface> queueSurfaces = [];
@@ -512,17 +471,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     {
         this.list = list;
         this.renderer = renderer;
-        try
-        {
-            File.WriteAllText(
-                TemporaryOverlayLogPath,
-                $"TEMPORARY DirectComposition overlay diagnostics started " +
-                $"{DateTime.Now:O}{Environment.NewLine}");
-        }
-        catch
-        {
-            // Diagnostics must never affect rendering.
-        }
     }
 
     internal bool Initialize()
@@ -575,7 +523,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         }
         catch (Exception exception)
         {
-            TemporaryOverlayLog($"initialization FAILED exception={exception}");
             Debug.WriteLine(
                 $"DirectComposition card overlays unavailable: {exception}");
             Dispose();
@@ -632,8 +579,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         }
         catch (Exception exception)
         {
-            TemporaryOverlayLog(
-                $"queue overlay render FAILED exception={exception}");
             Debug.WriteLine(
                 $"DirectComposition queue overlays unavailable: {exception}");
             Dispose();
@@ -655,8 +600,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         }
         catch (Exception exception)
         {
-            TemporaryOverlayLog(
-                $"preview overlay render FAILED exception={exception}");
             Debug.WriteLine(
                 $"DirectComposition overlay preview unavailable: {exception}");
             ClearPreview();
@@ -736,9 +679,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         }
         catch (Exception exception)
         {
-            TemporaryOverlayLog(
-                $"render FAILED overlaysOnly={overlaysOnly} " +
-                $"animationOnly={animationOnly} exception={exception}");
             Debug.WriteLine(
                 $"DirectComposition card overlay render failed: {exception}");
             Dispose();
@@ -1202,9 +1142,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 }
                 catch (Exception exception)
                 {
-                    TemporaryOverlayLog(
-                        $"direct upload FAILED size={source.Width}x{source.Height} " +
-                        $"format={source.PixelFormat} exception={exception}");
                     Debug.WriteLine(
                         $"bitmap-direct-upload-retry " +
                         $"size={source.Width}x{source.Height} " +
@@ -1225,21 +1162,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                     new DrawingRectangle(Point.Empty, source.Size),
                     0, 0, source.Width, source.Height,
                     GraphicsUnit.Pixel);
-                try
-                {
-                    bitmap = UploadBitmap(converted);
-                }
-                catch (Exception exception)
-                {
-                    TemporaryOverlayLog(
-                        $"normalized upload FAILED " +
-                        $"sourceSize={source.Width}x{source.Height} " +
-                        $"sourceFormat={source.PixelFormat} " +
-                        $"convertedSize={converted.Width}x{converted.Height} " +
-                        $"convertedFormat={converted.PixelFormat} " +
-                        $"exception={exception}");
-                    throw;
-                }
+                bitmap = UploadBitmap(converted);
             }
             bitmaps.Add(source, bitmap);
             return bitmap;
@@ -1258,7 +1181,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             (uint)frame.Image.Width > maximum ||
             (uint)frame.Image.Height > maximum;
         ID2D1Bitmap1 bitmap = oversized
-            ? GetFrameBitmap(frame, maximum)
+            ? GetFrameBitmap(frame)
             : GetBitmap(frame.Image);
         DrawingRectangle source = oversized
             ? new DrawingRectangle(Point.Empty, frame.Source.Size)
@@ -1272,8 +1195,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             Matrix4x4.Identity);
     }
 
-    private ID2D1Bitmap1 GetFrameBitmap(
-        CardOverlayFrame frame, uint maximum)
+    private ID2D1Bitmap1 GetFrameBitmap(CardOverlayFrame frame)
     {
         if (!frameBitmaps.TryGetValue(
                 frame.Image,
@@ -1281,10 +1203,6 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         {
             frames = [];
             frameBitmaps.Add(frame.Image, frames);
-            TemporaryOverlayLog(
-                $"oversized sheet using per-frame uploads " +
-                $"sheet={frame.Image.Width}x{frame.Image.Height} " +
-                $"maximum={maximum} frame={frame.Source.Size}");
         }
         if (frames.TryGetValue(frame.Source, out ID2D1Bitmap1? bitmap))
             return bitmap;
