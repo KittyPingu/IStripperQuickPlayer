@@ -20,6 +20,7 @@ public partial class Form1
     readonly NumericUpDown customAlphaThresholdInput = new()
         { Minimum = 0, Maximum = 255, Width = 70 };
     readonly ToolStripMenuItem editCustomShowMenu = new("Edit Custom Show Metadata...");
+    readonly ToolStripMenuItem reprocessCustomShowMenu = new("Reprocess Custom Show...");
     readonly ToolStripMenuItem deleteCustomShowMenu = new("Delete Custom Show");
     readonly ContextMenuStrip customClipContextMenu = new();
     readonly ToolStripMenuItem deleteCustomClipMenu =
@@ -97,14 +98,18 @@ public partial class Form1
 
         editCustomShowMenu.Click += (_, _) =>
             EditCustomShow(CurrentContextCustomShowId());
+        reprocessCustomShowMenu.Click += (_, _) =>
+            EditCustomShow(CurrentContextCustomShowId(), reprocess: true);
         deleteCustomShowMenu.Click += (_, _) => DeleteCurrentCustomShow();
         menuCardList.Items.Add(new ToolStripSeparator());
         menuCardList.Items.Add(editCustomShowMenu);
+        menuCardList.Items.Add(reprocessCustomShowMenu);
         menuCardList.Items.Add(deleteCustomShowMenu);
         menuCardList.Opening += (_, _) =>
         {
             bool custom = CurrentContextCustomShowId() != null;
             editCustomShowMenu.Visible = custom;
+            reprocessCustomShowMenu.Visible = custom;
             deleteCustomShowMenu.Visible = custom;
             deleteFromDiskToolStripMenuItem.Visible = !custom;
         };
@@ -385,11 +390,11 @@ public partial class Form1
         return Datastore.findCardByTag(tag)?.customShowId;
     }
 
-    void EditCustomShow(string? showId)
+    void EditCustomShow(string? showId, bool reprocess = false)
     {
         using CustomShowEditorForm form = new(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
-            customShowConfiguration, showId);
+            customShowConfiguration, showId, reprocess);
         if (form.ShowDialog(this) == DialogResult.OK)
         {
             ReloadCustomCards();

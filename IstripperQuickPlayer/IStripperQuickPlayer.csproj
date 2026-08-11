@@ -56,6 +56,9 @@
     <Content Include="..\tools\custom-shows\videomama_worker.py" Link="custom-shows\videomama_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\custom-shows\benchmark_videomama.py" Link="custom-shows\benchmark_videomama.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\tools\custom-shows\vitmatte_worker.py" Link="custom-shows\vitmatte_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
@@ -125,6 +128,7 @@
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <PackageReference Include="Vortice.DirectComposition" Version="3.8.3" />
     <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\third_party\ImageListView\ImageListView.csproj" />

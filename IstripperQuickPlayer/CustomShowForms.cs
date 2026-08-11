@@ -15,6 +15,7 @@ internal sealed class CustomShowEditorForm : Form
     readonly CustomShowStore store;
     readonly CustomShowConfiguration configuration;
     readonly string? showId;
+    readonly bool reprocess;
     readonly TextBox source = new();
     readonly CheckBox copySource = new() { Text = "Copy original into the show folder" };
     readonly TextBox title = new();
@@ -48,6 +49,10 @@ internal sealed class CustomShowEditorForm : Form
     readonly TextBox processingDetails = new() { ReadOnly = true, Multiline = true,
         Height = 88, ScrollBars = ScrollBars.Vertical, TabStop = false,
         Text = "Recorded in show.json after processing completes." };
+    readonly CheckBox keepClips = new() { Text = "Keep existing clip divisions",
+        AutoSize = true, Checked = true, Visible = false };
+    readonly CheckBox keepMasks = new() { Text = "Keep existing masks",
+        AutoSize = true, Checked = true, Visible = false };
     readonly Button save = new() { Text = "Process and Preview", AutoSize = true };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     List<CustomPerformerProfile> profiles = [];
@@ -56,12 +61,14 @@ internal sealed class CustomShowEditorForm : Form
     CustomShowClipDetection? clipDetection;
 
     internal CustomShowEditorForm(CustomShowStore store,
-        CustomShowConfiguration configuration, string? showId)
+        CustomShowConfiguration configuration, string? showId, bool reprocess = false)
     {
         this.store = store;
         this.configuration = configuration;
         this.showId = showId;
-        Text = showId == null ? "Create Custom Show" : "Edit Custom Show Metadata";
+        this.reprocess = reprocess && showId != null;
+        Text = showId == null ? "Create Custom Show" : this.reprocess
+            ? "Reprocess Custom Show" : "Edit Custom Show Metadata";
         ClientSize = new Size(760, 780);
         MinimumSize = new Size(650, 650);
         StartPosition = FormStartPosition.CenterParent;
@@ -141,12 +148,15 @@ internal sealed class CustomShowEditorForm : Form
         sequenceChunk.SelectedItem = 12;
         AddRow(table, "Processing batch size", sequenceChunk);
         AddRow(table, "Created using", processingDetails);
+        if (this.reprocess)
+            AddRow(table, "Reprocessing", Flow(keepClips, keepMasks));
         FlowLayoutPanel buttons = Flow(save, cancel);
         AddRow(table, "", buttons);
         AcceptButton = save;
         CancelButton = cancel;
         save.Click += Save;
-        preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
+        preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions(
+            applyRecommendedBatch: true);
         maskEngine.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
         newPerformer.Click += (_, _) => OpenPerformer(null);
         editPerformer.Click += (_, _) => OpenPerformer(selectedProfile);
@@ -154,6 +164,11 @@ internal sealed class CustomShowEditorForm : Form
         coverTitleColor.Click += ChooseCoverTitleColor;
         cover.TextChanged += (_, _) => coverTitleColor.Enabled =
             string.IsNullOrWhiteSpace(cover.Text);
+        keepClips.CheckedChanged += (_, _) =>
+        {
+            keepMasks.Enabled = keepClips.Checked && RetainedMasksAvailable();
+            if (!keepMasks.Enabled) keepMasks.Checked = false;
+        };
         performer.SelectedIndexChanged += (_, _) =>
         {
             selectedProfile = performer.SelectedItem as CustomPerformerProfile;
@@ -185,17 +200,19 @@ internal sealed class CustomShowEditorForm : Form
         coverTitleColor.ForeColor = color.GetBrightness() > .55f ? Color.Black : Color.White;
     }
 
-    void UpdateProcessingOptions()
+    void UpdateProcessingOptions(bool applyRecommendedBatch = false)
     {
         string selected = SelectedPreset();
-        if (showId == null && selected is "quality" or "fast")
+        if (CanProcess && selected is "quality" or "fast" &&
+            (!reprocess || applyRecommendedBatch))
         {
             int preferred = selected == "fast" ? configuration.RvmFastPreferredChunk :
                 configuration.RvmQualityPreferredChunk;
             sequenceChunk.SelectedItem = sequenceChunk.Items.Cast<int>()
                 .OrderBy(value => Math.Abs(value - preferred)).First();
         }
-        else if (showId == null && selected is "vitmatte-s" or "vitmatte-b")
+        else if (CanProcess && selected is "vitmatte-s" or "vitmatte-b" &&
+            (!reprocess || applyRecommendedBatch))
         {
             int recommended = selected == "vitmatte-b" ?
                 configuration.VitMatteBasePreferredBatchSize :
@@ -204,14 +221,19 @@ internal sealed class CustomShowEditorForm : Form
                 .OrderBy(value => Math.Abs(value - recommended)).First();
             sequenceChunk.SelectedItem = closest;
         }
+        else if (CanProcess && selected == "videomama" &&
+            (!reprocess || applyRecommendedBatch))
+            sequenceChunk.SelectedItem = configuration.VideoMaMaPreferredBatchSize;
         bool rvm = selected is "quality" or "fast";
-        mattingDetail.Enabled = (rvm || selected == "matanyone2") && showId == null;
-        sequenceChunk.Enabled = (rvm || UsesSam2(selected)) && showId == null;
-        maskEngine.Enabled = UsesSam2(selected) && showId == null;
+        mattingDetail.Enabled = (rvm || selected == "matanyone2") && CanProcess;
+        sequenceChunk.Enabled = (rvm || UsesSam2(selected)) && CanProcess;
+        maskEngine.Enabled = UsesSam2(selected) && CanProcess;
         sam2Model.Enabled = (selected == "matanyone2" ||
             (UsesSam2(selected) && SelectedMaskEngine() != "rvm")) &&
-            showId == null && sam2Model.Items.Count > 0;
+            CanProcess && sam2Model.Items.Count > 0;
     }
+
+    bool CanProcess => showId == null || reprocess;
 
     int SelectedMattingResolution() => mattingDetail.SelectedIndex switch
     {
@@ -257,10 +279,9 @@ internal sealed class CustomShowEditorForm : Form
         performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
         if (showId == null) return;
         CustomShowManifest show = store.LoadManifest(showId);
-        copySource.Enabled = preset.Enabled = maskEngine.Enabled =
-            mattingDetail.Enabled = sequenceChunk.Enabled = false;
+        copySource.Enabled = false;
         source.Text = SourceVideo(show);
-        save.Text = "Save Metadata";
+        save.Text = reprocess ? "Reprocess and Preview" : "Save Metadata";
         title.Text = show.Title;
         description.Text = show.Description;
         tags.Text = string.Join(", ", show.Tags);
@@ -286,8 +307,51 @@ internal sealed class CustomShowEditorForm : Form
         {
             processingDetails.Text = DescribeProcessing(processing);
             processingDetails.Visible = true;
+            SelectProcessingOptions(processing);
         }
+        keepClips.Visible = keepMasks.Visible = reprocess;
+        keepMasks.Enabled = reprocess && RetainedMasksAvailable();
+        keepMasks.Checked = keepMasks.Enabled;
+        if (reprocess && !keepMasks.Enabled)
+            keepMasks.Text = "Keep existing masks (not retained for this show)";
+        if (!reprocess)
+            preset.Enabled = maskEngine.Enabled = mattingDetail.Enabled =
+                sequenceChunk.Enabled = sam2Model.Enabled = false;
         UpdateClipButton();
+    }
+
+    void SelectProcessingOptions(CustomShowProcessing processing)
+    {
+        string prefix = processing.Algorithm switch
+        {
+            "fast" => "RVM Fast", "matanyone2" => "MatAnyone",
+            "videomama" => "VideoMaMa", "vitmatte-s" => "ViTMatte S",
+            "vitmatte-b" => "ViTMatte B", _ => "RVM Quality"
+        };
+        SelectStartingWith(preset, prefix);
+        SelectStartingWith(maskEngine, processing.MaskEngine switch
+        {
+            "sam2" => "SAM2", "edgetam" => "EdgeTAM", _ => "RVM"
+        });
+        SelectStartingWith(sam2Model, processing.Sam2Model switch
+        {
+            "small" => "Small", "tiny" => "Tiny", _ => "Base+"
+        });
+        mattingDetail.SelectedIndex = processing.MattingDetailPx switch
+        {
+            256 => 0, 384 => 1, 768 => 3, 1024 => 4, 0 => 5, _ => 2
+        };
+        if (sequenceChunk.Items.Contains(processing.BatchSize))
+            sequenceChunk.SelectedItem = processing.BatchSize;
+    }
+
+    static void SelectStartingWith(ComboBox combo, string prefix)
+    {
+        int index = combo.Items.Cast<object>().Select((value, index) => (value, index))
+            .FirstOrDefault(item => item.value.ToString()!.StartsWith(
+                prefix, StringComparison.Ordinal)).index;
+        if (index >= 0 && index < combo.Items.Count && combo.Items[index]!.ToString()!
+            .StartsWith(prefix, StringComparison.Ordinal)) combo.SelectedIndex = index;
     }
 
     static void AddIstripperModels(List<CustomPerformerProfile> target)
@@ -368,11 +432,18 @@ internal sealed class CustomShowEditorForm : Form
         using CustomClipEditorForm form = new(video, showClips,
             hotness.SelectedItem?.ToString() ?? "NoNudity",
             overallTypes.Length == 0 ? ["Standing"] : overallTypes,
-            configuration, allowBoundaryEditing: showId == null,
+            configuration, allowBoundaryEditing: showId == null ||
+                reprocess && !keepClips.Checked,
             existingDetection: clipDetection);
         if (form.ShowDialog(this) != DialogResult.OK) return;
         showClips = form.Clips;
         clipDetection = form.Detection;
+        if (reprocess && !RetainedMasksMatch(showClips))
+        {
+            keepMasks.Checked = false;
+            keepMasks.Enabled = false;
+            keepMasks.Text = "Keep existing masks (clip divisions changed)";
+        }
         UpdateClipButton();
     }
 
@@ -410,9 +481,9 @@ internal sealed class CustomShowEditorForm : Form
             CustomShowManifest show = showId == null ? new() : store.LoadManifest(showId);
             ApplyFields(show);
             CustomShowStore.ValidateLink(show, selectedProfile);
-            if (showId != null)
+            if (showId != null) RelinkSource(show);
+            if (showId != null && !reprocess)
             {
-                RelinkSource(show);
                 store.SavePerformer(selectedProfile);
                 string destination = CustomShowStore.ResolveRelative(
                     Path.Combine(store.ShowsFolder, show.Id), show.Media.Cover);
@@ -429,6 +500,7 @@ internal sealed class CustomShowEditorForm : Form
                 return;
             }
             if (!File.Exists(source.Text)) throw new FileNotFoundException("Select a source video.", source.Text);
+            if (!ConfirmGpuBatch()) return;
             if (showClips.Length == 0)
             {
                 using FfmpegCpuDecoder decoder = new(source.Text, fastDecode: true);
@@ -449,7 +521,15 @@ internal sealed class CustomShowEditorForm : Form
             try
             {
                 string input = source.Text;
-                if (copySource.Checked)
+                if (reprocess && show.Source.Mode == "copy")
+                {
+                    string original = SourceVideo(show);
+                    input = Path.Combine(staging, show.Source.Path.Replace('/',
+                        Path.DirectorySeparatorChar));
+                    Directory.CreateDirectory(Path.GetDirectoryName(input)!);
+                    File.Copy(original, input, true);
+                }
+                else if (copySource.Checked)
                 {
                     string relative = Path.Combine("source", "original" + Path.GetExtension(source.Text));
                     input = Path.Combine(staging, relative);
@@ -461,6 +541,7 @@ internal sealed class CustomShowEditorForm : Form
                 Dictionary<string, string> initialMasks = [];
                 Dictionary<string, long> initialMaskFrames = [];
                 Dictionary<string, string> sam2Masks = [];
+                Dictionary<string, string> maskDraftFolders = [];
                 string selectedPreset = SelectedPreset();
                 string selectedSam2Model = SelectedSam2Model();
                 string selectedMaskEngine = UsesSam2(selectedPreset) ?
@@ -468,6 +549,18 @@ internal sealed class CustomShowEditorForm : Form
                 int detail = SelectedMattingResolution();
                 string log = Path.Combine(staging, "processing.log");
                 if (File.Exists(log)) File.Delete(log);
+                if (reprocess && keepMasks.Checked)
+                {
+                    string retained = Path.Combine(store.ShowsFolder, show.Id, "masks");
+                    await Task.Run(() =>
+                    {
+                        if (Directory.Exists(retained))
+                            CopyDirectory(retained, Path.Combine(staging, "masks"));
+                        LoadRetainedMasks(Path.Combine(staging, "masks"), show,
+                            Path.Combine(staging, ".mask-work"), initialMasks,
+                            initialMaskFrames, sam2Masks);
+                    });
+                }
                 if (selectedPreset == "matanyone2" || UsesSam2(selectedPreset))
                 {
                     CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included).ToArray();
@@ -478,6 +571,13 @@ internal sealed class CustomShowEditorForm : Form
                     {
                         CustomShowClip clip = clipsToMask[index];
                         string draftClip = maskDraft.ClipFolder(index);
+                        maskDraftFolders[clip.Id] = draftClip;
+                        bool hasInitial = initialMasks.ContainsKey(clip.Id);
+                        bool hasTracked = sam2Masks.ContainsKey(clip.Id);
+                        if (selectedPreset == "matanyone2" && hasInitial)
+                            continue;
+                        if (UsesSam2(selectedPreset) && hasTracked)
+                            continue;
                         if (UsesSam2(selectedPreset) && selectedMaskEngine == "rvm")
                         {
                             string maskSequence = Path.Combine(draftClip, "rvm-masks");
@@ -496,44 +596,48 @@ internal sealed class CustomShowEditorForm : Form
                             sam2Masks[clip.Id] = maskSequence;
                             continue;
                         }
-                        using CustomMaskEditorForm maskEditor = new(input, configuration,
-                            clip.StartMs, clip.EndMs, clipsToMask.Length == 1 ? null :
-                            $"Clip {index + 1} of {clipsToMask.Length}",
-                            selectedPreset switch
-                            {
-                                "videomama" => "VideoMaMa",
-                                "vitmatte-s" => "ViTMatte S",
-                                "vitmatte-b" => "ViTMatte B",
-                                _ => "MatAnyone 2"
-                            }, allowFrameSelection: selectedPreset == "matanyone2",
-                            sam2Model: selectedSam2Model, draftFolder: draftClip);
-                        if (maskEditor.ShowDialog(this) != DialogResult.OK)
+                        if (!hasInitial)
                         {
-                            discardStaging = true;
-                            return;
-                        }
-                        if (selectedPreset != "matanyone2" &&
-                            maskEditor.FrameMs > clip.StartMs)
-                        {
-                            int clipIndex = Array.FindIndex(showClips,
-                                value => value.Id == clip.Id);
-                            CustomShowClip skipped = new()
+                            using CustomMaskEditorForm maskEditor = new(input, configuration,
+                                clip.StartMs, clip.EndMs, clipsToMask.Length == 1 ? null :
+                                $"Clip {index + 1} of {clipsToMask.Length}",
+                                selectedPreset switch
+                                {
+                                    "videomama" => "VideoMaMa",
+                                    "vitmatte-s" => "ViTMatte S",
+                                    "vitmatte-b" => "ViTMatte B",
+                                    _ => "MatAnyone 2"
+                                }, allowFrameSelection: selectedPreset == "matanyone2",
+                                sam2Model: selectedSam2Model, draftFolder: draftClip);
+                            if (maskEditor.ShowDialog(this) != DialogResult.OK)
                             {
-                                StartMs = clip.StartMs, EndMs = maskEditor.FrameMs,
-                                Included = false, Hotness = clip.Hotness,
-                                ClipTypes = [.. clip.ClipTypes]
-                            };
-                            clip.StartMs = maskEditor.FrameMs;
-                            showClips = [.. showClips[..clipIndex], skipped, clip,
-                                .. showClips[(clipIndex + 1)..]];
-                            UpdateClipButton();
+                                discardStaging = true;
+                                return;
+                            }
+                            if (selectedPreset != "matanyone2" &&
+                                maskEditor.FrameMs > clip.StartMs)
+                            {
+                                int clipIndex = Array.FindIndex(showClips,
+                                    value => value.Id == clip.Id);
+                                CustomShowClip skipped = new()
+                                {
+                                    StartMs = clip.StartMs, EndMs = maskEditor.FrameMs,
+                                    Included = false, Hotness = clip.Hotness,
+                                    ClipTypes = [.. clip.ClipTypes]
+                                };
+                                clip.StartMs = maskEditor.FrameMs;
+                                showClips = [.. showClips[..clipIndex], skipped, clip,
+                                    .. showClips[(clipIndex + 1)..]];
+                                UpdateClipButton();
+                            }
+                            string mask = Path.Combine(draftClip, "initial-mask.png");
+                            maskEditor.SaveMask(mask);
+                            initialMasks[clip.Id] = mask;
+                            initialMaskFrames[clip.Id] = maskEditor.FrameMs;
                         }
-                        string mask = Path.Combine(draftClip, "initial-mask.png");
-                        maskEditor.SaveMask(mask);
-                        initialMasks[clip.Id] = mask;
-                        initialMaskFrames[clip.Id] = maskEditor.FrameMs;
                         if (UsesSam2(selectedPreset))
                         {
+                            string mask = initialMasks[clip.Id];
                             string maskSequence = Path.Combine(draftClip, "sam2-masks");
                             string correctionState = Path.Combine(draftClip,
                                 "sam2-corrections.json");
@@ -551,6 +655,18 @@ internal sealed class CustomShowEditorForm : Form
                             sam2Masks[clip.Id] = maskSequence;
                         }
                     }
+                }
+                if (initialMasks.Count > 0 || sam2Masks.Count > 0)
+                {
+                    string saveText = save.Text;
+                    save.Text = "Compressing retained masks…";
+                    try
+                    {
+                        await Task.Run(() => SaveRetainedMasks(staging, source.Text,
+                            showClips, maskDraftFolders, initialMasks,
+                            initialMaskFrames, sam2Masks));
+                    }
+                    finally { save.Text = saveText; }
                 }
                 bool retry;
                 do
@@ -672,11 +788,22 @@ internal sealed class CustomShowEditorForm : Form
                         return;
                     }
                     CustomShowProcessResult media = processing.Result;
+                    await DeleteDirectoryWhenReleasedAsync(
+                        Path.Combine(staging, ".mask-work"));
+                    RemoveExpandedRetainedMasks(Path.Combine(staging, "masks"));
+                    bool retainExistingCover = reprocess &&
+                        string.IsNullOrWhiteSpace(cover.Text) &&
+                        !show.Media.AutoGeneratedCover;
+                    string? existingCover = retainExistingCover
+                        ? CustomShowStore.ResolveRelative(
+                            Path.Combine(store.ShowsFolder, show.Id), show.Media.Cover)
+                        : null;
                     show.Media = new()
                     {
                         Width = media.Width, Height = media.Height,
                         FrameRate = media.FrameRate, DurationMs = media.DurationMs,
-                        AutoGeneratedCover = string.IsNullOrWhiteSpace(cover.Text),
+                        AutoGeneratedCover = !retainExistingCover &&
+                            string.IsNullOrWhiteSpace(cover.Text),
                         CoverTitleColor = ColorHex(coverTitleColor.BackColor)
                     };
                     if (showClips.Length > 0)
@@ -720,6 +847,8 @@ internal sealed class CustomShowEditorForm : Form
                     };
                     if (!string.IsNullOrWhiteSpace(cover.Text))
                         SaveCover(cover.Text, Path.Combine(staging, show.Media.Cover));
+                    else if (existingCover != null)
+                        File.Copy(existingCover, Path.Combine(staging, show.Media.Cover), true);
                     else await CustomShowProcessor.GenerateCoverAsync(input,
                         Path.Combine(staging, show.Media.Cover), show.Media.DurationMs,
                         selectedProfile.ModelName, show.Title, coverTitleColor.BackColor,
@@ -735,7 +864,8 @@ internal sealed class CustomShowEditorForm : Form
                     }
                 } while (retry);
                 store.SavePerformer(selectedProfile);
-                store.Publish(staging, show);
+                if (reprocess) store.Replace(staging, show);
+                else store.Publish(staging, show);
                 if (maskDraft != null && Directory.Exists(maskDraft.Root))
                     try { await DeleteDirectoryWhenReleasedAsync(maskDraft.Root); }
                     catch (Exception cleanupError)
@@ -777,6 +907,196 @@ internal sealed class CustomShowEditorForm : Form
         }
         finally { save.Enabled = true; }
         await Task.CompletedTask;
+    }
+
+    bool ConfirmGpuBatch()
+    {
+        string algorithm = SelectedPreset();
+        if (algorithm is not ("videomama" or "vitmatte-s" or "vitmatte-b") ||
+            sequenceChunk.SelectedItem is not int requested) return true;
+        CustomShowProcessor.NvidiaMemory? memory =
+            CustomShowProcessor.NvidiaMemoryInfo();
+        if (memory == null) return true;
+        int suggested;
+        string name;
+        if (algorithm == "videomama")
+        {
+            suggested = Math.Max(CustomShowProcessor.VideoMaMaSafeBatch(memory),
+                configuration.VideoMaMaPreferredBatchSize);
+            name = "VideoMaMa";
+        }
+        else
+        {
+            using FfmpegCpuDecoder decoder = new(source.Text, fastDecode: true);
+            bool baseModel = algorithm == "vitmatte-b";
+            suggested = CustomShowProcessor.ViTMatteSafeBatch(memory, baseModel,
+                decoder.Width, decoder.Height);
+            name = baseModel ? "ViTMatte-B" : "ViTMatte-S";
+        }
+        if (requested <= suggested) return true;
+        DialogResult choice = MessageBox.Show(this,
+            $"{name} batch size {requested} is unlikely to fit safely in the " +
+            $"detected GPU memory ({memory.TotalMiB / 1024d:0.#} GB total, " +
+            $"{memory.FreeMiB / 1024d:0.#} GB currently free).\n\n" +
+            $"Use the suggested batch size of {suggested}?\n\n" +
+            "Choose OK to change the batch size, or Cancel to return without processing.",
+            $"{name} GPU Memory", MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Warning);
+        if (choice != DialogResult.OK) return false;
+        sequenceChunk.SelectedItem = suggested;
+        return true;
+    }
+
+    bool RetainedMasksAvailable() => reprocess && RetainedMasksMatch(showClips);
+
+    bool RetainedMasksMatch(IReadOnlyList<CustomShowClip> clips)
+    {
+        if (showId == null || string.IsNullOrWhiteSpace(source.Text) ||
+            !File.Exists(source.Text)) return false;
+        string root = Path.Combine(store.ShowsFolder, showId, "masks");
+        CustomRetainedMasksManifest? manifest = CustomShowMaskDraft.Load<
+            CustomRetainedMasksManifest>(Path.Combine(root, "retained-masks.json"));
+        if (manifest == null) return false;
+        FileInfo sourceInfo = new(source.Text);
+        if (manifest.SourceLength != sourceInfo.Length ||
+            manifest.SourceLastWriteUtcTicks != sourceInfo.LastWriteTimeUtc.Ticks)
+            return false;
+        Dictionary<string, CustomShowClip> current = clips.Where(clip => clip.Included)
+            .ToDictionary(clip => clip.Id, StringComparer.OrdinalIgnoreCase);
+        return manifest.Clips.Length > 0 && manifest.Clips.All(saved =>
+            current.TryGetValue(saved.ClipId, out CustomShowClip? clip) &&
+            clip.StartMs == saved.StartMs && clip.EndMs == saved.EndMs &&
+            (saved.HasInitialMask && File.Exists(Path.Combine(root, saved.ClipId,
+                "initial-mask.png")) || saved.HasTrackedMasks && (
+                File.Exists(Path.Combine(root, saved.ClipId,
+                    saved.TrackedMaskArchive ?? "tracked-masks.iqpmask")) ||
+                Directory.Exists(Path.Combine(root, saved.ClipId, "tracked-masks")) &&
+                Directory.EnumerateFiles(Path.Combine(root, saved.ClipId,
+                    "tracked-masks"), "*.png").Any())));
+    }
+
+    static void LoadRetainedMasks(string root, CustomShowManifest show,
+        string workRoot,
+        Dictionary<string, string> initialMasks,
+        Dictionary<string, long> initialMaskFrames,
+        Dictionary<string, string> trackedMasks)
+    {
+        CustomRetainedMasksManifest? manifest = CustomShowMaskDraft.Load<
+            CustomRetainedMasksManifest>(Path.Combine(root, "retained-masks.json"));
+        if (manifest == null) return;
+        Dictionary<string, CustomShowClip> clips = show.Clips.Where(clip => clip.Included)
+            .ToDictionary(clip => clip.Id, StringComparer.OrdinalIgnoreCase);
+        foreach (CustomRetainedMaskClip saved in manifest.Clips)
+        {
+            if (!clips.TryGetValue(saved.ClipId, out CustomShowClip? clip) ||
+                clip.StartMs != saved.StartMs || clip.EndMs != saved.EndMs) continue;
+            string folder = Path.Combine(root, saved.ClipId);
+            string initial = Path.Combine(folder, "initial-mask.png");
+            string tracked = Path.Combine(folder, "tracked-masks");
+            string archive = Path.Combine(folder,
+                saved.TrackedMaskArchive ?? "tracked-masks.iqpmask");
+            if (saved.HasInitialMask && File.Exists(initial))
+            {
+                initialMasks[clip.Id] = initial;
+                initialMaskFrames[clip.Id] = saved.InitialMaskFrameMs ?? clip.StartMs;
+            }
+            if (saved.HasTrackedMasks && File.Exists(archive))
+            {
+                tracked = Path.Combine(workRoot, saved.ClipId);
+                CustomMaskArchive.Extract(archive, tracked);
+            }
+            if (saved.HasTrackedMasks && Directory.Exists(tracked) &&
+                Directory.EnumerateFiles(tracked, "*.png").Any())
+            {
+                trackedMasks[clip.Id] = tracked;
+                if (!initialMasks.ContainsKey(clip.Id))
+                {
+                    string first = Directory.EnumerateFiles(tracked, "*.png")
+                        .OrderBy(path => Path.GetFileName(path),
+                            StringComparer.OrdinalIgnoreCase).First();
+                    initialMasks[clip.Id] = first;
+                    initialMaskFrames[clip.Id] = clip.StartMs;
+                }
+            }
+        }
+    }
+
+    static void SaveRetainedMasks(string staging, string sourcePath,
+        IReadOnlyList<CustomShowClip> clips,
+        IReadOnlyDictionary<string, string> draftFolders,
+        IReadOnlyDictionary<string, string> initialMasks,
+        IReadOnlyDictionary<string, long> initialMaskFrames,
+        IReadOnlyDictionary<string, string> trackedMasks)
+    {
+        string root = Path.Combine(staging, "masks");
+        Directory.CreateDirectory(root);
+        List<CustomRetainedMaskClip> saved = [];
+        foreach (CustomShowClip clip in clips.Where(clip => clip.Included))
+        {
+            string folder = Path.Combine(root, clip.Id);
+            Directory.CreateDirectory(folder);
+            bool hasInitial = initialMasks.TryGetValue(clip.Id, out string? initial) &&
+                File.Exists(initial);
+            bool hasTracked = trackedMasks.TryGetValue(clip.Id, out string? tracked) &&
+                Directory.Exists(tracked) && Directory.EnumerateFiles(tracked, "*.png").Any();
+            if (hasInitial)
+            {
+                string destination = Path.Combine(folder, "initial-mask.png");
+                if (!SamePath(initial!, destination)) File.Copy(initial!, destination, true);
+            }
+            if (hasTracked)
+            {
+                CustomMaskArchive.Create(tracked!, Path.Combine(folder,
+                    "tracked-masks.iqpmask"));
+            }
+            if (draftFolders.TryGetValue(clip.Id, out string? draft))
+                foreach ((string from, string to) in new[]
+                {
+                    (Path.Combine(draft, "initial-mask.json"),
+                        Path.Combine(folder, "initial-mask.json")),
+                    (Path.Combine(draft, "sam2-corrections.json"),
+                        Path.Combine(folder, "corrections.json")),
+                    (Path.Combine(draft, "rvm-review.json"),
+                        Path.Combine(folder, "corrections.json"))
+                })
+                    if (File.Exists(from)) File.Copy(from, to, true);
+            if (hasInitial || hasTracked)
+                saved.Add(new CustomRetainedMaskClip
+                {
+                    ClipId = clip.Id, StartMs = clip.StartMs, EndMs = clip.EndMs,
+                    InitialMaskFrameMs = initialMaskFrames.GetValueOrDefault(
+                        clip.Id, clip.StartMs),
+                    HasInitialMask = hasInitial, HasTrackedMasks = hasTracked,
+                    TrackedMaskArchive = hasTracked ? "tracked-masks.iqpmask" : null
+                });
+        }
+        FileInfo source = new(sourcePath);
+        CustomShowStore.WriteJsonAtomic(Path.Combine(root, "retained-masks.json"),
+            new CustomRetainedMasksManifest
+            {
+                SourceLength = source.Length,
+                SourceLastWriteUtcTicks = source.LastWriteTimeUtc.Ticks,
+                Clips = [.. saved]
+            });
+    }
+
+    static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (string file in Directory.EnumerateFiles(source))
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+        foreach (string folder in Directory.EnumerateDirectories(source))
+            CopyDirectory(folder, Path.Combine(destination, Path.GetFileName(folder)));
+    }
+
+    static void RemoveExpandedRetainedMasks(string root)
+    {
+        if (!Directory.Exists(root)) return;
+        foreach (string folder in Directory.EnumerateDirectories(root))
+        {
+            string expanded = Path.Combine(folder, "tracked-masks");
+            if (Directory.Exists(expanded)) Directory.Delete(expanded, true);
+        }
     }
 
     Dictionary<string, string> ReadProcessingRevisions(string selectedPreset,
@@ -1290,6 +1610,7 @@ internal sealed class CustomShowSettingsForm : Form
     readonly NumericUpDown vitMatteBaseCutoff = CutoffInput();
     readonly NumericUpDown vitMatteSmallBatch = BatchInput();
     readonly NumericUpDown vitMatteBaseBatch = BatchInput();
+    readonly NumericUpDown videoMaMaBatch = BatchInput();
     readonly Label validation = new() { AutoSize = true };
     readonly Label transNetStatus = StatusLabel();
     readonly Label rvmStatus = StatusLabel();
@@ -1324,7 +1645,8 @@ internal sealed class CustomShowSettingsForm : Form
             VitMatteSmallCompileCutoffFrames = current.VitMatteSmallCompileCutoffFrames,
             VitMatteBaseCompileCutoffFrames = current.VitMatteBaseCompileCutoffFrames,
             VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
-            VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize
+            VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize,
+            VideoMaMaPreferredBatchSize = current.VideoMaMaPreferredBatchSize
         };
         Text = "Custom Show Settings"; ClientSize = new Size(900, 700);
         MinimumSize = new Size(780, 620);
@@ -1400,8 +1722,8 @@ internal sealed class CustomShowSettingsForm : Form
         TabPage modelsTab = new("Matting && masks");
         TableLayoutPanel models = SettingsTable();
         modelsTab.Controls.Add(models); tabs.TabPages.Add(modelsTab);
-        AddExplanation(models, "MatAnyone2, SAM2, and ViTMatte",
-            "The benchmark on this tab tests only these three engines. At or above a displayed " +
+        AddExplanation(models, "MatAnyone2, SAM2, ViTMatte, and VideoMaMa",
+            "The model-cutoff benchmark tests MatAnyone2, SAM2, and ViTMatte. At or above a displayed " +
             "minimum, compilation is still used only when the status below says it is available.");
         GroupBox matAnyoneGroup = SettingsGroup("MatAnyone2", out TableLayoutPanel matAnyoneTable);
         AddStatus(matAnyoneTable, matAnyoneStatus);
@@ -1420,6 +1742,15 @@ internal sealed class CustomShowSettingsForm : Form
         AddBatch(vitMatteTable, "S preferred batch", vitMatteSmallBatch);
         AddBatch(vitMatteTable, "B preferred batch", vitMatteBaseBatch);
         AddWideControl(models, vitMatteGroup);
+        GroupBox videoMaMaGroup = SettingsGroup("VideoMaMa", out TableLayoutPanel videoMaMaTable);
+        AddBatch(videoMaMaTable, "Preferred batch", videoMaMaBatch);
+        Button benchmarkVideoMaMa = new() { Text = "Benchmark VideoMaMa batch...", AutoSize = true };
+        Label videoMaMaHelp = new() { AutoSize = true,
+            Text = "Tests the installed model at 1024x576 and saves the fastest safe batch for this GPU." };
+        FlowLayoutPanel videoMaMaActions = new() { AutoSize = true, WrapContents = true };
+        videoMaMaActions.Controls.AddRange([benchmarkVideoMaMa, videoMaMaHelp]);
+        AddWideControl(videoMaMaTable, videoMaMaActions);
+        AddWideControl(models, videoMaMaGroup);
         Button benchmark = new() { Text = "Benchmark MatAnyone2 + SAM2 + ViTMatte...",
             AutoSize = true };
         Label cutoffHelp = new() { AutoSize = true,
@@ -1456,11 +1787,13 @@ internal sealed class CustomShowSettingsForm : Form
         vitMatteBaseCutoff.Value = ClampCutoff(Configuration.VitMatteBaseCompileCutoffFrames);
         vitMatteSmallBatch.Value = ClampBatch(Configuration.VitMatteSmallPreferredBatchSize);
         vitMatteBaseBatch.Value = ClampBatch(Configuration.VitMatteBasePreferredBatchSize);
+        videoMaMaBatch.Value = ClampBatch(Configuration.VideoMaMaPreferredBatchSize);
         sam2CacheUsage.Text = "Calculating usage...";
         Shown += async (_, _) => { await UpdateCacheUsageAsync(); RefreshCompilationStatus(); };
         clearCache.Click += async (_, _) => await ClearSam2CacheAsync(clearCache);
         benchmarkTransNet.Click += (_, _) => BenchmarkTransNet();
         benchmarkRvm.Click += (_, _) => BenchmarkRvm();
+        benchmarkVideoMaMa.Click += (_, _) => BenchmarkVideoMaMa();
         benchmark.Click += (_, _) => BenchmarkCutoffs();
         validate.Click += async (_, _) => await ValidateSetup(validate);
         refresh.Click += (_, _) => RefreshCompilationStatus();
@@ -1730,6 +2063,7 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.VitMatteBaseCompileCutoffFrames = (int)vitMatteBaseCutoff.Value;
             Configuration.VitMatteSmallPreferredBatchSize = (int)vitMatteSmallBatch.Value;
             Configuration.VitMatteBasePreferredBatchSize = (int)vitMatteBaseBatch.Value;
+            Configuration.VideoMaMaPreferredBatchSize = (int)videoMaMaBatch.Value;
             Directory.CreateDirectory(Configuration.LibraryRoot);
             DialogResult = DialogResult.OK;
             Close();
@@ -1845,6 +2179,32 @@ internal sealed class CustomShowSettingsForm : Form
         rvmFastCutoff.Value = ClampCompileCutoff(form.Result.RvmFastCompileCutoffFrames);
         RefreshCompilationStatus();
         validation.Text = "RVM benchmark completed; review the values and click OK to save them.";
+    }
+
+    void BenchmarkVideoMaMa()
+    {
+        if (!File.Exists(python.Text))
+        {
+            MessageBox.Show(this, "Select the processing-environment Python executable first.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (MessageBox.Show(this,
+            "This benchmark loads VideoMaMa and tests increasing frame batches at its normal " +
+            "1024x576 model resolution. It uses the GPU heavily and stops before larger batches " +
+            "after an out-of-memory or unsafe-memory result. Close other GPU-heavy work first.\n\nRun it now?",
+            "Benchmark VideoMaMa batch", MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information) != DialogResult.Yes) return;
+        CustomShowConfiguration benchmarkConfiguration = new()
+        {
+            LibraryRoot = root.Text,
+            PythonExecutable = python.Text,
+            VideoMaMaPreferredBatchSize = (int)videoMaMaBatch.Value
+        };
+        using CustomShowVideoMaMaBenchmarkForm form = new(benchmarkConfiguration);
+        if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
+        videoMaMaBatch.Value = ClampBatch(form.Result.VideoMaMaPreferredBatchSize);
+        validation.Text = "VideoMaMa benchmark completed; review the preferred batch and click OK to save it.";
     }
 
     static int DecodeModeIndex(string? value) => value?.ToLowerInvariant() switch
@@ -2159,6 +2519,99 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
     static string FormatDuration(TimeSpan value) => value.TotalHours >= 1
         ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}"
         : $"{value.Minutes:00}:{value.Seconds:00}";
+
+    void Append(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
+        output.AppendText(text + Environment.NewLine);
+    }
+
+    void CloseBenchmark()
+    {
+        if (!complete)
+        {
+            try { process?.Kill(true); } catch { }
+            DialogResult = DialogResult.Cancel;
+        }
+        else if (Result != null) DialogResult = DialogResult.OK;
+        Close();
+    }
+}
+
+internal sealed class CustomShowVideoMaMaBenchmarkForm : Form
+{
+    readonly CustomShowConfiguration configuration;
+    readonly TextBox output = new()
+    {
+        Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Both, WordWrap = false
+    };
+    readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
+    Process? process;
+    bool complete;
+    internal CustomShowConfiguration? Result { get; private set; }
+
+    internal CustomShowVideoMaMaBenchmarkForm(CustomShowConfiguration configuration)
+    {
+        this.configuration = configuration;
+        Text = "Benchmark VideoMaMa Batch Size";
+        ClientSize = new Size(920, 560);
+        Controls.Add(output); Controls.Add(close);
+        close.Click += (_, _) => CloseBenchmark();
+        FormClosing += (_, _) => { if (!complete) try { process?.Kill(true); } catch { } };
+        Shown += async (_, _) => await RunAsync();
+        AppTheme.Apply(this);
+    }
+
+    async Task RunAsync()
+    {
+        string resultPath = Path.Combine(Path.GetTempPath(),
+            "iqp-videomama-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            Append("Loading VideoMaMa and measuring real inference batches. Settings are unchanged until you use the result.");
+            ProcessStartInfo start = new(configuration.PythonExecutable)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            foreach (string argument in new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "custom-shows", "benchmark_videomama.py"),
+                "--runtime", CustomShowProcessor.RuntimeRoot(configuration),
+                "--output", resultPath
+            }) start.ArgumentList.Add(argument);
+            process = Process.Start(start) ?? throw new InvalidOperationException(
+                "Python could not start the VideoMaMa benchmark.");
+            Task standardOutput = PumpAsync(process.StandardOutput);
+            Task standardError = PumpAsync(process.StandardError);
+            await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"VideoMaMa benchmark failed with exit code {process.ExitCode}.");
+            Result = JsonSerializer.Deserialize<CustomShowConfiguration>(
+                await File.ReadAllTextAsync(resultPath), CustomShowStore.JsonOptions) ??
+                throw new InvalidDataException("The benchmark did not return a VideoMaMa batch size.");
+            Append($"Recommended VideoMaMa batch: {Result.VideoMaMaPreferredBatchSize} frames.");
+        }
+        catch (Exception error)
+        {
+            if (!IsDisposed) Append("Benchmark failed: " + error.Message);
+        }
+        finally
+        {
+            complete = true;
+            if (!IsDisposed) close.Text = Result == null ? "Close" : "Use result";
+            try { File.Delete(resultPath); } catch { }
+        }
+    }
+
+    async Task PumpAsync(StreamReader reader)
+    {
+        while (await reader.ReadLineAsync() is string line) Append(line);
+    }
 
     void Append(string text)
     {

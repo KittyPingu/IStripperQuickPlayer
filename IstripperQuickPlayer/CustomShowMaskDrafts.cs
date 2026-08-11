@@ -89,8 +89,21 @@ internal sealed class CustomShowMaskDraft
                 Labels = [1, 0]
             });
             CustomInitialMaskDraft? loaded = Load<CustomInitialMaskDraft>(path);
+            string retainedPath = Path.Combine(folder, "retained-masks.json");
+            CustomShowStore.WriteJsonAtomic(retainedPath,
+                new CustomRetainedMasksManifest
+                {
+                    SourceLength = 9876, SourceLastWriteUtcTicks = 123,
+                    Clips = [new() { ClipId = Guid.NewGuid().ToString("N"),
+                        StartMs = 100, EndMs = 200, InitialMaskFrameMs = 125,
+                        HasInitialMask = true, HasTrackedMasks = true }]
+                });
+            CustomRetainedMasksManifest? retained =
+                Load<CustomRetainedMasksManifest>(retainedPath);
             return loaded?.FrameMs == 1234 && loaded.Automatic &&
-                loaded.Points.Length == 2 && loaded.Labels.SequenceEqual([1, 0]);
+                loaded.Points.Length == 2 && loaded.Labels.SequenceEqual([1, 0]) &&
+                retained?.SourceLength == 9876 && retained.Clips.Length == 1 &&
+                retained.Clips[0].HasTrackedMasks;
         }
         finally { try { Directory.Delete(folder, true); } catch { } }
     }
@@ -148,4 +161,23 @@ internal sealed class CustomVideoMaskRange
     public int AnchorFrame { get; set; }
     public int Start { get; set; }
     public int End { get; set; }
+}
+
+internal sealed class CustomRetainedMasksManifest
+{
+    public int SchemaVersion { get; set; } = 1;
+    public long SourceLength { get; set; }
+    public long SourceLastWriteUtcTicks { get; set; }
+    public CustomRetainedMaskClip[] Clips { get; set; } = [];
+}
+
+internal sealed class CustomRetainedMaskClip
+{
+    public string ClipId { get; set; } = "";
+    public long StartMs { get; set; }
+    public long EndMs { get; set; }
+    public long? InitialMaskFrameMs { get; set; }
+    public bool HasInitialMask { get; set; }
+    public bool HasTrackedMasks { get; set; }
+    public string? TrackedMaskArchive { get; set; }
 }

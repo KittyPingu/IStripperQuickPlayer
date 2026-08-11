@@ -269,6 +269,35 @@ def model_size(width, height):
     return max(8, round(width * scale / 8) * 8), max(8, round(height * scale / 8) * 8)
 
 
+def gpu_policy_key(torch):
+    properties = torch.cuda.get_device_properties(0)
+    return f"{properties.name}|{properties.total_memory}"
+
+
+def calibrated_batch_size(runtime, torch):
+    try:
+        policy = json.loads((runtime / "videomama-performance-policy-v1.json").read_text())
+        value = policy.get("entries", {}).get(gpu_policy_key(torch), {}) \
+            .get("safeBatchSize")
+        return max(1, min(int(value), 12))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def safe_batch_size(runtime, torch, requested):
+    """Keep enough headroom for Windows composition and both NVENC sessions."""
+    calibrated = calibrated_batch_size(runtime, torch)
+    maximum = calibrated if calibrated is not None else safe_batch_for_memory(
+        torch.cuda.get_device_properties(0).total_memory, requested)
+    return max(1, min(requested, maximum))
+
+
+def safe_batch_for_memory(total, requested):
+    gib = total / 1024 ** 3
+    maximum = 1 if gib < 20 else 2 if gib < 32 else 4
+    return max(1, min(requested, maximum))
+
+
 def write_preview(output, source, alpha):
     import numpy as np
     from PIL import Image
@@ -442,7 +471,11 @@ def process(args):
         emit("startup", 35, "Loading VideoMaMa diffusion model...")
         pipeline = load_videomama(runtime, torch)
         pipeline.unet.enable_forward_chunking(chunk_size=1, dim=1)
-        batch_size = max(1, min(args.batch_size, 12))
+        requested_batch = max(1, min(args.batch_size, 12))
+        batch_size = safe_batch_size(runtime, torch, requested_batch)
+        if batch_size < requested_batch:
+            emit("startup", 35, f"VideoMaMa batch reduced from {requested_batch} to "
+                 f"{batch_size} to preserve GPU memory headroom")
         emit("startup", 35, f"VideoMaMa model loaded; first {batch_size}-frame batch is running...")
         video_codec, alpha_codec, encoder_name = output_codecs(
             ffmpeg, width, height, preset=args.encoder_preset)
@@ -510,7 +543,9 @@ def process(args):
         except BaseException:
             decode.kill(); encode.kill(); raise
         (output / "result.json").write_text(json.dumps({"width": width, "height": height,
-            "frameRate": frame_rate, "durationMs": round(count * 1000 / fps)}, indent=2))
+            "frameRate": frame_rate, "durationMs": round(count * 1000 / fps),
+            "requestedSequenceChunk": requested_batch,
+            "effectiveSequenceChunk": batch_size}, indent=2))
         emit("complete", 100, "VideoMaMa foreground and alpha are ready for preview")
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -532,6 +567,9 @@ def main():
     if args.self_test:
         assert model_size(1920, 1080) == (1024, 576)
         assert model_size(1080, 1920) == (576, 1024)
+        assert safe_batch_for_memory(16 * 1024 ** 3, 12) == 1
+        assert safe_batch_for_memory(24 * 1024 ** 3, 12) == 2
+        assert safe_batch_for_memory(48 * 1024 ** 3, 12) == 4
         assert sam2_vos_uses_cudagraphs("max-autotune")
         assert not sam2_vos_uses_cudagraphs("max-autotune-no-cudagraphs")
         print("VideoMaMa worker self-test passed")

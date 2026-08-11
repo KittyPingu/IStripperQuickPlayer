@@ -33,6 +33,7 @@ internal sealed record CustomShowProcessJob(string Output, long StartMs, long En
 
 internal static class CustomShowProcessor
 {
+    internal sealed record NvidiaMemory(int TotalMiB, int FreeMiB);
     internal const string OmniShotCutRevision =
         "23ad6fb41b296fb9258b0e7825125a914573b906";
     internal const string StabiloRevision =
@@ -56,6 +57,47 @@ internal static class CustomShowProcessor
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "IStripperQuickPlayer", "sam2-frame-cache");
 
+    internal static NvidiaMemory? NvidiaMemoryInfo()
+    {
+        try
+        {
+            ProcessStartInfo start = new("nvidia-smi")
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            start.ArgumentList.Add("--query-gpu=memory.total,memory.free");
+            start.ArgumentList.Add("--format=csv,noheader,nounits");
+            using Process process = Process.Start(start)!;
+            string? line = process.StandardOutput.ReadLine();
+            if (!process.WaitForExit(3000)) { process.Kill(true); return null; }
+            string[] values = line?.Split(',', StringSplitOptions.TrimEntries) ?? [];
+            return process.ExitCode == 0 && values.Length >= 2 &&
+                int.TryParse(values[0], out int total) &&
+                int.TryParse(values[1], out int free) && total > 0 && free > 0
+                ? new(total, free) : null;
+        }
+        catch { return null; }
+    }
+
+    internal static int VideoMaMaSafeBatch(NvidiaMemory memory)
+    {
+        int usable = Math.Min(memory.TotalMiB, memory.FreeMiB);
+        return usable < 20 * 1024 ? 1 : usable < 32 * 1024 ? 2 : 4;
+    }
+
+    internal static int ViTMatteSafeBatch(NvidiaMemory memory, bool baseModel,
+        int width, int height)
+    {
+        int usable = Math.Min(memory.TotalMiB, memory.FreeMiB);
+        int maximum = baseModel
+            ? usable < 24 * 1024 ? 1 : usable < 40 * 1024 ? 2 : 4
+            : usable < 20 * 1024 ? 2 : usable < 32 * 1024 ? 4 : 8;
+        if ((long)width * height > 1920L * 1080)
+            maximum = Math.Max(1, maximum / 2);
+        return maximum;
+    }
+
     internal static bool VerifyResultContract()
     {
         const string json = """
@@ -78,7 +120,13 @@ internal static class CustomShowProcessor
         CustomShowProcessResult? result = JsonSerializer.Deserialize<CustomShowProcessResult>(
             json, CustomShowStore.JsonOptions);
         return result?.ForegroundMode == "source" && result.Clips?.Length == 1 &&
-            result.AdditionalProperties?.ContainsKey("futureWorkerMetadata") == true;
+            result.AdditionalProperties?.ContainsKey("futureWorkerMetadata") == true &&
+            VideoMaMaSafeBatch(new(16 * 1024, 15 * 1024)) == 1 &&
+            VideoMaMaSafeBatch(new(48 * 1024, 40 * 1024)) == 4 &&
+            ViTMatteSafeBatch(new(16 * 1024, 15 * 1024), true,
+                1920, 1080) == 1 &&
+            ViTMatteSafeBatch(new(24 * 1024, 23 * 1024), true,
+                3840, 2160) == 1;
     }
 
     internal static IReadOnlyList<string> InstalledSam2Models(

@@ -510,7 +510,8 @@ def load_resume_state(path, masks, total, fps, width, height):
         if not isinstance(anchors, list): return None
         for anchor in anchors:
             frame = int(anchor.get("frame", -1))
-            if frame < 0 or frame >= total or anchor.get("mode") not in ("prompt", "auto"):
+            if frame < 0 or frame >= total or anchor.get("mode") not in (
+                    "prompt", "auto", "paint"):
                 return None
             points, labels = anchor.get("points", []), anchor.get("labels", [])
             if not isinstance(points, list) or not isinstance(labels, list) or \
@@ -842,14 +843,17 @@ class CommandInbox:
         finally:
             self.pending.put(self._eof)
 
-    def poll_pause(self, allow_pause):
+    def poll_control(self, allow_pause, allow_stop_backward=False):
         while True:
             try: request = self.pending.get_nowait()
-            except queue.Empty: return False
+            except queue.Empty: return None
             if request is self._eof or request.get("command") == "quit":
                 raise StopRequested()
             if request.get("command") == "pause":
-                if allow_pause: return True
+                if allow_pause: return "pause"
+                continue
+            if request.get("command") == "stop-backward":
+                if allow_stop_backward: return "stop-backward"
                 continue
             self.deferred.append(request)
 
@@ -860,7 +864,8 @@ class CommandInbox:
 
 def propagate(predictor, state, writer, folder, start, total, reverse,
               progress_start, progress_size, message, profiler, max_frames=None,
-              mark_step=None, skip_start=False, commands=None, allow_pause=False):
+              mark_step=None, skip_start=False, commands=None, allow_pause=False,
+              allow_stop_backward=False):
     maximum = (start + 1 if reverse else total - start) if max_frames is None \
         else max_frames + 1
     written, seen, last_frame = 0, 0, start
@@ -890,8 +895,9 @@ def propagate(predictor, state, writer, folder, start, total, reverse,
         throttle.emit(percent, f"{message} {seen}/{maximum} frames", frame,
                       range_start, range_end, reverse, writer.completed_frame,
                       force=seen == 1 or seen == maximum)
-        if commands is not None and commands.poll_pause(
-                allow_pause and frame != range_end):
+        if commands is not None and commands.poll_control(
+                allow_pause and frame != range_end,
+                allow_stop_backward and reverse and frame != range_end):
             return written, last_frame, True
     return written, last_frame, False
 
@@ -1110,7 +1116,7 @@ def process(args):
                         terminal["availableEnd"] = available_end
                         send(**ready, **terminal)
                     continue
-                if command not in ("prompt", "auto", "reset", "update",
+                if command not in ("prompt", "auto", "mask", "reset", "update",
                                    "remove-preview", "remove"):
                     send(status="error", message="Unknown SAM2 editor command"); continue
                 frame = int(request["frame"])
@@ -1136,11 +1142,24 @@ def process(args):
                             state, original["pred_masks"].to(device, non_blocking=True))
                         writer.submit(state["obj_ids"], logits, frame, masks); writer.flush()
                         send(status="preview", frame=frame, automatic=False); continue
-                    points = np.asarray(request.get("points", []), np.float32)
-                    labels = np.asarray(request.get("labels", []), np.int32)
-                    if len(points) != len(labels) or command == "prompt" and len(points) == 0:
-                        send(status="error", message="Add at least one correction click"); continue
                     remember_prompt_preview(state, preview_baselines, frame)
+                    if command == "mask":
+                        painted_path = Path(str(request.get("mask", ""))).resolve()
+                        if not painted_path.is_file():
+                            send(status="error", message="The painted mask is missing"); continue
+                        with Image.open(painted_path) as painted_image:
+                            if painted_image.size != (review_width, review_height):
+                                send(status="error", message="The painted mask size is invalid"); continue
+                            painted = np.asarray(painted_image.convert("L")) >= 128
+                        prompted = time.perf_counter()
+                        _, object_ids, logits = predictor.add_new_mask(
+                            state, frame_idx=frame, obj_id=1, mask=painted)
+                        candidate_count = None
+                    else:
+                        points = np.asarray(request.get("points", []), np.float32)
+                        labels = np.asarray(request.get("labels", []), np.int32)
+                        if len(points) != len(labels) or command == "prompt" and len(points) == 0:
+                            send(status="error", message="Add at least one correction click"); continue
                     if command == "auto":
                         if auto_cache.get("frame") == frame:
                             candidates = auto_cache["candidates"]
@@ -1164,7 +1183,7 @@ def process(args):
                         prompted = time.perf_counter()
                         _, object_ids, logits = predictor.add_new_mask(
                             state, frame_idx=frame, obj_id=1, mask=automatic)
-                    else:
+                    elif command == "prompt":
                         prompted = time.perf_counter()
                         _, object_ids, logits = predictor.add_new_points_or_box(
                             state, frame_idx=frame, obj_id=1, points=points, labels=labels,
@@ -1173,7 +1192,7 @@ def process(args):
                     profiler.add("correction_prompt", time.perf_counter() - prompted)
                     writer.submit(object_ids, logits, frame, masks); writer.flush()
                     send(status="preview", frame=frame, candidates=candidate_count,
-                         automatic=command == "auto"); continue
+                         automatic=command == "auto", painted=command == "mask"); continue
                 removing = command == "remove"
                 if removing:
                     preview_baselines.pop(frame, None)
@@ -1186,17 +1205,22 @@ def process(args):
                         correction_frames.add(initial_frame)
                 clear_stale_memory(predictor, state, frame)
                 previous, following = correction_limits(frame, correction_frames, total)
+                completed_start = previous
                 use_compiled_interactive_forwards(prompt_forwards, True)
                 try:
                     if frame > previous:
                         send(status="generation", phase="backward",
-                             rangeStart=previous, rangeEnd=frame, **metadata)
-                        written, _, _ = propagate(predictor, state, writer, masks,
+                             rangeStart=previous, rangeEnd=frame,
+                             canStopBackward=True, **metadata)
+                        written, backward_last, backward_stopped = propagate(
+                            predictor, state, writer, masks,
                             frame, total, True, 0, 50, "Updated backward", profiler,
                             frame - previous, mark_step, commands=commands,
-                            allow_pause=False)
+                            allow_pause=False, allow_stop_backward=True)
                         propagated_frames += written
                         writer.flush()
+                        if backward_stopped:
+                            completed_start = backward_last
                     send(status="generation", phase="forward", rangeStart=frame,
                          rangeEnd=following, **metadata)
                     written, last_frame, paused = propagate(predictor, state, writer,
@@ -1213,10 +1237,10 @@ def process(args):
                 preview_baselines.pop(frame, None)
                 available_end = last_frame
                 terminal = dict(anchorFrame=frame, removing=removing,
-                    completedStart=previous, completedEnd=available_end,
+                    completedStart=completed_start, completedEnd=available_end,
                     availableEnd=available_end)
                 if paused:
-                    continuation = dict(target=following, range_start=previous,
+                    continuation = dict(target=following, range_start=completed_start,
                                         anchor=frame, removing=removing)
                     send(status="paused", **terminal, **metadata)
                 else:
@@ -1255,6 +1279,14 @@ def self_test():
     assert propagation_range(75, 150, True, 25) == (50, 75)
     assert propagation_range(75, 150, False, 25) == (75, 100)
     assert set(SAM2_MODELS) == {"base-plus", "small", "tiny"}
+    inbox = CommandInbox.__new__(CommandInbox)
+    inbox.pending, inbox.deferred = queue.Queue(), []
+    inbox.pending.put({"command": "stop-backward"})
+    assert inbox.poll_control(False, True) == "stop-backward"
+    inbox.pending.put({"command": "stop-backward"})
+    assert inbox.poll_control(True, False) is None
+    inbox.pending.put({"command": "pause"})
+    assert inbox.poll_control(True) == "pause"
     try:
         import torch
         from PIL import Image
@@ -1274,6 +1306,12 @@ def self_test():
                         saved.histogram()) if count}
                     assert values <= {0, 255}
             assert not list(folder.glob("*.tmp-*"))
+            state_path = folder / "paint-state.json"
+            state_path.write_text(json.dumps(dict(schemaVersion=1, frameCount=6,
+                fps=25, reviewWidth=2, reviewHeight=2,
+                anchors=[dict(frame=2, mode="paint", points=[], labels=[])])),
+                encoding="utf-8")
+            assert load_resume_state(state_path, folder, 6, 25, 2, 2) is not None
             resume_folder = folder / "resume-masks"; resume_folder.mkdir()
             for frame in range(12):
                 Image.new("L", (2, 2), 255 if frame % 2 else 0).save(

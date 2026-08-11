@@ -45,6 +45,14 @@ current path. A referenced source must not be moved or renamed if you later want
 to regenerate its automatic cover. The generated cover includes the model and
 show names, and its title colour can be changed when editing metadata.
 
+To process an existing card again, right-click it and choose **Reprocess Custom
+Show...**. Existing clip divisions are kept by default, and retained masks can
+also be reused when switching between MatAnyone 2, VideoMaMa, ViTMatte S, and
+ViTMatte B. Older shows must recreate their masks on the first reprocessing pass
+because earlier QuickPlayer versions discarded completed mask drafts.
+Tracked masks are stored losslessly as one-bit, XOR-delta, Zstandard-compressed
+chunks and are expanded only temporarily during reprocessing.
+
 ## 3. Split the source into clips
 
 Choose **Split into clips...** before processing. The editor works on the
@@ -104,7 +112,10 @@ Mask-guided methods ask you to identify the foreground:
 
 - left-click a person or missing foreground;
 - right-click background or unwanted foreground;
-- use **Undo click** to work backwards through the click history;
+- enable **Paint mask**, then left-drag to add foreground or right-drag to erase it;
+- adjust the brush-size slider or mouse wheel for broad areas or edge detail;
+- use **Undo click** or **Undo stroke** to work backwards;
+- use **Ctrl+P** to toggle paint mode and **Ctrl+Z** to undo;
 - use automatic masking when it provides a useful starting point.
 
 MatAnyone2 lets you play or scrub to a clear frame before creating its initial
@@ -112,8 +123,10 @@ mask. A mask made in the middle of a clip is propagated both forward and
 backward.
 
 ViTMatte and VideoMaMa use SAM2 masks across the clip. During mask review, scrub
-to a frame where tracking has drifted, add correction clicks, inspect the still
-preview, then choose **Update masks**. Timeline markers return to corrected
+to a frame where tracking has drifted, add correction clicks or paint the mask,
+inspect the still preview, then choose **Update masks**. During the backward update,
+choose **Stop backward propagation** when the correction has gone far enough; the
+completed masks are kept and the forward update starts. Timeline markers return to corrected
 frames and restore their clicks:
 
 - blue: originally generated masks;

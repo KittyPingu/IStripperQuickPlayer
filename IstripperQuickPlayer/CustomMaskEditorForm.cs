@@ -8,6 +8,9 @@ namespace IStripperQuickPlayer;
 
 internal sealed class CustomMaskEditorForm : Form
 {
+    sealed record PaintUndoState(string MaskPath, bool HadMask,
+        PointF[] Points, int[] Labels, bool Automatic);
+
     readonly string videoPath;
     readonly CustomShowConfiguration configuration;
     readonly long startMs;
@@ -21,7 +24,8 @@ internal sealed class CustomMaskEditorForm : Form
         "iqp-mask-" + Guid.NewGuid().ToString("N"));
     readonly PictureBox image = new() { Dock = DockStyle.Fill,
         SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black,
-        Enabled = false, AccessibleName = "Initial foreground mask image" };
+        Enabled = false, TabStop = true,
+        AccessibleName = "Initial foreground mask image" };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill,
         Height = 60, AllowDividerDragging = false,
         AccessibleName = "Initial mask frame timeline" };
@@ -32,13 +36,21 @@ internal sealed class CustomMaskEditorForm : Form
     readonly CheckBox slowMotion = new() { Text = "Slow motion (0.25×)", AutoSize = true,
         Padding = new Padding(8, 6, 0, 0) };
     readonly Label status = new() { AutoSize = true, Padding = new Padding(8) };
-    readonly Button clear = new() { Text = "Clear clicks", AutoSize = true, Enabled = false };
-    readonly Button undo = new() { Text = "Undo click", AutoSize = true, Enabled = false };
+    readonly Button clear = new() { Text = "Clear mask", AutoSize = true, Enabled = false };
+    readonly CheckBox paintMode = new() { Text = "Paint mask", AutoSize = true,
+        Enabled = false, Padding = new Padding(8, 6, 0, 0) };
+    readonly TrackBar brushSize = new() { Minimum = 2, Maximum = 200, Value = 40,
+        TickStyle = TickStyle.None, Width = 150, Enabled = false,
+        AccessibleName = "Initial mask paint brush size" };
+    readonly Label brushSizeLabel = new() { Text = "40 px", AutoSize = true,
+        Padding = new Padding(0, 7, 8, 0) };
+    readonly Button undo = new() { Text = "Undo", AutoSize = true, Enabled = false };
     readonly Button automatic = new() { Text = "Auto mask frame", AutoSize = true,
         Enabled = false };
     readonly Button accept = new() { Text = "Use this mask", AutoSize = true, Enabled = false };
     readonly List<PointF> points = [];
     readonly List<int> labels = [];
+    readonly Stack<PaintUndoState> paintUndo = [];
     readonly SemaphoreSlim responseLock = new(1, 1);
     readonly System.Windows.Forms.Timer playback = new() { Interval = 100 };
     readonly System.Windows.Forms.Timer previewDelay = new() { Interval = 140 };
@@ -56,6 +68,14 @@ internal sealed class CustomMaskEditorForm : Form
     bool resumeAfterScrub;
     bool closing;
     bool currentAutomatic;
+    Bitmap? paintingMask;
+    Bitmap? paintingSource;
+    PointF lastPaintPoint;
+    MouseButtons paintButton;
+    bool painting;
+    int paintRevision;
+    Point? brushCursorLocation;
+    long lastPaintPreviewTick;
 
     internal long FrameMs => Math.Min(Math.Max(startMs, endMs - 1),
         startMs + timeline.PositionMs);
@@ -89,12 +109,13 @@ internal sealed class CustomMaskEditorForm : Form
         ClientSize = new Size(1050, allowFrameSelection ? 880 : 780);
         MinimumSize = new Size(720, allowFrameSelection ? 650 : 560);
         StartPosition = FormStartPosition.CenterParent;
+        KeyPreview = true;
 
         Label instructions = new() { Dock = DockStyle.Fill, Height = 44,
             TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10, 0, 0, 0),
             Text = allowFrameSelection
-                ? "Choose any frame, then left-click each person to include. Right-click unwanted areas to exclude."
-                : "Left-click each person to include. Right-click background or unwanted areas to exclude." };
+                ? "Choose any frame, then click to prompt SAM2 or enable Paint mask for exact brush edits."
+                : "Click to prompt SAM2, or enable Paint mask and drag to edit the foreground directly." };
         TableLayoutPanel root = new() { Dock = DockStyle.Fill, RowCount = 5,
             ColumnCount = 1 };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
@@ -111,10 +132,12 @@ internal sealed class CustomMaskEditorForm : Form
         precision.Controls.AddRange([previousFrame, play, position, nextFrame, slowMotion]);
         root.Controls.Add(precision, 0, 3);
         FlowLayoutPanel actions = new() { Dock = DockStyle.Fill, AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(6) };
+            FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(6),
+            WrapContents = true };
         Button cancel = new() { Text = "Cancel", AutoSize = true,
             DialogResult = DialogResult.Cancel };
-        actions.Controls.AddRange([clear, undo, automatic, accept, cancel, status]);
+        actions.Controls.AddRange([paintMode, brushSize, brushSizeLabel, clear,
+            undo, automatic, accept, cancel, status]);
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         CancelButton = cancel;
@@ -153,9 +176,52 @@ internal sealed class CustomMaskEditorForm : Form
             await LoadSelectedFrameAsync(FrameMs);
         };
         image.MouseClick += Image_MouseClick;
+        image.MouseDown += Image_MouseDown;
+        image.MouseMove += Image_MouseMove;
+        image.MouseUp += Image_MouseUp;
+        image.MouseEnter += (_, _) =>
+        {
+            if (paintMode.Checked) image.Focus();
+        };
+        image.MouseWheel += (_, e) => ResizeBrush(e.Delta);
+        image.MouseLeave += (_, _) =>
+        {
+            brushCursorLocation = null;
+            image.Invalidate();
+        };
+        image.Paint += Image_PaintBrushCursor;
+        paintMode.CheckedChanged += (_, _) =>
+        {
+            brushSize.Enabled = paintMode.Checked && image.Enabled;
+            image.Cursor = Cursors.Default;
+            image.Invalidate();
+        };
+        brushSize.ValueChanged += (_, _) =>
+        {
+            brushSizeLabel.Text = $"{brushSize.Value} px";
+            image.Invalidate();
+        };
+        KeyDown += async (_, e) =>
+        {
+            if (!e.Control || e.Alt || e.Shift) return;
+            if (e.KeyCode == Keys.Z)
+            {
+                e.Handled = e.SuppressKeyPress = true;
+                if (undo.Enabled) await UndoClickAsync();
+            }
+            else if (e.KeyCode == Keys.P)
+            {
+                e.Handled = e.SuppressKeyPress = true;
+                if (paintMode.Enabled) paintMode.Checked = !paintMode.Checked;
+            }
+        };
         clear.Click += (_, _) => ClearClicks();
         undo.Click += async (_, _) => await UndoClickAsync();
-        automatic.Click += async (_, _) => await UpdateMaskAsync(true);
+        automatic.Click += async (_, _) =>
+        {
+            ClearPaintUndo();
+            await UpdateMaskAsync(true);
+        };
         accept.Click += (_, _) =>
         {
             SaveDraftState();
@@ -502,14 +568,205 @@ internal sealed class CustomMaskEditorForm : Form
 
     async void Image_MouseClick(object? sender, MouseEventArgs e)
     {
+        if (paintMode.Checked) return;
         if (e.Button is not (MouseButtons.Left or MouseButtons.Right) ||
             worker == null || worker.HasExited || image.Image == null ||
             !image.Enabled || updatingMask || displayedFrameMs != FrameMs) return;
         PointF? point = ImagePoint(e.Location);
         if (point == null) return;
+        ClearPaintUndo();
         points.Add(point.Value);
         labels.Add(e.Button == MouseButtons.Right ? 0 : 1);
         await UpdateMaskAsync(currentAutomatic);
+    }
+
+    void Image_MouseDown(object? sender, MouseEventArgs e)
+    {
+        if (!paintMode.Checked || updatingMask || !frameReady || image.Image == null ||
+            e.Button is not (MouseButtons.Left or MouseButtons.Right)) return;
+        PointF? point = ImagePoint(e.Location);
+        if (point == null || !File.Exists(FramePath)) return;
+        try
+        {
+            bool hadMask = File.Exists(MaskPath);
+            string undoPath = Path.Combine(temporary,
+                $"initial-paint-undo-{++paintRevision}.png");
+            if (hadMask) File.Copy(MaskPath, undoPath, true);
+            paintUndo.Push(new PaintUndoState(undoPath, hadMask,
+                [.. points], [.. labels], currentAutomatic));
+            paintingMask?.Dispose();
+            paintingSource?.Dispose();
+            using (Image loadedFrame = LoadImage(FramePath))
+                paintingSource = new Bitmap(loadedFrame);
+            if (hadMask)
+            {
+                using Image loadedMask = LoadImage(MaskPath);
+                paintingMask = new Bitmap(loadedMask);
+            }
+            else
+            {
+                using Image source = LoadImage(FramePath);
+                paintingMask = new Bitmap(source.Width, source.Height,
+                    PixelFormat.Format24bppRgb);
+                using Graphics blank = Graphics.FromImage(paintingMask);
+                blank.Clear(Color.Black);
+            }
+            points.Clear(); labels.Clear(); currentAutomatic = false;
+            painting = true;
+            paintButton = e.Button;
+            lastPaintPoint = point.Value;
+            image.Capture = true;
+            ApplyBrush(point.Value, point.Value);
+            RenderPaintPreview(paintingMask, save: false, force: true);
+            UpdateEnabledState();
+        }
+        catch (Exception error)
+        {
+            paintingMask?.Dispose(); paintingMask = null;
+            paintingSource?.Dispose(); paintingSource = null;
+            painting = false; image.Capture = false;
+            MessageBox.Show(this, error.Message, Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    void Image_MouseMove(object? sender, MouseEventArgs e)
+    {
+        if (paintMode.Checked)
+        {
+            Rectangle oldBounds = BrushCursorBounds(brushCursorLocation);
+            brushCursorLocation = e.Location;
+            image.Invalidate(Rectangle.Union(oldBounds,
+                BrushCursorBounds(brushCursorLocation)));
+        }
+        if (!painting || paintingMask == null) return;
+        PointF? point = ImagePoint(e.Location);
+        if (point == null) return;
+        ApplyBrush(lastPaintPoint, point.Value);
+        lastPaintPoint = point.Value;
+        RenderPaintPreview(paintingMask, save: false, force: false);
+    }
+
+    void Image_PaintBrushCursor(object? sender, PaintEventArgs e)
+    {
+        if (!paintMode.Checked || brushCursorLocation is not Point location ||
+            image.Image == null || ImagePoint(location) == null) return;
+        float scale = Math.Min(image.ClientSize.Width / (float)image.Image.Width,
+            image.ClientSize.Height / (float)image.Image.Height);
+        float diameter = Math.Max(2, brushSize.Value * scale);
+        RectangleF circle = new(location.X - diameter / 2,
+            location.Y - diameter / 2, diameter, diameter);
+        using Pen shadow = new(Color.Black, 3);
+        using Pen outline = new(painting && paintButton == MouseButtons.Right
+            ? Color.Red : Color.Lime, 1.5f);
+        e.Graphics.DrawEllipse(shadow, circle);
+        e.Graphics.DrawEllipse(outline, circle);
+    }
+
+    Rectangle BrushCursorBounds(Point? location)
+    {
+        if (location is not Point point || image.Image == null) return Rectangle.Empty;
+        float scale = Math.Min(image.ClientSize.Width / (float)image.Image.Width,
+            image.ClientSize.Height / (float)image.Image.Height);
+        int diameter = Math.Max(2, (int)Math.Ceiling(brushSize.Value * scale));
+        int radius = diameter / 2 + 4;
+        return new Rectangle(point.X - radius, point.Y - radius,
+            radius * 2 + 1, radius * 2 + 1);
+    }
+
+    void ResizeBrush(int wheelDelta)
+    {
+        if (!paintMode.Checked || !paintMode.Enabled || wheelDelta == 0) return;
+        int notches = Math.Max(1, Math.Abs(wheelDelta) / 120);
+        brushSize.Value = Math.Clamp(brushSize.Value +
+            Math.Sign(wheelDelta) * notches * 2, brushSize.Minimum, brushSize.Maximum);
+    }
+
+    void Image_MouseUp(object? sender, MouseEventArgs e)
+    {
+        if (!painting || paintingMask == null) return;
+        painting = false; image.Capture = false;
+        try
+        {
+            paintingMask.Save(MaskPath, ImageFormat.Png);
+            RenderPaintPreview(paintingMask, save: true, force: true);
+            status.Text = "Painted initial mask ready. Add another stroke or use this mask.";
+            SaveDraftState();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            paintingMask.Dispose(); paintingMask = null;
+            paintingSource?.Dispose(); paintingSource = null;
+            UpdateEnabledState();
+        }
+    }
+
+    void ApplyBrush(PointF from, PointF to)
+        => DrawBrush(paintingMask!, from, to, brushSize.Value,
+            paintButton != MouseButtons.Right);
+
+    static void DrawBrush(Bitmap mask, PointF from, PointF to, int size, bool add)
+    {
+        using Graphics graphics = Graphics.FromImage(mask);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
+        graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+        using Pen pen = new(add ? Color.White : Color.Black, size)
+        {
+            StartCap = System.Drawing.Drawing2D.LineCap.Round,
+            EndCap = System.Drawing.Drawing2D.LineCap.Round
+        };
+        graphics.DrawLine(pen, from, to);
+        float radius = size / 2f;
+        using Brush endpoint = new SolidBrush(add ? Color.White : Color.Black);
+        graphics.FillEllipse(endpoint, from.X - radius, from.Y - radius, size, size);
+        graphics.FillEllipse(endpoint, to.X - radius, to.Y - radius, size, size);
+    }
+
+    void RenderPaintPreview(Bitmap mask, bool save, bool force = true)
+    {
+        long now = Environment.TickCount64;
+        if (!force && now - lastPaintPreviewTick < 33) return;
+        lastPaintPreviewTick = now;
+        Bitmap? loadedSource = null;
+        Bitmap source;
+        if (paintingSource != null) source = paintingSource;
+        else
+        {
+            using Image loaded = LoadImage(FramePath);
+            loadedSource = new Bitmap(loaded);
+            source = loadedSource;
+        }
+        Bitmap? result = new(source.Width, source.Height);
+        try
+        {
+            using Graphics graphics = Graphics.FromImage(result);
+            graphics.DrawImageUnscaled(source, 0, 0);
+            using ImageAttributes attributes = new();
+            attributes.SetRemapTable([new ColorMap
+            {
+                OldColor = Color.Black,
+                NewColor = Color.Transparent
+            }, new ColorMap
+            {
+                OldColor = Color.White,
+                NewColor = Color.FromArgb(105, Color.Lime)
+            }]);
+            graphics.DrawImage(mask, new Rectangle(0, 0, result.Width, result.Height),
+                0, 0, mask.Width, mask.Height, GraphicsUnit.Pixel, attributes);
+            if (save) result.Save(PreviewPath, ImageFormat.Jpeg);
+            SetImage(result);
+            result = null;
+        }
+        finally
+        {
+            result?.Dispose();
+            loadedSource?.Dispose();
+        }
     }
 
     async Task EnsureWorkerFrameAsync()
@@ -571,6 +828,37 @@ internal sealed class CustomMaskEditorForm : Form
 
     async Task UndoClickAsync()
     {
+        if (!updatingMask && paintUndo.Count > 0)
+        {
+            PaintUndoState previous = paintUndo.Pop();
+            points.Clear(); points.AddRange(previous.Points);
+            labels.Clear(); labels.AddRange(previous.Labels);
+            currentAutomatic = previous.Automatic;
+            try
+            {
+                if (previous.HadMask)
+                {
+                    File.Copy(previous.MaskPath, MaskPath, true);
+                    using Image loadedMask = LoadImage(MaskPath);
+                    using Bitmap restored = new(loadedMask);
+                    RenderPaintPreview(restored, save: true);
+                }
+                else
+                {
+                    try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
+                    try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
+                    SetImage(LoadImage(FramePath));
+                }
+                status.Text = "Paint stroke undone.";
+                SaveDraftState();
+            }
+            finally
+            {
+                try { if (File.Exists(previous.MaskPath)) File.Delete(previous.MaskPath); } catch { }
+            }
+            UpdateEnabledState();
+            return;
+        }
         if (updatingMask || points.Count == 0) return;
         points.RemoveAt(points.Count - 1);
         labels.RemoveAt(labels.Count - 1);
@@ -623,6 +911,7 @@ internal sealed class CustomMaskEditorForm : Form
 
     void ClearClicks()
     {
+        ClearPaintUndo();
         points.Clear();
         labels.Clear();
         currentAutomatic = false;
@@ -636,6 +925,7 @@ internal sealed class CustomMaskEditorForm : Form
 
     void ResetMaskSelection()
     {
+        ClearPaintUndo();
         points.Clear();
         labels.Clear();
         currentAutomatic = false;
@@ -647,12 +937,24 @@ internal sealed class CustomMaskEditorForm : Form
     {
         if (closing || IsDisposed) return;
         bool editable = workerReady && frameReady && !updatingMask && !playback.Enabled;
-        image.Enabled = clear.Enabled = automatic.Enabled = editable;
-        undo.Enabled = editable && points.Count > 0;
+        image.Enabled = automatic.Enabled = paintMode.Enabled = editable;
+        brushSize.Enabled = editable && paintMode.Checked;
+        clear.Enabled = editable && (File.Exists(MaskPath) || points.Count > 0);
+        undo.Enabled = editable && (paintUndo.Count > 0 || points.Count > 0);
+        undo.Text = paintUndo.Count > 0 ? "Undo stroke" : "Undo click";
         accept.Enabled = editable && File.Exists(MaskPath);
         timeline.Enabled = previousFrame.Enabled = nextFrame.Enabled =
             slowMotion.Enabled = allowFrameSelection && workerReady && !updatingMask;
         play.Enabled = allowFrameSelection && workerReady && !updatingMask;
+    }
+
+    void ClearPaintUndo()
+    {
+        while (paintUndo.Count > 0)
+        {
+            PaintUndoState state = paintUndo.Pop();
+            try { if (File.Exists(state.MaskPath)) File.Delete(state.MaskPath); } catch { }
+        }
     }
 
     void SetImage(Image next)
@@ -696,7 +998,12 @@ internal sealed class CustomMaskEditorForm : Form
         using Bitmap white = new(4, 4);
         using Graphics graphics = Graphics.FromImage(white);
         graphics.Clear(Color.White);
-        return IsMostlyBlack(black) && !IsMostlyBlack(white);
+        using Bitmap painted = new(20, 20, PixelFormat.Format24bppRgb);
+        DrawBrush(painted, new PointF(10, 10), new PointF(10, 10), 6, true);
+        bool added = painted.GetPixel(10, 10).R == 255;
+        DrawBrush(painted, new PointF(10, 10), new PointF(10, 10), 6, false);
+        return IsMostlyBlack(black) && !IsMostlyBlack(white) && added &&
+            painted.GetPixel(10, 10).R == 0;
     }
 
     static string ResponseError(JsonElement response) =>
@@ -723,7 +1030,8 @@ internal sealed class CustomMaskEditorForm : Form
             streamCancellation?.Dispose();
             StopWorker();
             responseLock.Dispose();
-            image.Image?.Dispose();
+            image.Image?.Dispose(); paintingMask?.Dispose(); paintingSource?.Dispose();
+            ClearPaintUndo();
             try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
         }
         base.Dispose(disposing);

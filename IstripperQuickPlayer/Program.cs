@@ -30,6 +30,7 @@ namespace IStripperQuickPlayer
                     ("IAFD link parsing", Form1.VerifyIafdLinkParsing()),
                     ("mask frame selection", CustomMaskEditorForm.VerifyFrameSelection()),
                     ("mask draft round trip", CustomShowMaskDraft.VerifyRoundTrip()),
+                    ("mask archive round trip", CustomMaskArchive.VerifyRoundTrip()),
                     ("watermark selection", CustomWatermarkRemovalForm.VerifySelection()),
                     ("stabilization settings", CustomVideoStabilizationForm.VerifySettings()),
                     ("staging cleanup", CustomShowEditorForm.VerifyStagingCleanup()),

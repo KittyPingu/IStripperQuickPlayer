@@ -25,6 +25,15 @@ MODELS = {
 }
 POLICY_NAME = "vitmatte-performance-policy-v1.json"
 PIPELINE_DEPTH = 2
+
+
+def safe_batch_for_memory(total_bytes, model, width, height, requested):
+    gib = total_bytes / 1024 ** 3
+    if model == "b": maximum = 1 if gib < 24 else 2 if gib < 40 else 4
+    else: maximum = 2 if gib < 20 else 4 if gib < 32 else 8
+    if width * height > 1920 * 1080:
+        maximum = max(1, maximum // 2)
+    return max(1, min(requested, maximum))
 PREVIEW_INTERVAL = .5
 PREVIEW_MAXIMUM = (960, 540)
 
@@ -238,7 +247,14 @@ def process(args):
         width, height, alpha_codec)
     frame_bytes = width * height * 3
     requested_batch = max(1, args.batch_size)
-    active_batch = {"size": requested_batch}
+    safe_batch = safe_batch_for_memory(
+        torch.cuda.get_device_properties(device).total_memory,
+        args.model, width, height, requested_batch) if device.type == "cuda" \
+        else requested_batch
+    active_batch = {"size": safe_batch}
+    if safe_batch < requested_batch:
+        emit("startup", 0, f"ViTMatte-{args.model.upper()} batch reduced from "
+             f"{requested_batch} to {safe_batch} for this GPU and resolution")
     input_queue, output_queue = queue.Queue(PIPELINE_DEPTH), queue.Queue(PIPELINE_DEPTH)
     errors, stop = queue.Queue(), threading.Event()
     input_done = output_done = object()
@@ -253,7 +269,7 @@ def process(args):
     initial_key = policy_identity(torch, args.model, revision,
                                   padded_height, padded_width, fp16, requested_batch)
     initial_entry = load_policy(policy_path).get("entries", {}).get(initial_key, {})
-    active_batch["size"] = max(1, min(requested_batch,
+    active_batch["size"] = max(1, min(active_batch["size"],
         int(initial_entry.get("safeBatchSize", requested_batch) or requested_batch)))
     policy_key = {"value": initial_key}
     selected_mode = {"value": "eager"}
@@ -555,7 +571,10 @@ def process(args):
             preview_frame(output, last_result["source"], last_result["alpha"], cv2)
         (output / "result.json").write_text(json.dumps({"width": width,
             "height": height, "frameRate": frame_rate,
-            "durationMs": round(counters["written"] * 1000 / fps)}, indent=2))
+            "durationMs": round(counters["written"] * 1000 / fps),
+            "requestedSequenceChunk": requested_batch,
+            "effectiveSequenceChunk": active_batch["size"],
+            "executionMode": selected_mode["value"]}, indent=2))
         total = time.perf_counter() - started
         peak_vram = torch.cuda.max_memory_allocated() if device.type == "cuda" else 0
         try:
@@ -605,6 +624,9 @@ def self_test():
     trimap = trimap_from_mask(mask, cv2, cache)
     assert trimap[32, 32] == 255 and trimap[0, 0] == 0 and 128 in trimap
     assert len(cache) == 1
+    assert safe_batch_for_memory(16 * 1024 ** 3, "b", 1920, 1080, 12) == 1
+    assert safe_batch_for_memory(16 * 1024 ** 3, "s", 1920, 1080, 12) == 2
+    assert safe_batch_for_memory(24 * 1024 ** 3, "b", 3840, 2160, 12) == 1
     with torch.inference_mode(): alpha = torch.tensor([0., .5, 1.])
     assert alpha_bytes(alpha).tolist() == [0, 127, 255]
     print("ViTMatte worker self-test passed")

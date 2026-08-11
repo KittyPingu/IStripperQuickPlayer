@@ -31,6 +31,7 @@ internal sealed class CustomPlayerForm : Form
         internal uint Time;
         internal UIntPtr ExtraInfo;
     }
+    sealed record AlphaHitMap(byte[] Pixels, int Width, int Height);
     static readonly LowLevelMouseProc globalWheelProc = GlobalWheelCallback;
     static IntPtr globalWheelHook;
     static CustomPlayerForm? globalWheelOwner;
@@ -42,7 +43,7 @@ internal sealed class CustomPlayerForm : Form
     readonly System.Windows.Forms.Timer settleTimer = new() { Interval = 15 };
     readonly Stopwatch settleClock = new();
     PairedRenderer? renderer;
-    byte[]? hitTestAlpha;
+    AlphaHitMap? hitTestAlpha;
     volatile bool paused, locked, clickThroughLocked, wheelResize;
     bool? mouseTransparent;
     bool movingWindow;
@@ -184,8 +185,12 @@ internal sealed class CustomPlayerForm : Form
                 if (Math.Abs(renderer.PlaybackRate - rate) > .0001) renderer.PlaybackRate = rate;
                 if (paused) { renderer.Pause(); await Task.Delay(15, cancellation.Token); continue; }
                 renderer.Play();
-                if (renderer.TryRenderDue(out byte[]? alpha))
+                bool captureHitMap = !(locked && clickThroughLocked);
+                if (renderer.TryRenderDue(captureHitMap, out AlphaHitMap? alpha))
+                {
+                    if (alpha != null)
                     Volatile.Write(ref hitTestAlpha, alpha);
+                }
                 else await Task.Delay(1, cancellation.Token);
             }
             if (!IsDisposed) BeginInvoke(() =>
@@ -305,13 +310,13 @@ internal sealed class CustomPlayerForm : Form
 
     bool IsAlphaVisible(Point point)
     {
-        byte[]? alpha = Volatile.Read(ref hitTestAlpha);
+        AlphaHitMap? alpha = Volatile.Read(ref hitTestAlpha);
         if (alpha == null || renderer == null || ClientSize.Width <= 0 ||
             ClientSize.Height <= 0 || point.X < 0 || point.Y < 0 ||
             point.X >= ClientSize.Width || point.Y >= ClientSize.Height) return false;
-        int x = Math.Min(renderer.Width - 1, point.X * renderer.Width / ClientSize.Width);
-        int y = Math.Min(renderer.Height - 1, point.Y * renderer.Height / ClientSize.Height);
-        return IsVisibleAlpha(alpha[y * renderer.Width + x], alphaThreshold);
+        int x = Math.Min(alpha.Width - 1, point.X * alpha.Width / ClientSize.Width);
+        int y = Math.Min(alpha.Height - 1, point.Y * alpha.Height / ClientSize.Height);
+        return IsVisibleAlpha(alpha.Pixels[y * alpha.Width + x], alphaThreshold);
     }
 
     void UpdateMouseTransparency()
@@ -503,8 +508,10 @@ internal sealed class CustomPlayerForm : Form
         SettlePosition(100, 500, 0) == (100, false) &&
         SettlePosition(100, 500, 10) == (500, true) &&
         !IsEstablishedWindow(false, 1024, 576) &&
-        IsEstablishedWindow(true, 1024, 576) &&
-        AnchoredLocation(new Size(100, 200),
+            IsEstablishedWindow(true, 1024, 576) &&
+            HitMapSize(3840, 2160, 512) == new Size(512, 288) &&
+            HitMapSize(320, 240, 512) == new Size(320, 240) &&
+            AnchoredLocation(new Size(100, 200),
             new Rectangle(300, 400, 200, 300),
             new Rectangle(0, 0, 1920, 1080)) == new Point(350, 880);
 
@@ -514,6 +521,14 @@ internal sealed class CustomPlayerForm : Form
     static bool PairDurationMatches(double foreground, double alpha,
         double frameDuration) => Math.Abs(foreground - alpha) <=
             Math.Max(.05, frameDuration * 2 + .002);
+
+    static Size HitMapSize(int width, int height, int maximumDimension)
+    {
+        double scale = Math.Min(1, maximumDimension /
+            (double)Math.Max(1, Math.Max(width, height)));
+        return new Size(Math.Max(1, (int)Math.Round(width * scale)),
+            Math.Max(1, (int)Math.Round(height * scale)));
+    }
 
     static int TimestampStreamToAdvance(long foreground, long alpha,
         long tolerance) => Math.Abs(foreground - alpha) <= tolerance
@@ -557,6 +572,7 @@ internal sealed class CustomPlayerForm : Form
         int alphaThreshold, fullOpacityThreshold;
         int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1;
         double clockSeconds, rate = 1;
+        readonly byte[] alphaRow;
         internal int Width => rgb.Width; internal int Height => rgb.Height;
         internal double Duration { get; }
         internal bool Ended { get; private set; }
@@ -576,6 +592,7 @@ internal sealed class CustomPlayerForm : Form
                 !PairDurationMatches(rgb.Duration, alpha.Duration, rgb.FrameDuration))
                 throw new InvalidDataException("Foreground and alpha dimensions, frame rate, or duration do not match.");
             Duration = Math.Min(rgb.Duration, alpha.Duration);
+            alphaRow = new byte[Width];
             audio = InternalAudioPlayer.TryOpen(foreground);
             device = D3D11.D3D11CreateDevice(DriverType.Hardware,
                 DeviceCreationFlags.BgraSupport, Vortice.Direct3D.FeatureLevel.Level_11_1,
@@ -616,7 +633,8 @@ internal sealed class CustomPlayerForm : Form
             Volatile.Write(ref alphaThreshold, Math.Clamp(value, 0, 255));
         internal void SetFullOpacityThreshold(int value) =>
             Volatile.Write(ref fullOpacityThreshold, Math.Clamp(value, 1, 255));
-        internal unsafe bool TryRenderDue(out byte[]? alphaBytes)
+        internal unsafe bool TryRenderDue(bool captureHitMap,
+            out AlphaHitMap? alphaBytes)
         {
             alphaBytes=null; lock(sync)
             {
@@ -632,9 +650,26 @@ internal sealed class CustomPlayerForm : Form
                 context.OMSetRenderTargets(target!); context.RSSetViewport(new GpuViewport(0,0,back!.Description.Width,back.Description.Height)); context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
                 context.VSSetShader(vs); context.PSSetShader(ps); context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView); context.PSSetShaderResource(3,aView); context.PSSetShaderResource(4,thresholdView); context.PSSetSampler(0,sampler); context.Draw(3,0);
                 context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3); context.PSUnsetShaderResource(4); swap!.Present(1,PresentFlags.None);
-                alphaBytes=new byte[checked(Width*Height)]; for(int y=0;y<Height;y++) Marshal.Copy(ad+y*(int)ap,alphaBytes,y*Width,Width);
+                if(captureHitMap) alphaBytes=CreateHitMap(ad,ap);
                 pending=false; return true;
             }
+        }
+        AlphaHitMap CreateHitMap(IntPtr alphaPlane, uint pitch)
+        {
+            Size size = HitMapSize(Width, Height, 512);
+            byte[] pixels = GC.AllocateUninitializedArray<byte>(
+                checked(size.Width * size.Height));
+            for (int y = 0; y < size.Height; y++)
+            {
+                int sourceY = Math.Min(Height - 1, y * Height / size.Height);
+                Marshal.Copy(alphaPlane + sourceY * (int)pitch,
+                    alphaRow, 0, Width);
+                int destination = y * size.Width;
+                for (int x = 0; x < size.Width; x++)
+                    pixels[destination + x] = alphaRow[
+                        Math.Min(Width - 1, x * Width / size.Width)];
+            }
+            return new AlphaHitMap(pixels, size.Width, size.Height);
         }
         bool DecodePair()
         {

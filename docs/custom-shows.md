@@ -293,7 +293,11 @@ frame at a time through the original clip to choose a clear mask frame. After
 playback or scrubbing stops, QuickPlayer loads the exact still frame while keeping
 SAM2 base-plus resident, then updates the mask interactively: left-click
 every person to include and right-click unwanted people or background areas to
-exclude. **Auto mask frame** runs SAM2's automatic image-mask generator; positive
+exclude. For exact initial-mask edits, enable **Paint mask**, adjust the brush-size
+slider or mouse wheel, then left-drag to add foreground or right-drag to erase it.
+**Ctrl+P** toggles paint mode; **Ctrl+Z** or **Undo stroke** restores the mask
+before the previous stroke. **Auto mask frame** runs SAM2's
+automatic image-mask generator; positive
 clicks guide which generated masks are combined, while no clicks selects the
 largest useful candidate for further refinement. MatAnyone propagates a first-frame
 mask forward normally. For a middle or last frame it propagates forward to the end,
@@ -320,14 +324,19 @@ frames, and is expected to be much slower than RVM or MatAnyone2.
 For **VideoMaMa**, **ViTMatte S**, and **ViTMatte B**, QuickPlayer opens a
 resizable review editor for the initial SAM2 or EdgeTAM propagation before matting.
 The editor displays sampled tracked overlays while the initial pass runs. Choose
-**Pause generation** to stop after the mask currently being calculated, inspect
+**Pause and Correct** to stop after the mask currently being calculated, inspect
 the valid portion of the clip, and correct a problem as soon as it appears.
 Scrub, play, or step one frame at a time through the generated overlay. Left-click
-missing person pixels and right-click background or unwanted pixels. Clicks update
-only that frame's preview; **Update masks** then propagates the accepted prompt
-backward without interruption and then forward. The forward phase can be paused
-again for another correction; **Continue generation** resumes it without adding a
-correction. **Use corrected masks** becomes available only after the complete clip
+missing person pixels and right-click background or unwanted pixels. For exact
+local edits, enable **Paint mask**, choose a brush size, left-drag to add foreground,
+or right-drag to erase it; the mouse wheel changes brush size, **Ctrl+P** toggles
+paint mode, and **Ctrl+Z** undoes one complete stroke or click. Clicks and paint update
+only that frame's preview; **Update masks** then propagates the accepted mask anchor
+backward and then forward. While it is moving backward, choose **Stop backward
+propagation** once the corrected tracking has reached far enough; masks already
+updated are retained and forward propagation begins immediately. The forward phase
+can be paused again for another correction; **Continue generation** resumes it
+without adding a correction. **Use corrected masks** becomes available only after the complete clip
 has valid masks. **Auto mask frame** can replace the current frame prompt with
 an automatically generated candidate before updating. Later corrections stop at
 adjacent accepted correction frames instead of needlessly recalculating beyond
@@ -472,7 +481,12 @@ official RVM conversion guidance. Values 1, 2, 3, 4, 6, 8, 12, 16, and 24 are
 available. If a chunk exceeds GPU memory, QuickPlayer halves it and remembers the
 successful size for every remaining chunk and clip in that job instead of
 repeatedly retrying the oversized allocation.
-The same batch selector controls ViTMatte inference and VideoMaMa groups.
+The same batch selector controls ViTMatte inference and VideoMaMa groups. The
+VideoMaMa default is visible under **Custom Show Settings > Matting & masks >
+VideoMaMa**. **Benchmark VideoMaMa batch...** runs real 1024x576 diffusion
+inference with increasing batches, monitors whole-GPU VRAM, stops after memory
+pressure or an out-of-memory result, and copies the fastest safe value into the
+setting after confirmation.
 
 ### RVM pipeline performance
 
@@ -601,6 +615,33 @@ Show fields are title, description, tags, release date, optional recording/show 
 
 Right-click a custom card and choose **Edit Custom Show Metadata…**. Official iStripper metadata remains read-only.
 
+### Reprocessing a show
+
+Right-click a custom card and choose **Reprocess Custom Show…** to run the
+original source through a different installed algorithm without creating a
+second card. **Keep existing clip divisions** is enabled by default. Clear it
+to unlock divider editing before processing. **Keep existing masks** reuses the
+retained initial and tracked masks, so changing among ViTMatte S, ViTMatte B,
+VideoMaMa, and MatAnyone 2 does not require drawing the same mask again. Clear
+it to generate and review new masks.
+
+QuickPlayer retains masks for newly processed and newly reprocessed shows.
+Shows created by older versions still retain their clip divisions, but their
+temporary mask drafts were not stored; the first reprocessing pass therefore
+asks for masks again and retains them for later passes. Reprocessing validates
+the complete staged replacement before swapping it into the library. The old
+show is restored if that swap cannot complete.
+
+Before VideoMaMa or ViTMatte processing begins, QuickPlayer compares the selected
+batch with a conservative recommendation based on the NVIDIA GPU's total and
+currently free VRAM. ViTMatte also accounts for the S/B model and source
+resolution. If the batch is too large, QuickPlayer shows the detected memory and
+offers to select the safer batch; cancelling returns to the form without starting
+mask review or processing. A completed VideoMaMa benchmark also writes a
+GPU-specific policy, allowing the worker to use the measured safe batch on that
+GPU while retaining the conservative generic cap on unbenchmarked hardware.
+ViTMatte retains its out-of-memory batch reduction as a final safeguard.
+
 ## Playback and queues
 
 An unsplit custom card has the stable playback ID `custom:<show-id>`. Split clips
@@ -622,6 +663,11 @@ The transparent player keeps RGB and alpha decoders synchronized and rejects dim
     show.json
     cover.jpg
     processing.log
+    masks/                  # retained reprocessing inputs, when available
+      retained-masks.json
+      <clip-id>/
+        initial-mask.png
+        tracked-masks.iqpmask # 1-bit XOR-delta chunks compressed with Zstandard
     clips/
       <clip-id>/
         foreground.mp4
@@ -652,6 +698,13 @@ installed processing tool's exact commit/model revision. It also records each
 included clip's initial-mask frame and whether SAM2 mask tracking was used.
 This provenance is read-only in **Edit Custom Show Metadata**. Older shows with
 no `processing` object remain valid; their original settings cannot be inferred.
+
+Tracked masks are retained losslessly in `IQPMASK1` archives. Each binary mask is
+packed to one bit per pixel; within each 300-frame chunk, later frames are stored
+as XOR differences from the preceding mask and the chunk is compressed with
+Zstandard. Every chunk includes a SHA-256 integrity value. Reprocessing expands
+the archive into temporary `0`/`255` PNG masks and removes those temporary files
+afterward. The decoded masks are pixel-identical to the originals.
 
 To move a library, close QuickPlayer, copy the entire configured custom-library root, then select the new root in **Custom Shows → Settings**. Relative show media remains portable; referenced originals do not need to move unless you want to reprocess them.
 

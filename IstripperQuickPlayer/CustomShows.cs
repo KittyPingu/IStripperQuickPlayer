@@ -39,6 +39,7 @@ internal sealed class CustomShowConfiguration
     public int VitMatteBaseCompileCutoffFrames { get; set; } = 16000;
     public int VitMatteSmallPreferredBatchSize { get; set; } = 2;
     public int VitMatteBasePreferredBatchSize { get; set; } = 1;
+    public int VideoMaMaPreferredBatchSize { get; set; } = 1;
 
     internal int Sam2CompileCutoffFrames(string model) => model switch
     {
@@ -73,6 +74,8 @@ internal sealed class CustomShowConfiguration
             if (configuration.LastClipDetector is not
                 ("ffmpeg" or "transnetv2" or "omnishotcut"))
                 configuration.LastClipDetector = "transnetv2";
+            if (!rvmChunks.Contains(configuration.VideoMaMaPreferredBatchSize))
+                configuration.VideoMaMaPreferredBatchSize = 1;
             return configuration;
         }
         catch { return new(); }
@@ -389,6 +392,33 @@ internal sealed class CustomShowStore
         WriteJsonAtomic(Path.Combine(stagingFolder, "show.json"), show);
         EnsureCreated();
         Directory.Move(stagingFolder, destination);
+    }
+
+    internal void Replace(string stagingFolder, CustomShowManifest show)
+    {
+        ValidateId(show.Id, "show");
+        string destination = Path.Combine(ShowsFolder, show.Id);
+        if (!Directory.Exists(destination))
+            throw new DirectoryNotFoundException("The custom show being reprocessed no longer exists.");
+        ValidateManifest(show, stagingFolder);
+        WriteJsonAtomic(Path.Combine(stagingFolder, "show.json"), show);
+        string backupRoot = Path.Combine(root, ".replaced");
+        Directory.CreateDirectory(backupRoot);
+        string backup = Path.Combine(backupRoot,
+            show.Id + "-" + Guid.NewGuid().ToString("N"));
+        Directory.Move(destination, backup);
+        try
+        {
+            Directory.Move(stagingFolder, destination);
+        }
+        catch
+        {
+            if (!Directory.Exists(destination) && Directory.Exists(backup))
+                Directory.Move(backup, destination);
+            throw;
+        }
+        try { Directory.Delete(backup, true); }
+        catch { }
     }
 
     internal void DeleteShow(string showId)
@@ -1109,6 +1139,17 @@ internal sealed class CustomShowStore
                 Console.Error.WriteLine("Custom performer propagation check failed.");
                 return false;
             }
+            string replacement = Path.Combine(root, ".staging", show.Id);
+            CopyDirectoryForVerification(folder, replacement);
+            roundTrip.Title = "Reprocessed Test Show";
+            store.Replace(replacement, roundTrip);
+            folder = Path.Combine(store.ShowsFolder, show.Id);
+            if (store.LoadManifest(show.Id).Title != "Reprocessed Test Show" ||
+                Directory.Exists(replacement))
+            {
+                Console.Error.WriteLine("Custom show replacement check failed.");
+                return false;
+            }
             string removedClipId = roundTrip.Clips[0].Id;
             string removedClipFolder = Path.Combine(folder, "clips",
                 removedClipId);
@@ -1171,6 +1212,16 @@ internal sealed class CustomShowStore
             throw new InvalidOperationException("FFmpeg did not start.");
         process.WaitForExit();
         if (process.ExitCode != 0) throw new InvalidOperationException("FFmpeg fixture creation failed.");
+    }
+
+    static void CopyDirectoryForVerification(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (string file in Directory.EnumerateFiles(source))
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+        foreach (string child in Directory.EnumerateDirectories(source))
+            CopyDirectoryForVerification(child,
+                Path.Combine(destination, Path.GetFileName(child)));
     }
 
     static bool RejectsTraversal()
