@@ -1750,6 +1750,8 @@ namespace IStripperQuickPlayer
 
             PlayQueueEntry entry = drag.Entry;
             SelectCardInModelList(entry.CardTag);
+            if (drag.Playing)
+                return;
             bool manual = drag.Source == "manual";
             List<PlayQueueEntry> queue = manual
                 ? manualPlayQueue : automaticPlayQueue;
@@ -1787,13 +1789,28 @@ namespace IStripperQuickPlayer
         private static bool TryRemoveQueueEntry(List<PlayQueueEntry> queue,
             PlayQueueDrag drag)
         {
-            int index = drag.Index < queue.Count &&
+            int index = drag.Index >= 0 && drag.Index < queue.Count &&
                 queue[drag.Index] == drag.Entry
                     ? drag.Index : queue.IndexOf(drag.Entry);
             if (index < 0)
                 return false;
             queue.RemoveAt(index);
             return true;
+        }
+
+        internal static bool VerifyQueueEntryRemoval()
+        {
+            PlayQueueEntry first = new("first");
+            PlayQueueEntry second = new("second");
+            List<PlayQueueEntry> queue = [first, second];
+            PlayQueueDrag active = new(
+                "automatic", -1, new PlayQueueEntry("active"), true);
+            if (TryRemoveQueueEntry(queue, active) || queue.Count != 2)
+                return false;
+
+            PlayQueueDrag staleIndex = new("automatic", 99, second);
+            return TryRemoveQueueEntry(queue, staleIndex) &&
+                queue.SequenceEqual([first]);
         }
 
         private void HighlightPlayQueueCard(Panel panel)
