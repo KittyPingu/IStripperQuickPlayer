@@ -25,7 +25,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     readonly Button next = new() { Text = "1 frame ▶", AutoSize = true, Enabled = false };
     readonly CheckBox slowMotion = new() { Text = "Slow motion (0.25×)", AutoSize = true,
         Padding = new Padding(8, 6, 0, 0), Enabled = false };
-    readonly Button generation = new() { Text = "Pause generation", AutoSize = true,
+    readonly Button generation = new() { Text = "Pause and Correct", AutoSize = true,
         Enabled = false };
     readonly Button automatic = new() { Text = "Auto mask frame", AutoSize = true,
         Enabled = false };
@@ -383,7 +383,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             ? phaseValue.GetString() ?? "forward" : "forward";
         generationActive = true;
         generationPaused = false;
-        generation.Text = phase == "backward" ? "Updating backward…" : "Pause generation";
+        generation.Text = phase == "backward" ? "Updating backward…" : "Pause and Correct";
         generation.Enabled = supportsCorrections && phase == "forward";
         playback.Stop(); play.Text = "Play";
         timeline.Enabled = image.Enabled = previous.Enabled = play.Enabled = next.Enabled =
