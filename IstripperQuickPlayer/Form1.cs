@@ -6326,7 +6326,8 @@ namespace IStripperQuickPlayer
             clipListHost.Controls.Add(cmdPhotos);
             clipListHost.Layout += (_, _) => PositionPhotosButton();
             listClips.FontChanged += (_, _) => PositionPhotosButton();
-            listClips.HandleCreated += (_, _) => PositionPhotosButton();
+            listClips.HandleCreated += (_, _) =>
+                listClips.BeginInvoke((Action)PositionPhotosButton);
             PositionPhotosButton();
 
             FlowLayoutPanel modelMetricsRow =
@@ -6394,7 +6395,18 @@ namespace IStripperQuickPlayer
                 return;
             int headerHeight = listClips.Font.Height + 7;
             if (listClips.IsHandleCreated && listClips.Items.Count > 0)
-                headerHeight = listClips.GetItemRect(0).Top;
+            {
+                try
+                {
+                    headerHeight = listClips.GetItemRect(0).Top;
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    // HandleCreated can run before the native ListView has
+                    // materialized its managed items. The deferred callback
+                    // will measure the real header once creation completes.
+                }
+            }
             cmdPhotos.Height = Math.Max(1, headerHeight);
             cmdPhotos.Location = new Point(
                 Math.Max(0, clipListHost.ClientSize.Width -
