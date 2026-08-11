@@ -379,6 +379,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/CustomStabiloStabilizationForm.cs
 !/IstripperQuickPlayer/CustomVideoComparisonForm.cs
 !/IstripperQuickPlayer/CustomMaskArchive.cs
+!/IstripperQuickPlayer/StartupSplashForm.cs
 !/IstripperQuickPlayer/LockStateOverlay.cs
 !/IstripperQuickPlayer/PlaybackBridgeClient.cs
 !/IstripperQuickPlayer/ProcessCancellationScope.cs

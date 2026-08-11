@@ -500,7 +500,38 @@ namespace IStripperQuickPlayer
                 return;
             }
 
-            Application.Run(new Form1(options));
+            if (options.ApiOnly)
+            {
+                Application.Run(new Form1(options));
+                return;
+            }
+
+            using StartupSplashController splash =
+                StartupSplashController.Start();
+            using Form1 startupWindow = new(options)
+            {
+                ShowInTaskbar = false
+            };
+            using ApplicationContext context = new();
+            startupWindow.InitialCardListReady += (_, _) =>
+            {
+                splash.Cover(startupWindow.Bounds);
+                context.MainForm = startupWindow;
+                startupWindow.ShowInTaskbar = true;
+                startupWindow.Show();
+                startupWindow.Refresh();
+                startupWindow.Update();
+                startupWindow.RefreshInitialCardDisplay();
+                startupWindow.Refresh();
+                startupWindow.Update();
+                splash.Close();
+                if (startupWindow.WindowState != FormWindowState.Minimized)
+                    startupWindow.Activate();
+            };
+            _ = startupWindow.Handle;
+            startupWindow.BeginInvoke(
+                (Action)startupWindow.BeginHiddenStartup);
+            Application.Run(context);
         }
 
         private sealed class PartialRefreshRenderer :

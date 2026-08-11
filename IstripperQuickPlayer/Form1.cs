@@ -156,6 +156,10 @@ namespace IStripperQuickPlayer
             { CheckOnClick = true };
         private DirectCompositionCardOverlayControl?
             directCompositionCardOverlays;
+        internal event EventHandler? InitialCardListReady;
+        private bool initialCardListReady;
+        private bool startupInitializationStarted;
+        private bool deferCardCompositionUntilShown;
         private readonly ToolStripMenuItem updateToolStripMenuItem = new();
         private readonly ToolStripMenuItem alphaCheckpointCacheToolStripMenuItem =
             new();
@@ -888,7 +892,7 @@ namespace IStripperQuickPlayer
             this.Cursor = Cursors.Arrow;
         }
 
-        private void ReloadModels()
+        private void ReloadModels(Action? afterPopulation = null)
         {
             List<ModelCard> previousCards =
                 (Datastore.modelcards ?? []).ToList();
@@ -1002,6 +1006,8 @@ namespace IStripperQuickPlayer
                     previousCards.Count, loadedCards, physicalFolders))
                 {
                     RestorePreviousCatalogue();
+                    if (!apiOnlyMode)
+                        QueueModelPopulation(afterPopulation);
                     diagnostics.AppendLine(
                         "Result: incomplete catalogue ignored; " +
                         "previous cards retained");
@@ -1014,7 +1020,7 @@ namespace IStripperQuickPlayer
                     CardOverlayLoader.Reload(
                         Datastore.modelcards ?? [], myData);
                 if (!apiOnlyMode)
-                    BeginInvoke((Action)PopulateModelListview);
+                    QueueModelPopulation(afterPopulation);
                 PersistModels();
                 diagnostics.AppendLine("Result: success");
             }
@@ -1550,7 +1556,7 @@ namespace IStripperQuickPlayer
             Serialize(Datastore.modelcards, modelfilepath);
         }
 
-        private void RetrieveModels()
+        private void RetrieveModels(Action? afterPopulation = null)
         {
             string modelfilepath = Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IStripperQuickPlayer", "models.bin");
             if (System.IO.File.Exists(modelfilepath))
@@ -1561,7 +1567,8 @@ namespace IStripperQuickPlayer
                     if (apiOnlyMode)
                         ReloadModels();
                     else
-                        BeginInvoke((Action)ReloadModels);
+                        BeginInvoke((Action)(() =>
+                            ReloadModels(afterPopulation)));
                 }
                 else
                 {
@@ -1571,7 +1578,7 @@ namespace IStripperQuickPlayer
                     if (!apiOnlyMode)
                     {
                         CardOverlayLoader.Reload(Datastore.modelcards, myData);
-                        BeginInvoke((Action)PopulateModelListview);
+                        QueueModelPopulation(afterPopulation);
                     }
                 }
             }
@@ -1580,8 +1587,18 @@ namespace IStripperQuickPlayer
                 if (apiOnlyMode)
                     ReloadModels();
                 else
-                    BeginInvoke((Action)ReloadModels);
+                    BeginInvoke((Action)(() =>
+                        ReloadModels(afterPopulation)));
             }
+        }
+
+        private void QueueModelPopulation(Action? afterPopulation)
+        {
+            BeginInvoke((Action)(() =>
+            {
+                PopulateModelListview();
+                afterPopulation?.Invoke();
+            }));
         }
 
         ListViewItem[]? items; //stores the list of virtualized cards for modelList operations
@@ -1720,6 +1737,29 @@ namespace IStripperQuickPlayer
                 }
             }
             this.BeginInvoke((Action)(() => TaskbarThumbnail()));
+        }
+
+        private void SignalInitialCardListReady()
+        {
+            if (initialCardListReady)
+                return;
+            initialCardListReady = true;
+            InitialCardListReady?.Invoke(this, EventArgs.Empty);
+        }
+
+        internal void RefreshInitialCardDisplay()
+        {
+            deferCardCompositionUntilShown = false;
+            // The DirectComposition renderer consumes the GPU card scene that
+            // CardRenderer builds during a normal list paint.  Prime that
+            // scene now that the HWND is visible, while the splash still
+            // covers the window, before switching the list to DComp output.
+            listModelsNew.Invalidate();
+            listModelsNew.Update();
+            UpdateCardOverlayRenderingPath();
+            listModelsNew.Invalidate();
+            listModelsNew.Update();
+            directCompositionCardOverlays?.Render();
         }
 
         private TextSearchDocument CreateSearchDocument(ModelCard card)
@@ -2305,8 +2345,20 @@ namespace IStripperQuickPlayer
         }
 
 
-        private async void Form1_Load(object? sender, EventArgs e)
+        private async void Form1_Load(object? sender, EventArgs e) =>
+            await InitializeStartupAsync();
+
+        internal async void BeginHiddenStartup()
         {
+            deferCardCompositionUntilShown = true;
+            await InitializeStartupAsync();
+        }
+
+        private async Task InitializeStartupAsync()
+        {
+            if (startupInitializationStarted)
+                return;
+            startupInitializationStarted = true;
             if (Properties.Settings.Default.UpdateSettings)
             {
                 Properties.Settings.Default.Upgrade();
@@ -2427,7 +2479,8 @@ namespace IStripperQuickPlayer
                 listModelsNew.SetRenderer(cardRenderer);
                 cardRenderer.SetColours();
             }
-            UpdateCardOverlayRenderingPath();
+            if (!deferCardCompositionUntilShown)
+                UpdateCardOverlayRenderingPath();
 
             if (FilterSettingsList.filters.ContainsKey("Default"))
                 cmbFilter.SelectedItem = "Default";
@@ -2436,7 +2489,7 @@ namespace IStripperQuickPlayer
             //watcher.RegistryChange += RegistryChanged;
             clickingNowPlaying = true;
 
-            RetrieveModels();
+            RetrieveModels(SignalInitialCardListReady);
             RestorePreviousQueue();
             GetNowPlaying();
             StartRestApi();
@@ -5593,6 +5646,8 @@ namespace IStripperQuickPlayer
         private void UpdateCardOverlayRenderingPath()
         {
             DisableDirectCompositionCardOverlays();
+            if (deferCardCompositionUntilShown)
+                return;
             if (!Properties.Settings.Default
                     .DirectCompositionOverlays ||
                 cardRenderer == null)
