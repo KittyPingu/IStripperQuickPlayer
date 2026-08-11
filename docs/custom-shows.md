@@ -156,12 +156,15 @@ frame progress immediately, and normally runs around playback speed or faster.
 Install optional ProPainter to enable **AI High Quality**, which is appropriate
 when the selected area needs temporal AI reconstruction rather than interpolation.
 
-ProPainter is substantially more memory-intensive than RVM. Start with **50%
-processing resolution**, a **40-frame temporal window**, and **FP16** on a 12–16
-GB NVIDIA GPU. The output dimensions remain those of the source; processing at a
-lower resolution trades inpaint detail for speed and lower VRAM. Reduce the window
-to 20–30 frames if CUDA runs out of memory, or raise it only when there is measured
-headroom. Frames are decoded into a bounded rolling buffer, processed on CUDA, and
+ProPainter is substantially more memory-intensive than RVM. The dialog therefore
+defaults to **25% processing resolution**, a **40-frame temporal window**, and
+**FP16**. This conservative default is particularly important for 4K sources:
+50% processes four times as many pixels as 25% and can exhaust dedicated VRAM or
+spill into much slower shared GPU memory. The output dimensions remain those of
+the source; processing at a lower resolution trades inpaint detail for speed and
+lower VRAM. Increase the resolution only when there is measured headroom, or
+reduce the window to 20–30 frames if CUDA still runs out of memory. Frames are
+decoded into a bounded rolling buffer, processed on CUDA, and
 encoded immediately (NVENC when available), so long videos no longer create a
 full lossless-PNG copy or need to fit in RAM. The dialog reports completed/total
 frames and derives its remaining-time estimate from that progress. CPU/FP32
@@ -171,9 +174,10 @@ any previous completed output intact. A `<output>.processing.log` file records
 worker diagnostics.
 
 QuickPlayer automatically caps ProPainter's temporal window for the selected
-resolution and available VRAM. On a 16 GB GPU, the defaults are 12 frames at full
-HD processing, 16 at 75%, and 40 at 50%; this prevents Windows shared-GPU-memory
-spill from turning a high-quality run into a system-wide memory stall.
+resolution and available VRAM. At 4K, the 25% default has the same working pixel
+count as 1080p at 50%, normally allowing the requested 40-frame window on a 16 GB
+GPU. This prevents Windows shared-GPU-memory spill from turning a high-quality run
+into a system-wide memory stall.
 
 ## Creating a show
 

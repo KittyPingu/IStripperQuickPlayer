@@ -41,6 +41,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
 
     string FramePath => Path.Combine(temporary, "selection-frame.png");
     string MaskPath => Path.Combine(temporary, "removal-mask.png");
+    string SourcePreviewPath => Path.Combine(temporary, "source-preview.jpg");
     string OutputPreviewPath => Path.Combine(temporary, "output-preview.jpg");
 
     internal CustomWatermarkRemovalForm(CustomShowConfiguration configuration)
@@ -88,7 +89,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
             "50% processing resolution (recommended)"]);
         for (int percentage = 45; percentage >= 10; percentage -= 5)
             scale.Items.Add($"{percentage}% processing resolution");
-        scale.SelectedIndex = 2;
+        scale.SelectedIndex = 7;
         scale.SelectedIndexChanged += (_, _) => subvideo.Value =
             scale.SelectedIndex switch { 0 => 12, 1 => 16, _ => 40 };
         options.Controls.AddRange([new Label { Text = "Method", AutoSize = true,
@@ -344,10 +345,12 @@ internal sealed class CustomWatermarkRemovalForm : Form
             SaveMask();
             bool ai = method.SelectedIndex > 0;
             double ratio = ProcessingRatio(scale.SelectedIndex);
+            await ExtractProcessingPreviewAsync(source, SourcePreviewPath);
+            File.Copy(SourcePreviewPath, OutputPreviewPath, true);
             using CustomShowProcessingForm processing = new((progress, token) =>
                     RunProPainterAsync(configuration, source, MaskPath, output, ratio,
                         (int)subvideo.Value, ai && fp16.Checked, ai ? "propainter" : "fast",
-                        FramePath, OutputPreviewPath,
+                        SourcePreviewPath, OutputPreviewPath,
                         progress, token),
                 "Removing Video Object / Watermark", "Original input", "Output preview");
             if (processing.ShowDialog(this) != DialogResult.OK) return;
@@ -391,7 +394,8 @@ internal sealed class CustomWatermarkRemovalForm : Form
             "--mask", mask, "--output", output, "--resize-ratio",
             ratio.ToString(CultureInfo.InvariantCulture), "--subvideo-length",
             Math.Clamp(subvideoLength, 12, 80).ToString(CultureInfo.InvariantCulture),
-            "--method", method, "--preview-output", previewOutput })
+            "--method", method, "--preview-source", previewSource,
+            "--preview-output", previewOutput })
             start.ArgumentList.Add(argument);
         if (fp16) start.ArgumentList.Add("--fp16");
         start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
@@ -426,12 +430,33 @@ internal sealed class CustomWatermarkRemovalForm : Form
         return new CustomShowProcessResult();
     }
 
+    static async Task ExtractProcessingPreviewAsync(string source,
+        string destination)
+    {
+        ProcessStartInfo start = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"))
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardError = true
+        };
+        foreach (string argument in new[] { "-y", "-v", "error", "-i", source,
+            "-frames:v", "1", "-vf", "setsar=1", destination })
+            start.ArgumentList.Add(argument);
+        using Process process = Process.Start(start) ??
+            throw new InvalidOperationException("FFmpeg could not prepare processing previews.");
+        string error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        if (process.ExitCode != 0 || !File.Exists(destination))
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(error)
+                ? "The initial processing preview could not be created." : error.Trim());
+    }
+
     internal static bool VerifySelection()
     {
         Rectangle rectangle = Rectangle.FromLTRB(Math.Min(20, 5), Math.Min(10, 30),
             Math.Max(20, 5), Math.Max(10, 30));
         return rectangle == new Rectangle(5, 10, 15, 20) &&
-            ProcessingRatio(2) == .5 && ProcessingRatio(10) == .1;
+            ProcessingRatio(2) == .5 && ProcessingRatio(7) == .25 &&
+            ProcessingRatio(10) == .1;
     }
 
     static double ProcessingRatio(int selectedIndex) => selectedIndex switch

@@ -122,7 +122,11 @@ internal sealed class CustomPerformerProfile
 {
     public int SchemaVersion { get; set; } = 1;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string? IstripperModelId { get; set; }
     public string ModelName { get; set; } = "";
+    [JsonIgnore]
+    public string DisplayName => string.IsNullOrWhiteSpace(IstripperModelId)
+        ? ModelName : $"{ModelName} (iStripper)";
     public DateOnly? BirthDate { get; set; }
     public decimal? HeightCm { get; set; }
     public decimal? BustCm { get; set; }
@@ -764,10 +768,13 @@ internal sealed class CustomShowStore
         CustomPerformerProfile performer, string folder, string manifestPath,
         bool loadImage)
     {
+        ModelCard? istripperModel = FindIstripperModel(performer.IstripperModelId);
         string cover = ResolveRelative(folder, show.Media.Cover);
         CustomClipMedia[] playableMedia = show.Clips.Where(clip => clip.Included)
             .Select(clip => clip.Media!).ToArray();
-        int age = performer.BirthDate is DateOnly birth
+        DateOnly? birthDate = istripperModel?.birthdate is DateTime nativeBirth &&
+            nativeBirth != default ? DateOnly.FromDateTime(nativeBirth) : performer.BirthDate;
+        int age = birthDate is DateOnly birth
             ? AgeAt(birth, show.ReleaseDate)
             : show.AgeAtReleaseOverride ?? 0;
         long mediaSize = playableMedia.Sum(media =>
@@ -781,28 +788,29 @@ internal sealed class CustomShowStore
             customPerformerId = show.PerformerId,
             customManifestPath = manifestPath,
             collection = CollectionType.Custom,
-            modelName = performer.ModelName.Trim(),
-            modelId = show.PerformerId,
+            modelName = istripperModel?.modelName?.Trim() ?? performer.ModelName.Trim(),
+            modelId = string.IsNullOrWhiteSpace(performer.IstripperModelId)
+                ? show.PerformerId : performer.IstripperModelId,
             outfit = show.Title.Trim(),
             description = show.Description,
             tags = show.Tags,
             datePurchased = show.CreatedUtc.ToLocalTime(),
             dateReleased = show.ReleaseDate.ToDateTime(TimeOnly.MinValue),
             dateShow = show.ShowDate?.ToDateTime(TimeOnly.MinValue) ?? default,
-            birthdate = performer.BirthDate?.ToDateTime(TimeOnly.MinValue),
+            birthdate = birthDate?.ToDateTime(TimeOnly.MinValue),
             modelAge = age,
             rating = show.OfficialRating is decimal rating ? rating + 5 : 0,
             hotnessLevel = show.Hotness,
             exclusive = show.Exclusive,
             numgirls = show.PerformerCount,
-            hair = performer.Hair,
-            ethnicity = performer.Ethnicity,
-            city = performer.City,
-            country = performer.Country,
-            bust = CmToInches(performer.BustCm),
-            waist = CmToInches(performer.WaistCm),
-            hips = CmToInches(performer.HipsCm),
-            height = CmToLegacyHeight(performer.HeightCm),
+            hair = istripperModel?.hair ?? performer.Hair,
+            ethnicity = istripperModel?.ethnicity ?? performer.Ethnicity,
+            city = istripperModel?.city ?? performer.City,
+            country = istripperModel?.country ?? performer.Country,
+            bust = istripperModel?.bust ?? CmToInches(performer.BustCm),
+            waist = istripperModel?.waist ?? CmToInches(performer.WaistCm),
+            hips = istripperModel?.hips ?? CmToInches(performer.HipsCm),
+            height = istripperModel?.height ?? CmToLegacyHeight(performer.HeightCm),
             imagefile = cover,
             resolution = ResolutionFor(show.Media.Height),
             bestResolution = ResolutionFor(show.Media.Height),
@@ -833,6 +841,14 @@ internal sealed class CustomShowStore
                     clip.AlphaThreshold, 0, media.DurationMs);
             }).ToList();
         return card;
+    }
+
+    static ModelCard? FindIstripperModel(string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId)) return null;
+        return (Datastore.modelcards ?? []).FirstOrDefault(card =>
+            !card.IsCustom && string.Equals(card.modelId?.Trim(), modelId.Trim(),
+                StringComparison.OrdinalIgnoreCase));
     }
 
     static ModelClip CreateClip(string name, string foreground, string alpha,
@@ -907,6 +923,7 @@ internal sealed class CustomShowStore
             store.EnsureCreated();
             CustomPerformerProfile profile = new()
             {
+                IstripperModelId = "test-native-model",
                 ModelName = "Test Model", HeightCm = 170,
                 BustCm = 91.44m, WaistCm = 66, HipsCm = 94
             };
@@ -1073,6 +1090,7 @@ internal sealed class CustomShowStore
             IReadOnlyList<ModelCard> cards = store.LoadCards(false);
             List<ModelClip>? loadedClips = cards.FirstOrDefault()?.clips;
             if (cards.Count != 1 || cards[0].name != "custom:" + show.Id ||
+                cards[0].modelId != "test-native-model" ||
                 cards[0].modelAge != 24 || cards[0].bust != 36 ||
                 cards[0].height != "5.7" || loadedClips?.Count != 2 ||
                 loadedClips[0].customEndMs != 400 ||

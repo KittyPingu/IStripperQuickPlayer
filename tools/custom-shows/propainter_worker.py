@@ -66,7 +66,8 @@ def supports_nvenc(ffmpeg: str) -> bool:
 
 
 def fast_process(source: Path, mask: Path, output: Path, part: Path,
-                 preview_output: Path | None, ffmpeg: str, total_frames: int) -> None:
+                 preview_source: Path | None, preview_output: Path | None,
+                 ffmpeg: str, total_frames: int) -> None:
     import cv2
     import numpy as np
 
@@ -93,14 +94,21 @@ def fast_process(source: Path, mask: Path, output: Path, part: Path,
          ("NVENC..." if nvenc else "CPU H.264 output..."))
     clean = f"delogo=x={x}:y={y}:w={area_width}:h={area_height}:show=0"
     command = [ffmpeg, "-y", "-v", "error", "-i", str(source)]
-    if preview_output:
+    if preview_source and preview_output:
+        preview_source.parent.mkdir(parents=True, exist_ok=True)
         preview_output.parent.mkdir(parents=True, exist_ok=True)
         command += ["-filter_complex",
-                    f"[0:v]{clean},split=2[encoded][preview];[preview]fps=1[thumb]",
+                    f"[0:v]split=2[source_preview_input][clean_input];"
+                    f"[clean_input]{clean},split=2[encoded][output_preview_input];"
+                    f"[source_preview_input]fps=1[source_thumb];"
+                    f"[output_preview_input]fps=1[output_thumb]",
                     "-map", "[encoded]", "-map", "0:a?", *codec,
                     "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart",
-                    str(part), "-map", "[thumb]", "-an", "-c:v", "mjpeg",
-                    "-q:v", "3", "-update", "1", str(preview_output)]
+                    str(part), "-map", "[source_thumb]", "-an", "-c:v", "mjpeg",
+                    "-q:v", "3", "-update", "1", "-atomic_writing", "1",
+                    str(preview_source), "-map", "[output_thumb]", "-an",
+                    "-c:v", "mjpeg", "-q:v", "3", "-update", "1",
+                    "-atomic_writing", "1", str(preview_output)]
     else:
         command += ["-vf", clean, "-map", "0:v:0", "-map", "0:a?", *codec,
                     "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart",
@@ -136,7 +144,10 @@ def process(args: argparse.Namespace) -> None:
     runtime = Path(args.runtime).resolve()
     source, mask, output = (Path(value).resolve() for value in
                             (args.source, args.mask, args.output))
+    preview_source = Path(args.preview_source).resolve() if args.preview_source else None
     preview_output = Path(args.preview_output).resolve() if args.preview_output else None
+    if bool(preview_source) != bool(preview_output):
+        raise RuntimeError("Both processing preview paths must be provided together")
     if not source.is_file() or source.suffix.lower() not in {".mp4", ".mov", ".avi"}:
         raise RuntimeError("ProPainter accepts MP4, MOV, or AVI source videos")
     if not mask.is_file():
@@ -156,7 +167,7 @@ def process(args: argparse.Namespace) -> None:
     rate, total_frames = video_info(ffprobe, source)
     if args.method == "fast":
         try:
-            fast_process(source, mask, output, final_part, preview_output,
+            fast_process(source, mask, output, final_part, preview_source, preview_output,
                          ffmpeg, total_frames)
         finally:
             final_part.unlink(missing_ok=True)
@@ -228,9 +239,15 @@ def process(args: argparse.Namespace) -> None:
     fp16 = bool(args.fp16 and use_cuda)
     device = "CUDA/FP16" if fp16 else ("CUDA/FP32" if use_cuda else "CPU/FP32")
     raw_frames = VideoFrames()
+    preview_capture = cv2.VideoCapture(str(source)) if preview_source else None
+    if preview_capture is not None and not preview_capture.isOpened():
+        raw_frames.close()
+        raise RuntimeError("OpenCV could not open the source preview stream")
     removal_mask = cv2.imread(str(mask), cv2.IMREAD_GRAYSCALE)
     if removal_mask is None:
         raw_frames.close()
+        if preview_capture is not None:
+            preview_capture.release()
         raise RuntimeError("The removal mask could not be read")
     if removal_mask.shape != (raw_frames.height, raw_frames.width):
         removal_mask = cv2.resize(removal_mask, (raw_frames.width, raw_frames.height),
@@ -289,14 +306,26 @@ def process(args: argparse.Namespace) -> None:
             for output_frames in iterator:
                 encode.stdin.write(np.ascontiguousarray(output_frames).tobytes())
                 completed += len(output_frames)
-                if preview_output:
+                if preview_source and preview_output and preview_capture is not None:
+                    source_frame = None
+                    for _ in output_frames:
+                        ok, source_frame = preview_capture.read()
+                        if not ok:
+                            raise RuntimeError("Source preview decoding ended early")
+                    assert source_frame is not None
+                    preview_source.parent.mkdir(parents=True, exist_ok=True)
                     preview_output.parent.mkdir(parents=True, exist_ok=True)
-                    temporary_preview = preview_output.with_name(
+                    temporary_source = preview_source.with_name(
+                        preview_source.stem + ".tmp.jpg")
+                    temporary_output = preview_output.with_name(
                         preview_output.stem + ".tmp.jpg")
-                    cv2.imwrite(str(temporary_preview), cv2.cvtColor(
+                    cv2.imwrite(str(temporary_source), source_frame,
+                                [cv2.IMWRITE_JPEG_QUALITY, 88])
+                    cv2.imwrite(str(temporary_output), cv2.cvtColor(
                         output_frames[-1], cv2.COLOR_RGB2BGR),
                         [cv2.IMWRITE_JPEG_QUALITY, 88])
-                    os.replace(temporary_preview, preview_output)
+                    os.replace(temporary_source, preview_source)
+                    os.replace(temporary_output, preview_output)
                 emit("inpainting", 10 + min(completed, total_frames) / total_frames * 84,
                      f"Removed object from {min(completed, total_frames):,}/{total_frames:,} frames")
         encode.stdin.close()
@@ -316,6 +345,8 @@ def process(args: argparse.Namespace) -> None:
         emit("complete", 100, f"Saved {output.name}")
     finally:
         raw_frames.close()
+        if preview_capture is not None:
+            preview_capture.release()
         if encode is not None and encode.poll() is None:
             try:
                 if encode.stdin:
@@ -350,6 +381,7 @@ def main() -> None:
     parser.add_argument("--subvideo-length", type=int, default=40)
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--method", choices=("fast", "propainter"), default="propainter")
+    parser.add_argument("--preview-source")
     parser.add_argument("--preview-output")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()

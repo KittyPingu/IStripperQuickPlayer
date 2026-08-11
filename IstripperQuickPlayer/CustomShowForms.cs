@@ -18,7 +18,9 @@ internal sealed class CustomShowEditorForm : Form
     readonly TextBox source = new();
     readonly CheckBox copySource = new() { Text = "Copy original into the show folder" };
     readonly TextBox title = new();
-    readonly ComboBox performer = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox performer = new() { DropDownStyle = ComboBoxStyle.DropDown,
+        AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+        AutoCompleteSource = AutoCompleteSource.ListItems };
     readonly Button newPerformer = new() { Text = "New model...", AutoSize = true };
     readonly Button editPerformer = new() { Text = "Edit model...", AutoSize = true,
         Enabled = false };
@@ -155,7 +157,9 @@ internal sealed class CustomShowEditorForm : Form
         performer.SelectedIndexChanged += (_, _) =>
         {
             selectedProfile = performer.SelectedItem as CustomPerformerProfile;
-            editPerformer.Enabled = selectedProfile != null;
+            bool editable = selectedProfile != null &&
+                string.IsNullOrWhiteSpace(selectedProfile.IstripperModelId);
+            editPerformer.Enabled = editPerformer.Visible = editable;
         };
         LoadData();
         UpdateProcessingOptions();
@@ -247,9 +251,10 @@ internal sealed class CustomShowEditorForm : Form
     void LoadData()
     {
         profiles = store.LoadPerformers().ToList();
+        AddIstripperModels(profiles);
         performer.DataSource = null;
-        performer.DisplayMember = nameof(CustomPerformerProfile.ModelName);
-        performer.DataSource = profiles;
+        performer.DisplayMember = nameof(CustomPerformerProfile.DisplayName);
+        performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
         if (showId == null) return;
         CustomShowManifest show = store.LoadManifest(showId);
         copySource.Enabled = preset.Enabled = maskEngine.Enabled =
@@ -283,6 +288,38 @@ internal sealed class CustomShowEditorForm : Form
             processingDetails.Visible = true;
         }
         UpdateClipButton();
+    }
+
+    static void AddIstripperModels(List<CustomPerformerProfile> target)
+    {
+        HashSet<string> existingIds = target
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.IstripperModelId))
+            .Select(profile => profile.IstripperModelId!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<ModelCard> nativeModels = (DataModel.Datastore.modelcards ?? [])
+            .Where(card => !card.IsCustom &&
+                !string.IsNullOrWhiteSpace(card.modelId) &&
+                !card.modelId.Contains(',') &&
+                !string.IsNullOrWhiteSpace(card.modelName))
+            .GroupBy(card => card.modelId!, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(card => card.modelName, StringComparer.CurrentCultureIgnoreCase);
+        foreach (ModelCard card in nativeModels)
+        {
+            string modelId = card.modelId!.Trim();
+            if (!existingIds.Add(modelId)) continue;
+            target.Add(new CustomPerformerProfile
+            {
+                IstripperModelId = modelId,
+                ModelName = card.modelName!.Trim(),
+                BirthDate = card.birthdate is DateTime birth && birth != default
+                    ? DateOnly.FromDateTime(birth) : null,
+                Hair = card.hair ?? "",
+                Ethnicity = card.ethnicity ?? "",
+                City = card.city ?? "",
+                Country = card.country ?? ""
+            });
+        }
     }
 
     static string DescribeProcessing(CustomShowProcessing value)
@@ -357,7 +394,7 @@ internal sealed class CustomShowEditorForm : Form
         int index = profiles.FindIndex(profile => profile.Id == selectedProfile.Id);
         if (index >= 0) profiles[index] = selectedProfile; else profiles.Add(selectedProfile);
         performer.DataSource = null;
-        performer.DisplayMember = nameof(CustomPerformerProfile.ModelName);
+        performer.DisplayMember = nameof(CustomPerformerProfile.DisplayName);
         performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
         performer.SelectedItem = performer.Items.Cast<CustomPerformerProfile>()
             .First(profile => profile.Id == selectedProfileId);
@@ -1191,7 +1228,8 @@ internal sealed class CustomPerformerForm : Form
     static void Add(TableLayoutPanel table, string label, Control control)
         { int row = table.RowCount++; table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row); control.Dock = DockStyle.Fill; table.Controls.Add(control, 1, row); }
     static CustomPerformerProfile Clone(CustomPerformerProfile p) => new()
-        { SchemaVersion=p.SchemaVersion, Id=p.Id, ModelName=p.ModelName, BirthDate=p.BirthDate,
+        { SchemaVersion=p.SchemaVersion, Id=p.Id, IstripperModelId=p.IstripperModelId,
+          ModelName=p.ModelName, BirthDate=p.BirthDate,
           HeightCm=p.HeightCm, BustCm=p.BustCm, WaistCm=p.WaistCm, HipsCm=p.HipsCm,
           Hair=p.Hair, Ethnicity=p.Ethnicity, City=p.City, Country=p.Country };
 }

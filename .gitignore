@@ -380,6 +380,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/CustomVideoComparisonForm.cs
 !/IstripperQuickPlayer/LockStateOverlay.cs
 !/IstripperQuickPlayer/PlaybackBridgeClient.cs
+!/IstripperQuickPlayer/ProcessCancellationScope.cs
 !/IstripperQuickPlayer/Controls/
 /IstripperQuickPlayer/Controls/*
 !/IstripperQuickPlayer/Controls/PlaybackSeekBar.cs
