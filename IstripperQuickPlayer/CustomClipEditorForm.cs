@@ -67,6 +67,12 @@ internal sealed class CustomClipEditorForm : Form
         Enabled = false };
     readonly Label transitionSecondsLabel = new() { Text = "seconds", AutoSize = true,
         Margin = new Padding(0, 7, 3, 3) };
+    readonly CheckBox showSkipped = new() { Text = "Show skipped clips in grid",
+        AutoSize = true, Checked = true };
+    readonly NumericUpDown shortClipSeconds = new() { DecimalPlaces = 1,
+        Minimum = 0, Maximum = 3600, Increment = .5m, Value = 10, Width = 72 };
+    readonly Label shortClipLabel = new() { Text = "Auto-skip shorter than (seconds)",
+        AutoSize = true, Margin = new Padding(8, 7, 3, 3) };
     readonly System.Windows.Forms.Timer playback = new() { Interval = 100 };
     readonly System.Windows.Forms.Timer previewDelay = new() { Interval = 140 };
     CancellationTokenSource? previewCancellation;
@@ -132,7 +138,13 @@ internal sealed class CustomClipEditorForm : Form
             ColumnCount = 2, RowCount = 1 };
         details.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 68));
         details.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
-        details.Controls.Add(grid, 0, 0);
+        TableLayoutPanel gridPanel = new() { Dock = DockStyle.Fill,
+            ColumnCount = 1, RowCount = 2 };
+        gridPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        gridPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        gridPanel.Controls.Add(showSkipped, 0, 0);
+        gridPanel.Controls.Add(grid, 0, 1);
+        details.Controls.Add(gridPanel, 0, 0);
         TableLayoutPanel metadata = new() { Dock = DockStyle.Fill,
             ColumnCount = 1, RowCount = 7, Padding = new Padding(8) };
         metadata.Controls.Add(include);
@@ -159,7 +171,7 @@ internal sealed class CustomClipEditorForm : Form
         root.Controls.Add(details, 0, 3);
 
         FlowLayoutPanel actions = new() { Dock = DockStyle.Fill, AutoSize = true,
-            WrapContents = false };
+            WrapContents = true };
         Button ok = new() { Text = "OK", AutoSize = true };
         Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
         detector.Items.Add("Fast (FFmpeg)");
@@ -179,9 +191,13 @@ internal sealed class CustomClipEditorForm : Form
             preferredIndex = detector.Items.Cast<string>().ToList().FindIndex(item =>
                 DetectorId(item) == "omnishotcut");
         detector.SelectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
+        shortClipSeconds.Value = Math.Clamp(
+            (existingDetection?.MinimumClipMs ?? 10_000) / 1000m,
+            shortClipSeconds.Minimum, shortClipSeconds.Maximum);
         actions.Controls.AddRange([addDivider, removeDivider,
             detector, skipTransitions, transitionSeconds,
-            transitionSecondsLabel, autoDetect, ok, cancel]);
+            transitionSecondsLabel, shortClipLabel, shortClipSeconds,
+            autoDetect, ok, cancel]);
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         AcceptButton = ok;
@@ -206,7 +222,13 @@ internal sealed class CustomClipEditorForm : Form
             detector.Visible = allowBoundaryEditing;
         skipTransitions.Visible = transitionSeconds.Visible =
             transitionSecondsLabel.Visible = allowBoundaryEditing;
-        timeline.PositionChanged += (_, _) => { UpdatePosition(); RequestPreview(); };
+        shortClipLabel.Visible = shortClipSeconds.Visible = allowBoundaryEditing;
+        timeline.PositionChanged += (_, _) =>
+        {
+            UpdatePosition();
+            SelectClipAtTimelinePosition();
+            RequestPreview();
+        };
         timeline.ScrubStarted += (_, _) =>
         {
             resumeAfterScrub = playback.Enabled;
@@ -219,6 +241,8 @@ internal sealed class CustomClipEditorForm : Form
         };
         timeline.DividerMoved += _ => { MarkDetectionManuallyEdited(); UpdateGridTimes(); };
         grid.SelectionChanged += (_, _) => LoadSelectedMetadata();
+        showSkipped.CheckedChanged += (_, _) => RefreshGrid(
+            ClipIndexAt(clips, timeline.PositionMs));
         grid.CellDoubleClick += (_, e) => SeekToSegment(
             e.RowIndex, e.ColumnIndex == 4);
         include.Click += (_, _) =>
@@ -305,7 +329,8 @@ internal sealed class CustomClipEditorForm : Form
         for (int i = 0; i < clips.Count; i++)
         {
             CustomShowClip clip = clips[i];
-            grid.Rows.Add(i + 1, clip.Included ? "Clip" : "Skip",
+            if (!showSkipped.Checked && !clip.Included) continue;
+            int rowIndex = grid.Rows.Add(i + 1, clip.Included ? "Clip" : "Skip",
                 string.Join(", ", clip.DetectionLabels),
                 Format(clip.StartMs), Format(clip.EndMs),
                 Format(clip.EndMs - clip.StartMs), clip.Hotness,
@@ -313,17 +338,26 @@ internal sealed class CustomClipEditorForm : Form
                 clip.Included && clip.Media != null
                     ? clip.AlphaThreshold.ToString(CultureInfo.InvariantCulture)
                     : "");
+            grid.Rows[rowIndex].Tag = i;
         }
-        if (grid.Rows.Count > 0)
-            grid.Rows[Math.Clamp(selected, 0, grid.Rows.Count - 1)].Selected = true;
+        DataGridViewRow? selectedRow = RowForClip(selected) ??
+            grid.Rows.Cast<DataGridViewRow>().FirstOrDefault();
+        grid.ClearSelection();
+        if (selectedRow != null) selectedRow.Selected = true;
         loadingMetadata = false;
         LoadSelectedMetadata();
     }
 
-    int SelectedIndex => grid.SelectedRows.Count == 0 ? -1 : grid.SelectedRows[0].Index;
+    int SelectedIndex => grid.SelectedRows.Count == 0 ? -1 :
+        (int?)grid.SelectedRows[0].Tag ?? -1;
     int[] SelectedIndexes => grid.SelectedRows.Cast<DataGridViewRow>()
-        .Select(row => row.Index).Where(index => index >= 0 && index < clips.Count)
+        .Select(row => (int?)row.Tag ?? -1)
+        .Where(index => index >= 0 && index < clips.Count)
         .Order().ToArray();
+
+    DataGridViewRow? RowForClip(int clipIndex) => grid.Rows
+        .Cast<DataGridViewRow>().FirstOrDefault(row =>
+            (int?)row.Tag == clipIndex);
 
     void LoadSelectedMetadata()
     {
@@ -397,6 +431,8 @@ internal sealed class CustomClipEditorForm : Form
                 clips[index].Hotness = selectedHotness;
             UpdateGridMetadata(index);
         }
+        if (!showSkipped.Checked && indexes.Any(index => !clips[index].Included))
+            RefreshGrid(ClipIndexAt(clips, timeline.PositionMs));
         timeline.Invalidate();
     }
 
@@ -422,11 +458,14 @@ internal sealed class CustomClipEditorForm : Form
 
     void UpdateGridMetadata(int index)
     {
-        grid.Rows[index].Cells[1].Value = clips[index].Included ? "Clip" : "Skip";
-        grid.Rows[index].Cells[2].Value = string.Join(", ", clips[index].DetectionLabels);
-        grid.Rows[index].Cells[6].Value = clips[index].Hotness;
-        grid.Rows[index].Cells[7].Value = string.Join(", ", clips[index].ClipTypes);
-        grid.Rows[index].Cells[8].Value = clips[index].Included &&
+        DataGridViewRow? row = RowForClip(index);
+        if (row == null)
+            return;
+        row.Cells[1].Value = clips[index].Included ? "Clip" : "Skip";
+        row.Cells[2].Value = string.Join(", ", clips[index].DetectionLabels);
+        row.Cells[6].Value = clips[index].Hotness;
+        row.Cells[7].Value = string.Join(", ", clips[index].ClipTypes);
+        row.Cells[8].Value = clips[index].Included &&
             clips[index].Media != null
                 ? clips[index].AlphaThreshold.ToString(CultureInfo.InvariantCulture)
                 : "";
@@ -434,11 +473,13 @@ internal sealed class CustomClipEditorForm : Form
 
     void UpdateGridTimes()
     {
-        for (int i = 0; i < clips.Count && i < grid.Rows.Count; i++)
+        for (int i = 0; i < clips.Count; i++)
         {
-            grid.Rows[i].Cells[3].Value = Format(clips[i].StartMs);
-            grid.Rows[i].Cells[4].Value = Format(clips[i].EndMs);
-            grid.Rows[i].Cells[5].Value = Format(clips[i].EndMs - clips[i].StartMs);
+            DataGridViewRow? row = RowForClip(i);
+            if (row == null) continue;
+            row.Cells[3].Value = Format(clips[i].StartMs);
+            row.Cells[4].Value = Format(clips[i].EndMs);
+            row.Cells[5].Value = Format(clips[i].EndMs - clips[i].StartMs);
         }
     }
 
@@ -487,7 +528,7 @@ internal sealed class CustomClipEditorForm : Form
         StopPlayback(requestPreview: false);
         SaveSelectedMetadata();
         autoDetect.Enabled = detector.Enabled = skipTransitions.Enabled =
-            transitionSeconds.Enabled = addDivider.Enabled =
+            transitionSeconds.Enabled = shortClipSeconds.Enabled = addDivider.Enabled =
             removeDivider.Enabled = timeline.Enabled = false;
         Cursor = Cursors.WaitCursor;
         detectionCancellation?.Cancel();
@@ -527,8 +568,10 @@ internal sealed class CustomClipEditorForm : Form
             CustomShowClip seed = Clone(clips.FirstOrDefault(clip => clip.Included) ?? clips[0]);
             long bufferMs = skipTransitions.Checked
                 ? checked((long)Math.Round(transitionSeconds.Value * 1000)) : 0;
+            long minimumClipMs = checked((long)Math.Round(
+                shortClipSeconds.Value * 1000));
             CustomShowClip[] detected = BuildDetectedClips(
-                seed, result, durationMs, bufferMs);
+                seed, result, durationMs, bufferMs, minimumClipMs);
             clips.Clear();
             clips.AddRange(detected);
             clipDetection = new()
@@ -537,7 +580,7 @@ internal sealed class CustomClipEditorForm : Form
                 ToolRevision = result.ToolRevision,
                 OverlapFrames = result.OverlapFrames,
                 TransitionBufferMs = bufferMs,
-                MinimumClipMs = 10_000,
+                MinimumClipMs = minimumClipMs,
                 ManuallyEdited = false
             };
             timeline.PositionMs = validDividers.FirstOrDefault(
@@ -560,7 +603,7 @@ internal sealed class CustomClipEditorForm : Form
             {
                 autoDetect.Text = "Auto-detect clips";
                 autoDetect.Enabled = detector.Enabled = skipTransitions.Enabled =
-                    addDivider.Enabled = timeline.Enabled = true;
+                    shortClipSeconds.Enabled = addDivider.Enabled = timeline.Enabled = true;
                 transitionSeconds.Enabled = skipTransitions.Checked;
                 removeDivider.Enabled = SelectedIndex > 0;
                 Cursor = Cursors.Default;
@@ -634,21 +677,30 @@ internal sealed class CustomClipEditorForm : Form
 
     void HighlightPlayingClip()
     {
+        SelectClipAtTimelinePosition();
+    }
+
+    void SelectClipAtTimelinePosition()
+    {
         int index = ClipIndexAt(clips, timeline.PositionMs);
         if (index < 0 || index == SelectedIndex) return;
+        DataGridViewRow? row = RowForClip(index);
+        if (row == null) return;
         grid.ClearSelection();
-        grid.Rows[index].Selected = true;
-        if (!grid.Rows[index].Displayed)
-            grid.FirstDisplayedScrollingRowIndex = index;
+        row.Selected = true;
+        if (!row.Displayed)
+            grid.FirstDisplayedScrollingRowIndex = row.Index;
     }
 
     void SeekToSegment(int index, bool seekToEnd)
     {
-        if (index < 0 || index >= clips.Count) return;
+        if (index < 0 || index >= grid.Rows.Count) return;
+        int clipIndex = (int?)grid.Rows[index].Tag ?? -1;
+        if (clipIndex < 0 || clipIndex >= clips.Count) return;
         StopPlayback(requestPreview: false);
         grid.ClearSelection();
         grid.Rows[index].Selected = true;
-        timeline.PositionMs = SegmentSeekPosition(clips[index], seekToEnd,
+        timeline.PositionMs = SegmentSeekPosition(clips[clipIndex], seekToEnd,
             frameDurationMs, durationMs);
     }
 
@@ -826,14 +878,17 @@ internal sealed class CustomClipEditorForm : Form
     }
 
     internal static CustomShowClip[] BuildDetectedClips(CustomShowClip seed,
-        IEnumerable<long> dividers, long durationMs, long bufferMs)
+        IEnumerable<long> dividers, long durationMs, long bufferMs,
+        long minimumClipMs = 10_000)
         => BuildDetectedClips(seed, new SceneDetectionResult("ffmpeg",
-            dividers.ToArray(), []), durationMs, bufferMs);
+            dividers.ToArray(), []), durationMs, bufferMs, minimumClipMs);
 
     internal static CustomShowClip[] BuildDetectedClips(CustomShowClip seed,
-        SceneDetectionResult detection, long durationMs, long bufferMs)
+        SceneDetectionResult detection, long durationMs, long bufferMs,
+        long minimumClipMs = 10_000)
     {
-        const long minimumClipMs = 10_000;
+        if (minimumClipMs is < 0 or > 3_600_000)
+            throw new ArgumentOutOfRangeException(nameof(minimumClipMs));
         string[] gradual = ["Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway"];
         string[] intra = ["General", .. gradual, "Padding"];
         string[] inter = ["New_Start", "Hard_Cut", "Transition_Source", "Transition",
@@ -916,12 +971,13 @@ internal sealed class CustomClipEditorForm : Form
             clip.StartMs = start;
             clip.EndMs = end;
             clip.Included = !isSkipped && end - start >= minimumClipMs;
-            if (!isSkipped && end - start < minimumClipMs) labels.Add("Short (<10s)");
+            string shortLabel = ShortClipLabel(minimumClipMs);
+            if (!isSkipped && end - start < minimumClipMs) labels.Add(shortLabel);
             clip.DetectionLabels = labels.Distinct(StringComparer.Ordinal).ToArray();
             clip.Media = null;
             if (result.Count > 0 && !clip.Included && !result[^1].Included &&
-                !clip.DetectionLabels.Contains("Short (<10s)") &&
-                !result[^1].DetectionLabels.Contains("Short (<10s)"))
+                !clip.DetectionLabels.Contains(shortLabel) &&
+                !result[^1].DetectionLabels.Contains(shortLabel))
             {
                 result[^1].EndMs = clip.EndMs;
                 result[^1].DetectionLabels = result[^1].DetectionLabels
@@ -931,6 +987,9 @@ internal sealed class CustomClipEditorForm : Form
         }
         return [.. result];
     }
+
+    static string ShortClipLabel(long minimumClipMs) =>
+        $"Short (<{minimumClipMs / 1000d:0.###}s)";
 
     internal static long FrameStep(long position, int direction,
         double frameDurationMs, long durationMs) => Math.Clamp(
@@ -954,6 +1013,10 @@ internal sealed class CustomClipEditorForm : Form
             seed, [15_000, 30_000], 40_000, 1_000);
         CustomShowClip[] unbuffered = BuildDetectedClips(
             seed, [12_000], 30_000, 0);
+        CustomShowClip[] sixSecondMinimum = BuildDetectedClips(
+            seed, [7_000], 15_000, 0, 6_000);
+        CustomShowClip[] eightSecondMinimum = BuildDetectedClips(
+            seed, [7_000], 15_000, 0, 8_000);
         SceneDetectionResult omni = new("omnishotcut", [12_000, 14_000],
             [new(0, 12_000, "General", "New_Start"),
              new(12_000, 14_000, "Fade", "Transition"),
@@ -981,6 +1044,10 @@ internal sealed class CustomClipEditorForm : Form
             detected[4].StartMs == 31_000 && detected[4].EndMs == 40_000 &&
             unbuffered.Length == 2 && unbuffered.All(clip => clip.Included) &&
             unbuffered[0].EndMs == 12_000 && unbuffered[1].StartMs == 12_000 &&
+            sixSecondMinimum.All(clip => clip.Included) &&
+            !eightSecondMinimum[0].Included &&
+            eightSecondMinimum[0].DetectionLabels.Contains("Short (<8s)") &&
+            eightSecondMinimum[1].Included &&
             transitionAware.Length == 3 && transitionAware[0].Included &&
             !transitionAware[1].Included && transitionAware[1].StartMs == 12_000 &&
             transitionAware[1].EndMs == 14_000 &&

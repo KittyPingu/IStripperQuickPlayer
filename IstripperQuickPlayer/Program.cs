@@ -32,6 +32,8 @@ namespace IStripperQuickPlayer
                     ("mask frame selection", CustomMaskEditorForm.VerifyFrameSelection()),
                     ("mask draft round trip", CustomShowMaskDraft.VerifyRoundTrip()),
                     ("mask archive round trip", CustomMaskArchive.VerifyRoundTrip()),
+                    ("automatic show queue", CustomShowJobRunner.VerifyQueuePersistence()),
+                    ("automatic queue eligibility", VerifyQueueEligibility()),
                     ("watermark selection", CustomWatermarkRemovalForm.VerifySelection()),
                     ("stabilization settings", CustomVideoStabilizationForm.VerifySettings()),
                     ("staging cleanup", CustomShowEditorForm.VerifyStagingCleanup()),
@@ -583,6 +585,17 @@ namespace IStripperQuickPlayer
                 }
             }
         }
+
+        static bool VerifyQueueEligibility() =>
+            CustomShowEditorForm.QueueAction("quality", true) == "Queue" &&
+            CustomShowEditorForm.QueueAction("fast", true) == "Queue" &&
+            CustomShowEditorForm.QueueAction("rvm-matanyone2", true) == "Queue" &&
+            CustomShowEditorForm.QueueAction("rvm-vitmatte-s", true) == "Queue" &&
+            CustomShowEditorForm.QueueAction("matanyone2", true) == "Mask and Queue" &&
+            CustomShowEditorForm.QueueAction("quality", false) == null &&
+            CustomShowEditorForm.QueueAction("videomama", true) == null &&
+            CustomShowEditorForm.QueueAction("vitmatte-s", true) == null &&
+            CustomShowEditorForm.QueueAction("vitmatte-b", true) == null;
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern IntPtr GetThreadDpiAwarenessContext();

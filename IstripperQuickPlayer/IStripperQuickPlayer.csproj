@@ -41,6 +41,9 @@
     <Content Include="..\tools\custom-shows\rvm_worker.py" Link="custom-shows\rvm_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\custom-shows\processing_priority.py" Link="custom-shows\processing_priority.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\tools\custom-shows\transnetv2_worker.py" Link="custom-shows\transnetv2_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

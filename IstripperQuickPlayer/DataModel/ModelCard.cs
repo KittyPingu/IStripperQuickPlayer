@@ -87,6 +87,7 @@ namespace IStripperQuickPlayer
         internal string? customShowId;
         internal string? customPerformerId;
         internal string? customManifestPath;
+        internal string? gender;
         internal bool IsCustom => collection == CollectionType.Custom;
         internal byte oo;
         internal int ff;

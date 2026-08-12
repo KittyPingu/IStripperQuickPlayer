@@ -27,6 +27,27 @@ namespace IStripperQuickPlayer
         public FilterSettings? filterSettings;
         FilterSettings? savedSettings;
         bool deleting = false;
+        readonly GroupBox cardTypeGroup = new()
+        {
+            Text = "Card Type",
+            Location = new Point(21, 687),
+            Size = new System.Drawing.Size(757, 92)
+        };
+        readonly GroupBox genderGroup = new()
+        {
+            Text = "Gender",
+            Location = new Point(21, 790),
+            Size = new System.Drawing.Size(757, 88)
+        };
+        readonly CheckedListBox customGenders = new()
+        {
+            CheckOnClick = true,
+            MultiColumn = true,
+            ColumnWidth = 120,
+            BorderStyle = BorderStyle.None,
+            Location = new Point(12, 24),
+            Size = new System.Drawing.Size(730, 52)
+        };
         readonly CheckBox chkCustom = new()
         {
             AutoSize = true,
@@ -40,6 +61,8 @@ namespace IStripperQuickPlayer
 
             Save();
             InitializeComponent();
+            AddCardTypeFilter();
+            AddGenderFilter();
             this.dateTimePickerMin.CustomFormat = Application.CurrentCulture.DateTimeFormat.ShortDatePattern;
             this.dateTimePickerMax.CustomFormat = Application.CurrentCulture.DateTimeFormat.ShortDatePattern;
             ReadValues();
@@ -50,13 +73,59 @@ namespace IStripperQuickPlayer
             this.Controls.Add(rangeHips);
             this.Controls.Add(rangeAge);
             chkCustom.CheckedChanged += (_, e) => chk_CheckedChanged(chkCustom, e);
-            this.Controls.Add(chkCustom);
             AppTheme.Apply(this);
             isLoaded = true;
             if (string.IsNullOrEmpty(_filterName) || _filterName == "Default") button1.Enabled = false;
             else button1.Enabled = true;
             _ = TooltipManager.Attach(this, components,
                 Properties.Settings.Default.TooltipInitialDelay);
+        }
+
+        void AddCardTypeFilter()
+        {
+            TableLayoutPanel choices = new()
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 5,
+                RowCount = 2,
+                Padding = new Padding(8, 10, 8, 4)
+            };
+            for (int column = 0; column < choices.ColumnCount; column++)
+                choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+            choices.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            choices.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            CheckBox[] cardTypes =
+            [
+                chkIStripperClassic, chkDeskBabes, chkVGClassic, chkIStripper,
+                chkIStripperXXX, chkNormal, chkSpecial, chkVirtuaGuy,
+                chkTradingCard, chkCustom
+            ];
+            for (int index = 0; index < cardTypes.Length; index++)
+            {
+                cardTypes[index].Location = Point.Empty;
+                cardTypes[index].Anchor = AnchorStyles.None;
+                choices.Controls.Add(cardTypes[index], index % 5, index / 5);
+            }
+            cardTypeGroup.Controls.Add(choices);
+            Controls.Add(cardTypeGroup);
+        }
+
+        void AddGenderFilter()
+        {
+            customGenders.Items.AddRange(CustomShowStore.GenderValues);
+            customGenders.ItemCheck += (_, _) =>
+            {
+                if (isLoaded) BeginInvoke(ApplySettings);
+            };
+            customGenders.Location = new Point(
+                (genderGroup.ClientSize.Width - customGenders.Width) / 2,
+                (genderGroup.ClientSize.Height - customGenders.Height) / 2 + 6);
+            genderGroup.Controls.Add(customGenders);
+            Controls.Add(genderGroup);
+            foreach (Button button in new[]
+                { cmdSaveDefault, button1, cmdSaveAs, cmdRevert, cmdOK })
+                button.Top += 95;
+            ClientSize = new System.Drawing.Size(ClientSize.Width, ClientSize.Height + 95);
         }
 
         private void ReadValues()
@@ -170,6 +239,12 @@ namespace IStripperQuickPlayer
             chkVirtuaGuy.Checked = filterSettings.VirtuaGuy;
             chkTradingCard.Checked = filterSettings.TradingCard;
             chkCustom.Checked = filterSettings.Custom;
+            HashSet<string> selectedGenders = filterSettings.genders.Split(',',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            for (int index = 0; index < customGenders.Items.Count; index++)
+                customGenders.SetItemChecked(index,
+                    selectedGenders.Contains(customGenders.Items[index]!.ToString()!));
             dateTimePickerMin.Value = filterSettings.minDate;
             dateTimePickerMax.Value = filterSettings.maxDate;
             dateTimePickerMin.ValueChanged += Range_ValueChanged;
@@ -303,6 +378,8 @@ namespace IStripperQuickPlayer
             filterSettings.VirtuaGuy = chkVirtuaGuy.Checked;
             filterSettings.TradingCard = chkTradingCard.Checked;
             filterSettings.Custom = chkCustom.Checked;
+            filterSettings.genders = string.Join(',',
+                customGenders.CheckedItems.Cast<object>().Select(value => value.ToString()));
 
             Form1? frm = Utils.GetMainForm();
             if (frm != null)
@@ -384,13 +461,10 @@ namespace IStripperQuickPlayer
             if (savedSettings is null) return;
             filterSettings = (FilterSettings)savedSettings.Clone();
             isLoaded = false;
+            foreach (Control control in new Control?[] { rangeRating, rangeMyRating,
+                rangeBreastSize, rangeWaist, rangeHips, rangeAge }.OfType<Control>())
+                Controls.Remove(control);
             ReadValues();
-            this.Controls.RemoveAt(this.Controls.Count - 1);
-            this.Controls.RemoveAt(this.Controls.Count - 1);
-            this.Controls.RemoveAt(this.Controls.Count - 1);
-            this.Controls.RemoveAt(this.Controls.Count - 1);
-            this.Controls.RemoveAt(this.Controls.Count - 1);
-            this.Controls.RemoveAt(this.Controls.Count - 1);
 
             this.Controls.Add(rangeRating);
             this.Controls.Add(rangeMyRating);

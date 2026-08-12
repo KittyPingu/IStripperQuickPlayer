@@ -16,6 +16,8 @@ internal sealed class CustomShowEditorForm : Form
     readonly CustomShowConfiguration configuration;
     readonly string? showId;
     readonly bool reprocess;
+    readonly CustomShowQueueManager? queueManager;
+    readonly string? queueJobId;
     string? appendShowId;
     readonly TextBox source = new();
     readonly Button addToExisting = new() { Text = "Add To Existing Show", AutoSize = true };
@@ -32,6 +34,7 @@ internal sealed class CustomShowEditorForm : Form
     readonly DateTimePicker showDate = new() { Format = DateTimePickerFormat.Short, ShowCheckBox = true };
     readonly NumericUpDown ageOverride = new() { Minimum = 18, Maximum = 120, Value = 18 };
     readonly CheckBox useAgeOverride = new() { Text = "Use" };
+    readonly ComboBox gender = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox hotness = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly NumericUpDown performerCount = new() { Minimum = 1, Maximum = 20, Value = 1 };
     readonly CheckedListBox clipTypes = new() { Height = 90, CheckOnClick = true };
@@ -59,6 +62,7 @@ internal sealed class CustomShowEditorForm : Form
     readonly CheckBox keepMasks = new() { Text = "Keep existing masks",
         AutoSize = true, Checked = true, Visible = false };
     readonly Button save = new() { Text = "Process and Preview", AutoSize = true };
+    readonly Button queue = new() { Text = "Queue", AutoSize = true, Visible = false };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     TableLayoutPanel? processingTable;
     int maskEngineRow, sam2ModelRow, mattingDetailRow, rvmThresholdRow,
@@ -67,14 +71,23 @@ internal sealed class CustomShowEditorForm : Form
     CustomPerformerProfile? selectedProfile;
     CustomShowClip[] showClips = [];
     CustomShowClipDetection? clipDetection;
+    string? originalCoverTitle;
+    string? originalCoverPerformerId;
+    string? originalCoverModelName;
+    string? originalCoverTitleColor;
+
+    internal string? SavedShowId { get; private set; }
 
     internal CustomShowEditorForm(CustomShowStore store,
-        CustomShowConfiguration configuration, string? showId, bool reprocess = false)
+        CustomShowConfiguration configuration, string? showId, bool reprocess = false,
+        CustomShowQueueManager? queueManager = null, string? queueJobId = null)
     {
         this.store = store;
         this.configuration = configuration;
         this.showId = showId;
         this.reprocess = reprocess && showId != null;
+        this.queueManager = queueManager;
+        this.queueJobId = queueJobId;
         Text = showId == null ? "Create Custom Show" : this.reprocess
             ? "Reprocess Custom Show" : "Edit Custom Show Metadata";
         ClientSize = new Size(780, 760);
@@ -118,6 +131,9 @@ internal sealed class CustomShowEditorForm : Form
         AddRow(metadata, "Show / recording date", showDate);
         FlowLayoutPanel agePanel = Flow(ageOverride, useAgeOverride);
         AddRow(metadata, "Age at release override", agePanel);
+        gender.Items.AddRange(CustomShowStore.GenderValues);
+        gender.SelectedItem = "Female";
+        AddRow(metadata, "Gender", gender);
         hotness.Items.AddRange(HotnessValues);
         hotness.SelectedItem = "NoNudity";
         AddRow(metadata, "Hotness", hotness);
@@ -186,7 +202,7 @@ internal sealed class CustomShowEditorForm : Form
         if (this.reprocess)
             reprocessingRow = AddRow(processingTable, "Reprocessing", Flow(keepClips, keepMasks));
         AddSection(root, "Processing", processingTable);
-        FlowLayoutPanel buttons = Flow(save, cancel);
+        FlowLayoutPanel buttons = Flow(save, queue, cancel);
         buttons.Dock = DockStyle.Fill;
         buttons.Margin = Padding.Empty;
         buttons.Padding = new Padding(12, 8, 12, 10);
@@ -194,12 +210,14 @@ internal sealed class CustomShowEditorForm : Form
         AcceptButton = save;
         CancelButton = cancel;
         save.Click += Save;
+        queue.Click += QueueJob;
         addToExisting.Click += SelectExistingShow;
         preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions(
             applyRecommendedBatch: true);
         rvmInitializerThreshold.ValueChanged += (_, _) =>
             rvmInitializerThresholdValue.Text = $"{rvmInitializerThreshold.Value}%";
         maskEngine.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
+        autoAccept.CheckedChanged += (_, _) => UpdateProcessingOptions();
         newPerformer.Click += (_, _) => OpenPerformer(null);
         editPerformer.Click += (_, _) => OpenPerformer(selectedProfile);
         editClips.Click += EditClips;
@@ -219,8 +237,9 @@ internal sealed class CustomShowEditorForm : Form
             editPerformer.Enabled = editPerformer.Visible = editable;
         };
         LoadData();
+        if (queueJobId != null) LoadQueueJob(queueJobId);
         UpdateProcessingOptions();
-        if (showId == null) RestoreProcessingOptions();
+        if (showId == null && queueJobId == null) RestoreProcessingOptions();
         FormClosing += (_, _) =>
         {
             if (showId == null) RememberProcessingOptions();
@@ -304,6 +323,9 @@ internal sealed class CustomShowEditorForm : Form
             if (reprocessingRow >= 0)
                 SetRowVisible(processingTable, reprocessingRow, reprocess);
         }
+        string? queueAction = QueueAction(selected, autoAccept.Checked);
+        queue.Visible = queueManager != null && CanProcess && queueAction != null;
+        if (queueAction != null) queue.Text = queueAction;
     }
 
     bool CanProcess => showId == null || reprocess;
@@ -348,6 +370,44 @@ internal sealed class CustomShowEditorForm : Form
     static bool UsesSam2(string selectedPreset) => selectedPreset is
         "videomama" or "vitmatte-s" or "vitmatte-b";
 
+    internal static string? QueueAction(string algorithm, bool autoAccept) =>
+        !autoAccept ? null : algorithm switch
+        {
+            "quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" => "Queue",
+            "matanyone2" => "Mask and Queue",
+            _ => null
+        };
+
+    void LoadQueueJob(string id)
+    {
+        CustomShowQueueJob job = queueManager?.Find(id) ??
+            throw new InvalidOperationException("The queue job no longer exists.");
+        source.Text = job.SourcePath;
+        if (!profiles.Any(profile => profile.Id == job.Performer.Id))
+        {
+            profiles.Add(CloneQueueValue(job.Performer));
+            performer.DataSource = null;
+            performer.DisplayMember = nameof(CustomPerformerProfile.DisplayName);
+            performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
+        }
+        PopulateFromShow(job.Manifest, editingExisting: false);
+        showClips = JsonSerializer.Deserialize<CustomShowClip[]>(JsonSerializer.Serialize(
+            job.Clips, CustomShowStore.JsonOptions), CustomShowStore.JsonOptions) ?? [];
+        clipDetection = job.Manifest.ClipDetection;
+        appendShowId = job.Operation == CustomShowQueueOperation.Append
+            ? job.TargetShowId : null;
+        Text = "Edit Queued Custom Show";
+        save.Visible = false;
+        queue.Text = job.Manifest.Processing?.Algorithm == "matanyone2"
+            ? "Mask and Queue" : "Update Queue Job";
+        AcceptButton = queue;
+        autoAccept.Checked = true;
+        if (job.CoverAsset != null)
+            cover.Text = Path.Combine(queueManager!.AssetFolder(job.Id),
+                job.CoverAsset.Replace('/', Path.DirectorySeparatorChar));
+        UpdateClipButton();
+    }
+
     void LoadData()
     {
         profiles = store.LoadPerformers().ToList();
@@ -381,6 +441,11 @@ internal sealed class CustomShowEditorForm : Form
         {
             source.Text = SourceVideo(show);
             save.Text = reprocess ? "Reprocess and Preview" : "Save Metadata";
+            originalCoverTitle = show.Title;
+            originalCoverPerformerId = show.PerformerId;
+            originalCoverModelName = profiles.FirstOrDefault(profile =>
+                profile.Id == show.PerformerId)?.ModelName;
+            originalCoverTitleColor = show.Media.CoverTitleColor;
         }
         title.Text = show.Title;
         description.Text = show.Description;
@@ -390,6 +455,7 @@ internal sealed class CustomShowEditorForm : Form
         if (show.ShowDate is DateOnly date) showDate.Value = date.ToDateTime(TimeOnly.MinValue);
         useAgeOverride.Checked = show.AgeAtReleaseOverride != null;
         if (show.AgeAtReleaseOverride is int age) ageOverride.Value = age;
+        gender.SelectedItem = show.Gender;
         hotness.SelectedItem = show.Hotness;
         performerCount.Value = show.PerformerCount;
         coverTitleColor.BackColor = ColorTranslator.FromHtml(
@@ -661,9 +727,10 @@ internal sealed class CustomShowEditorForm : Form
                     SaveCover(cover.Text, destination);
                     show.Media.AutoGeneratedCover = false;
                 }
-                else if (show.Media.AutoGeneratedCover)
+                else if (show.Media.AutoGeneratedCover && AutoCoverSettingsChanged(show))
                     await SaveAutoCover(show, destination);
                 store.SaveManifest(show);
+                SavedShowId = show.Id;
                 DialogResult = DialogResult.OK;
                 Close();
                 return;
@@ -1106,6 +1173,10 @@ internal sealed class CustomShowEditorForm : Form
                 store.SavePerformer(selectedProfile);
                 if (reprocess || Appending) store.Replace(staging, show);
                 else store.Publish(staging, show);
+                // Record the successful library mutation before draft cleanup. The
+                // owner must refresh even if cleanup or WinForms dialog state later
+                // prevents this form from returning DialogResult.OK.
+                SavedShowId = show.Id;
                 if (maskDraft != null && Directory.Exists(maskDraft.Root))
                     try { await DeleteDirectoryWhenReleasedAsync(maskDraft.Root); }
                     catch (Exception cleanupError)
@@ -1149,6 +1220,149 @@ internal sealed class CustomShowEditorForm : Form
         await Task.CompletedTask;
     }
 
+    async void QueueJob(object? sender, EventArgs e)
+    {
+        queue.Enabled = false;
+        string? maskWork = null;
+        try
+        {
+            if (queueManager == null) return;
+            if (!autoAccept.Checked)
+                throw new InvalidDataException(
+                    "Queued processing requires automatic acceptance at alpha threshold 25.");
+            if (selectedProfile == null)
+                throw new InvalidDataException("Select or create a model profile.");
+            CustomShowStore.ValidateProfile(selectedProfile);
+            if (!File.Exists(source.Text))
+                throw new FileNotFoundException("Select a source video.", source.Text);
+            if (!ConfirmGpuBatch()) return;
+            if (showClips.Length == 0)
+            {
+                using FfmpegCpuDecoder decoder = new(source.Text, fastDecode: true);
+                showClips = [new()
+                {
+                    StartMs = 0,
+                    EndMs = checked((long)Math.Round(decoder.Duration * 1000)),
+                    Hotness = hotness.SelectedItem?.ToString() ?? "NoNudity",
+                    ClipTypes = clipTypes.CheckedItems.Cast<object>()
+                        .Select(value => value.ToString()!).ToArray()
+                }];
+            }
+            CustomShowQueueJob? existing = queueJobId == null
+                ? null : queueManager.Find(queueJobId);
+            CustomShowQueueOperation operation = existing?.Operation ??
+                (Appending ? CustomShowQueueOperation.Append : reprocess
+                    ? CustomShowQueueOperation.Reprocess : CustomShowQueueOperation.New);
+            string? targetId = existing?.TargetShowId ??
+                (operation == CustomShowQueueOperation.Append ? appendShowId :
+                    operation == CustomShowQueueOperation.Reprocess ? showId : null);
+            CustomShowManifest manifest = operation == CustomShowQueueOperation.New
+                ? existing?.Manifest ?? new() : store.LoadManifest(targetId!);
+            ApplyFields(manifest, includeClipLayout: true);
+            manifest.Clips = CloneQueueValue(showClips);
+            manifest.ClipDetection = clipDetection;
+            manifest.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
+            string algorithm = SelectedPreset();
+            manifest.Processing = new()
+            {
+                Algorithm = algorithm,
+                MattingDetailPx = SelectedMattingResolution(),
+                BatchSize = (int)(sequenceChunk.SelectedItem ?? 12),
+                RvmInitializerAlphaThresholdPercent = algorithm is
+                    "rvm-matanyone2" or "rvm-vitmatte-s"
+                    ? rvmInitializerThreshold.Value : null,
+                AutoAcceptedAlphaThreshold = 25,
+                Sam2Model = algorithm == "matanyone2" ? SelectedSam2Model() : null,
+                ExecutionPolicy = "auto",
+                PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
+                RecurrentRefinementSteps = algorithm is "matanyone2" or
+                    "rvm-matanyone2" ? 11 : 0,
+                ToolRevisions = ReadProcessingRevisions(algorithm, SelectedMaskEngine())
+            };
+            FileInfo sourceInfo = new(source.Text);
+            CustomShowQueueJob job = existing ?? new();
+            bool masksStillMatch = existing != null &&
+                existing.SourceLength == sourceInfo.Length &&
+                existing.SourceLastWriteUtcTicks == sourceInfo.LastWriteTimeUtc.Ticks &&
+                SameQueueLayout(existing.Clips, showClips);
+            job.Operation = operation;
+            job.Status = CustomShowQueueStatus.Pending;
+            job.Manifest = manifest;
+            job.Performer = CloneQueueValue(selectedProfile);
+            job.Clips = CloneQueueValue(showClips);
+            job.SourcePath = Path.GetFullPath(source.Text);
+            job.SourceLength = sourceInfo.Length;
+            job.SourceLastWriteUtcTicks = sourceInfo.LastWriteTimeUtc.Ticks;
+            job.TargetShowId = targetId;
+            job.TargetManifestSha256 = targetId == null ? null :
+                CustomShowQueueStore.HashFile(Path.Combine(store.ShowsFolder,
+                    targetId, "show.json"));
+            job.KeepExistingMasks = reprocess && keepMasks.Checked;
+            job.Percent = 0; job.Message = "Pending"; job.Error = null;
+            job.StartedUtc = null; job.CompletedUtc = null;
+            Dictionary<string, string> masks = [];
+            Dictionary<string, long> maskFrames = [];
+            bool missingMask = showClips.Where(value => value.Included).Any(clip =>
+                !job.InitialMaskAssets.TryGetValue(clip.Id, out string? relative) ||
+                !File.Exists(Path.Combine(queueManager.AssetFolder(job.Id),
+                    relative.Replace('/', Path.DirectorySeparatorChar))));
+            if (algorithm == "matanyone2" && (!masksStillMatch || missingMask))
+            {
+                maskWork = Path.Combine(store.Root, ".queue-mask-work",
+                    Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(maskWork);
+                foreach (CustomShowClip clip in showClips.Where(value => value.Included))
+                {
+                    string clipFolder = Path.Combine(maskWork, clip.Id);
+                    using CustomMaskEditorForm editor = new(source.Text, configuration,
+                        clip.StartMs, clip.EndMs, showClips.Length == 1 ? null :
+                        $"Clip {Array.IndexOf(showClips, clip) + 1} of {showClips.Length}",
+                        "MatAnyone 2", allowFrameSelection: true,
+                        sam2Model: SelectedSam2Model(), draftFolder: clipFolder);
+                    if (editor.ShowDialog(this) != DialogResult.OK) return;
+                    string mask = Path.Combine(clipFolder, "initial-mask.png");
+                    editor.SaveMask(mask);
+                    masks[clip.Id] = mask;
+                    maskFrames[clip.Id] = editor.FrameMs;
+                }
+                job.InitialMaskFrameMs = maskFrames;
+            }
+            else if (algorithm != "matanyone2")
+            {
+                job.InitialMaskAssets.Clear();
+                job.InitialMaskFrameMs.Clear();
+            }
+            if (string.IsNullOrWhiteSpace(cover.Text)) job.CoverAsset = null;
+            queueManager.AddOrUpdate(job, queueJobId,
+                string.IsNullOrWhiteSpace(cover.Text) ? null : cover.Text, masks);
+            RememberProcessingOptions();
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            if (maskWork != null) CustomShowQueueStore.TryDelete(maskWork);
+            queue.Enabled = true;
+        }
+        await Task.CompletedTask;
+    }
+
+    static bool SameQueueLayout(CustomShowClip[] first, CustomShowClip[] second) =>
+        first.Length == second.Length && first.Zip(second).All(pair =>
+            pair.First.Id == pair.Second.Id &&
+            pair.First.StartMs == pair.Second.StartMs &&
+            pair.First.EndMs == pair.Second.EndMs &&
+            pair.First.Included == pair.Second.Included);
+
+    static T CloneQueueValue<T>(T value) => JsonSerializer.Deserialize<T>(
+        JsonSerializer.Serialize(value, CustomShowStore.JsonOptions),
+        CustomShowStore.JsonOptions)!;
+
     bool ConfirmGpuBatch()
     {
         string algorithm = SelectedPreset();
@@ -1175,15 +1389,28 @@ internal sealed class CustomShowEditorForm : Form
             name = baseModel ? "ViTMatte-B" : "ViTMatte-S";
         }
         if (requested <= suggested) return true;
-        DialogResult choice = MessageBox.Show(this,
-            $"{name} batch size {requested} is unlikely to fit safely in the " +
-            $"detected GPU memory ({memory.TotalMiB / 1024d:0.#} GB total, " +
-            $"{memory.FreeMiB / 1024d:0.#} GB currently free).\n\n" +
-            $"Use the suggested batch size of {suggested}?\n\n" +
-            "Choose OK to change the batch size, or Cancel to return without processing.",
-            $"{name} GPU Memory", MessageBoxButtons.OKCancel,
-            MessageBoxIcon.Warning);
-        if (choice != DialogResult.OK) return false;
+        TaskDialogButton useSuggested = new(
+            $"Use suggested batch size {suggested}");
+        TaskDialogButton continueRequested = new(
+            $"Continue with batch size {requested}");
+        TaskDialogButton cancelProcessing = new("Cancel processing");
+        TaskDialogPage warning = new()
+        {
+            Caption = $"{name} GPU Memory",
+            Heading = $"Batch size {requested} may exceed available GPU memory",
+            Text = $"{name} batch size {requested} is unlikely to fit safely in the " +
+                $"detected GPU memory ({memory.TotalMiB / 1024d:0.#} GB total, " +
+                $"{memory.FreeMiB / 1024d:0.#} GB currently free).",
+            Icon = TaskDialogIcon.Warning,
+            AllowCancel = true,
+            DefaultButton = useSuggested
+        };
+        warning.Buttons.Add(useSuggested);
+        warning.Buttons.Add(continueRequested);
+        warning.Buttons.Add(cancelProcessing);
+        TaskDialogButton choice = TaskDialog.ShowDialog(this, warning);
+        if (choice == continueRequested) return true;
+        if (choice != useSuggested) return false;
         sequenceChunk.SelectedItem = suggested;
         return true;
     }
@@ -1491,6 +1718,7 @@ internal sealed class CustomShowEditorForm : Form
         show.ShowDate = showDate.Checked ? DateOnly.FromDateTime(showDate.Value) : null;
         show.AgeAtReleaseOverride = selectedProfile.BirthDate == null && useAgeOverride.Checked
             ? (int)ageOverride.Value : null;
+        show.Gender = gender.SelectedItem?.ToString() ?? "Female";
         show.Hotness = hotness.SelectedItem?.ToString() ?? "NoNudity";
         show.PerformerCount = (int)performerCount.Value;
         show.ClipTypes = clipTypes.CheckedItems.Cast<object>()
@@ -1599,6 +1827,15 @@ internal sealed class CustomShowEditorForm : Form
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+
+    bool AutoCoverSettingsChanged(CustomShowManifest show) =>
+        !string.Equals(originalCoverTitle, show.Title, StringComparison.Ordinal) ||
+        !string.Equals(originalCoverPerformerId, show.PerformerId,
+            StringComparison.Ordinal) ||
+        !string.Equals(originalCoverModelName, selectedProfile?.ModelName,
+            StringComparison.Ordinal) ||
+        !string.Equals(originalCoverTitleColor, show.Media.CoverTitleColor,
+            StringComparison.OrdinalIgnoreCase);
 
     static string ColorHex(Color color) =>
         $"#{color.R:X2}{color.G:X2}{color.B:X2}";
@@ -2129,6 +2366,8 @@ internal sealed class CustomShowSettingsForm : Form
     readonly NumericUpDown rvmFastCutoff = CompileCutoffInput();
     readonly ComboBox nvencPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 90 };
+    readonly ComboBox cpuPriority = PriorityInput();
+    readonly ComboBox gpuPriority = PriorityInput();
     readonly NumericUpDown matAnyoneCutoff = CutoffInput();
     readonly NumericUpDown sam2BaseCutoff = CutoffInput();
     readonly NumericUpDown sam2SmallCutoff = CutoffInput();
@@ -2165,6 +2404,8 @@ internal sealed class CustomShowSettingsForm : Form
             RvmQualityCompileCutoffFrames = current.RvmQualityCompileCutoffFrames,
             RvmFastCompileCutoffFrames = current.RvmFastCompileCutoffFrames,
             RvmNvencPreset = current.RvmNvencPreset,
+            ProcessingCpuPriority = current.ProcessingCpuPriority,
+            ProcessingGpuPriority = current.ProcessingGpuPriority,
             MatAnyone2CompileCutoffFrames = current.MatAnyone2CompileCutoffFrames,
             Sam2BasePlusCompileCutoffFrames = current.Sam2BasePlusCompileCutoffFrames,
             Sam2SmallCompileCutoffFrames = current.Sam2SmallCompileCutoffFrames,
@@ -2199,6 +2440,11 @@ internal sealed class CustomShowSettingsForm : Form
             "These settings are shared by all custom-show processing tools.");
         AddPath(general, "Library folder", root, true);
         AddPath(general, "Python executable", python, false);
+        AddExplanation(general, "Processing priority",
+            "Controls custom-show processing workers only. Normal preserves current behaviour. " +
+            "Lower priorities favour playback and desktop responsiveness when resources are busy.");
+        AddChoice(general, "CPU priority", cpuPriority);
+        AddChoice(general, "GPU priority", gpuPriority);
         int cacheRow = general.RowCount++;
         general.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         general.Controls.Add(new Label { Text = "SAM2 frame cache (GB)", AutoSize = true,
@@ -2315,6 +2561,8 @@ internal sealed class CustomShowSettingsForm : Form
         rvmFastCutoff.Value = ClampCompileCutoff(Configuration.RvmFastCompileCutoffFrames);
         nvencPreset.SelectedItem = CustomShowProcessor.ValidNvencPreset(
             Configuration.RvmNvencPreset);
+        cpuPriority.SelectedIndex = PriorityIndex(Configuration.ProcessingCpuPriority);
+        gpuPriority.SelectedIndex = PriorityIndex(Configuration.ProcessingGpuPriority);
         matAnyoneCutoff.Value = ClampCutoff(Configuration.MatAnyone2CompileCutoffFrames);
         sam2BaseCutoff.Value = ClampCutoff(Configuration.Sam2BasePlusCompileCutoffFrames);
         sam2SmallCutoff.Value = ClampCutoff(Configuration.Sam2SmallCompileCutoffFrames);
@@ -2591,6 +2839,8 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.RvmQualityCompileCutoffFrames = (int)rvmQualityCutoff.Value;
             Configuration.RvmFastCompileCutoffFrames = (int)rvmFastCutoff.Value;
             Configuration.RvmNvencPreset = nvencPreset.SelectedItem?.ToString() ?? "p5";
+            Configuration.ProcessingCpuPriority = PriorityValue(cpuPriority.SelectedIndex);
+            Configuration.ProcessingGpuPriority = PriorityValue(gpuPriority.SelectedIndex);
             Configuration.MatAnyone2CompileCutoffFrames = (int)matAnyoneCutoff.Value;
             Configuration.Sam2BasePlusCompileCutoffFrames = (int)sam2BaseCutoff.Value;
             Configuration.Sam2SmallCompileCutoffFrames = (int)sam2SmallCutoff.Value;
@@ -2757,6 +3007,31 @@ internal sealed class CustomShowSettingsForm : Form
         _ => "auto"
     };
 
+    static ComboBox PriorityInput()
+    {
+        ComboBox input = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
+        input.Items.AddRange(["Idle", "Below Normal", "Normal", "Above Normal", "High"]);
+        return input;
+    }
+
+    static int PriorityIndex(string? value) => value switch
+    {
+        "idle" => 0,
+        "below-normal" => 1,
+        "above-normal" => 3,
+        "high" => 4,
+        _ => 2
+    };
+
+    static string PriorityValue(int index) => index switch
+    {
+        0 => "idle",
+        1 => "below-normal",
+        3 => "above-normal",
+        4 => "high",
+        _ => "normal"
+    };
+
     static NumericUpDown CutoffInput() => new()
     {
         Minimum = 1, Maximum = 10_000_000, Increment = 1000,
@@ -2886,6 +3161,7 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
         Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
         ScrollBars = ScrollBars.Both, WordWrap = false
     };
+
     readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
     readonly Stopwatch elapsed = new();
     readonly System.Windows.Forms.Timer clock = new() { Interval = 1000 };

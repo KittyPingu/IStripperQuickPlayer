@@ -1884,6 +1884,12 @@ namespace IStripperQuickPlayer
             if (filterSettings.TradingCard) enabledcollections.Add(Enums.CollectionType.TradingCard);
             if (filterSettings.Custom) enabledcollections.Add(Enums.CollectionType.Custom);
 
+            HashSet<string> selectedGenders = filterSettings.genders.Split(',',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            currentCards = currentCards.Where(card => selectedGenders.Contains(
+                CardGender(card))).ToList();
+
             if (filterSettings.Normal && !filterSettings.Special)
                 currentCards = currentCards.Where(c => c.exclusive != null && !(bool)c.exclusive).ToList();
             else if (filterSettings.Special && !filterSettings.Normal)
@@ -1900,6 +1906,11 @@ namespace IStripperQuickPlayer
 
             return currentCards;
         }
+
+        internal static string CardGender(ModelCard card) => card.IsCustom
+            ? card.gender ?? "Female"
+            : card.collection is Enums.CollectionType.VirtuaGuy or
+                Enums.CollectionType.VGClassic ? "Male" : "Female";
 
         internal static bool MatchesMeasurement(
             decimal? value, decimal minimum, decimal maximum,
@@ -5119,6 +5130,17 @@ namespace IStripperQuickPlayer
                 return;
             }
 
+            if (customShowQueueManager?.HasActiveJob == true)
+            {
+                DialogResult closeQueue = MessageBox.Show(this,
+                    "An automatic custom-show job is running. Closing QuickPlayer will " +
+                    "cancel it and return it to Pending so it restarts from the beginning " +
+                    "next time.\n\nClose QuickPlayer?", "Custom-Show Queue",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (closeQueue != DialogResult.Yes) { e.Cancel = true; return; }
+                customShowQueueManager.CancelForExit();
+            }
+
             formIsClosing = true;
             StopCustomPlayback(restoreIstripper: true);
             StopRestApi();
@@ -5193,6 +5215,8 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.Minimised = true;
             }
             Properties.Settings.Default.Save();
+            customShowQueueForm?.Dispose();
+            customShowQueueManager?.Dispose();
         }
 
         private void CloseApiOnly()

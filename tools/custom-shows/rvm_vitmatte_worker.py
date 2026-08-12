@@ -53,7 +53,8 @@ def process(args):
                 "--runtime", str(args.runtime), "--frames", str(frames),
                 "--masks", str(masks), "--start-ms", str(args.start_ms),
                 "--end-ms", str(args.end_ms), "--masks-only",
-                "--alpha-threshold", str(args.rvm_alpha_threshold)]
+                "--alpha-threshold", str(args.rvm_alpha_threshold),
+                "--preview-output", str(args.output)]
             emit("rvm-masks", 0, "Generating a complete RVM mask sequence...")
             run(rvm_command, 0, 30, "rvm-masks")
         elif not masks.is_dir() or not any(masks.glob("*.png")):

@@ -42,6 +42,8 @@ public partial class Form1
     ModelCard? customClipAlphaCard;
     ModelClip? customClipAlphaClip;
     CustomShowConfiguration customShowConfiguration = CustomShowConfiguration.Load();
+    CustomShowQueueManager? customShowQueueManager;
+    CustomShowQueueForm? customShowQueueForm;
     CustomPlayerForm? customPlayer;
     ModelCard? customPlayerCard;
     ModelClip? customPlayerClip;
@@ -71,6 +73,7 @@ public partial class Form1
         SetupCustomPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
+        ToolStripMenuItem queues = new("Queues...");
         ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
         ToolStripMenuItem backgroundLock = new(
             "Camera / Background Lock (Stabilo + SAM2)...");
@@ -79,7 +82,11 @@ public partial class Form1
         ToolStripMenuItem setup = new("Install / Update Processing Tools...");
         ToolStripMenuItem settings = new("Settings...");
         ToolStripMenuItem open = new("Open Folder");
+        customShowQueueManager = new CustomShowQueueManager(
+            new CustomShowStore(customShowConfiguration.LibraryRoot),
+            customShowConfiguration, QueueShowPublished);
         create.Click += (_, _) => EditCustomShow(null);
+        queues.Click += (_, _) => ShowCustomShowQueues();
         stabilize.Click += (_, _) => StabilizeVideo();
         backgroundLock.Click += (_, _) => StabilizeBackgroundVideo();
         removeWatermark.Click += (_, _) => RemoveVideoWatermark();
@@ -93,7 +100,7 @@ public partial class Form1
             { UseShellExecute = true });
         };
         customShowsMenu.DropDownItems.AddRange(
-            [create, stabilize, backgroundLock, removeWatermark, models, setup, settings, open]);
+            [create, queues, stabilize, backgroundLock, removeWatermark, models, setup, settings, open]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
         editCustomShowMenu.Click += (_, _) =>
@@ -394,12 +401,74 @@ public partial class Form1
     {
         using CustomShowEditorForm form = new(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
-            customShowConfiguration, showId, reprocess);
-        if (form.ShowDialog(this) == DialogResult.OK)
+            customShowConfiguration, showId, reprocess, customShowQueueManager);
+        DialogResult result = form.ShowDialog(this);
+        if (result == DialogResult.OK || form.SavedShowId != null)
+        {
+            if (form.SavedShowId != null)
+            {
+                // Refresh on the next UI turn, after the using scope has disposed
+                // the editor and released its last preview/image handles.
+                string savedShowId = form.SavedShowId;
+                BeginInvoke((Action)(() => RefreshSavedCustomShow(savedShowId)));
+            }
+            else
+            {
+                ReloadCustomCards();
+                RebindCurrentCustomPlayback();
+            }
+        }
+    }
+
+    async void RefreshSavedCustomShow(string showId)
+    {
+        const int attempts = 3;
+        for (int attempt = 1; attempt <= attempts; attempt++)
         {
             ReloadCustomCards();
             RebindCurrentCustomPlayback();
+            if (Datastore.findCardByTag("custom:" + showId) != null)
+                return;
+            if (attempt < attempts)
+                await Task.Delay(200);
         }
+        Debug.WriteLine($"Published custom show {showId} was not available after refresh.");
+    }
+
+    void ShowCustomShowQueues()
+    {
+        if (customShowQueueManager == null) return;
+        if (customShowQueueForm is null || customShowQueueForm.IsDisposed)
+            customShowQueueForm = new(customShowQueueManager, EditCustomShowQueueJob);
+        customShowQueueForm.Show(this);
+        customShowQueueForm.BringToFront();
+    }
+
+    void QueueShowPublished()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        BeginInvoke((Action)(() =>
+        {
+            ReloadCustomCards();
+            RebindCurrentCustomPlayback();
+        }));
+    }
+
+    void EditCustomShowQueueJob(CustomShowQueueJob job)
+    {
+        if (job.Status == CustomShowQueueStatus.Completed &&
+            !string.IsNullOrWhiteSpace(job.PublishedShowId))
+        {
+            EditCustomShow(job.PublishedShowId);
+            return;
+        }
+        using CustomShowEditorForm form = new(
+            new CustomShowStore(customShowConfiguration.LibraryRoot),
+            customShowConfiguration,
+            job.Operation == CustomShowQueueOperation.Reprocess ? job.TargetShowId : null,
+            job.Operation == CustomShowQueueOperation.Reprocess,
+            customShowQueueManager, job.Id);
+        if (form.ShowDialog(this) == DialogResult.OK) ShowCustomShowQueues();
     }
 
     void ManageCustomModels()
@@ -412,11 +481,23 @@ public partial class Form1
 
     void ConfigureCustomShows()
     {
+        if (customShowQueueManager?.IsRunning == true)
+        {
+            MessageBox.Show(this, "Stop the custom-show queue before changing its settings.",
+                "Custom Shows", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         using CustomShowSettingsForm form = new(customShowConfiguration);
         if (form.ShowDialog(this) != DialogResult.OK)
             return;
         customShowConfiguration = form.Configuration;
         customShowConfiguration.Save();
+        customShowQueueForm?.Dispose();
+        customShowQueueForm = null;
+        customShowQueueManager?.Dispose();
+        customShowQueueManager = new CustomShowQueueManager(
+            new CustomShowStore(customShowConfiguration.LibraryRoot),
+            customShowConfiguration, QueueShowPublished);
         ReloadCustomCards();
     }
 

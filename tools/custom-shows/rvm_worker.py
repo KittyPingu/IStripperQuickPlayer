@@ -15,6 +15,10 @@ import threading
 import time
 from pathlib import Path
 
+from processing_priority import apply_processing_priorities
+
+apply_processing_priorities()
+
 RVM_COMMIT = "53d74c6826735f01f4406b5ca9075eee27bec094"
 WEIGHTS = {
     "fast": ("mobilenetv3", "rvm_mobilenetv3.pth", "3c7c1d92033f7c38d6577c481d13a195d7d80a159b960f4f3119ac7b534cf4f8"),

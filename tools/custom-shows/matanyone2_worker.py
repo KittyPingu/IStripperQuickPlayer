@@ -235,6 +235,12 @@ def automatic_rvm_mask(source, runtime, start, frame_rate, width, height,
     if not cleaned.any():
         raise RuntimeError("RVM could not find a usable person mask in the opening frames")
     Image.fromarray(cleaned, "L").save(destination)
+    preview_output = destination.parent
+    for name, image, mode in (("preview-source.jpg", frames[selected], "RGB"),
+                              ("preview-composite.jpg", cleaned, "L")):
+        temporary = preview_output / (name + ".tmp")
+        Image.fromarray(image, mode).save(temporary, "JPEG", quality=88)
+        replace_preview(temporary, preview_output / name)
     profiler.add("rvm_initialization", time.perf_counter() - started)
     log_record("rvm_initializer", sampledFrames=count, selectedFrame=selected,
                threshold=threshold, dilationPixels=3,

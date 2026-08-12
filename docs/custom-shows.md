@@ -2,8 +2,17 @@
 
 Custom shows are normal QuickPlayer library cards backed by a local foreground video and alpha video. They can be searched, sorted, filtered, rated, favourited, dragged, saved in manual queues, selected by automatic queues, and controlled through REST alongside iStripper cards. iStripper still plays official shows; QuickPlayer's transparent player is used only for IDs beginning `custom:`.
 
-For the task-oriented workflow, begin with [Creating Custom Shows](../CUSTOM_SHOWS.md).
-This document is the exact setup, format, licensing, and troubleshooting reference.
+For a concise, task-oriented guide with recommended choices, begin with
+[Creating Custom Shows](../CUSTOM_SHOWS.md). This document is the exact setup,
+format, performance, licensing, and troubleshooting reference.
+
+For most new shows, start with **RVM-MatAnyone** for automatic subject selection,
+**MatAnyone 2** when you want to choose and correct the initial subject mask, or
+**RVM-ViTMatte S** for automatic full-frame masks followed by softer-edge
+refinement. Start RVM and MatAnyone methods at **Standard (512 px)** detail.
+RVM-ViTMatte S works at source dimensions, so its batch size—not Matting detail—is
+the main VRAM control. See the end-user guide before using the more specialised
+VideoMaMa or ViTMatte B workflows.
 
 Only process videos you have permission to use. V1 mattes people (one or more visible people) and links each show to one primary reusable model profile. It does not segment arbitrary objects; SAM2 correction clicks refine person masks.
 
@@ -33,7 +42,7 @@ QuickPlayer pins:
 ## Exact setup
 
 The simplest method is **File → Custom Shows → Install / Update Processing
-Tools…**. TransNetV2 and MatAnyone2 are selected by default; VideoMaMa,
+Tools…**. TransNetV2 and MatAnyone 2 + SAM2 are selected by default; VideoMaMa,
 ViTMatte, and ProPainter are initially cleared. Select the tools to install or
 update in the choices dialog, then leave
 the setup window open until it finishes. Selecting any mask-guided method
@@ -101,6 +110,33 @@ The script creates `venv`, checks out exact commits, downloads verified weights,
 QuickPlayer only lists TransNetV2, OmniShotCut, MatAnyone2, VideoMaMa, ViTMatte, and ProPainter in operational
 selectors when their installation markers, source folders, workers, and required
 model files are present. The setup choices remain visible so missing tools can be installed.
+
+## Automatic processing queue
+
+Select **Automatically accept result with alpha threshold 25** to enable **Queue**
+for RVM Quality/Fast, RVM-MatAnyone, and RVM-ViTMatte S. MatAnyone 2 instead shows
+**Mask and Queue** and collects its initial mask for each included clip before the
+job is added. Open **Custom Shows → Queues...** to reorder, edit, delete, retry,
+run, pause, stop, and monitor jobs. The queue runs one show at a time and does not
+open the normal processing or result-review windows.
+
+RVM-MatAnyone requires the MatAnyone 2 installation. RVM-ViTMatte S requires the
+ViTMatte installation. All selected tools must validate before a job is queued,
+and the referenced source must remain at the same path until processing finishes.
+VideoMaMa and the manually corrected ViTMatte workflows are interactive and are
+not currently eligible for the automatic queue.
+
+Queue state and job-owned covers/masks are stored under `<custom-library>\queue`.
+Source videos remain referenced and are checked for size/timestamp changes before
+processing. Append and reprocess jobs also verify that their target `show.json`
+has not changed. Conflicts are marked **Needs attention** rather than overwriting
+newer data. Completed entries remain as history until deleted; deleting history
+never deletes the published show.
+
+Closing the Queue window leaves processing active. Pause can either finish the
+current show before pausing or cancel it back to Pending for a full restart. Stop
+also returns the active job to Pending. Closing QuickPlayer while a job runs asks
+for confirmation and, if confirmed, safely cancels it back to Pending.
 
 In QuickPlayer, open **File → Custom Shows → Settings**:
 
@@ -184,10 +220,14 @@ into a system-wide memory stall.
 Choose **File → Custom Shows → Create Show**. Source video, show title, and model
 profile are required. The form is divided into **Show**, collapsed **Metadata
 (optional)**, **Video sections**, and **Processing** groups. Expand Metadata to set
-the description, tags, dates, age override, hotness, performer count, clip types,
-and cover options. Official rating and Exclusive are not edited by this workflow.
+the description, tags, dates, age override, gender, hotness, performer count,
+clip types, and cover options.
 QuickPlayer records the source video as an absolute reference and never deletes it.
 The Processing group shows only the controls used by the selected algorithm.
+
+Choose **Add To Existing Show** to load an existing custom show's metadata. The
+included clips produced from the new source are appended to that show rather than
+creating a second card.
 
 Before processing, choose **Split into clips...** to open the clip editor on the
 original source. Scrub or play the preview, place dividers, and drag only their
@@ -203,8 +243,10 @@ dividers. OmniShotCut discards `Padding`, keeps `General`, skips complete gradua
 transition ranges, and splits at the start of `Hard_Cut` and `Sudden_Jump`
 ranges. Enable **Skip transition ±** to expand gradual ranges and add symmetric
 buffers around instantaneous cuts; overlapping skipped ranges are merged.
-Auto-detected playable segments shorter than 10 seconds are also skipped by
-default. Detection labels remain visible on each segment and survive manual
+The **Auto-skip shorter than** value controls which detected playable segments
+are skipped and defaults to 10 seconds. **Show skipped clips in grid** hides or
+reveals excluded segments. Clicking or scrubbing the timeline selects the related
+grid row and scrolls it into view. Detection labels remain visible on each segment and survive manual
 inclusion and metadata edits.
 TransNet inference runs on CUDA when available and FFmpeg
 uses CUDA decode/scale where the source codec supports it, with automatic CPU
@@ -544,6 +586,11 @@ inference with increasing batches, monitors whole-GPU VRAM, stops after memory
 pressure or an out-of-memory result, and copies the fastest safe value into the
 setting after confirmation.
 
+**CPU priority** and **GPU priority** in Custom Show Settings apply to newly
+started processing workers and both default to **Normal**. Lower priorities can
+leave more resources for playback and desktop interaction, but may reduce
+processing throughput. They do not change a worker that is already running.
+
 ### RVM pipeline performance
 
 RVM uses the normalized source stream directly for `foreground.mp4`, asks
@@ -667,9 +714,19 @@ Use **File → Custom Shows → Manage Models** to create or edit reusable profi
 
 Profile measurements are stored in centimetres: height, bust, waist, and hips. QuickPlayer converts them to its legacy display/filter values so metric/imperial display, sorting, and filters continue to work. Birth date is stored without a time. Model age is calculated at the show's release date. If birth date is unknown, enable the show-specific age-at-release override.
 
-Show fields are title, description, tags, release date, optional recording/show date, optional official-style rating from 0–5, hotness, exclusive flag, number of performers, and one or more clip types. The title is displayed through the existing `outfit` field and the profile name through `modelName`. Personal rating and favourite remain QuickPlayer user data, separate from the optional official-style rating.
+Show fields are title, description, tags, release date, optional recording/show
+date, optional age-at-release override, gender, hotness, number of performers,
+and one or more clip types. The title is displayed through the existing `outfit`
+field and the profile name through `modelName`. Personal rating and favourite
+remain separate QuickPlayer user data. The Gender filter supports Male, Female,
+Transgender, Femboy, Sissy, and Non-Binary. Official iStripper cards are treated
+as Female for filtering, except VirtuaGuy cards, which are treated as Male.
 
 Right-click a custom card and choose **Edit Custom Show Metadata…**. Official iStripper metadata remains read-only.
+Changing ordinary metadata preserves the existing cover. An automatic cover is
+regenerated only when its title, linked model, or title colour changes; selecting
+a new custom cover replaces it. Therefore an unrelated metadata edit does not
+require the referenced original source to still exist.
 
 ### Reprocessing a show
 
@@ -746,7 +803,7 @@ included. Ranges start at zero and cover the complete source without gaps or
 overlaps. Skipped entries have no required media and never become playable clips.
 An optional `detectionLabels` array records the typed reason for each generated
 range. An optional root `clipDetection` object records the detector, pinned tool
-revision, overlap, transition-buffer duration, 10-second minimum, and whether a
+revision, overlap, transition-buffer duration, configured short-clip minimum, and whether a
 divider was manually changed. In OmniShotCut output, `intraLabel` classifies the
 range itself and `interLabel` classifies its relationship to the preceding
 range. Unknown worker or manifest labels are rejected rather than guessed.
@@ -777,12 +834,7 @@ Deleting a custom card moves only `shows/<show-id>` to the Windows Recycle Bin. 
 
 Library, queue, and status objects include `source` (`istripper` or `custom`) and nullable `showId`. Custom status reports `animationPath: "custom:<show-id>"`. Existing play, queue, seek, speed, next, lock, and panic routes accept custom card tags; there are no separate custom-show REST endpoints.
 
-## Troubleshooting
-
-- **Unsupported Python**: rerun setup with Python 3.11–3.14, then reselect its venv executable.
-- **CUDA unavailable**: processing automatically uses CPU/FP32 and libx264. This is functional but much slower, especially for MatAnyone2. To restore GPU processing, install a compatible NVIDIA driver and confirm `& <python> -c "import torch; print(torch.cuda.is_available())"` prints `True`.
-
-### Reference benchmark
+## Reference benchmark
 
 On the reference Ryzen 7 7800X3D/RTX 4080 machine at 1920×1080, RVM detail
 512, and PyTorch 2.11/CUDA 12.8, the QuickPlayer tensor path measured:
@@ -804,6 +856,11 @@ and foreground/alpha encoding. Its median bounded result was 61.69 seconds for
 1,000 1080p frames at Standard detail with previews enabled (16.21 FPS). This is
 the more representative planning figure for complete QuickPlayer conversions;
 the tensor-path number above remains useful when comparing devices in isolation.
+
+## Troubleshooting
+
+- **Unsupported Python**: rerun setup with Python 3.11–3.14, then reselect its venv executable.
+- **CUDA unavailable**: processing automatically uses CPU/FP32 and libx264. This is functional but much slower, especially for MatAnyone2. To restore GPU processing, install a compatible NVIDIA driver and confirm `& <python> -c "import torch; print(torch.cuda.is_available())"` prints `True`.
 - **Checkpoint validation failed**: delete only the named file in `<runtime>\checkpoints` and rerun setup. Do not bypass the hash check.
 - **MatAnyone2/SAM unavailable**: rerun processing-tools setup with MatAnyone2 checked. It is one option because SAM is required to create the initial mask.
 - **VideoMaMa unavailable**: rerun setup with VideoMaMa checked. It remains hidden until VideoMaMa, SAM2, and all required model files are installed. CUDA is mandatory.

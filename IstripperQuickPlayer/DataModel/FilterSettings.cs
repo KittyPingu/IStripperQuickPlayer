@@ -28,6 +28,8 @@ namespace IStripperQuickPlayer.DataModel
         internal bool VirtuaGuy = true;
         internal bool TradingCard = true;
         internal bool Custom = true;
+        internal string genders =
+            "Male,Female,Transgender,Femboy,Sissy,Non-Binary";
         internal decimal minMyRating=0;
         internal decimal maxMyRating=10;
         internal DateTime minDate=new DateTime(2000,1,1);
@@ -39,6 +41,7 @@ namespace IStripperQuickPlayer.DataModel
             maxWaist = 99;
             maxHips = 99;
             Custom = true;
+            genders = "Male,Female,Transgender,Femboy,Sissy,Non-Binary";
         }
 
         public object Clone()
@@ -73,7 +76,9 @@ namespace IStripperQuickPlayer.DataModel
             Normal == other.Normal &&
             VirtuaGuy == other.VirtuaGuy &&
             TradingCard == other.TradingCard &&
-            Custom == other.Custom;
+            Custom == other.Custom &&
+            string.Equals(genders, other.genders,
+                StringComparison.Ordinal);
     }
 
     [Serializable]

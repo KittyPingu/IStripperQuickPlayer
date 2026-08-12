@@ -1,207 +1,284 @@
 # Creating Custom Shows
 
 QuickPlayer can turn an ordinary video containing one or more people into a
-transparent show. Custom cards appear alongside official iStripper cards and
-work with the same library, search, filters, favourites, ratings, queues,
-history, hotkeys, and REST controls.
+transparent show. Custom cards appear beside official iStripper cards and use
+the same search, filters, favourites, ratings, queues, history, hotkeys, and
+REST controls.
 
-This is the user guide. For pinned versions, storage schemas, processing
-internals, benchmark results, licensing, and developer diagnostics, see the
-[technical custom-show reference](docs/custom-shows.md).
+This is the end-user guide. Exact model versions, storage formats, benchmarks,
+licences, and implementation details are in the
+[technical reference](docs/custom-shows.md).
 
-## 1. Install the processing tools
+## Recommended workflow
+
+For most users, choose one of these three methods:
+
+| Method | Choose it when | Starting point |
+| --- | --- | --- |
+| **RVM-MatAnyone** | You want a good automatic workflow without drawing a mask. RVM chooses a complete-person starting mask and MatAnyone 2 produces the final alpha. | **Standard (512 px)** detail. |
+| **MatAnyone 2** | You want to choose the exact person or people and manually correct the initial mask before processing. | Scrub to a clear frame, create the mask, then use **Standard (512 px)** detail. |
+| **RVM-ViTMatte S** | You want a fully automatic RVM mask for every frame followed by softer ViTMatte edge refinement. | Keep the recommended ViTMatte-S batch; lower it if VRAM is tight. |
+
+**RVM-MatAnyone is the recommended automatic starting point.** Use plain
+**MatAnyone 2** when subject selection matters, there are several people, or
+RVM includes the wrong foreground. Try **RVM-ViTMatte S** when hair and soft-edge
+quality justify a slower, more VRAM-intensive run.
+
+Higher **Matting detail** can improve fine edges in RVM and MatAnyone-based
+methods, but increases processing time and VRAM use. It does not change the
+exported video dimensions. Start at 512 px; try 768 or 1024 only after checking
+that the improvement is visible. For RVM-MatAnyone, detail controls the final
+MatAnyone pass; its brief RVM initializer remains capped at 512 px.
+RVM-ViTMatte S does not use the Matting detail selector: ViTMatte works at the
+source dimensions, and **Processing batch size** is its main VRAM control.
+
+To run unattended, enable **Automatically accept result with alpha threshold
+25**. This enables **Queue** for RVM-MatAnyone and RVM-ViTMatte S. MatAnyone 2
+shows **Mask and Queue** instead: you must create one initial mask for every
+included clip before the job can be queued. A queued job also requires a source
+video that will remain at the recorded path, valid clip divisions, a model
+profile, and all selected processing tools already installed. Open **File >
+Custom Shows > Queues...** to start, reorder, pause, stop, retry, edit, or delete
+jobs. Closing the queue window does not stop processing.
+
+## Install the processing tools
 
 Choose **File > Custom Shows > Install / Update Processing Tools...**.
 
-Robust Video Matting (RVM) is always installed. The default optional selection
-also installs TransNetV2 clip detection and MatAnyone2/SAM2 interactive masking.
-VideoMaMa, ViTMatte, and ProPainter are optional larger or specialised tools.
+- Keep **MatAnyone 2 + SAM2** selected to install MatAnyone 2 and its interactive
+  mask editor. This is selected by default.
+- Select **ViTMatte S + B** to install ViTMatte and the SAM2 components used by
+  its editable workflow. The same install also enables **RVM-ViTMatte S**.
+- RVM is part of the core processing setup and is used by RVM Quality, RVM Fast,
+  RVM-MatAnyone, and RVM-ViTMatte S.
+- TransNetV2 is the recommended optional clip detector and is selected by
+  default. VideoMaMa, OmniShotCut, EdgeTAM, Stabilo, and ProPainter are optional
+  specialist tools.
 
-Setup creates an isolated Python environment under
-`%LOCALAPPDATA%\IStripperQuickPlayer\rvm-runtime`. Existing verified model files
-are reused when setup is run again.
+Leave the installer open until it reports completion. It creates an isolated
+Python environment under
+`%LOCALAPPDATA%\IStripperQuickPlayer\rvm-runtime` and reuses verified files when
+run again. If needed, it installs a compatible Python for the current user.
 
-After setup:
+After installation:
 
 1. Open **File > Custom Shows > Settings...**.
-2. Select the custom-show library folder and Python executable if necessary.
+2. Confirm the custom-show library folder and Python executable.
 3. Click **Validate setup**.
 
-An NVIDIA CUDA GPU is strongly recommended. RVM can fall back to CPU, but the
-mask-guided methods are generally too slow there for normal use.
+An NVIDIA CUDA GPU is strongly recommended. CPU fallback exists for some
+methods, but MatAnyone, ViTMatte, VideoMaMa, and mask tracking are generally too
+slow for normal CPU-only use.
 
-## 2. Create the card and model profile
+## Create or extend a show
 
 Choose **File > Custom Shows > Create Show...**, select a source video, enter a
-title, and choose or create a model profile.
+title, and choose or create a model profile. The source remains an external
+reference; QuickPlayer does not copy or delete it.
 
-Model profiles are shared. Changing a model's birth date, height, measurements,
-hair, ethnicity, city, or country updates every linked custom card. The show
-title, dates, description, tags, rating, hotness, clip types, and age override
-belong to the individual show.
+Use **Add To Existing Show** to select an existing custom show. Its metadata is
+loaded into the form, and newly processed clips are appended to its existing
+clips. Right-click an existing custom card and choose **Reprocess Custom Show...**
+to replace its processed media while optionally retaining clip divisions and
+masks.
 
-You can either copy the source into the show folder or retain a reference to its
-current path. A referenced source must not be moved or renamed if you later want
-to regenerate its automatic cover. The generated cover includes the model and
-show names, and its title colour can be changed when editing metadata.
+The collapsed **Metadata (optional)** section contains description, tags, dates,
+age override, gender, hotness, performer count, clip types, and cover options.
+Model profiles are reusable. Selecting an official iStripper model uses that
+model's existing metadata and statistics; custom model metadata is editable and
+shared by every linked custom show.
 
-To process an existing card again, right-click it and choose **Reprocess Custom
-Show...**. Existing clip divisions are kept by default, and retained masks can
-also be reused when switching between MatAnyone 2, VideoMaMa, ViTMatte S, and
-ViTMatte B. Older shows must recreate their masks on the first reprocessing pass
-because earlier QuickPlayer versions discarded completed mask drafts.
-Tracked masks are stored losslessly as one-bit, XOR-delta, Zstandard-compressed
-chunks and are expanded only temporarily during reprocessing.
+## Split and classify clips
 
-## 3. Split the source into clips
+Choose **Split into clips...** when the source contains scene changes, titles,
+or sections that should not play. Clicking or scrubbing the timeline selects and
+brings the related grid row into view. Use **Show skipped clips in grid** to hide
+or reveal excluded sections.
 
-Choose **Split into clips...** before processing. The editor works on the
-original video. You can:
+You can add or move dividers, assign hotness and clip types, and include or skip
+segments. Automatic detectors are:
 
-- play, scrub, use slow motion, or step one frame at a time;
-- add dividers and drag their gold triangle markers;
-- assign hotness and clip types to each segment;
-- include or skip individual segments;
-- select several rows and edit them together.
-
-Double-click a segment to seek to its start without autoplaying. Double-click
-its **End** cell to seek to its final frame.
-
-Three automatic detectors are available:
-
-- **Fast (FFmpeg)** is always available and finds simple visual cuts.
-- **Accurate (TransNetV2)** is the default when installed.
-- **Modern/Quality (OmniShotCut)** is an optional CUDA detector that also finds
-  complete fades, dissolves, wipes, pushes, slides, zooms, and doorway
+- **Fast (FFmpeg)**: always available; lightweight visual cut detection.
+- **Accurate (TransNetV2)**: recommended general detector when installed.
+- **Modern/Quality (OmniShotCut)**: optional CUDA detector that identifies hard
+  cuts, sudden jumps, fades, dissolves, wipes, pushes, slides, zooms, and doorway
   transitions.
 
-The last selected detector is remembered. If it is unavailable, QuickPlayer
-falls back to TransNetV2, then OmniShotCut, then FFmpeg. OmniShotCut skips the
-whole gradual-transition range by default and labels the result in the
-**Detected as** column. **Skip transition ± seconds** adds a safety margin to
-those ranges and creates skipped buffers around hard cuts and sudden jumps.
-You can still change inclusion or move dividers afterwards. Auto-detected
-segments shorter than 10 seconds are skipped by default but can be re-enabled.
+The **Auto-skip shorter than** value controls which short detected clips are
+excluded; it defaults to 10 seconds and can be changed before detection. The
+transition buffer can skip complete transitions and a margin around them.
+Review the results: skipped clips are not processed or published, and every
+included clip restarts the selected matting model at its boundary.
 
-Skipped segments are neither processed nor published as playable clips. Every
-included clip is processed independently so state does not carry across scene
-cuts.
+## Processing methods
 
-## 4. Choose a matting method
+### Recommended methods
 
-| Method | Best use |
-| --- | --- |
-| **RVM Quality** | General-purpose automatic person matting. |
-| **RVM Fast** | Lighter RVM model; useful when model inference is the bottleneck. |
-| **MatAnyone2** | Interactive subject selection on a powerful NVIDIA GPU. |
-| **VideoMaMa** | Very slow, high-quality experimental processing with high VRAM use. |
-| **ViTMatte S** | Editable SAM2 masks with lighter matte refinement. |
-| **ViTMatte B** | Higher-cost refinement; often several times slower than S. |
+**RVM-MatAnyone** samples the first few frames of each clip with RVM, chooses the
+strongest complete-person matte, cleans it, and uses it to initialize MatAnyone
+2. The **RVM initializer alpha** slider controls how readily faint RVM alpha is
+kept. The 40% default is a balanced choice; reduce it to retain more hair, dark
+clothing, or motion-blurred limbs, and raise it to reject weak background haze.
 
-For a capable NVIDIA GPU, MatAnyone2 is a good first choice when you want direct
-control over which person or people are retained.
+**MatAnyone 2** opens an initial-mask editor for each included clip. Scrub to a
+clear frame, left-click or paint foreground, and right-click or paint unwanted
+foreground/background. A mask selected in the middle of a clip propagates both
+backward and forward. This is the best choice when you need deliberate subject
+selection.
 
-**Matting detail** controls the internal processing resolution, not the exported
-video size. Start with **Standard (512 px)**. If VRAM fills or Windows starts
-using shared GPU memory heavily, reduce it to 384 px or 256 px and lower the
-processing batch/chunk size.
+**RVM-ViTMatte S** first makes a binary RVM mask for every frame and then uses
+ViTMatte S to produce soft alpha edges. It is automatic and retains the generated
+mask sequence for reprocessing. It normally uses more VRAM and runs more slowly
+than RVM-MatAnyone. Start with the recommended batch size; larger batches are not
+always faster and can force Windows into very slow shared GPU memory.
 
-## 5. Create and correct masks
+### Other methods
 
-Mask-guided methods ask you to identify the foreground:
+- **RVM Quality (ResNet50)** is the built-in automatic whole-person method. It is
+  quick and dependable, but its final edge quality may be below MatAnyone or
+  ViTMatte.
+- **RVM Fast (MobileNetV3)** is lighter than RVM Quality and useful on slower
+  hardware or for drafts.
+- **ViTMatte S** uses editable SAM2 or EdgeTAM masks and is the recommended
+  ViTMatte model. Choose it when you want to correct tracking before edge
+  refinement.
+- **ViTMatte B** uses a larger backbone. It is slower and can consume much more
+  VRAM; use it only after S and with a conservative batch.
+- **VideoMaMa High Quality** uses editable masks and diffusion-based processing.
+  It is experimental, CUDA-only, very slow, and requires substantial VRAM and
+  temporary disk space.
 
-- left-click a person or missing foreground;
-- right-click background or unwanted foreground;
-- enable **Paint mask**, then left-drag to add foreground or right-drag to erase it;
-- adjust the brush-size slider or mouse wheel for broad areas or edge detail;
-- use **Undo click** or **Undo stroke** to work backwards;
-- use **Ctrl+P** to toggle paint mode and **Ctrl+Z** to undo;
-- use automatic masking when it provides a useful starting point.
+The form remembers the previous algorithm, mask engine, model, detail, batch,
+RVM threshold, and automatic-accept choice. It shows only controls that apply to
+the selected method.
 
-MatAnyone2 lets you play or scrub to a clear frame before creating its initial
-mask. A mask made in the middle of a clip is propagated both forward and
-backward.
+For editable-mask methods, **SAM2 Base+** is the most robust mask generator and
+the recommended default; Small and Tiny trade some robustness for speed.
+**EdgeTAM** is the faster optional alternative when installed. The chosen mask
+engine tracks the binary subject mask; MatAnyone, ViTMatte, or VideoMaMa then
+performs the selected final processing.
 
-ViTMatte and VideoMaMa use SAM2 masks across the clip. During mask review, scrub
-to a frame where tracking has drifted, add correction clicks or paint the mask,
-inspect the still preview, then choose **Update masks**. During the backward update,
-choose **Stop backward propagation** when the correction has gone far enough; the
-completed masks are kept and the forward update starts. Timeline markers return to corrected
-frames and restore their clicks:
+## Create and correct masks
 
-- blue: originally generated masks;
-- grey: currently regenerating;
-- green: regenerated after correction.
+The initial-mask and tracked-mask editors support:
 
-Mask work is saved as a draft. If processing is cancelled or fails, starting the
-same source again with the same method and clip boundaries restores the saved
-masks, correction frames, clicks, and undo histories. Successful publication or
-explicit discard removes the matching draft.
+- left-click or left-paint to add foreground;
+- right-click or right-paint to remove foreground;
+- a brush-size slider and mouse wheel to resize the circular brush;
+- **Ctrl+P** to toggle painting and **Ctrl+Z** to undo;
+- playback, scrubbing, slow motion, and frame stepping.
 
-SAM2 Base+ is the most robust model, Small is balanced, and Tiny is fastest.
-Only installed and verified models appear in the selector.
+For ViTMatte and VideoMaMa, mask generation can be interrupted with **Pause and
+Correct**. The timeline always represents the whole clip; after pausing, scrub
+back to any generated frame, correct the first tracking error, and choose
+**Update masks**. During backward propagation, use **Stop backward propagation**
+once the correction has travelled far enough. Continue correcting later drift,
+then choose **Use corrected masks** when the complete clip is valid.
 
-## 6. Process and review
+Mask work is saved as a resumable draft if processing is cancelled or fails.
+Published shows also retain reusable masks: initial masks as PNG and tracked
+sequences as lossless one-bit, XOR-delta, Zstandard-compressed `.iqpmask`
+archives. Reprocessing with **Keep existing masks** avoids masking again and can
+reuse masks across MatAnyone 2, RVM-MatAnyone, VideoMaMa, and ViTMatte where the
+workflow is compatible.
 
-The processing window shows the latest source frame and composited result, along
-with processed frames, processing FPS, elapsed time, and an ETA once the rate is
-stable. Model loading and the first few frames may make an early estimate
-unreliable.
+## Process, review, or queue
 
-Cancel if the mask is clearly unsuitable. A cancelled or failed conversion does
-not publish a partial card.
+**Process and Preview** runs immediately, shows source and mask/composite
+previews, and opens a final review where each clip's minimum alpha can be tuned.
+New clips use alpha threshold 25. Choose **Accept** to publish atomically;
+cancelling or failing never publishes a partial card.
 
-After processing, preview every clip and tune its lower alpha threshold. New
-clips start at **25**; pixels below it become transparent. Playback settings also
-contain a global full-opacity threshold for turning sufficiently opaque pixels
-fully solid while retaining soft edges between the two thresholds.
+Enable **Automatically accept result with alpha threshold 25** for a fire-and-
+forget run. The number is an alpha cutoff on the 0-255 scale, not 25% of the
+image. With automatic acceptance enabled:
 
-Choose **Accept** when satisfied. QuickPlayer closes its preview players, waits
-for the media files to be released, and publishes the show atomically. You do
-not need to close previews manually. **Retry**, **Open Log**, and **Discard** are
-available when further work is needed.
+- RVM Quality, RVM Fast, RVM-MatAnyone, and RVM-ViTMatte S can be queued directly.
+- MatAnyone 2 requires **Mask and Queue** so its initial masks exist first.
+- VideoMaMa and manually masked ViTMatte currently run through the interactive
+  workflow rather than the automatic queue.
 
-## 7. Playback, storage, and backup
+The queue runs one show at a time. It verifies that referenced sources and target
+shows have not changed, preserves conflicts as **Needs attention**, and retains
+completed entries as history until you delete them. Pause can finish the current
+show or cancel it back to Pending; Stop also returns it to Pending for a complete
+restart. Closing QuickPlayer asks before cancelling an active job.
 
-A custom card may contain several clips. Natural completion and **Next clip**
-follow the existing manual or automatic queue rules, and custom and official
-cards can be mixed in either direction.
+## Reprocessing and adding clips
 
-Custom shows are stored under `<custom-library>\shows`, while shared model
-profiles are under `<custom-library>\performers`. QuickPlayer `.iqpb` backups do
-not contain this library, so back up the configured custom-library folder
-separately.
+Right-click a custom card and choose **Reprocess Custom Show...**. Keep existing
+clip divisions and masks unless you need to correct them. This lets you compare,
+for example, MatAnyone 2 with RVM-MatAnyone or ViTMatte without recreating all
+mask work. The replacement is validated before the existing show is swapped.
 
-Deleting a custom card moves its show folder to the Recycle Bin. It does not
-delete a referenced source video or a shared model profile.
+**Edit Custom Show Metadata...** does not need the referenced source for ordinary
+changes. QuickPlayer preserves the existing cover unless you select a new custom
+cover or change an automatic-cover input such as its title, model, or title
+colour. Regenerating an automatic cover does require the source.
 
-## 8. Performance and maintenance
+To add a different source video as more clips on the same card, begin a new
+Create Show workflow and select **Add To Existing Show**. The selected show's
+metadata is populated; split and process the new source normally, and its
+included clips are appended.
 
-- Start RVM at 512 px detail and its recommended chunk size.
-- Start ViTMatte and VideoMaMa with small batches on 12-16 GB GPUs.
-- Reduce matting detail before reducing the exported video resolution.
-- Avoid other heavy GPU applications while processing or benchmarking.
-- Use the manual benchmark buttons only when you want to recalibrate settings.
-  They generate deterministic temporary test videos and do not use personal
-  videos or rely on a path in your Downloads or custom library.
-- The SAM2 frame cache can be sized or cleared in Custom Show Settings. Setting
-  its limit to 0 disables persistent caching.
+## Performance and VRAM guidance
 
-The benchmark buttons do not change saved settings until you explicitly choose
-**Use results** and then save Settings. Compilation may have a substantial
-one-time setup cost; subsequent compatible runs reuse the compiler cache.
+- Begin MatAnyone/RVM processing at **Standard (512 px)**. Lower detail if VRAM
+  fills; raise it only for a visible edge-quality improvement.
+- Use the recommended ViTMatte-S batch. ViTMatte-B and VideoMaMa should normally
+  start at batch 1 on 12-16 GB GPUs.
+- QuickPlayer warns when a requested ViTMatte or VideoMaMa batch is unlikely to
+  fit and lets you use the suggested value or continue deliberately.
+- If Task Manager shows dedicated VRAM full and shared GPU memory growing,
+  cancel and lower detail or batch size. Shared-memory spill can slow the whole
+  desktop dramatically.
+- **CPU priority** and **GPU priority** in Custom Show Settings apply to newly
+  started processing workers. Both default to **Normal**. Lowering them may
+  favour playback and desktop responsiveness, but can reduce processing speed.
+- Benchmarks are optional. They measure safe batches and compiled/eager paths on
+  the current GPU; settings change only after you accept and save the results.
+
+## Playback, storage, and backup
+
+Accepted custom cards become visible immediately and can mix with official cards
+in manual and automatic playback queues. A custom card may contain several clips;
+clip completion follows the normal QuickPlayer next-item rules.
+
+Shows are stored under `<custom-library>\shows`, model profiles under
+`<custom-library>\performers`, resumable drafts under
+`<custom-library>\.mask-drafts`, and processing queue state under
+`<custom-library>\queue`. QuickPlayer `.iqpb` backups do not contain this
+library, so back up the complete custom-library folder separately.
+
+Deleting a custom show moves its show folder to the Recycle Bin. It does not
+delete its referenced source or shared model profile.
+
+## Source preparation tools
+
+- **Stabilize Video (FFmpeg)** performs conventional two-pass stabilization.
+- **Camera / Background Lock (Stabilo + SAM2)** tracks a selected background and
+  compensates camera motion.
+- **Remove Video Object / Watermark** offers fast FFmpeg delogo or optional
+  ProPainter AI inpainting. ProPainter defaults to 25% processing resolution
+  because 50% uses four times as many pixels and can exhaust VRAM. Scrub to a
+  representative frame before selecting the rectangle; the rectangle applies
+  for the complete video.
+
+These tools create a new source video. Select that output when creating the
+custom show.
 
 ## Troubleshooting
 
-- Run **Validate setup** after changing Python, CUDA, or optional tools.
-- Lower matting detail and batch/chunk size after an out-of-memory failure.
-- Keep referenced sources at their recorded paths if covers may be regenerated.
-- Use **Open Log** for worker, FFmpeg, checkpoint, or media mismatch details.
-- If an algorithm is missing, install it through the processing-tool choices and
-  validate the setup again.
-- Do not manually remove active staging or mask-draft folders while processing or
-  preview windows are open.
+- Run **Validate setup** after changing Python, CUDA, drivers, or optional tools.
+- If an algorithm is absent, rerun **Install / Update Processing Tools** with its
+  checkbox selected.
+- Lower detail or batch size after an out-of-memory error.
+- Keep referenced source videos at their recorded paths for reprocessing.
+- Use **Open Log** for worker, FFmpeg, model, or media mismatch diagnostics.
+- Do not delete active staging, queue, or mask-draft folders while work is open.
+- Foreground and alpha media are a synchronized pair; do not transcode one
+  independently.
 
-See the [technical custom-show reference](docs/custom-shows.md) for exact setup,
-formats, benchmark methodology and results, pipeline design, portability,
-licences, and deeper diagnostics.
+Only process videos you have permission to use. Review the individual model
+licences before commercial use. See the [technical reference](docs/custom-shows.md)
+for exact licence terms and pinned upstream versions.

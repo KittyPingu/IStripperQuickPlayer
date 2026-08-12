@@ -31,6 +31,8 @@ internal sealed class CustomShowConfiguration
     public int RvmQualityCompileCutoffFrames { get; set; }
     public int RvmFastCompileCutoffFrames { get; set; }
     public string RvmNvencPreset { get; set; } = "p5";
+    public string ProcessingCpuPriority { get; set; } = "normal";
+    public string ProcessingGpuPriority { get; set; } = "normal";
     public int MatAnyone2CompileCutoffFrames { get; set; } = 16000;
     public int Sam2BasePlusCompileCutoffFrames { get; set; } = 16000;
     public int Sam2SmallCompileCutoffFrames { get; set; } = 16000;
@@ -76,6 +78,10 @@ internal sealed class CustomShowConfiguration
             if (configuration.RvmNvencPreset is not
                 ("p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7"))
                 configuration.RvmNvencPreset = "p5";
+            if (!IsProcessingPriority(configuration.ProcessingCpuPriority))
+                configuration.ProcessingCpuPriority = "normal";
+            if (!IsProcessingPriority(configuration.ProcessingGpuPriority))
+                configuration.ProcessingGpuPriority = "normal";
             if (configuration.TransNetDecodeMode is not ("auto" or "legacy" or "cpu"))
                 configuration.TransNetDecodeMode = "auto";
             if (configuration.LastClipDetector is not
@@ -104,6 +110,9 @@ internal sealed class CustomShowConfiguration
     }
 
     internal void Save() => CustomShowStore.WriteJsonAtomic(FilePath, this);
+
+    internal static bool IsProcessingPriority(string? value) => value is
+        "idle" or "below-normal" or "normal" or "above-normal" or "high";
 
     internal static string FindPythonExecutable()
     {
@@ -174,6 +183,7 @@ internal sealed class CustomShowManifest
     public DateOnly ReleaseDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public DateOnly? ShowDate { get; set; }
     public int? AgeAtReleaseOverride { get; set; }
+    public string Gender { get; set; } = "Female";
     public decimal? OfficialRating { get; set; }
     public string Hotness { get; set; } = "NoNudity";
     public bool Exclusive { get; set; }
@@ -283,6 +293,8 @@ internal sealed class CustomShowStore
 
     static readonly HashSet<string> HotnessValues =
         ["Public", "NoNudity", "Topless", "Nudity", "FullNudity", "XXX"];
+    internal static readonly string[] GenderValues =
+        ["Male", "Female", "Transgender", "Femboy", "Sissy", "Non-Binary"];
     static readonly HashSet<string> ClipTypeValues =
         ["Standing", "Table", "Behind Table", "Swing", "Cage", "Pole",
          "Glass", "Sign", "Prop", "Full Legs", "Side"];
@@ -578,6 +590,8 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("createdUtc must be an ISO-8601 UTC value.");
         if (show.OfficialRating is < 0 or > 5) throw new InvalidDataException("Official rating must be 0–5.");
         if (show.AgeAtReleaseOverride is < 18 or > 120) throw new InvalidDataException("Age at release must be 18–120.");
+        if (!GenderValues.Contains(show.Gender))
+            throw new InvalidDataException("Unknown gender value.");
         if (!HotnessValues.Contains(show.Hotness)) throw new InvalidDataException("Unknown hotness value.");
         if (show.PerformerCount < 1) throw new InvalidDataException("Performer count must be at least one.");
         if (show.ClipTypes.Length == 0 || show.ClipTypes.Any(type => !ClipTypeValues.Contains(type)))
@@ -867,6 +881,7 @@ internal sealed class CustomShowStore
             modelAge = age,
             rating = show.OfficialRating is decimal rating ? rating + 5 : 0,
             hotnessLevel = show.Hotness,
+            gender = show.Gender,
             exclusive = show.Exclusive,
             numgirls = show.PerformerCount,
             hair = istripperModel?.hair ?? performer.Hair,
@@ -1016,6 +1031,7 @@ internal sealed class CustomShowStore
             CustomShowManifest show = new()
             {
                 PerformerId = profile.Id, Title = "Test Show",
+                Gender = "Non-Binary",
                 AgeAtReleaseOverride = 24,
                 ClipDetection = new()
                 {
@@ -1110,6 +1126,7 @@ internal sealed class CustomShowStore
                 roundTrip.Processing.Encoder != "libx264" ||
                 roundTrip.Processing.EncoderPreset != "slow/medium" ||
                 roundTrip.Processing.Clips.Length != 2 ||
+                roundTrip.Gender != "Non-Binary" ||
                 roundTrip.ClipDetection?.Method != "omnishotcut" ||
                 roundTrip.ClipDetection.OverlapFrames != 20 ||
                 !roundTrip.ClipDetection.ManuallyEdited ||
@@ -1178,6 +1195,7 @@ internal sealed class CustomShowStore
             List<ModelClip>? loadedClips = cards.FirstOrDefault()?.clips;
             if (cards.Count != 1 || cards[0].name != "custom:" + show.Id ||
                 cards[0].modelId != "test-native-model" ||
+                cards[0].gender != "Non-Binary" ||
                 cards[0].modelAge != 24 || cards[0].bust != 36 ||
                 cards[0].height != "5.7" || loadedClips?.Count != 2 ||
                 loadedClips[0].customEndMs != 400 ||

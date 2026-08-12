@@ -471,6 +471,7 @@ internal static class CustomShowProcessor
         }
         start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
+        ConfigureProcessingPriorities(start, configuration);
 
         using Process process = new() { StartInfo = start };
         StringBuilder log = new();
@@ -491,14 +492,26 @@ internal static class CustomShowProcessor
                 {
                     using JsonDocument json = JsonDocument.Parse(line);
                     JsonElement root = json.RootElement;
+                    string progressStage = root.TryGetProperty("stage", out var stage)
+                        ? stage.GetString() ?? "processing" : "processing";
+                    bool showingRvmMask =
+                        (preset == "rvm-vitmatte-s" &&
+                            progressStage == "rvm-masks") ||
+                        (preset == "rvm-matanyone2" &&
+                            progressStage == "initializing");
                     progress?.Report(new CustomShowProgress(
-                        root.TryGetProperty("stage", out var stage) ? stage.GetString() ?? "processing" : "processing",
+                        progressStage,
                         root.TryGetProperty("percent", out var percent) ? percent.GetDouble() : 0,
                         root.TryGetProperty("message", out var message) ? message.GetString() ?? "" : "",
                         File.Exists(Path.Combine(stagingFolder, "preview-source.jpg"))
                             ? Path.Combine(stagingFolder, "preview-source.jpg") : null,
                         File.Exists(Path.Combine(stagingFolder, "preview-composite.jpg"))
-                            ? Path.Combine(stagingFolder, "preview-composite.jpg") : null));
+                            ? Path.Combine(stagingFolder, "preview-composite.jpg") : null,
+                        preset is "rvm-vitmatte-s" or "rvm-matanyone2"
+                            ? "Original input" : null,
+                        preset is "rvm-vitmatte-s" or "rvm-matanyone2"
+                            ? showingRvmMask ? "RVM mask" : "Composited result"
+                            : null));
                 }
                 catch (JsonException) { }
             }
@@ -527,6 +540,15 @@ internal static class CustomShowProcessor
             foreach (string preview in new[] { "preview-source.jpg", "preview-composite.jpg" })
                 try { File.Delete(Path.Combine(stagingFolder, preview)); } catch { }
         }
+    }
+
+    internal static void ConfigureProcessingPriorities(ProcessStartInfo start,
+        CustomShowConfiguration configuration)
+    {
+        start.Environment["IQP_CPU_PRIORITY"] = CustomShowConfiguration.IsProcessingPriority(
+            configuration.ProcessingCpuPriority) ? configuration.ProcessingCpuPriority : "normal";
+        start.Environment["IQP_GPU_PRIORITY"] = CustomShowConfiguration.IsProcessingPriority(
+            configuration.ProcessingGpuPriority) ? configuration.ProcessingGpuPriority : "normal";
     }
 
     internal static string ValidNvencPreset(string? value) => value is

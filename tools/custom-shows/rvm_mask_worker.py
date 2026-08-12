@@ -3,7 +3,7 @@
 import argparse, json, shutil, subprocess, sys
 from pathlib import Path
 
-from rvm_worker import executable, load_model, probe
+from rvm_worker import executable, load_model, probe, replace_preview
 from videomama_worker import model_size
 
 
@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--alpha-threshold", type=float, default=.5)
     parser.add_argument("--masks-only", action="store_true")
     parser.add_argument("--profile-log", type=Path)
+    parser.add_argument("--preview-output", type=Path)
     args = parser.parse_args()
 
     import numpy as np
@@ -106,6 +107,15 @@ def main():
                                              compress_level=1)
             index += 1
             if index == 1 or index == count or index % 10 == 0:
+                if args.preview_output:
+                    args.preview_output.mkdir(parents=True, exist_ok=True)
+                    for name, image, mode in (
+                            ("preview-source.jpg", pixels, "RGB"),
+                            ("preview-composite.jpg", mask, "L")):
+                        temporary = args.preview_output / (name + ".tmp")
+                        Image.fromarray(image, mode).save(
+                            temporary, "JPEG", quality=88)
+                        replace_preview(temporary, args.preview_output / name)
                 send(status="progress", percent=10 + 88 * index / count,
                      message=f"RVM segmented {index}/{count} frames",
                      frame=index - 1)
