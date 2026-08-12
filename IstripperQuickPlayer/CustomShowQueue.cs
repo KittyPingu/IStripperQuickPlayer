@@ -423,6 +423,25 @@ internal sealed class CustomShowQueueManager : IDisposable
         OnChanged();
     }
 
+    internal int RemoveCompleted()
+    {
+        int removed;
+        lock (gate)
+        {
+            string[] ids = document.Jobs
+                .Where(job => job.Status == CustomShowQueueStatus.Completed)
+                .Select(job => job.Id).ToArray();
+            removed = ids.Length;
+            if (removed == 0) return 0;
+            document.Jobs.RemoveAll(job =>
+                job.Status == CustomShowQueueStatus.Completed);
+            foreach (string id in ids) storage.DeleteAssets(id);
+            SaveLocked();
+        }
+        OnChanged();
+        return removed;
+    }
+
     internal void Move(string id, int direction)
     {
         lock (gate)
@@ -909,6 +928,24 @@ internal static class CustomShowJobRunner
             if (manager.Jobs[1].Id != running.Id) return false;
             manager.Delete(completed.Id);
             if (manager.Find(completed.Id) != null || !Directory.Exists(published)) return false;
+            CustomShowQueueJob completedHistory = new()
+            {
+                Status = CustomShowQueueStatus.Completed,
+                PublishedShowId = "published"
+            };
+            CustomShowQueueJob failedHistory = new()
+            {
+                Status = CustomShowQueueStatus.Failed
+            };
+            manager.AddOrUpdate(completedHistory, null, null,
+                new Dictionary<string, string>());
+            manager.AddOrUpdate(failedHistory, null, null,
+                new Dictionary<string, string>());
+            if (manager.RemoveCompleted() != 1 ||
+                manager.Find(completedHistory.Id) != null ||
+                manager.Find(failedHistory.Id) == null ||
+                Directory.Exists(storage.Assets(completedHistory.Id)) ||
+                !Directory.Exists(published)) return false;
             CustomShowQueueJob firstTarget = new() { TargetShowId = "target" };
             manager.AddOrUpdate(firstTarget, null, null,
                 new Dictionary<string, string>());
@@ -948,6 +985,7 @@ internal sealed class CustomShowQueueForm : Form
     readonly Button down = new() { Text = "Move Down", AutoSize = true };
     readonly Button editButton = new() { Text = "Edit", AutoSize = true };
     readonly Button delete = new() { Text = "Delete", AutoSize = true };
+    readonly Button removeCompleted = new() { Text = "Remove Completed", AutoSize = true };
     readonly Button retry = new() { Text = "Retry", AutoSize = true };
     readonly Button open = new() { Text = "Open", AutoSize = true };
     readonly Label summary = new() { Dock = DockStyle.Fill,
@@ -979,7 +1017,8 @@ internal sealed class CustomShowQueueForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(12, 5, 12, 12)
         };
-        buttons.Controls.AddRange([run, pause, stop, up, down, editButton, retry, open, delete]);
+        buttons.Controls.AddRange([run, pause, stop, up, down, editButton, retry, open,
+            delete, removeCompleted]);
         layout.Controls.Add(buttons, 0, 2); Controls.Add(layout);
         run.Click += (_, _) => manager.Run();
         pause.Click += Pause;
@@ -988,6 +1027,7 @@ internal sealed class CustomShowQueueForm : Form
         down.Click += (_, _) => { if (SelectedId() is string id) manager.Move(id, 1); };
         retry.Click += (_, _) => { if (SelectedId() is string id) manager.Retry(id); };
         delete.Click += Delete;
+        removeCompleted.Click += RemoveCompleted;
         open.Click += OpenSelected;
         editButton.Click += (_, _) => { if (Selected() is { } job) edit(job); };
         grid.SelectionChanged += (_, _) => RefreshButtons();
@@ -1085,6 +1125,19 @@ internal sealed class CustomShowQueueForm : Form
                 MessageBoxIcon.Warning) == DialogResult.Yes) manager.Delete(job.Id);
     }
 
+    void RemoveCompleted(object? sender, EventArgs e)
+    {
+        int count = manager.Jobs.Count(job =>
+            job.Status == CustomShowQueueStatus.Completed);
+        if (count == 0) return;
+        string entries = count == 1 ? "entry" : "entries";
+        if (MessageBox.Show(this,
+                $"Remove all {count} completed queue {entries} from history?\n\n" +
+                "Published shows will not be deleted.", "Remove Completed Jobs",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            manager.RemoveCompleted();
+    }
+
     void OpenSelected(object? sender, EventArgs e)
     {
         if (Selected() is not { } job) return;
@@ -1111,6 +1164,8 @@ internal sealed class CustomShowQueueForm : Form
         up.Enabled = down.Enabled = editable && job!.Status != CustomShowQueueStatus.Completed;
         editButton.Enabled = editable;
         delete.Enabled = editable;
+        removeCompleted.Enabled = manager.Jobs.Any(value =>
+            value.Status == CustomShowQueueStatus.Completed);
         retry.Enabled = job?.Status is CustomShowQueueStatus.Failed or
             CustomShowQueueStatus.NeedsAttention;
         open.Enabled = job?.Status is CustomShowQueueStatus.Completed or

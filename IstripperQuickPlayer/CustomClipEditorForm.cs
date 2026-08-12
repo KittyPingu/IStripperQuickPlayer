@@ -933,7 +933,7 @@ internal sealed class CustomClipEditorForm : Form
         foreach (long divider in detection.BoundariesMs.Where(value => value > 0 && value < durationMs))
         {
             if (bufferMs == 0) cuts.Add(divider);
-            else if (detection.Ranges.Length == 0)
+            else
                 skipped.Add((Math.Max(0, divider - bufferMs),
                     Math.Min(durationMs, divider + bufferMs), "Scene change buffer", false));
         }
@@ -1025,6 +1025,11 @@ internal sealed class CustomClipEditorForm : Form
              new(14_000, 40_000, "General", "Hard_Cut")], "revision", 20);
         CustomShowClip[] transitionAware = BuildDetectedClips(seed, omni, 40_000, 0);
         CustomShowClip[] transitionBuffered = BuildDetectedClips(seed, omni, 40_000, 1_000);
+        SceneDetectionResult generalBoundary = new("omnishotcut", [10_000],
+            [new(0, 10_000, "General", "New_Start"),
+             new(10_000, 20_000, "General", "Transition_Source")]);
+        CustomShowClip[] hardCutBuffered = BuildDetectedClips(seed,
+            generalBoundary, 20_000, 1_500, 0);
         return first.EndMs == second.StartMs && second.EndMs == 1_000 &&
             first.Id != second.Id && !second.Included &&
             ClipIndexAt([first, second], 399) == 0 &&
@@ -1060,6 +1065,12 @@ internal sealed class CustomClipEditorForm : Form
             transitionBuffered.Last().StartMs == 15_000 &&
             transitionBuffered.Where(clip => !clip.Included).Any(clip =>
                 clip.DetectionLabels.Contains("Fade buffer")) &&
+            hardCutBuffered.Length == 3 &&
+            hardCutBuffered[0].Included && hardCutBuffered[0].EndMs == 8_500 &&
+            !hardCutBuffered[1].Included && hardCutBuffered[1].StartMs == 8_500 &&
+            hardCutBuffered[1].EndMs == 11_500 &&
+            hardCutBuffered[1].DetectionLabels.Contains("Scene change buffer") &&
+            hardCutBuffered[2].Included && hardCutBuffered[2].StartMs == 11_500 &&
             VerifyOmniShotCutPolicies() &&
             CustomSceneDetector.MonotonicProgress(18, 5) == 18 &&
             CustomSceneDetector.MonotonicProgress(18, 20) == 20;

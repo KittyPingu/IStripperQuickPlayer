@@ -45,6 +45,8 @@ video that will remain at the recorded path, valid clip divisions, a model
 profile, and all selected processing tools already installed. Open **File >
 Custom Shows > Queues...** to start, reorder, pause, stop, retry, edit, or delete
 jobs. Closing the queue window does not stop processing.
+Use **Remove Completed** to clear all successful history entries after confirming;
+published shows are not deleted.
 
 ## Install the processing tools
 
@@ -111,7 +113,9 @@ segments. Automatic detectors are:
 
 The **Auto-skip shorter than** value controls which short detected clips are
 excluded; it defaults to 20 seconds and can be changed before detection. The
-transition buffer can skip complete transitions and a margin around them.
+transition buffer can skip complete transitions and a margin around them. For a
+hard cut, the value is applied on both sides: **±1.5 seconds** creates one skipped
+3-second segment centred on the cut.
 Review the results: skipped clips are not processed or published, and every
 included clip restarts the selected matting model at its boundary.
 

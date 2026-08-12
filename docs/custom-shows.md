@@ -136,7 +136,8 @@ Source videos remain referenced and are checked for size/timestamp changes befor
 processing. Append and reprocess jobs also verify that their target `show.json`
 has not changed. Conflicts are marked **Needs attention** rather than overwriting
 newer data. Completed entries remain as history until deleted; deleting history
-never deletes the published show.
+never deletes the published show. **Remove Completed** clears all successful
+history entries together after confirmation, without deleting published shows.
 
 Closing the Queue window leaves processing active. Pause can either finish the
 current show before pausing or cancel it back to Pending for a full restart. Stop
@@ -256,7 +257,9 @@ OmniShotCut, then FFmpeg. Click **Auto-detect clips** to replace current
 dividers. OmniShotCut discards `Padding`, keeps `General`, skips complete gradual
 transition ranges, and splits at the start of `Hard_Cut` and `Sudden_Jump`
 ranges. Enable **Skip transition ±** to expand gradual ranges and add symmetric
-buffers around instantaneous cuts; overlapping skipped ranges are merged.
+buffers around every detected instantaneous cut; overlapping skipped ranges are
+merged. For example, a 1.5-second value creates a 3-second skipped segment
+centred on a hard cut.
 The **Auto-skip shorter than** value controls which detected playable segments
 are skipped and defaults to 20 seconds. **Show skipped clips in grid** hides or
 reveals excluded segments. Clicking or scrubbing the timeline selects the related
