@@ -40,6 +40,13 @@ internal sealed class CustomShowConfiguration
     public int VitMatteSmallPreferredBatchSize { get; set; } = 2;
     public int VitMatteBasePreferredBatchSize { get; set; } = 1;
     public int VideoMaMaPreferredBatchSize { get; set; } = 1;
+    public string LastProcessingAlgorithm { get; set; } = "quality";
+    public string LastMaskEngine { get; set; } = "sam2";
+    public string LastSam2Model { get; set; } = "base-plus";
+    public int LastMattingDetailPx { get; set; } = 512;
+    public int LastProcessingBatchSize { get; set; } = 12;
+    public int LastRvmInitializerAlphaThresholdPercent { get; set; } = 40;
+    public bool LastAutoAcceptAlphaThreshold { get; set; }
 
     internal int Sam2CompileCutoffFrames(string model) => model switch
     {
@@ -76,6 +83,21 @@ internal sealed class CustomShowConfiguration
                 configuration.LastClipDetector = "transnetv2";
             if (!rvmChunks.Contains(configuration.VideoMaMaPreferredBatchSize))
                 configuration.VideoMaMaPreferredBatchSize = 1;
+            if (configuration.LastProcessingAlgorithm is not
+                ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or
+                 "matanyone2" or "videomama" or "vitmatte-s" or "vitmatte-b"))
+                configuration.LastProcessingAlgorithm = "quality";
+            if (configuration.LastMaskEngine is not ("sam2" or "edgetam" or "rvm"))
+                configuration.LastMaskEngine = "sam2";
+            if (configuration.LastSam2Model is not ("base-plus" or "small" or "tiny"))
+                configuration.LastSam2Model = "base-plus";
+            if (configuration.LastMattingDetailPx is not
+                (0 or 256 or 384 or 512 or 768 or 1024))
+                configuration.LastMattingDetailPx = 512;
+            if (!rvmChunks.Contains(configuration.LastProcessingBatchSize))
+                configuration.LastProcessingBatchSize = 12;
+            configuration.LastRvmInitializerAlphaThresholdPercent = Math.Clamp(
+                configuration.LastRvmInitializerAlphaThresholdPercent, 10, 90);
             return configuration;
         }
         catch { return new(); }
@@ -180,6 +202,8 @@ internal sealed class CustomShowProcessing
     public string Algorithm { get; set; } = "";
     public int MattingDetailPx { get; set; }
     public int BatchSize { get; set; } = 3;
+    public int? RvmInitializerAlphaThresholdPercent { get; set; }
+    public int? AutoAcceptedAlphaThreshold { get; set; }
     public string? Sam2Model { get; set; }
     public string? MaskEngine { get; set; }
     public string ExecutionPolicy { get; set; } = "auto";
@@ -213,6 +237,9 @@ internal sealed class CustomShowClip
     public string[] ClipTypes { get; set; } = ["Standing"];
     public int AlphaThreshold { get; set; } = 25;
     public string[] DetectionLabels { get; set; } = [];
+    public CustomShowSource? Source { get; set; }
+    public long? SourceStartMs { get; set; }
+    public long? SourceEndMs { get; set; }
     public CustomClipMedia? Media { get; set; }
 }
 
@@ -260,7 +287,8 @@ internal sealed class CustomShowStore
         ["Standing", "Table", "Behind Table", "Swing", "Cage", "Pole",
          "Glass", "Sign", "Prop", "Full Legs", "Side"];
     static readonly HashSet<string> ProcessingAlgorithms =
-        ["quality", "fast", "matanyone2", "videomama", "vitmatte-s", "vitmatte-b"];
+        ["quality", "fast", "matanyone2", "rvm-matanyone2", "videomama",
+         "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
     static readonly HashSet<int> BatchSizeValues = [1, 2, 3, 4, 6, 8, 12, 16, 24];
     static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
@@ -568,6 +596,7 @@ internal sealed class CustomShowStore
         {
             if (clip.Included && clip.Media == null)
                 throw new InvalidDataException("Every included clip needs processed media.");
+            ValidateClipSource(clip, folder);
             if (clip.Media is not CustomClipMedia media) continue;
             ValidateMediaFields(media.Width, media.Height, media.FrameRate,
                 media.DurationMs, "Clip media");
@@ -612,6 +641,13 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Unknown matting-detail resolution.");
         if (!BatchSizeValues.Contains(processing.BatchSize))
             throw new InvalidDataException("Unknown processing batch size.");
+        if (processing.RvmInitializerAlphaThresholdPercent is int initializerThreshold &&
+            (processing.Algorithm is not ("rvm-matanyone2" or "rvm-vitmatte-s") ||
+                initializerThreshold is < 10 or > 90))
+            throw new InvalidDataException("Invalid RVM initializer alpha threshold.");
+        if (processing.AutoAcceptedAlphaThreshold is int acceptedThreshold &&
+            acceptedThreshold is < 0 or > 255)
+            throw new InvalidDataException("Invalid automatically accepted alpha threshold.");
         bool trackedMasks = processing.Algorithm is
             "videomama" or "vitmatte-s" or "vitmatte-b";
         string? maskEngine = trackedMasks ? processing.MaskEngine ?? "sam2" : null;
@@ -873,6 +909,25 @@ internal sealed class CustomShowStore
         return card;
     }
 
+    static void ValidateClipSource(CustomShowClip clip, string folder)
+    {
+        if (clip.Source == null)
+        {
+            if (clip.SourceStartMs != null || clip.SourceEndMs != null)
+                throw new InvalidDataException("Clip source ranges require a clip source.");
+            return;
+        }
+        if (clip.Source.Mode is not "copy" and not "reference" ||
+            string.IsNullOrWhiteSpace(clip.Source.Path))
+            throw new InvalidDataException("Invalid clip source metadata.");
+        if (clip.SourceStartMs is not long start || clip.SourceEndMs is not long end ||
+            start < 0 || end <= start || end - start != clip.EndMs - clip.StartMs)
+            throw new InvalidDataException("Invalid clip source range.");
+        if (clip.Source.Mode == "copy" &&
+            !File.Exists(ResolveRelative(folder, clip.Source.Path)))
+            throw new FileNotFoundException("The copied clip source video is missing.");
+    }
+
     static ModelCard? FindIstripperModel(string? modelId)
     {
         if (string.IsNullOrWhiteSpace(modelId)) return null;
@@ -1019,8 +1074,9 @@ internal sealed class CustomShowStore
             }
             show.Processing = new()
             {
-                Algorithm = "matanyone2", MattingDetailPx = 512,
-                BatchSize = 3, Sam2Model = "small",
+                Algorithm = "rvm-matanyone2", MattingDetailPx = 512,
+                BatchSize = 3, RvmInitializerAlphaThresholdPercent = 40,
+                AutoAcceptedAlphaThreshold = 25,
                 ExecutionPolicy = "auto",
                 ResolvedExecutionMode = "eager",
                 EffectiveBatchSize = 3,
@@ -1036,7 +1092,6 @@ internal sealed class CustomShowStore
                     new CustomClipProcessing
                     {
                         ClipId = clip.Id,
-                        InitialMaskFrameMs = clip.StartMs,
                         Sam2MaskTracking = false
                     }).ToArray()
             };
@@ -1044,9 +1099,11 @@ internal sealed class CustomShowStore
                 Path.Combine(folder, "cover.jpg"), System.Drawing.Imaging.ImageFormat.Jpeg);
             store.SaveManifest(show);
             CustomShowManifest roundTrip = store.LoadManifest(show.Id);
-            if (roundTrip.Processing?.Algorithm != "matanyone2" ||
+            if (roundTrip.Processing?.Algorithm != "rvm-matanyone2" ||
                 roundTrip.Processing.MattingDetailPx != 512 ||
-                roundTrip.Processing.Sam2Model != "small" ||
+                roundTrip.Processing.RvmInitializerAlphaThresholdPercent != 40 ||
+                roundTrip.Processing.AutoAcceptedAlphaThreshold != 25 ||
+                roundTrip.Processing.Sam2Model != null ||
                 roundTrip.Processing.ResolvedExecutionMode != "eager" ||
                 roundTrip.Processing.EffectiveBatchSize != 3 ||
                 roundTrip.Processing.PipelineDepth != 3 ||

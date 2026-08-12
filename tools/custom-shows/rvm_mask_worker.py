@@ -4,11 +4,22 @@ import argparse, json, shutil, subprocess, sys
 from pathlib import Path
 
 from rvm_worker import executable, load_model, probe
-from sam2_refine_worker import model_size
+from videomama_worker import model_size
 
 
 def send(**values):
     print(json.dumps(values, separators=(",", ":")), flush=True)
+
+
+def read_exact(stream, size):
+    value, received = bytearray(size), 0
+    view = memoryview(value)
+    while received < size:
+        count = stream.readinto(view[received:])
+        if not count:
+            break
+        received += count
+    return None if received == 0 else value if received == size else value[:received]
 
 
 def main():
@@ -19,6 +30,8 @@ def main():
     parser.add_argument("--masks", type=Path, required=True)
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int, required=True)
+    parser.add_argument("--alpha-threshold", type=float, default=.5)
+    parser.add_argument("--masks-only", action="store_true")
     parser.add_argument("--profile-log", type=Path)
     args = parser.parse_args()
 
@@ -33,19 +46,31 @@ def main():
         raise RuntimeError("clip range is outside the source video")
     review_width, review_height = model_size(width, height)
     expected = max(1, round((min(end, duration) - start) * fps))
-    shutil.rmtree(args.frames, ignore_errors=True)
     shutil.rmtree(args.masks, ignore_errors=True)
-    args.frames.mkdir(parents=True)
     args.masks.mkdir(parents=True)
-    send(status="progress", percent=1, message="Extracting RVM review frames...")
-    command = [executable("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", f"{start:.6f}", "-i", str(source), "-t", f"{end-start:.6f}",
-        "-vf", f"fps={rate},scale={review_width}:{review_height}:flags=bilinear,setsar=1",
-        "-q:v", "3", "-start_number", "1", str(args.frames / "%08d.jpg")]
-    subprocess.run(command, check=True)
-    files = sorted(args.frames.glob("*.jpg"))
-    if not files:
-        raise RuntimeError("RVM frame extraction produced no frames")
+    args.alpha_threshold = max(0, min(1, args.alpha_threshold))
+    files = []
+    decode = None
+    if args.masks_only:
+        send(status="progress", percent=1,
+             message="Streaming source frames into RVM...")
+        command = [executable("ffmpeg"), "-hide_banner", "-loglevel", "error",
+            "-ss", f"{start:.6f}", "-i", str(source), "-t", f"{end-start:.6f}",
+            "-vf", f"fps={rate},scale={review_width}:{review_height}:flags=bilinear,setsar=1",
+            "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
+        decode = subprocess.Popen(command, stdout=subprocess.PIPE)
+    else:
+        shutil.rmtree(args.frames, ignore_errors=True)
+        args.frames.mkdir(parents=True)
+        send(status="progress", percent=1, message="Extracting RVM review frames...")
+        command = [executable("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{start:.6f}", "-i", str(source), "-t", f"{end-start:.6f}",
+            "-vf", f"fps={rate},scale={review_width}:{review_height}:flags=bilinear,setsar=1",
+            "-q:v", "3", "-start_number", "1", str(args.frames / "%08d.jpg")]
+        subprocess.run(command, check=True)
+        files = sorted(args.frames.glob("*.jpg"))
+        if not files:
+            raise RuntimeError("RVM frame extraction produced no frames")
 
     send(status="progress", percent=10, message="Loading RVM ResNet50...")
     torch, model, device = load_model(runtime, "quality")
@@ -53,26 +78,51 @@ def main():
     rec = [None] * 4
     with torch.inference_mode(), torch.autocast(device_type=device.type,
             dtype=torch.bfloat16, enabled=bf16):
-        for index, path in enumerate(files):
-            pixels = np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8).copy()
+        count = expected if args.masks_only else len(files)
+        index = 0
+        while True:
+            if args.masks_only:
+                data = read_exact(decode.stdout, review_width * review_height * 3)
+                if not data:
+                    break
+                if len(data) != review_width * review_height * 3:
+                    raise RuntimeError("RVM source decoder returned a partial frame")
+                pixels = np.frombuffer(data, dtype=np.uint8).reshape(
+                    review_height, review_width, 3).copy()
+            else:
+                if index >= len(files):
+                    break
+                pixels = np.asarray(Image.open(files[index]).convert("RGB"),
+                                    dtype=np.uint8).copy()
             tensor = torch.from_numpy(pixels).permute(2, 0, 1).unsqueeze(0) \
                 .to(device=device, dtype=torch.float32).div_(255)
             # RVM returns full review-resolution alpha while its encoder works at
             # roughly 512 px, matching the fast custom-show RVM path.
             _, alpha, *rec = model(tensor, *rec,
                 downsample_ratio=min(1.0, 512 / max(review_width, review_height)))
-            mask = (alpha[0, 0].float().cpu().numpy() >= .5).astype(np.uint8) * 255
+            mask = (alpha[0, 0].float().cpu().numpy() >=
+                    args.alpha_threshold).astype(np.uint8) * 255
             Image.fromarray(mask, "L").save(args.masks / f"{index + 1:08d}.png",
                                              compress_level=1)
-            if index == 0 or index + 1 == len(files) or index % 10 == 0:
-                send(status="progress", percent=10 + 88 * (index + 1) / len(files),
-                     message=f"RVM segmented {index + 1}/{len(files)} frames",
-                     frame=index)
-    send(status="ready", frameCount=len(files), fps=fps, width=review_width,
+            index += 1
+            if index == 1 or index == count or index % 10 == 0:
+                send(status="progress", percent=10 + 88 * index / count,
+                     message=f"RVM segmented {index}/{count} frames",
+                     frame=index - 1)
+    generated = len(list(args.masks.glob("*.png")))
+    if decode is not None:
+        decode.stdout.close()
+        if decode.wait() != 0:
+            raise RuntimeError("RVM source decoding failed")
+    if not generated:
+        raise RuntimeError("RVM generated no masks")
+    send(status="ready", frameCount=generated, fps=fps, width=review_width,
          height=review_height, device=device.type, precision="BF16" if bf16 else "FP32",
          optimized=False, execution="eager", checkpoint="RVM ResNet50",
          model="rvm", resumed=False, framesFolder=str(args.frames),
          supportsCorrections=False)
+    if args.masks_only:
+        return
     for line in sys.stdin:
         if not line.strip():
             continue

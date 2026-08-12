@@ -16,6 +16,7 @@ internal sealed class CustomShowProcessResult
     public int Width { get; set; }
     public int Height { get; set; }
     public string FrameRate { get; set; } = "";
+    public long? InitialMaskFrameMs { get; set; }
     public long DurationMs { get; set; }
     public string? ForegroundMode { get; set; }
     public int? RequestedSequenceChunk { get; set; }
@@ -46,6 +47,8 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "videomama_worker.py");
     internal static string ViTMatteWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "vitmatte_worker.py");
+    internal static string RvmViTMatteWorkerPath => Path.Combine(
+        AppContext.BaseDirectory, "custom-shows", "rvm_vitmatte_worker.py");
     internal static string ProPainterWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "propainter_worker.py");
     internal static string OmniShotCutWorkerPath => Path.Combine(
@@ -106,6 +109,7 @@ internal static class CustomShowProcessor
               "height": 720,
               "frameRate": "30/1",
               "durationMs": 1000,
+              "initialMaskFrameMs": 1033,
               "foregroundMode": "source",
               "clips": [{
                 "width": 1280,
@@ -119,7 +123,8 @@ internal static class CustomShowProcessor
             """;
         CustomShowProcessResult? result = JsonSerializer.Deserialize<CustomShowProcessResult>(
             json, CustomShowStore.JsonOptions);
-        return result?.ForegroundMode == "source" && result.Clips?.Length == 1 &&
+        return result?.ForegroundMode == "source" && result.InitialMaskFrameMs == 1033 &&
+            result.Clips?.Length == 1 &&
             result.AdditionalProperties?.ContainsKey("futureWorkerMetadata") == true &&
             VideoMaMaSafeBatch(new(16 * 1024, 15 * 1024)) == 1 &&
             VideoMaMaSafeBatch(new(48 * 1024, 40 * 1024)) == 4 &&
@@ -181,6 +186,14 @@ internal static class CustomShowProcessor
         OptionalToolInstalled(configuration, "SAM2_COMMIT", "sam2") &&
         File.Exists(MatAnyoneWorkerPath);
 
+    internal static bool IsRvmMatAnyone2Installed(CustomShowConfiguration configuration) =>
+        OptionalToolInstalled(configuration, "MATANYONE2_COMMIT", "matanyone2") &&
+        OptionalToolInstalled(configuration, "RVM_COMMIT", "rvm") &&
+        File.Exists(Path.Combine(RuntimeRoot(configuration), "checkpoints",
+            "matanyone2.pth")) &&
+        File.Exists(Path.Combine(RuntimeRoot(configuration), "checkpoints",
+            "rvm_resnet50.pth")) && File.Exists(MatAnyoneWorkerPath);
+
     internal static bool IsVideoMaMaInstalled(CustomShowConfiguration configuration) =>
         OptionalToolInstalled(configuration, "VIDEOMAMA_COMMIT", "videomama") &&
         OptionalToolInstalled(configuration, "SAM2_COMMIT", "sam2") &&
@@ -196,6 +209,15 @@ internal static class CustomShowProcessor
         OptionalToolInstalled(configuration, "SAM2_COMMIT", "sam2") &&
         File.Exists(Path.Combine(RuntimeRoot(configuration), "vitmatte-s",
             "model.safetensors")) && File.Exists(ViTMatteWorkerPath);
+
+    internal static bool IsRvmViTMatteSmallInstalled(
+        CustomShowConfiguration configuration) =>
+        OptionalToolInstalled(configuration, "VITMATTE_S_REVISION", "vitmatte-s") &&
+        File.Exists(Path.Combine(RuntimeRoot(configuration), "vitmatte-s",
+            "model.safetensors")) && File.Exists(ViTMatteWorkerPath) &&
+        OptionalToolInstalled(configuration, "RVM_COMMIT", "rvm") &&
+        File.Exists(Path.Combine(RuntimeRoot(configuration), "checkpoints",
+            "rvm_resnet50.pth")) && File.Exists(RvmViTMatteWorkerPath);
 
     internal static bool IsViTMatteBaseInstalled(CustomShowConfiguration configuration) =>
         OptionalToolInstalled(configuration, "VITMATTE_B_REVISION", "vitmatte-b") &&
@@ -249,12 +271,15 @@ internal static class CustomShowProcessor
                 PythonExecutable = Path.Combine(runtime, "venv", "Scripts", "python.exe")
             };
             if (IsTransNetV2Installed(configuration) || IsOmniShotCutInstalled(configuration) ||
-                IsMatAnyone2Installed(configuration) || IsVideoMaMaInstalled(configuration) ||
+                IsMatAnyone2Installed(configuration) ||
+                IsRvmMatAnyone2Installed(configuration) || IsVideoMaMaInstalled(configuration) ||
                 IsViTMatteSmallInstalled(configuration) ||
+                IsRvmViTMatteSmallInstalled(configuration) ||
                 IsViTMatteBaseInstalled(configuration) || IsProPainterInstalled(configuration) ||
                 IsStabiloInstalled(configuration))
                 return false;
-            foreach (string directory in new[] { "checkpoints", "transnetv2", "omnishotcut", "matanyone2",
+            foreach (string directory in new[] { "checkpoints", "transnetv2", "omnishotcut",
+                "matanyone2", "rvm",
                 "videomama", "sam2", "vitmatte-s", "vitmatte-b",
                 "propainter-streaming", "stabilo",
                 Path.Combine("videomama-base", "image_encoder"),
@@ -262,7 +287,8 @@ internal static class CustomShowProcessor
                 Path.Combine("videomama-model", "unet"),
                 "propainter-streaming-weights" })
                 Directory.CreateDirectory(Path.Combine(runtime, directory));
-            foreach (string marker in new[] { "TRANSNETV2_COMMIT", "OMNISHOTCUT_COMMIT", "MATANYONE2_COMMIT",
+            foreach (string marker in new[] { "TRANSNETV2_COMMIT", "OMNISHOTCUT_COMMIT",
+                "MATANYONE2_COMMIT", "RVM_COMMIT",
                 "VIDEOMAMA_COMMIT", "SAM2_COMMIT",
                 "VITMATTE_S_REVISION", "VITMATTE_B_REVISION",
                 "PROPAINTER_STREAMING_COMMIT", "STABILO_COMMIT" })
@@ -281,10 +307,14 @@ internal static class CustomShowProcessor
             File.WriteAllBytes(Path.Combine(runtime, "vitmatte-s", "model.safetensors"), []);
             File.WriteAllBytes(Path.Combine(runtime, "vitmatte-b", "pytorch_model.bin"), []);
             File.WriteAllBytes(Path.Combine(runtime, "checkpoints", "OmniShotCut_ckpt.pth"), []);
+            File.WriteAllBytes(Path.Combine(runtime, "checkpoints", "matanyone2.pth"), []);
+            File.WriteAllBytes(Path.Combine(runtime, "checkpoints", "rvm_resnet50.pth"), []);
             return IsTransNetV2Installed(configuration) &&
                 IsOmniShotCutInstalled(configuration) &&
-                IsMatAnyone2Installed(configuration) && IsVideoMaMaInstalled(configuration) &&
+                IsMatAnyone2Installed(configuration) &&
+                IsRvmMatAnyone2Installed(configuration) && IsVideoMaMaInstalled(configuration) &&
                 IsViTMatteSmallInstalled(configuration) &&
+                IsRvmViTMatteSmallInstalled(configuration) &&
                 IsViTMatteBaseInstalled(configuration) &&
                 IsProPainterInstalled(configuration) && IsStabiloInstalled(configuration);
         }
@@ -300,7 +330,8 @@ internal static class CustomShowProcessor
         IProgress<CustomShowProgress>? progress,
         CancellationToken cancellationToken,
         IReadOnlyList<CustomShowProcessJob>? jobs = null,
-        long? maskFrameMs = null)
+        long? maskFrameMs = null,
+        int rvmInitializerAlphaThresholdPercent = 40)
     {
         string python = configuration.PythonExecutable;
         if (!File.Exists(python))
@@ -308,7 +339,8 @@ internal static class CustomShowProcessor
                 "Configure the Python 3.11-3.14 custom-show environment first.", python);
         string worker = preset switch
         {
-            "matanyone2" => MatAnyoneWorkerPath,
+            "matanyone2" or "rvm-matanyone2" => MatAnyoneWorkerPath,
+            "rvm-vitmatte-s" => RvmViTMatteWorkerPath,
             "videomama" => VideoMaMaWorkerPath,
             "vitmatte-s" or "vitmatte-b" => ViTMatteWorkerPath,
             _ => WorkerPath
@@ -335,14 +367,28 @@ internal static class CustomShowProcessor
             worker, "--source", source, "--output", stagingFolder,
             "--runtime", runtime
         }) start.ArgumentList.Add(argument);
-        if (preset == "matanyone2")
+        if (preset is "matanyone2" or "rvm-matanyone2")
         {
-            start.ArgumentList.Add("--mask");
-            start.ArgumentList.Add(initialMask!);
+            if (preset == "rvm-matanyone2" && !File.Exists(initialMask))
+            {
+                start.ArgumentList.Add("--auto-rvm-init");
+                start.ArgumentList.Add("--rvm-alpha-threshold");
+                start.ArgumentList.Add((Math.Clamp(rvmInitializerAlphaThresholdPercent,
+                    10, 90) / 100d).ToString("0.00",
+                    System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                start.ArgumentList.Add("--mask");
+                start.ArgumentList.Add(initialMask!);
+            }
             start.ArgumentList.Add("--max-size");
             start.ArgumentList.Add(mattingResolution.ToString());
-            start.ArgumentList.Add("--mask-frame-ms");
-            start.ArgumentList.Add((maskFrameMs ?? startMs).ToString());
+            if (preset == "matanyone2" || File.Exists(initialMask))
+            {
+                start.ArgumentList.Add("--mask-frame-ms");
+                start.ArgumentList.Add((maskFrameMs ?? startMs).ToString());
+            }
             start.ArgumentList.Add("--compile-cutoff-frames");
             start.ArgumentList.Add(Math.Max(1,
                 configuration.MatAnyone2CompileCutoffFrames).ToString());
@@ -362,6 +408,26 @@ internal static class CustomShowProcessor
                     StringComparison.Ordinal) ? configuration.VitMatteBaseCompileCutoffFrames :
                     configuration.VitMatteSmallCompileCutoffFrames).ToString());
             }
+        }
+        else if (preset == "rvm-vitmatte-s")
+        {
+            if (endMs == null)
+                throw new InvalidDataException(
+                    "RVM-ViTMatte processing requires a bounded clip range.");
+            if (Directory.Exists(maskFolder))
+            {
+                start.ArgumentList.Add("--mask-folder");
+                start.ArgumentList.Add(maskFolder!);
+            }
+            start.ArgumentList.Add("--batch-size");
+            start.ArgumentList.Add(Math.Clamp(sequenceChunk, 1, 12).ToString());
+            start.ArgumentList.Add("--rvm-alpha-threshold");
+            start.ArgumentList.Add((Math.Clamp(rvmInitializerAlphaThresholdPercent,
+                10, 90) / 100d).ToString("0.00",
+                System.Globalization.CultureInfo.InvariantCulture));
+            start.ArgumentList.Add("--compile-cutoff-frames");
+            start.ArgumentList.Add(Math.Max(1,
+                configuration.VitMatteSmallCompileCutoffFrames).ToString());
         }
         else
         {
@@ -467,7 +533,7 @@ internal static class CustomShowProcessor
         "p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7" ? value : "p5";
 
     internal static async Task GenerateCoverAsync(string source, string destination,
-        long durationMs, string modelName, string showTitle, Color titleColor,
+        long positionMs, string modelName, string showTitle, Color titleColor,
         CancellationToken token)
     {
         ProcessStartInfo start = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"))
@@ -476,7 +542,8 @@ internal static class CustomShowProcessor
             RedirectStandardError = true
         };
         foreach (string argument in new[] { "-y", "-v", "error", "-ss",
-            (durationMs / 2000d).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
+            (Math.Max(0, positionMs) / 1000d).ToString("0.###",
+                System.Globalization.CultureInfo.InvariantCulture),
             "-i", source, "-frames:v", "1", "-vf",
             "scale=600:900:force_original_aspect_ratio=increase,crop=600:900", destination })
             start.ArgumentList.Add(argument);

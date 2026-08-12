@@ -70,6 +70,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     bool loadedDraftState;
     bool supportsCorrections;
     bool generationActive;
+    bool pauseRequested;
     bool generationPaused;
     bool generationComplete;
     bool canStopBackward;
@@ -150,6 +151,12 @@ internal sealed class CustomVideoMaskEditorForm : Form
 
         timeline.PositionChanged += (_, _) =>
         {
+            if (!generationComplete && (pauseRequested || generationPaused) &&
+                timeline.PositionMs > FrameTime(AvailableLastFrame))
+            {
+                timeline.PositionMs = FrameTime(AvailableLastFrame);
+                return;
+            }
             UpdatePosition();
             if (playback.Enabled) LoadPreview();
             else { previewDelay.Stop(); previewDelay.Start(); }
@@ -451,6 +458,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             response.TryGetProperty("canStopBackward", out JsonElement stopValue) &&
             stopValue.GetBoolean();
         generationActive = true;
+        pauseRequested = false;
         generationPaused = false;
         generation.Text = canStopBackward ? "Stop backward propagation" :
             phase == "backward" ? "Updating backward…" : "Pause and Correct";
@@ -478,6 +486,13 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (!final && now - lastGenerationPreview < 400) return;
         lastGenerationPreview = now;
         availableEnd = Math.Max(availableEnd, frame);
+        if (pauseRequested)
+        {
+            SetGeneratedReviewRange();
+            timeline.Enabled = previous.Enabled = play.Enabled = next.Enabled =
+                slowMotion.Enabled = true;
+            return;
+        }
         timeline.PositionMs = FrameTime(frame);
         previewDelay.Stop();
         LoadPreview(); UpdatePosition();
@@ -486,7 +501,9 @@ internal sealed class CustomVideoMaskEditorForm : Form
     void ApplyTerminalState(JsonElement response)
     {
         string kind = response.GetProperty("status").GetString() ?? "";
+        bool userRequestedPause = pauseRequested;
         generationActive = false;
+        pauseRequested = false;
         canStopBackward = false;
         generationPaused = kind == "paused";
         generationComplete = kind == "ready";
@@ -503,9 +520,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             if (!removing && anchorModes.ContainsKey(anchor))
                 correctedRanges[anchor] = (startValue.GetInt32(), endValue.GetInt32());
         }
-        long duration = generationComplete
-            ? Math.Max(1, checked((long)Math.Round(frameCount * 1000 / fps)))
-            : Math.Max(1, FrameTime(AvailableLastFrame));
+        long duration = Math.Max(1, checked((long)Math.Round(frameCount * 1000 / fps)));
         timeline.Clips = [new CustomShowClip { StartMs = 0, EndMs = duration }];
         timeline.DurationMs = duration;
         timeline.FixedMarkers = TimelineMarkers();
@@ -520,7 +535,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
         generation.Text = generationPaused ? "Continue generation" : "Generation complete";
         generation.Enabled = supportsCorrections && generationPaused;
         progress.Value = generationComplete ? 100 : progress.Value;
-        if (response.TryGetProperty("pauseFrame", out JsonElement pauseValue))
+        if (!userRequestedPause &&
+            response.TryGetProperty("pauseFrame", out JsonElement pauseValue))
             timeline.PositionMs = FrameTime(Math.Min(pauseValue.GetInt32(), AvailableLastFrame));
         previewDelay.Stop();
         LoadPreview(); UpdatePosition();
@@ -552,6 +568,16 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 ? "Finishing the current backward mask, then updating forward…"
                 : "Pausing after the current mask finishes…";
             string command = canStopBackward ? "stop-backward" : "pause";
+            if (!canStopBackward)
+            {
+                pauseRequested = true;
+                workerStatus = "Pausing SAM2; completed masks are available for review...";
+                playback.Stop();
+                play.Text = "Play";
+                SetGeneratedReviewRange();
+                timeline.Enabled = previous.Enabled = play.Enabled = next.Enabled =
+                    slowMotion.Enabled = availableEnd >= 0;
+            }
             await worker.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { command }));
             await worker.StandardInput.FlushAsync();
             return;
@@ -575,6 +601,17 @@ internal sealed class CustomVideoMaskEditorForm : Form
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally { updating = false; }
+    }
+
+    void SetGeneratedReviewRange()
+    {
+        if (frameCount <= 0 || availableEnd < 0) return;
+        long duration = Math.Max(1, checked((long)Math.Round(frameCount * 1000 / fps)));
+        long current = Math.Min(timeline.PositionMs, FrameTime(AvailableLastFrame));
+        timeline.Clips = [new CustomShowClip { StartMs = 0, EndMs = duration }];
+        timeline.DurationMs = duration;
+        timeline.PositionMs = current;
+        timeline.FixedMarkers = TimelineMarkers();
     }
 
     void UpdateWorkerStatus()

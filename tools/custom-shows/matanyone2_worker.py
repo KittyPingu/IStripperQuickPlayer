@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """QuickPlayer MatAnyone 2 worker. Stdout is NDJSON progress only."""
 import argparse
+from collections import deque
 import ctypes
 import json
 import math
@@ -15,7 +16,8 @@ import threading
 import time
 from pathlib import Path
 
-from rvm_worker import digest, emit, executable, fast_fp16, probe, replace_preview
+from rvm_worker import (digest, emit, executable, fast_fp16, load_model as load_rvm_model,
+                        probe, replace_preview)
 from videomama_worker import (alpha_encoder, output_codecs,
                               source_and_foreground_encoder)
 
@@ -128,6 +130,121 @@ def preview_size(width, height):
 def mask_frame_index(mask_frame_ms, start_ms, fps, total):
     return max(0, min(total - 1,
         round(max(0, mask_frame_ms - start_ms) * fps / 1000)))
+
+
+def binary_dilate(mask, iterations=3):
+    import numpy as np
+    result = mask.astype(bool, copy=True)
+    for _ in range(iterations):
+        padded = np.pad(result, 1, mode="constant")
+        result = np.logical_or.reduce([
+            padded[y:y + result.shape[0], x:x + result.shape[1]]
+            for y in range(3) for x in range(3)])
+    return result
+
+
+def mask_components(mask):
+    import numpy as np
+    height, width = mask.shape
+    visited = np.zeros(mask.shape, dtype=bool)
+    for start_y, start_x in zip(*np.nonzero(mask)):
+        if visited[start_y, start_x]:
+            continue
+        pending = deque([(int(start_y), int(start_x))])
+        visited[start_y, start_x] = True
+        component = []
+        touches_edge = False
+        while pending:
+            y, x = pending.popleft()
+            component.append((y, x))
+            touches_edge |= y == 0 or x == 0 or y == height - 1 or x == width - 1
+            for next_y, next_x in ((y - 1, x), (y + 1, x),
+                                   (y, x - 1), (y, x + 1)):
+                if (0 <= next_y < height and 0 <= next_x < width and
+                        mask[next_y, next_x] and not visited[next_y, next_x]):
+                    visited[next_y, next_x] = True
+                    pending.append((next_y, next_x))
+        yield component, touches_edge
+
+
+def clean_rvm_mask(alpha, threshold=.40, dilation=3):
+    import numpy as np
+    foreground = np.asarray(alpha) >= threshold
+    pixels = foreground.size
+    minimum_island = max(16, pixels // 2000)
+    cleaned = np.zeros_like(foreground)
+    for component, _ in mask_components(foreground):
+        if len(component) >= minimum_island:
+            ys, xs = zip(*component)
+            cleaned[ys, xs] = True
+    maximum_hole = max(64, pixels // 500)
+    background = ~cleaned
+    for component, touches_edge in mask_components(background):
+        if not touches_edge and len(component) <= maximum_hole:
+            ys, xs = zip(*component)
+            cleaned[ys, xs] = True
+    return binary_dilate(cleaned, dilation).astype(np.uint8) * 255
+
+
+def rvm_frame_score(alpha, threshold=.40):
+    import numpy as np
+    value = np.asarray(alpha, dtype=np.float32)
+    foreground = value >= threshold
+    area = int(foreground.sum())
+    if area < foreground.size * .005 or area > foreground.size * .90:
+        return -1.0
+    confident = int((value >= .75).sum())
+    border = int(foreground[0].sum() + foreground[-1].sum() +
+                 foreground[:, 0].sum() + foreground[:, -1].sum())
+    return area + confident * .20 - border * 2
+
+
+def automatic_rvm_mask(source, runtime, start, frame_rate, width, height,
+                       sample_count, destination, profiler, threshold=.40):
+    import numpy as np
+    from PIL import Image
+    emit("initializing", 0, f"Running RVM on the first {sample_count} frames...")
+    frame_bytes = width * height * 3
+    command = [executable("ffmpeg"), "-v", "error", "-ss", f"{start:.6f}",
+        "-i", str(source), "-map", "0:v:0", "-vf",
+        f"fps={frame_rate},scale={width}:{height}:flags=bilinear,setsar=1",
+        "-frames:v", str(sample_count), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+    started = time.perf_counter()
+    decoded = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if decoded.returncode != 0:
+        raise RuntimeError(decoded.stderr.decode(errors="replace").strip() or
+                           "RVM initialization frames could not be decoded")
+    count = len(decoded.stdout) // frame_bytes
+    if count <= 0:
+        raise RuntimeError("RVM initialization decoded no frames")
+    frames = np.frombuffer(decoded.stdout[:count * frame_bytes], np.uint8).reshape(
+        count, height, width, 3).copy()
+    profiler.add("rvm_initialization_decode", time.perf_counter() - started)
+    started = time.perf_counter()
+    torch, model, device = load_rvm_model(runtime, "quality")
+    fp16 = device.type == "cuda" and fast_fp16(torch.cuda.get_device_capability(device))
+    tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).unsqueeze(0).to(
+        device=device, dtype=torch.float32).div_(255)
+    with torch.inference_mode(), torch.autocast(device_type=device.type,
+            dtype=torch.float16, enabled=fp16):
+        _, alpha, *_ = model(tensor, *([None] * 4), downsample_ratio=1)
+    alphas = alpha[0, :, 0].float().cpu().numpy()
+    scores = [rvm_frame_score(value, threshold) for value in alphas]
+    selected = max(range(count), key=lambda index: scores[index])
+    cleaned = clean_rvm_mask(alphas[selected], threshold=threshold)
+    if not cleaned.any():
+        raise RuntimeError("RVM could not find a usable person mask in the opening frames")
+    Image.fromarray(cleaned, "L").save(destination)
+    profiler.add("rvm_initialization", time.perf_counter() - started)
+    log_record("rvm_initializer", sampledFrames=count, selectedFrame=selected,
+               threshold=threshold, dilationPixels=3,
+               scores=[round(value, 2) for value in scores])
+    del tensor, alpha, alphas, model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    emit("initializing", 4,
+         f"RVM selected frame {selected + 1}/{count}; starting MatAnyone 2...")
+    return selected
 
 
 def load_model(runtime, device_override=None):
@@ -412,6 +529,17 @@ def _process_once(args, compile_enabled):
 
     with tempfile.TemporaryDirectory(prefix=".matanyone-", dir=output) as work_value:
         work = Path(work_value)
+        mask_path = args.mask
+        if args.auto_rvm_init:
+            # Keep the cleaned initializer beside the processed media so the
+            # host can retain it for later MatAnyone reprocessing.
+            mask_path = output / "initial-mask.png"
+            initializer_size = min(512, args.max_size) if args.max_size > 0 else 512
+            initializer_width, initializer_height = processing_size(
+                width, height, initializer_size)
+            selected_index = automatic_rvm_mask(source, runtime, start, frame_rate,
+                initializer_width, initializer_height, min(8, total), mask_path,
+                profiler, args.rvm_alpha_threshold)
         prepared = work / "source"
         prepared.mkdir()
         extract_earlier_frames(ffmpeg, source, prepared, start, frame_rate,
@@ -453,7 +581,7 @@ def _process_once(args, compile_enabled):
         def new_processor():
             return InferenceCore(model, cfg=model.cfg, device=device)
 
-        mask = Image.open(args.mask).convert("L").resize(
+        mask = Image.open(mask_path).convert("L").resize(
             (process_width, process_height), Image.Resampling.NEAREST)
         mask_tensor = torch.from_numpy(np.asarray(mask, dtype=np.uint8).copy()).float().to(device)
         transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
@@ -767,8 +895,10 @@ def _process_once(args, compile_enabled):
 
     if count != total:
         raise RuntimeError(f"source decoder returned {count} of {total} expected frames")
+    initial_mask_frame_ms = round((start + selected_index / fps) * 1000)
     (output / "result.json").write_text(json.dumps({"width": width, "height": height,
-        "frameRate": frame_rate, "durationMs": round(count * 1000 / fps)}, indent=2))
+        "frameRate": frame_rate, "durationMs": round(count * 1000 / fps),
+        "initialMaskFrameMs": initial_mask_frame_ms}, indent=2))
     compile_stats = {}
     if compile_enabled:
         try:
@@ -832,6 +962,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path)
     parser.add_argument("--mask", type=Path)
+    parser.add_argument("--auto-rvm-init", action="store_true")
+    parser.add_argument("--rvm-alpha-threshold", type=float, default=.40)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--start-ms", type=int, default=0)
@@ -891,10 +1023,21 @@ def main():
         BoundedPipeline(torch, device, 2, 2, profiler, prepare, infer,
                         consume).run(range(7))
         assert order == list(range(7))
+        alpha = np.zeros((24, 24), np.float32)
+        alpha[4:20, 6:18] = .9
+        alpha[10, 10] = 0
+        alpha[1, 1] = 1
+        cleaned = clean_rvm_mask(alpha)
+        assert cleaned.dtype == np.uint8 and cleaned[10, 10] == 255
+        assert cleaned[1, 1] == 0 and set(np.unique(cleaned)) <= {0, 255}
+        assert rvm_frame_score(alpha) > rvm_frame_score(np.zeros_like(alpha))
         print("MatAnyone 2 worker self-test passed")
-    elif not all((args.source, args.mask, args.output, args.runtime)):
-        parser.error("--source, --mask, --output, and --runtime are required")
+    elif not all((args.source, args.output, args.runtime)) or \
+            not args.auto_rvm_init and args.mask is None:
+        parser.error("--source, --output, --runtime, and either --mask or --auto-rvm-init are required")
     else:
+        if not .10 <= args.rvm_alpha_threshold <= .90:
+            parser.error("--rvm-alpha-threshold must be between 0.10 and 0.90")
         if args.device == "cpu":
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
         process(args)

@@ -786,6 +786,13 @@ internal sealed class CustomClipEditorForm : Form
         AlphaThreshold = clip.AlphaThreshold,
         ClipTypes = [.. clip.ClipTypes],
         DetectionLabels = [.. clip.DetectionLabels],
+        Source = clip.Source == null ? null : new()
+        {
+            Mode = clip.Source.Mode,
+            Path = clip.Source.Path
+        },
+        SourceStartMs = clip.SourceStartMs,
+        SourceEndMs = clip.SourceEndMs,
         Media = clip.Media == null ? null : new()
         {
             Foreground = clip.Media.Foreground, Alpha = clip.Media.Alpha,

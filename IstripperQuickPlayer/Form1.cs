@@ -117,6 +117,7 @@ namespace IStripperQuickPlayer
         private const uint ModShift = 0x0004;
         private const uint ModWin = 0x0008;
         private const uint ModNoRepeat = 0x4000;
+        private bool hotkeysInitialized;
         private Int32 vghd_procID = 0;
         private readonly SemaphoreSlim playbackOperationLock = new(1, 1);
         private readonly object playbackApiLock = new();
@@ -2792,6 +2793,14 @@ namespace IStripperQuickPlayer
                 RegisterConfiguredHotKey(NowPlayingInfoHotkeyId, Properties.Settings.Default.NowPlayingInfoHotkeyString);
             if (Properties.Settings.Default.PanicHotkeyEnabled)
                 RegisterConfiguredHotKey(PanicHotkeyId, Properties.Settings.Default.PanicHotkeyString);
+            hotkeysInitialized = true;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            if (hotkeysInitialized && !apiOnlyMode && !formIsClosing)
+                SetupKeyHooks();
         }
 
         private void RegisterConfiguredHotKey(int id, string shortcut)

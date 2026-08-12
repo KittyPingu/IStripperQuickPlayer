@@ -209,14 +209,26 @@ internal sealed class LockStateOverlay : Form
         if (text != null)
         {
             float badgeSize = Math.Min(ClientSize.Width, ClientSize.Height);
-            using Font font = new(FontFamily.GenericSansSerif,
-                badgeSize * 0.26f, FontStyle.Bold, GraphicsUnit.Pixel);
+            float fontSize = badgeSize * 0.26f;
             using SolidBrush textBrush = new(Color.White);
             using StringFormat centered = new()
             {
                 Alignment = StringAlignment.Center,
-                LineAlignment = StringAlignment.Center
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap,
+                Trimming = StringTrimming.None
             };
+            using (Font measureFont = new(FontFamily.GenericSansSerif,
+                fontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            {
+                SizeF measured = e.Graphics.MeasureString(text, measureFont,
+                    int.MaxValue, centered);
+                float availableWidth = ClientSize.Width * 0.84f;
+                if (measured.Width > availableWidth)
+                    fontSize *= availableWidth / measured.Width;
+            }
+            using Font font = new(FontFamily.GenericSansSerif,
+                Math.Max(8, fontSize), FontStyle.Bold, GraphicsUnit.Pixel);
             e.Graphics.DrawString(text, font, textBrush, ClientRectangle, centered);
             return;
         }

@@ -16,8 +16,9 @@ internal sealed class CustomShowEditorForm : Form
     readonly CustomShowConfiguration configuration;
     readonly string? showId;
     readonly bool reprocess;
+    string? appendShowId;
     readonly TextBox source = new();
-    readonly CheckBox copySource = new() { Text = "Copy original into the show folder" };
+    readonly Button addToExisting = new() { Text = "Add To Existing Show", AutoSize = true };
     readonly TextBox title = new();
     readonly ComboBox performer = new() { DropDownStyle = ComboBoxStyle.DropDown,
         AutoCompleteMode = AutoCompleteMode.SuggestAppend,
@@ -31,10 +32,7 @@ internal sealed class CustomShowEditorForm : Form
     readonly DateTimePicker showDate = new() { Format = DateTimePickerFormat.Short, ShowCheckBox = true };
     readonly NumericUpDown ageOverride = new() { Minimum = 18, Maximum = 120, Value = 18 };
     readonly CheckBox useAgeOverride = new() { Text = "Use" };
-    readonly NumericUpDown rating = new() { Minimum = 0, Maximum = 5, DecimalPlaces = 1, Increment = .5m };
-    readonly CheckBox useRating = new() { Text = "Set" };
     readonly ComboBox hotness = new() { DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly CheckBox exclusive = new() { Text = "Exclusive" };
     readonly NumericUpDown performerCount = new() { Minimum = 1, Maximum = 20, Value = 1 };
     readonly CheckedListBox clipTypes = new() { Height = 90, CheckOnClick = true };
     readonly Button editClips = new() { Text = "Split into clips...", AutoSize = true };
@@ -46,6 +44,13 @@ internal sealed class CustomShowEditorForm : Form
     readonly ComboBox sam2Model = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox mattingDetail = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sequenceChunk = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly TrackBar rvmInitializerThreshold = new()
+        { Minimum = 10, Maximum = 90, Value = 40, TickFrequency = 5,
+          SmallChange = 1, LargeChange = 5, Width = 260, Height = 32 };
+    readonly Label rvmInitializerThresholdValue = new() { Text = "40%", AutoSize = true,
+        Margin = new Padding(3, 7, 3, 3) };
+    readonly CheckBox autoAccept = new()
+        { Text = "Automatically accept result with alpha threshold 25", AutoSize = true };
     readonly TextBox processingDetails = new() { ReadOnly = true, Multiline = true,
         Height = 88, ScrollBars = ScrollBars.Vertical, TabStop = false,
         Text = "Recorded in show.json after processing completes." };
@@ -55,6 +60,9 @@ internal sealed class CustomShowEditorForm : Form
         AutoSize = true, Checked = true, Visible = false };
     readonly Button save = new() { Text = "Process and Preview", AutoSize = true };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+    TableLayoutPanel? processingTable;
+    int maskEngineRow, sam2ModelRow, mattingDetailRow, rvmThresholdRow,
+        batchSizeRow, processingDetailsRow, reprocessingRow = -1;
     List<CustomPerformerProfile> profiles = [];
     CustomPerformerProfile? selectedProfile;
     CustomShowClip[] showClips = [];
@@ -69,46 +77,70 @@ internal sealed class CustomShowEditorForm : Form
         this.reprocess = reprocess && showId != null;
         Text = showId == null ? "Create Custom Show" : this.reprocess
             ? "Reprocess Custom Show" : "Edit Custom Show Metadata";
-        ClientSize = new Size(760, 780);
+        ClientSize = new Size(780, 760);
         MinimumSize = new Size(650, 650);
         StartPosition = FormStartPosition.CenterParent;
-        AutoScroll = true;
-        TableLayoutPanel table = new()
+        AutoScroll = false;
+        TableLayoutPanel shell = new()
         {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            ColumnCount = 3,
+            Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2,
+            Margin = Padding.Empty, Padding = Padding.Empty
+        };
+        shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        Panel scrollHost = new()
+        {
+            Dock = DockStyle.Fill, AutoScroll = true,
+            Margin = Padding.Empty, Padding = Padding.Empty
+        };
+        shell.Controls.Add(scrollHost, 0, 0);
+        Controls.Add(shell);
+        TableLayoutPanel root = new()
+        {
+            Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1,
             Padding = new Padding(12)
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        Controls.Add(table);
-        AddFileRow(table, "Source video", source, "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*");
-        AddRow(table, "", copySource);
-        AddRow(table, "Show title", title);
-        AddRow(table, "Model profile", performer, Flow(newPerformer, editPerformer));
-        AddRow(table, "Description", description);
-        AddRow(table, "Tags (comma separated)", tags);
-        AddRow(table, "Release date", releaseDate);
-        AddRow(table, "Show / recording date", showDate);
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        scrollHost.Controls.Add(root);
+        TableLayoutPanel basic = SectionTable();
+        AddFileRow(basic, "Source video", source,
+            "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*");
+        if (showId == null) AddRow(basic, "", addToExisting);
+        AddRow(basic, "Show title", title);
+        AddRow(basic, "Model profile", performer,
+            FlowVertical(newPerformer, editPerformer));
+        AddSection(root, "Show", basic);
+
+        TableLayoutPanel metadata = SectionTable();
+        AddRow(metadata, "Description", description);
+        AddRow(metadata, "Tags (comma separated)", tags);
+        AddRow(metadata, "Release date", releaseDate);
+        AddRow(metadata, "Show / recording date", showDate);
         FlowLayoutPanel agePanel = Flow(ageOverride, useAgeOverride);
-        AddRow(table, "Age at release override", agePanel);
-        FlowLayoutPanel ratingPanel = Flow(rating, useRating);
-        AddRow(table, "Official rating (0–5)", ratingPanel);
+        AddRow(metadata, "Age at release override", agePanel);
         hotness.Items.AddRange(HotnessValues);
         hotness.SelectedItem = "NoNudity";
-        AddRow(table, "Hotness", hotness);
-        AddRow(table, "", exclusive);
-        AddRow(table, "Number of performers", performerCount);
+        AddRow(metadata, "Hotness", hotness);
+        AddRow(metadata, "Number of performers", performerCount);
         clipTypes.Items.AddRange(ClipTypeValues);
         clipTypes.SetItemChecked(0, true);
-        AddRow(table, "Clip types", clipTypes);
-        AddRow(table, "Video sections", editClips);
-        AddFileRow(table, "Custom cover (optional)", cover,
+        AddRow(metadata, "Clip types", clipTypes);
+        AddFileRow(metadata, "Custom cover (optional)", cover,
             "Images|*.jpg;*.jpeg;*.png;*.bmp|All files|*.*");
-        AddRow(table, "Auto-cover title colour", coverTitleColor);
+        AddRow(metadata, "Auto-cover title colour", coverTitleColor);
+        AddCollapsibleSection(root, "Metadata (optional)", metadata);
+
+        TableLayoutPanel sections = SectionTable();
+        editClips.MinimumSize = new Size(0, 38);
+        AddRow(sections, "Split and classify", editClips);
+        AddSection(root, "Video sections", sections);
+
+        processingTable = SectionTable();
         preset.Items.AddRange(["RVM Quality (ResNet50)", "RVM Fast (MobileNetV3)"]);
+        if (CustomShowProcessor.IsRvmMatAnyone2Installed(configuration))
+            preset.Items.Add("RVM-MatAnyone (automatic RVM initialization)");
+        if (CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration))
+            preset.Items.Add("RVM-ViTMatte S (automatic full RVM masks)");
         if (CustomShowProcessor.IsMatAnyone2Installed(configuration))
             preset.Items.Add("MatAnyone 2 (interactive initial mask)");
         if (CustomShowProcessor.IsVideoMaMaInstalled(configuration))
@@ -118,14 +150,14 @@ internal sealed class CustomShowEditorForm : Form
         if (CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
             preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
         preset.SelectedIndex = 0;
-        AddRow(table, "Processing algorithm", preset);
+        AddRow(processingTable, "Processing algorithm", preset);
         maskEngine.Items.Add("RVM ResNet50 (fast, person-only)");
         if (CustomShowProcessor.InstalledSam2Models(configuration).Count > 0)
             maskEngine.Items.Insert(0, "SAM2 (editable, best robustness)");
         if (CustomShowProcessor.IsEdgeTamInstalled(configuration))
             maskEngine.Items.Add("EdgeTAM (editable, faster)");
         maskEngine.SelectedIndex = 0;
-        AddRow(table, "Mask generation", maskEngine);
+        maskEngineRow = AddRow(processingTable, "Mask generation", maskEngine);
         foreach (string model in CustomShowProcessor.InstalledSam2Models(configuration))
             sam2Model.Items.Add(model switch
             {
@@ -137,26 +169,36 @@ internal sealed class CustomShowEditorForm : Form
             sam2Model.SelectedIndex = sam2Model.Items.Cast<string>().ToList().FindIndex(
                 value => value.StartsWith("Base+", StringComparison.Ordinal)) is int index &&
                 index >= 0 ? index : 0;
-        AddRow(table, "SAM2 mask model", sam2Model);
+        sam2ModelRow = AddRow(processingTable, "SAM2 mask model", sam2Model);
         mattingDetail.Items.AddRange([
             "Very Low (256 px)", "Low (384 px)",
             "Standard (512 px - recommended)", "High (768 px)",
             "Very High (1024 px)", "Full resolution (slowest)"]);
         mattingDetail.SelectedIndex = 2;
-        AddRow(table, "Matting detail", mattingDetail);
+        mattingDetailRow = AddRow(processingTable, "Matting detail", mattingDetail);
+        rvmThresholdRow = AddRow(processingTable, "RVM initializer alpha", Flow(rvmInitializerThreshold,
+            rvmInitializerThresholdValue));
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12, 16, 24]);
         sequenceChunk.SelectedItem = 12;
-        AddRow(table, "Processing batch size", sequenceChunk);
-        AddRow(table, "Created using", processingDetails);
+        batchSizeRow = AddRow(processingTable, "Processing batch size", sequenceChunk);
+        AddRow(processingTable, "After processing", autoAccept);
+        processingDetailsRow = AddRow(processingTable, "Created using", processingDetails);
         if (this.reprocess)
-            AddRow(table, "Reprocessing", Flow(keepClips, keepMasks));
+            reprocessingRow = AddRow(processingTable, "Reprocessing", Flow(keepClips, keepMasks));
+        AddSection(root, "Processing", processingTable);
         FlowLayoutPanel buttons = Flow(save, cancel);
-        AddRow(table, "", buttons);
+        buttons.Dock = DockStyle.Fill;
+        buttons.Margin = Padding.Empty;
+        buttons.Padding = new Padding(12, 8, 12, 10);
+        shell.Controls.Add(buttons, 0, 1);
         AcceptButton = save;
         CancelButton = cancel;
         save.Click += Save;
+        addToExisting.Click += SelectExistingShow;
         preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions(
             applyRecommendedBatch: true);
+        rvmInitializerThreshold.ValueChanged += (_, _) =>
+            rvmInitializerThresholdValue.Text = $"{rvmInitializerThreshold.Value}%";
         maskEngine.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
         newPerformer.Click += (_, _) => OpenPerformer(null);
         editPerformer.Click += (_, _) => OpenPerformer(selectedProfile);
@@ -178,6 +220,11 @@ internal sealed class CustomShowEditorForm : Form
         };
         LoadData();
         UpdateProcessingOptions();
+        if (showId == null) RestoreProcessingOptions();
+        FormClosing += (_, _) =>
+        {
+            if (showId == null) RememberProcessingOptions();
+        };
         Color selectedCoverColor = coverTitleColor.BackColor;
         AppTheme.Apply(this);
         coverTitleColor.BackColor = selectedCoverColor;
@@ -203,7 +250,7 @@ internal sealed class CustomShowEditorForm : Form
     void UpdateProcessingOptions(bool applyRecommendedBatch = false)
     {
         string selected = SelectedPreset();
-        if (CanProcess && selected is "quality" or "fast" &&
+        if (CanProcess && selected is ("quality" or "fast") &&
             (!reprocess || applyRecommendedBatch))
         {
             int preferred = selected == "fast" ? configuration.RvmFastPreferredChunk :
@@ -211,7 +258,8 @@ internal sealed class CustomShowEditorForm : Form
             sequenceChunk.SelectedItem = sequenceChunk.Items.Cast<int>()
                 .OrderBy(value => Math.Abs(value - preferred)).First();
         }
-        else if (CanProcess && selected is "vitmatte-s" or "vitmatte-b" &&
+        else if (CanProcess &&
+            selected is ("vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s") &&
             (!reprocess || applyRecommendedBatch))
         {
             int recommended = selected == "vitmatte-b" ?
@@ -225,15 +273,41 @@ internal sealed class CustomShowEditorForm : Form
             (!reprocess || applyRecommendedBatch))
             sequenceChunk.SelectedItem = configuration.VideoMaMaPreferredBatchSize;
         bool rvm = selected is "quality" or "fast";
-        mattingDetail.Enabled = (rvm || selected == "matanyone2") && CanProcess;
-        sequenceChunk.Enabled = (rvm || UsesSam2(selected)) && CanProcess;
+        mattingDetail.Enabled = (rvm || selected is "matanyone2" or
+            "rvm-matanyone2") && CanProcess;
+        sequenceChunk.Enabled = (rvm || UsesSam2(selected) ||
+            selected == "rvm-vitmatte-s") && CanProcess;
         maskEngine.Enabled = UsesSam2(selected) && CanProcess;
         sam2Model.Enabled = (selected == "matanyone2" ||
             (UsesSam2(selected) && SelectedMaskEngine() != "rvm")) &&
             CanProcess && sam2Model.Items.Count > 0;
+        rvmInitializerThreshold.Enabled =
+            selected is ("rvm-matanyone2" or "rvm-vitmatte-s") && CanProcess;
+        rvmInitializerThresholdValue.Enabled = rvmInitializerThreshold.Enabled;
+        autoAccept.Enabled = CanProcess;
+        if (processingTable != null)
+        {
+            bool usesMasks = UsesSam2(selected);
+            bool usesSamModel = selected == "matanyone2" ||
+                usesMasks && SelectedMaskEngine() != "rvm";
+            SetRowVisible(processingTable, maskEngineRow, usesMasks);
+            SetRowVisible(processingTable, sam2ModelRow, usesSamModel);
+            SetRowVisible(processingTable, mattingDetailRow,
+                rvm || selected is "matanyone2" or "rvm-matanyone2");
+            SetRowVisible(processingTable, rvmThresholdRow,
+                selected is "rvm-matanyone2" or "rvm-vitmatte-s");
+            SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
+                selected == "rvm-vitmatte-s");
+            SetRowVisible(processingTable, processingDetailsRow,
+                processingDetails.Text !=
+                    "Recorded in show.json after processing completes.");
+            if (reprocessingRow >= 0)
+                SetRowVisible(processingTable, reprocessingRow, reprocess);
+        }
     }
 
     bool CanProcess => showId == null || reprocess;
+    bool Appending => showId == null && appendShowId != null;
 
     int SelectedMattingResolution() => mattingDetail.SelectedIndex switch
     {
@@ -260,6 +334,10 @@ internal sealed class CustomShowEditorForm : Form
     {
         string selected = preset.SelectedItem?.ToString() ?? "";
         if (selected.StartsWith("RVM Fast", StringComparison.Ordinal)) return "fast";
+        if (selected.StartsWith("RVM-MatAnyone", StringComparison.Ordinal))
+            return "rvm-matanyone2";
+        if (selected.StartsWith("RVM-ViTMatte S", StringComparison.Ordinal))
+            return "rvm-vitmatte-s";
         if (selected.StartsWith("MatAnyone", StringComparison.Ordinal)) return "matanyone2";
         if (selected.StartsWith("VideoMaMa", StringComparison.Ordinal)) return "videomama";
         if (selected.StartsWith("ViTMatte S", StringComparison.Ordinal)) return "vitmatte-s";
@@ -278,10 +356,32 @@ internal sealed class CustomShowEditorForm : Form
         performer.DisplayMember = nameof(CustomPerformerProfile.DisplayName);
         performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
         if (showId == null) return;
-        CustomShowManifest show = store.LoadManifest(showId);
-        copySource.Enabled = false;
-        source.Text = SourceVideo(show);
-        save.Text = reprocess ? "Reprocess and Preview" : "Save Metadata";
+        PopulateFromShow(store.LoadManifest(showId), editingExisting: true);
+    }
+
+    void SelectExistingShow(object? sender, EventArgs e)
+    {
+        using CustomShowPickerForm picker = new(store);
+        if (picker.ShowDialog(this) != DialogResult.OK || picker.ShowId == null) return;
+        appendShowId = picker.ShowId;
+        CustomShowManifest show = store.LoadManifest(appendShowId);
+        PopulateFromShow(show, editingExisting: false);
+        showClips = [];
+        clipDetection = null;
+        addToExisting.Text = $"Adding to: {show.Title}";
+        save.Text = "Process and Add Clips";
+        Text = "Add Video to Existing Custom Show";
+        UpdateClipButton();
+        UpdateProcessingOptions();
+    }
+
+    void PopulateFromShow(CustomShowManifest show, bool editingExisting)
+    {
+        if (editingExisting)
+        {
+            source.Text = SourceVideo(show);
+            save.Text = reprocess ? "Reprocess and Preview" : "Save Metadata";
+        }
         title.Text = show.Title;
         description.Text = show.Description;
         tags.Text = string.Join(", ", show.Tags);
@@ -290,10 +390,7 @@ internal sealed class CustomShowEditorForm : Form
         if (show.ShowDate is DateOnly date) showDate.Value = date.ToDateTime(TimeOnly.MinValue);
         useAgeOverride.Checked = show.AgeAtReleaseOverride != null;
         if (show.AgeAtReleaseOverride is int age) ageOverride.Value = age;
-        useRating.Checked = show.OfficialRating != null;
-        if (show.OfficialRating is decimal value) rating.Value = value;
         hotness.SelectedItem = show.Hotness;
-        exclusive.Checked = show.Exclusive;
         performerCount.Value = show.PerformerCount;
         coverTitleColor.BackColor = ColorTranslator.FromHtml(
             show.Media.CoverTitleColor);
@@ -301,22 +398,27 @@ internal sealed class CustomShowEditorForm : Form
         for (int i = 0; i < clipTypes.Items.Count; i++)
             clipTypes.SetItemChecked(i, show.ClipTypes.Contains(clipTypes.Items[i]!.ToString()));
         performer.SelectedItem = profiles.FirstOrDefault(profile => profile.Id == show.PerformerId);
-        showClips = show.Clips;
-        clipDetection = show.ClipDetection;
+        if (editingExisting)
+        {
+            showClips = show.Clips;
+            clipDetection = show.ClipDetection;
+        }
         if (show.Processing is CustomShowProcessing processing)
         {
             processingDetails.Text = DescribeProcessing(processing);
             processingDetails.Visible = true;
             SelectProcessingOptions(processing);
         }
-        keepClips.Visible = keepMasks.Visible = reprocess;
+        keepClips.Visible = keepMasks.Visible = editingExisting && reprocess;
         keepMasks.Enabled = reprocess && RetainedMasksAvailable();
         keepMasks.Checked = keepMasks.Enabled;
         if (reprocess && !keepMasks.Enabled)
             keepMasks.Text = "Keep existing masks (not retained for this show)";
-        if (!reprocess)
+        if (editingExisting && !reprocess)
             preset.Enabled = maskEngine.Enabled = mattingDetail.Enabled =
-                sequenceChunk.Enabled = sam2Model.Enabled = false;
+                sequenceChunk.Enabled = sam2Model.Enabled =
+                rvmInitializerThreshold.Enabled = rvmInitializerThresholdValue.Enabled =
+                autoAccept.Enabled = false;
         UpdateClipButton();
     }
 
@@ -325,6 +427,8 @@ internal sealed class CustomShowEditorForm : Form
         string prefix = processing.Algorithm switch
         {
             "fast" => "RVM Fast", "matanyone2" => "MatAnyone",
+            "rvm-matanyone2" => "RVM-MatAnyone",
+            "rvm-vitmatte-s" => "RVM-ViTMatte S",
             "videomama" => "VideoMaMa", "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B", _ => "RVM Quality"
         };
@@ -343,6 +447,10 @@ internal sealed class CustomShowEditorForm : Form
         };
         if (sequenceChunk.Items.Contains(processing.BatchSize))
             sequenceChunk.SelectedItem = processing.BatchSize;
+        rvmInitializerThreshold.Value = Math.Clamp(
+            processing.RvmInitializerAlphaThresholdPercent ?? 40,
+            rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
+        autoAccept.Checked = processing.AutoAcceptedAlphaThreshold == 25;
     }
 
     static void SelectStartingWith(ComboBox combo, string prefix)
@@ -352,6 +460,57 @@ internal sealed class CustomShowEditorForm : Form
                 prefix, StringComparison.Ordinal)).index;
         if (index >= 0 && index < combo.Items.Count && combo.Items[index]!.ToString()!
             .StartsWith(prefix, StringComparison.Ordinal)) combo.SelectedIndex = index;
+    }
+
+    void RestoreProcessingOptions()
+    {
+        string prefix = configuration.LastProcessingAlgorithm switch
+        {
+            "fast" => "RVM Fast",
+            "rvm-matanyone2" => "RVM-MatAnyone",
+            "rvm-vitmatte-s" => "RVM-ViTMatte S",
+            "matanyone2" => "MatAnyone",
+            "videomama" => "VideoMaMa",
+            "vitmatte-s" => "ViTMatte S",
+            "vitmatte-b" => "ViTMatte B",
+            _ => "RVM Quality"
+        };
+        SelectStartingWith(preset, prefix);
+        SelectStartingWith(maskEngine, configuration.LastMaskEngine switch
+        {
+            "edgetam" => "EdgeTAM", "rvm" => "RVM", _ => "SAM2"
+        });
+        SelectStartingWith(sam2Model, configuration.LastSam2Model switch
+        {
+            "small" => "Small", "tiny" => "Tiny", _ => "Base+"
+        });
+        mattingDetail.SelectedIndex = configuration.LastMattingDetailPx switch
+        {
+            256 => 0, 384 => 1, 768 => 3, 1024 => 4, 0 => 5, _ => 2
+        };
+        if (sequenceChunk.Items.Contains(configuration.LastProcessingBatchSize))
+            sequenceChunk.SelectedItem = configuration.LastProcessingBatchSize;
+        rvmInitializerThreshold.Value = Math.Clamp(
+            configuration.LastRvmInitializerAlphaThresholdPercent,
+            rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
+        autoAccept.Checked = configuration.LastAutoAcceptAlphaThreshold;
+        UpdateProcessingOptions();
+        if (sequenceChunk.Items.Contains(configuration.LastProcessingBatchSize))
+            sequenceChunk.SelectedItem = configuration.LastProcessingBatchSize;
+    }
+
+    void RememberProcessingOptions()
+    {
+        configuration.LastProcessingAlgorithm = SelectedPreset();
+        configuration.LastMaskEngine = SelectedMaskEngine();
+        configuration.LastSam2Model = SelectedSam2Model();
+        configuration.LastMattingDetailPx = SelectedMattingResolution();
+        configuration.LastProcessingBatchSize =
+            (int)(sequenceChunk.SelectedItem ?? 12);
+        configuration.LastRvmInitializerAlphaThresholdPercent =
+            rvmInitializerThreshold.Value;
+        configuration.LastAutoAcceptAlphaThreshold = autoAccept.Checked;
+        configuration.Save();
     }
 
     static void AddIstripperModels(List<CustomPerformerProfile> target)
@@ -393,6 +552,8 @@ internal sealed class CustomShowEditorForm : Form
             "quality" => "RVM Quality (ResNet50)",
             "fast" => "RVM Fast (MobileNetV3)",
             "matanyone2" => "MatAnyone 2",
+            "rvm-matanyone2" => "RVM-MatAnyone (automatic)",
+            "rvm-vitmatte-s" => "RVM-ViTMatte S (automatic)",
             "videomama" => "VideoMaMa",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
@@ -410,7 +571,11 @@ internal sealed class CustomShowEditorForm : Form
             $"; {value.ResolvedExecutionMode}";
         string encoder = value.Encoder == null ? "" :
             $"; {value.Encoder} {value.EncoderPreset}";
-        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{effective}{sam2}{mask}{execution}{encoder}\r\n" +
+        string initializer = value.RvmInitializerAlphaThresholdPercent is int threshold ?
+            $"; RVM initializer alpha {threshold}%" : "";
+        string accepted = value.AutoAcceptedAlphaThreshold is int alpha ?
+            $"; automatically accepted at alpha {alpha}" : "";
+        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{effective}{sam2}{mask}{initializer}{accepted}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -478,8 +643,12 @@ internal sealed class CustomShowEditorForm : Form
         {
             if (selectedProfile == null) throw new InvalidDataException("Select or create a model profile.");
             CustomShowStore.ValidateProfile(selectedProfile);
-            CustomShowManifest show = showId == null ? new() : store.LoadManifest(showId);
-            ApplyFields(show);
+            CustomShowManifest show = Appending
+                ? store.LoadManifest(appendShowId!)
+                : showId == null ? new() : store.LoadManifest(showId);
+            CustomShowClip[] existingClips = Appending ? show.Clips : [];
+            long existingDuration = Appending ? show.Media.DurationMs : 0;
+            ApplyFields(show, includeClipLayout: !Appending);
             CustomShowStore.ValidateLink(show, selectedProfile);
             if (showId != null) RelinkSource(show);
             if (showId != null && !reprocess)
@@ -514,28 +683,30 @@ internal sealed class CustomShowEditorForm : Form
             }
             string staging = Path.Combine(store.Root, ".staging", show.Id);
             await DeleteDirectoryWhenReleasedAsync(staging);
-            Directory.CreateDirectory(staging);
+            if (Appending)
+                CopyDirectory(Path.Combine(store.ShowsFolder, show.Id), staging);
+            else Directory.CreateDirectory(staging);
             bool discardStaging = false;
             bool discardMaskDraft = false;
             CustomShowMaskDraft? maskDraft = null;
+            CustomShowSource? appendedSource = null;
             try
             {
                 string input = source.Text;
-                if (reprocess && show.Source.Mode == "copy")
+                if (Appending)
+                {
+                    appendedSource = new CustomShowSource
+                    {
+                        Mode = "reference", Path = Path.GetFullPath(source.Text)
+                    };
+                }
+                else if (reprocess && show.Source.Mode == "copy")
                 {
                     string original = SourceVideo(show);
                     input = Path.Combine(staging, show.Source.Path.Replace('/',
                         Path.DirectorySeparatorChar));
                     Directory.CreateDirectory(Path.GetDirectoryName(input)!);
                     File.Copy(original, input, true);
-                }
-                else if (copySource.Checked)
-                {
-                    string relative = Path.Combine("source", "original" + Path.GetExtension(source.Text));
-                    input = Path.Combine(staging, relative);
-                    Directory.CreateDirectory(Path.GetDirectoryName(input)!);
-                    File.Copy(source.Text, input, true);
-                    show.Source = new() { Mode = "copy", Path = relative.Replace('\\', '/') };
                 }
                 else show.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
                 Dictionary<string, string> initialMasks = [];
@@ -656,18 +827,6 @@ internal sealed class CustomShowEditorForm : Form
                         }
                     }
                 }
-                if (initialMasks.Count > 0 || sam2Masks.Count > 0)
-                {
-                    string saveText = save.Text;
-                    save.Text = "Compressing retained masks…";
-                    try
-                    {
-                        await Task.Run(() => SaveRetainedMasks(staging, source.Text,
-                            showClips, maskDraftFolders, initialMasks,
-                            initialMaskFrames, sam2Masks));
-                    }
-                    finally { save.Text = saveText; }
-                }
                 bool retry;
                 do
                 {
@@ -744,9 +903,33 @@ internal sealed class CustomShowEditorForm : Form
                                 initialMasks.GetValueOrDefault(clip.Id),
                                 sam2Masks.GetValueOrDefault(clip.Id), detail, chunk,
                                 clip.StartMs, clip.EndMs, log,
-                                index > 0 || File.Exists(log), aggregate, token,
-                                maskFrameMs: initialMaskFrames.GetValueOrDefault(
-                                    clip.Id, clip.StartMs));
+                                 index > 0 || File.Exists(log), aggregate, token,
+                                 maskFrameMs: initialMaskFrames.GetValueOrDefault(
+                                    clip.Id, clip.StartMs),
+                                 rvmInitializerAlphaThresholdPercent:
+                                    rvmInitializerThreshold.Value);
+                            if (selectedPreset == "rvm-vitmatte-s" &&
+                                !sam2Masks.ContainsKey(clip.Id))
+                            {
+                                string generatedMasks = Path.Combine(output,
+                                    ".rvm-masks");
+                                if (Directory.Exists(generatedMasks) &&
+                                    Directory.EnumerateFiles(generatedMasks,
+                                        "*.png").Any())
+                                    sam2Masks[clip.Id] = generatedMasks;
+                            }
+                            if (selectedPreset == "rvm-matanyone2" &&
+                                !initialMasks.ContainsKey(clip.Id))
+                            {
+                                string generatedMask = Path.Combine(output,
+                                    "initial-mask.png");
+                                if (File.Exists(generatedMask))
+                                {
+                                    initialMasks[clip.Id] = generatedMask;
+                                    initialMaskFrames[clip.Id] =
+                                        result.InitialMaskFrameMs ?? clip.StartMs;
+                                }
+                            }
                             clip.Media = new()
                             {
                                 Foreground = Path.Combine(relativeFolder, "foreground.mp4").Replace('\\', '/'),
@@ -787,32 +970,80 @@ internal sealed class CustomShowEditorForm : Form
                                 MessageBoxButtons.OK, MessageBoxIcon.Information);
                         return;
                     }
+                    if (Appending && selectedPreset == "rvm-vitmatte-s")
+                    {
+                        string saveText = save.Text;
+                        save.Text = "Compressing retained masks…";
+                        try
+                        {
+                            await Task.Run(() => CompressGeneratedRvmMasks(
+                                staging, sam2Masks));
+                        }
+                        finally { save.Text = saveText; }
+                    }
+                    else if (!Appending &&
+                        (initialMasks.Count > 0 || sam2Masks.Count > 0))
+                    {
+                        string saveText = save.Text;
+                        save.Text = "Compressing retained masks…";
+                        try
+                        {
+                            await Task.Run(() => SaveRetainedMasks(staging, source.Text,
+                                showClips, maskDraftFolders, initialMasks,
+                                initialMaskFrames, sam2Masks));
+                        }
+                        finally { save.Text = saveText; }
+                    }
+                    if (selectedPreset == "rvm-vitmatte-s")
+                        foreach (string generated in GeneratedRvmMaskFolders(
+                            staging, sam2Masks))
+                            try { Directory.Delete(generated, true); } catch { }
                     CustomShowProcessResult media = processing.Result;
                     await DeleteDirectoryWhenReleasedAsync(
                         Path.Combine(staging, ".mask-work"));
                     RemoveExpandedRetainedMasks(Path.Combine(staging, "masks"));
-                    bool retainExistingCover = reprocess &&
+                    bool retainExistingCover = (reprocess || Appending) &&
                         string.IsNullOrWhiteSpace(cover.Text) &&
                         !show.Media.AutoGeneratedCover;
-                    string? existingCover = retainExistingCover
+                    string? existingCover = retainExistingCover && !Appending
                         ? CustomShowStore.ResolveRelative(
                             Path.Combine(store.ShowsFolder, show.Id), show.Media.Cover)
                         : null;
-                    show.Media = new()
-                    {
-                        Width = media.Width, Height = media.Height,
-                        FrameRate = media.FrameRate, DurationMs = media.DurationMs,
-                        AutoGeneratedCover = !retainExistingCover &&
-                            string.IsNullOrWhiteSpace(cover.Text),
-                        CoverTitleColor = ColorHex(coverTitleColor.BackColor)
-                    };
                     if (showClips.Length > 0)
                     {
                         showClips[^1].EndMs = media.DurationMs;
                         CustomShowStore.ValidateClips(showClips, media.DurationMs);
                     }
-                    show.Clips = showClips;
+                    CustomShowClip[] processedClips = showClips.Where(
+                        clip => clip.Included).ToArray();
+                    if (autoAccept.Checked)
+                        foreach (CustomShowClip clip in processedClips)
+                            clip.AlphaThreshold = 25;
+                    if (Appending)
+                    {
+                        show.Media.DurationMs = checked(existingDuration + media.DurationMs);
+                        show.Media.CoverTitleColor = ColorHex(coverTitleColor.BackColor);
+                        if (!string.IsNullOrWhiteSpace(cover.Text))
+                            show.Media.AutoGeneratedCover = false;
+                        show.Clips = [.. existingClips, .. OffsetClips(showClips,
+                            existingDuration, appendedSource!)];
+                        show.ClipDetection = null;
+                    }
+                    else
+                    {
+                        show.Media = new()
+                        {
+                            Width = media.Width, Height = media.Height,
+                            FrameRate = media.FrameRate, DurationMs = media.DurationMs,
+                            AutoGeneratedCover = !retainExistingCover &&
+                                string.IsNullOrWhiteSpace(cover.Text),
+                            CoverTitleColor = ColorHex(coverTitleColor.BackColor)
+                        };
+                        show.Clips = showClips;
+                    }
                     int processingBatchSize = (int)(sequenceChunk.SelectedItem ?? 3);
+                    bool usesInitialMask = selectedPreset is "matanyone2" or
+                        "rvm-matanyone2";
                     bool usesSam2 = selectedPreset == "matanyone2" ||
                         (UsesSam2(selectedPreset) && selectedMaskEngine != "rvm");
                     show.Processing = new()
@@ -820,6 +1051,10 @@ internal sealed class CustomShowEditorForm : Form
                         Algorithm = selectedPreset,
                         MattingDetailPx = detail,
                         BatchSize = processingBatchSize,
+                        RvmInitializerAlphaThresholdPercent = selectedPreset is
+                            "rvm-matanyone2" or "rvm-vitmatte-s"
+                            ? rvmInitializerThreshold.Value : null,
+                        AutoAcceptedAlphaThreshold = autoAccept.Checked ? 25 : null,
                         Sam2Model = usesSam2 ? selectedSam2Model : null,
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null,
                         ExecutionPolicy = "auto",
@@ -829,32 +1064,37 @@ internal sealed class CustomShowEditorForm : Form
                         Encoder = media.Encoder,
                         EncoderPreset = media.EncoderPreset,
                         PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
-                        RecurrentRefinementSteps = selectedPreset == "matanyone2" ? 11 : 0,
+                        RecurrentRefinementSteps = selectedPreset is "matanyone2" or
+                            "rvm-matanyone2" ? 11 : 0,
                         ProcessedUtc = DateTime.UtcNow,
                         QuickPlayerVersion = Application.ProductVersion,
                         ToolRevisions = ReadProcessingRevisions(selectedPreset,
                             selectedMaskEngine),
-                        Clips = showClips.Where(clip => clip.Included).Select(clip =>
+                        Clips = (Appending ? existingClips.Where(clip => clip.Included)
+                            .Select(clip => new CustomClipProcessing { ClipId = clip.Id })
+                            : []).Concat(showClips.Where(clip => clip.Included).Select(clip =>
                             new CustomClipProcessing
                             {
                                 ClipId = clip.Id,
-                                InitialMaskFrameMs = usesSam2
-                                    ? initialMaskFrames.GetValueOrDefault(clip.Id, clip.StartMs)
+                                InitialMaskFrameMs = usesInitialMask
+                                    ? checked(initialMaskFrames.GetValueOrDefault(
+                                        clip.Id, clip.StartMs) + existingDuration)
                                     : null,
                                 Sam2MaskTracking = UsesSam2(selectedPreset) &&
                                     selectedMaskEngine == "sam2"
-                            }).ToArray()
+                            })).ToArray()
                     };
                     if (!string.IsNullOrWhiteSpace(cover.Text))
                         SaveCover(cover.Text, Path.Combine(staging, show.Media.Cover));
                     else if (existingCover != null)
                         File.Copy(existingCover, Path.Combine(staging, show.Media.Cover), true);
-                    else await CustomShowProcessor.GenerateCoverAsync(input,
-                        Path.Combine(staging, show.Media.Cover), show.Media.DurationMs,
+                    else if (!Appending) await CustomShowProcessor.GenerateCoverAsync(input,
+                        Path.Combine(staging, show.Media.Cover), show.Media.DurationMs / 2,
                         selectedProfile.ModelName, show.Title, coverTitleColor.BackColor,
                         CancellationToken.None);
-                    DialogResult decision = await ReviewProcessedShow(staging,
-                        showClips.Where(clip => clip.Included).ToArray());
+                    DialogResult decision;
+                    if (autoAccept.Checked) decision = DialogResult.OK;
+                    else decision = await ReviewProcessedShow(staging, processedClips);
                     retry = decision == DialogResult.Retry;
                     if (decision == DialogResult.Cancel)
                     {
@@ -864,7 +1104,7 @@ internal sealed class CustomShowEditorForm : Form
                     }
                 } while (retry);
                 store.SavePerformer(selectedProfile);
-                if (reprocess) store.Replace(staging, show);
+                if (reprocess || Appending) store.Replace(staging, show);
                 else store.Publish(staging, show);
                 if (maskDraft != null && Directory.Exists(maskDraft.Root))
                     try { await DeleteDirectoryWhenReleasedAsync(maskDraft.Root); }
@@ -912,7 +1152,8 @@ internal sealed class CustomShowEditorForm : Form
     bool ConfirmGpuBatch()
     {
         string algorithm = SelectedPreset();
-        if (algorithm is not ("videomama" or "vitmatte-s" or "vitmatte-b") ||
+        if (algorithm is not ("videomama" or "vitmatte-s" or "vitmatte-b" or
+                "rvm-vitmatte-s") ||
             sequenceChunk.SelectedItem is not int requested) return true;
         CustomShowProcessor.NvidiaMemory? memory =
             CustomShowProcessor.NvidiaMemoryInfo();
@@ -1080,6 +1321,32 @@ internal sealed class CustomShowEditorForm : Form
             });
     }
 
+    static IEnumerable<string> GeneratedRvmMaskFolders(string staging,
+        IReadOnlyDictionary<string, string> trackedMasks) =>
+        trackedMasks.Values.Where(path => IsGeneratedRvmMaskFolder(staging, path));
+
+    static bool IsGeneratedRvmMaskFolder(string staging, string path) =>
+        path.StartsWith(staging + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase) &&
+        Path.GetFileName(path).Equals(".rvm-masks",
+            StringComparison.OrdinalIgnoreCase);
+
+    static void CompressGeneratedRvmMasks(string staging,
+        IReadOnlyDictionary<string, string> trackedMasks)
+    {
+        foreach ((string clipId, string masks) in trackedMasks)
+        {
+            if (!IsGeneratedRvmMaskFolder(staging, masks) ||
+                !Directory.Exists(masks) ||
+                !Directory.EnumerateFiles(masks, "*.png").Any())
+                continue;
+            string folder = Path.Combine(staging, "masks", clipId);
+            Directory.CreateDirectory(folder);
+            CustomMaskArchive.Create(masks, Path.Combine(folder,
+                "tracked-masks.iqpmask"));
+        }
+    }
+
     static void CopyDirectory(string source, string destination)
     {
         Directory.CreateDirectory(destination);
@@ -1106,6 +1373,8 @@ internal sealed class CustomShowEditorForm : Form
         {
             "quality" or "fast" => ["RVM_COMMIT"],
             "matanyone2" => ["MATANYONE2_COMMIT", "SAM2_COMMIT"],
+            "rvm-matanyone2" => ["MATANYONE2_COMMIT", "RVM_COMMIT"],
+            "rvm-vitmatte-s" => ["VITMATTE_S_REVISION", "RVM_COMMIT"],
             "videomama" => ["VIDEOMAMA_COMMIT", "VIDEOMAMA_SVD_REVISION",
                 "VIDEOMAMA_MODEL_REVISION", "SAM2_COMMIT"],
             "vitmatte-s" => ["VITMATTE_S_REVISION", "SAM2_COMMIT"],
@@ -1211,7 +1480,7 @@ internal sealed class CustomShowEditorForm : Form
         }
     }
 
-    void ApplyFields(CustomShowManifest show)
+    void ApplyFields(CustomShowManifest show, bool includeClipLayout = true)
     {
         show.PerformerId = selectedProfile!.Id;
         show.Title = title.Text.Trim();
@@ -1222,24 +1491,77 @@ internal sealed class CustomShowEditorForm : Form
         show.ShowDate = showDate.Checked ? DateOnly.FromDateTime(showDate.Value) : null;
         show.AgeAtReleaseOverride = selectedProfile.BirthDate == null && useAgeOverride.Checked
             ? (int)ageOverride.Value : null;
-        show.OfficialRating = useRating.Checked ? rating.Value : null;
         show.Hotness = hotness.SelectedItem?.ToString() ?? "NoNudity";
-        show.Exclusive = exclusive.Checked;
         show.PerformerCount = (int)performerCount.Value;
         show.ClipTypes = clipTypes.CheckedItems.Cast<object>()
             .Select(item => item.ToString()!).ToArray();
-        show.Clips = showClips;
-        show.ClipDetection = clipDetection;
+        if (includeClipLayout)
+        {
+            show.Clips = showClips;
+            show.ClipDetection = clipDetection;
+        }
         show.Media.CoverTitleColor = ColorHex(coverTitleColor.BackColor);
         if (string.IsNullOrWhiteSpace(show.Title)) throw new InvalidDataException("Show title is required.");
     }
 
+    static CustomShowClip[] OffsetClips(IEnumerable<CustomShowClip> clips, long offset,
+        CustomShowSource source) =>
+        clips.Select(clip => new CustomShowClip
+        {
+            Id = clip.Id,
+            StartMs = checked(clip.StartMs + offset),
+            EndMs = checked(clip.EndMs + offset),
+            Included = clip.Included,
+            Hotness = clip.Hotness,
+            ClipTypes = [.. clip.ClipTypes],
+            AlphaThreshold = clip.AlphaThreshold,
+            DetectionLabels = [.. clip.DetectionLabels],
+            Source = new CustomShowSource { Mode = source.Mode, Path = source.Path },
+            SourceStartMs = clip.StartMs,
+            SourceEndMs = clip.EndMs,
+            Media = clip.Media
+        }).ToArray();
+
     string SourceVideo(CustomShowManifest show)
     {
+        return SourceVideo(show, show.Source);
+    }
+
+    string SourceVideo(CustomShowManifest show, CustomShowSource source)
+    {
         string folder = Path.Combine(store.ShowsFolder, show.Id);
-        return show.Source.Mode == "copy"
-            ? CustomShowStore.ResolveRelative(folder, show.Source.Path)
-            : show.Source.Path;
+        return source.Mode == "copy"
+            ? CustomShowStore.ResolveRelative(folder, source.Path)
+            : source.Path;
+    }
+
+    (string Video, long PositionMs) CoverFrameSource(CustomShowManifest show)
+    {
+        (CustomShowSource source, long positionMs) = CoverFramePosition(show);
+        return (SourceVideo(show, source), positionMs);
+    }
+
+    static (CustomShowSource Source, long PositionMs) CoverFramePosition(
+        CustomShowManifest show)
+    {
+        CustomShowClip[] playable = show.Clips.Where(clip => clip.Included &&
+            clip.EndMs > clip.StartMs).ToArray();
+        long remaining = playable.Sum(clip => clip.EndMs - clip.StartMs) / 2;
+        foreach (CustomShowClip clip in playable)
+        {
+            long duration = clip.EndMs - clip.StartMs;
+            if (remaining >= duration)
+            {
+                remaining -= duration;
+                continue;
+            }
+
+            CustomShowSource clipSource = clip.Source ?? show.Source;
+            long sourceStart = clip.SourceStartMs ?? clip.StartMs;
+            return (clipSource, checked(sourceStart + remaining));
+        }
+
+        return (show.Source, Math.Max(0, show.Media.DurationMs / 2));
     }
 
     void RelinkSource(CustomShowManifest show)
@@ -1263,7 +1585,7 @@ internal sealed class CustomShowEditorForm : Form
 
     async Task SaveAutoCover(CustomShowManifest show, string destination)
     {
-        string video = SourceVideo(show);
+        (string video, long positionMs) = CoverFrameSource(show);
         if (!File.Exists(video))
             throw new FileNotFoundException(
                 "The original source video is required to regenerate the automatic cover.", video);
@@ -1271,7 +1593,7 @@ internal sealed class CustomShowEditorForm : Form
         try
         {
             await CustomShowProcessor.GenerateCoverAsync(video, temporary,
-                show.Media.DurationMs, selectedProfile!.ModelName, show.Title,
+                positionMs, selectedProfile!.ModelName, show.Title,
                 coverTitleColor.BackColor, CancellationToken.None);
             File.Move(temporary, destination, true);
         }
@@ -1318,7 +1640,90 @@ internal sealed class CustomShowEditorForm : Form
         ColorHex(Color.DeepPink) == "#FF1493" &&
         SamePath(@"C:\video\..\source.mp4", @"c:\source.mp4");
 
-    static void AddRow(TableLayoutPanel table, string label, Control control,
+    internal static bool VerifyAppendLayout()
+    {
+        CustomShowSource source = new() { Mode = "reference", Path = @"C:\second.mp4" };
+        CustomShowClip[] appended = OffsetClips([
+            new() { StartMs = 0, EndMs = 400 },
+            new() { StartMs = 400, EndMs = 1_000, Included = false }
+        ], 2_000, source);
+        CustomShowManifest combined = new()
+        {
+            Source = new() { Mode = "reference", Path = @"C:\first.mp4" },
+            Media = new() { DurationMs = 3_000 },
+            Clips =
+            [
+                new() { StartMs = 0, EndMs = 1_000 },
+                .. appended
+            ]
+        };
+        (CustomShowSource coverSource, long coverPosition) =
+            CoverFramePosition(combined);
+        return appended[0].StartMs == 2_000 && appended[0].EndMs == 2_400 &&
+            appended[1].StartMs == 2_400 && appended[1].EndMs == 3_000 &&
+            appended.All(clip => clip.Source?.Path == source.Path) &&
+            appended[0].SourceStartMs == 0 && appended[0].SourceEndMs == 400 &&
+            appended[1].SourceStartMs == 400 && appended[1].SourceEndMs == 1_000 &&
+            coverSource.Path == combined.Source.Path && coverPosition == 700;
+    }
+
+    static TableLayoutPanel SectionTable()
+    {
+        TableLayoutPanel table = new()
+        {
+            Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3,
+            Padding = new Padding(8)
+        };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        return table;
+    }
+
+    static void AddRootControl(TableLayoutPanel root, Control control)
+    {
+        int row = root.RowCount++;
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        control.Dock = DockStyle.Top;
+        root.Controls.Add(control, 0, row);
+    }
+
+    static void AddSection(TableLayoutPanel root, string title,
+        TableLayoutPanel contents)
+    {
+        GroupBox group = new()
+        {
+            Text = title, AutoSize = true, Dock = DockStyle.Top,
+            Padding = new Padding(8), Margin = new Padding(0, 0, 0, 14)
+        };
+        group.Controls.Add(contents);
+        AddRootControl(root, group);
+    }
+
+    static void AddCollapsibleSection(TableLayoutPanel root, string title,
+        TableLayoutPanel contents)
+    {
+        Panel container = new() { AutoSize = true, Dock = DockStyle.Top,
+            Margin = new Padding(0, 0, 0, 14) };
+        Button toggle = new()
+        {
+            Text = $"▶  {title}", AutoSize = false, Height = 36,
+            Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft
+        };
+        GroupBox body = new() { AutoSize = true, Dock = DockStyle.Top,
+            Padding = new Padding(8), Visible = false };
+        body.Controls.Add(contents);
+        container.Controls.Add(body);
+        container.Controls.Add(toggle);
+        toggle.Click += (_, _) =>
+        {
+            body.Visible = !body.Visible;
+            toggle.Text = $"{(body.Visible ? "▼" : "▶")}  {title}";
+        };
+        AddRootControl(root, container);
+    }
+
+    static int AddRow(TableLayoutPanel table, string label, Control control,
         Control? extra = null)
     {
         int row = table.RowCount++;
@@ -1329,6 +1734,17 @@ internal sealed class CustomShowEditorForm : Form
         table.Controls.Add(control, 1, row);
         if (extra != null) table.Controls.Add(extra, 2, row);
         else table.SetColumnSpan(control, 2);
+        return row;
+    }
+
+    static void SetRowVisible(TableLayoutPanel table, int row, bool visible)
+    {
+        if (row < 0 || row >= table.RowCount) return;
+        foreach (Control control in table.Controls.Cast<Control>()
+            .Where(control => table.GetRow(control) == row))
+            control.Visible = visible;
+        table.RowStyles[row].SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
+        table.RowStyles[row].Height = 0;
     }
 
     static void AddFileRow(TableLayoutPanel table, string label, TextBox box, string filter)
@@ -1344,9 +1760,120 @@ internal sealed class CustomShowEditorForm : Form
 
     static FlowLayoutPanel Flow(params Control[] controls)
     {
-        FlowLayoutPanel panel = new() { AutoSize = true, Dock = DockStyle.Fill };
+        FlowLayoutPanel panel = new()
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill, WrapContents = false
+        };
         panel.Controls.AddRange(controls);
         return panel;
+    }
+
+    static FlowLayoutPanel FlowVertical(params Control[] controls)
+    {
+        FlowLayoutPanel panel = new()
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
+            WrapContents = false
+        };
+        panel.Controls.AddRange(controls);
+        return panel;
+    }
+}
+
+internal sealed class CustomShowPickerForm : Form
+{
+    sealed record Choice(string Id, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    readonly TextBox filter = new() { Dock = DockStyle.Top,
+        PlaceholderText = "Filter by show or model name" };
+    readonly ListBox shows = new() { Dock = DockStyle.Fill };
+    readonly Button select = new() { Text = "Add to selected show", AutoSize = true,
+        Enabled = false };
+    readonly Choice[] choices;
+
+    internal string? ShowId { get; private set; }
+
+    internal CustomShowPickerForm(CustomShowStore store)
+    {
+        Text = "Add To Existing Show";
+        ClientSize = new Size(560, 520);
+        MinimumSize = new Size(420, 340);
+        StartPosition = FormStartPosition.CenterParent;
+        choices = LoadChoices(store);
+
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12),
+            ColumnCount = 1, RowCount = 3 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(filter, 0, 0);
+        layout.Controls.Add(shows, 0, 1);
+        FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, AutoSize = true,
+            FlowDirection = FlowDirection.RightToLeft };
+        Button cancel = new() { Text = "Cancel", AutoSize = true,
+            DialogResult = DialogResult.Cancel };
+        buttons.Controls.AddRange([cancel, select]);
+        layout.Controls.Add(buttons, 0, 2);
+        Controls.Add(layout);
+        CancelButton = cancel;
+
+        filter.TextChanged += (_, _) => RefreshChoices();
+        shows.SelectedIndexChanged += (_, _) => select.Enabled =
+            shows.SelectedItem is Choice;
+        shows.DoubleClick += (_, _) => AcceptSelection();
+        select.Click += (_, _) => AcceptSelection();
+        RefreshChoices();
+        AppTheme.Apply(this);
+    }
+
+    static Choice[] LoadChoices(CustomShowStore store)
+    {
+        Dictionary<string, string> models = store.LoadPerformers().ToDictionary(
+            profile => profile.Id, profile => profile.ModelName,
+            StringComparer.OrdinalIgnoreCase);
+        List<Choice> result = [];
+        foreach (string folder in Directory.EnumerateDirectories(store.ShowsFolder))
+            try
+            {
+                CustomShowManifest show = store.LoadManifest(Path.GetFileName(folder));
+                result.Add(new Choice(show.Id,
+                    $"{models.GetValueOrDefault(show.PerformerId, "Unknown model")} — {show.Title}"));
+            }
+            catch (Exception error)
+            {
+                Debug.WriteLine($"Could not list custom show {folder}: {error.Message}");
+            }
+        return result.OrderBy(choice => choice.Label,
+            StringComparer.CurrentCultureIgnoreCase).ToArray();
+    }
+
+    void RefreshChoices()
+    {
+        string query = filter.Text.Trim();
+        Choice? selected = shows.SelectedItem as Choice;
+        shows.BeginUpdate();
+        shows.Items.Clear();
+        shows.Items.AddRange(choices.Where(choice => query.Length == 0 ||
+            choice.Label.Contains(query, StringComparison.CurrentCultureIgnoreCase))
+            .Cast<object>().ToArray());
+        if (selected != null)
+            shows.SelectedItem = shows.Items.Cast<Choice>().FirstOrDefault(
+                choice => choice.Id == selected.Id);
+        if (shows.SelectedIndex < 0 && shows.Items.Count > 0) shows.SelectedIndex = 0;
+        shows.EndUpdate();
+    }
+
+    void AcceptSelection()
+    {
+        if (shows.SelectedItem is not Choice choice) return;
+        ShowId = choice.Id;
+        DialogResult = DialogResult.OK;
+        Close();
     }
 }
 
@@ -1646,7 +2173,15 @@ internal sealed class CustomShowSettingsForm : Form
             VitMatteBaseCompileCutoffFrames = current.VitMatteBaseCompileCutoffFrames,
             VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
             VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize,
-            VideoMaMaPreferredBatchSize = current.VideoMaMaPreferredBatchSize
+            VideoMaMaPreferredBatchSize = current.VideoMaMaPreferredBatchSize,
+            LastProcessingAlgorithm = current.LastProcessingAlgorithm,
+            LastMaskEngine = current.LastMaskEngine,
+            LastSam2Model = current.LastSam2Model,
+            LastMattingDetailPx = current.LastMattingDetailPx,
+            LastProcessingBatchSize = current.LastProcessingBatchSize,
+            LastRvmInitializerAlphaThresholdPercent =
+                current.LastRvmInitializerAlphaThresholdPercent,
+            LastAutoAcceptAlphaThreshold = current.LastAutoAcceptAlphaThreshold
         };
         Text = "Custom Show Settings"; ClientSize = new Size(900, 700);
         MinimumSize = new Size(780, 620);

@@ -181,7 +181,13 @@ into a system-wide memory stall.
 
 ## Creating a show
 
-Choose **File → Custom Shows → Create Show**. Source video, show title, and model profile are required. Choose **Copy original** to place the original under the show folder; otherwise the absolute original path is recorded as a reference and is never deleted by QuickPlayer.
+Choose **File → Custom Shows → Create Show**. Source video, show title, and model
+profile are required. The form is divided into **Show**, collapsed **Metadata
+(optional)**, **Video sections**, and **Processing** groups. Expand Metadata to set
+the description, tags, dates, age override, hotness, performer count, clip types,
+and cover options. Official rating and Exclusive are not edited by this workflow.
+QuickPlayer records the source video as an absolute reference and never deletes it.
+The Processing group shows only the controls used by the selected algorithm.
 
 Before processing, choose **Split into clips...** to open the clip editor on the
 original source. Scrub or play the preview, place dividers, and drag only their
@@ -287,6 +293,25 @@ pinned-memory transfers, recurrent RVM inference, output transfers, preview
 generation, and FFmpeg encoding. Published frames remain strictly ordered and
 each included clip starts with fresh recurrent state.
 
+The **RVM-MatAnyone** preset is fully automatic. For every included clip it runs
+RVM ResNet50 over up to the first eight frames, selects the strongest usable
+complete-person matte, thresholds alpha at 0.40, removes tiny disconnected
+regions, fills small enclosed holes, and dilates the mask by three pixels. RVM is
+then released before MatAnyone 2 loads and uses the selected frame and cleaned
+binary mask. Since detected scenes are processed as separate clips, this
+initialization and MatAnyone recurrent state restart after every retained scene
+cut. RVM supplies only the initializer; MatAnyone 2 produces the final alpha.
+For this preset, the selected **Matting detail** applies to MatAnyone's
+frame-by-frame processing, not to the RVM initializer. The initializer is capped
+at 512 px on the short side and RVM is unloaded before MatAnyone starts. Thus,
+selecting **Very High (1024 px)** can use most of a 16 GB GPU even though the
+brief RVM stage remains at 512 px. Lowering Matting detail reduces MatAnyone's
+processing time and VRAM use; it does not change the dimensions of the published
+foreground or alpha video. **RVM initializer alpha** controls the automatic
+binary-mask cutoff from 10% to 90% and defaults to 40%. Lower values retain more
+hair, motion-blurred limbs, dark clothing, and faint edges; higher values require
+greater RVM confidence but can remove weak background haze.
+
 The optional **MatAnyone 2** algorithm opens an initial-mask editor for every
 included clip before processing. Play, scrub, use 0.25x slow motion, or step a
 frame at a time through the original clip to choose a clear mask frame. After
@@ -323,21 +348,32 @@ frames, and is expected to be much slower than RVM or MatAnyone2.
 
 For **VideoMaMa**, **ViTMatte S**, and **ViTMatte B**, QuickPlayer opens a
 resizable review editor for the initial SAM2 or EdgeTAM propagation before matting.
-The editor displays sampled tracked overlays while the initial pass runs. Choose
-**Pause and Correct** to stop after the mask currently being calculated, inspect
-the valid portion of the clip, and correct a problem as soon as it appears.
-Scrub, play, or step one frame at a time through the generated overlay. Left-click
-missing person pixels and right-click background or unwanted pixels. For exact
-local edits, enable **Paint mask**, choose a brush size, left-drag to add foreground,
-or right-drag to erase it; the mouse wheel changes brush size, **Ctrl+P** toggles
-paint mode, and **Ctrl+Z** undoes one complete stroke or click. Clicks and paint update
-only that frame's preview; **Update masks** then propagates the accepted mask anchor
-backward and then forward. While it is moving backward, choose **Stop backward
-propagation** once the corrected tracking has reached far enough; masks already
-updated are retained and forward propagation begins immediately. The forward phase
-can be paused again for another correction; **Continue generation** resumes it
-without adding a correction. **Use corrected masks** becomes available only after the complete clip
-has valid masks. **Auto mask frame** can replace the current frame prompt with
+The editor displays sampled tracked overlays while the initial pass runs. Its
+timeline always represents the whole clip. Choose **Pause and Correct** to stop
+after the mask currently being calculated. Once paused, scrub, play, or step
+through any already-generated frame, including frames earlier than the pause
+point, and correct the first place where tracking went wrong. Frames beyond the
+generated range remain visible on the timeline but cannot be reviewed until their
+masks have been generated.
+
+Left-click missing person pixels and right-click background or unwanted pixels.
+For exact local edits, enable **Paint mask**, choose a 2–200 px brush size, then
+left-drag to add foreground or right-drag to erase it. The pointer becomes a
+circular outline scaled to the preview so it shows the actual brush diameter
+instead of a crosshair; it is green when adding and red while erasing. The mouse
+wheel changes brush size, **Ctrl+P** toggles paint mode, and **Ctrl+Z** or **Undo
+stroke** undoes one complete stroke or click. Painting is available both while
+creating an initial mask and while correcting a generated mask.
+
+Clicks and paint update only the selected frame's preview. Choose **Update masks**
+to accept that frame as a correction anchor and propagate it backward and then
+forward. The timeline marks saved anchors and highlights ranges as their masks are
+updated. During the backward phase, choose **Stop backward propagation** once the
+corrected tracking has reached far enough; masks already updated are retained and
+forward propagation begins immediately. The forward phase can be paused again for
+another correction. **Continue generation** resumes without adding a correction,
+whereas **Use corrected masks** becomes available only after the complete clip has
+valid masks. **Auto mask frame** can replace the current frame prompt with
 an automatically generated candidate before updating. Later corrections stop at
 adjacent accepted correction frames instead of needlessly recalculating beyond
 them. Playback includes normal speed, 0.25× slow motion, and frame stepping. Repeat
@@ -446,6 +482,15 @@ reused, and preview/progress work is throttled. Corrected review masks remain re
 until successful publication or explicit discard; the generated RGB/alpha clips
 are retained in the published show.
 
+**RVM-ViTMatte S** is the fully automatic alternative. It first runs RVM
+ResNet50 over every frame in each included clip to create a complete binary mask
+sequence, then uses that sequence as ViTMatte S trimap input. It does not open the
+SAM2 correction editor. The **RVM initializer alpha** control sets the RVM
+foreground cutoff. After successful processing, QuickPlayer compresses every
+generated sequence as `masks/<clip-id>/tracked-masks.iqpmask` inside the published
+show and deletes only the temporary PNG copies. Reprocessing with **Keep existing
+masks** extracts and reuses those archives, avoiding another RVM pass.
+
 ViTMatte permanently reduces its batch size after the first CUDA out-of-memory
 failure instead of retrying the same oversized batch throughout the clip. The
 safe size is remembered per GPU, driver, PyTorch/CUDA version, model, padded
@@ -474,6 +519,17 @@ fills or Task Manager shows shared-GPU-memory spill, cancel and retry at a lower
 detail setting. It never changes the full-resolution dimensions of the
 foreground or alpha output. RVM's official HD baseline is
 approximately 480 px internally (`downsample_ratio=0.25` at 1920 px wide).
+The RVM-MatAnyone preset is the exception to the shared-resolution wording: its
+automatic RVM initializer is always capped at 512 px, while the selected detail
+controls the final MatAnyone pass.
+
+Enable **Automatically accept result with alpha threshold 25** to skip the final
+preview/retry dialog after successful processing. This option is available for
+every processing algorithm and assigns the existing 0–255 playback alpha cutoff
+of 25 to every included clip before publishing. It is especially useful for
+unattended RVM and RVM-MatAnyone jobs. This means an alpha value of 25 (about 10%
+opacity), not a requirement that foreground cover 25% of the image. Leave it
+unchecked when you want to preview each clip and tune its cutoff before accepting.
 
 QuickPlayer processes configurable temporal chunks through RVM while retaining
 recurrent state. Quality and Fast each default to 12 frames, following the
@@ -625,6 +681,12 @@ retained initial and tracked masks, so changing among ViTMatte S, ViTMatte B,
 VideoMaMa, and MatAnyone 2 does not require drawing the same mask again. Clear
 it to generate and review new masks.
 
+Interactive MatAnyone retains the initial mask selected for every included
+clip. RVM-MatAnyone retains the cleaned binary initializer generated by RVM and
+its selected frame. A later RVM-MatAnyone reprocessing pass uses that retained
+mask directly and does not rerun RVM initialization unless **Keep existing
+masks** is cleared.
+
 QuickPlayer retains masks for newly processed and newly reprocessed shows.
 Shows created by older versions still retain their clip divisions, but their
 temporary mask drafts were not stored; the first reprocessing pass therefore
@@ -674,7 +736,6 @@ The transparent player keeps RGB and alpha decoders synchronized and rejects dim
         alpha.mkv
         initial-mask.png     # MatAnyone2 clips only
         result.json
-    source/                 # only for Copy original
 ```
 
 IDs are lowercase 32-character UUIDs. `show.json` uses schema version 2. Media paths are relative to the show folder and may not escape it. Referenced original source paths may be absolute because they are not playback media. Invalid/duplicate profiles or shows are skipped and recorded in the model reload diagnostic without blocking valid shows. Version 1 shared-media shows must be reprocessed.
