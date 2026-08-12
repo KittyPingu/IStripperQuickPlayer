@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using IStripperQuickPlayer.DataModel;
@@ -311,6 +312,12 @@ internal sealed class CustomShowStore
          "Hard Cut", "Sudden Jump", "Scene change buffer", "Hard Cut buffer",
          "Sudden Jump buffer", "Dissolve buffer", "Wipes buffer", "Push buffer",
          "Slide buffer", "Zoom buffer", "Fade buffer", "Doorway buffer", "Short (<10s)"];
+    static readonly Regex ShortDetectionLabel = new(
+        @"\AShort \(<(?:0|[1-9]\d*)(?:\.\d{1,3})?s\)\z",
+        RegexOptions.CultureInvariant);
+
+    internal static bool IsValidDetectionLabel(string label) =>
+        DetectionLabels.Contains(label) || ShortDetectionLabel.IsMatch(label);
 
     readonly string root;
     internal string Root => root;
@@ -750,7 +757,8 @@ internal sealed class CustomShowStore
             if (clip.AlphaThreshold is < 0 or > 255)
                 throw new InvalidDataException("Clip alpha threshold must be 0–255.");
             if (clip.DetectionLabels == null ||
-                clip.DetectionLabels.Any(label => !DetectionLabels.Contains(label)) ||
+                clip.DetectionLabels.Any(label =>
+                    !IsValidDetectionLabel(label)) ||
                 clip.DetectionLabels.Distinct(StringComparer.Ordinal).Count() !=
                     clip.DetectionLabels.Length)
                 throw new InvalidDataException("Invalid clip-detection labels.");

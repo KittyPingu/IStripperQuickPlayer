@@ -30,14 +30,14 @@ namespace IStripperQuickPlayer
         readonly GroupBox cardTypeGroup = new()
         {
             Text = "Card Type",
-            Location = new Point(21, 687),
-            Size = new System.Drawing.Size(757, 92)
+            Location = new Point(21, 680),
+            Size = new System.Drawing.Size(757, 112)
         };
         readonly GroupBox genderGroup = new()
         {
             Text = "Gender",
-            Location = new Point(21, 790),
-            Size = new System.Drawing.Size(757, 88)
+            Location = new Point(21, 803),
+            Size = new System.Drawing.Size(757, 72)
         };
         readonly CheckedListBox customGenders = new()
         {
@@ -45,8 +45,8 @@ namespace IStripperQuickPlayer
             MultiColumn = true,
             ColumnWidth = 120,
             BorderStyle = BorderStyle.None,
-            Location = new Point(12, 24),
-            Size = new System.Drawing.Size(730, 52)
+            IntegralHeight = false,
+            Size = new System.Drawing.Size(730, 32)
         };
         readonly CheckBox chkCustom = new()
         {
@@ -88,7 +88,7 @@ namespace IStripperQuickPlayer
                 Dock = DockStyle.Fill,
                 ColumnCount = 5,
                 RowCount = 2,
-                Padding = new Padding(8, 10, 8, 4)
+                Padding = new Padding(8, 14, 8, 8)
             };
             for (int column = 0; column < choices.ColumnCount; column++)
                 choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
@@ -119,7 +119,7 @@ namespace IStripperQuickPlayer
             };
             customGenders.Location = new Point(
                 (genderGroup.ClientSize.Width - customGenders.Width) / 2,
-                (genderGroup.ClientSize.Height - customGenders.Height) / 2 + 6);
+                (genderGroup.ClientSize.Height - customGenders.Height) / 2 + 4);
             genderGroup.Controls.Add(customGenders);
             Controls.Add(genderGroup);
             foreach (Button button in new[]

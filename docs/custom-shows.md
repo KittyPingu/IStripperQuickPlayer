@@ -14,6 +14,11 @@ RVM-ViTMatte S works at source dimensions, so its batch size—not Matting detai
 the main VRAM control. See the end-user guide before using the more specialised
 VideoMaMa or ViTMatte B workflows.
 
+One measured queued 1920x1080 source was 38 minutes long and divided into 18
+clips. On the reference machine it took approximately **7 minutes with RVM
+Quality**, **42 minutes with RVM-MatAnyone**, and **2 hours 30 minutes with
+RVM-ViTMatte S**.
+
 Only process videos you have permission to use. V1 mattes people (one or more visible people) and links each show to one primary reusable model profile. It does not segment arbitrary objects; SAM2 correction clicks refine person masks.
 
 ## Requirements
@@ -253,7 +258,7 @@ transition ranges, and splits at the start of `Hard_Cut` and `Sudden_Jump`
 ranges. Enable **Skip transition ±** to expand gradual ranges and add symmetric
 buffers around instantaneous cuts; overlapping skipped ranges are merged.
 The **Auto-skip shorter than** value controls which detected playable segments
-are skipped and defaults to 10 seconds. **Show skipped clips in grid** hides or
+are skipped and defaults to 20 seconds. **Show skipped clips in grid** hides or
 reveals excluded segments. Clicking or scrubbing the timeline selects the related
 grid row and scrolls it into view. Detection labels remain visible on each segment and survive manual
 inclusion and metadata edits.
@@ -795,7 +800,7 @@ The transparent player keeps RGB and alpha decoders synchronized and rejects dim
       retained-masks.json
       <clip-id>/
         initial-mask.png
-        tracked-masks.iqpmask # 1-bit XOR-delta chunks compressed with Zstandard
+        tracked-masks.iqpmask # 1-bit chunks compressed with Zstandard
     clips/
       <clip-id>/
         foreground.mp4
@@ -827,9 +832,10 @@ This provenance is read-only in **Edit Custom Show Metadata**. Older shows with
 no `processing` object remain valid; their original settings cannot be inferred.
 
 Tracked masks are retained losslessly in `IQPMASK1` archives. Each binary mask is
-packed to one bit per pixel; within each 300-frame chunk, later frames are stored
-as XOR differences from the preceding mask and the chunk is compressed with
-Zstandard. Every chunk includes a SHA-256 integrity value. Reprocessing expands
+packed to one bit per pixel and each 300-frame chunk is compressed with
+Zstandard. Every chunk includes a SHA-256 integrity value. Current archives use
+plain packed frames because they compressed better in representative testing;
+QuickPlayer remains able to read older XOR-delta archives. Reprocessing expands
 the archive into temporary `0`/`255` PNG masks and removes those temporary files
 afterward. The decoded masks are pixel-identical to the originals.
 

@@ -70,7 +70,7 @@ internal sealed class CustomClipEditorForm : Form
     readonly CheckBox showSkipped = new() { Text = "Show skipped clips in grid",
         AutoSize = true, Checked = true };
     readonly NumericUpDown shortClipSeconds = new() { DecimalPlaces = 1,
-        Minimum = 0, Maximum = 3600, Increment = .5m, Value = 10, Width = 72 };
+        Minimum = 0, Maximum = 3600, Increment = .5m, Value = 20, Width = 72 };
     readonly Label shortClipLabel = new() { Text = "Auto-skip shorter than (seconds)",
         AutoSize = true, Margin = new Padding(8, 7, 3, 3) };
     readonly System.Windows.Forms.Timer playback = new() { Interval = 100 };
@@ -114,7 +114,9 @@ internal sealed class CustomClipEditorForm : Form
 
         Text = allowBoundaryEditing ? "Split Custom Show into Clips" :
             "Edit Custom Show Clip Metadata";
-        ClientSize = new Size(1220, 1000);
+        // Wide enough at normal Windows scaling to keep the complete clip-action
+        // row on one line (matching the preferred editor layout).
+        ClientSize = new Size(1340, 1000);
         MinimumSize = new Size(760, 620);
         StartPosition = FormStartPosition.CenterParent;
         preview.AccessibleName = "Video preview";
@@ -192,7 +194,7 @@ internal sealed class CustomClipEditorForm : Form
                 DetectorId(item) == "omnishotcut");
         detector.SelectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
         shortClipSeconds.Value = Math.Clamp(
-            (existingDetection?.MinimumClipMs ?? 10_000) / 1000m,
+            (existingDetection?.MinimumClipMs ?? 20_000) / 1000m,
             shortClipSeconds.Minimum, shortClipSeconds.Maximum);
         actions.Controls.AddRange([addDivider, removeDivider,
             detector, skipTransitions, transitionSeconds,

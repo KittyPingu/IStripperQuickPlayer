@@ -311,17 +311,25 @@ internal sealed class CustomShowQueueManager : IDisposable
     void FinishError(CustomShowQueueJob job, CustomShowQueueStatus status,
         Exception error)
     {
-        CustomShowJobRunner.PreserveLog(storage.Work(job.Id), storage.Assets(job.Id));
-        CustomShowQueueStore.TryDelete(storage.Work(job.Id));
+        string work = storage.Work(job.Id);
+        CustomShowJobRunner.PreserveLog(work, storage.Assets(job.Id));
+        bool completedOutput = job.ReadyToPublish ||
+            File.Exists(Path.Combine(work, "show.json"));
         lock (gate)
         {
             job.Status = status;
-            job.Message = status == CustomShowQueueStatus.NeedsAttention
-                ? "Needs attention" : "Failed";
+            job.ReadyToPublish = completedOutput;
+            job.Percent = completedOutput ? 100 : job.Percent;
+            job.Message = completedOutput
+                ? "Processed; ready to retry publication"
+                : status == CustomShowQueueStatus.NeedsAttention
+                    ? "Needs attention" : "Failed";
             job.Error = error.Message;
             job.CompletedUtc = DateTime.UtcNow;
             SaveLocked();
         }
+        if (!completedOutput)
+            CustomShowQueueStore.TryDelete(work);
     }
 
     void UpdateProgress(string id, double percent, string message)
@@ -862,6 +870,10 @@ internal static class CustomShowJobRunner
             "iqp-queue-test-" + Guid.NewGuid().ToString("N"));
         try
         {
+            if (!CustomShowStore.IsValidDetectionLabel("Short (<20s)") ||
+                !CustomShowStore.IsValidDetectionLabel("Short (<0.125s)") ||
+                CustomShowStore.IsValidDetectionLabel("Short (<twenty seconds)"))
+                return false;
             CustomShowStore shows = new(root);
             CustomShowQueueStore storage = new(shows);
             CustomShowQueueDocument document = new();
@@ -960,9 +972,13 @@ internal sealed class CustomShowQueueForm : Form
         TableLayoutPanel layout = new() { Dock = DockStyle.Fill, RowCount = 3 };
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         layout.Controls.Add(grid, 0, 0); layout.Controls.Add(summary, 0, 1);
-        FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, Padding = new Padding(8, 5, 8, 5) };
+        FlowLayoutPanel buttons = new()
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12, 5, 12, 12)
+        };
         buttons.Controls.AddRange([run, pause, stop, up, down, editButton, retry, open, delete]);
         layout.Controls.Add(buttons, 0, 2); Controls.Add(layout);
         run.Click += (_, _) => manager.Run();

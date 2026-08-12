@@ -823,6 +823,7 @@ namespace IStripperQuickPlayer
                 randomPlayOrderToolStripMenuItem,
                 avoidRecentRepeatsToolStripMenuItem,
                 new ToolStripSeparator(),
+                iStripperPlayerVolumeMenu,
                 customPlayerVolumeMenu,
                 customPlayerFullOpacityMenu,
                 enablePlaybackControlToolStripMenuItem,

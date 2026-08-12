@@ -32,6 +32,11 @@ MatAnyone pass; its brief RVM initializer remains capped at 512 px.
 RVM-ViTMatte S does not use the Matting detail selector: ViTMatte works at the
 source dimensions, and **Processing batch size** is its main VRAM control.
 
+As a real-world queue reference, a 38-minute 1920x1080 source divided into 18
+clips took about **7 minutes with RVM Quality**, **42 minutes with
+RVM-MatAnyone**, and **2 hours 30 minutes with RVM-ViTMatte S** on the reference
+machine.
+
 To run unattended, enable **Automatically accept result with alpha threshold
 25**. This enables **Queue** for RVM-MatAnyone and RVM-ViTMatte S. MatAnyone 2
 shows **Mask and Queue** instead: you must create one initial mask for every
@@ -105,7 +110,7 @@ segments. Automatic detectors are:
   transitions.
 
 The **Auto-skip shorter than** value controls which short detected clips are
-excluded; it defaults to 10 seconds and can be changed before detection. The
+excluded; it defaults to 20 seconds and can be changed before detection. The
 transition buffer can skip complete transitions and a margin around them.
 Review the results: skipped clips are not processed or published, and every
 included clip restarts the selected matting model at its boundary.
@@ -177,7 +182,7 @@ then choose **Use corrected masks** when the complete clip is valid.
 
 Mask work is saved as a resumable draft if processing is cancelled or fails.
 Published shows also retain reusable masks: initial masks as PNG and tracked
-sequences as lossless one-bit, XOR-delta, Zstandard-compressed `.iqpmask`
+sequences as lossless one-bit, Zstandard-compressed `.iqpmask`
 archives. Reprocessing with **Keep existing masks** avoids masking again and can
 reuse masks across MatAnyone 2, RVM-MatAnyone, VideoMaMa, and ViTMatte where the
 workflow is compatible.

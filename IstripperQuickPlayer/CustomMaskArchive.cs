@@ -9,7 +9,8 @@ namespace IStripperQuickPlayer;
 
 internal static class CustomMaskArchive
 {
-    const int Version = 1;
+    const int Version = 2;
+    const int XorDeltaVersion = 1;
     const int ChunkFrames = 300;
     static readonly byte[] Magic = Encoding.ASCII.GetBytes("IQPMASK1");
 
@@ -42,7 +43,6 @@ internal static class CustomMaskArchive
                 {
                     int count = Math.Min(ChunkFrames, paths.Length - start);
                     byte[] raw = new byte[checked(count * packedLength)];
-                    byte[] previous = new byte[packedLength];
                     for (int offset = 0; offset < count; offset++)
                     {
                         using Bitmap mask = new(paths[start + offset]);
@@ -51,10 +51,7 @@ internal static class CustomMaskArchive
                                 "Tracked masks must all have the same dimensions.");
                         byte[] packed = Pack(mask);
                         Span<byte> target = raw.AsSpan(offset * packedLength, packedLength);
-                        if (offset == 0) packed.CopyTo(target);
-                        else for (int index = 0; index < packedLength; index++)
-                            target[index] = (byte)(packed[index] ^ previous[index]);
-                        packed.CopyTo(previous, 0);
+                        packed.CopyTo(target);
                     }
                     byte[] compressed = compressor.Wrap(raw).ToArray();
                     writer.Write(start); writer.Write(count); writer.Write(raw.Length);
@@ -76,7 +73,7 @@ internal static class CustomMaskArchive
         Directory.CreateDirectory(destination);
         using FileStream stream = File.OpenRead(archive);
         using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: true);
-        Info info = ReadHeader(reader);
+        (Info info, bool xorDeltas) = ReadHeader(reader);
         int packedLength = checked((info.Width * info.Height + 7) / 8);
         using Decompressor decompressor = new();
         int expectedStart = 0;
@@ -88,7 +85,7 @@ internal static class CustomMaskArchive
             for (int offset = 0; offset < count; offset++)
             {
                 Span<byte> packed = raw.AsSpan(offset * packedLength, packedLength);
-                if (offset > 0)
+                if (xorDeltas && offset > 0)
                     for (int index = 0; index < packedLength; index++)
                         packed[index] ^= previous[index];
                 packed.CopyTo(previous);
@@ -106,7 +103,7 @@ internal static class CustomMaskArchive
     {
         using FileStream stream = File.OpenRead(archive);
         using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: true);
-        Info info = ReadHeader(reader);
+        (Info info, _) = ReadHeader(reader);
         int packedLength = checked((info.Width * info.Height + 7) / 8);
         using Decompressor decompressor = new();
         int expectedStart = 0;
@@ -121,17 +118,20 @@ internal static class CustomMaskArchive
         return info;
     }
 
-    static Info ReadHeader(BinaryReader reader)
+    static (Info Info, bool XorDeltas) ReadHeader(BinaryReader reader)
     {
-        if (!reader.ReadBytes(Magic.Length).SequenceEqual(Magic) ||
-            reader.ReadInt32() != Version)
+        if (!reader.ReadBytes(Magic.Length).SequenceEqual(Magic))
+            throw new InvalidDataException("Unknown retained-mask archive format.");
+        int version = reader.ReadInt32();
+        if (version is not (XorDeltaVersion or Version))
             throw new InvalidDataException("Unknown retained-mask archive format.");
         int width = reader.ReadInt32(), height = reader.ReadInt32();
         int frames = reader.ReadInt32(), chunkFrames = reader.ReadInt32();
         if (width <= 0 || height <= 0 || frames <= 0 || chunkFrames <= 0 ||
             width > 16384 || height > 16384 || frames > 10_000_000)
             throw new InvalidDataException("Invalid retained-mask archive dimensions.");
-        return new(width, height, frames, chunkFrames);
+        return (new(width, height, frames, chunkFrames),
+            version == XorDeltaVersion);
     }
 
     static (int Start, int Count, byte[] Raw) ReadChunk(BinaryReader reader,

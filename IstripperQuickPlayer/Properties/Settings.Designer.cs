@@ -938,6 +938,30 @@ namespace IStripperQuickPlayer.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("-1")]
+        public int IStripperSmallPlayerVolume {
+            get {
+                return ((int)(this["IStripperSmallPlayerVolume"]));
+            }
+            set {
+                this["IStripperSmallPlayerVolume"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("-1")]
+        public int IStripperLargePlayerVolume {
+            get {
+                return ((int)(this["IStripperLargePlayerVolume"]));
+            }
+            set {
+                this["IStripperLargePlayerVolume"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("-1")]
         public int TooltipInitialDelay {
             get {
                 return ((int)(this["TooltipInitialDelay"]));

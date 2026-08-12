@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 93;
+        private const int PlaybackBridgeVersion = 94;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
@@ -101,6 +101,8 @@ namespace IStripperQuickPlayer
         private const int WmHotkey = 0x0312;
         private static readonly int WheelResizeMessage = (int)
             RegisterWindowMessage("IStripperQuickPlayer.WheelResize.v1");
+        private static readonly int VolumeWheelMessage = (int)
+            RegisterWindowMessage("IStripperQuickPlayer.VolumeWheel.v1");
         private const int NextClipHotkeyId = 1;
         private const int NextCardHotkeyId = 2;
         private const int ToggleLockHotkeyId = 3;
@@ -294,6 +296,12 @@ namespace IStripperQuickPlayer
             {
                 SetPlaybackStatus(
                     $"Player size update failed (0x{result:X8}).");
+            }
+            else
+            {
+                int mode = large ? 1 : 2;
+                Volatile.Write(ref playerMode, mode);
+                ApplyIStripperPlayerVolume(mode);
             }
         }
 
@@ -2884,6 +2892,14 @@ namespace IStripperQuickPlayer
                 }
                 return;
             }
+            if (message.Msg == VolumeWheelMessage)
+            {
+                int steps = unchecked((int)message.WParam.ToInt64());
+                int mode = message.LParam.ToInt32();
+                if (steps != 0 && mode is 1 or 2)
+                    ChangeIStripperPlayerVolume(mode, steps * 5);
+                return;
+            }
             if (message.Msg == WmHotkey)
             {
                 switch (message.WParam.ToInt32())
@@ -3771,6 +3787,8 @@ namespace IStripperQuickPlayer
                         playbackDecoderKind = discoveredDecoderKind;
                         playbackSeekingSupported =
                             playbackDecoderKind is 1 or 2;
+                        ApplyIStripperPlayerVolume(
+                            Volatile.Read(ref playerMode));
                         SetPlaybackBusy(playbackBusy);
                     }
                     playbackNextMovieDiscoveryAt = playbackMovieRegistered
@@ -4561,8 +4579,11 @@ namespace IStripperQuickPlayer
                                 {
                                     SetVghdPlayerMode((int)mode);
                                     if (mode != 3)
+                                    {
                                         QueueConfiguredPlayerSize(
                                             mode: (int)mode);
+                                        ApplyIStripperPlayerVolume((int)mode);
+                                    }
                                 }
                                 catch { }
                             });
@@ -5129,7 +5150,6 @@ namespace IStripperQuickPlayer
                 CloseApiOnly();
                 return;
             }
-
             if (customShowQueueManager?.HasActiveJob == true)
             {
                 DialogResult closeQueue = MessageBox.Show(this,
@@ -5217,6 +5237,72 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.Save();
             customShowQueueForm?.Dispose();
             customShowQueueManager?.Dispose();
+        }
+
+        private int IStripperPlayerVolume(int mode)
+        {
+            EnsureIStripperPlayerVolumes();
+            return Math.Clamp(mode == 1
+                ? Properties.Settings.Default.IStripperLargePlayerVolume
+                : Properties.Settings.Default.IStripperSmallPlayerVolume,
+                0, 100);
+        }
+
+        private void EnsureIStripperPlayerVolumes()
+        {
+            if (Properties.Settings.Default.IStripperSmallPlayerVolume >= 0 &&
+                Properties.Settings.Default.IStripperLargePlayerVolume >= 0)
+                return;
+            int current = 100;
+            try
+            {
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Totem\vghd\parameters", false);
+                if (key?.GetValue("SoundVolume") is int volume)
+                    current = Math.Clamp(volume, 0, 100);
+            }
+            catch { }
+            if (Properties.Settings.Default.IStripperSmallPlayerVolume < 0)
+                Properties.Settings.Default.IStripperSmallPlayerVolume = current;
+            if (Properties.Settings.Default.IStripperLargePlayerVolume < 0)
+                Properties.Settings.Default.IStripperLargePlayerVolume = current;
+        }
+
+        private void ChangeIStripperPlayerVolume(int mode, int delta)
+        {
+            int percent = Math.Clamp(IStripperPlayerVolume(mode) + delta, 0, 100);
+            if (mode == 1)
+                Properties.Settings.Default.IStripperLargePlayerVolume = percent;
+            else
+                Properties.Settings.Default.IStripperSmallPlayerVolume = percent;
+            Properties.Settings.Default.Save();
+            RefreshIStripperPlayerVolumeMenu();
+            ApplyIStripperPlayerVolume(mode, percent, showOverlay: true);
+        }
+
+        private void ApplyIStripperPlayerVolume(int mode, int? percent = null,
+            bool showOverlay = false)
+        {
+            if (mode is not (1 or 2))
+                return;
+            int value = percent ?? IStripperPlayerVolume(mode);
+            try
+            {
+                using RegistryKey? key = Registry.CurrentUser.CreateSubKey(
+                    @"Software\Totem\vghd\parameters", true);
+                key?.SetValue("SoundVolume", value, RegistryValueKind.DWord);
+            }
+            catch { }
+            int result = CallPlaybackBridgeApi(
+                "IStripperSetPlayerVolume", (ulong)value);
+            if (result < 0)
+            {
+                SetPlaybackStatus(
+                    $"Player volume update failed (0x{result:X8}).");
+            }
+            if (showOverlay)
+                LockStateOverlay.ShowTextForProcess(
+                    vghd_procID, $"Volume {value}%");
         }
 
         private void CloseApiOnly()

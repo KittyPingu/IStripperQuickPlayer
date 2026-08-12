@@ -13,6 +13,10 @@ public partial class Form1
         new("Custom player volume");
     readonly ToolStripMenuItem customPlayerSmallVolumeMenu = new();
     readonly ToolStripMenuItem customPlayerLargeVolumeMenu = new();
+    readonly ToolStripMenuItem iStripperPlayerVolumeMenu =
+        new("iStripper player volume");
+    readonly ToolStripMenuItem iStripperPlayerSmallVolumeMenu = new();
+    readonly ToolStripMenuItem iStripperPlayerLargeVolumeMenu = new();
     readonly ToolStripMenuItem customPlayerFullOpacityMenu = new();
     readonly TrackBar customPlayerFullOpacitySlider = new();
     readonly Label customAlphaThresholdLabel = new()
@@ -71,6 +75,7 @@ public partial class Form1
         panelClip.Controls.Add(customAlphaThresholdLabel);
         panelClip.Controls.Add(customAlphaThresholdInput);
         SetupCustomPlayerVolumeMenu();
+        SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
         ToolStripMenuItem queues = new("Queues...");
@@ -208,6 +213,55 @@ public partial class Form1
                 menu.DropDownItems.Add(item);
             }
         RefreshCustomPlayerVolumeMenu();
+    }
+
+    void SetupIStripperPlayerVolumeMenu()
+    {
+        iStripperPlayerVolumeMenu.ToolTipText =
+            "Set separate audio volume for small and large iStripper shows. " +
+            "Ctrl+mouse wheel over a show also changes it.";
+        iStripperPlayerVolumeMenu.DropDownItems.AddRange(
+            [iStripperPlayerSmallVolumeMenu, iStripperPlayerLargeVolumeMenu]);
+        foreach ((ToolStripMenuItem menu, int mode) in new[]
+        {
+            (iStripperPlayerSmallVolumeMenu, 2),
+            (iStripperPlayerLargeVolumeMenu, 1)
+        })
+            foreach (int percent in Enumerable.Range(0, 11)
+                         .Select(value => value * 10))
+            {
+                ToolStripMenuItem item = new($"{percent}%") { Tag = percent };
+                item.Click += (_, _) => SetIStripperPlayerVolume(mode, percent);
+                menu.DropDownItems.Add(item);
+            }
+        RefreshIStripperPlayerVolumeMenu();
+    }
+
+    void SetIStripperPlayerVolume(int mode, int percent)
+    {
+        percent = Math.Clamp(percent, 0, 100);
+        if (mode == 1)
+            Properties.Settings.Default.IStripperLargePlayerVolume = percent;
+        else
+            Properties.Settings.Default.IStripperSmallPlayerVolume = percent;
+        Properties.Settings.Default.Save();
+        RefreshIStripperPlayerVolumeMenu();
+        if (customPlayer == null && Volatile.Read(ref playerMode) == mode)
+            ApplyIStripperPlayerVolume(mode, percent, showOverlay: true);
+    }
+
+    void RefreshIStripperPlayerVolumeMenu()
+    {
+        int small = IStripperPlayerVolume(2), large = IStripperPlayerVolume(1);
+        iStripperPlayerSmallVolumeMenu.Text = $"Small: {small}%";
+        iStripperPlayerLargeVolumeMenu.Text = $"Large: {large}%";
+        foreach ((ToolStripMenuItem menu, int current) in new[]
+        {
+            (iStripperPlayerSmallVolumeMenu, small),
+            (iStripperPlayerLargeVolumeMenu, large)
+        })
+            foreach (ToolStripMenuItem item in menu.DropDownItems)
+                item.Checked = item.Tag is int value && value == current;
     }
 
     void SetupCustomPlayerFullOpacityMenu()

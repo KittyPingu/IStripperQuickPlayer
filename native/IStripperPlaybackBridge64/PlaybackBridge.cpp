@@ -369,6 +369,7 @@ namespace
     LONG volatile g_playerClickThrough = 0;
     LONG volatile g_playerWheelResize = 0;
     LONG volatile g_playerWheelDelta = 0;
+    LONG volatile g_playerVolumeWheelDelta = 0;
     LONG volatile g_playerMode = 2;
     std::uintptr_t g_liveVtableRva = 0;
     PVOID volatile g_liveObject = nullptr;
@@ -494,6 +495,7 @@ namespace
     HWINEVENTHOOK g_movieWindowEventHook = nullptr;
     HHOOK g_movieMouseHook = nullptr;
     UINT g_wheelResizeMessage = 0;
+    UINT g_volumeWheelMessage = 0;
     LONG volatile g_movieWindowWatcherResult = E_PENDING;
     UINT g_movieWindowProbeMessage = 0;
     PVOID volatile g_fastForwardMovie = nullptr;
@@ -2735,8 +2737,7 @@ namespace
 
     LRESULT CALLBACK MovieMouseHook(int code, WPARAM wParam, LPARAM lParam)
     {
-        if (code == HC_ACTION && wParam == WM_MOUSEWHEEL &&
-            InterlockedCompareExchange(&g_playerWheelResize, 0, 0) != 0)
+        if (code == HC_ACTION && wParam == WM_MOUSEWHEEL)
         {
             const auto mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
             MovieWindowAtPoint search = { mouse->pt, nullptr };
@@ -2745,6 +2746,28 @@ namespace
             if (search.window != nullptr)
             {
                 const int delta = GET_WHEEL_DELTA_WPARAM(mouse->mouseData);
+                if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
+                {
+                    const LONG accumulated = InterlockedExchangeAdd(
+                        &g_playerVolumeWheelDelta, delta) + delta;
+                    const int steps = accumulated / WHEEL_DELTA;
+                    if (steps != 0 && g_volumeWheelMessage != 0)
+                    {
+                        InterlockedExchangeAdd(&g_playerVolumeWheelDelta,
+                            -steps * WHEEL_DELTA);
+                        PostMessageW(HWND_BROADCAST, g_volumeWheelMessage,
+                            static_cast<WPARAM>(steps),
+                            static_cast<LPARAM>(InterlockedCompareExchange(
+                                &g_playerMode, 0, 0)));
+                    }
+                    return 1;
+                }
+                if (InterlockedCompareExchange(
+                        &g_playerWheelResize, 0, 0) == 0)
+                {
+                    return CallNextHookEx(
+                        g_movieMouseHook, code, wParam, lParam);
+                }
                 const LONG accumulated = InterlockedExchangeAdd(
                     &g_playerWheelDelta, delta) + delta;
                 const int steps = accumulated / WHEEL_DELTA;
@@ -3107,10 +3130,7 @@ namespace
     {
         InterlockedExchange(&g_playerWheelResize, enabled ? 1 : 0);
         InterlockedExchange(&g_playerWheelDelta, 0);
-        if (!enabled)
-        {
-            return BridgeSuccess;
-        }
+        InterlockedExchange(&g_playerVolumeWheelDelta, 0);
 
         if (g_wheelResizeMessage == 0)
         {
@@ -3119,6 +3139,15 @@ namespace
             if (g_wheelResizeMessage == 0)
             {
                 InterlockedExchange(&g_playerWheelResize, 0);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+        }
+        if (g_volumeWheelMessage == 0)
+        {
+            g_volumeWheelMessage = RegisterWindowMessageW(
+                L"IStripperQuickPlayer.VolumeWheel.v1");
+            if (g_volumeWheelMessage == 0)
+            {
                 return HRESULT_FROM_WIN32(GetLastError());
             }
         }
@@ -6218,6 +6247,36 @@ namespace
         }
         void* sound = MovieAudioSound(movie);
         return sound == nullptr || ControlSoundAudio(sound, command);
+    }
+
+    HRESULT SetMovieVolume(int percent)
+    {
+        if (percent < 0 || percent > 100)
+            return E_INVALIDARG;
+        void* movie = ActiveMovie();
+        if (movie == nullptr)
+            return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+        void* sound = MovieAudioSound(movie);
+        if (sound == nullptr)
+            return BridgeSuccess;
+        void* output = SoundAudioOutput(sound);
+        if (output == nullptr)
+            return BridgeSuccess;
+
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const auto invoke = core == nullptr ? nullptr :
+            reinterpret_cast<QMetaInvoke>(GetProcAddress(core,
+                "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+                "VQGenericArgument@@222222222@Z"));
+        if (invoke == nullptr)
+            return E_NOINTERFACE;
+
+        const double volume = static_cast<double>(percent) / 100.0;
+        const QtGenericArgument argument = { &volume, "qreal" };
+        const QtGenericArgument empty = {};
+        return invoke(output, "setVolume", argument, empty, empty, empty,
+            empty, empty, empty, empty, empty, empty)
+            ? BridgeSuccess : E_FAIL;
     }
 
     bool IsMoviePlaying(void* movie)
@@ -9540,6 +9599,20 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
     return SetPlayerMode(mode);
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerVolume(
+    SIZE_T percent)
+{
+    __try
+    {
+        return percent <= 100
+            ? SetMovieVolume(static_cast<int>(percent)) : E_INVALIDARG;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerSizePercent(
     SIZE_T packed)
 {
@@ -9770,7 +9843,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 93;
+    return 94;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()
