@@ -39,6 +39,7 @@ internal sealed class CustomShowQueueJob
     public string Message { get; set; } = "Pending";
     public string? Error { get; set; }
     public string? PublishedShowId { get; set; }
+    public bool ReadyToPublish { get; set; }
 }
 
 internal sealed class CustomShowQueueStore
@@ -73,11 +74,15 @@ internal sealed class CustomShowQueueStore
         foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
             value.Status == CustomShowQueueStatus.Running))
         {
+            job.ReadyToPublish |= File.Exists(Path.Combine(
+                Work(job.Id), "show.json"));
             job.Status = CustomShowQueueStatus.Pending;
-            job.Percent = 0;
-            job.Message = "Interrupted; ready to restart";
+            job.Percent = job.ReadyToPublish ? 100 : 0;
+            job.Message = job.ReadyToPublish
+                ? "Interrupted; ready to retry publication"
+                : "Interrupted; ready to restart";
             job.StartedUtc = null;
-            TryDelete(Work(job.Id));
+            if (!job.ReadyToPublish) TryDelete(Work(job.Id));
             changed = true;
         }
         if (changed) Save(document);
@@ -104,6 +109,8 @@ internal sealed class CustomShowQueueStore
 }
 
 internal sealed class CustomShowQueueAttentionException(string message) : Exception(message);
+internal sealed class CustomShowPublicationException(string message, Exception inner) :
+    IOException(message, inner);
 
 internal sealed class CustomShowQueueManager : IDisposable
 {
@@ -112,6 +119,7 @@ internal sealed class CustomShowQueueManager : IDisposable
     readonly CustomShowConfiguration configuration;
     readonly CustomShowQueueStore storage;
     readonly Action published;
+    readonly Func<string?, Task> preparePublication;
     readonly CustomShowQueueDocument document;
     CancellationTokenSource? cancellation;
     Task? loop;
@@ -120,11 +128,13 @@ internal sealed class CustomShowQueueManager : IDisposable
     internal event EventHandler? Changed;
 
     internal CustomShowQueueManager(CustomShowStore shows,
-        CustomShowConfiguration configuration, Action published)
+        CustomShowConfiguration configuration, Action published,
+        Func<string?, Task>? preparePublication = null)
     {
         this.shows = shows;
         this.configuration = configuration;
         this.published = published;
+        this.preparePublication = preparePublication ?? (_ => Task.CompletedTask);
         storage = new(shows);
         document = storage.Load();
     }
@@ -237,7 +247,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     job.Id, value.Percent, string.IsNullOrWhiteSpace(value.Message)
                         ? value.Stage : value.Message));
                 string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
-                    configuration, storage, progress, token);
+                    configuration, storage, progress, preparePublication, token);
                 lock (gate)
                 {
                     job.Status = CustomShowQueueStatus.Completed;
@@ -245,6 +255,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     job.Message = "Completed";
                     job.CompletedUtc = DateTime.UtcNow;
                     job.PublishedShowId = publishedId;
+                    job.ReadyToPublish = false;
                     SaveLocked();
                 }
                 try { published(); } catch (Exception error)
@@ -254,19 +265,38 @@ internal sealed class CustomShowQueueManager : IDisposable
             {
                 lock (gate)
                 {
+                    job.ReadyToPublish |= File.Exists(Path.Combine(
+                        storage.Work(job.Id), "show.json"));
                     job.Status = CustomShowQueueStatus.Pending;
-                    job.Percent = 0;
-                    job.Message = "Stopped; ready to restart";
+                    job.Percent = job.ReadyToPublish ? 100 : 0;
+                    job.Message = job.ReadyToPublish
+                        ? "Stopped; ready to retry publication"
+                        : "Stopped; ready to restart";
                     job.StartedUtc = null;
                     SaveLocked();
                 }
-                CustomShowQueueStore.TryDelete(storage.Work(job.Id));
+                if (!job.ReadyToPublish)
+                    CustomShowQueueStore.TryDelete(storage.Work(job.Id));
                 OnChanged();
                 break;
             }
             catch (CustomShowQueueAttentionException error)
             {
                 FinishError(job, CustomShowQueueStatus.NeedsAttention, error);
+            }
+            catch (CustomShowPublicationException error)
+            {
+                CustomShowJobRunner.PreserveLog(storage.Work(job.Id), storage.Assets(job.Id));
+                lock (gate)
+                {
+                    job.Status = CustomShowQueueStatus.Failed;
+                    job.Percent = 100;
+                    job.Message = "Processed; publication failed";
+                    job.Error = error.Message;
+                    job.CompletedUtc = DateTime.UtcNow;
+                    job.ReadyToPublish = true;
+                    SaveLocked();
+                }
             }
             catch (Exception error)
             {
@@ -330,9 +360,13 @@ internal sealed class CustomShowQueueManager : IDisposable
             foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
                 value.Status == CustomShowQueueStatus.Running))
             {
+                job.ReadyToPublish |= File.Exists(Path.Combine(
+                    storage.Work(job.Id), "show.json"));
                 job.Status = CustomShowQueueStatus.Pending;
-                job.Percent = 0;
-                job.Message = "QuickPlayer closed; ready to restart";
+                job.Percent = job.ReadyToPublish ? 100 : 0;
+                job.Message = job.ReadyToPublish
+                    ? "QuickPlayer closed; ready to retry publication"
+                    : "QuickPlayer closed; ready to restart";
                 job.StartedUtc = null;
             }
             SaveLocked();
@@ -352,7 +386,9 @@ internal sealed class CustomShowQueueManager : IDisposable
             {
                 CustomShowJobRunner.Validate(job, shows, configuration, storage);
                 job.Status = CustomShowQueueStatus.Pending;
-                job.Percent = 0; job.Message = "Pending"; job.Error = null;
+                job.Percent = job.ReadyToPublish ? 100 : 0;
+                job.Message = job.ReadyToPublish ? "Ready to retry publication" : "Pending";
+                job.Error = null;
                 job.CompletedUtc = null;
             }
             catch (CustomShowQueueAttentionException error)
@@ -414,10 +450,20 @@ internal static class CustomShowJobRunner
     internal static async Task<string> RunAsync(CustomShowQueueJob job,
         CustomShowStore store, CustomShowConfiguration configuration,
         CustomShowQueueStore queue, IProgress<CustomShowProgress> progress,
-        CancellationToken token)
+        Func<string?, Task> preparePublication, CancellationToken token)
     {
         Validate(job, store, configuration, queue);
         string staging = queue.Work(job.Id);
+        if (job.ReadyToPublish && Directory.Exists(staging))
+        {
+            CustomShowManifest ready = JsonSerializer.Deserialize<CustomShowManifest>(
+                await File.ReadAllTextAsync(Path.Combine(staging, "show.json"), token),
+                CustomShowStore.JsonOptions) ?? throw new InvalidDataException(
+                    "The completed queue staging manifest is invalid.");
+            await PublishAsync(job, ready, staging, store, progress,
+                preparePublication, token);
+            return ready.Id;
+        }
         CustomShowQueueStore.TryDelete(staging);
         Directory.CreateDirectory(staging);
         CustomShowManifest show;
@@ -487,9 +533,57 @@ internal static class CustomShowJobRunner
         show.Processing = Processing(job, result, show.Clips, offset);
         await SaveCover(job, show, staging, queue, token);
         store.SavePerformer(job.Performer);
-        if (job.Operation == CustomShowQueueOperation.New) store.Publish(staging, show);
-        else store.Replace(staging, show);
+        CustomShowStore.WriteJsonAtomic(Path.Combine(staging, "show.json"), show);
+        job.ReadyToPublish = true;
+        await PublishAsync(job, show, staging, store, progress,
+            preparePublication, token);
         return show.Id;
+    }
+
+    static async Task PublishAsync(CustomShowQueueJob job, CustomShowManifest show,
+        string staging, CustomShowStore store, IProgress<CustomShowProgress> progress,
+        Func<string?, Task> preparePublication, CancellationToken token)
+    {
+        progress.Report(new CustomShowProgress("Waiting to publish", 100,
+            "Processing complete; preparing the library update"));
+        try
+        {
+            await preparePublication(job.Operation == CustomShowQueueOperation.New
+                ? null : job.TargetShowId);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception error)
+        {
+            throw new CustomShowPublicationException(
+                "Processing completed, but QuickPlayer could not release the " +
+                "currently playing target show for publication. Retry this queue " +
+                "entry to publish the completed output without processing again.", error);
+        }
+        const int attempts = 40;
+        for (int attempt = 1; ; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                if (job.Operation == CustomShowQueueOperation.New)
+                    store.Publish(staging, show);
+                else store.Replace(staging, show);
+                return;
+            }
+            catch (Exception error) when (error is IOException or
+                UnauthorizedAccessException)
+            {
+                if (attempt >= attempts)
+                    throw new CustomShowPublicationException(
+                        "Processing completed, but QuickPlayer could not replace the " +
+                        "existing show because its folder remained in use. Retry this " +
+                        "queue entry to publish the completed output without processing again.",
+                        error);
+                progress.Report(new CustomShowProgress("Waiting to publish", 100,
+                    $"Waiting for the existing show files to be released ({attempt}/{attempts})"));
+                await Task.Delay(250, token);
+            }
+        }
     }
 
     internal static void Validate(CustomShowQueueJob job, CustomShowStore store,
@@ -829,8 +923,11 @@ internal sealed class CustomShowQueueForm : Form
     {
         Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false,
         AllowUserToDeleteRows = false, AllowUserToResizeRows = false,
+        AllowUserToResizeColumns = true,
         MultiSelect = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-        AutoGenerateColumns = false, RowHeadersVisible = false
+        AutoGenerateColumns = false, RowHeadersVisible = false,
+        AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
+        ScrollBars = ScrollBars.Both
     };
     readonly Button run = new() { Text = "Run", AutoSize = true };
     readonly Button pause = new() { Text = "Pause", AutoSize = true };
@@ -901,8 +998,8 @@ internal sealed class CustomShowQueueForm : Form
 
     static DataGridViewTextBoxColumn Column(string title, string property, int width) =>
         new() { HeaderText = title, DataPropertyName = property, Width = width,
-            AutoSizeMode = property == "Message" ? DataGridViewAutoSizeColumnMode.Fill :
-                DataGridViewAutoSizeColumnMode.None };
+            MinimumWidth = 30, Resizable = DataGridViewTriState.True,
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.None };
 
     void ManagerChanged(object? sender, EventArgs e)
     {

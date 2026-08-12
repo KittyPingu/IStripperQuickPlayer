@@ -138,6 +138,15 @@ current show before pausing or cancel it back to Pending for a full restart. Sto
 also returns the active job to Pending. Closing QuickPlayer while a job runs asks
 for confirmation and, if confirmed, safely cancels it back to Pending.
 
+For append and reprocess jobs, publication first advances playback away from the
+target show, or stops playback if no other valid card is available, and waits for
+the previous custom decoder to close. The atomic directory replacement retries
+transient Windows sharing/permission errors for ten seconds. If publication still
+fails, the fully processed staging folder remains owned by the queue; **Retry**
+revalidates the source and target manifest and retries only publication rather
+than running matting again. The queue displays **Waiting to publish** during this
+phase instead of presenting processing as complete prematurely.
+
 In QuickPlayer, open **File → Custom Shows → Settings**:
 
 1. Select the custom library folder. The default is `%LOCALAPPDATA%\IStripperQuickPlayer\custom-shows`.

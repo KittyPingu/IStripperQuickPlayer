@@ -84,7 +84,8 @@ public partial class Form1
         ToolStripMenuItem open = new("Open Folder");
         customShowQueueManager = new CustomShowQueueManager(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
-            customShowConfiguration, QueueShowPublished);
+            customShowConfiguration, QueueShowPublished,
+            PrepareCustomShowPublicationAsync);
         create.Click += (_, _) => EditCustomShow(null);
         queues.Click += (_, _) => ShowCustomShowQueues();
         stabilize.Click += (_, _) => StabilizeVideo();
@@ -454,6 +455,56 @@ public partial class Form1
         }));
     }
 
+    async Task PrepareCustomShowPublicationAsync(string? targetShowId)
+    {
+        if (string.IsNullOrWhiteSpace(targetShowId)) return;
+        if (InvokeRequired)
+        {
+            TaskCompletionSource completion = new(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            BeginInvoke(async () =>
+            {
+                try
+                {
+                    await PrepareCustomShowPublicationAsync(targetShowId);
+                    completion.SetResult();
+                }
+                catch (Exception error) { completion.SetException(error); }
+            });
+            await completion.Task;
+            return;
+        }
+        if (!string.Equals(customPlayerCard?.customShowId, targetShowId,
+                StringComparison.OrdinalIgnoreCase))
+            return;
+
+        CustomPlayerForm? previous = customPlayer;
+        string? replacement = FindPublicationReplacement(targetShowId);
+        bool started = replacement != null && RequestAnimationPlayback(replacement);
+        if (!started) StopCustomPlayback(restoreIstripper: true);
+        if (previous != null) await previous.ClosePlayerAsync();
+    }
+
+    string? FindPublicationReplacement(string targetShowId)
+    {
+        if (items == null) return null;
+        HashSet<string> recent = GetRecentPlaybackPaths();
+        List<ModelClip> candidates = [];
+        foreach (ListViewItem item in items)
+        {
+            ModelCard? card = Datastore.findCardByTag(item.Tag?.ToString() ?? "");
+            if (!PlaybackCardAllowed(card) || card?.clips == null ||
+                string.Equals(card.customShowId, targetShowId,
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+            candidates.AddRange(FilterClipList(card.clips));
+        }
+        if (candidates.Count == 0) return null;
+        List<ModelClip> fresh = ExcludeRecentClips(candidates, recent);
+        List<ModelClip> selectable = fresh.Count > 0 ? fresh : candidates;
+        return GetAnimationPath(selectable[Random.Shared.Next(selectable.Count)]);
+    }
+
     void EditCustomShowQueueJob(CustomShowQueueJob job)
     {
         if (job.Status == CustomShowQueueStatus.Completed &&
@@ -497,7 +548,8 @@ public partial class Form1
         customShowQueueManager?.Dispose();
         customShowQueueManager = new CustomShowQueueManager(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
-            customShowConfiguration, QueueShowPublished);
+            customShowConfiguration, QueueShowPublished,
+            PrepareCustomShowPublicationAsync);
         ReloadCustomCards();
     }
 

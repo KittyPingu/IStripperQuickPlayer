@@ -204,6 +204,12 @@ completed entries as history until you delete them. Pause can finish the current
 show or cancel it back to Pending; Stop also returns it to Pending for a complete
 restart. Closing QuickPlayer asks before cancelling an active job.
 
+Before appending to or replacing a show, QuickPlayer moves playback away from
+that show—or stops playback when no other valid card is available—then waits for
+its decoder files to close. Temporary Windows file locks are retried. If the
+folder still cannot be replaced, the completed staging output is retained and
+**Retry** attempts publication again without rerunning matting.
+
 ## Reprocessing and adding clips
 
 Right-click a custom card and choose **Reprocess Custom Show...**. Keep existing
