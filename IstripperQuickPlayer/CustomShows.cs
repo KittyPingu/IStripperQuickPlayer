@@ -311,13 +311,15 @@ internal sealed class CustomShowStore
         Converters = { new JsonStringEnumConverter() }
     };
 
-    static readonly HashSet<string> HotnessValues =
+    internal static readonly string[] HotnessOptions =
         ["Public", "NoNudity", "Topless", "Nudity", "FullNudity", "XXX"];
+    static readonly HashSet<string> HotnessValues = [.. HotnessOptions];
     internal static readonly string[] GenderValues =
         ["Male", "Female", "Transgender", "Femboy", "Sissy", "Non-Binary"];
-    static readonly HashSet<string> ClipTypeValues =
+    internal static readonly string[] ClipTypeOptions =
         ["Standing", "Table", "Behind Table", "Swing", "Cage", "Pole",
          "Glass", "Sign", "Prop", "Full Legs", "Side"];
+    static readonly HashSet<string> ClipTypeValues = [.. ClipTypeOptions];
     static readonly HashSet<string> ProcessingAlgorithms =
         ["quality", "fast", "matanyone2", "rvm-matanyone2", "videomama",
          "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s"];
@@ -1028,7 +1030,7 @@ internal sealed class CustomShowStore
         _ => CardResolutionType.lowest
     };
 
-    static HotnessCode ParseHotness(string value) => value switch
+    internal static HotnessCode ParseHotness(string value) => value switch
     {
         "Public" => HotnessCode.publ,
         "Topless" => HotnessCode.topless,

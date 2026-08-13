@@ -30,6 +30,8 @@ public partial class Form1
     readonly ContextMenuStrip customClipContextMenu = new();
     readonly ToolStripMenuItem deleteCustomClipMenu =
         new("Delete Custom Clip...");
+    readonly ToolStripMenuItem customClipHotnessMenu = new("Hotness");
+    readonly ToolStripMenuItem customClipTypesMenu = new("Clip types");
     readonly Controls.PlaybackSeekBar customClipAlphaSlider = new()
     {
         Minimum = 0, Maximum = 255, SmallChange = 1, LargeChange = 10,
@@ -170,8 +172,32 @@ public partial class Form1
             PersistContextClipAlphaThreshold();
             await DeleteSelectedCustomClipAsync();
         };
+        foreach (string hotness in CustomShowStore.HotnessOptions)
+        {
+            string label = hotness switch
+            {
+                "NoNudity" => "No Nudity",
+                "FullNudity" => "Full Nudity",
+                _ => hotness
+            };
+            ToolStripMenuItem item = new(label) { Tag = hotness };
+            item.Click += (_, _) => ChangeContextClipHotness(hotness);
+            customClipHotnessMenu.DropDownItems.Add(item);
+        }
+        foreach (string clipType in CustomShowStore.ClipTypeOptions)
+        {
+            ToolStripMenuItem item = new(clipType)
+            {
+                Tag = clipType,
+                CheckOnClick = true
+            };
+            item.Click += (_, _) => ChangeContextClipType(item);
+            customClipTypesMenu.DropDownItems.Add(item);
+        }
         customClipContextMenu.Items.AddRange([
             customClipAlphaHost, new ToolStripSeparator(),
+            customClipHotnessMenu, customClipTypesMenu,
+            new ToolStripSeparator(),
             deleteCustomClipMenu]);
         customClipContextMenu.Opening += (sender, eventArgs) =>
         {
@@ -186,7 +212,10 @@ public partial class Form1
                 ? customClipAlphaSlider.Value.ToString() : "";
             loadingCustomClipAlphaThreshold = false;
             customClipAlphaDirty = false;
+            RefreshContextClipClassificationChecks(custom ? clip : null);
             customClipAlphaHost.Visible = custom;
+            customClipHotnessMenu.Visible = custom;
+            customClipTypesMenu.Visible = custom;
             deleteCustomClipMenu.Visible = custom;
             eventArgs.Cancel = !custom;
         };
@@ -402,6 +431,99 @@ public partial class Form1
         {
             SetPlaybackStatus("Could not save alpha threshold: " +
                 error.Message);
+        }
+    }
+
+    void RefreshContextClipClassificationChecks(ModelClip? clip)
+    {
+        string hotness = clip?.hotnessCode switch
+        {
+            Enums.HotnessCode.publ => "Public",
+            Enums.HotnessCode.topless => "Topless",
+            Enums.HotnessCode.nudity => "Nudity",
+            Enums.HotnessCode.fullnudity => "FullNudity",
+            Enums.HotnessCode.xxx => "XXX",
+            _ => "NoNudity"
+        };
+        foreach (ToolStripMenuItem item in
+                 customClipHotnessMenu.DropDownItems.OfType<ToolStripMenuItem>())
+            item.Checked = clip != null && string.Equals(item.Tag as string,
+                hotness, StringComparison.OrdinalIgnoreCase);
+
+        HashSet<string> types = (clip?.clipType ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries |
+                        StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (ToolStripMenuItem item in
+                 customClipTypesMenu.DropDownItems.OfType<ToolStripMenuItem>())
+            item.Checked = types.Contains(item.Tag as string ?? "");
+    }
+
+    void ChangeContextClipHotness(string hotness)
+    {
+        if (customClipAlphaCard == null || customClipAlphaClip == null) return;
+        PersistContextClipClassification(customClipAlphaCard,
+            customClipAlphaClip, hotness, null);
+    }
+
+    void ChangeContextClipType(ToolStripMenuItem changedItem)
+    {
+        if (customClipAlphaCard == null || customClipAlphaClip == null) return;
+        string[] types = customClipTypesMenu.DropDownItems
+            .OfType<ToolStripMenuItem>()
+            .Where(item => item.Checked)
+            .Select(item => item.Tag as string ?? "")
+            .Where(value => value.Length > 0)
+            .ToArray();
+        if (types.Length == 0)
+        {
+            changedItem.Checked = true;
+            System.Media.SystemSounds.Beep.Play();
+            return;
+        }
+        PersistContextClipClassification(customClipAlphaCard,
+            customClipAlphaClip, null, types);
+    }
+
+    void PersistContextClipClassification(ModelCard card, ModelClip clip,
+        string? hotness, string[]? clipTypes)
+    {
+        if (card.customShowId == null) return;
+        PersistContextClipAlphaThreshold();
+        try
+        {
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            CustomShowManifest show = store.LoadManifest(card.customShowId);
+            int index = card.clips!.IndexOf(clip);
+            CustomShowClip[] included = show.Clips.Where(value =>
+                value.Included).ToArray();
+            if (index < 0 || index >= included.Length)
+                throw new InvalidDataException(
+                    "The selected clip no longer matches the saved show.");
+            if (hotness != null)
+            {
+                included[index].Hotness = hotness;
+            }
+            if (clipTypes != null)
+            {
+                included[index].ClipTypes = clipTypes;
+            }
+            store.SaveManifest(show);
+            if (hotness != null)
+                clip.hotnessCode = CustomShowStore.ParseHotness(hotness);
+            if (clipTypes != null)
+                clip.clipType = string.Join(", ", clipTypes);
+            RefreshContextClipClassificationChecks(clip);
+            selectingClipForContextMenu = true;
+            try { loadListClips(card.name!); }
+            finally { selectingClipForContextMenu = false; }
+            RebuildAutomaticQueue();
+        }
+        catch (Exception error)
+        {
+            SetPlaybackStatus("Could not save clip classification: " +
+                error.Message);
+            RefreshContextClipClassificationChecks(clip);
         }
     }
 
