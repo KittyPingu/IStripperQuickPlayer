@@ -100,13 +100,11 @@ internal sealed class CustomVideoMaskEditorForm : Form
     string workerStatus = "";
     string framesFolder;
     Bitmap? paintingMask;
-    Bitmap? paintingSource;
     PointF lastPaintPoint;
     MouseButtons paintButton;
     bool painting;
     int paintingFrame = -1;
     int paintRevision;
-    long lastPaintPreviewTick;
 
     string FramesFolder => framesFolder;
 
@@ -215,11 +213,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
         image.MouseDown += Image_MouseDown;
         image.MouseMove += Image_MouseMove;
         image.MouseUp += Image_MouseUp;
-        image.MouseEnter += (_, _) =>
-        {
-            if (paintMode.Checked) image.Focus();
-        };
-        image.MouseWheel += (_, e) => ResizeBrush(e.Delta);
+        image.MouseEnter += (_, _) => image.Focus();
+        image.MouseWheel += Image_MouseWheel;
         image.MouseLeave += (_, _) =>
         {
             image.SetBrush(null, brushSize.Value);
@@ -725,6 +720,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             labels[frame] = frameLabels = [];
         framePoints.Add(point.Value);
         frameLabels.Add(e.Button == MouseButtons.Right ? 0 : 1);
+        image.SetMarkers([.. framePoints], [.. frameLabels]);
         await PreviewCorrectionAsync(frame, useAutomatic:
             anchorModes.GetValueOrDefault(frame) == "auto" ||
             pendingFrame == frame && pendingMode == "auto");
@@ -747,11 +743,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
         try
         {
             paintingMask?.Dispose();
-            paintingSource?.Dispose();
             paintingMask = LoadBitmap(maskPath);
             InvalidatePreview(frame);
-            paintingSource = LoadBitmap(Path.Combine(FramesFolder,
-                $"{frame + 1:00000000}.jpg"));
             string undoPath = Path.Combine(temporary,
                 $"paint-undo-{frame}-{++paintRevision}.png");
             paintingMask.Save(undoPath, System.Drawing.Imaging.ImageFormat.Png);
@@ -763,14 +756,13 @@ internal sealed class CustomVideoMaskEditorForm : Form
             paintButton = e.Button;
             lastPaintPoint = point.Value;
             image.Capture = true;
-            ApplyBrush(point.Value, point.Value);
-            RenderPreview(frame, paintingMask, livePaint: true, force: true);
+            Rectangle dirty = ApplyBrush(point.Value, point.Value);
+            RenderPreview(frame, paintingMask, dirty);
             UpdateUndoState(frame);
         }
         catch (Exception error)
         {
             paintingMask?.Dispose(); paintingMask = null;
-            paintingSource?.Dispose(); paintingSource = null;
             painting = false; image.Capture = false;
             MessageBox.Show(this, error.Message, Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -784,9 +776,9 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (!painting || paintingMask == null || paintingFrame != CurrentFrame) return;
         PointF? point = image.ImagePoint(e.Location);
         if (point == null) return;
-        ApplyBrush(lastPaintPoint, point.Value);
+        Rectangle dirty = ApplyBrush(lastPaintPoint, point.Value);
         lastPaintPoint = point.Value;
-        RenderPreview(paintingFrame, paintingMask, livePaint: true, force: false);
+        RenderPreview(paintingFrame, paintingMask, dirty);
     }
 
     void ResizeBrush(int wheelDelta)
@@ -795,6 +787,19 @@ internal sealed class CustomVideoMaskEditorForm : Form
         int notches = Math.Max(1, Math.Abs(wheelDelta) / 120);
         brushSize.Value = Math.Clamp(brushSize.Value +
             Math.Sign(wheelDelta) * notches * 2, brushSize.Minimum, brushSize.Maximum);
+    }
+
+    void Image_MouseWheel(object? sender, MouseEventArgs e)
+    {
+        if (e.Delta == 0) return;
+        if (paintMode.Checked)
+        {
+            ResizeBrush(e.Delta);
+            return;
+        }
+        if (playback.Enabled || updating || !timeline.Enabled) return;
+        int frames = Math.Max(1, Math.Abs(e.Delta) / 120);
+        SetFrame(CurrentFrame + Math.Sign(e.Delta) * frames);
     }
 
     async void Image_MouseUp(object? sender, MouseEventArgs e)
@@ -808,18 +813,16 @@ internal sealed class CustomVideoMaskEditorForm : Form
         {
             paintingMask.Save(paintedPath, System.Drawing.Imaging.ImageFormat.Png);
             paintingMask.Dispose(); paintingMask = null;
-            paintingSource?.Dispose(); paintingSource = null;
             await PreviewCorrectionAsync(frame, paintedMask: paintedPath);
         }
         finally
         {
             paintingMask?.Dispose(); paintingMask = null;
-            paintingSource?.Dispose(); paintingSource = null;
             try { if (File.Exists(paintedPath)) File.Delete(paintedPath); } catch { }
         }
     }
 
-    void ApplyBrush(PointF from, PointF to)
+    Rectangle ApplyBrush(PointF from, PointF to)
     {
         using Graphics graphics = Graphics.FromImage(paintingMask!);
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
@@ -838,6 +841,13 @@ internal sealed class CustomVideoMaskEditorForm : Form
             brushSize.Value, brushSize.Value);
         graphics.FillEllipse(endpoint, to.X - radius, to.Y - radius,
             brushSize.Value, brushSize.Value);
+        Rectangle dirty = Rectangle.Ceiling(RectangleF.FromLTRB(
+            Math.Min(from.X, to.X) - radius - 2,
+            Math.Min(from.Y, to.Y) - radius - 2,
+            Math.Max(from.X, to.X) + radius + 2,
+            Math.Max(from.Y, to.Y) + radius + 2));
+        dirty.Intersect(new Rectangle(Point.Empty, paintingMask!.Size));
+        return dirty;
     }
 
     async Task UndoClickAsync()
@@ -874,6 +884,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             framePoints.Count == 0) return;
         framePoints.RemoveAt(framePoints.Count - 1);
         labels[frame].RemoveAt(labels[frame].Count - 1);
+        image.SetMarkers([.. framePoints], [.. labels[frame]]);
         if (framePoints.Count == 0)
         {
             if (anchorModes.GetValueOrDefault(frame) == "auto")
@@ -1169,12 +1180,22 @@ internal sealed class CustomVideoMaskEditorForm : Form
             Bitmap? source = null, mask = null;
             try
             {
-                (source, mask) = await Task.Run(() =>
-                    (LoadBitmap(framePath), LoadBitmap(maskPath)), cancellation.Token);
+                bool retainSource = displayedFrame == frame && image.HasImage;
+                if (retainSource)
+                    mask = await Task.Run(() => LoadBitmap(maskPath), cancellation.Token);
+                else
+                    (source, mask) = await Task.Run(() =>
+                        (LoadBitmap(framePath), LoadBitmap(maskPath)), cancellation.Token);
                 if (cancellation.IsCancellationRequested || revision != previewRevision ||
                     frame != CurrentFrame || closing || IsDisposed) return;
-                image.SetPreviewOwned(source, mask, framePoints, frameLabels);
-                source = mask = null;
+                if (source == null)
+                    image.SetMaskOwned(mask, framePoints, frameLabels);
+                else
+                {
+                    image.SetPreviewOwned(source, mask, framePoints, frameLabels);
+                    source = null;
+                }
+                mask = null;
                 displayedFrame = frame;
                 if (!generationActive && !updating) image.Enabled = true;
                 UpdateUndoState(frame);
@@ -1218,13 +1239,13 @@ internal sealed class CustomVideoMaskEditorForm : Form
         previewRevision++;
     }
 
-    void RenderPreview(int frame, Bitmap mask, bool livePaint = false, bool force = true)
+    void RenderPreview(int frame, Bitmap mask, Rectangle? dirty = null)
     {
-        long now = Environment.TickCount64;
-        if (livePaint && !force && now - lastPaintPreviewTick < PreviewIntervalMs) return;
-        if (livePaint) lastPaintPreviewTick = now;
-        image.SetMask(mask, points.GetValueOrDefault(frame)?.ToArray() ?? [],
-            labels.GetValueOrDefault(frame)?.ToArray() ?? []);
+        PointF[] framePoints = points.GetValueOrDefault(frame)?.ToArray() ?? [];
+        int[] frameLabels = labels.GetValueOrDefault(frame)?.ToArray() ?? [];
+        if (dirty is Rectangle region)
+            image.SetMaskRegion(mask, region, framePoints, frameLabels);
+        else image.SetMask(mask, framePoints, frameLabels);
         displayedFrame = frame;
         UpdateUndoState(frame);
     }
@@ -1299,7 +1320,6 @@ internal sealed class CustomVideoMaskEditorForm : Form
         {
             ClearPreviewCache();
             StopWorker(); paintingMask?.Dispose();
-            paintingSource?.Dispose();
             try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
         }
         base.Dispose(disposing);

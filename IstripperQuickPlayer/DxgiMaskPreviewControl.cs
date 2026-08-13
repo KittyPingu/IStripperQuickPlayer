@@ -9,12 +9,13 @@ using DComp = Vortice.DirectComposition.DComp;
 using DxgiAlphaMode = Vortice.DXGI.AlphaMode;
 using DxgiFormat = Vortice.DXGI.Format;
 using GpuViewport = Vortice.Mathematics.Viewport;
+using GpuBox = Vortice.Mathematics.Box;
 
 namespace IStripperQuickPlayer;
 
 /// <summary>
-/// HWND-bound DXGI preview. The render thread owns every D3D object and is the
-/// only thread that waits in Present, keeping CUDA contention off the UI pump.
+/// DirectComposition-backed DXGI preview. The render thread owns every D3D object,
+/// keeping CUDA contention and presentation work off the UI pump.
 /// Source and mask are committed together in a single swap-chain frame.
 /// </summary>
 internal sealed class DxgiMaskPreviewControl : Control
@@ -48,6 +49,7 @@ internal sealed class DxgiMaskPreviewControl : Control
     {
         internal Bitmap? Source;
         internal required Bitmap Mask;
+        internal Rectangle? MaskRegion;
         internal required PointF[] Points;
         internal required int[] Labels;
         public void Dispose() { Source?.Dispose(); Mask.Dispose(); }
@@ -61,7 +63,9 @@ internal sealed class DxgiMaskPreviewControl : Control
     Size imageSize;
     PointF? brush;
     int brushDiameter;
-    bool overlayDirty;
+    PointF[] pendingPoints = [];
+    int[] pendingLabels = [];
+    bool overlayDirty, markersDirty;
     volatile bool stopping;
     Exception? failure;
 
@@ -114,6 +118,12 @@ internal sealed class DxgiMaskPreviewControl : Control
             Points = [.. points.Take(64)], Labels = [.. labels.Take(64)] });
     }
 
+    internal void SetSourceOwned(Bitmap source)
+    {
+        Bitmap mask = new(source.Width, source.Height, PixelFormat.Format32bppArgb);
+        Queue(new FrameUpdate { Source = source, Mask = mask, Points = [], Labels = [] });
+    }
+
     internal void SetPreview(Bitmap source, Bitmap mask, PointF[] points, int[] labels) =>
         Queue(new FrameUpdate { Source = new Bitmap(source), Mask = new Bitmap(mask),
             Points = [.. points.Take(64)], Labels = [.. labels.Take(64)] });
@@ -121,6 +131,62 @@ internal sealed class DxgiMaskPreviewControl : Control
     internal void SetMask(Bitmap mask, PointF[] points, int[] labels) =>
         Queue(new FrameUpdate { Mask = new Bitmap(mask),
             Points = [.. points.Take(64)], Labels = [.. labels.Take(64)] });
+
+    internal void SetMaskOwned(Bitmap mask, PointF[] points, int[] labels) =>
+        Queue(new FrameUpdate { Mask = mask,
+            Points = [.. points.Take(64)], Labels = [.. labels.Take(64)] });
+
+    internal void SetMaskRegion(Bitmap mask, Rectangle dirty,
+        PointF[] points, int[] labels)
+    {
+        dirty.Intersect(new Rectangle(Point.Empty, mask.Size));
+        if (dirty.Width <= 0 || dirty.Height <= 0) return;
+        lock (sync)
+        {
+            if (pending?.Source != null)
+            {
+                Bitmap? source = pending.Source;
+                pending.Source = null;
+                pending.Dispose();
+                pending = new FrameUpdate { Source = source, Mask = new Bitmap(mask),
+                    Points = [.. points.Take(64)], Labels = [.. labels.Take(64)] };
+                changed.Set();
+                return;
+            }
+            if (pending is { MaskRegion: null })
+            {
+                pending.Dispose();
+                pending = new FrameUpdate { Mask = new Bitmap(mask),
+                    Points = [.. points.Take(64)], Labels = [.. labels.Take(64)] };
+                changed.Set();
+                return;
+            }
+            if (pending is { Source: null, MaskRegion: Rectangle previous })
+            {
+                dirty = Rectangle.Union(dirty, previous);
+                pending.Dispose();
+                pending = null;
+            }
+            pending = new FrameUpdate
+            {
+                Mask = mask.Clone(dirty, PixelFormat.Format32bppArgb),
+                MaskRegion = dirty,
+                Points = [.. points.Take(64)], Labels = [.. labels.Take(64)]
+            };
+        }
+        changed.Set();
+    }
+
+    internal void SetMarkers(PointF[] points, int[] labels)
+    {
+        lock (sync)
+        {
+            pendingPoints = [.. points.Take(64)];
+            pendingLabels = [.. labels.Take(64)];
+            markersDirty = true;
+        }
+        changed.Set();
+    }
 
     void Queue(FrameUpdate update)
     {
@@ -216,12 +282,15 @@ internal sealed class DxgiMaskPreviewControl : Control
                     changed.WaitOne();
                     if (stopping) break;
                     FrameUpdate? update; Size requested; PointF? currentBrush;
-                    int currentBrushDiameter; bool redrawOverlay;
+                    int currentBrushDiameter; bool redrawOverlay, redrawMarkers;
+                    PointF[] latestPoints; int[] latestLabels;
                     lock (sync)
                     {
                         update = pending; pending = null; requested = pendingSize;
                         currentBrush = brush; currentBrushDiameter = brushDiameter;
                         redrawOverlay = overlayDirty; overlayDirty = false;
+                        redrawMarkers = markersDirty; markersDirty = false;
+                        latestPoints = pendingPoints; latestLabels = pendingLabels;
                     }
                     requested = ValidSize(requested);
                     bool resized = requested != swapSize;
@@ -247,16 +316,26 @@ internal sealed class DxgiMaskPreviewControl : Control
                                 currentImageSize = update.Source.Size;
                                 lock (sync) imageSize = currentImageSize;
                             }
-                            ID3D11Texture2D nextMask = Upload(device, context, update.Mask);
-                            ID3D11ShaderResourceView nextMaskView = device.CreateShaderResourceView(nextMask);
-                            maskView?.Dispose(); maskTexture?.Dispose();
-                            maskTexture = nextMask; maskView = nextMaskView;
+                            if (update.MaskRegion is Rectangle region && maskTexture != null)
+                                UploadRegion(context, maskTexture, update.Mask, region);
+                            else
+                            {
+                                ID3D11Texture2D nextMask = Upload(device, context, update.Mask);
+                                ID3D11ShaderResourceView nextMaskView = device.CreateShaderResourceView(nextMask);
+                                maskView?.Dispose(); maskTexture?.Dispose();
+                                maskTexture = nextMask; maskView = nextMaskView;
+                            }
                             currentPoints = update.Points; currentLabels = update.Labels;
                         }
                         finally { update.Dispose(); }
                     }
                     if (sourceView == null || maskView == null || currentImageSize.IsEmpty ||
-                        (update == null && !resized && !redrawOverlay)) continue;
+                        (update == null && !resized && !redrawOverlay && !redrawMarkers)) continue;
+                    if (redrawMarkers)
+                    {
+                        currentPoints = latestPoints;
+                        currentLabels = latestLabels;
+                    }
                     Draw(context, swap, swapSize, currentImageSize, sourceView, maskView,
                         data, dataView, pointData, pointView, sampler, vs, ps,
                         currentPoints, currentLabels, currentBrush, currentBrushDiameter);
@@ -304,7 +383,7 @@ internal sealed class DxgiMaskPreviewControl : Control
         // The preview is disposable visual feedback. If DWM has not consumed
         // the previous frame, drop this one instead of ever stalling behind a
         // saturated CUDA queue.
-        swap.Present(0, PresentFlags.DoNotWait);
+        PresentNonBlocking(swap);
     }
 
     static void PresentBlack(ID3D11DeviceContext context, IDXGISwapChain1 swap)
@@ -312,7 +391,14 @@ internal sealed class DxgiMaskPreviewControl : Control
         using ID3D11Texture2D back = swap.GetBuffer<ID3D11Texture2D>(0);
         using ID3D11RenderTargetView target = context.Device.CreateRenderTargetView(back);
         context.ClearRenderTargetView(target, new Vortice.Mathematics.Color4(0, 0, 0, 1));
-        swap.Present(0, PresentFlags.DoNotWait);
+        PresentNonBlocking(swap);
+    }
+
+    static void PresentNonBlocking(IDXGISwapChain1 swap)
+    {
+        var result = swap.Present(0, PresentFlags.DoNotWait);
+        if (result.Failure && result != Vortice.DXGI.ResultCode.WasStillDrawing)
+            result.CheckError();
     }
 
     static Size ValidSize(Size value) => new(Math.Max(1, value.Width), Math.Max(1, value.Height));
@@ -341,6 +427,22 @@ internal sealed class DxgiMaskPreviewControl : Control
         try { context.UpdateSubresource(texture, 0, null, bits.Scan0, (uint)bits.Stride, 0); }
         finally { bitmap.UnlockBits(bits); }
         return texture;
+    }
+
+    static void UploadRegion(ID3D11DeviceContext context, ID3D11Texture2D texture,
+        Bitmap regionBitmap, Rectangle destination)
+    {
+        BitmapData bits = regionBitmap.LockBits(
+            new Rectangle(Point.Empty, regionBitmap.Size), ImageLockMode.ReadOnly,
+            PixelFormat.Format32bppArgb);
+        try
+        {
+            GpuBox box = new(destination.Left, destination.Top, 0,
+                destination.Right, destination.Bottom, 1);
+            context.UpdateSubresource(texture, 0, box, bits.Scan0,
+                (uint)bits.Stride, 0);
+        }
+        finally { regionBitmap.UnlockBits(bits); }
     }
 
     void StopRenderer()
