@@ -63,6 +63,7 @@ internal sealed class CustomVideoComparisonForm : Form
         timeline.Maximum = checked((int)Math.Min(int.MaxValue, this.durationMs));
         timeline.SmallChange = checked((int)Math.Min(int.MaxValue, frameDurationMs));
         timeline.LargeChange = Math.Min(5_000, timeline.Maximum);
+        timeline.ShowTimeToolTip = true;
 
         TableLayoutPanel root = new()
         {

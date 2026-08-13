@@ -2819,7 +2819,10 @@ internal sealed class CustomShowSettingsForm : Form
     readonly Label vitMatteStatus = StatusLabel();
     CancellationTokenSource? validationCancellation;
     internal CustomShowConfiguration Configuration { get; }
-    internal CustomShowSettingsForm(CustomShowConfiguration current)
+    internal CustomShowSettingsForm(CustomShowConfiguration current,
+        Action<IWin32Window?>? restoreIncomplete = null,
+        Action<IWin32Window?>? manageModels = null,
+        Func<IWin32Window?, string?>? installTools = null)
     {
         Configuration = new()
         {
@@ -2981,6 +2984,25 @@ internal sealed class CustomShowSettingsForm : Form
         AddWideControl(models, cutoffActions);
         AddWideControl(models, new Panel { Height = 28, Margin = Padding.Empty });
 
+        TabPage maintenanceTab = new("Maintenance");
+        TableLayoutPanel maintenance = SettingsTable();
+        maintenanceTab.Controls.Add(maintenance); tabs.TabPages.Add(maintenanceTab);
+        AddExplanation(maintenance, "Custom-show maintenance",
+            "Restore unfinished work, maintain model profiles, install processing tools, " +
+            "or open the custom-show library folder.");
+        Button restore = new() { Text = "Restore Incomplete Setup...", AutoSize = true,
+            Enabled = restoreIncomplete != null };
+        Button modelsButton = new() { Text = "Manage Models...", AutoSize = true,
+            Enabled = manageModels != null };
+        Button setup = new() { Text = "Install / Update Processing Tools...",
+            AutoSize = true, Enabled = installTools != null };
+        Button openFolder = new() { Text = "Open Folder", AutoSize = true };
+        FlowLayoutPanel maintenanceActions = new() { AutoSize = true,
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
+            WrapContents = false, Padding = new Padding(4, 8, 4, 8) };
+        maintenanceActions.Controls.AddRange([restore, modelsButton, setup, openFolder]);
+        AddWideControl(maintenance, maintenanceActions);
+
         Button validate = new() { Text = "Validate setup", AutoSize = true };
         Button refresh = new() { Text = "Refresh compilation status", AutoSize = true };
         Button ok = new() { Text = "OK", AutoSize = true };
@@ -3018,6 +3040,25 @@ internal sealed class CustomShowSettingsForm : Form
         benchmarkRvm.Click += (_, _) => BenchmarkRvm();
         benchmarkVideoMaMa.Click += (_, _) => BenchmarkVideoMaMa();
         benchmark.Click += (_, _) => BenchmarkCutoffs();
+        restore.Click += (_, _) => restoreIncomplete?.Invoke(this);
+        modelsButton.Click += (_, _) => manageModels?.Invoke(this);
+        setup.Click += (_, _) =>
+        {
+            string? installedPython = installTools?.Invoke(this);
+            if (!string.IsNullOrWhiteSpace(installedPython))
+            {
+                python.Text = installedPython;
+                Configuration.PythonExecutable = installedPython;
+                RefreshCompilationStatus();
+            }
+        };
+        openFolder.Click += (_, _) =>
+        {
+            string folder = string.IsNullOrWhiteSpace(root.Text)
+                ? Configuration.LibraryRoot : root.Text;
+            Directory.CreateDirectory(folder);
+            Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+        };
         validate.Click += async (_, _) => await ValidateSetup(validate);
         refresh.Click += (_, _) => RefreshCompilationStatus();
         tabs.SelectedIndexChanged += (_, _) => RefreshCompilationStatus();

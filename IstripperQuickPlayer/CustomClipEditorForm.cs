@@ -1709,6 +1709,9 @@ internal sealed class ClipTimelineControl : Control
 {
     long durationMs, positionMs;
     bool scrubbing;
+    readonly ToolTip hoverTip = new() { InitialDelay = 120, ReshowDelay = 0,
+        AutoPopDelay = 30_000, ShowAlways = true };
+    string? hoverText;
     int draggingDivider = -1;
     IList<long> fixedMarkers = [];
     IList<(long StartMs, long EndMs, Color Color)> highlightedRanges = [];
@@ -1811,8 +1814,14 @@ internal sealed class ClipTimelineControl : Control
             e.Graphics.DrawPolygon(Pens.Black, marker);
         }
         int playhead = bar.Left + (int)Math.Round(bar.Width * positionMs / (double)durationMs);
-        using Pen pen = new(Color.Red, 2);
-        e.Graphics.DrawLine(pen, playhead, 3, playhead, bar.Bottom + 2);
+        using Pen outline = new(Color.FromArgb(24, 24, 24), 5);
+        using Pen pen = new(Color.FromArgb(255, 48, 48), 3);
+        e.Graphics.DrawLine(outline, playhead, 1, playhead, bar.Bottom + 3);
+        e.Graphics.DrawLine(pen, playhead, 1, playhead, bar.Bottom + 3);
+        Point[] head = [new(playhead - 6, 1), new(playhead + 6, 1),
+            new(playhead, 9)];
+        e.Graphics.FillPolygon(Brushes.Red, head);
+        e.Graphics.DrawPolygon(Pens.Black, head);
         e.Graphics.DrawRectangle(Pens.DimGray, bar);
     }
 
@@ -1838,12 +1847,25 @@ internal sealed class ClipTimelineControl : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        string text = FormatHoverTime(TimeAt(e.X));
+        if (!string.Equals(text, hoverText, StringComparison.Ordinal))
+        {
+            hoverText = text;
+            hoverTip.SetToolTip(this, text);
+        }
         if (e.Button == MouseButtons.Left)
         {
             if (draggingDivider > 0) MoveDivider(e.X); else if (scrubbing) SetPosition(e.X);
         }
         else Cursor = AllowDividerDragging && MarkerAt(e.Location) > 0
             ? Cursors.SizeWE : Cursors.Hand;
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        hoverText = null;
+        hoverTip.Hide(this);
+        base.OnMouseLeave(e);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -1904,9 +1926,28 @@ internal sealed class ClipTimelineControl : Control
 
     void SetPosition(int x)
     {
+        PositionMs = TimeAt(x);
+    }
+
+    long TimeAt(int x)
+    {
         Rectangle bar = BarRectangle;
-        PositionMs = (long)Math.Round(durationMs *
+        return (long)Math.Round(durationMs *
             Math.Clamp((x - bar.Left) / (double)bar.Width, 0, 1));
+    }
+
+    static string FormatHoverTime(long milliseconds)
+    {
+        TimeSpan time = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+        return time.TotalHours >= 1
+            ? $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}.{time.Milliseconds:000}"
+            : $"{time.Minutes}:{time.Seconds:00}.{time.Milliseconds:000}";
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) hoverTip.Dispose();
+        base.Dispose(disposing);
     }
 
     internal static bool VerifyMarkerHitTesting()

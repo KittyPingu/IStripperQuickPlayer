@@ -16,8 +16,8 @@ internal sealed class CustomWatermarkRemovalForm : Form
     readonly TextBox outputPath = new() { Dock = DockStyle.Fill };
     readonly DxgiMaskPreviewControl preview = new() { Dock = DockStyle.Fill,
         AccessibleName = "Video frame used to select the area to remove" };
-    readonly TrackBar timeline = new() { Dock = DockStyle.Fill, Minimum = 0,
-        Maximum = 10_000, TickStyle = TickStyle.None, Enabled = false,
+    readonly Controls.PlaybackSeekBar timeline = new() { Dock = DockStyle.Fill,
+        Minimum = 0, Maximum = 10_000, Enabled = false, ShowTimeToolTip = true,
         AccessibleName = "Preview frame timeline" };
     readonly Label timelinePosition = new() { AutoSize = true, Text = "0:00 / 0:00",
         Anchor = AnchorStyles.Right };
@@ -46,6 +46,8 @@ internal sealed class CustomWatermarkRemovalForm : Form
     internal CustomWatermarkRemovalForm(CustomShowConfiguration configuration)
     {
         this.configuration = configuration;
+        timeline.ToolTipFormatter = value => FormatTime(durationSeconds <= 0 ? 0 :
+            durationSeconds * value / timeline.Maximum);
         Text = "Remove Video Object / Watermark";
         ClientSize = new Size(1000, 760);
         MinimumSize = new Size(760, 580);

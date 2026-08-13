@@ -672,6 +672,7 @@ namespace IStripperQuickPlayer
             cardOverlayTimer.Start();
             trkPlaybackPosition.AccessibleDescription =
                 "Click or drag to seek within the current clip.";
+            trkPlaybackPosition.ShowTimeToolTip = true;
             listClips.SetDoubleBuffered();
             listModelsNew.RefreshOnFocusChanged = false;
             panicResumeButton.Click += panicResumeButton_Click;

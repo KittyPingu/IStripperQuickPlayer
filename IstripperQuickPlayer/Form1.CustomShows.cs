@@ -84,37 +84,25 @@ public partial class Form1
         SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
-        ToolStripMenuItem restore = new("Restore Incomplete Setup...");
         ToolStripMenuItem queues = new("Queues...");
         ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
         ToolStripMenuItem backgroundLock = new(
             "Camera / Background Lock (Stabilo + SAM2)...");
         ToolStripMenuItem removeWatermark = new("Remove Video Object / Watermark...");
-        ToolStripMenuItem models = new("Manage Models...");
-        ToolStripMenuItem setup = new("Install / Update Processing Tools...");
         ToolStripMenuItem settings = new("Settings...");
-        ToolStripMenuItem open = new("Open Folder");
         customShowQueueManager = new CustomShowQueueManager(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
         create.Click += (_, _) => EditCustomShow(null);
-        restore.Click += (_, _) => RestoreIncompleteCustomShow();
         queues.Click += (_, _) => ShowCustomShowQueues();
         stabilize.Click += (_, _) => StabilizeVideo();
         backgroundLock.Click += (_, _) => StabilizeBackgroundVideo();
         removeWatermark.Click += (_, _) => RemoveVideoWatermark();
-        models.Click += (_, _) => ManageCustomModels();
-        setup.Click += (_, _) => InstallCustomShowTools();
         settings.Click += (_, _) => ConfigureCustomShows();
-        open.Click += (_, _) =>
-        {
-            Directory.CreateDirectory(customShowConfiguration.LibraryRoot);
-            Process.Start(new ProcessStartInfo(customShowConfiguration.LibraryRoot)
-            { UseShellExecute = true });
-        };
         customShowsMenu.DropDownItems.AddRange(
-            [create, restore, queues, stabilize, backgroundLock, removeWatermark, models, setup, settings, open]);
+            [create, queues, new ToolStripSeparator(), stabilize, backgroundLock,
+                removeWatermark, settings]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
         editCustomShowMenu.Click += (_, _) =>
@@ -613,15 +601,16 @@ public partial class Form1
         }
     }
 
-    void RestoreIncompleteCustomShow()
+    void RestoreIncompleteCustomShow(IWin32Window? owner = null)
     {
+        owner ??= this;
         CustomShowStore store = new(customShowConfiguration.LibraryRoot);
         using CustomShowIncompletePickerForm picker = new(store);
-        if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null)
+        if (picker.ShowDialog(owner) != DialogResult.OK || picker.Selected == null)
             return;
         using CustomShowEditorForm form = new(store, customShowConfiguration,
             null, false, customShowQueueManager, restoredSetup: picker.Selected);
-        DialogResult result = form.ShowDialog(this);
+        DialogResult result = form.ShowDialog(owner);
         if (result == DialogResult.OK && form.SavedShowId != null)
             RefreshSavedCustomShow(form.SavedShowId);
     }
@@ -802,11 +791,12 @@ public partial class Form1
         if (form.ShowDialog(this) == DialogResult.OK) ShowCustomShowQueues();
     }
 
-    void ManageCustomModels()
+    void ManageCustomModels(IWin32Window? owner = null)
     {
+        owner ??= this;
         using CustomModelManagerForm form = new(
             new CustomShowStore(customShowConfiguration.LibraryRoot));
-        if (form.ShowDialog(this) == DialogResult.OK)
+        if (form.ShowDialog(owner) == DialogResult.OK)
             ReloadCustomCards();
     }
 
@@ -818,7 +808,9 @@ public partial class Form1
                 "Custom Shows", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        using CustomShowSettingsForm form = new(customShowConfiguration);
+        using CustomShowSettingsForm form = new(customShowConfiguration,
+            RestoreIncompleteCustomShow, ManageCustomModels,
+            InstallCustomShowTools);
         if (form.ShowDialog(this) != DialogResult.OK)
             return;
         customShowConfiguration = form.Configuration;
@@ -833,18 +825,19 @@ public partial class Form1
         ReloadCustomCards();
     }
 
-    void InstallCustomShowTools()
+    string? InstallCustomShowTools(IWin32Window? owner = null)
     {
+        owner ??= this;
         using CustomShowSetupOptionsForm options = new();
-        if (options.ShowDialog(this) != DialogResult.OK) return;
+        if (options.ShowDialog(owner) != DialogResult.OK) return null;
 
         string script = Path.Combine(AppContext.BaseDirectory,
             "custom-shows", "setup.ps1");
         if (!File.Exists(script))
         {
-            MessageBox.Show(this, "The setup script is missing:\n" + script,
+            MessageBox.Show(owner, "The setup script is missing:\n" + script,
                 "Custom Shows", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            return null;
         }
 
         try
@@ -855,7 +848,7 @@ public partial class Form1
                 options.InstallVideoMaMa, options.InstallViTMatte,
                 options.InstallProPainter, options.InstallEdgeTam,
                 options.InstallStabilo);
-            if (form.ShowDialog(this) != DialogResult.OK) return;
+            if (form.ShowDialog(owner) != DialogResult.OK) return null;
             string python = CustomShowConfiguration.FindPythonExecutable();
             if (!File.Exists(python) ||
                 !python.Contains("rvm-runtime", StringComparison.OrdinalIgnoreCase))
@@ -863,14 +856,16 @@ public partial class Form1
                     "Setup completed but its Python environment was not found.");
             customShowConfiguration.PythonExecutable = python;
             customShowConfiguration.Save();
-            MessageBox.Show(this,
+            MessageBox.Show(owner,
                 "Processing tools are installed and Python is now set to:\n" + python,
                 "Custom Shows", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return python;
         }
         catch (Exception error)
         {
-            MessageBox.Show(this, error.Message, "Custom Show Setup",
+            MessageBox.Show(owner, error.Message, "Custom Show Setup",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return null;
         }
     }
 

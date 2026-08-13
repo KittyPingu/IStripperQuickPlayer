@@ -15,6 +15,14 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
     private int maximum = 1;
     private int value;
     private bool dragging;
+    private readonly ToolTip hoverTip = new()
+    {
+        InitialDelay = 120,
+        ReshowDelay = 0,
+        AutoPopDelay = 30_000,
+        ShowAlways = true
+    };
+    private string? hoverText;
 
     public PlaybackSeekBar()
     {
@@ -87,6 +95,13 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
     [DefaultValue(10)]
     public int LargeChange { get; set; } = 10;
 
+    [DefaultValue(false)]
+    public bool ShowTimeToolTip { get; set; }
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Func<int, string>? ToolTipFormatter { get; set; }
+
     public event EventHandler? Scroll;
 
     public void BeginInit()
@@ -124,7 +139,25 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
         if (Enabled && dragging)
             SetValueFromX(e.X);
 
+        if (Enabled && ShowTimeToolTip)
+        {
+            int hovered = ValueFromX(e.X);
+            string text = ToolTipFormatter?.Invoke(hovered) ?? FormatTime(hovered);
+            if (!string.Equals(text, hoverText, StringComparison.Ordinal))
+            {
+                hoverText = text;
+                hoverTip.SetToolTip(this, text);
+            }
+        }
+
         base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        hoverText = null;
+        hoverTip.Hide(this);
+        base.OnMouseLeave(e);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -226,18 +259,28 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
 
     private void SetValueFromX(int x)
     {
-        Rectangle track = GetTrackRectangle();
-        double fraction = Math.Clamp(
-            (double)(x - track.Left) / Math.Max(1, track.Width),
-            0,
-            1);
-        int requested = minimum +
-            (int)Math.Round(fraction * (maximum - minimum));
+        int requested = ValueFromX(x);
         if (requested == value)
             return;
 
         Value = requested;
         Scroll?.Invoke(this, EventArgs.Empty);
+    }
+
+    private int ValueFromX(int x)
+    {
+        Rectangle track = GetTrackRectangle();
+        double fraction = Math.Clamp(
+            (double)(x - track.Left) / Math.Max(1, track.Width), 0, 1);
+        return minimum + (int)Math.Round(fraction * (maximum - minimum));
+    }
+
+    private static string FormatTime(long milliseconds)
+    {
+        TimeSpan time = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+        return time.TotalHours >= 1
+            ? $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}"
+            : $"{time.Minutes}:{time.Seconds:00}";
     }
 
     private Rectangle GetTrackRectangle()
@@ -267,6 +310,12 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
         // Repainting this small custom control is cheaper than maintaining the
         // previous thumb bounds, and avoids seams in the active track.
         Invalidate();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) hoverTip.Dispose();
+        base.Dispose(disposing);
     }
 
     private sealed class PlaybackSeekBarAccessibleObject(
