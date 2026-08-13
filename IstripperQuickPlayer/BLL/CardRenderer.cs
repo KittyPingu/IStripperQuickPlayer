@@ -129,10 +129,22 @@ namespace IStripperQuickPlayer.BLL
             Rectangle bounds, Point point) => bounds.Contains(point);
 
         public override bool RetainsHover(
-            ImageListViewItem item, Point point) =>
-            mZoomRatio > 0 &&
-            _boundsByIndex.TryGetValue(item.Index, out Rectangle bounds) &&
-            RetainsExpandedHover(bounds, point);
+            ImageListViewItem item, Point point)
+        {
+            if (mZoomRatio <= 0)
+                return false;
+
+            if (DrawWithDirectComposition &&
+                TryGetPromotedCard(item.Index, ImageListView.ClientRectangle,
+                    out GpuCardVisual promoted))
+            {
+                return RetainsExpandedHover(promoted.Bounds, point);
+            }
+
+            return _boundsByIndex.TryGetValue(
+                    item.Index, out Rectangle bounds) &&
+                RetainsExpandedHover(bounds, point);
+        }
 
         internal static bool VerifyRelativeMetrics()
         {
@@ -170,7 +182,16 @@ namespace IStripperQuickPlayer.BLL
                     new Point(21, 170)) &&
                 !RetainsExpandedHover(
                     new Rectangle(20, 20, 200, 300),
-                    new Point(19, 170));
+                    new Point(19, 170)) &&
+                PromotedBounds(
+                    new Rectangle(100, 100, 100, 150),
+                    new Rectangle(0, 0, 500, 500), .2f) ==
+                    new Rectangle(80, 70, 140, 210) &&
+                RetainsExpandedHover(
+                    PromotedBounds(
+                        new Rectangle(100, 100, 100, 150),
+                        new Rectangle(0, 0, 500, 500), .2f),
+                    new Point(210, 175));
         }
 
         private Font GetFont(string family, int size,
@@ -479,15 +500,8 @@ namespace IStripperQuickPlayer.BLL
             if (!gpuCards.TryGetValue(itemIndex, out visual) ||
                 visual.Card.image == null || mZoomRatio <= 0)
                 return false;
-            Rectangle bounds = visual.Bounds;
-            bounds.Inflate((int)(bounds.Width * mZoomRatio),
-                (int)(bounds.Height * mZoomRatio));
-            if (bounds.Bottom > viewport.Bottom)
-                bounds.Y = viewport.Bottom - bounds.Height + 34;
-            if (bounds.Top < viewport.Top) bounds.Y = viewport.Top;
-            if (bounds.Right > viewport.Right)
-                bounds.X = viewport.Right - bounds.Width;
-            if (bounds.Left < viewport.Left) bounds.X = viewport.Left;
+            Rectangle bounds = PromotedBounds(
+                visual.Bounds, viewport, mZoomRatio);
             double ratio = visual.Card.image.Width /
                 (double)visual.Card.image.Height;
             int inset = CardImageBottomInset(bounds);
@@ -510,6 +524,20 @@ namespace IStripperQuickPlayer.BLL
                         visual.PlayingBounds.Height * scale)))
             };
             return true;
+        }
+
+        private static Rectangle PromotedBounds(
+            Rectangle bounds, Rectangle viewport, float zoomRatio)
+        {
+            bounds.Inflate((int)(bounds.Width * zoomRatio),
+                (int)(bounds.Height * zoomRatio));
+            if (bounds.Bottom > viewport.Bottom)
+                bounds.Y = viewport.Bottom - bounds.Height + 34;
+            if (bounds.Top < viewport.Top) bounds.Y = viewport.Top;
+            if (bounds.Right > viewport.Right)
+                bounds.X = viewport.Right - bounds.Width;
+            if (bounds.Left < viewport.Left) bounds.X = viewport.Left;
+            return bounds;
         }
 
         internal void ResetCardScene()
