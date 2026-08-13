@@ -416,6 +416,17 @@ internal sealed class CustomShowStore
         return cards;
     }
 
+    internal ModelCard LoadCard(string showId, bool loadImage = true)
+    {
+        CustomShowManifest show = LoadManifest(showId);
+        CustomPerformerProfile performer = LoadPerformer(show.PerformerId);
+        string folder = Path.Combine(ShowsFolder, show.Id);
+        ValidateLink(show, performer);
+        ValidateMediaCompatibility(show, folder);
+        return ToModelCard(show, performer, folder,
+            Path.Combine(folder, "show.json"), loadImage);
+    }
+
     internal CustomShowManifest LoadManifest(string showId)
     {
         ValidateId(showId, "show");

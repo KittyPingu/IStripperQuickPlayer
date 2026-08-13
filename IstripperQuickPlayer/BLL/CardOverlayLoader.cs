@@ -402,6 +402,17 @@ internal static class CardOverlayLoader
         return true;
     }
 
+    internal static void ForgetCard(string tag)
+    {
+        bool changed = overlaysByCard.Remove(tag) |
+            overlayIdsByCard.Remove(tag) |
+            officialOverlayCards.Remove(tag) |
+            builtInFavouriteCards.Remove(tag);
+        if (!changed) return;
+        lastAnimationSignature = long.MinValue;
+        Generation++;
+    }
+
     internal static void Draw(
         Graphics graphics, ModelCard card, Rectangle destination)
     {

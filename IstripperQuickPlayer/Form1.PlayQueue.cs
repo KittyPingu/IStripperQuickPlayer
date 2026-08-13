@@ -143,6 +143,9 @@ namespace IStripperQuickPlayer
         private long activeQueuedCardStartedAt = -1;
         private string activeQueuedCardLastAnimationPath = "";
         private bool activeQueuedCardUsesSmartRules;
+        private long activeUnqueuedCardStartedAt = -1;
+        private string activeUnqueuedCardTag = "";
+        private bool activeUnqueuedCardSequential;
         private readonly System.Windows.Forms.Timer clipSelectionPlaybackTimer =
             new() { Interval = 15 };
         private readonly System.Windows.Forms.Timer playQueueResizeTimer =
@@ -2719,6 +2722,60 @@ namespace IStripperQuickPlayer
         private static int ReadShowDurationMinutes() =>
             ReadRegistryInteger(@"Software\Totem\vghd\player", "duration");
 
+        private void ObserveUnqueuedCardPlayback(string animationPath)
+        {
+            if (activeQueuedCard != null ||
+                string.IsNullOrEmpty(animationPath))
+                return;
+            string cardTag = GetCardTagFromAnimationPath(animationPath);
+            if (string.Equals(activeUnqueuedCardTag, cardTag,
+                    StringComparison.OrdinalIgnoreCase))
+                return;
+            activeUnqueuedCardTag = cardTag;
+            activeUnqueuedCardStartedAt = Environment.TickCount64;
+            activeUnqueuedCardSequential = false;
+        }
+
+        private void StartUnqueuedCardSession(string animationPath,
+            bool sequential)
+        {
+            activeUnqueuedCardTag = GetCardTagFromAnimationPath(animationPath);
+            activeUnqueuedCardStartedAt = Environment.TickCount64;
+            activeUnqueuedCardSequential = sequential;
+        }
+
+        private bool CanContinueUnqueuedCard(string animationPath)
+        {
+            return IsUnqueuedCardSession(animationPath) &&
+                ShouldContinueQueuedCard(activeUnqueuedCardStartedAt,
+                    Environment.TickCount64, ReadShowDurationMinutes());
+        }
+
+        private bool IsUnqueuedCardSession(string animationPath) =>
+            activeUnqueuedCardStartedAt >= 0 && string.Equals(
+                activeUnqueuedCardTag,
+                GetCardTagFromAnimationPath(animationPath),
+                StringComparison.OrdinalIgnoreCase);
+
+        private bool CanPreloadCurrentCard(string animationPath) =>
+            activeQueuedCard != null
+                ? ShouldContinueQueuedCard(activeQueuedCardStartedAt,
+                    Environment.TickCount64, ReadShowDurationMinutes())
+                : CanContinueUnqueuedCard(animationPath);
+
+        private bool UnqueuedCardContinuesSequentially(string animationPath) =>
+            activeUnqueuedCardSequential && string.Equals(
+                activeUnqueuedCardTag,
+                GetCardTagFromAnimationPath(animationPath),
+                StringComparison.OrdinalIgnoreCase);
+
+        private void ClearUnqueuedCardSession()
+        {
+            activeUnqueuedCardStartedAt = -1;
+            activeUnqueuedCardTag = "";
+            activeUnqueuedCardSequential = false;
+        }
+
         private static bool IsProgressiveHotnessEnabled() =>
             ReadRegistryInteger(@"Software\Totem\vghd\parameters",
                 "EroRandom") == 1;
@@ -2747,8 +2804,6 @@ namespace IStripperQuickPlayer
             if (!RequestAnimationPlayback(animationPath))
                 return false;
             SelectQueuedCard(cardTag, animationPath);
-            if (!apiOnlyMode)
-                BeginInvoke((Action)TaskbarThumbnail);
             return true;
         }
 

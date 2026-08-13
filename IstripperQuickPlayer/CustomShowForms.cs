@@ -80,6 +80,7 @@ internal sealed class CustomShowEditorForm : Form
     string? originalCoverTitleColor;
 
     internal string? SavedShowId { get; private set; }
+    internal bool SavedPerformerChanged { get; private set; }
 
     internal CustomShowEditorForm(CustomShowStore store,
         CustomShowConfiguration configuration, string? showId, bool reprocess = false,
@@ -91,6 +92,8 @@ internal sealed class CustomShowEditorForm : Form
         this.reprocess = reprocess && showId != null;
         this.queueManager = queueManager;
         this.queueJobId = queueJobId;
+        bool metadataOnly = showId != null && !this.reprocess &&
+            queueJobId == null;
         Text = showId == null ? "Create Custom Show" : this.reprocess
             ? "Reprocess Custom Show" : "Edit Custom Show Metadata";
         ClientSize = new Size(780, 760);
@@ -156,28 +159,31 @@ internal sealed class CustomShowEditorForm : Form
 
         processingTable = SectionTable();
         preset.Items.AddRange(["RVM Quality (ResNet50)", "RVM Fast (MobileNetV3)"]);
-        if (CustomShowProcessor.IsRvmMatAnyone2Installed(configuration))
+        if (metadataOnly || CustomShowProcessor.IsRvmMatAnyone2Installed(configuration))
             preset.Items.Add("RVM-MatAnyone (automatic RVM initialization)");
-        if (CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration))
+        if (metadataOnly || CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration))
             preset.Items.Add("RVM-ViTMatte S (automatic full RVM masks)");
-        if (CustomShowProcessor.IsMatAnyone2Installed(configuration))
+        if (metadataOnly || CustomShowProcessor.IsMatAnyone2Installed(configuration))
             preset.Items.Add("MatAnyone 2 (interactive initial mask)");
-        if (CustomShowProcessor.IsVideoMaMaInstalled(configuration))
+        if (metadataOnly || CustomShowProcessor.IsVideoMaMaInstalled(configuration))
             preset.Items.Add("VideoMaMa High Quality (SAM2 + diffusion)");
-        if (CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
+        if (metadataOnly || CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
             preset.Items.Add("ViTMatte S (editable SAM2 masks)");
-        if (CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
+        if (metadataOnly || CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
             preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
         preset.SelectedIndex = 0;
         AddRow(processingTable, "Processing algorithm", preset);
         maskEngine.Items.Add("RVM ResNet50 (fast, person-only)");
-        if (CustomShowProcessor.InstalledSam2Models(configuration).Count > 0)
+        IReadOnlyList<string> installedSam2Models = metadataOnly
+            ? ["base-plus", "small", "tiny"]
+            : CustomShowProcessor.InstalledSam2Models(configuration);
+        if (installedSam2Models.Count > 0)
             maskEngine.Items.Insert(0, "SAM2 (editable, best robustness)");
-        if (CustomShowProcessor.IsEdgeTamInstalled(configuration))
+        if (metadataOnly || CustomShowProcessor.IsEdgeTamInstalled(configuration))
             maskEngine.Items.Add("EdgeTAM (editable, faster)");
         maskEngine.SelectedIndex = 0;
         maskEngineRow = AddRow(processingTable, "Mask generation", maskEngine);
-        foreach (string model in CustomShowProcessor.InstalledSam2Models(configuration))
+        foreach (string model in installedSam2Models)
             sam2Model.Items.Add(model switch
             {
                 "small" => "Small (balanced)",
@@ -735,6 +741,8 @@ internal sealed class CustomShowEditorForm : Form
     {
         using CustomPerformerForm form = new(profile);
         if (form.ShowDialog(this) != DialogResult.OK) return;
+        if (profile != null)
+            SavedPerformerChanged = true;
         selectedProfile = form.Profile;
         string selectedProfileId = selectedProfile.Id;
         int index = profiles.FindIndex(profile => profile.Id == selectedProfile.Id);
@@ -1970,6 +1978,7 @@ internal sealed class CustomShowEditorForm : Form
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        table.SuspendLayout();
         return table;
     }
 
@@ -1984,6 +1993,7 @@ internal sealed class CustomShowEditorForm : Form
     static void AddSection(TableLayoutPanel root, string title,
         TableLayoutPanel contents)
     {
+        contents.ResumeLayout(false);
         GroupBox group = new()
         {
             Text = title, AutoSize = true, Dock = DockStyle.Top,
@@ -1996,24 +2006,32 @@ internal sealed class CustomShowEditorForm : Form
     static void AddCollapsibleSection(TableLayoutPanel root, string title,
         TableLayoutPanel contents)
     {
-        Panel container = new() { AutoSize = true, Dock = DockStyle.Top,
-            Margin = new Padding(0, 0, 0, 14) };
+        contents.ResumeLayout(false);
         Button toggle = new()
         {
             Text = $"▶  {title}", AutoSize = false, Height = 36,
-            Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft
+            Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 0, 0, 14)
         };
         GroupBox body = new() { AutoSize = true, Dock = DockStyle.Top,
-            Padding = new Padding(8), Visible = false };
+            Padding = new Padding(8), Visible = false,
+            Margin = new Padding(0, 0, 0, 14) };
         body.Controls.Add(contents);
-        container.Controls.Add(body);
-        container.Controls.Add(toggle);
+        AddRootControl(root, toggle);
+        AddRootControl(root, body);
         toggle.Click += (_, _) =>
         {
-            body.Visible = !body.Visible;
-            toggle.Text = $"{(body.Visible ? "▼" : "▶")}  {title}";
+            ScrollableControl? scroll = root.Parent as ScrollableControl;
+            scroll?.SuspendLayout();
+            root.SuspendLayout();
+            bool expanding = !body.Visible;
+            toggle.Margin = expanding
+                ? Padding.Empty : new Padding(0, 0, 0, 14);
+            body.Visible = expanding;
+            toggle.Text = $"{(expanding ? "▼" : "▶")}  {title}";
+            root.ResumeLayout(true);
+            scroll?.ResumeLayout(true);
         };
-        AddRootControl(root, container);
     }
 
     static int AddRow(TableLayoutPanel table, string label, Control control,

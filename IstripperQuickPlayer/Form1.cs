@@ -209,6 +209,8 @@ namespace IStripperQuickPlayer
         private static readonly object playbackRegistryLock = new();
         private static RegistryKey? playbackParametersKey;
         private bool playbackTimelinePolling;
+        private int nowPlayingUiUpdatePending;
+        private string displayedNowPlayingCardTag = "";
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
         private int playbackLastKnownElapsedMilliseconds;
@@ -2372,7 +2374,10 @@ namespace IStripperQuickPlayer
             if (!string.IsNullOrEmpty(full) &&
                 !string.Equals(GetCurrentAnimationPath(), full,
                     StringComparison.OrdinalIgnoreCase))
+            {
+                StartUnqueuedCardSession(full, sequential: true);
                 RequestAnimationPlayback(full);
+            }
             lastchosen = r;
         }
 
@@ -4940,17 +4945,18 @@ namespace IStripperQuickPlayer
                     (string.IsNullOrEmpty(path) ||
                      !string.IsNullOrEmpty(nowPlaying)))
                 {
-                    listClips.BeginInvoke(RefreshPlayingClipHighlight);
+                    QueueNowPlayingUiUpdate();
                     return;
                 }
                 bool pathChanged = path != nowPlayingPath;
                 nowPlayingPath = path;
+                if (pathChanged) ObserveUnqueuedCardPlayback(path);
                 WakePlaybackTimeline();
                 ArmMovieCapture();
                 nowPlaying = "";
                 if (path == "")
                 {
-                    listClips.BeginInvoke(RefreshPlayingClipHighlight);
+                    QueueNowPlayingUiUpdate();
                     return;
                 }
                 if (pathChanged)
@@ -4980,18 +4986,10 @@ namespace IStripperQuickPlayer
                     }
                     nowPlayingClipNumber = Convert.ToInt32(modelClip.clipNumber);
                 }
-                listClips.BeginInvoke(RefreshPlayingClipHighlight);
-                if (lblNowPlaying != null) lblNowPlaying.BeginInvoke((Action)(() => { lblNowPlaying.Text = "Now Playing: " + nowPlaying; }));
-                if (listClips.Items.Count == 0)
-                    this.BeginInvoke((Action)(() => NowPlayingClick(true)));
                 cardRenderer.nowPlayingTag = nowPlayingTag;
-                listModelsNew.BeginInvoke((Action)(() => listModelsNew.Refresh()));
             }
             catch { }
-            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-            if (doWallpaper && lblNowPlaying != null)
-                lblNowPlaying.BeginInvoke((Action)(() =>
-                    lblNowPlaying.Text = "Now Playing: " + nowPlaying));
+            QueueNowPlayingUiUpdate();
             if (Properties.Settings.Default.AutoWallpaper && doWallpaper &&
                 nowPlaying != "")
                 BeginInvoke((Action)(() => _ = ChangeWallpaper(
@@ -5286,6 +5284,41 @@ namespace IStripperQuickPlayer
             customShowQueueManager?.Dispose();
         }
 
+        private void QueueNowPlayingUiUpdate()
+        {
+            if (apiOnlyMode || IsDisposed || formIsClosing ||
+                Interlocked.Exchange(ref nowPlayingUiUpdatePending, 1) != 0)
+                return;
+            BeginInvoke((Action)(() =>
+            {
+                Interlocked.Exchange(ref nowPlayingUiUpdatePending, 0);
+                if (IsDisposed || formIsClosing) return;
+                string previousTag = displayedNowPlayingCardTag;
+                string currentTag = nowPlayingTagShort;
+                displayedNowPlayingCardTag = currentTag;
+                RefreshPlayingClipHighlight();
+                if (lblNowPlaying != null)
+                    lblNowPlaying.Text = "Now Playing: " + nowPlaying;
+                if (listClips.Items.Count == 0 &&
+                    !string.IsNullOrEmpty(nowPlayingPath))
+                    NowPlayingClick(true);
+                if (!string.Equals(previousTag, currentTag,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    ImageListViewItem[] changed = listModelsNew.Items
+                        .Where(item => string.Equals(item.Tag?.ToString(),
+                                previousTag,
+                                StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(item.Tag?.ToString(), currentTag,
+                                StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+                    if (changed.Length > 0)
+                        listModelsNew.RefreshItems(changed);
+                }
+                TaskbarThumbnail();
+            }));
+        }
+
         private int IStripperPlayerVolume(int mode)
         {
             EnsureIStripperPlayerVolumes();
@@ -5405,7 +5438,27 @@ namespace IStripperQuickPlayer
 
             if (!useQueue || model != null)
                 ClearQueuedCardSession();
-            if (useQueue && model == null && TryPlayNextQueuedAnimation())
+
+            bool continueUnqueuedCard = useQueue && model == null &&
+                activeQueuedCard == null &&
+                !string.IsNullOrEmpty(completedAnimation) &&
+                IsUnqueuedCardSession(completedAnimation);
+            if (continueUnqueuedCard &&
+                !CanContinueUnqueuedCard(completedAnimation!))
+            {
+                ClearUnqueuedCardSession();
+                GetNextCard();
+                return;
+            }
+
+            // A manually selected card owns playback until its show-duration
+            // session expires. The automatic queue must not take over between
+            // clips in that session.
+            if (!continueUnqueuedCard && useQueue && model == null &&
+                TryPlayNextQueuedAnimation())
+                return;
+            if (continueUnqueuedCard &&
+                TryPlayPreloadedCustomClip(completedAnimation!))
                 return;
 
             string path = completedAnimation ?? "";
@@ -5429,9 +5482,13 @@ namespace IStripperQuickPlayer
                 if (model == null) return;
                 List<ModelClip> clips = new List<ModelClip>();
                 if (model.clips == null) return;
-                clips = FilterClipList(model.clips);
+                clips = FilterClipList(model.clips)
+                    .OrderBy(clip => clip.clipNumber).ToList();
+                bool sequentialSession = !string.IsNullOrEmpty(path) &&
+                    UnqueuedCardContinuesSequentially(path);
                 List<ModelClip> selectableClips = clips;
-                if (chooseRandom || Properties.Settings.Default.Randomize)
+                if (chooseRandom || Properties.Settings.Default.Randomize &&
+                    !sequentialSession)
                 {
                     List<ModelClip> freshClips = ExcludeRecentClips(clips,
                         GetRecentPlaybackPaths());
@@ -5473,13 +5530,14 @@ namespace IStripperQuickPlayer
                     RequestAnimationPlayback(GetAnimationPath(mnew));
                 }
             }
-            this.BeginInvoke((Action)(() => TaskbarThumbnail()));
         }
 
         private void GetNextCard()
         {
             if (panicActive)
                 return;
+
+            ClearUnqueuedCardSession();
 
             ClearQueuedCardSession(clearManualQueueEntry: false);
             if (TryPlayNextQueuedAnimation())

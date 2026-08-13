@@ -31,7 +31,7 @@ internal sealed class CustomPlayerForm : Form
         internal uint Time;
         internal UIntPtr ExtraInfo;
     }
-    sealed record AlphaHitMap(byte[] Pixels, int Width, int Height);
+    internal sealed record AlphaHitMap(byte[] Pixels, int Width, int Height);
     static readonly LowLevelMouseProc globalWheelProc = GlobalWheelCallback;
     static IntPtr globalWheelHook;
     static CustomPlayerForm? globalWheelOwner;
@@ -39,6 +39,7 @@ internal sealed class CustomPlayerForm : Form
     readonly bool suppressErrorDialog;
     readonly double rangeStartSeconds, requestedRangeEndSeconds;
     readonly Rectangle? initialBounds;
+    readonly Task<PreparedPlayback?>? preparedPlayback;
     readonly CancellationTokenSource cancellation = new();
     readonly System.Windows.Forms.Timer settleTimer = new() { Interval = 15 };
     readonly Stopwatch settleClock = new();
@@ -48,6 +49,7 @@ internal sealed class CustomPlayerForm : Form
     bool? mouseTransparent;
     bool movingWindow;
     bool windowConfigured;
+    bool preloadRequested;
     int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
         settleStart, settleTarget;
     volatile int alphaThreshold, fullOpacityThreshold;
@@ -68,8 +70,11 @@ internal sealed class CustomPlayerForm : Form
     internal bool Paused => paused;
     internal event EventHandler? PlaybackCompleted;
     internal event EventHandler<Exception>? PlaybackFailed;
+    internal event EventHandler? FirstFramePresented;
+    internal event EventHandler? PreloadRequested;
     internal event Action<int>? VolumeChanged;
     internal event Action<int>? SizePercentChanged;
+    internal bool HoldFinalFrameOnCompletion;
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
@@ -95,7 +100,8 @@ internal sealed class CustomPlayerForm : Form
         int playerSizePercent = 40, int volumePercent = 100,
         int alphaThreshold = 0, int fullOpacityThreshold = 255,
         bool suppressErrorDialog = false, long startMs = 0, long endMs = 0,
-        Rectangle? initialBounds = null)
+        Rectangle? initialBounds = null,
+        Task<PreparedPlayback?>? preparedPlayback = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
@@ -103,6 +109,7 @@ internal sealed class CustomPlayerForm : Form
         rangeStartSeconds = Math.Max(0, startMs / 1000d);
         requestedRangeEndSeconds = endMs / 1000d;
         this.initialBounds = initialBounds;
+        this.preparedPlayback = preparedPlayback;
         sizePercent = Math.Clamp(playerSizePercent, 10, 200);
         this.volumePercent = Math.Clamp(volumePercent, 0, 100);
         this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
@@ -162,18 +169,47 @@ internal sealed class CustomPlayerForm : Form
     {
         try
         {
-            renderer = await Task.Run(() => new PairedRenderer(
+            PreparedPlayback? prepared = null;
+            if (preparedPlayback != null)
+            {
+                try
+                {
+                    prepared = await preparedPlayback.WaitAsync(
+                        cancellation.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    _ = preparedPlayback.ContinueWith(task =>
+                    {
+                        if (task.Status == TaskStatus.RanToCompletion)
+                            task.Result?.Dispose();
+                        else
+                            _ = task.Exception;
+                    }, TaskScheduler.Default);
+                    throw;
+                }
+                catch
+                {
+                    // A speculative preload must never prevent normal playback.
+                }
+            }
+            renderer = prepared?.TakeRenderer();
+            bool rendererWasPrepared = renderer != null;
+            renderer ??= await Task.Run(() => new PairedRenderer(
                 foregroundPath, alphaPath, alphaThreshold,
                 fullOpacityThreshold), cancellation.Token);
+            prepared?.Dispose();
             renderer.SetVolume(volumePercent);
             if (rangeStartSeconds >= RangeEndSeconds)
                 throw new InvalidDataException("The custom clip time range is invalid.");
-            renderer.Seek(rangeStartSeconds);
+            if (!rendererWasPrepared)
+                renderer.Seek(rangeStartSeconds);
             Invoke(() => ConfigureWindow(renderer.Width, renderer.Height));
             (IntPtr handle, int width, int height) window =
                 ((IntPtr, int, int))Invoke(() => (Handle, ClientSize.Width, ClientSize.Height));
             renderer.AttachWindow(window.handle, window.width, window.height);
             renderer.Play();
+            bool firstFramePresented = false;
             while (!renderer.Ended && renderer.CurrentTime < RangeEndSeconds)
             {
                 cancellation.Token.ThrowIfCancellationRequested();
@@ -185,18 +221,32 @@ internal sealed class CustomPlayerForm : Form
                 if (Math.Abs(renderer.PlaybackRate - rate) > .0001) renderer.PlaybackRate = rate;
                 if (paused) { renderer.Pause(); await Task.Delay(15, cancellation.Token); continue; }
                 renderer.Play();
+                if (!preloadRequested &&
+                    RangeEndSeconds - renderer.CurrentTime <= 5)
+                {
+                    preloadRequested = true;
+                    BeginInvoke(() => PreloadRequested?.Invoke(
+                        this, EventArgs.Empty));
+                }
                 bool captureHitMap = !(locked && clickThroughLocked);
                 if (renderer.TryRenderDue(captureHitMap, out AlphaHitMap? alpha))
                 {
                     if (alpha != null)
-                    Volatile.Write(ref hitTestAlpha, alpha);
+                        Volatile.Write(ref hitTestAlpha, alpha);
+                    if (!firstFramePresented)
+                    {
+                        firstFramePresented = true;
+                        BeginInvoke(() => FirstFramePresented?.Invoke(
+                            this, EventArgs.Empty));
+                    }
                 }
                 else await Task.Delay(1, cancellation.Token);
             }
+            renderer.Pause();
             if (!IsDisposed) BeginInvoke(() =>
             {
                 PlaybackCompleted?.Invoke(this, EventArgs.Empty);
-                Close();
+                if (!HoldFinalFrameOnCompletion) Close();
             });
         }
         catch (OperationCanceledException) { }
@@ -307,6 +357,25 @@ internal sealed class CustomPlayerForm : Form
     }
     internal void HidePlayer() { if (!IsDisposed) BeginInvoke(Hide); }
     internal void ShowPlayer() { if (!IsDisposed) BeginInvoke(Show); }
+
+    internal static Task<PreparedPlayback?> PrepareAsync(string foregroundPath,
+        string alphaPath, int alphaThreshold, int fullOpacityThreshold,
+        long startMs, CancellationToken cancellationToken) => Task.Run(() =>
+        {
+            PairedRenderer renderer = new(foregroundPath, alphaPath,
+                alphaThreshold, fullOpacityThreshold);
+            try
+            {
+                renderer.Seek(Math.Max(0, startMs / 1000d));
+                renderer.Prime();
+                return (PreparedPlayback?)new PreparedPlayback(renderer);
+            }
+            catch
+            {
+                renderer.Dispose();
+                throw;
+            }
+        }, cancellationToken);
 
     bool IsAlphaVisible(Point point)
     {
@@ -546,7 +615,21 @@ internal sealed class CustomPlayerForm : Form
         locked && clickThrough || !moving && !alphaVisible
             ? HtTransparent : locked ? HtClient : HtCaption;
 
-    sealed class PairedRenderer : IDisposable
+    internal sealed class PreparedPlayback : IDisposable
+    {
+        PairedRenderer? renderer;
+
+        internal PreparedPlayback(PairedRenderer renderer) =>
+            this.renderer = renderer;
+
+        internal PairedRenderer? TakeRenderer() =>
+            Interlocked.Exchange(ref renderer, null);
+
+        public void Dispose() =>
+            Interlocked.Exchange(ref renderer, null)?.Dispose();
+    }
+
+    internal sealed class PairedRenderer : IDisposable
     {
         const string Shader = """
             struct O { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
@@ -628,6 +711,7 @@ internal sealed class CustomPlayerForm : Form
         internal void Play() { lock(sync) { if(playing)return; clock.Restart(); playing=true; audio?.Play(clockSeconds); } }
         internal void Pause() { lock(sync) { if(!playing)return; UpdateClock(); playing=false; audio?.Pause(); } }
         internal void Seek(double seconds) { lock(sync) { seconds=Math.Clamp(seconds,0,Duration); rgb.Seek(seconds); alpha.Seek(seconds); clockSeconds=seconds; clock.Restart(); if(!playing)clock.Stop(); pending=false; Ended=false; audio?.Seek(seconds,playing); } }
+        internal void Prime() { lock(sync) { if(!pending) DecodePair(); } }
         internal void SetVolume(int percent)=>audio?.SetVolume(percent);
         internal void SetAlphaThreshold(int value) =>
             Volatile.Write(ref alphaThreshold, Math.Clamp(value, 0, 255));

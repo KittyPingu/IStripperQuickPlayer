@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
+using Manina.Windows.Forms;
 using Microsoft.Win32;
 
 namespace IStripperQuickPlayer;
@@ -56,6 +57,9 @@ public partial class Form1
     bool customClipAlphaDirty;
     bool selectingClipForContextMenu;
     string customPlayerAnimationPath = "";
+    string customPreloadedAnimationPath = "";
+    Task<CustomPlayerForm.PreparedPlayback?>? customPreloadedPlayback;
+    CancellationTokenSource? customPreloadCancellation;
     IntPtr customHiddenMovieWindow;
     Rectangle? customPlayerBounds;
     bool customResumeIstripper;
@@ -465,7 +469,17 @@ public partial class Form1
                 // Refresh on the next UI turn, after the using scope has disposed
                 // the editor and released its last preview/image handles.
                 string savedShowId = form.SavedShowId;
-                BeginInvoke((Action)(() => RefreshSavedCustomShow(savedShowId)));
+                bool performerChanged = form.SavedPerformerChanged;
+                BeginInvoke((Action)(() =>
+                {
+                    if (performerChanged)
+                    {
+                        ReloadCustomCards();
+                        RebindCurrentCustomPlayback();
+                    }
+                    else
+                        RefreshSavedCustomShow(savedShowId);
+                }));
             }
             else
             {
@@ -480,14 +494,89 @@ public partial class Form1
         const int attempts = 3;
         for (int attempt = 1; attempt <= attempts; attempt++)
         {
-            ReloadCustomCards();
-            RebindCurrentCustomPlayback();
-            if (Datastore.findCardByTag("custom:" + showId) != null)
+            try
+            {
+                CustomShowStore store = new(
+                    customShowConfiguration.LibraryRoot);
+                ModelCard refreshed = await Task.Run(() =>
+                    store.LoadCard(showId));
+                ReplaceCustomCard(refreshed);
+                RebindCurrentCustomPlayback();
                 return;
+            }
+            catch (IOException) when (attempt < attempts) { }
             if (attempt < attempts)
                 await Task.Delay(200);
         }
         Debug.WriteLine($"Published custom show {showId} was not available after refresh.");
+    }
+
+    void ReplaceCustomCard(ModelCard refreshed)
+    {
+        List<ModelCard> cards = Datastore.modelcards ?? [];
+        int index = cards.FindIndex(card => string.Equals(card.name,
+            refreshed.name, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            ReloadCustomCards();
+            return;
+        }
+
+        ModelCard previous = cards[index];
+        List<ModelCard> replacement = [.. cards];
+        replacement[index] = refreshed;
+        Datastore.modelcards = replacement;
+        CardOverlayLoader.RecalculateCard(refreshed, myData);
+
+        bool rebuild = RequiresCardListRebuild(previous, refreshed);
+        ImageListViewItem? visible = listModelsNew.Items.FirstOrDefault(item =>
+            string.Equals(item.Tag?.ToString(), refreshed.name,
+                StringComparison.OrdinalIgnoreCase));
+        ListViewItem? virtualItem = items?.FirstOrDefault(item =>
+            string.Equals(item.Tag?.ToString(), refreshed.name,
+                StringComparison.OrdinalIgnoreCase));
+        if (rebuild || visible == null || virtualItem == null)
+        {
+            directCompositionCardOverlays?.InvalidateCardImage(previous.image);
+            previous.image?.Dispose();
+            PopulateModelListview();
+            return;
+        }
+
+        string text = refreshed.modelName + Environment.NewLine +
+            refreshed.outfit;
+        virtualItem.Text = text;
+        visible.Text = text;
+        directCompositionCardOverlays?.InvalidateCardImage(previous.image);
+        listModelsNew.RefreshItems([visible]);
+        RenderPlayQueues();
+        if (visible.Selected)
+            loadListClips(refreshed.name);
+        previous.image?.Dispose();
+    }
+
+    bool RequiresCardListRebuild(ModelCard previous, ModelCard current)
+    {
+        if (!string.IsNullOrWhiteSpace(txtSearch.Text) ||
+            chkFavourite.Checked ||
+            !string.Equals(cmbFilter.Text, "Default",
+                StringComparison.OrdinalIgnoreCase))
+            return true;
+        string sort = cmbSortBy.Text;
+        return sort switch
+        {
+            "Model Name" => previous.modelName != current.modelName,
+            "Rating" => previous.rating != current.rating,
+            "Age" => previous.modelAge != current.modelAge,
+            "Breast Size" => previous.bust != current.bust,
+            "Waist" => previous.waist != current.waist,
+            "Hips" => previous.hips != current.hips,
+            "Ethnicity" => previous.ethnicity != current.ethnicity,
+            "Height" => previous.height != current.height,
+            "Date Purchased" => previous.datePurchased != current.datePurchased,
+            "Release Date" => previous.dateReleased != current.dateReleased,
+            _ => false
+        };
     }
 
     void ShowCustomShowQueues()
@@ -666,18 +755,69 @@ public partial class Form1
         form.ShowDialog(this);
     }
 
-    void DeleteCurrentCustomShow()
+    async void DeleteCurrentCustomShow()
     {
         string? showId = CurrentContextCustomShowId();
         ModelCard? card = showId == null ? null :
             Datastore.findCardByTag("custom:" + showId);
-        if (showId == null || card == null || MessageBox.Show(this,
+        if (showId == null || card == null)
+            return;
+        string playing = !string.IsNullOrEmpty(customPlayerAnimationPath)
+            ? customPlayerAnimationPath : GetCurrentAnimationPath();
+        if (string.Equals(GetCardTagFromAnimationPath(playing), card.name,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this,
+                "This custom show is currently playing. Play another show " +
+                "or stop playback before deleting it.",
+                "Delete Custom Show", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (MessageBox.Show(this,
                 $"Move '{card.outfit}' to the Recycle Bin?",
                 "Delete Custom Show", MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning) != DialogResult.Yes)
             return;
-        new CustomShowStore(customShowConfiguration.LibraryRoot).DeleteShow(showId);
-        ReloadCustomCards();
+        try
+        {
+            UseWaitCursor = true;
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            await Task.Run(() => store.DeleteShow(showId));
+            RemoveCustomClipQueueEntries(card.name, null);
+            Datastore.modelcards = (Datastore.modelcards ?? [])
+                .Where(value => !string.Equals(value.name, card.name,
+                    StringComparison.OrdinalIgnoreCase)).ToList();
+            CardOverlayLoader.ForgetCard(card.name);
+            ImageListViewItem? visible = listModelsNew.Items.FirstOrDefault(
+                item => string.Equals(item.Tag?.ToString(), card.name,
+                    StringComparison.OrdinalIgnoreCase));
+            items = items?.Where(item => !string.Equals(
+                    item.Tag?.ToString(), card.name,
+                    StringComparison.OrdinalIgnoreCase)).ToArray();
+            directCompositionCardOverlays?.ResetCardImages();
+            cardRenderer?.ResetCardScene();
+            if (visible != null)
+                listModelsNew.Items.Remove(visible);
+            if (string.Equals(clipListTag, card.name,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                clipListTag = "";
+                listClips.Items.Clear();
+            }
+            lblModelsLoaded.Text = "Cards Shown: " +
+                listModelsNew.Items.Count + "/" +
+                (Datastore.modelcards?.Count(value =>
+                    value.clips?.Count > 0) ?? 0);
+            RebuildAutomaticQueue();
+            card.image?.Dispose();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Delete Custom Show",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally { UseWaitCursor = false; }
     }
 
     void listClips_MouseDownForCustomContext(object? sender, MouseEventArgs e)
@@ -897,12 +1037,16 @@ public partial class Form1
         int mode = Volatile.Read(ref playerMode);
         int size = PlayerSizeForAnimation(
             animationPath, mode, mode == 1 ? 80 : 40);
+        Task<CustomPlayerForm.PreparedPlayback?>? preparedPlayback =
+            TakeCustomPreload(animationPath);
         CustomPlayerForm player = new(clip.customForegroundPath,
             clip.customAlphaPath, size,
             CustomPlayerVolume(playerMode == 1), clip.customAlphaThreshold,
             customShowConfiguration.FullOpacityThreshold,
             startMs: clip.customStartMs,
-            endMs: clip.customEndMs, initialBounds: initialBounds);
+            endMs: clip.customEndMs, initialBounds: initialBounds,
+            preparedPlayback: preparedPlayback);
+        player.HoldFinalFrameOnCompletion = true;
         player.SetLocked(playerlocked);
         player.SetClickThroughLocked(Properties.Settings.Default.ClickThroughLockedPlayer);
         player.SetWheelResize(Properties.Settings.Default.EnablePlayerWheelResize);
@@ -937,7 +1081,12 @@ public partial class Form1
         SelectCustomAlphaThreshold(card!, clip);
         customPlayerAnimationPath = animationPath;
         RefreshPlaybackControlVisibility();
-        previous?.ClosePlayer();
+        if (previous != null)
+        {
+            player.FirstFramePresented += (_, _) => previous.ClosePlayer();
+        }
+        player.PreloadRequested += (_, _) => BeginInvoke(() =>
+            PreloadNextCustomClip(card!, clip));
         player.PlaybackCompleted += (_, _) =>
         {
             Rectangle playerBounds = player.Bounds;
@@ -945,18 +1094,23 @@ public partial class Form1
             {
                 if (customPlayer != player) return;
                 customPlayerBounds = playerBounds;
-                customPlayer = null;
-                customPlayerCard = null;
-                customPlayerClip = null;
-                customPlayerAnimationPath = "";
                 GetNextClip(null, animationPath);
-                if (customPlayer == null &&
-                    string.IsNullOrEmpty(customPendingIstripperAnimation))
+                if (customPlayer == player)
+                {
+                    customPlayer = null;
+                    customPlayerCard = null;
+                    customPlayerClip = null;
+                    customPlayerAnimationPath = "";
+                    player.ClosePlayer();
+                }
+                if (customPlayer == null && string.IsNullOrEmpty(
+                        customPendingIstripperAnimation))
                     RestoreIStripperAfterCustomPlayback();
             });
         };
         player.PlaybackFailed += (_, _) => BeginInvoke(() =>
         {
+            previous?.ClosePlayer();
             if (customPlayer == player) StopCustomPlayback(true);
         });
         player.FormClosed += (_, _) =>
@@ -977,6 +1131,98 @@ public partial class Form1
         ShowNowPlaying(animationPath, doWallpaper: true);
         player.Show(this);
         return true;
+    }
+
+    void PreloadNextCustomClip(ModelCard card, ModelClip current)
+    {
+        if (customPlayerCard != card || customPlayerClip != current ||
+            card.clips == null || !CanPreloadCurrentCard(
+                GetAnimationPath(current)))
+            return;
+        List<ModelClip> playable = FilterClipList(card.clips)
+            .OrderBy(value => value.clipNumber).ToList();
+        int index = playable.IndexOf(current);
+        if (index < 0 || playable.Count < 2) return;
+        ModelClip? next;
+        if (Properties.Settings.Default.Randomize &&
+            !UnqueuedCardContinuesSequentially(GetAnimationPath(current)))
+        {
+            List<ModelClip> candidates = playable.Where(value =>
+                value != current).ToList();
+            List<ModelClip> fresh = ExcludeRecentClips(candidates,
+                GetRecentPlaybackPaths());
+            if (fresh.Count > 0) candidates = fresh;
+            next = candidates.Count == 0 ? null : candidates[
+                Random.Shared.Next(candidates.Count)];
+        }
+        else
+        {
+            next = index + 1 < playable.Count ? playable[index + 1] : null;
+        }
+        if (next == null) return;
+        if (next.customForegroundPath == null || next.customAlphaPath == null ||
+            !File.Exists(next.customForegroundPath) ||
+            !File.Exists(next.customAlphaPath)) return;
+        string path = GetAnimationPath(next);
+        if (string.Equals(customPreloadedAnimationPath, path,
+                StringComparison.OrdinalIgnoreCase)) return;
+
+        CancelCustomPreload();
+        customPreloadCancellation = new CancellationTokenSource();
+        customPreloadedAnimationPath = path;
+        customPreloadedPlayback = CustomPlayerForm.PrepareAsync(
+            next.customForegroundPath, next.customAlphaPath,
+            next.customAlphaThreshold,
+            customShowConfiguration.FullOpacityThreshold,
+            next.customStartMs, customPreloadCancellation.Token);
+    }
+
+    Task<CustomPlayerForm.PreparedPlayback?>? TakeCustomPreload(
+        string animationPath)
+    {
+        if (!string.Equals(customPreloadedAnimationPath, animationPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            CancelCustomPreload();
+            return null;
+        }
+        Task<CustomPlayerForm.PreparedPlayback?>? prepared =
+            customPreloadedPlayback;
+        customPreloadedPlayback = null;
+        customPreloadedAnimationPath = "";
+        customPreloadCancellation?.Dispose();
+        customPreloadCancellation = null;
+        return prepared;
+    }
+
+    bool TryPlayPreloadedCustomClip(string completedAnimation)
+    {
+        if (string.IsNullOrEmpty(customPreloadedAnimationPath) ||
+            !completedAnimation.StartsWith("custom:",
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(GetCardTagFromAnimationPath(completedAnimation),
+                GetCardTagFromAnimationPath(customPreloadedAnimationPath),
+                StringComparison.OrdinalIgnoreCase))
+            return false;
+        return RequestAnimationPlayback(customPreloadedAnimationPath);
+    }
+
+    void CancelCustomPreload()
+    {
+        CancellationTokenSource? cancellation = customPreloadCancellation;
+        Task<CustomPlayerForm.PreparedPlayback?>? prepared =
+            customPreloadedPlayback;
+        customPreloadCancellation = null;
+        customPreloadedPlayback = null;
+        customPreloadedAnimationPath = "";
+        cancellation?.Cancel();
+        cancellation?.Dispose();
+        if (prepared != null)
+            _ = prepared.ContinueWith(task =>
+            {
+                if (task.Status == TaskStatus.RanToCompletion)
+                    task.Result?.Dispose();
+            }, TaskScheduler.Default);
     }
 
     void SuspendIStripperForCustomPlayback()
@@ -1006,6 +1252,7 @@ public partial class Form1
 
     void StopCustomPlayback(bool restoreIstripper)
     {
+        CancelCustomPreload();
         CustomPlayerForm? player = customPlayer;
         if (player != null) RememberCustomPlayerBounds(player);
         customPlayer = null;

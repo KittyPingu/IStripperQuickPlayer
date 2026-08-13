@@ -1488,6 +1488,16 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         renderedGpuSceneVersion = -1;
     }
 
+    internal void InvalidateCardImage(Image? image)
+    {
+        if (image is not DrawingBitmap bitmapImage ||
+            !bitmaps.Remove(bitmapImage,
+                out ID2D1Bitmap1? bitmap))
+            return;
+        bitmap.Dispose();
+        renderedGpuSceneVersion = -1;
+    }
+
     private void ClearSharedOverlays()
     {
         foreach ((int index, CardOverlayVisual visual) in cardOverlayVisuals)
