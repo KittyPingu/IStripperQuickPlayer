@@ -16,8 +16,7 @@ internal sealed class CustomVideoStabilizationForm : Form
         "iqp-stabilize-" + Guid.NewGuid().ToString("N"));
     readonly TextBox sourcePath = new() { Dock = DockStyle.Fill };
     readonly TextBox outputPath = new() { Dock = DockStyle.Fill };
-    readonly PictureBox preview = new() { Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black,
+    readonly DxgiMaskPreviewControl preview = new() { Dock = DockStyle.Fill,
         AccessibleName = "Representative frame from the video to stabilize" };
     readonly ComboBox strength = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 210 };
@@ -30,7 +29,6 @@ internal sealed class CustomVideoStabilizationForm : Form
         Enabled = false };
     readonly Button review = new() { Text = "Review input vs output...", AutoSize = true,
         Enabled = false };
-    Bitmap? frame;
     VideoInfo? sourceInfo;
 
     string SourcePreviewPath => Path.Combine(temporary, "source-preview.jpg");
@@ -142,8 +140,7 @@ internal sealed class CustomVideoStabilizationForm : Form
             await ExtractPreviewAsync(sourcePath.Text, SourcePreviewPath,
                 Math.Min(3, sourceInfo.DurationMs / 2000d), CancellationToken.None);
             Bitmap next = LoadBitmap(SourcePreviewPath);
-            preview.Image = next;
-            frame?.Dispose(); frame = next;
+            preview.SetSourceOwned(next);
             run.Enabled = true;
             UpdateReviewAvailability();
             status.Text = $"Ready: {sourceInfo.Width}×{sourceInfo.Height}, " +
@@ -189,8 +186,7 @@ internal sealed class CustomVideoStabilizationForm : Form
             if (File.Exists(OutputPreviewPath))
             {
                 Bitmap next = LoadBitmap(OutputPreviewPath);
-                preview.Image = next;
-                frame?.Dispose(); frame = next;
+                preview.SetSourceOwned(next);
             }
             UpdateReviewAvailability();
             status.Text = "Stabilized video complete: " + output;
@@ -531,7 +527,6 @@ internal sealed class CustomVideoStabilizationForm : Form
     {
         if (disposing)
         {
-            preview.Image = null; frame?.Dispose();
             try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
         }
         base.Dispose(disposing);

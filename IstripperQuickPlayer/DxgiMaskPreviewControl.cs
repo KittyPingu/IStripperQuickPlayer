@@ -29,6 +29,7 @@ internal sealed class DxgiMaskPreviewControl : Control
           o.uv=p; o.position=float4(p*float2(2,-2)+float2(-1,1),0,1); return o; }
         float4 PSMain(Out i):SV_TARGET {
           float4 sizes=Data.Load(int3(0,0,0)), edit=Data.Load(int3(1,0,0));
+          float4 selection=Data.Load(int3(2,0,0));
           float scale=min(sizes.z/sizes.x,sizes.w/sizes.y);
           float2 offset=(sizes.zw-sizes.xy*scale)*.5;
           float2 pixel=(i.uv*sizes.zw-offset)/scale;
@@ -41,6 +42,12 @@ internal sealed class DxgiMaskPreviewControl : Control
           }
           if(edit.y>=0&&abs(distance(pixel,edit.yz)-edit.w)<=1.5)
             color=float4(1,1,1,1);
+          if(selection.x>=0 && pixel.x>=selection.x && pixel.y>=selection.y &&
+             pixel.x<=selection.z && pixel.y<=selection.w) {
+            bool border=abs(pixel.x-selection.x)<=2 || abs(pixel.x-selection.z)<=2 ||
+              abs(pixel.y-selection.y)<=2 || abs(pixel.y-selection.w)<=2;
+            color.rgb=border?float3(1,1,0):lerp(color.rgb,float3(1,0,0),.35);
+          }
           return float4(color.rgb,1);
         }
         """;
@@ -48,6 +55,8 @@ internal sealed class DxgiMaskPreviewControl : Control
     sealed class FrameUpdate : IDisposable
     {
         internal Bitmap? Source;
+        internal byte[]? SourceBgra;
+        internal Size SourceSize;
         internal required Bitmap Mask;
         internal Rectangle? MaskRegion;
         internal required PointF[] Points;
@@ -62,6 +71,7 @@ internal sealed class DxgiMaskPreviewControl : Control
     Size pendingSize;
     Size imageSize;
     PointF? brush;
+    Rectangle? selection;
     int brushDiameter;
     PointF[] pendingPoints = [];
     int[] pendingLabels = [];
@@ -120,8 +130,19 @@ internal sealed class DxgiMaskPreviewControl : Control
 
     internal void SetSourceOwned(Bitmap source)
     {
-        Bitmap mask = new(source.Width, source.Height, PixelFormat.Format32bppArgb);
+        Bitmap mask = new(1, 1, PixelFormat.Format32bppArgb);
         Queue(new FrameUpdate { Source = source, Mask = mask, Points = [], Labels = [] });
+    }
+
+    internal void SetSource(Bitmap source) => SetSourceOwned(new Bitmap(source));
+
+    /// <summary>Queues an owned, tightly packed BGRA frame without creating a GDI bitmap.</summary>
+    internal void SetSourceBgraOwned(byte[] source, int width, int height)
+    {
+        if (source.Length < checked(width * height * 4))
+            throw new ArgumentException("The BGRA frame is smaller than its dimensions.", nameof(source));
+        Queue(new FrameUpdate { SourceBgra = source, SourceSize = new Size(width, height),
+            Mask = new Bitmap(1, 1, PixelFormat.Format32bppArgb), Points = [], Labels = [] });
     }
 
     internal void SetPreview(Bitmap source, Bitmap mask, PointF[] points, int[] labels) =>
@@ -195,10 +216,14 @@ internal sealed class DxgiMaskPreviewControl : Control
             // A paint update may overtake the initial source+mask upload. Carry
             // the source forward so coalescing can never produce a mask-only
             // first frame.
-            if (update.Source == null && pending?.Source != null)
+            if (update.Source == null && update.SourceBgra == null &&
+                (pending?.Source != null || pending?.SourceBgra != null))
             {
                 update.Source = pending.Source;
+                update.SourceBgra = pending.SourceBgra;
+                update.SourceSize = pending.SourceSize;
                 pending.Source = null;
+                pending.SourceBgra = null;
             }
             pending?.Dispose();
             pending = update;
@@ -209,6 +234,12 @@ internal sealed class DxgiMaskPreviewControl : Control
     internal void SetBrush(PointF? value, int diameter)
     {
         lock (sync) { brush = value; brushDiameter = diameter; overlayDirty = true; }
+        changed.Set();
+    }
+
+    internal void SetSelection(Rectangle? value)
+    {
+        lock (sync) { selection = value; overlayDirty = true; }
         changed.Set();
     }
 
@@ -266,7 +297,7 @@ internal sealed class DxgiMaskPreviewControl : Control
                 Shader, "VSMain", "MaskPreview.hlsl", "vs_5_0", ShaderFlags.OptimizationLevel3).Span);
             using ID3D11PixelShader ps = device.CreatePixelShader(Compiler.Compile(
                 Shader, "PSMain", "MaskPreview.hlsl", "ps_5_0", ShaderFlags.OptimizationLevel3).Span);
-            using ID3D11Texture2D data = FloatTexture(device, 2);
+            using ID3D11Texture2D data = FloatTexture(device, 3);
             using ID3D11ShaderResourceView dataView = device.CreateShaderResourceView(data);
             using ID3D11Texture2D pointData = FloatTexture(device, 64);
             using ID3D11ShaderResourceView pointView = device.CreateShaderResourceView(pointData);
@@ -282,12 +313,14 @@ internal sealed class DxgiMaskPreviewControl : Control
                     changed.WaitOne();
                     if (stopping) break;
                     FrameUpdate? update; Size requested; PointF? currentBrush;
+                    Rectangle? currentSelection;
                     int currentBrushDiameter; bool redrawOverlay, redrawMarkers;
                     PointF[] latestPoints; int[] latestLabels;
                     lock (sync)
                     {
                         update = pending; pending = null; requested = pendingSize;
                         currentBrush = brush; currentBrushDiameter = brushDiameter;
+                        currentSelection = selection;
                         redrawOverlay = overlayDirty; overlayDirty = false;
                         redrawMarkers = markersDirty; markersDirty = false;
                         latestPoints = pendingPoints; latestLabels = pendingLabels;
@@ -316,6 +349,17 @@ internal sealed class DxgiMaskPreviewControl : Control
                                 currentImageSize = update.Source.Size;
                                 lock (sync) imageSize = currentImageSize;
                             }
+                            else if (update.SourceBgra != null)
+                            {
+                                ID3D11Texture2D next = UploadBgra(device, context,
+                                    update.SourceBgra, update.SourceSize.Width,
+                                    update.SourceSize.Height);
+                                ID3D11ShaderResourceView nextView = device.CreateShaderResourceView(next);
+                                sourceView?.Dispose(); sourceTexture?.Dispose();
+                                sourceTexture = next; sourceView = nextView;
+                                currentImageSize = update.SourceSize;
+                                lock (sync) imageSize = currentImageSize;
+                            }
                             if (update.MaskRegion is Rectangle region && maskTexture != null)
                                 UploadRegion(context, maskTexture, update.Mask, region);
                             else
@@ -338,7 +382,8 @@ internal sealed class DxgiMaskPreviewControl : Control
                     }
                     Draw(context, swap, swapSize, currentImageSize, sourceView, maskView,
                         data, dataView, pointData, pointView, sampler, vs, ps,
-                        currentPoints, currentLabels, currentBrush, currentBrushDiameter);
+                        currentPoints, currentLabels, currentBrush, currentBrushDiameter,
+                        currentSelection);
                 }
             }
             finally
@@ -356,14 +401,15 @@ internal sealed class DxgiMaskPreviewControl : Control
         ID3D11ShaderResourceView dataView, ID3D11Texture2D pointData,
         ID3D11ShaderResourceView pointView, ID3D11SamplerState sampler,
         ID3D11VertexShader vs, ID3D11PixelShader ps, PointF[] points, int[] labels,
-        PointF? brush, int brushDiameter)
+        PointF? brush, int brushDiameter, Rectangle? selection)
     {
         using ID3D11Texture2D back = swap.GetBuffer<ID3D11Texture2D>(0);
         using ID3D11RenderTargetView target = context.Device.CreateRenderTargetView(back);
         float[] values = [sourceSize.Width, sourceSize.Height, swapSize.Width,
             swapSize.Height, points.Length, brush?.X ?? -1, brush?.Y ?? -1,
-            brushDiameter / 2f];
-        fixed (float* p = values) context.UpdateSubresource(data, 0, null, (IntPtr)p, 32, 0);
+            brushDiameter / 2f, selection?.Left ?? -1, selection?.Top ?? -1,
+            selection?.Right ?? -1, selection?.Bottom ?? -1];
+        fixed (float* p = values) context.UpdateSubresource(data, 0, null, (IntPtr)p, 48, 0);
         float[] pv = new float[256];
         for (int i = 0; i < points.Length; i++)
         {
@@ -426,6 +472,20 @@ internal sealed class DxgiMaskPreviewControl : Control
             ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         try { context.UpdateSubresource(texture, 0, null, bits.Scan0, (uint)bits.Stride, 0); }
         finally { bitmap.UnlockBits(bits); }
+        return texture;
+    }
+
+    static unsafe ID3D11Texture2D UploadBgra(ID3D11Device device,
+        ID3D11DeviceContext context, byte[] bytes, int width, int height)
+    {
+        ID3D11Texture2D texture = device.CreateTexture2D(new Texture2DDescription {
+            Width = (uint)width, Height = (uint)height, MipLevels = 1,
+            ArraySize = 1, Format = DxgiFormat.B8G8R8A8_UNorm,
+            SampleDescription = new SampleDescription(1, 0), Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.ShaderResource });
+        fixed (byte* pointer = bytes)
+            context.UpdateSubresource(texture, 0, null, (IntPtr)pointer,
+                (uint)(width * 4), 0);
         return texture;
     }
 

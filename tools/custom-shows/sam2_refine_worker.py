@@ -16,6 +16,9 @@ from sam_mask_worker import automatic_candidates, select_automatic_foreground
 CACHE_SCHEMA = 1
 POLICY_SCHEMA = 1
 PROGRESS_INTERVAL = .15
+CUDA_LOW_MEMORY_FRACTION = .15
+CUDA_LOW_MEMORY_MINIMUM = 2 * 1024 ** 3
+CUDA_RECLAIMABLE_MINIMUM = 512 * 1024 ** 2
 
 
 def send(**values):
@@ -584,6 +587,38 @@ def physical_memory_bytes():
     return 8 * 1024 ** 3
 
 
+def release_cuda_cache_under_pressure(torch, device, profiler):
+    """Return unused allocator blocks only at safe propagation boundaries."""
+    if device != "cuda": return False
+    try:
+        free, total = torch.cuda.mem_get_info()
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+        low_memory = free < max(int(total * CUDA_LOW_MEMORY_FRACTION),
+                                CUDA_LOW_MEMORY_MINIMUM)
+        if not low_memory or reserved - allocated < CUDA_RECLAIMABLE_MINIMUM:
+            return False
+        reclaimable = reserved - allocated
+        send(status="maintenance", phase="start", operation="cuda-cache-release",
+             message=f"Low GPU memory: releasing {reclaimable / 1024 ** 3:.1f} GB "
+                     "of unused CUDA cache...")
+        started = time.perf_counter()
+        gc.collect()
+        torch.cuda.empty_cache()
+        elapsed = time.perf_counter() - started
+        released = max(0, reserved - torch.cuda.memory_reserved())
+        profiler.add("pressure_cache_release", elapsed)
+        profiler.count("pressureCacheReleases")
+        profiler.count("pressureCacheBytesReleased", released)
+        send(status="maintenance", phase="complete",
+             operation="cuda-cache-release", releasedBytes=released,
+             message=f"Released {released / 1024 ** 3:.1f} GB of unused CUDA cache.")
+        return True
+    except RuntimeError:
+        profiler.count("pressureCacheReleaseFailures")
+        return False
+
+
 def add_feature_profiler(predictor, profiler, torch, device, enabled):
     if not enabled: return
     original = predictor.forward_image
@@ -1100,6 +1135,7 @@ def process(args):
                     mark_step=mark_step, commands=commands, allow_pause=True)
                 propagated_frames += written
                 writer.flush()
+                release_cuda_cache_under_pressure(torch, device, profiler)
                 available_end = last_frame
                 if paused:
                     continuation = dict(target=total - 1, range_start=0,
@@ -1223,6 +1259,7 @@ def process(args):
                         skip_start=True, commands=commands, allow_pause=True)
                     propagated_frames += written
                     writer.flush()
+                    release_cuda_cache_under_pressure(torch, device, profiler)
                     if continuation.get("extends_review", True):
                         available_end = max(available_end, last_frame)
                     terminal = dict(pauseFrame=available_end,
@@ -1388,6 +1425,7 @@ def process(args):
                         allow_pause=True)
                     propagated_frames += written
                     writer.flush()
+                    release_cuda_cache_under_pressure(torch, device, profiler)
                 finally:
                     use_compiled_interactive_forwards(prompt_forwards, False)
                 if not removing: correction_frames.add(frame)

@@ -30,8 +30,7 @@ internal sealed class CustomClipEditorForm : Form
     readonly List<CustomShowClip> clips;
     readonly bool usesPerClipMedia;
     CustomShowClipDetection? clipDetection;
-    readonly PictureBox preview = new() { Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+    readonly DxgiMaskPreviewControl preview = new() { Dock = DockStyle.Fill };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill, Height = 60 };
     readonly DataGridView grid = new() { Dock = DockStyle.Fill, ReadOnly = true,
         AllowUserToAddRows = false, AllowUserToDeleteRows = false,
@@ -315,7 +314,7 @@ internal sealed class CustomClipEditorForm : Form
         slowMotion.CheckedChanged += (_, _) => RestartPlayback();
         playback.Tick += (_, _) => PlaybackTick();
         previewDelay.Tick += (_, _) => { previewDelay.Stop(); _ = LoadPreviewAsync(timeline.PositionMs); };
-        FormClosed += (_, _) => { playback.Stop(); previewDelay.Stop(); sensitivityDelay.Stop(); previewCancellation?.Cancel(); streamCancellation?.Cancel(); detectionCancellation?.Cancel(); preview.Image?.Dispose(); };
+        FormClosed += (_, _) => { playback.Stop(); previewDelay.Stop(); sensitivityDelay.Stop(); previewCancellation?.Cancel(); streamCancellation?.Cancel(); detectionCancellation?.Cancel(); };
         RefreshGrid(0);
         UpdatePosition();
         RequestPreview();
@@ -905,18 +904,9 @@ internal sealed class CustomClipEditorForm : Form
             while (!token.IsCancellationRequested)
             {
                 await process.StandardOutput.BaseStream.ReadExactlyAsync(frame, token);
-                Bitmap bitmap = FrameBitmap(frame, 640, 360);
-                try
-                {
-                    if (!IsHandleCreated || IsDisposed) { bitmap.Dispose(); break; }
-                    Invoke(() =>
-                    {
-                        Image? old = preview.Image;
-                        preview.Image = bitmap;
-                        old?.Dispose();
-                    });
-                }
-                catch { bitmap.Dispose(); throw; }
+                if (!IsHandleCreated || IsDisposed) break;
+                preview.SetSourceBgraOwned(frame, 640, 360);
+                frame = new byte[640 * 360 * 4];
             }
         }
         catch (EndOfStreamException) { }
@@ -936,21 +926,6 @@ internal sealed class CustomClipEditorForm : Form
                 System.Globalization.CultureInfo.InvariantCulture) })
             start.ArgumentList.Add(argument);
         return start;
-    }
-
-    static Bitmap FrameBitmap(byte[] bytes, int width, int height)
-    {
-        Bitmap bitmap = new(width, height, PixelFormat.Format32bppArgb);
-        BitmapData data = bitmap.LockBits(new Rectangle(0, 0, width, height),
-            ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-        try
-        {
-            for (int row = 0; row < height; row++)
-                Marshal.Copy(bytes, row * width * 4,
-                    data.Scan0 + row * data.Stride, width * 4);
-        }
-        finally { bitmap.UnlockBits(data); }
-        return bitmap;
     }
 
     async Task LoadPreviewAsync(long atMs)
@@ -979,9 +954,7 @@ internal sealed class CustomClipEditorForm : Form
             using Image image = Image.FromStream(bytes);
             Bitmap bitmap = new(image);
             if (cancellation.IsCancellationRequested) { bitmap.Dispose(); return; }
-            Image? old = preview.Image;
-            preview.Image = bitmap;
-            old?.Dispose();
+            preview.SetSourceOwned(bitmap);
         }
         catch (OperationCanceledException) { }
         catch (Exception error)

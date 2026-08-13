@@ -16,8 +16,7 @@ internal sealed class CustomStabiloStabilizationForm : Form
         "iqp-stabilo-" + Guid.NewGuid().ToString("N"));
     readonly TextBox sourcePath = new() { Dock = DockStyle.Fill };
     readonly TextBox outputPath = new() { Dock = DockStyle.Fill };
-    readonly PictureBox preview = new() { Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black,
+    readonly DxgiMaskPreviewControl preview = new() { Dock = DockStyle.Fill,
         AccessibleName = "Representative source frame" };
     readonly ComboBox preset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 255 };
@@ -30,7 +29,6 @@ internal sealed class CustomStabiloStabilizationForm : Form
         Enabled = false };
     readonly Button review = new() { Text = "Review input vs output...", AutoSize = true,
         Enabled = false };
-    Bitmap? frame;
     VideoInfo? sourceInfo;
 
     string InitialMaskPath => Path.Combine(temporary, "initial-mask.png");
@@ -155,8 +153,7 @@ internal sealed class CustomStabiloStabilizationForm : Form
             await ExtractPreviewAsync(sourcePath.Text, SourcePreviewPath,
                 Math.Min(3, decoder.Duration / 2), CancellationToken.None);
             Bitmap next = LoadBitmap(SourcePreviewPath);
-            preview.Image = next;
-            frame?.Dispose(); frame = next;
+            preview.SetSourceOwned(next);
             run.Enabled = sam2Model.Items.Count > 0;
             status.Text = run.Enabled
                 ? $"Ready: {sourceInfo.Width}×{sourceInfo.Height}, " +
@@ -226,8 +223,7 @@ internal sealed class CustomStabiloStabilizationForm : Form
             if (File.Exists(OutputPreviewPath))
             {
                 Bitmap next = LoadBitmap(OutputPreviewPath);
-                preview.Image = next;
-                frame?.Dispose(); frame = next;
+                preview.SetSourceOwned(next);
             }
             UpdateReviewAvailability();
             status.Text = "Background-locked video complete: " + output;
@@ -424,7 +420,6 @@ internal sealed class CustomStabiloStabilizationForm : Form
     {
         if (disposing)
         {
-            frame?.Dispose();
             try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
         }
         base.Dispose(disposing);

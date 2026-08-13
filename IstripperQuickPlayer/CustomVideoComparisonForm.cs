@@ -1,7 +1,5 @@
 using System.Diagnostics;
-using System.Drawing.Imaging;
 using System.Globalization;
-using System.Runtime.InteropServices;
 
 namespace IStripperQuickPlayer;
 
@@ -14,11 +12,9 @@ internal sealed class CustomVideoComparisonForm : Form
     readonly string outputPath;
     readonly long durationMs;
     readonly long frameDurationMs;
-    readonly PictureBox preview = new()
+    readonly DxgiMaskPreviewControl preview = new()
     {
         Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom,
-        BackColor = Color.Black,
         AccessibleName = "Synchronized original and stabilized video comparison"
     };
     readonly Controls.PlaybackSeekBar timeline = new()
@@ -281,7 +277,7 @@ internal sealed class CustomVideoComparisonForm : Form
             await process.WaitForExitAsync(cancellation.Token);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(await error);
-            SetPreview(FrameBitmap(bytes));
+            preview.SetSourceBgraOwned(bytes, PreviewWidth, PreviewHeight);
             state.Text = "Paused - drag the time bar to compare any frame. Audio is muted.";
         }
         catch (OperationCanceledException) { }
@@ -320,18 +316,8 @@ internal sealed class CustomVideoComparisonForm : Form
             {
                 byte[] bytes = new byte[length];
                 await process.StandardOutput.BaseStream.ReadExactlyAsync(bytes, token);
-                Bitmap bitmap = FrameBitmap(bytes);
-                if (!IsHandleCreated || IsDisposed)
-                {
-                    bitmap.Dispose();
-                    break;
-                }
-                try { BeginInvoke(() => SetPreview(bitmap)); }
-                catch
-                {
-                    bitmap.Dispose();
-                    throw;
-                }
+                if (!IsHandleCreated || IsDisposed) break;
+                preview.SetSourceBgraOwned(bytes, PreviewWidth, PreviewHeight);
             }
         }
         catch (OperationCanceledException) { }
@@ -391,35 +377,6 @@ internal sealed class CustomVideoComparisonForm : Form
         try { if (!process.HasExited) process.Kill(true); } catch { }
     }
 
-    static Bitmap FrameBitmap(byte[] bytes)
-    {
-        Bitmap bitmap = new(PreviewWidth, PreviewHeight,
-            PixelFormat.Format32bppArgb);
-        BitmapData data = bitmap.LockBits(
-            new Rectangle(0, 0, PreviewWidth, PreviewHeight),
-            ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-        try
-        {
-            for (int row = 0; row < PreviewHeight; row++)
-                Marshal.Copy(bytes, row * PreviewWidth * 4,
-                    data.Scan0 + row * data.Stride, PreviewWidth * 4);
-        }
-        finally { bitmap.UnlockBits(data); }
-        return bitmap;
-    }
-
-    void SetPreview(Bitmap bitmap)
-    {
-        if (IsDisposed)
-        {
-            bitmap.Dispose();
-            return;
-        }
-        Image? previous = preview.Image;
-        preview.Image = bitmap;
-        previous?.Dispose();
-    }
-
     void UpdatePosition() => position.Text =
         $"{FormatTime(timeline.Value)} / {FormatTime(durationMs)}";
 
@@ -458,9 +415,6 @@ internal sealed class CustomVideoComparisonForm : Form
             clock.Stop();
             previewDelay.Stop();
             CancelDecode();
-            Image? image = preview.Image;
-            preview.Image = null;
-            image?.Dispose();
         }
         base.Dispose(disposing);
     }

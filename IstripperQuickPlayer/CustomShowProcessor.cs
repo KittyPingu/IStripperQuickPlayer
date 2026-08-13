@@ -780,10 +780,10 @@ internal sealed class CustomShowProcessingForm : Form
     };
     readonly Label status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
     readonly Button cancel = new() { Dock = DockStyle.Bottom, Text = "Cancel", Height = 36 };
-    readonly PictureBox source = new() { Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
-    readonly PictureBox composite = new() { Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+    readonly DxgiMaskPreviewControl source = new() { Dock = DockStyle.Fill,
+        AccessibleName = "Original input preview" };
+    readonly DxgiMaskPreviewControl composite = new() { Dock = DockStyle.Fill,
+        AccessibleName = "Composited result preview" };
     readonly GroupBox sourceGroup;
     readonly GroupBox compositeGroup;
     readonly CancellationTokenSource cancellation = new();
@@ -883,7 +883,7 @@ internal sealed class CustomShowProcessingForm : Form
         finally { clock.Stop(); elapsed.Stop(); Close(); }
     }
 
-    static GroupBox PreviewGroup(string text, PictureBox picture)
+    static GroupBox PreviewGroup(string text, Control picture)
     {
         GroupBox group = new() { Text = text, Dock = DockStyle.Fill,
             Padding = new Padding(6) };
@@ -900,18 +900,17 @@ internal sealed class CustomShowProcessingForm : Form
                 compositeWritten = File.GetLastWriteTimeUtc(compositePath),
                 written = sourceWritten > compositeWritten ? sourceWritten : compositeWritten;
             if (written <= lastPreviewUtc) return;
-            Image nextSource = LoadPreview(sourcePath),
+            Bitmap nextSource = LoadPreview(sourcePath),
                 nextComposite = LoadPreview(compositePath);
-            Image? oldSource = source.Image, oldComposite = composite.Image;
-            source.Image = nextSource; composite.Image = nextComposite;
-            oldSource?.Dispose(); oldComposite?.Dispose();
+            source.SetSourceOwned(nextSource);
+            composite.SetSourceOwned(nextComposite);
             lastPreviewUtc = written;
         }
         catch (IOException) { }
         catch (ArgumentException) { }
     }
 
-    static Image LoadPreview(string path)
+    static Bitmap LoadPreview(string path)
     {
         using FileStream stream = new(path, FileMode.Open, FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete);
@@ -923,8 +922,6 @@ internal sealed class CustomShowProcessingForm : Form
     {
         if (disposing)
         {
-            source.Image?.Dispose();
-            composite.Image?.Dispose();
             cancellation.Dispose();
             clock.Dispose();
         }

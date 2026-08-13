@@ -424,6 +424,14 @@ internal sealed class CustomVideoMaskEditorForm : Form
             }
             if (kind == "error")
                 throw new InvalidOperationException(response.GetProperty("message").GetString());
+            if (kind == "maintenance")
+            {
+                workerStatus = response.TryGetProperty("message", out JsonElement message)
+                    ? message.GetString() ?? "Maintaining GPU memory..."
+                    : "Maintaining GPU memory...";
+                UpdateWorkerStatus();
+                continue;
+            }
             if (kind == "progress")
             {
                 double value = response.GetProperty("percent").GetDouble();

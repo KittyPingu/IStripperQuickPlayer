@@ -14,8 +14,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
         "iqp-watermark-" + Guid.NewGuid().ToString("N"));
     readonly TextBox sourcePath = new() { Dock = DockStyle.Fill };
     readonly TextBox outputPath = new() { Dock = DockStyle.Fill };
-    readonly PictureBox preview = new() { Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black,
+    readonly DxgiMaskPreviewControl preview = new() { Dock = DockStyle.Fill,
         AccessibleName = "Video frame used to select the area to remove" };
     readonly TrackBar timeline = new() { Dock = DockStyle.Fill, Minimum = 0,
         Maximum = 10_000, TickStyle = TickStyle.None, Enabled = false,
@@ -111,7 +110,6 @@ internal sealed class CustomWatermarkRemovalForm : Form
         preview.MouseDown += Preview_MouseDown;
         preview.MouseMove += Preview_MouseMove;
         preview.MouseUp += Preview_MouseUp;
-        preview.Paint += Preview_Paint;
         method.SelectedIndexChanged += (_, _) => UpdateMethodOptions();
         timeline.Scroll += (_, _) =>
         {
@@ -249,7 +247,8 @@ internal sealed class CustomWatermarkRemovalForm : Form
             using Image loaded = Image.FromStream(stream);
             Bitmap next = new(loaded);
             File.Copy(extractedFrame, FramePath, true);
-            frame?.Dispose(); frame = next; preview.Image = frame;
+            frame?.Dispose(); frame = next;
+            preview.SetSource(frame);
             if (clearSelection)
             {
                 selectedPixels = Rectangle.Empty;
@@ -257,7 +256,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
             }
             status.Text = selectedPixels.IsEmpty ? "Drag around the area to remove." :
                 $"Selected {selectedPixels.Width} x {selectedPixels.Height} pixels (applies to the entire video).";
-            preview.Invalidate();
+            preview.SetSelection(selectedPixels.IsEmpty ? null : selectedPixels);
         }
         catch (Exception error)
         {
@@ -277,7 +276,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
         if (e.Button != MouseButtons.Left || ImagePoint(e.Location, true) is not Point point)
             return;
         dragStart = point; selectedPixels = Rectangle.Empty; dragging = true;
-        preview.Capture = true; preview.Invalidate();
+        preview.Capture = true; preview.SetSelection(null);
     }
 
     void Preview_MouseMove(object? sender, MouseEventArgs e)
@@ -286,7 +285,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
         selectedPixels = Rectangle.FromLTRB(Math.Min(dragStart.X, point.X),
             Math.Min(dragStart.Y, point.Y), Math.Max(dragStart.X, point.X),
             Math.Max(dragStart.Y, point.Y));
-        preview.Invalidate();
+        preview.SetSelection(selectedPixels);
     }
 
     void Preview_MouseUp(object? sender, MouseEventArgs e)
@@ -311,21 +310,6 @@ internal sealed class CustomWatermarkRemovalForm : Form
             return null;
         return new Point(Math.Clamp((int)Math.Round(x), 0, frame.Width - 1),
             Math.Clamp((int)Math.Round(y), 0, frame.Height - 1));
-    }
-
-    void Preview_Paint(object? sender, PaintEventArgs e)
-    {
-        if (frame == null || selectedPixels.IsEmpty) return;
-        float scale = Math.Min(preview.ClientSize.Width / (float)frame.Width,
-            preview.ClientSize.Height / (float)frame.Height);
-        float left = (preview.ClientSize.Width - frame.Width * scale) / 2,
-            top = (preview.ClientSize.Height - frame.Height * scale) / 2;
-        RectangleF area = new(left + selectedPixels.X * scale,
-            top + selectedPixels.Y * scale, selectedPixels.Width * scale,
-            selectedPixels.Height * scale);
-        using Brush fill = new SolidBrush(Color.FromArgb(90, Color.Red));
-        using Pen outline = new(Color.Yellow, 2);
-        e.Graphics.FillRectangle(fill, area); e.Graphics.DrawRectangle(outline, area);
     }
 
     async Task RunAsync()
@@ -471,7 +455,7 @@ internal sealed class CustomWatermarkRemovalForm : Form
         if (disposing)
         {
             previewDelay.Dispose();
-            preview.Image = null; frame?.Dispose();
+            frame?.Dispose();
             try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
         }
         base.Dispose(disposing);
