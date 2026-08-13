@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Persistent SAM2 propagation/correction worker. Stdout is NDJSON UI protocol."""
-import argparse, concurrent.futures, contextlib, hashlib, json, math, os, queue, shutil
+import argparse, concurrent.futures, contextlib, gc, hashlib, json, math, os, queue, shutil
 import subprocess, sys
 import tempfile, threading, time, uuid
 from collections import defaultdict
@@ -632,6 +632,7 @@ def install_gpu_feature_cache(predictor, state, torch, maximum, profiler):
                 profiler.count("gpuFeatureCacheStores")
         return result
     predictor._get_image_feature = cached
+    predictor._iqp_clear_gpu_feature_cache = retained.clear
 
 
 def install_edgetam_embedding_batches(predictor, state, torch, profiler,
@@ -901,6 +902,8 @@ def propagate(predictor, state, writer, folder, start, total, reverse,
     written, seen, last_frame = 0, 0, start
     range_start, range_end = propagation_range(start, total, reverse, max_frames)
     throttle = ProgressThrottle()
+    interactive_gap = max(0.0, min(10.0, float(
+        os.environ.get("IQP_INTERACTIVE_CUDA_GAP_MS", "0")))) / 1000
     writer.completed_frame = None
     iterator = iter(predictor.propagate_in_video(state, start_frame_idx=start,
         reverse=reverse, max_frame_num_to_track=max_frames))
@@ -921,6 +924,15 @@ def propagate(predictor, state, writer, folder, start, total, reverse,
             continue
         writer.submit(object_ids, logits, frame, folder, timings)
         written += 1; last_frame = frame
+        if interactive_gap and writer.device == "cuda":
+            # Bound the queued CUDA work, then yield briefly so DWM/pointer work
+            # gets a scheduling opportunity after every mask. The one-millisecond
+            # sleep is roughly one percent at ten frames/second and applies only
+            # to the interactive editor, never queued/final processing.
+            yielded = time.perf_counter()
+            writer.torch.cuda.synchronize()
+            time.sleep(interactive_gap)
+            profiler.add("interactive_cuda_yield", time.perf_counter() - yielded)
         percent = progress_start + seen * progress_size / max(1, maximum)
         throttle.emit(percent, f"{message} {seen}/{maximum} frames", frame,
                       range_start, range_end, reverse, writer.completed_frame,
@@ -1141,6 +1153,60 @@ def process(args):
                 request = commands.next()
                 if request.get("command") == "quit": break
                 command = request.get("command")
+                # TEMPORARY DIAGNOSTIC: rebuild only the inference state so we
+                # can measure whether accumulated temporal tensors are released
+                # without restarting Python or reloading the SAM2 model.
+                if command == "flush-vram":
+                    if device != "cuda":
+                        send(status="error", message="SAM2 is not using CUDA"); continue
+                    writer.flush()
+                    torch.cuda.synchronize()
+                    allocated_before = torch.cuda.memory_allocated()
+                    reserved_before = torch.cuda.memory_reserved()
+                    preview_baselines.clear()
+                    preview_mask_baselines.clear()
+                    auto_cache.clear()
+                    clear_feature_cache = getattr(
+                        predictor, "_iqp_clear_gpu_feature_cache", None)
+                    if clear_feature_cache is not None:
+                        clear_feature_cache()
+                    predictor.reset_state(state)
+                    del state
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                    torch.cuda.synchronize()
+                    allocated_released = torch.cuda.memory_allocated()
+                    reserved_released = torch.cuda.memory_reserved()
+                    state = predictor.init_state(str(frames), offload_video_to_cpu=True,
+                                                 offload_state_to_cpu=False)
+                    for anchor_frame in sorted(correction_frames):
+                        path = masks / f"{anchor_frame + 1:08d}.png"
+                        if anchor_frame == initial_frame and not path.is_file():
+                            saved = initial
+                        elif path.is_file():
+                            saved = np.asarray(Image.open(path).convert("L")) >= 128
+                        else:
+                            continue
+                        predictor.add_new_mask(state, frame_idx=anchor_frame,
+                                               obj_id=1, mask=saved)
+                    # A paused forward pass needs a checkpoint at its frontier;
+                    # it is deliberately not added to correction_frames.
+                    if continuation is not None and available_end not in correction_frames:
+                        path = masks / f"{available_end + 1:08d}.png"
+                        if path.is_file():
+                            saved = np.asarray(Image.open(path).convert("L")) >= 128
+                            predictor.add_new_mask(state, frame_idx=available_end,
+                                                   obj_id=1, mask=saved)
+                    torch.cuda.synchronize()
+                    send(status="flushed",
+                         allocatedBefore=allocated_before,
+                         reservedBefore=reserved_before,
+                         allocatedReleased=allocated_released,
+                         reservedReleased=reserved_released,
+                         allocatedAfter=torch.cuda.memory_allocated(),
+                         reservedAfter=torch.cuda.memory_reserved())
+                    continue
                 if command == "pause":
                     send(**ready); continue
                 if command == "continue":

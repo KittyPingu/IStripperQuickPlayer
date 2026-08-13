@@ -12,15 +12,19 @@ internal sealed class CustomVideoMaskEditorForm : Form
     readonly long startMs, endMs, initialFrameMs;
     readonly string temporary = Path.Combine(Path.GetTempPath(),
         "iqp-sam2-" + Guid.NewGuid().ToString("N"));
-    readonly PictureBox image = new() { Dock = DockStyle.Fill,
-        SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black,
+    readonly DxgiMaskPreviewControl image = new() { Dock = DockStyle.Fill,
+        BackColor = Color.Black,
         Enabled = false, TabStop = true,
         AccessibleName = "SAM2 tracked foreground mask" };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill,
         Height = 60, AllowDividerDragging = false };
     readonly ProgressBar progress = new() { Dock = DockStyle.Top, Height = 20 };
-    readonly Label position = new() { AutoSize = true, Padding = new Padding(8, 8, 8, 0) };
-    readonly Label status = new() { AutoSize = true, Padding = new Padding(8) };
+    // Fixed bounds prevent every frame/status change from re-laying out all of
+    // the controls below the GPU preview.
+    readonly Label position = new() { AutoSize = false, Size = new Size(300, 34),
+        Padding = new Padding(8, 8, 8, 0), AutoEllipsis = true };
+    readonly Label status = new() { AutoSize = false, Size = new Size(760, 36),
+        Padding = new Padding(8), AutoEllipsis = true };
     readonly Button previous = new() { Text = "◀ 1 frame", AutoSize = true, Enabled = false };
     readonly Button play = new() { Text = "Play", AutoSize = true, Enabled = false };
     readonly Button next = new() { Text = "1 frame ▶", AutoSize = true, Enabled = false };
@@ -37,16 +41,27 @@ internal sealed class CustomVideoMaskEditorForm : Form
         AccessibleName = "Mask paint brush size" };
     readonly Label brushSizeLabel = new() { Text = "40 px", AutoSize = true,
         Padding = new Padding(0, 7, 8, 0) };
+    readonly Label previewRateTitle = new() { Text = "Preview interval", AutoSize = true,
+        Padding = new Padding(8, 7, 0, 0) };
+    readonly Controls.PlaybackSeekBar previewRate = new()
+    {
+        Minimum = 0, Maximum = 1000, Value = 200,
+        SmallChange = 10, LargeChange = 100, Size = new Size(160, 32),
+        AccessibleName = "Mask preview update interval in milliseconds" };
+    readonly Label previewRateLabel = new() { Text = "200 ms", AutoSize = true,
+        Padding = new Padding(0, 7, 8, 0) };
     readonly Button undo = new() { Text = "Undo", AutoSize = true, Enabled = false };
     readonly Button updateMasks = new() { Text = "Update masks", AutoSize = true,
         Enabled = false };
+    // TEMPORARY DIAGNOSTIC: remove after validating in-process SAM2 state reset.
+    readonly Button flushSam2Vram = new() { Text = "Flush SAM2 VRAM (test)",
+        AutoSize = true, Enabled = false };
     readonly Button accept = new() { Text = "Use corrected masks", AutoSize = true, Enabled = false };
     readonly System.Windows.Forms.Timer playback = new();
-    readonly System.Windows.Forms.Timer previewDelay = new() { Interval = 25 };
+    // Coalesce rapid scrub positions before doing a full JPEG + mask composite.
+    readonly System.Windows.Forms.Timer previewDelay = new() { Interval = 60 };
     readonly System.Windows.Forms.Timer workerClock = new() { Interval = 1000 };
     readonly SemaphoreSlim previewLoadLock = new(1, 1);
-    readonly Dictionary<int, Bitmap> previewCache = [];
-    readonly LinkedList<int> previewCacheOrder = [];
     readonly Stopwatch workerElapsed = new();
     readonly Dictionary<int, List<PointF>> points = [];
     readonly Dictionary<int, List<int>> labels = [];
@@ -60,6 +75,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     Process? worker;
     Task<string>? workerError;
     CancellationTokenSource? previewLoadCancellation;
+    bool previewReloadPending;
     int previewRevision;
     int frameCount;
     int displayedFrame = -1;
@@ -79,6 +95,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     int availableEnd = -1;
     int initialFrame = -1;
     long lastGenerationPreview;
+    long lastProgressUiTick;
     string pendingMode = "prompt";
     string workerStatus = "";
     string framesFolder;
@@ -89,7 +106,6 @@ internal sealed class CustomVideoMaskEditorForm : Form
     bool painting;
     int paintingFrame = -1;
     int paintRevision;
-    Point? brushCursorLocation;
     long lastPaintPreviewTick;
 
     string FramesFolder => framesFolder;
@@ -122,7 +138,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (maskEngine == "rvm") accept.Text = "Use RVM masks";
         Text = clipLabel == null ? $"Review {engineName} Masks" :
             $"Review {engineName} Masks - {clipLabel}";
-        ClientSize = new Size(1200, 900);
+        ClientSize = new Size(1320, 980);
         MinimumSize = new Size(760, 620);
         StartPosition = FormStartPosition.CenterParent;
         KeyPreview = true;
@@ -146,7 +162,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
         Button cancel = new() { Text = "Cancel", AutoSize = true,
             DialogResult = DialogResult.Cancel };
         actions.Controls.AddRange([paintMode, brushSize, brushSizeLabel, automatic,
-            undo, updateMasks, accept, cancel, status]);
+            undo, updateMasks, previewRateTitle, previewRate, previewRateLabel,
+            flushSam2Vram, accept, cancel, status]);
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         CancelButton = cancel;
@@ -161,6 +178,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             undo.Visible = false;
             updateMasks.Visible = false;
         }
+        flushSam2Vram.Visible = maskEngine == "sam2";
 
         timeline.PositionChanged += (_, _) =>
         {
@@ -204,21 +222,21 @@ internal sealed class CustomVideoMaskEditorForm : Form
         image.MouseWheel += (_, e) => ResizeBrush(e.Delta);
         image.MouseLeave += (_, _) =>
         {
-            brushCursorLocation = null;
-            image.Invalidate();
+            image.SetBrush(null, brushSize.Value);
         };
-        image.Paint += Image_PaintBrushCursor;
         paintMode.CheckedChanged += (_, _) =>
         {
             brushSize.Enabled = supportsCorrections && paintMode.Checked && !updating;
             image.Cursor = Cursors.Default;
-            image.Invalidate();
+            image.SetBrush(null, brushSize.Value);
         };
         brushSize.ValueChanged += (_, _) =>
         {
             brushSizeLabel.Text = $"{brushSize.Value} px";
-            image.Invalidate();
+            image.SetBrush(null, brushSize.Value);
         };
+        previewRate.Scroll += (_, _) => previewRateLabel.Text =
+            previewRate.Value == 0 ? "Fastest (~33 ms)" : $"{previewRate.Value} ms";
         KeyDown += async (_, e) =>
         {
             if (!e.Control || e.Alt || e.Shift) return;
@@ -236,6 +254,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         automatic.Click += async (_, _) => await PreviewCorrectionAsync(CurrentFrame, true);
         undo.Click += async (_, _) => await UndoClickAsync();
         updateMasks.Click += async (_, _) => await ApplyCorrectionAsync();
+        flushSam2Vram.Click += async (_, _) => await FlushSam2VramAsync();
         accept.Click += async (_, _) =>
         {
             if (updating || !generationComplete) return;
@@ -363,6 +382,10 @@ internal sealed class CustomVideoMaskEditorForm : Form
             }
             start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
             start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
+            CustomShowProcessor.ConfigureProcessingPriorities(start, configuration);
+            // Interactive SAM2 otherwise keeps the CUDA queue saturated enough
+            // to make the Windows compositor and pointer visibly stutter.
+            start.Environment["IQP_INTERACTIVE_CUDA_GAP_MS"] = "4";
             worker = Process.Start(start) ?? throw new InvalidOperationException("Mask worker did not start.");
             workerError = worker.StandardError.ReadToEndAsync();
             JsonElement terminal = await ReadUntilAsync("ready", "paused");
@@ -413,14 +436,21 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 bool compiling = workerStatus.StartsWith("Compiling ",
                     StringComparison.Ordinal) || workerStatus.StartsWith(
                     "Loading cached ", StringComparison.Ordinal);
-                progress.Style = compiling ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
-                if (!compiling && (value >= displayed + .5 || value >= 100))
+                long now = Environment.TickCount64;
+                bool refreshUi = value >= 100 || now - lastProgressUiTick >= 250;
+                if (refreshUi)
                 {
-                    displayed = value;
-                    progress.Value = Math.Clamp((int)Math.Round(value), 0, 100);
+                    lastProgressUiTick = now;
+                    progress.Style = compiling ? ProgressBarStyle.Marquee :
+                        ProgressBarStyle.Blocks;
+                    if (!compiling && (value >= displayed + .5 || value >= 100))
+                    {
+                        displayed = value;
+                        progress.Value = Math.Clamp((int)Math.Round(value), 0, 100);
+                    }
+                    UpdateWorkerStatus();
+                    UpdateTimelineProgress(response);
                 }
-                UpdateWorkerStatus();
-                UpdateTimelineProgress(response);
                 UpdateGenerationPreview(response);
             }
         }
@@ -483,6 +513,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             slowMotion.Enabled = automatic.Enabled = paintMode.Enabled = brushSize.Enabled =
             undo.Enabled = updateMasks.Enabled =
             accept.Enabled = false;
+        flushSam2Vram.Enabled = false;
         workerStatus = phase == "backward"
             ? "Regenerating masks backward from the correction…"
             : "Generating masks forward…";
@@ -498,7 +529,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         long now = Environment.TickCount64;
         bool final = response.TryGetProperty("percent", out JsonElement percentValue) &&
             percentValue.GetDouble() >= 100;
-        if (!final && now - lastGenerationPreview < 400) return;
+        if (!final && now - lastGenerationPreview < PreviewIntervalMs) return;
         lastGenerationPreview = now;
         availableEnd = Math.Max(availableEnd, frame);
         if (pauseRequested)
@@ -549,6 +580,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         accept.Enabled = generationComplete;
         generation.Text = generationPaused ? "Continue generation" : "Generation complete";
         generation.Enabled = supportsCorrections && generationPaused;
+        flushSam2Vram.Enabled = maskEngine == "sam2";
         progress.Value = generationComplete ? 100 : progress.Value;
         if (!userRequestedPause &&
             response.TryGetProperty("pauseFrame", out JsonElement pauseValue))
@@ -618,6 +650,44 @@ internal sealed class CustomVideoMaskEditorForm : Form
         finally { updating = false; }
     }
 
+    // TEMPORARY DIAGNOSTIC: exercises an in-process inference-state reset while
+    // keeping the Python process and loaded SAM2 model alive.
+    async Task FlushSam2VramAsync()
+    {
+        if (maskEngine != "sam2" || updating || generationActive || worker == null ||
+            worker.HasExited || updateMasks.Enabled) return;
+        updating = true;
+        flushSam2Vram.Enabled = false;
+        status.Text = "Resetting SAM2 tracking state and measuring VRAM...";
+        try
+        {
+            SaveDraftState();
+            await worker.StandardInput.WriteLineAsync("{\"command\":\"flush-vram\"}");
+            await worker.StandardInput.FlushAsync();
+            JsonElement result = await ReadUntilAsync("flushed");
+            static string Vram(JsonElement value, string name) =>
+                value.TryGetProperty(name, out JsonElement bytes)
+                    ? $"{bytes.GetInt64() / 1024d / 1024d:0} MB" : "unknown";
+            status.Text = "SAM2 VRAM allocated: " +
+                $"{Vram(result, "allocatedBefore")} before, " +
+                $"{Vram(result, "allocatedReleased")} after release, " +
+                $"{Vram(result, "allocatedAfter")} after state rebuild; reserved " +
+                $"{Vram(result, "reservedBefore")} -> {Vram(result, "reservedAfter")}.";
+        }
+        catch (Exception error)
+        {
+            if (!closing && !IsDisposed && !Disposing)
+                MessageBox.Show(this, error.Message, Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            updating = false;
+            flushSam2Vram.Enabled = maskEngine == "sam2" &&
+                !generationActive && !updateMasks.Enabled;
+        }
+    }
+
     void SetGeneratedReviewRange()
     {
         if (frameCount <= 0 || availableEnd < 0) return;
@@ -639,14 +709,14 @@ internal sealed class CustomVideoMaskEditorForm : Form
     async void Image_MouseClick(object? sender, MouseEventArgs e)
     {
         if (paintMode.Checked) return;
-        if (!supportsCorrections || updating || image.Image == null || e.Button is not
+        if (!supportsCorrections || updating || !image.HasImage || e.Button is not
             (MouseButtons.Left or MouseButtons.Right)) return;
         if (displayedFrame != CurrentFrame)
         {
             status.Text = "Wait for this frame's preview to finish loading before editing.";
             return;
         }
-        PointF? point = ImagePoint(e.Location);
+        PointF? point = image.ImagePoint(e.Location);
         if (point == null) return;
         int frame = CurrentFrame;
         if (!points.TryGetValue(frame, out List<PointF>? framePoints))
@@ -662,14 +732,14 @@ internal sealed class CustomVideoMaskEditorForm : Form
 
     void Image_MouseDown(object? sender, MouseEventArgs e)
     {
-        if (!paintMode.Checked || !supportsCorrections || updating || image.Image == null ||
+        if (!paintMode.Checked || !supportsCorrections || updating || !image.HasImage ||
             e.Button is not (MouseButtons.Left or MouseButtons.Right)) return;
         if (displayedFrame != CurrentFrame)
         {
             status.Text = "Wait for this frame's preview to finish loading before painting.";
             return;
         }
-        PointF? point = ImagePoint(e.Location);
+        PointF? point = image.ImagePoint(e.Location);
         if (point == null) return;
         int frame = CurrentFrame;
         string maskPath = MaskPath(frame);
@@ -710,45 +780,13 @@ internal sealed class CustomVideoMaskEditorForm : Form
     void Image_MouseMove(object? sender, MouseEventArgs e)
     {
         if (paintMode.Checked)
-        {
-            Rectangle oldBounds = BrushCursorBounds(brushCursorLocation);
-            brushCursorLocation = e.Location;
-            image.Invalidate(Rectangle.Union(oldBounds,
-                BrushCursorBounds(brushCursorLocation)));
-        }
+            image.SetBrush(image.ImagePoint(e.Location), brushSize.Value);
         if (!painting || paintingMask == null || paintingFrame != CurrentFrame) return;
-        PointF? point = ImagePoint(e.Location);
+        PointF? point = image.ImagePoint(e.Location);
         if (point == null) return;
         ApplyBrush(lastPaintPoint, point.Value);
         lastPaintPoint = point.Value;
         RenderPreview(paintingFrame, paintingMask, livePaint: true, force: false);
-    }
-
-    void Image_PaintBrushCursor(object? sender, PaintEventArgs e)
-    {
-        if (!paintMode.Checked || brushCursorLocation is not Point location ||
-            image.Image == null || ImagePoint(location) == null) return;
-        float scale = Math.Min(image.ClientSize.Width / (float)image.Image.Width,
-            image.ClientSize.Height / (float)image.Image.Height);
-        float diameter = Math.Max(2, brushSize.Value * scale);
-        RectangleF circle = new(location.X - diameter / 2,
-            location.Y - diameter / 2, diameter, diameter);
-        using Pen shadow = new(Color.Black, 3);
-        using Pen outline = new(painting && paintButton == MouseButtons.Right
-            ? Color.Red : Color.Lime, 1.5f);
-        e.Graphics.DrawEllipse(shadow, circle);
-        e.Graphics.DrawEllipse(outline, circle);
-    }
-
-    Rectangle BrushCursorBounds(Point? location)
-    {
-        if (location is not Point point || image.Image == null) return Rectangle.Empty;
-        float scale = Math.Min(image.ClientSize.Width / (float)image.Image.Width,
-            image.ClientSize.Height / (float)image.Image.Height);
-        int diameter = Math.Max(2, (int)Math.Ceiling(brushSize.Value * scale));
-        int radius = diameter / 2 + 4;
-        return new Rectangle(point.X - radius, point.Y - radius,
-            radius * 2 + 1, radius * 2 + 1);
     }
 
     void ResizeBrush(int wheelDelta)
@@ -867,7 +905,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         playback.Stop(); play.Text = "Play";
         timeline.Enabled = false;
         image.Enabled = automatic.Enabled = paintMode.Enabled = brushSize.Enabled =
-            undo.Enabled = generation.Enabled = false;
+            undo.Enabled = generation.Enabled = flushSam2Vram.Enabled = false;
         previous.Enabled = play.Enabled = next.Enabled = slowMotion.Enabled = false;
         status.Text = removeAnchor ? "Previewing this frame without its correction..." :
             reset ? "Restoring this frame's tracked mask..." : useAutomatic ?
@@ -932,6 +970,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 previous.Enabled = play.Enabled = next.Enabled = slowMotion.Enabled = canMove;
                 accept.Enabled = canMove && generationComplete;
                 generation.Enabled = canMove && generationPaused;
+                flushSam2Vram.Enabled = maskEngine == "sam2" && canMove;
                 UpdateUndoState(CurrentFrame);
             }
         }
@@ -950,7 +989,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         updating = true;
         updateMasks.Enabled = image.Enabled = automatic.Enabled = paintMode.Enabled =
             brushSize.Enabled = accept.Enabled =
-            generation.Enabled = false;
+            generation.Enabled = flushSam2Vram.Enabled = false;
         progress.Value = 0;
         workerElapsed.Restart(); workerClock.Start();
         try
@@ -1097,16 +1136,19 @@ internal sealed class CustomVideoMaskEditorForm : Form
     {
         if (frameCount == 0) return;
         int frame = CurrentFrame;
-        if (previewCache.TryGetValue(frame, out Bitmap? cached))
-        {
-            TouchPreviewCache(frame);
-            SetPreviewImage(new Bitmap(cached), frame);
-            UpdateUndoState(frame);
-            return;
-        }
         string framePath = Path.Combine(FramesFolder, $"{frame + 1:00000000}.jpg"),
             maskPath = MaskPath(frame);
         if (!File.Exists(framePath) || !File.Exists(maskPath)) return;
+        // Never build a queue of obsolete JPEG/mask decodes. Generation can
+        // report frames faster than decoding (especially at a 0 ms setting),
+        // so retain only the newest requested frame while one decode is active.
+        if (previewLoadLock.CurrentCount == 0)
+        {
+            previewReloadPending = true;
+            previewLoadCancellation?.Cancel();
+            return;
+        }
+        previewReloadPending = false;
         previewLoadCancellation?.Cancel();
         CancellationTokenSource cancellation = new();
         previewLoadCancellation = cancellation;
@@ -1124,23 +1166,25 @@ internal sealed class CustomVideoMaskEditorForm : Form
         try
         {
             await previewLoadLock.WaitAsync(cancellation.Token);
-            Bitmap rendered;
+            Bitmap? source = null, mask = null;
             try
             {
-                rendered = await Task.Run(() => ComposePreview(framePath, maskPath,
-                    framePoints, frameLabels), cancellation.Token);
+                (source, mask) = await Task.Run(() =>
+                    (LoadBitmap(framePath), LoadBitmap(maskPath)), cancellation.Token);
+                if (cancellation.IsCancellationRequested || revision != previewRevision ||
+                    frame != CurrentFrame || closing || IsDisposed) return;
+                image.SetPreviewOwned(source, mask, framePoints, frameLabels);
+                source = mask = null;
+                displayedFrame = frame;
+                if (!generationActive && !updating) image.Enabled = true;
+                UpdateUndoState(frame);
+                if (image.RendererFailure is Exception error)
+                    status.Text = "DXGI mask preview unavailable: " + error.Message;
             }
-            finally { previewLoadLock.Release(); }
-            if (cancellation.IsCancellationRequested || revision != previewRevision ||
-                frame != CurrentFrame ||
-                closing || IsDisposed)
+            finally
             {
-                rendered.Dispose();
-                return;
+                source?.Dispose(); mask?.Dispose(); previewLoadLock.Release();
             }
-            AddPreviewCache(frame, new Bitmap(rendered));
-            SetPreviewImage(rendered, frame);
-            UpdateUndoState(frame);
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -1153,125 +1197,44 @@ internal sealed class CustomVideoMaskEditorForm : Form
             if (ReferenceEquals(previewLoadCancellation, cancellation))
                 previewLoadCancellation = null;
             cancellation.Dispose();
+            if (previewReloadPending && !closing && !IsDisposed && !Disposing)
+            {
+                previewReloadPending = false;
+                BeginInvoke(LoadPreview);
+            }
         }
-    }
-
-    static Bitmap ComposePreview(string framePath, string maskPath,
-        PointF[] framePoints, int[] frameLabels)
-    {
-        using Bitmap source = LoadBitmap(framePath);
-        using Bitmap mask = LoadBitmap(maskPath);
-        Bitmap result = new(source.Width, source.Height);
-        using Graphics graphics = Graphics.FromImage(result);
-        graphics.DrawImageUnscaled(source, 0, 0);
-        using System.Drawing.Imaging.ImageAttributes attributes = new();
-        attributes.SetRemapTable([new System.Drawing.Imaging.ColorMap
-        {
-            OldColor = Color.Black, NewColor = Color.Transparent
-        }, new System.Drawing.Imaging.ColorMap
-        {
-            OldColor = Color.White, NewColor = Color.FromArgb(105, Color.Lime)
-        }]);
-        graphics.DrawImage(mask, new Rectangle(0, 0, result.Width, result.Height),
-            0, 0, mask.Width, mask.Height, GraphicsUnit.Pixel, attributes);
-        for (int index = 0; index < Math.Min(framePoints.Length, frameLabels.Length); index++)
-        {
-            PointF point = framePoints[index];
-            using Pen pen = new(frameLabels[index] == 1 ? Color.Lime : Color.Red, 4);
-            graphics.DrawEllipse(pen, point.X - 7, point.Y - 7, 14, 14);
-        }
-        return result;
-    }
-
-    void AddPreviewCache(int frame, Bitmap bitmap)
-    {
-        if (previewCache.Remove(frame, out Bitmap? previous)) previous.Dispose();
-        previewCacheOrder.Remove(frame);
-        previewCache[frame] = bitmap;
-        previewCacheOrder.AddLast(frame);
-        while (previewCacheOrder.Count > 10)
-        {
-            int oldest = previewCacheOrder.First!.Value;
-            previewCacheOrder.RemoveFirst();
-            if (previewCache.Remove(oldest, out Bitmap? removed)) removed.Dispose();
-        }
-    }
-
-    void TouchPreviewCache(int frame)
-    {
-        previewCacheOrder.Remove(frame);
-        previewCacheOrder.AddLast(frame);
     }
 
     void InvalidatePreview(int frame)
     {
         previewLoadCancellation?.Cancel();
         previewRevision++;
-        if (previewCache.Remove(frame, out Bitmap? cached)) cached.Dispose();
-        previewCacheOrder.Remove(frame);
     }
 
     void ClearPreviewCache()
     {
         previewLoadCancellation?.Cancel();
+        previewReloadPending = false;
         previewRevision++;
-        foreach (Bitmap cached in previewCache.Values) cached.Dispose();
-        previewCache.Clear(); previewCacheOrder.Clear();
-    }
-
-    void SetPreviewImage(Bitmap value, int frame)
-    {
-        Image? old = image.Image;
-        image.Image = value;
-        displayedFrame = frame;
-        if (!generationActive && !updating) image.Enabled = true;
-        old?.Dispose();
     }
 
     void RenderPreview(int frame, Bitmap mask, bool livePaint = false, bool force = true)
     {
         long now = Environment.TickCount64;
-        if (livePaint && !force && now - lastPaintPreviewTick < 33) return;
+        if (livePaint && !force && now - lastPaintPreviewTick < PreviewIntervalMs) return;
         if (livePaint) lastPaintPreviewTick = now;
-        string framePath = Path.Combine(FramesFolder, $"{frame + 1:00000000}.jpg");
-        if (!File.Exists(framePath)) return;
-        Bitmap? loadedSource = null;
-        Bitmap source = paintingSource ?? (loadedSource = LoadBitmap(framePath));
-        Bitmap? result = new(source.Width, source.Height);
-        try
-        {
-            using Graphics graphics = Graphics.FromImage(result);
-            graphics.DrawImageUnscaled(source, 0, 0);
-            using System.Drawing.Imaging.ImageAttributes attributes = new();
-            attributes.SetRemapTable([new System.Drawing.Imaging.ColorMap
-            {
-                OldColor = Color.Black, NewColor = Color.Transparent
-            }, new System.Drawing.Imaging.ColorMap
-            {
-                OldColor = Color.White, NewColor = Color.FromArgb(105, Color.Lime)
-            }]);
-            graphics.DrawImage(mask, new Rectangle(0, 0, result.Width, result.Height),
-                0, 0, mask.Width, mask.Height, GraphicsUnit.Pixel, attributes);
-            if (points.TryGetValue(frame, out List<PointF>? framePoints))
-                for (int index = 0; index < framePoints.Count; index++)
-                {
-                    PointF point = framePoints[index];
-                    using Pen pen = new(labels[frame][index] == 1 ? Color.Lime : Color.Red, 4);
-                    graphics.DrawEllipse(pen, point.X - 7, point.Y - 7, 14, 14);
-                }
-            Image? old = image.Image; image.Image = result; old?.Dispose();
-            result = null;
-            UpdateUndoState(frame);
-        }
-        finally
-        {
-            result?.Dispose();
-            loadedSource?.Dispose();
-        }
+        image.SetMask(mask, points.GetValueOrDefault(frame)?.ToArray() ?? [],
+            labels.GetValueOrDefault(frame)?.ToArray() ?? []);
+        displayedFrame = frame;
+        UpdateUndoState(frame);
     }
 
     string MaskPath(int frame) =>
         Path.Combine(maskFolder, $"{frame + 1:00000000}.png");
+
+    // Zero means fastest useful display rate, not an unbounded decode/present
+    // loop. 33 ms aligns the preview with a typical 30 Hz UI cadence.
+    int PreviewIntervalMs => Math.Max(33, previewRate.Value);
 
     void UpdateUndoState(int frame)
     {
@@ -1288,18 +1251,6 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (!paintUndo.Remove(frame, out List<string>? paths)) return;
         foreach (string path in paths)
             try { if (File.Exists(path)) File.Delete(path); } catch { }
-    }
-
-    PointF? ImagePoint(Point location)
-    {
-        Image source = image.Image!;
-        float scale = Math.Min(image.ClientSize.Width / (float)source.Width,
-            image.ClientSize.Height / (float)source.Height);
-        float left = (image.ClientSize.Width - source.Width * scale) / 2,
-            top = (image.ClientSize.Height - source.Height * scale) / 2;
-        float x = (location.X - left) / scale, y = (location.Y - top) / scale;
-        return x < 0 || y < 0 || x >= source.Width || y >= source.Height
-            ? null : new PointF(x, y);
     }
 
     static Bitmap LoadBitmap(string path)
@@ -1347,7 +1298,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (disposing)
         {
             ClearPreviewCache();
-            StopWorker(); image.Image?.Dispose(); paintingMask?.Dispose();
+            StopWorker(); paintingMask?.Dispose();
             paintingSource?.Dispose();
             try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
         }
