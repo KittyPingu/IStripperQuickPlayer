@@ -260,6 +260,21 @@ ranges. Enable **Skip transition ±** to expand gradual ranges and add symmetric
 buffers around every detected instantaneous cut; overlapping skipped ranges are
 merged. For example, a 1.5-second value creates a 3-second skipped segment
 centred on a hard cut.
+Fast FFmpeg and TransNetV2 expose a detector-specific **Sensitivity** percentage.
+Higher values lower the acceptance threshold and produce more candidate cuts;
+lower values require a stronger change. Fast defaults to 65% (the former fixed
+scene threshold of 0.35), while TransNetV2 defaults to 50% (probability 0.5).
+All three values are remembered separately and recorded in new detection
+metadata. OmniShotCut defaults to 100%, preserving its previous behaviour of
+accepting every highest-probability prediction. Lower values reject uncertain
+classifications or boundary positions and merge those ranges into neighbouring
+content; they cannot produce more detections than 100%.
+New detections retain compressed raw scores or scored boundaries in the
+clip-detection metadata. Releasing the sensitivity slider rebuilds the grid from
+that data without decoding the source or rerunning a neural model. If dividers or
+included/skipped states were edited after the last calculation, QuickPlayer asks
+before discarding those changes. Older detections without retained data require
+one new Auto-detect run before local sensitivity adjustment is available.
 The **Auto-skip shorter than** value controls which detected playable segments
 are skipped and defaults to 20 seconds. **Show skipped clips in grid** hides or
 reveals excluded segments. Clicking or scrubbing the timeline selects the related

@@ -27,6 +27,9 @@ internal sealed class CustomShowConfiguration
     public int TransNetCompileCutoffFrames { get; set; } = 16000;
     public string TransNetDecodeMode { get; set; } = "auto";
     public string LastClipDetector { get; set; } = "transnetv2";
+    public int FastClipDetectionSensitivity { get; set; } = 65;
+    public int TransNetClipDetectionSensitivity { get; set; } = 50;
+    public int OmniShotCutClipDetectionSensitivity { get; set; } = 100;
     public int RvmQualityPreferredChunk { get; set; } = 12;
     public int RvmFastPreferredChunk { get; set; } = 12;
     public int RvmQualityCompileCutoffFrames { get; set; }
@@ -47,6 +50,7 @@ internal sealed class CustomShowConfiguration
     public string LastMaskEngine { get; set; } = "sam2";
     public string LastSam2Model { get; set; } = "base-plus";
     public int LastMattingDetailPx { get; set; } = 512;
+    public int LastVitMatteInferenceDetailPx { get; set; } = 1024;
     public int LastProcessingBatchSize { get; set; } = 12;
     public int LastRvmInitializerAlphaThresholdPercent { get; set; } = 40;
     public bool LastAutoAcceptAlphaThreshold { get; set; }
@@ -88,6 +92,12 @@ internal sealed class CustomShowConfiguration
             if (configuration.LastClipDetector is not
                 ("ffmpeg" or "transnetv2" or "omnishotcut"))
                 configuration.LastClipDetector = "transnetv2";
+            configuration.FastClipDetectionSensitivity = Math.Clamp(
+                configuration.FastClipDetectionSensitivity, 1, 99);
+            configuration.TransNetClipDetectionSensitivity = Math.Clamp(
+                configuration.TransNetClipDetectionSensitivity, 1, 99);
+            configuration.OmniShotCutClipDetectionSensitivity = Math.Clamp(
+                configuration.OmniShotCutClipDetectionSensitivity, 1, 100);
             if (!rvmChunks.Contains(configuration.VideoMaMaPreferredBatchSize))
                 configuration.VideoMaMaPreferredBatchSize = 1;
             if (configuration.LastProcessingAlgorithm is not
@@ -101,6 +111,9 @@ internal sealed class CustomShowConfiguration
             if (configuration.LastMattingDetailPx is not
                 (0 or 256 or 384 or 512 or 768 or 1024))
                 configuration.LastMattingDetailPx = 512;
+            if (configuration.LastVitMatteInferenceDetailPx is not
+                (0 or 512 or 768 or 1024))
+                configuration.LastVitMatteInferenceDetailPx = 1024;
             if (!rvmChunks.Contains(configuration.LastProcessingBatchSize))
                 configuration.LastProcessingBatchSize = 12;
             configuration.LastRvmInitializerAlphaThresholdPercent = Math.Clamp(
@@ -203,8 +216,12 @@ internal sealed class CustomShowClipDetection
     public string Method { get; set; } = "";
     public string? ToolRevision { get; set; }
     public int? OverlapFrames { get; set; }
+    public int? SensitivityPercent { get; set; }
+    public string? SensitivityDataFormat { get; set; }
+    public string? SensitivityData { get; set; }
+    public double? DetectionFrameRate { get; set; }
     public long TransitionBufferMs { get; set; }
-    public long MinimumClipMs { get; set; } = 10_000;
+    public long MinimumClipMs { get; set; } = 20_000;
     public bool ManuallyEdited { get; set; }
 }
 
@@ -212,6 +229,7 @@ internal sealed class CustomShowProcessing
 {
     public string Algorithm { get; set; } = "";
     public int MattingDetailPx { get; set; }
+    public int? VitMatteInferenceDetailPx { get; set; }
     public int BatchSize { get; set; } = 3;
     public int? RvmInitializerAlphaThresholdPercent { get; set; }
     public int? AutoAcceptedAlphaThreshold { get; set; }
@@ -646,7 +664,15 @@ internal sealed class CustomShowStore
         if (detection.ToolRevision is string revision &&
             (string.IsNullOrWhiteSpace(revision) || revision.Length > 200))
             throw new InvalidDataException("Invalid clip-detection tool revision.");
+        if (detection.SensitivityDataFormat is string format &&
+            (format.Length > 100 || string.IsNullOrWhiteSpace(format)))
+            throw new InvalidDataException("Invalid clip-detection sensitivity-data format.");
+        if (detection.SensitivityData is string data && data.Length > 50_000_000)
+            throw new InvalidDataException("Clip-detection sensitivity data is too large.");
+        if (detection.DetectionFrameRate is <= 0 or > 1000)
+            throw new InvalidDataException("Invalid clip-detection frame rate.");
         if (detection.OverlapFrames is < 0 or > 10_000 ||
+            detection.SensitivityPercent is < 1 or > 100 ||
             detection.TransitionBufferMs is < 0 or > 30_000 ||
             detection.MinimumClipMs is < 0 or > 3_600_000)
             throw new InvalidDataException("Invalid clip-detection parameters.");
@@ -660,6 +686,10 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Unknown custom-show processing algorithm.");
         if (!MattingDetailValues.Contains(processing.MattingDetailPx))
             throw new InvalidDataException("Unknown matting-detail resolution.");
+        if (processing.VitMatteInferenceDetailPx is int vitMatteDetail &&
+            (processing.Algorithm is not ("vitmatte-s" or "vitmatte-b" or
+                "rvm-vitmatte-s") || vitMatteDetail is not (0 or 512 or 768 or 1024)))
+            throw new InvalidDataException("Unknown ViTMatte inference-detail resolution.");
         if (!BatchSizeValues.Contains(processing.BatchSize))
             throw new InvalidDataException("Unknown processing batch size.");
         if (processing.RvmInitializerAlphaThresholdPercent is int initializerThreshold &&

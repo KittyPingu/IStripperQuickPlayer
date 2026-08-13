@@ -111,6 +111,18 @@ segments. Automatic detectors are:
   cuts, sudden jumps, fades, dissolves, wipes, pushes, slides, zooms, and doorway
   transitions.
 
+Fast FFmpeg and TransNetV2 show a **Sensitivity** percentage. Higher values find
+more possible cuts; lower values keep only stronger changes. The defaults are
+65% for Fast and 50% for TransNetV2, matching their previous fixed behaviour.
+Each detector remembers its own setting. OmniShotCut defaults to 100%, which is
+its previous accept-all behaviour; lowering it filters uncertain classifications
+and boundaries but cannot discover more cuts than 100%.
+New detections retain compressed confidence data, so moving the sensitivity
+slider can rebuild the clip grid without rerunning the detector. The slider sits
+above the grid beside **Show skipped clips in grid**. If dividers or included/
+skipped states changed after detection, QuickPlayer asks before replacing those
+edits. Results created before confidence retention require one new Auto-detect run.
+
 The **Auto-skip shorter than** value controls which short detected clips are
 excluded; it defaults to 20 seconds and can be changed before detection. The
 transition buffer can skip complete transitions and a margin around them. For a

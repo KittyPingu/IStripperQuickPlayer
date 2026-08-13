@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Streaming/batched QuickPlayer TransNetV2 worker. Stdout is NDJSON only."""
 import argparse
+import base64
 import collections
 import gc
+import gzip
 import hashlib
 import json
 import math
@@ -435,10 +437,11 @@ def run_pipeline(args, torch, model, device, command, batch_size, use_fp16,
             except Exception: pass
 
 
-def dividers(predictions, fps):
+def dividers(predictions, fps, threshold_probability=.5):
     import numpy as np
     found, start = [], None
-    for index, is_transition in enumerate(predictions > 0):
+    threshold_logit = math.log(threshold_probability / (1 - threshold_probability))
+    for index, is_transition in enumerate(predictions > threshold_logit):
         if is_transition and start is None: start = index
         if start is not None and (not is_transition or index == len(predictions) - 1):
             end = index if not is_transition else index + 1
@@ -476,6 +479,7 @@ def self_test():
     import numpy as np
     predictions = np.array([-2, 1, 3, 1, -2, -1, 2, 4, -1], np.float32)
     assert dividers(predictions, 10) == [700]
+    assert dividers(np.array([-.5, -.5, -.5, -.3, -.5]), 10, .4) == [300]
     automatic = SimpleNamespace(decode_mode="auto")
     assert resolution_bucket({"width": 3840, "height": 2160}) == "4k"
     assert resolution_bucket({"width": 2160, "height": 3840}) == "4k"
@@ -506,10 +510,13 @@ def main():
     parser.add_argument("--decode-mode", choices=("auto", "legacy", "cpu", "cpu-fast"),
                         default="auto")
     parser.add_argument("--profile-log", type=Path)
+    parser.add_argument("--threshold-probability", type=float, default=.5)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test: self_test(); return
     if not args.source or not args.runtime: parser.error("--source and --runtime are required")
+    if not 0 < args.threshold_probability < 1:
+        parser.error("--threshold-probability must be between 0 and 1")
     ffmpeg = os.environ.get("IQP_FFMPEG", "ffmpeg")
     ffprobe = os.environ.get("IQP_FFPROBE", "ffprobe")
     runtime = Path(args.runtime)
@@ -584,7 +591,7 @@ def main():
         emit("decode", 5, "CUDA decode unavailable; restarting with compatible CPU decode")
         decode_mode = "cpu"
         logits, profile = process_with_runtime_fallback(decode_mode)
-    cuts = dividers(logits, info["fps"])
+    cuts = dividers(logits, info["fps"], args.threshold_probability)
     duration_ms = round(len(logits) * 1000 / info["fps"])
     cuts = [cut for cut in cuts if cut <= duration_ms - 250]
     total_seconds = time.perf_counter() - started
@@ -599,7 +606,11 @@ def main():
         "policyKey": key, "source": info, "dividerCount": len(cuts)})
     profile.update(memory_profile(torch, device))
     append_profile(args.profile_log, profile)
+    score_data = base64.b64encode(gzip.compress(
+        logits.astype("<f4", copy=False).tobytes(), compresslevel=9)).decode("ascii")
     emit("complete", 100, f"Detected {len(cuts)} scene changes", dividersMs=cuts,
+         sensitivityDataFormat="transnet-logits-gzip-f32-v1",
+         sensitivityData=score_data, detectionFrameRate=info["fps"],
          profile=profile)
 
 

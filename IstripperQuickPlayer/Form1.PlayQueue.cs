@@ -2571,7 +2571,10 @@ namespace IStripperQuickPlayer
                 : FilterClipList(card.clips);
             if (clips.Count == 0)
                 return false;
-            if (useSmartRules &&
+            bool sequentialContinuation =
+                !Properties.Settings.Default.Randomize &&
+                !string.IsNullOrEmpty(previousAnimationPath);
+            if (!sequentialContinuation && useSmartRules &&
                 Properties.Settings.Default.SmartQueueUnplayedClipsFirst &&
                 myData != null)
             {
@@ -2591,7 +2594,7 @@ namespace IStripperQuickPlayer
                 string.Equals(GetAnimationPath(clip), previousAnimationPath,
                     StringComparison.OrdinalIgnoreCase));
             ModelClip selected;
-            if (progressive)
+            if (sequentialContinuation || progressive)
             {
                 List<ModelClip> ordered = clips.OrderBy(clip =>
                     clip.clipNumber).ToList();

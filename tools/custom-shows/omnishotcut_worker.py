@@ -11,8 +11,10 @@ the preceding model invocation.
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import deque
 from fractions import Fraction
+import gzip
 import json
 import os
 from pathlib import Path
@@ -105,6 +107,19 @@ def merge_predictions(full: list[dict], current: list[dict], tolerance: int = 2)
         if full and abs(item["end_frame"] - full[-1]["end_frame"]) <= tolerance:
             continue
         full.append(item)
+
+
+def select_by_sensitivity(boundaries: list[dict], sensitivity_percent: int):
+    """Keep the strongest requested percentage; model confidences saturate near 1."""
+    if not boundaries:
+        return []
+    sensitivity_percent = max(1, min(100, sensitivity_percent))
+    count = max(1, min(len(boundaries),
+                       int(np.ceil(len(boundaries) * sensitivity_percent / 100))))
+    selected = {value[1]["end_frame"] for value in sorted(
+        enumerate(boundaries), key=lambda value: (-value[1].get("confidence", 1),
+                                                  value[0]))[:count]}
+    return [value for value in boundaries if value["end_frame"] in selected]
 
 
 def load_model(runtime: Path):
@@ -344,18 +359,24 @@ class WindowProducer:
 
 
 def predictions_for(outputs):
-    intra = outputs["intra_clip_logits"].softmax(-1)[:, :, :-1].argmax(-1)
-    inter = outputs["inter_clip_logits"].softmax(-1)[:, :, :-1].argmax(-1)
-    ranges = outputs["pred_shot_logits"].softmax(-1)[:, :, :-1].argmax(-1)
-    return torch.stack((intra, inter, ranges), dim=2)
+    intra_probs = outputs["intra_clip_logits"].softmax(-1)[:, :, :-1]
+    inter_probs = outputs["inter_clip_logits"].softmax(-1)[:, :, :-1]
+    range_probs = outputs["pred_shot_logits"].softmax(-1)[:, :, :-1]
+    intra_conf, intra = intra_probs.max(-1)
+    inter_conf, inter = inter_probs.max(-1)
+    range_conf, ranges = range_probs.max(-1)
+    return torch.stack((intra, inter, ranges, intra_conf, inter_conf,
+                        range_conf), dim=2)
 
 
 def collect_predictions(boundaries: list[dict], predictions: np.ndarray,
                         window_start: int, valid_start: int, valid_end: int,
-                        valid_len: int):
+                        valid_len: int, sensitivity_percent: int = 100):
     current: list[dict] = []
     local_start = 0
-    for intra_index, inter_index, end_index in predictions:
+    minimum_confidence = 1 - max(1, min(100, sensitivity_percent)) / 100
+    for (intra_index, inter_index, end_index, intra_confidence,
+         inter_confidence, range_confidence) in predictions:
         intra_index = int(intra_index)
         inter_index = int(inter_index)
         local_end = min(int(end_index), valid_len)
@@ -365,9 +386,20 @@ def collect_predictions(boundaries: list[dict], predictions: np.ndarray,
         if valid_start < global_end <= valid_end:
             if intra_index not in INTRA_LABELS or inter_index not in INTER_LABELS:
                 raise RuntimeError("OmniShotCut returned an unknown classification label.")
+            class_confidence = (float(intra_confidence)
+                                if intra_index not in (0, 8)
+                                else float(inter_confidence))
+            confidence = min(class_confidence, float(range_confidence))
+            if confidence < minimum_confidence:
+                local_start = local_end
+                if local_end >= valid_len:
+                    break
+                continue
             current.append({"end_frame": global_end,
                             "intra": INTRA_LABELS[intra_index],
-                            "inter": INTER_LABELS[inter_index]})
+                            "inter": INTER_LABELS[inter_index],
+                            "confidence": confidence,
+                            "range_confidence": float(range_confidence)})
         local_start = local_end
         if local_end >= valid_len:
             break
@@ -384,7 +416,8 @@ def progress(info: dict, covered: int, last_percent: int):
 
 
 def run_bounded(model, command, info: dict, chunk_size: int,
-                width: int, height: int, requested_batch: int):
+                width: int, height: int, requested_batch: int,
+                sensitivity_percent: int):
     stop = threading.Event()
     requested_batch = max(1, min(16, requested_batch))
     effective_batch = requested_batch
@@ -455,7 +488,8 @@ def run_bounded(model, command, info: dict, chunk_size: int,
         inference_ms += inference_start.elapsed_time(inference_end)
         for slot, prediction in zip(group, predictions):
             collect_predictions(boundaries, prediction, slot.window_start,
-                                slot.valid_start, slot.valid_end, slot.valid_len)
+                                slot.valid_start, slot.valid_end, slot.valid_len,
+                                sensitivity_percent)
             window_count += 1
             last_percent = progress(info, min(slot.valid_end,
                 max(info["expected_frames"], producer.decoded_frames)), last_percent)
@@ -526,7 +560,7 @@ def read_frame(stream, byte_count: int):
 
 
 def run_serial(model, transform, command, info: dict, chunk_size: int,
-               width: int, height: int):
+               width: int, height: int, sensitivity_percent: int):
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     errors: deque[str] = deque(maxlen=80)
@@ -575,7 +609,8 @@ def run_serial(model, transform, command, info: dict, chunk_size: int,
             result_seconds += time.perf_counter() - transfer_started
             inference_seconds += time.perf_counter() - inference_started
             collect_predictions(boundaries, predictions, window_start,
-                                valid_start, valid_end, valid_len)
+                                valid_start, valid_end, valid_len,
+                                sensitivity_percent)
             window_count += 1
             last_percent = progress(info, min(valid_end,
                 max(info["expected_frames"], total_frames)), last_percent)
@@ -683,9 +718,10 @@ def run(args):
     def execute(mode):
         command = decode_command(ffmpeg, args.source, mode, width, height)
         if args.pipeline_mode == "serial":
-            return run_serial(model, transform, command, info, chunk_size, width, height)
+            return run_serial(model, transform, command, info, chunk_size, width,
+                              height, 100)
         return run_bounded(model, command, info, chunk_size, width, height,
-                           args.window_batch)
+                           args.window_batch, 100)
 
     try:
         boundaries, total_frames, metrics = execute(decode_mode)
@@ -702,7 +738,16 @@ def run(args):
 
     if total_frames == 0:
         raise RuntimeError("FFmpeg decoded no video frames.")
+    retained_boundaries = list(boundaries)
+    boundaries = select_by_sensitivity(retained_boundaries,
+                                       args.sensitivity_percent)
     ranges = ranges_from_boundaries(boundaries, total_frames, info["rate"])
+    retained = {"totalFrames": total_frames, "boundaries": [{
+        "endFrame": int(value["end_frame"]), "intra": value["intra"],
+        "inter": value["inter"], "confidence": float(value.get("confidence", 1))}
+        for value in retained_boundaries]}
+    sensitivity_data = base64.b64encode(gzip.compress(json.dumps(
+        retained, separators=(",", ":")).encode("utf-8"), compresslevel=9)).decode("ascii")
     total_seconds = time.perf_counter() - started
     profile = {
         "kind": "omnishotcut-profile",
@@ -721,6 +766,7 @@ def run(args):
         "resolvedDecodeMode": decode_mode,
         "decodeFallback": fallback,
         "overlapFrames": OVERLAP_FRAMES,
+        "sensitivityPercent": args.sensitivity_percent,
         "processWidth": width, "processHeight": height,
         "vfrApproximation": info["vfr_approximation"],
         **metrics,
@@ -728,6 +774,8 @@ def run(args):
     }
     append_profile(args.profile_log, profile)
     emit(stage="complete", percent=100, ranges=ranges, totalFrames=total_frames,
+         sensitivityDataFormat="omnishotcut-gzip-json-v1",
+         sensitivityData=sensitivity_data, detectionFrameRate=float(info["rate"]),
          frameRate=f"{info['rate'].numerator}/{info['rate'].denominator}",
          revision=MODEL_REVISION, overlapFrames=OVERLAP_FRAMES,
          device=profile["device"], pipelineMode=args.pipeline_mode,
@@ -747,6 +795,14 @@ def self_test():
     merge_predictions(values, [{"end_frame": 20}, {"end_frame": 40}])
     merge_predictions(values, [{"end_frame": 41}, {"end_frame": 80}])
     assert [item["end_frame"] for item in values] == [20, 40, 80]
+    sensitivity_values = [
+        {"end_frame": 10, "confidence": .2},
+        {"end_frame": 20, "confidence": .99},
+        {"end_frame": 30, "confidence": .8},
+    ]
+    assert [value["end_frame"] for value in
+            select_by_sensitivity(sensitivity_values, 1)] == [20]
+    assert select_by_sensitivity(sensitivity_values, 100) == sensitivity_values
     source = torch.arange(4 * 3 * 5 * 3, dtype=torch.uint8).reshape(4, 3, 5, 3)
     actual = torch.empty((1, 4, 3, 3, 5), dtype=torch.float32)
     mean = torch.tensor(NORMALIZE_MEAN).view(1, 1, 3, 1, 1)
@@ -776,6 +832,7 @@ def main():
                         default="auto", help=argparse.SUPPRESS)
     parser.add_argument("--window-batch", type=int, default=1,
                         help=argparse.SUPPRESS)
+    parser.add_argument("--sensitivity-percent", type=int, default=100)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -783,6 +840,8 @@ def main():
         return
     if not args.source or not args.runtime:
         parser.error("--source and --runtime are required")
+    if not 1 <= args.sensitivity_percent <= 100:
+        parser.error("--sensitivity-percent must be between 1 and 100")
     run(args)
 
 

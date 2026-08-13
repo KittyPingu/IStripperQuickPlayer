@@ -46,6 +46,8 @@ internal sealed class CustomShowEditorForm : Form
     readonly ComboBox maskEngine = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sam2Model = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox mattingDetail = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox vitMatteInferenceDetail = new()
+        { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sequenceChunk = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly TrackBar rvmInitializerThreshold = new()
         { Minimum = 10, Maximum = 90, Value = 40, TickFrequency = 5,
@@ -65,7 +67,8 @@ internal sealed class CustomShowEditorForm : Form
     readonly Button queue = new() { Text = "Queue", AutoSize = true, Visible = false };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     TableLayoutPanel? processingTable;
-    int maskEngineRow, sam2ModelRow, mattingDetailRow, rvmThresholdRow,
+    int maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
+        rvmThresholdRow,
         batchSizeRow, processingDetailsRow, reprocessingRow = -1;
     List<CustomPerformerProfile> profiles = [];
     CustomPerformerProfile? selectedProfile;
@@ -192,6 +195,12 @@ internal sealed class CustomShowEditorForm : Form
             "Very High (1024 px)", "Full resolution (slowest)"]);
         mattingDetail.SelectedIndex = 2;
         mattingDetailRow = AddRow(processingTable, "Matting detail", mattingDetail);
+        vitMatteInferenceDetail.Items.AddRange([
+            "Standard (512 px)", "High (768 px)",
+            "Very High (1024 px - recommended)", "Full resolution (slowest)"]);
+        vitMatteInferenceDetail.SelectedIndex = 2;
+        vitMatteInferenceDetailRow = AddRow(processingTable,
+            "ViTMatte inference detail", vitMatteInferenceDetail);
         rvmThresholdRow = AddRow(processingTable, "RVM initializer alpha", Flow(rvmInitializerThreshold,
             rvmInitializerThresholdValue));
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12, 16, 24]);
@@ -294,6 +303,8 @@ internal sealed class CustomShowEditorForm : Form
         bool rvm = selected is "quality" or "fast";
         mattingDetail.Enabled = (rvm || selected is "matanyone2" or
             "rvm-matanyone2") && CanProcess;
+        vitMatteInferenceDetail.Enabled = selected is
+            ("vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s") && CanProcess;
         sequenceChunk.Enabled = (rvm || UsesSam2(selected) ||
             selected == "rvm-vitmatte-s") && CanProcess;
         maskEngine.Enabled = UsesSam2(selected) && CanProcess;
@@ -313,6 +324,8 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, sam2ModelRow, usesSamModel);
             SetRowVisible(processingTable, mattingDetailRow,
                 rvm || selected is "matanyone2" or "rvm-matanyone2");
+            SetRowVisible(processingTable, vitMatteInferenceDetailRow,
+                selected is "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s");
             SetRowVisible(processingTable, rvmThresholdRow,
                 selected is "rvm-matanyone2" or "rvm-vitmatte-s");
             SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
@@ -334,6 +347,11 @@ internal sealed class CustomShowEditorForm : Form
     int SelectedMattingResolution() => mattingDetail.SelectedIndex switch
     {
         0 => 256, 1 => 384, 3 => 768, 4 => 1024, 5 => 0, _ => 512
+    };
+
+    int SelectedVitMatteInferenceResolution() => vitMatteInferenceDetail.SelectedIndex switch
+    {
+        0 => 512, 1 => 768, 3 => 0, _ => 1024
     };
 
     string SelectedSam2Model()
@@ -482,6 +500,7 @@ internal sealed class CustomShowEditorForm : Form
             keepMasks.Text = "Keep existing masks (not retained for this show)";
         if (editingExisting && !reprocess)
             preset.Enabled = maskEngine.Enabled = mattingDetail.Enabled =
+                vitMatteInferenceDetail.Enabled =
                 sequenceChunk.Enabled = sam2Model.Enabled =
                 rvmInitializerThreshold.Enabled = rvmInitializerThresholdValue.Enabled =
                 autoAccept.Enabled = false;
@@ -511,6 +530,11 @@ internal sealed class CustomShowEditorForm : Form
         {
             256 => 0, 384 => 1, 768 => 3, 1024 => 4, 0 => 5, _ => 2
         };
+        vitMatteInferenceDetail.SelectedIndex =
+            (processing.VitMatteInferenceDetailPx ?? 1024) switch
+            {
+                512 => 0, 768 => 1, 0 => 3, _ => 2
+            };
         if (sequenceChunk.Items.Contains(processing.BatchSize))
             sequenceChunk.SelectedItem = processing.BatchSize;
         rvmInitializerThreshold.Value = Math.Clamp(
@@ -554,6 +578,11 @@ internal sealed class CustomShowEditorForm : Form
         {
             256 => 0, 384 => 1, 768 => 3, 1024 => 4, 0 => 5, _ => 2
         };
+        vitMatteInferenceDetail.SelectedIndex =
+            configuration.LastVitMatteInferenceDetailPx switch
+            {
+                512 => 0, 768 => 1, 0 => 3, _ => 2
+            };
         if (sequenceChunk.Items.Contains(configuration.LastProcessingBatchSize))
             sequenceChunk.SelectedItem = configuration.LastProcessingBatchSize;
         rvmInitializerThreshold.Value = Math.Clamp(
@@ -571,6 +600,8 @@ internal sealed class CustomShowEditorForm : Form
         configuration.LastMaskEngine = SelectedMaskEngine();
         configuration.LastSam2Model = SelectedSam2Model();
         configuration.LastMattingDetailPx = SelectedMattingResolution();
+        configuration.LastVitMatteInferenceDetailPx =
+            SelectedVitMatteInferenceResolution();
         configuration.LastProcessingBatchSize =
             (int)(sequenceChunk.SelectedItem ?? 12);
         configuration.LastRvmInitializerAlphaThresholdPercent =
@@ -627,6 +658,12 @@ internal sealed class CustomShowEditorForm : Form
         };
         string detail = value.MattingDetailPx == 0 ? "full resolution" :
             $"{value.MattingDetailPx} px";
+        string detailText = value.Algorithm is
+            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+            ? $"; ViTMatte inference detail " +
+                ((value.VitMatteInferenceDetailPx ?? 0) == 0 ? "full resolution" :
+                    $"{value.VitMatteInferenceDetailPx ?? 1024} px")
+            : $"; detail {detail}";
         string sam2 = value.Sam2Model == null ? "" :
             $"; SAM2 {value.Sam2Model}";
         string mask = value.MaskEngine == null ? "" :
@@ -641,7 +678,7 @@ internal sealed class CustomShowEditorForm : Form
             $"; RVM initializer alpha {threshold}%" : "";
         string accepted = value.AutoAcceptedAlphaThreshold is int alpha ?
             $"; automatically accepted at alpha {alpha}" : "";
-        return $"{algorithm}; detail {detail}; batch {value.BatchSize}{effective}{sam2}{mask}{initializer}{accepted}{execution}{encoder}\r\n" +
+        return $"{algorithm}{detailText}; batch {value.BatchSize}{effective}{sam2}{mask}{initializer}{accepted}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -785,6 +822,7 @@ internal sealed class CustomShowEditorForm : Form
                 string selectedMaskEngine = UsesSam2(selectedPreset) ?
                     SelectedMaskEngine() : "sam2";
                 int detail = SelectedMattingResolution();
+                int vitMatteDetail = SelectedVitMatteInferenceResolution();
                 string log = Path.Combine(staging, "processing.log");
                 if (File.Exists(log)) File.Delete(log);
                 if (reprocess && keepMasks.Checked)
@@ -974,7 +1012,8 @@ internal sealed class CustomShowEditorForm : Form
                                  maskFrameMs: initialMaskFrames.GetValueOrDefault(
                                     clip.Id, clip.StartMs),
                                  rvmInitializerAlphaThresholdPercent:
-                                    rvmInitializerThreshold.Value);
+                                    rvmInitializerThreshold.Value,
+                                 vitMatteInferenceDetailPx: vitMatteDetail);
                             if (selectedPreset == "rvm-vitmatte-s" &&
                                 !sam2Masks.ContainsKey(clip.Id))
                             {
@@ -1117,6 +1156,9 @@ internal sealed class CustomShowEditorForm : Form
                     {
                         Algorithm = selectedPreset,
                         MattingDetailPx = detail,
+                        VitMatteInferenceDetailPx = selectedPreset is
+                            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+                            ? vitMatteDetail : null,
                         BatchSize = processingBatchSize,
                         RvmInitializerAlphaThresholdPercent = selectedPreset is
                             "rvm-matanyone2" or "rvm-vitmatte-s"
@@ -1267,6 +1309,9 @@ internal sealed class CustomShowEditorForm : Form
             {
                 Algorithm = algorithm,
                 MattingDetailPx = SelectedMattingResolution(),
+                VitMatteInferenceDetailPx = algorithm is
+                    "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+                    ? SelectedVitMatteInferenceResolution() : null,
                 BatchSize = (int)(sequenceChunk.SelectedItem ?? 12),
                 RvmInitializerAlphaThresholdPercent = algorithm is
                     "rvm-matanyone2" or "rvm-vitmatte-s"
@@ -2399,6 +2444,10 @@ internal sealed class CustomShowSettingsForm : Form
             TransNetCompileCutoffFrames = current.TransNetCompileCutoffFrames,
             TransNetDecodeMode = current.TransNetDecodeMode,
             LastClipDetector = current.LastClipDetector,
+            FastClipDetectionSensitivity = current.FastClipDetectionSensitivity,
+            TransNetClipDetectionSensitivity = current.TransNetClipDetectionSensitivity,
+            OmniShotCutClipDetectionSensitivity =
+                current.OmniShotCutClipDetectionSensitivity,
             RvmQualityPreferredChunk = current.RvmQualityPreferredChunk,
             RvmFastPreferredChunk = current.RvmFastPreferredChunk,
             RvmQualityCompileCutoffFrames = current.RvmQualityCompileCutoffFrames,

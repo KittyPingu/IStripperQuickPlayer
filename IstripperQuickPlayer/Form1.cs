@@ -5383,10 +5383,13 @@ namespace IStripperQuickPlayer
                 List<ModelClip> clips = new List<ModelClip>();
                 if (model.clips == null) return;
                 clips = FilterClipList(model.clips);
-                List<ModelClip> freshClips = ExcludeRecentClips(clips,
-                    GetRecentPlaybackPaths());
-                List<ModelClip> selectableClips = freshClips.Count > 0
-                    ? freshClips : clips;
+                List<ModelClip> selectableClips = clips;
+                if (chooseRandom || Properties.Settings.Default.Randomize)
+                {
+                    List<ModelClip> freshClips = ExcludeRecentClips(clips,
+                        GetRecentPlaybackPaths());
+                    if (freshClips.Count > 0) selectableClips = freshClips;
+                }
 
                 ModelClip? mnew = null;
                 if (chooseRandom)
