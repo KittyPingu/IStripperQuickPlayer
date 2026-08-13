@@ -331,7 +331,7 @@ internal sealed class CustomShowStore
     static readonly HashSet<string> ClipDetectionMethods =
         ["ffmpeg", "transnetv2", "omnishotcut"];
     static readonly HashSet<string> DetectionLabels =
-        ["General", "Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway", "Padding",
+        ["General", "Skipped", "Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway", "Padding",
          "Hard Cut", "Sudden Jump", "Scene change buffer", "Hard Cut buffer",
          "Sudden Jump buffer", "Dissolve buffer", "Wipes buffer", "Push buffer",
          "Slide buffer", "Zoom buffer", "Fade buffer", "Doorway buffer", "Short (<10s)"];

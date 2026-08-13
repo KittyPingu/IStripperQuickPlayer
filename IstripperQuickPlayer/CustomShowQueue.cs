@@ -32,6 +32,7 @@ internal sealed class CustomShowQueueJob
     public Dictionary<string, string> InitialMaskAssets { get; set; } = [];
     public Dictionary<string, long> InitialMaskFrameMs { get; set; } = [];
     public bool KeepExistingMasks { get; set; }
+    public string[] ReprocessClipIds { get; set; } = [];
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime? StartedUtc { get; set; }
     public DateTime? CompletedUtc { get; set; }
@@ -494,6 +495,7 @@ internal static class CustomShowJobRunner
         CustomShowQueueStore.TryDelete(staging);
         Directory.CreateDirectory(staging);
         CustomShowManifest show;
+        CustomShowProcessing? previousProcessing = null;
         CustomShowClip[] existing = [];
         long offset = 0;
         if (job.Operation == CustomShowQueueOperation.New)
@@ -501,44 +503,72 @@ internal static class CustomShowJobRunner
         else
         {
             show = store.LoadManifest(job.TargetShowId!);
+            previousProcessing = show.Processing == null ? null : Clone(show.Processing);
             CopyDirectory(Path.Combine(store.ShowsFolder, show.Id), staging);
             if (job.Operation == CustomShowQueueOperation.Reprocess &&
                 !job.KeepExistingMasks)
-                CustomShowQueueStore.TryDelete(Path.Combine(staging, "masks"));
+            {
+                string masks = Path.Combine(staging, "masks");
+                string[] replacedIds = (job.ReprocessClipIds.Length == 0
+                    ? job.Clips.Where(clip => clip.Included).Select(clip => clip.Id)
+                    : job.ReprocessClipIds).ToArray();
+                foreach (string clipId in replacedIds)
+                    CustomShowQueueStore.TryDelete(Path.Combine(masks, clipId));
+                string retainedPath = Path.Combine(masks, "retained-masks.json");
+                CustomRetainedMasksManifest? retained = CustomShowMaskDraft.Load<
+                    CustomRetainedMasksManifest>(retainedPath);
+                if (retained != null)
+                {
+                    HashSet<string> replaced = replacedIds.ToHashSet(
+                        StringComparer.OrdinalIgnoreCase);
+                    retained.Clips = retained.Clips.Where(clip =>
+                        !replaced.Contains(clip.ClipId)).ToArray();
+                    CustomShowStore.WriteJsonAtomic(retainedPath, retained);
+                }
+            }
             existing = show.Clips;
             offset = job.Operation == CustomShowQueueOperation.Append
                 ? show.Media.DurationMs : 0;
             ApplyMetadata(show, job.Manifest);
         }
         CustomShowClip[] clips = Clone(job.Clips);
+        CustomShowClip[] clipsToProcess = ClipsToProcess(job, clips);
         string log = Path.Combine(staging, "processing.log");
         Dictionary<string, string> generatedMasks = [];
         Dictionary<string, string> initialMasks = [];
         Dictionary<string, string> retainedMasks = [];
         if (job.Operation == CustomShowQueueOperation.Reprocess && job.KeepExistingMasks)
-            LoadRetainedMasks(staging, clips, initialMasks, retainedMasks);
-        CustomShowProcessResult result = await ProcessClips(job, clips, staging,
+            LoadRetainedMasks(staging, clipsToProcess, initialMasks, retainedMasks);
+        CustomShowProcessResult result = await ProcessClips(job, clipsToProcess, staging,
             configuration, queue, log, initialMasks, retainedMasks,
             generatedMasks, progress, token);
         if (generatedMasks.Count > 0 && job.Operation != CustomShowQueueOperation.Append)
         {
             FileInfo sourceInfo = new(job.SourcePath);
+            string masksRoot = Path.Combine(staging, "masks");
+            CustomRetainedMasksManifest? retained = CustomShowMaskDraft.Load<
+                CustomRetainedMasksManifest>(Path.Combine(masksRoot,
+                    "retained-masks.json"));
+            Dictionary<string, CustomRetainedMaskClip> retainedClips =
+                retained?.Clips.ToDictionary(clip => clip.ClipId,
+                    StringComparer.OrdinalIgnoreCase) ?? [];
+            foreach (CustomShowClip clip in clips.Where(clip => clip.Included &&
+                generatedMasks.ContainsKey(clip.Id)))
+                retainedClips[clip.Id] = new CustomRetainedMaskClip
+                {
+                    ClipId = clip.Id, StartMs = clip.StartMs,
+                    EndMs = clip.EndMs, HasTrackedMasks = true,
+                    TrackedMaskArchive = "tracked-masks.iqpmask"
+                };
             CustomShowStore.WriteJsonAtomic(Path.Combine(staging, "masks",
                 "retained-masks.json"), new CustomRetainedMasksManifest
                 {
                     SourceLength = sourceInfo.Length,
                     SourceLastWriteUtcTicks = sourceInfo.LastWriteTimeUtc.Ticks,
-                    Clips = clips.Where(clip => clip.Included &&
-                        generatedMasks.ContainsKey(clip.Id)).Select(clip =>
-                        new CustomRetainedMaskClip
-                        {
-                            ClipId = clip.Id, StartMs = clip.StartMs,
-                            EndMs = clip.EndMs, HasTrackedMasks = true,
-                            TrackedMaskArchive = "tracked-masks.iqpmask"
-                        }).ToArray()
+                    Clips = retainedClips.Values.ToArray()
                 });
         }
-        foreach (CustomShowClip clip in clips.Where(value => value.Included))
+        foreach (CustomShowClip clip in clipsToProcess)
             clip.AlphaThreshold = 25;
         long duration = clips.Max(value => value.EndMs);
         if (job.Operation == CustomShowQueueOperation.Append)
@@ -557,7 +587,8 @@ internal static class CustomShowJobRunner
             show.Media.FrameRate = result.FrameRate;
             show.Media.DurationMs = duration;
         }
-        show.Processing = Processing(job, result, show.Clips, offset);
+        show.Processing = Processing(job, result, show.Clips, clipsToProcess,
+            previousProcessing, offset);
         await SaveCover(job, show, staging, queue, token);
         store.SavePerformer(job.Performer);
         CustomShowStore.WriteJsonAtomic(Path.Combine(staging, "show.json"), show);
@@ -652,12 +683,23 @@ internal static class CustomShowJobRunner
                 throw new CustomShowQueueAttentionException(
                     "The target show changed after this job was queued. Edit the job to review it.");
         }
+        if (job.Operation == CustomShowQueueOperation.Reprocess &&
+            job.ReprocessClipIds.Length > 0)
+        {
+            HashSet<string> included = job.Clips.Where(clip => clip.Included)
+                .Select(clip => clip.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (job.ReprocessClipIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+                    job.ReprocessClipIds.Length ||
+                job.ReprocessClipIds.Any(id => !included.Contains(id)))
+                throw new CustomShowQueueAttentionException(
+                    "The selected clips to reprocess no longer match the show.");
+        }
         if (job.CoverAsset != null && !File.Exists(Path.Combine(queue.Assets(job.Id),
                 job.CoverAsset.Replace('/', Path.DirectorySeparatorChar))))
             throw new CustomShowQueueAttentionException(
                 "The queued custom cover is missing. Edit the job to select it again.");
         if (job.Manifest.Processing?.Algorithm == "matanyone2")
-            foreach (CustomShowClip clip in job.Clips.Where(value => value.Included))
+            foreach (CustomShowClip clip in ClipsToProcess(job, job.Clips))
                 if (!job.InitialMaskAssets.TryGetValue(clip.Id, out string? mask) ||
                     !File.Exists(Path.Combine(queue.Assets(job.Id),
                         mask.Replace('/', Path.DirectorySeparatorChar))))
@@ -783,8 +825,13 @@ internal static class CustomShowJobRunner
     }
 
     static CustomShowProcessing Processing(CustomShowQueueJob job,
-        CustomShowProcessResult result, CustomShowClip[] clips, long appendedOffset)
+        CustomShowProcessResult result, CustomShowClip[] clips,
+        CustomShowClip[] processedClips, CustomShowProcessing? previous,
+        long appendedOffset)
     {
+        if (job.Operation == CustomShowQueueOperation.Reprocess && previous != null &&
+            processedClips.Length < clips.Count(clip => clip.Included))
+            return Clone(previous);
         CustomShowProcessing value = Clone(job.Manifest.Processing!);
         value.AutoAcceptedAlphaThreshold = 25;
         value.ProcessedUtc = DateTime.UtcNow;
@@ -794,13 +841,24 @@ internal static class CustomShowJobRunner
         value.PipelineDepth = result.PipelineDepth;
         value.Encoder = result.Encoder;
         value.EncoderPreset = result.EncoderPreset;
-        value.Clips = clips.Where(clip => clip.Included).Select(clip => new
-            CustomClipProcessing { ClipId = clip.Id,
+        value.Clips = clips.Where(clip => clip.Included).Select(clip =>
+            new CustomClipProcessing { ClipId = clip.Id,
                 InitialMaskFrameMs = value.Algorithm == "matanyone2" &&
                     job.InitialMaskFrameMs.TryGetValue(clip.Id, out long frame)
                     ? checked(frame + appendedOffset) : null })
             .ToArray();
         return value;
+    }
+
+    static CustomShowClip[] ClipsToProcess(CustomShowQueueJob job,
+        IEnumerable<CustomShowClip> clips)
+    {
+        CustomShowClip[] included = clips.Where(clip => clip.Included).ToArray();
+        if (job.Operation != CustomShowQueueOperation.Reprocess ||
+            job.ReprocessClipIds.Length == 0) return included;
+        HashSet<string> selected = job.ReprocessClipIds.ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
+        return included.Where(clip => selected.Contains(clip.Id)).ToArray();
     }
 
     static async Task SaveCover(CustomShowQueueJob job, CustomShowManifest show,

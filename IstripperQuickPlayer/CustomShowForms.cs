@@ -64,13 +64,16 @@ internal sealed class CustomShowEditorForm : Form
         AutoSize = true, Checked = true, Visible = false };
     readonly CheckBox keepMasks = new() { Text = "Keep existing masks",
         AutoSize = true, Checked = true, Visible = false };
+    readonly CheckedListBox reprocessClips = new() { Height = 126,
+        CheckOnClick = true, IntegralHeight = false, Visible = false };
     readonly Button save = new() { Text = "Process and Preview", AutoSize = true };
     readonly Button queue = new() { Text = "Queue", AutoSize = true, Visible = false };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     TableLayoutPanel? processingTable;
     int maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
         rvmThresholdRow,
-        batchSizeRow, processingDetailsRow, reprocessingRow = -1;
+        batchSizeRow, processingDetailsRow, reprocessingRow,
+        reprocessClipsRow = -1;
     List<CustomPerformerProfile> profiles = [];
     CustomPerformerProfile? selectedProfile;
     CustomShowClip[] showClips = [];
@@ -80,6 +83,7 @@ internal sealed class CustomShowEditorForm : Form
     string? originalCoverModelName;
     string? originalCoverTitleColor;
     bool loadingPerformerSelection;
+    bool reprocessLayoutChanged;
 
     internal string? SavedShowId { get; private set; }
     internal bool SavedPerformerChanged { get; private set; }
@@ -223,7 +227,10 @@ internal sealed class CustomShowEditorForm : Form
         AddRow(processingTable, "After processing", autoAccept);
         processingDetailsRow = AddRow(processingTable, "Created using", processingDetails);
         if (this.reprocess)
+        {
             reprocessingRow = AddRow(processingTable, "Reprocessing", Flow(keepClips, keepMasks));
+            reprocessClipsRow = AddRow(processingTable, "Clips to reprocess", reprocessClips);
+        }
         AddSection(root, "Processing", processingTable);
         FlowLayoutPanel buttons = Flow(save, queue, cancel);
         buttons.Dock = DockStyle.Fill;
@@ -251,6 +258,7 @@ internal sealed class CustomShowEditorForm : Form
         {
             keepMasks.Enabled = keepClips.Checked && RetainedMasksAvailable();
             if (!keepMasks.Enabled) keepMasks.Checked = false;
+            UpdateReprocessClipSelectionAvailability();
         };
         performer.SelectedIndexChanged += (_, _) =>
         {
@@ -444,6 +452,9 @@ internal sealed class CustomShowEditorForm : Form
         PopulateFromShow(job.Manifest, editingExisting: false);
         showClips = JsonSerializer.Deserialize<CustomShowClip[]>(JsonSerializer.Serialize(
             job.Clips, CustomShowStore.JsonOptions), CustomShowStore.JsonOptions) ?? [];
+        if (job.Operation == CustomShowQueueOperation.Reprocess)
+            PopulateReprocessClips(job.ReprocessClipIds.Length == 0 ? null :
+                job.ReprocessClipIds.ToHashSet(StringComparer.OrdinalIgnoreCase));
         clipDetection = job.Manifest.ClipDetection;
         appendShowId = job.Operation == CustomShowQueueOperation.Append
             ? job.TargetShowId : null;
@@ -540,6 +551,7 @@ internal sealed class CustomShowEditorForm : Form
         {
             showClips = show.Clips;
             clipDetection = show.ClipDetection;
+            PopulateReprocessClips();
         }
         if (show.Processing is CustomShowProcessing processing)
         {
@@ -559,6 +571,48 @@ internal sealed class CustomShowEditorForm : Form
                 rvmInitializerThreshold.Enabled = rvmInitializerThresholdValue.Enabled =
                 autoAccept.Enabled = false;
         UpdateClipButton();
+        UpdateReprocessClipSelectionAvailability();
+    }
+
+    void PopulateReprocessClips(IReadOnlyCollection<string>? selectedIds = null)
+    {
+        if (!reprocess) return;
+        selectedIds ??= showClips.Where(clip => clip.Included)
+            .Select(clip => clip.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        reprocessClips.Items.Clear();
+        int playable = 0;
+        for (int index = 0; index < showClips.Length; index++)
+        {
+            CustomShowClip clip = showClips[index];
+            if (!clip.Included) continue;
+            playable++;
+            reprocessClips.Items.Add(new ReprocessClipChoice(clip.Id,
+                $"Clip {playable}: {FormatTime(clip.StartMs)}–{FormatTime(clip.EndMs)}  " +
+                $"{clip.Hotness}; {string.Join(", ", clip.ClipTypes)}"),
+                selectedIds.Contains(clip.Id));
+        }
+    }
+
+    void UpdateReprocessClipSelectionAvailability()
+    {
+        if (!reprocess || processingTable == null || reprocessClipsRow < 0) return;
+        bool available = keepClips.Checked && !reprocessLayoutChanged;
+        SetRowVisible(processingTable, reprocessClipsRow, available);
+        reprocessClips.Visible = available;
+    }
+
+    string[] SelectedReprocessClipIds() => !reprocess ||
+        !keepClips.Checked || reprocessLayoutChanged
+        ? showClips.Where(clip => clip.Included).Select(clip => clip.Id).ToArray()
+        : reprocessClips.CheckedItems.Cast<ReprocessClipChoice>()
+            .Select(choice => choice.Id).ToArray();
+
+    static string FormatTime(long milliseconds) =>
+        TimeSpan.FromMilliseconds(milliseconds).ToString(@"h\:mm\:ss\.fff");
+
+    sealed record ReprocessClipChoice(string Id, string Label)
+    {
+        public override string ToString() => Label;
     }
 
     void SelectProcessingOptions(CustomShowProcessing processing)
@@ -752,6 +806,7 @@ internal sealed class CustomShowEditorForm : Form
         }
         string[] overallTypes = clipTypes.CheckedItems.Cast<object>()
             .Select(item => item.ToString()!).ToArray();
+        CustomShowClip[] priorLayout = CloneQueueValue(showClips);
         using CustomClipEditorForm form = new(video, showClips,
             hotness.SelectedItem?.ToString() ?? "NoNudity",
             overallTypes.Length == 0 ? ["Standing"] : overallTypes,
@@ -761,6 +816,8 @@ internal sealed class CustomShowEditorForm : Form
         if (form.ShowDialog(this) != DialogResult.OK) return;
         showClips = form.Clips;
         clipDetection = form.Detection;
+        if (reprocess && !SameQueueLayout(priorLayout, showClips))
+            reprocessLayoutChanged = true;
         if (reprocess && !RetainedMasksMatch(showClips))
         {
             keepMasks.Checked = false;
@@ -768,6 +825,7 @@ internal sealed class CustomShowEditorForm : Form
             keepMasks.Text = "Keep existing masks (clip divisions changed)";
         }
         UpdateClipButton();
+        UpdateReprocessClipSelectionAvailability();
     }
 
     void UpdateClipButton()
@@ -806,6 +864,8 @@ internal sealed class CustomShowEditorForm : Form
             CustomShowManifest show = Appending
                 ? store.LoadManifest(appendShowId!)
                 : showId == null ? new() : store.LoadManifest(showId);
+            CustomShowProcessing? previousProcessing = reprocess && show.Processing != null
+                ? CloneQueueValue(show.Processing) : null;
             CustomShowClip[] existingClips = Appending ? show.Clips : [];
             long existingDuration = Appending ? show.Media.DurationMs : 0;
             ApplyFields(show, includeClipLayout: !Appending);
@@ -843,9 +903,14 @@ internal sealed class CustomShowEditorForm : Form
                     ClipTypes = [.. show.ClipTypes]
                 }];
             }
+            string[] reprocessClipIds = SelectedReprocessClipIds();
+            if (reprocess && reprocessClipIds.Length == 0)
+                throw new InvalidDataException("Select at least one clip to reprocess.");
+            HashSet<string> reprocessClipSet = reprocessClipIds.ToHashSet(
+                StringComparer.OrdinalIgnoreCase);
             string staging = Path.Combine(store.Root, ".staging", show.Id);
             await DeleteDirectoryWhenReleasedAsync(staging);
-            if (Appending)
+            if (Appending || reprocess)
                 CopyDirectory(Path.Combine(store.ShowsFolder, show.Id), staging);
             else Directory.CreateDirectory(staging);
             bool discardStaging = false;
@@ -883,7 +948,7 @@ internal sealed class CustomShowEditorForm : Form
                 int vitMatteDetail = SelectedVitMatteInferenceResolution();
                 string log = Path.Combine(staging, "processing.log");
                 if (File.Exists(log)) File.Delete(log);
-                if (reprocess && keepMasks.Checked)
+                if (reprocess)
                 {
                     string retained = Path.Combine(store.ShowsFolder, show.Id, "masks");
                     await Task.Run(() =>
@@ -894,10 +959,22 @@ internal sealed class CustomShowEditorForm : Form
                             Path.Combine(staging, ".mask-work"), initialMasks,
                             initialMaskFrames, sam2Masks);
                     });
+                    if (!keepMasks.Checked)
+                        foreach (string clipId in reprocessClipIds)
+                        {
+                            initialMasks.Remove(clipId);
+                            initialMaskFrames.Remove(clipId);
+                            sam2Masks.Remove(clipId);
+                            string folder = Path.Combine(staging, "masks", clipId);
+                            if (Directory.Exists(folder)) Directory.Delete(folder, true);
+                        }
+                    RemoveRetainedMaskEntries(Path.Combine(staging, "masks"),
+                        reprocessClipIds);
                 }
                 if (selectedPreset == "matanyone2" || UsesSam2(selectedPreset))
                 {
-                    CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included).ToArray();
+                    CustomShowClip[] clipsToMask = showClips.Where(clip => clip.Included &&
+                        (!reprocess || reprocessClipSet.Contains(clip.Id))).ToArray();
                     maskDraft = CustomShowMaskDraft.Open(store, source.Text,
                         selectedPreset, selectedSam2Model, selectedMaskEngine,
                         clipsToMask);
@@ -1062,7 +1139,8 @@ internal sealed class CustomShowEditorForm : Form
                     using CustomShowProcessingForm processing = new(async (progress, token) =>
                     {
                         int chunk = SelectedBatchSize();
-                        CustomShowClip[] included = showClips.Where(clip => clip.Included).ToArray();
+                        CustomShowClip[] included = showClips.Where(clip => clip.Included &&
+                            (!reprocess || reprocessClipSet.Contains(clip.Id))).ToArray();
                         long totalDuration = included.Sum(clip =>
                             Math.Max(1, clip.EndMs - clip.StartMs));
                         long completedDuration = 0;
@@ -1244,8 +1322,8 @@ internal sealed class CustomShowEditorForm : Form
                         showClips[^1].EndMs = media.DurationMs;
                         CustomShowStore.ValidateClips(showClips, media.DurationMs);
                     }
-                    CustomShowClip[] processedClips = showClips.Where(
-                        clip => clip.Included).ToArray();
+                    CustomShowClip[] processedClips = showClips.Where(clip => clip.Included &&
+                        (!reprocess || reprocessClipSet.Contains(clip.Id))).ToArray();
                     if (autoAccept.Checked)
                         foreach (CustomShowClip clip in processedClips)
                             clip.AlphaThreshold = 25;
@@ -1318,6 +1396,9 @@ internal sealed class CustomShowEditorForm : Form
                                     selectedMaskEngine is "sam2" or "rvm-sam2"
                             })).ToArray()
                     };
+                    if (reprocess && previousProcessing != null &&
+                        processedClips.Length < showClips.Count(clip => clip.Included))
+                        show.Processing = previousProcessing;
                     if (!string.IsNullOrWhiteSpace(cover.Text))
                         SaveCover(cover.Text, Path.Combine(staging, show.Media.Cover));
                     else if (existingCover != null)
@@ -1469,11 +1550,21 @@ internal sealed class CustomShowEditorForm : Form
                 CustomShowQueueStore.HashFile(Path.Combine(store.ShowsFolder,
                     targetId, "show.json"));
             job.KeepExistingMasks = reprocess && keepMasks.Checked;
+            job.ReprocessClipIds = operation == CustomShowQueueOperation.Reprocess
+                ? SelectedReprocessClipIds() : [];
             job.Percent = 0; job.Message = "Pending"; job.Error = null;
             job.StartedUtc = null; job.CompletedUtc = null;
             Dictionary<string, string> masks = [];
             Dictionary<string, long> maskFrames = [];
-            bool missingMask = showClips.Where(value => value.Included).Any(clip =>
+            HashSet<string> queuedReprocessClips = job.ReprocessClipIds.ToHashSet(
+                StringComparer.OrdinalIgnoreCase);
+            CustomShowClip[] clipsNeedingProcessing = showClips.Where(value =>
+                value.Included && (operation != CustomShowQueueOperation.Reprocess ||
+                    queuedReprocessClips.Contains(value.Id))).ToArray();
+            if (operation == CustomShowQueueOperation.Reprocess &&
+                clipsNeedingProcessing.Length == 0)
+                throw new InvalidDataException("Select at least one clip to reprocess.");
+            bool missingMask = clipsNeedingProcessing.Any(clip =>
                 !job.InitialMaskAssets.TryGetValue(clip.Id, out string? relative) ||
                 !File.Exists(Path.Combine(queueManager.AssetFolder(job.Id),
                     relative.Replace('/', Path.DirectorySeparatorChar))));
@@ -1482,7 +1573,7 @@ internal sealed class CustomShowEditorForm : Form
                 maskWork = Path.Combine(store.Root, ".queue-mask-work",
                     Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(maskWork);
-                foreach (CustomShowClip clip in showClips.Where(value => value.Included))
+                foreach (CustomShowClip clip in clipsNeedingProcessing)
                 {
                     string clipFolder = Path.Combine(maskWork, clip.Id);
                     using CustomMaskEditorForm editor = new(source.Text, configuration,
@@ -1628,6 +1719,19 @@ internal sealed class CustomShowEditorForm : Form
             if (!File.Exists(Path.Combine(masksFolder, $"{frame:00000000}.png")))
                 return false;
         return true;
+    }
+
+    static void RemoveRetainedMaskEntries(string masksRoot,
+        IEnumerable<string> clipIds)
+    {
+        string path = Path.Combine(masksRoot, "retained-masks.json");
+        CustomRetainedMasksManifest? retained = CustomShowMaskDraft.Load<
+            CustomRetainedMasksManifest>(path);
+        if (retained == null) return;
+        HashSet<string> removed = clipIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        retained.Clips = retained.Clips.Where(clip =>
+            !removed.Contains(clip.ClipId)).ToArray();
+        CustomShowStore.WriteJsonAtomic(path, retained);
     }
 
     static void LoadRetainedMasks(string root, CustomShowManifest show,
