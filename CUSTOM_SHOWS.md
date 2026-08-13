@@ -22,15 +22,17 @@ For most users, choose one of these three methods:
 **RVM-MatAnyone is the recommended automatic starting point.** Use plain
 **MatAnyone 2** when subject selection matters, there are several people, or
 RVM includes the wrong foreground. Try **RVM-ViTMatte S** when hair and soft-edge
-quality justify a slower, more VRAM-intensive run.
+quality justify a slower, more VRAM-intensive run. Use **RVM Quality** when you
+want a very fast automatic result and its simpler matte quality is sufficient.
 
 Higher **Matting detail** can improve fine edges in RVM and MatAnyone-based
 methods, but increases processing time and VRAM use. It does not change the
 exported video dimensions. Start at 512 px; try 768 or 1024 only after checking
 that the improvement is visible. For RVM-MatAnyone, detail controls the final
 MatAnyone pass; its brief RVM initializer remains capped at 512 px.
-RVM-ViTMatte S does not use the Matting detail selector: ViTMatte works at the
-source dimensions, and **Processing batch size** is its main VRAM control.
+RVM-ViTMatte S does not use the RVM/MatAnyone **Matting detail** selector. Use
+**ViTMatte inference detail** instead; it defaults to 1024 px while published
+foreground and alpha media retain the source dimensions.
 
 As a real-world queue reference, a 38-minute 1920x1080 source divided into 18
 clips took about **7 minutes with RVM Quality**, **42 minutes with
@@ -111,17 +113,22 @@ segments. Automatic detectors are:
   cuts, sudden jumps, fades, dissolves, wipes, pushes, slides, zooms, and doorway
   transitions.
 
-Fast FFmpeg and TransNetV2 show a **Sensitivity** percentage. Higher values find
-more possible cuts; lower values keep only stronger changes. The defaults are
-65% for Fast and 50% for TransNetV2, matching their previous fixed behaviour.
-Each detector remembers its own setting. OmniShotCut defaults to 100%, which is
-its previous accept-all behaviour; lowering it filters uncertain classifications
-and boundaries but cannot discover more cuts than 100%.
-New detections retain compressed confidence data, so moving the sensitivity
-slider can rebuild the clip grid without rerunning the detector. The slider sits
-above the grid beside **Show skipped clips in grid**. If dividers or included/
-skipped states changed after detection, QuickPlayer asks before replacing those
-edits. Results created before confidence retention require one new Auto-detect run.
+All three detectors show a **Sensitivity** slider above the grid beside **Show
+skipped clips in grid**. Higher values find or retain more possible cuts; lower
+values keep only stronger changes. Fast defaults to 65% and TransNetV2 to 50%,
+matching their previous fixed behaviour. OmniShotCut defaults to 100%, preserving
+its previous result; its confidence scores cluster near 1.0, so its percentage
+means the proportion of strongest candidate boundaries retained. For example,
+1% keeps roughly the strongest 1%, while 100% keeps them all. Each detector
+remembers its own setting.
+
+New detections retain compressed confidence data. While you move the slider,
+QuickPlayer rebuilds the grid after a short debounce without decoding the source
+or rerunning the detector. If dividers or included/skipped states changed after
+detection, live recalculation pauses and QuickPlayer asks on release before
+replacing those edits. After acceptance, continued slider movement updates live.
+Results created before confidence retention require one new **Auto-detect clips**
+run.
 
 The **Auto-skip shorter than** value controls which short detected clips are
 excluded; it defaults to 20 seconds and can be changed before detection. The
@@ -252,8 +259,10 @@ included clips are appended.
 
 - Begin MatAnyone/RVM processing at **Standard (512 px)**. Lower detail if VRAM
   fills; raise it only for a visible edge-quality improvement.
-- Use the recommended ViTMatte-S batch. ViTMatte-B and VideoMaMa should normally
-  start at batch 1 on 12-16 GB GPUs.
+- Prefer **Auto** batch for RVM, ViTMatte, RVM-ViTMatte, and VideoMaMa. It starts
+  from current VRAM and effective inference size, adjusts from live memory use,
+  and remembers successful values for similar future runs. Manual values remain
+  available when repeatability is required.
 - QuickPlayer warns when a requested ViTMatte or VideoMaMa batch is unlikely to
   fit and lets you use the suggested value or continue deliberately.
 - If Task Manager shows dedicated VRAM full and shared GPU memory growing,

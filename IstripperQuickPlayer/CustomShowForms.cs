@@ -203,8 +203,9 @@ internal sealed class CustomShowEditorForm : Form
             "ViTMatte inference detail", vitMatteInferenceDetail);
         rvmThresholdRow = AddRow(processingTable, "RVM initializer alpha", Flow(rvmInitializerThreshold,
             rvmInitializerThresholdValue));
+        sequenceChunk.Items.Add("Auto");
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12, 16, 24]);
-        sequenceChunk.SelectedItem = 12;
+        sequenceChunk.SelectedIndex = 0;
         batchSizeRow = AddRow(processingTable, "Processing batch size", sequenceChunk);
         AddRow(processingTable, "After processing", autoAccept);
         processingDetailsRow = AddRow(processingTable, "Created using", processingDetails);
@@ -279,26 +280,26 @@ internal sealed class CustomShowEditorForm : Form
     {
         string selected = SelectedPreset();
         if (CanProcess && selected is ("quality" or "fast") &&
-            (!reprocess || applyRecommendedBatch))
+            (!reprocess || applyRecommendedBatch) && SelectedBatchSize() != 0)
         {
             int preferred = selected == "fast" ? configuration.RvmFastPreferredChunk :
                 configuration.RvmQualityPreferredChunk;
-            sequenceChunk.SelectedItem = sequenceChunk.Items.Cast<int>()
+            sequenceChunk.SelectedItem = sequenceChunk.Items.OfType<int>()
                 .OrderBy(value => Math.Abs(value - preferred)).First();
         }
         else if (CanProcess &&
             selected is ("vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s") &&
-            (!reprocess || applyRecommendedBatch))
+            (!reprocess || applyRecommendedBatch) && SelectedBatchSize() != 0)
         {
             int recommended = selected == "vitmatte-b" ?
                 configuration.VitMatteBasePreferredBatchSize :
                 configuration.VitMatteSmallPreferredBatchSize;
-            int closest = sequenceChunk.Items.Cast<int>()
+            int closest = sequenceChunk.Items.OfType<int>()
                 .OrderBy(value => Math.Abs(value - recommended)).First();
             sequenceChunk.SelectedItem = closest;
         }
         else if (CanProcess && selected == "videomama" &&
-            (!reprocess || applyRecommendedBatch))
+            (!reprocess || applyRecommendedBatch) && SelectedBatchSize() != 0)
             sequenceChunk.SelectedItem = configuration.VideoMaMaPreferredBatchSize;
         bool rvm = selected is "quality" or "fast";
         mattingDetail.Enabled = (rvm || selected is "matanyone2" or
@@ -353,6 +354,14 @@ internal sealed class CustomShowEditorForm : Form
     {
         0 => 512, 1 => 768, 3 => 0, _ => 1024
     };
+
+    int SelectedBatchSize() => sequenceChunk.SelectedItem is int value ? value : 0;
+
+    void SelectBatchSize(int value)
+    {
+        if (value == 0) sequenceChunk.SelectedIndex = 0;
+        else if (sequenceChunk.Items.Contains(value)) sequenceChunk.SelectedItem = value;
+    }
 
     string SelectedSam2Model()
     {
@@ -535,8 +544,7 @@ internal sealed class CustomShowEditorForm : Form
             {
                 512 => 0, 768 => 1, 0 => 3, _ => 2
             };
-        if (sequenceChunk.Items.Contains(processing.BatchSize))
-            sequenceChunk.SelectedItem = processing.BatchSize;
+        SelectBatchSize(processing.BatchSize);
         rvmInitializerThreshold.Value = Math.Clamp(
             processing.RvmInitializerAlphaThresholdPercent ?? 40,
             rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
@@ -583,15 +591,13 @@ internal sealed class CustomShowEditorForm : Form
             {
                 512 => 0, 768 => 1, 0 => 3, _ => 2
             };
-        if (sequenceChunk.Items.Contains(configuration.LastProcessingBatchSize))
-            sequenceChunk.SelectedItem = configuration.LastProcessingBatchSize;
+        SelectBatchSize(configuration.LastProcessingBatchSize);
         rvmInitializerThreshold.Value = Math.Clamp(
             configuration.LastRvmInitializerAlphaThresholdPercent,
             rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
         autoAccept.Checked = configuration.LastAutoAcceptAlphaThreshold;
         UpdateProcessingOptions();
-        if (sequenceChunk.Items.Contains(configuration.LastProcessingBatchSize))
-            sequenceChunk.SelectedItem = configuration.LastProcessingBatchSize;
+        SelectBatchSize(configuration.LastProcessingBatchSize);
     }
 
     void RememberProcessingOptions()
@@ -602,8 +608,7 @@ internal sealed class CustomShowEditorForm : Form
         configuration.LastMattingDetailPx = SelectedMattingResolution();
         configuration.LastVitMatteInferenceDetailPx =
             SelectedVitMatteInferenceResolution();
-        configuration.LastProcessingBatchSize =
-            (int)(sequenceChunk.SelectedItem ?? 12);
+        configuration.LastProcessingBatchSize = SelectedBatchSize();
         configuration.LastRvmInitializerAlphaThresholdPercent =
             rvmInitializerThreshold.Value;
         configuration.LastAutoAcceptAlphaThreshold = autoAccept.Checked;
@@ -668,7 +673,9 @@ internal sealed class CustomShowEditorForm : Form
             $"; SAM2 {value.Sam2Model}";
         string mask = value.MaskEngine == null ? "" :
             $"; masks {value.MaskEngine}";
-        string effective = value.EffectiveBatchSize is int batch && batch != value.BatchSize ?
+        string requestedBatch = value.BatchSize == 0 ? "Auto" : value.BatchSize.ToString();
+        string effective = value.EffectiveBatchSize is int batch &&
+            (value.BatchSize == 0 || batch != value.BatchSize) ?
             $" (effective {batch})" : "";
         string execution = value.ResolvedExecutionMode == null ? "" :
             $"; {value.ResolvedExecutionMode}";
@@ -678,7 +685,7 @@ internal sealed class CustomShowEditorForm : Form
             $"; RVM initializer alpha {threshold}%" : "";
         string accepted = value.AutoAcceptedAlphaThreshold is int alpha ?
             $"; automatically accepted at alpha {alpha}" : "";
-        return $"{algorithm}{detailText}; batch {value.BatchSize}{effective}{sam2}{mask}{initializer}{accepted}{execution}{encoder}\r\n" +
+        return $"{algorithm}{detailText}; batch {requestedBatch}{effective}{sam2}{mask}{initializer}{accepted}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -937,7 +944,7 @@ internal sealed class CustomShowEditorForm : Form
                 {
                     using CustomShowProcessingForm processing = new(async (progress, token) =>
                     {
-                        int chunk = (int)(sequenceChunk.SelectedItem ?? 3);
+                        int chunk = SelectedBatchSize();
                         CustomShowClip[] included = showClips.Where(clip => clip.Included).ToArray();
                         long totalDuration = included.Sum(clip =>
                             Math.Max(1, clip.EndMs - clip.StartMs));
@@ -1147,7 +1154,7 @@ internal sealed class CustomShowEditorForm : Form
                         };
                         show.Clips = showClips;
                     }
-                    int processingBatchSize = (int)(sequenceChunk.SelectedItem ?? 3);
+                    int processingBatchSize = SelectedBatchSize();
                     bool usesInitialMask = selectedPreset is "matanyone2" or
                         "rvm-matanyone2";
                     bool usesSam2 = selectedPreset == "matanyone2" ||
@@ -1312,7 +1319,7 @@ internal sealed class CustomShowEditorForm : Form
                 VitMatteInferenceDetailPx = algorithm is
                     "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
                     ? SelectedVitMatteInferenceResolution() : null,
-                BatchSize = (int)(sequenceChunk.SelectedItem ?? 12),
+                BatchSize = SelectedBatchSize(),
                 RvmInitializerAlphaThresholdPercent = algorithm is
                     "rvm-matanyone2" or "rvm-vitmatte-s"
                     ? rvmInitializerThreshold.Value : null,
@@ -1429,8 +1436,12 @@ internal sealed class CustomShowEditorForm : Form
         {
             using FfmpegCpuDecoder decoder = new(source.Text, fastDecode: true);
             bool baseModel = algorithm == "vitmatte-b";
+            int detail = SelectedVitMatteInferenceResolution();
+            double scale = detail <= 0 ? 1 : Math.Min(1d,
+                detail / (double)Math.Max(decoder.Width, decoder.Height));
             suggested = CustomShowProcessor.ViTMatteSafeBatch(memory, baseModel,
-                decoder.Width, decoder.Height);
+                Math.Max(1, (int)Math.Round(decoder.Width * scale)),
+                Math.Max(1, (int)Math.Round(decoder.Height * scale)));
             name = baseModel ? "ViTMatte-B" : "ViTMatte-S";
         }
         if (requested <= suggested) return true;
@@ -2468,6 +2479,7 @@ internal sealed class CustomShowSettingsForm : Form
             LastMaskEngine = current.LastMaskEngine,
             LastSam2Model = current.LastSam2Model,
             LastMattingDetailPx = current.LastMattingDetailPx,
+            LastVitMatteInferenceDetailPx = current.LastVitMatteInferenceDetailPx,
             LastProcessingBatchSize = current.LastProcessingBatchSize,
             LastRvmInitializerAlphaThresholdPercent =
                 current.LastRvmInitializerAlphaThresholdPercent,

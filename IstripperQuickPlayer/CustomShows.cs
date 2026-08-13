@@ -51,7 +51,8 @@ internal sealed class CustomShowConfiguration
     public string LastSam2Model { get; set; } = "base-plus";
     public int LastMattingDetailPx { get; set; } = 512;
     public int LastVitMatteInferenceDetailPx { get; set; } = 1024;
-    public int LastProcessingBatchSize { get; set; } = 12;
+    // Zero means the worker should choose and learn an adaptive batch size.
+    public int LastProcessingBatchSize { get; set; }
     public int LastRvmInitializerAlphaThresholdPercent { get; set; } = 40;
     public bool LastAutoAcceptAlphaThreshold { get; set; }
 
@@ -71,7 +72,7 @@ internal sealed class CustomShowConfiguration
                     File.ReadAllText(FilePath), CustomShowStore.JsonOptions) ?? new();
             if (string.IsNullOrWhiteSpace(configuration.PythonExecutable))
                 configuration.PythonExecutable = FindPythonExecutable();
-            int[] rvmChunks = [1, 2, 3, 4, 6, 8, 12, 16, 24];
+            int[] rvmChunks = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
             if (!rvmChunks.Contains(configuration.RvmQualityPreferredChunk))
                 configuration.RvmQualityPreferredChunk = 12;
             if (!rvmChunks.Contains(configuration.RvmFastPreferredChunk))
@@ -115,7 +116,7 @@ internal sealed class CustomShowConfiguration
                 (0 or 512 or 768 or 1024))
                 configuration.LastVitMatteInferenceDetailPx = 1024;
             if (!rvmChunks.Contains(configuration.LastProcessingBatchSize))
-                configuration.LastProcessingBatchSize = 12;
+                configuration.LastProcessingBatchSize = 0;
             configuration.LastRvmInitializerAlphaThresholdPercent = Math.Clamp(
                 configuration.LastRvmInitializerAlphaThresholdPercent, 10, 90);
             return configuration;
@@ -230,7 +231,7 @@ internal sealed class CustomShowProcessing
     public string Algorithm { get; set; } = "";
     public int MattingDetailPx { get; set; }
     public int? VitMatteInferenceDetailPx { get; set; }
-    public int BatchSize { get; set; } = 3;
+    public int BatchSize { get; set; }
     public int? RvmInitializerAlphaThresholdPercent { get; set; }
     public int? AutoAcceptedAlphaThreshold { get; set; }
     public string? Sam2Model { get; set; }
@@ -321,7 +322,7 @@ internal sealed class CustomShowStore
         ["quality", "fast", "matanyone2", "rvm-matanyone2", "videomama",
          "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
-    static readonly HashSet<int> BatchSizeValues = [1, 2, 3, 4, 6, 8, 12, 16, 24];
+    static readonly HashSet<int> BatchSizeValues = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
     static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
     static readonly HashSet<string> ClipDetectionMethods =
         ["ffmpeg", "transnetv2", "omnishotcut"];
@@ -721,7 +722,8 @@ internal sealed class CustomShowStore
         if (processing.PipelineDepth is < 1 or > 3)
             throw new InvalidDataException("Invalid processing pipeline depth.");
         if (processing.ResolvedExecutionMode is string mode &&
-            mode is not ("eager" or "compiled" or "eager-fallback"))
+            mode is not ("eager" or "compiled" or "eager-fallback" or
+                "eager-oom-fallback"))
             throw new InvalidDataException("Invalid resolved processing execution mode.");
         if (processing.Encoder is string encoder &&
             encoder is not ("h264_nvenc" or "libx264"))

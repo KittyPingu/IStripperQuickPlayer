@@ -284,8 +284,13 @@ class RvmExecution:
     def __init__(self, args, loaded, expected_frames):
         self.args = args
         self.torch, self.model, self.device = loaded
-        self.safe_chunk = args.sequence_chunk
+        self.auto_batch = args.sequence_chunk == 0
+        self.safe_chunk = 1 if self.auto_batch else args.sequence_chunk
         self.requested_chunk = args.sequence_chunk
+        self.slot_capacity = 24 if self.auto_batch else args.sequence_chunk
+        self.stable_batches = 0
+        self.policy_path = args.runtime / "rvm-auto-batch-policy-v1.json"
+        self.policy_key = None
         self.expected_frames = expected_frames
         self.compiled_model = None
         self.compile_attempted = False
@@ -299,7 +304,8 @@ class RvmExecution:
 
     @property
     def compile_allowed(self):
-        if self.device.type != "cuda" or self.args.matting_resolution != 512:
+        if self.auto_batch or self.device.type != "cuda" or \
+                self.args.matting_resolution != 512:
             return False
         if self.args.execution_mode == "eager" or self.args.compile_cutoff_frames <= 0:
             return self.args.execution_mode == "compile"
@@ -356,6 +362,53 @@ class RvmExecution:
             "encoder": self.encoder,
             "encoderPreset": self.encoder_preset,
         }
+
+    def configure_auto_batch(self, width, height):
+        if not self.auto_batch:
+            return
+        if self.device.type == "cuda":
+            properties = self.torch.cuda.get_device_properties(self.device)
+            free, total = self.torch.cuda.mem_get_info(self.device)
+            detail_scale = min(1.0, (512 * 512) / max(1, width * height))
+            usable_gib = min(free, total) / 1024 ** 3
+            vram_cap = 4 if usable_gib < 8 else 8 if usable_gib < 12 else \
+                12 if usable_gib < 20 else 24
+            heuristic = max(1, min(vram_cap, round(12 * detail_scale)))
+            self.policy_key = (f"{properties.name}|{properties.total_memory}|"
+                               f"{self.args.preset}|{width}x{height}")
+            learned = None
+            try:
+                policy = json.loads(self.policy_path.read_text(encoding="utf-8"))
+                learned = policy.get("entries", {}).get(self.policy_key, {}).get(
+                    "safeBatchSize")
+                learned = max(1, min(24, int(learned)))
+            except (OSError, ValueError, TypeError):
+                pass
+            # Reuse a learned value when the GPU is currently healthy. Otherwise
+            # begin conservatively and let measurements grow it again.
+            healthy_headroom = free >= max(2 * 1024 ** 3, total * .20)
+            self.safe_chunk = learned if learned and healthy_headroom else heuristic
+        else:
+            self.safe_chunk = 1
+        self.slot_capacity = min(24, self.safe_chunk + 4)
+
+    def save_auto_batch(self):
+        if not self.auto_batch or not self.policy_key:
+            return
+        try:
+            try:
+                policy = json.loads(self.policy_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                policy = {"schemaVersion": 1, "entries": {}}
+            entry = policy.setdefault("entries", {}).setdefault(self.policy_key, {})
+            entry["safeBatchSize"] = self.safe_chunk
+            entry["updatedUtc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            self.policy_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.policy_path.with_suffix(self.policy_path.suffix + ".tmp")
+            temporary.write_text(json.dumps(policy, indent=2), encoding="utf-8")
+            os.replace(temporary, self.policy_path)
+        except OSError as error:
+            profile_record("rvm_auto_batch_policy_warning", error=str(error))
 
 
 def validate(runtime):
@@ -471,6 +524,10 @@ def process(args, execution, report=emit):
         args.matting_resolution / max(width, height), 1)
     model_width = max(1, int(width * downsample))
     model_height = max(1, int(height * downsample))
+    execution.configure_auto_batch(model_width, model_height)
+    if execution.auto_batch:
+        report("startup", 0, f"Auto batch starts at {execution.safe_chunk} for "
+               f"{model_width}x{model_height} RVM inference")
     normalized = (f"[0:v:0]fps={frame_rate},scale={width}:{height}:flags=lanczos,"
                   "setsar=1,split=2[video][python]")
     if (model_width, model_height) == (width, height):
@@ -499,7 +556,7 @@ def process(args, execution, report=emit):
         raise
 
     frame_bytes = model_width * model_height * 3
-    slot_bytes = args.sequence_chunk * model_width * model_height * 4
+    slot_bytes = execution.slot_capacity * model_width * model_height * 4
     memory_limit = min(2 * 1024 ** 3, int(physical_memory_bytes() * .125))
     slot_count = 1 if args.pipeline == "serial" else min(3,
         max(1, memory_limit // max(1, slot_bytes)))
@@ -520,7 +577,7 @@ def process(args, execution, report=emit):
         output_slots = queue.Queue(maxsize=max(1, slot_count - 1))
         errors = queue.Queue()
         stop = threading.Event()
-        slots = [FrameSlot(torch, args.sequence_chunk, model_height, model_width,
+        slots = [FrameSlot(torch, execution.slot_capacity, model_height, model_width,
                            device, tensor_dtype) for _ in range(slot_count)]
         for slot in slots:
             free_slots.put(slot)
@@ -746,10 +803,24 @@ def process(args, execution, report=emit):
                 state = run_slice(slot, offset, length, state, compiled)
                 bootstrap = False
                 offset += length
+                if execution.auto_batch and device.type == "cuda" and \
+                        length == execution.safe_chunk:
+                    execution.stable_batches += 1
+                    free, total_memory = torch.cuda.mem_get_info(device)
+                    if execution.stable_batches >= 2 and \
+                            free > max(2 * 1024 ** 3, total_memory * .25) and \
+                            execution.safe_chunk < execution.slot_capacity:
+                        execution.safe_chunk += 1
+                        execution.stable_batches = 0
+                        report("inference", min(99, encoded_count * 100 / total),
+                               f"Auto batch increased to {execution.safe_chunk} after "
+                               "healthy GPU memory measurements")
             except torch.OutOfMemoryError:
                 if length <= 1:
                     raise
-                execution.safe_chunk = max(1, length // 2)
+                execution.safe_chunk = max(1, length - 1) if execution.auto_batch \
+                    else max(1, length // 2)
+                execution.stable_batches = 0
                 execution.disable_compile("CUDA out of memory")
                 if device.type == "cuda":
                     torch.cuda.empty_cache()
@@ -845,6 +916,7 @@ def process(args, execution, report=emit):
         "durationMs": round(encoded_count * 1000 / fps), "foregroundMode": "source",
         **execution.metadata()}
     (output / "result.json").write_text(json.dumps(result, indent=2))
+    execution.save_auto_batch()
     report("complete", 100, "Source foreground and alpha are ready for preview")
     return result
 
@@ -893,7 +965,7 @@ def main():
     parser.add_argument("--preset", choices=WEIGHTS, default="quality")
     parser.add_argument("--matting-resolution", type=int,
                         choices=(0, 256, 384, 512, 768, 1024), default=512)
-    parser.add_argument("--sequence-chunk", type=int, choices=range(1, 25), default=12)
+    parser.add_argument("--sequence-chunk", type=int, choices=range(0, 25), default=12)
     parser.add_argument("--encoder-preset", choices=tuple(f"p{i}" for i in range(1, 8)),
                         default="p5")
     parser.add_argument("--compile-cutoff-frames", type=int, default=0)

@@ -9,9 +9,12 @@ format, performance, licensing, and troubleshooting reference.
 For most new shows, start with **RVM-MatAnyone** for automatic subject selection,
 **MatAnyone 2** when you want to choose and correct the initial subject mask, or
 **RVM-ViTMatte S** for automatic full-frame masks followed by softer-edge
-refinement. Start RVM and MatAnyone methods at **Standard (512 px)** detail.
-RVM-ViTMatte S works at source dimensions, so its batch size—not Matting detail—is
-the main VRAM control. See the end-user guide before using the more specialised
+refinement. Use **RVM Quality** when you want a very fast automatic result and
+its simpler matte quality is sufficient. Start RVM and MatAnyone methods at
+**Standard (512 px)** detail.
+RVM-ViTMatte S has a separate **ViTMatte inference detail** setting that defaults
+to 1024 px. Published media retains the source dimensions, and the unrelated
+RVM/MatAnyone Matting detail selector is hidden. See the end-user guide before using the more specialised
 VideoMaMa or ViTMatte B workflows.
 
 One measured queued 1920x1080 source was 38 minutes long and divided into 18
@@ -260,21 +263,25 @@ ranges. Enable **Skip transition ±** to expand gradual ranges and add symmetric
 buffers around every detected instantaneous cut; overlapping skipped ranges are
 merged. For example, a 1.5-second value creates a 3-second skipped segment
 centred on a hard cut.
-Fast FFmpeg and TransNetV2 expose a detector-specific **Sensitivity** percentage.
-Higher values lower the acceptance threshold and produce more candidate cuts;
+All three detectors expose a detector-specific **Sensitivity** slider above the
+grid beside **Show skipped clips in grid**. For Fast FFmpeg and TransNetV2,
+higher values lower the acceptance threshold and produce more candidate cuts;
 lower values require a stronger change. Fast defaults to 65% (the former fixed
 scene threshold of 0.35), while TransNetV2 defaults to 50% (probability 0.5).
-All three values are remembered separately and recorded in new detection
-metadata. OmniShotCut defaults to 100%, preserving its previous behaviour of
-accepting every highest-probability prediction. Lower values reject uncertain
-classifications or boundary positions and merge those ranges into neighbouring
-content; they cannot produce more detections than 100%.
+OmniShotCut defaults to 100%, preserving its previous accept-all result. Because
+OmniShotCut confidence values cluster very close to 1.0, its slider ranks the
+retained candidates by confidence instead: 1% keeps roughly the strongest 1%,
+50% keeps the strongest half, and 100% keeps all candidates. Removing a boundary
+merges its range into neighbouring content. All three values are remembered
+separately and recorded in new detection metadata.
 New detections retain compressed raw scores or scored boundaries in the
-clip-detection metadata. Releasing the sensitivity slider rebuilds the grid from
-that data without decoding the source or rerunning a neural model. If dividers or
-included/skipped states were edited after the last calculation, QuickPlayer asks
-before discarding those changes. Older detections without retained data require
-one new Auto-detect run before local sensitivity adjustment is available.
+clip-detection metadata. Moving the sensitivity slider rebuilds the grid from
+that data after a short debounce, without decoding the source or rerunning a
+neural model. If dividers or included/skipped states were edited after the last
+calculation, live recalculation pauses and QuickPlayer asks on slider release
+before discarding those changes. Accepting the warning enables live updates for
+continued movement. Older detections without retained data require one new
+**Auto-detect clips** run before local sensitivity adjustment is available.
 The **Auto-skip shorter than** value controls which detected playable segments
 are skipped and defaults to 20 seconds. **Show skipped clips in grid** hides or
 reveals excluded segments. Clicking or scrubbing the timeline selects the related
@@ -611,8 +618,14 @@ official RVM conversion guidance. Values 1, 2, 3, 4, 6, 8, 12, 16, and 24 are
 available. If a chunk exceeds GPU memory, QuickPlayer halves it and remembers the
 successful size for every remaining chunk and clip in that job instead of
 repeatedly retrying the oversized allocation.
-The same batch selector controls ViTMatte inference and VideoMaMa groups. The
-VideoMaMa default is visible under **Custom Show Settings > Matting & masks >
+The same batch selector controls ViTMatte inference and VideoMaMa groups. **Auto**
+is the default for genuinely batched workflows: RVM, ViTMatte, RVM-ViTMatte, and
+VideoMaMa. It starts conservatively from the algorithm, effective inference
+dimensions, current free VRAM, GPU identity, and VRAM capacity. It increments
+after healthy measurements and decrements on a CUDA memory limit. Successful
+effective values are stored in the runtime performance policy and reused as the
+initial suggestion for matching later runs. The VideoMaMa manual default is
+visible under **Custom Show Settings > Matting & masks >
 VideoMaMa**. **Benchmark VideoMaMa batch...** runs real 1024x576 diffusion
 inference with increasing batches, monitors whole-GPU VRAM, stops after memory
 pressure or an out-of-memory result, and copies the fastest safe value into the

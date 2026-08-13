@@ -96,9 +96,14 @@ internal static class CustomShowProcessor
         int maximum = baseModel
             ? usable < 24 * 1024 ? 1 : usable < 40 * 1024 ? 2 : 4
             : usable < 20 * 1024 ? 2 : usable < 32 * 1024 ? 4 : 8;
-        if ((long)width * height > 1920L * 1080)
+        long pixels = (long)width * height;
+        const long referencePixels = 1920L * 1080;
+        if (pixels < referencePixels)
+            maximum = Math.Max(maximum, (int)Math.Floor(maximum *
+                Math.Sqrt(referencePixels / (double)Math.Max(1, pixels))));
+        else if (pixels > referencePixels)
             maximum = Math.Max(1, maximum / 2);
-        return maximum;
+        return Math.Clamp(maximum, 1, 12);
     }
 
     internal static bool VerifyResultContract()
@@ -331,7 +336,8 @@ internal static class CustomShowProcessor
         CancellationToken cancellationToken,
         IReadOnlyList<CustomShowProcessJob>? jobs = null,
         long? maskFrameMs = null,
-        int rvmInitializerAlphaThresholdPercent = 40)
+        int rvmInitializerAlphaThresholdPercent = 40,
+        int vitMatteInferenceDetailPx = 1024)
     {
         string python = configuration.PythonExecutable;
         if (!File.Exists(python))
@@ -398,9 +404,12 @@ internal static class CustomShowProcessor
             start.ArgumentList.Add("--mask-folder");
             start.ArgumentList.Add(maskFolder!);
             start.ArgumentList.Add("--batch-size");
-            start.ArgumentList.Add(Math.Clamp(sequenceChunk, 1, 12).ToString());
+            start.ArgumentList.Add((sequenceChunk == 0 ? 0 :
+                Math.Clamp(sequenceChunk, 1, 12)).ToString());
             if (preset.StartsWith("vitmatte", StringComparison.Ordinal))
             {
+                start.ArgumentList.Add("--max-size");
+                start.ArgumentList.Add(vitMatteInferenceDetailPx.ToString());
                 start.ArgumentList.Add("--model");
                 start.ArgumentList.Add(preset[^1..]);
                 start.ArgumentList.Add("--compile-cutoff-frames");
@@ -420,7 +429,10 @@ internal static class CustomShowProcessor
                 start.ArgumentList.Add(maskFolder!);
             }
             start.ArgumentList.Add("--batch-size");
-            start.ArgumentList.Add(Math.Clamp(sequenceChunk, 1, 12).ToString());
+            start.ArgumentList.Add((sequenceChunk == 0 ? 0 :
+                Math.Clamp(sequenceChunk, 1, 12)).ToString());
+            start.ArgumentList.Add("--max-size");
+            start.ArgumentList.Add(vitMatteInferenceDetailPx.ToString());
             start.ArgumentList.Add("--rvm-alpha-threshold");
             start.ArgumentList.Add((Math.Clamp(rvmInitializerAlphaThresholdPercent,
                 10, 90) / 100d).ToString("0.00",
@@ -437,12 +449,14 @@ internal static class CustomShowProcessor
             int compileCutoff = preset == "fast" ?
                 configuration.RvmFastCompileCutoffFrames :
                 configuration.RvmQualityCompileCutoffFrames;
-            if (mattingResolution != 512 || sequenceChunk != preferredChunk)
+            if (mattingResolution != 512 || sequenceChunk == 0 ||
+                sequenceChunk != preferredChunk)
                 compileCutoff = 0;
             foreach (string argument in new[]
             {
                 "--preset", preset, "--matting-resolution", mattingResolution.ToString(),
-                "--sequence-chunk", Math.Clamp(sequenceChunk, 1, 24).ToString(),
+                "--sequence-chunk", (sequenceChunk == 0 ? 0 :
+                    Math.Clamp(sequenceChunk, 1, 24)).ToString(),
                 "--compile-cutoff-frames", Math.Max(0, compileCutoff).ToString()
             }) start.ArgumentList.Add(argument);
             if (jobs != null)

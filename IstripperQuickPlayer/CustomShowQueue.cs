@@ -717,7 +717,9 @@ internal static class CustomShowJobRunner
                 log, i > 0, aggregate, token, maskFrameMs:
                     job.InitialMaskFrameMs.GetValueOrDefault(clip.Id, clip.StartMs),
                 rvmInitializerAlphaThresholdPercent:
-                    options.RvmInitializerAlphaThresholdPercent ?? 40);
+                    options.RvmInitializerAlphaThresholdPercent ?? 40,
+                vitMatteInferenceDetailPx:
+                    options.VitMatteInferenceDetailPx ?? 1024);
             if (options.Algorithm == "rvm-vitmatte-s")
             {
                 string masks = Path.Combine(output, ".rvm-masks");

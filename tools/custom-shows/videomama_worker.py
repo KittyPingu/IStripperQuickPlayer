@@ -298,6 +298,38 @@ def safe_batch_for_memory(total, requested):
     return max(1, min(requested, maximum))
 
 
+def auto_batch_policy_key(torch, width, height):
+    return f"{gpu_policy_key(torch)}|videomama|{width}x{height}"
+
+
+def load_auto_batch(runtime, torch, width, height):
+    try:
+        policy = json.loads((runtime / "videomama-performance-policy-v1.json").read_text())
+        value = policy.get("entries", {}).get(
+            auto_batch_policy_key(torch, width, height), {}).get("safeBatchSize")
+        return max(1, min(int(value), 12))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def save_auto_batch(runtime, torch, width, height, batch):
+    path = runtime / "videomama-performance-policy-v1.json"
+    try:
+        try:
+            policy = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            policy = {"schemaVersion": 1, "entries": {}}
+        entry = policy.setdefault("entries", {}).setdefault(
+            auto_batch_policy_key(torch, width, height), {})
+        entry["safeBatchSize"] = int(batch)
+        entry["updatedUtc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(policy, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError as error:
+        print(f"Auto batch policy warning: {error}", file=sys.stderr, flush=True)
+
+
 def write_preview(output, source, alpha):
     import numpy as np
     from PIL import Image
@@ -471,9 +503,21 @@ def process(args):
         emit("startup", 35, "Loading VideoMaMa diffusion model...")
         pipeline = load_videomama(runtime, torch)
         pipeline.unet.enable_forward_chunking(chunk_size=1, dim=1)
-        requested_batch = max(1, min(args.batch_size, 12))
-        batch_size = safe_batch_size(runtime, torch, requested_batch)
-        if batch_size < requested_batch:
+        auto_batch = args.batch_size == 0
+        requested_batch = 0 if auto_batch else max(1, min(args.batch_size, 12))
+        free_memory, total_memory = torch.cuda.mem_get_info()
+        if auto_batch:
+            learned = load_auto_batch(runtime, torch, model_width, model_height)
+            heuristic = safe_batch_for_memory(min(free_memory, total_memory), 12)
+            healthy_headroom = free_memory >= max(2 * 1024 ** 3,
+                                                   total_memory * .20)
+            batch_size = learned if learned and healthy_headroom \
+                else heuristic
+            emit("startup", 35, f"Auto batch starts at {batch_size} for "
+                 f"{model_width}x{model_height} VideoMaMa inference")
+        else:
+            batch_size = safe_batch_size(runtime, torch, requested_batch)
+        if not auto_batch and batch_size < requested_batch:
             emit("startup", 35, f"VideoMaMa batch reduced from {requested_batch} to "
                  f"{batch_size} to preserve GPU memory headroom")
         emit("startup", 35, f"VideoMaMa model loaded; first {batch_size}-frame batch is running...")
@@ -511,14 +555,26 @@ def process(args):
 
         last_source = last_alpha = None
         try:
-            for offset in range(0, total, batch_size):
+            offset, stable_batches = 0, 0
+            while offset < total:
                 chunk_files = frame_files[offset:offset + batch_size]
                 cond = [Image.open(path).convert("RGB") for path in chunk_files]
                 guides = [Image.open(masks / (path.stem + ".png")).convert("L").resize(
                     (model_width, model_height), Image.Resampling.NEAREST)
                     for path in chunk_files]
-                mattes = pipeline.run(cond, guides, seed=42, mask_cond_mode="vae",
-                                      fps=max(1, round(fps)))
+                try:
+                    mattes = pipeline.run(cond, guides, seed=42, mask_cond_mode="vae",
+                                          fps=max(1, round(fps)))
+                except torch.OutOfMemoryError:
+                    if len(chunk_files) <= 1:
+                        raise
+                    batch_size = max(1, len(chunk_files) - 1) if auto_batch else \
+                        max(1, len(chunk_files) // 2)
+                    stable_batches = 0
+                    torch.cuda.empty_cache()
+                    emit("inference", 35 + count * 64 / total,
+                         f"GPU memory limit; batch reduced to {batch_size}")
+                    continue
                 for matte in mattes:
                     source_frame = read_source()
                     alpha = np.asarray(matte.convert("L").resize(
@@ -535,6 +591,17 @@ def process(args):
                     preview(source_frame, alpha)
                     emit("inference", 35 + count * 64 / total,
                          f"Processed {count}/{total} frames")
+                offset += len(chunk_files)
+                if auto_batch and len(chunk_files) == batch_size:
+                    stable_batches += 1
+                    free_memory, total_memory = torch.cuda.mem_get_info()
+                    if stable_batches >= 2 and free_memory > max(2 * 1024 ** 3,
+                            total_memory * .25) and batch_size < 12:
+                        batch_size += 1
+                        stable_batches = 0
+                        emit("inference", 35 + count * 64 / total,
+                             f"Auto batch increased to {batch_size} after healthy "
+                             "GPU memory measurements")
             if last_source is not None: preview(last_source, last_alpha, force=True)
             encode.stdin.close(); decode.stdout.close()
             if decode.wait() != 0:
@@ -546,6 +613,8 @@ def process(args):
             "frameRate": frame_rate, "durationMs": round(count * 1000 / fps),
             "requestedSequenceChunk": requested_batch,
             "effectiveSequenceChunk": batch_size}, indent=2))
+        if auto_batch:
+            save_auto_batch(runtime, torch, model_width, model_height, batch_size)
         emit("complete", 100, "VideoMaMa foreground and alpha are ready for preview")
     finally:
         shutil.rmtree(work, ignore_errors=True)

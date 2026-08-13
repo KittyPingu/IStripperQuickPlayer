@@ -31,9 +31,28 @@ def safe_batch_for_memory(total_bytes, model, width, height, requested):
     gib = total_bytes / 1024 ** 3
     if model == "b": maximum = 1 if gib < 24 else 2 if gib < 40 else 4
     else: maximum = 2 if gib < 20 else 4 if gib < 32 else 8
-    if width * height > 1920 * 1080:
+    pixels = width * height
+    reference_pixels = 1920 * 1080
+    if pixels < reference_pixels:
+        maximum = max(maximum, math.floor(maximum *
+                      math.sqrt(reference_pixels / max(1, pixels))))
+    elif pixels > reference_pixels:
         maximum = max(1, maximum // 2)
     return max(1, min(requested, maximum))
+
+
+def inference_size(width, height, maximum):
+    if maximum <= 0 or max(width, height) <= maximum:
+        return width, height
+    scale = maximum / max(width, height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def auto_batch_for_memory(free_bytes, total_bytes, model, width, height):
+    # Start conservatively. Runtime measurements can then grow one frame at a time.
+    baseline = safe_batch_for_memory(min(free_bytes, total_bytes), model,
+                                     width, height, 12)
+    return max(1, baseline)
 PREVIEW_INTERVAL = .5
 PREVIEW_MAXIMUM = (960, 540)
 
@@ -83,7 +102,8 @@ def alpha_bytes(alpha):
 
 def policy_identity(torch, model, revision, padded_height, padded_width, fp16, batch_size):
     if torch.cuda.is_available():
-        gpu = torch.cuda.get_device_name(0)
+        properties = torch.cuda.get_device_properties(0)
+        gpu = f"{properties.name}|{properties.total_memory}"
         try:
             driver = str(torch._C._cuda_getDriverVersion())
         except Exception:
@@ -212,6 +232,7 @@ def process(args):
         raise RuntimeError("The corrected SAM2 mask sequence is missing")
 
     width, height, frame_rate, fps, source_duration = probe(source)
+    inference_width, inference_height = inference_size(width, height, args.max_size)
     start = args.start_ms / 1000
     end = source_duration if args.end_ms is None else args.end_ms / 1000
     if start < 0 or end <= start or end > source_duration + .1:
@@ -242,17 +263,23 @@ def process(args):
     video_codec, alpha_codec, encoder_name = output_codecs(
         ffmpeg, width, height, preset=args.encoder_preset)
     decode = source_and_foreground_encoder(ffmpeg, source, output, start, duration,
-        frame_rate, width, height, len(masks), video_codec)
+        frame_rate, width, height, len(masks), video_codec,
+        inference_width, inference_height)
     encode = alpha_encoder(ffmpeg, output, frame_rate, width, height, len(masks),
-        width, height, alpha_codec)
-    frame_bytes = width * height * 3
-    requested_batch = max(1, args.batch_size)
-    safe_batch = safe_batch_for_memory(
-        torch.cuda.get_device_properties(device).total_memory,
-        args.model, width, height, requested_batch) if device.type == "cuda" \
-        else requested_batch
+        inference_width, inference_height, alpha_codec)
+    frame_bytes = inference_width * inference_height * 3
+    auto_batch = args.batch_size == 0
+    requested_batch = 0 if auto_batch else max(1, args.batch_size)
+    if device.type == "cuda":
+        free_memory, total_memory = torch.cuda.mem_get_info(device)
+        safe_batch = (auto_batch_for_memory(free_memory, total_memory, args.model,
+                      inference_width, inference_height) if auto_batch else
+                      safe_batch_for_memory(total_memory, args.model,
+                      inference_width, inference_height, requested_batch))
+    else:
+        safe_batch = 1 if auto_batch else requested_batch
     active_batch = {"size": safe_batch}
-    if safe_batch < requested_batch:
+    if not auto_batch and safe_batch < requested_batch:
         emit("startup", 0, f"ViTMatte-{args.model.upper()} batch reduced from "
              f"{requested_batch} to {safe_batch} for this GPU and resolution")
     input_queue, output_queue = queue.Queue(PIPELINE_DEPTH), queue.Queue(PIPELINE_DEPTH)
@@ -264,13 +291,22 @@ def process(args):
     policy_path = runtime / POLICY_NAME
     # Both official ViTMatte processors are pinned to a 32-pixel divisor.
     divisor = 32
-    padded_height = math.ceil(height / divisor) * divisor
-    padded_width = math.ceil(width / divisor) * divisor
+    padded_height = math.ceil(inference_height / divisor) * divisor
+    padded_width = math.ceil(inference_width / divisor) * divisor
     initial_key = policy_identity(torch, args.model, revision,
                                   padded_height, padded_width, fp16, requested_batch)
     initial_entry = load_policy(policy_path).get("entries", {}).get(initial_key, {})
-    active_batch["size"] = max(1, min(active_batch["size"],
-        int(initial_entry.get("safeBatchSize", requested_batch) or requested_batch)))
+    learned = int(initial_entry.get("safeBatchSize", safe_batch) or safe_batch)
+    if auto_batch:
+        free_memory, total_memory = torch.cuda.mem_get_info(device) if \
+            device.type == "cuda" else (0, 1)
+        healthy_headroom = free_memory >= max(2 * 1024 ** 3, total_memory * .20)
+        active_batch["size"] = max(1, min(12,
+            learned if healthy_headroom else safe_batch))
+        emit("startup", 0, f"Auto batch starts at {active_batch['size']} for "
+             f"{inference_width}x{inference_height} inference")
+    else:
+        active_batch["size"] = max(1, min(active_batch["size"], learned))
     policy_key = {"value": initial_key}
     selected_mode = {"value": "eager"}
     compiled = {"model": None, "batch": None, "failed": False}
@@ -296,7 +332,7 @@ def process(args):
                     try:
                         frame = source_pool.get_nowait()
                     except queue.Empty:
-                        frame = np.empty((height, width, 3), np.uint8)
+                        frame = np.empty((inference_height, inference_width, 3), np.uint8)
                     complete = read_exact_into(decode.stdout, frame)
                     timings.add("decodeRead", time.perf_counter() - stage)
                     if not complete:
@@ -306,8 +342,9 @@ def process(args):
                     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
                     if mask is None:
                         raise RuntimeError(f"Could not read {mask_path.name}")
-                    if mask.shape != (height, width):
-                        mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+                    if mask.shape != (inference_height, inference_width):
+                        mask = cv2.resize(mask, (inference_width, inference_height),
+                                          interpolation=cv2.INTER_NEAREST)
                     trimap = trimap_from_mask(mask, cv2, kernel_cache)
                     timings.add("maskReadTrimap", time.perf_counter() - stage)
                     frames.append(frame); trimaps.append(trimap)
@@ -456,7 +493,8 @@ def process(args):
         try:
             with torch.inference_mode(), torch.autocast(device_type=device.type,
                     dtype=torch.float16, enabled=fp16):
-                result = model(pixel_values=uploaded).alphas[:, 0, :height, :width]
+                result = model(pixel_values=uploaded).alphas[:, 0,
+                    :inference_height, :inference_width]
         except torch.OutOfMemoryError:
             raise
         except Exception as error:
@@ -513,6 +551,7 @@ def process(args):
     input_thread = threading.Thread(target=input_worker, name="vitmatte-input", daemon=True)
     output_thread = threading.Thread(target=output_worker, name="vitmatte-output", daemon=True)
     input_thread.start(); output_thread.start()
+    stable_batches = 0
     try:
         while not stop.is_set():
             if not errors.empty():
@@ -532,7 +571,9 @@ def process(args):
                 except torch.OutOfMemoryError:
                     if size == 1:
                         raise
-                    active_batch["size"] = max(1, size // 2)
+                    active_batch["size"] = max(1, size - 1) if auto_batch else \
+                        max(1, size // 2)
+                    stable_batches = 0
                     if device.type == "cuda":
                         torch.cuda.empty_cache()
                     if compiled["model"] is not None:
@@ -552,6 +593,17 @@ def process(args):
                                     gpu_events), stop):
                     break
                 offset += size
+                if auto_batch and device.type == "cuda" and size == active_batch["size"]:
+                    stable_batches += 1
+                    free_memory, total_memory = torch.cuda.mem_get_info(device)
+                    if stable_batches >= 2 and free_memory > max(2 * 1024 ** 3,
+                                                                 total_memory * .25) and \
+                            active_batch["size"] < 12:
+                        active_batch["size"] += 1
+                        stable_batches = 0
+                        emit("inference", counters["written"] * 100 / len(masks),
+                             f"Auto batch increased to {active_batch['size']} after "
+                             "healthy GPU memory measurements")
         if not errors.empty():
             raise errors.get()
         put_bounded(output_queue, output_done, stop)
@@ -585,7 +637,10 @@ def process(args):
             peak_ram = 0
         profile = {"profile": "vitmatte-v1", "model": args.model,
             "executionMode": selected_mode["value"], "frames": counters["written"],
-            "width": width, "height": height, "batchSizeRequested": requested_batch,
+            "width": width, "height": height,
+            "inferenceWidth": inference_width, "inferenceHeight": inference_height,
+            "inferenceDetailPx": args.max_size,
+            "batchSizeRequested": requested_batch,
             "batchSizeUsed": active_batch["size"], "totalSeconds": total,
             "fps": counters["written"] / total if total else 0,
             "peakVramBytes": peak_vram, "peakRamBytes": peak_ram,
@@ -601,6 +656,9 @@ def process(args):
             temporary = args.profile_output.with_suffix(args.profile_output.suffix + ".tmp")
             temporary.write_text(json.dumps(profile, indent=2), encoding="utf-8")
             os.replace(temporary, args.profile_output)
+        if auto_batch and policy_key["value"]:
+            update_policy(policy_path, policy_key["value"],
+                          safeBatchSize=active_batch["size"])
         emit("complete", 100,
              f"ViTMatte-{args.model.upper()} foreground and alpha are ready for preview")
     except BaseException:
@@ -627,6 +685,7 @@ def self_test():
     assert safe_batch_for_memory(16 * 1024 ** 3, "b", 1920, 1080, 12) == 1
     assert safe_batch_for_memory(16 * 1024 ** 3, "s", 1920, 1080, 12) == 2
     assert safe_batch_for_memory(24 * 1024 ** 3, "b", 3840, 2160, 12) == 1
+    assert inference_size(1920, 1080, 1024) == (1024, 576)
     with torch.inference_mode(): alpha = torch.tensor([0., .5, 1.])
     assert alpha_bytes(alpha).tolist() == [0, 127, 255]
     print("ViTMatte worker self-test passed")
@@ -642,6 +701,8 @@ def main():
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int)
     parser.add_argument("--batch-size", type=int, default=3)
+    parser.add_argument("--max-size", type=int, choices=(0, 512, 768, 1024),
+                        default=1024)
     parser.add_argument("--encoder-preset", choices=tuple(f"p{i}" for i in range(1, 8)),
                         default="p5")
     parser.add_argument("--compile-cutoff-frames", type=int, default=16000)

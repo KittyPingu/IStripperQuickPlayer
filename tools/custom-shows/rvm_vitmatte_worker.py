@@ -65,7 +65,8 @@ def process(args):
             "--output", str(args.output), "--runtime", str(args.runtime),
             "--mask-folder", str(masks), "--model", "s",
             "--start-ms", str(args.start_ms), "--end-ms", str(args.end_ms),
-            "--batch-size", str(args.batch_size), "--encoder-preset",
+            "--batch-size", str(args.batch_size), "--max-size", str(args.max_size),
+            "--encoder-preset",
             args.encoder_preset, "--compile-cutoff-frames",
             str(args.compile_cutoff_frames)]
         emit("vitmatte", 30, "Refining the RVM masks with ViTMatte-S...")
@@ -83,6 +84,8 @@ def main():
     parser.add_argument("--end-ms", type=int, required=True)
     parser.add_argument("--mask-folder", type=Path)
     parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--max-size", type=int, choices=(0, 512, 768, 1024),
+                        default=1024)
     parser.add_argument("--rvm-alpha-threshold", type=float, default=.5)
     parser.add_argument("--encoder-preset",
                         choices=tuple(f"p{i}" for i in range(1, 8)), default="p5")
