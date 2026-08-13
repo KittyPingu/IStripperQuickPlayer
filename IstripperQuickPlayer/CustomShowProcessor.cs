@@ -802,12 +802,13 @@ internal sealed class CustomShowProcessingForm : Form
     internal CustomShowProcessingForm(Func<IProgress<CustomShowProgress>,
         CancellationToken, Task<CustomShowProcessResult>> operation,
         string text = "Processing Custom Show", string sourceLabel = "Original input",
-        string compositeLabel = "Composited result", string? processDescription = null)
+        string compositeLabel = "Composited result", string? processDescription = null,
+        bool showPreviews = true)
     {
         this.operation = operation;
         Text = text;
-        ClientSize = new Size(1000, 680);
-        MinimumSize = new Size(700, 500);
+        ClientSize = showPreviews ? new Size(1000, 680) : new Size(620, 190);
+        MinimumSize = showPreviews ? new Size(700, 500) : new Size(500, 180);
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
         TableLayoutPanel layout = new() { Dock = DockStyle.Fill,
@@ -815,7 +816,8 @@ internal sealed class CustomShowProcessingForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,
             processDescription == null ? 0 : 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(showPreviews ? SizeType.Percent :
+            SizeType.Absolute, showPreviews ? 100 : 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         this.processDescription.Text = processDescription ?? "";
@@ -856,7 +858,8 @@ internal sealed class CustomShowProcessingForm : Form
                     elapsed.Elapsed.TotalSeconds, percent);
                 statusMessage = string.IsNullOrWhiteSpace(value.Message) ? value.Stage : value.Message;
                 AddFrameSample(statusMessage, elapsed.Elapsed.TotalSeconds);
-                bool compiling = statusMessage.StartsWith("Compiling optimized SAM2",
+                bool compiling = value.Stage == "preparing" ||
+                    statusMessage.StartsWith("Compiling optimized SAM2",
                     StringComparison.Ordinal) || statusMessage.StartsWith(
                     "Loading cached optimized SAM2", StringComparison.Ordinal);
                 bar.Style = compiling ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;

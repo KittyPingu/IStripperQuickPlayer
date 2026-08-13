@@ -909,10 +909,7 @@ internal sealed class CustomShowEditorForm : Form
             HashSet<string> reprocessClipSet = reprocessClipIds.ToHashSet(
                 StringComparer.OrdinalIgnoreCase);
             string staging = Path.Combine(store.Root, ".staging", show.Id);
-            await DeleteDirectoryWhenReleasedAsync(staging);
-            if (Appending || reprocess)
-                CopyDirectory(Path.Combine(store.ShowsFolder, show.Id), staging);
-            else Directory.CreateDirectory(staging);
+            if (!await PrepareStaging(show, staging, Appending || reprocess)) return;
             bool discardStaging = false;
             bool discardMaskDraft = false;
             CustomShowMaskDraft? maskDraft = null;
@@ -1872,6 +1869,58 @@ internal sealed class CustomShowEditorForm : Form
             File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
         foreach (string folder in Directory.EnumerateDirectories(source))
             CopyDirectory(folder, Path.Combine(destination, Path.GetFileName(folder)));
+    }
+
+    async Task<bool> PrepareStaging(CustomShowManifest show, string staging,
+        bool copyExistingShow)
+    {
+        using CustomShowProcessingForm preparing = new(async (progress, token) =>
+        {
+            progress.Report(new CustomShowProgress("preparing", 0,
+                "Preparing a safe working copy…"));
+            await Task.Run(() => DeleteDirectoryWhenReleasedAsync(staging), token);
+            token.ThrowIfCancellationRequested();
+            if (copyExistingShow)
+            {
+                string existing = Path.Combine(store.ShowsFolder, show.Id);
+                await Task.Run(() => CopyDirectoryWithProgress(existing, staging,
+                    progress, token), token);
+            }
+            else Directory.CreateDirectory(staging);
+            progress.Report(new CustomShowProgress("preparing", 100,
+                "Working copy ready"));
+            return new CustomShowProcessResult();
+        }, reprocess ? "Preparing Reprocessing" : "Preparing Custom Show",
+            processDescription: copyExistingShow
+                ? "Creating a safe working copy of the existing show"
+                : "Preparing the custom show workspace",
+            showPreviews: false);
+        return preparing.ShowDialog(this) == DialogResult.OK;
+    }
+
+    static void CopyDirectoryWithProgress(string source, string destination,
+        IProgress<CustomShowProgress> progress, CancellationToken token)
+    {
+        int copied = 0;
+        Copy(source, destination);
+        return;
+
+        void Copy(string from, string to)
+        {
+            token.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(to);
+            foreach (string file in Directory.EnumerateFiles(from))
+            {
+                token.ThrowIfCancellationRequested();
+                File.Copy(file, Path.Combine(to, Path.GetFileName(file)), true);
+                copied++;
+                if (copied == 1 || copied % 100 == 0)
+                    progress.Report(new CustomShowProgress("preparing", 0,
+                        $"Copied {copied:N0} files into the safe working copy"));
+            }
+            foreach (string folder in Directory.EnumerateDirectories(from))
+                Copy(folder, Path.Combine(to, Path.GetFileName(folder)));
+        }
     }
 
     static void RemoveExpandedRetainedMasks(string root)
