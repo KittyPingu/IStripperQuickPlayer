@@ -18,6 +18,7 @@ internal sealed class CustomShowEditorForm : Form
     readonly bool reprocess;
     readonly CustomShowQueueManager? queueManager;
     readonly string? queueJobId;
+    readonly CustomShowIncompleteSetupEntry? restoredSetup;
     string? appendShowId;
     readonly TextBox source = new();
     readonly Button addToExisting = new() { Text = "Add To Existing Show", AutoSize = true };
@@ -78,13 +79,15 @@ internal sealed class CustomShowEditorForm : Form
     string? originalCoverPerformerId;
     string? originalCoverModelName;
     string? originalCoverTitleColor;
+    bool loadingPerformerSelection;
 
     internal string? SavedShowId { get; private set; }
     internal bool SavedPerformerChanged { get; private set; }
 
     internal CustomShowEditorForm(CustomShowStore store,
         CustomShowConfiguration configuration, string? showId, bool reprocess = false,
-        CustomShowQueueManager? queueManager = null, string? queueJobId = null)
+        CustomShowQueueManager? queueManager = null, string? queueJobId = null,
+        CustomShowIncompleteSetupEntry? restoredSetup = null)
     {
         this.store = store;
         this.configuration = configuration;
@@ -92,6 +95,7 @@ internal sealed class CustomShowEditorForm : Form
         this.reprocess = reprocess && showId != null;
         this.queueManager = queueManager;
         this.queueJobId = queueJobId;
+        this.restoredSetup = restoredSetup;
         bool metadataOnly = showId != null && !this.reprocess &&
             queueJobId == null;
         Text = showId == null ? "Create Custom Show" : this.reprocess
@@ -178,6 +182,9 @@ internal sealed class CustomShowEditorForm : Form
             ? ["base-plus", "small", "tiny"]
             : CustomShowProcessor.InstalledSam2Models(configuration);
         if (installedSam2Models.Count > 0)
+            maskEngine.Items.Insert(0,
+                "RVM → SAM2 (automatic person mask, editable)");
+        if (installedSam2Models.Count > 0)
             maskEngine.Items.Insert(0, "SAM2 (editable, best robustness)");
         if (metadataOnly || CustomShowProcessor.IsEdgeTamInstalled(configuration))
             maskEngine.Items.Add("EdgeTAM (editable, faster)");
@@ -251,11 +258,17 @@ internal sealed class CustomShowEditorForm : Form
             bool editable = selectedProfile != null &&
                 string.IsNullOrWhiteSpace(selectedProfile.IstripperModelId);
             editPerformer.Enabled = editPerformer.Visible = editable;
+            if (!loadingPerformerSelection && showId == null &&
+                queueJobId == null && appendShowId == null &&
+                !string.IsNullOrWhiteSpace(selectedProfile?.Gender))
+                gender.SelectedItem = selectedProfile.Gender;
         };
         LoadData();
+        if (restoredSetup != null) RestoreIncompleteSetup(restoredSetup);
         if (queueJobId != null) LoadQueueJob(queueJobId);
         UpdateProcessingOptions();
-        if (showId == null && queueJobId == null) RestoreProcessingOptions();
+        if (showId == null && queueJobId == null && restoredSetup == null)
+            RestoreProcessingOptions();
         FormClosing += (_, _) =>
         {
             if (showId == null) RememberProcessingOptions();
@@ -318,8 +331,11 @@ internal sealed class CustomShowEditorForm : Form
         sam2Model.Enabled = (selected == "matanyone2" ||
             (UsesSam2(selected) && SelectedMaskEngine() != "rvm")) &&
             CanProcess && sam2Model.Items.Count > 0;
+        bool rvmSam2 = UsesSam2(selected) &&
+            SelectedMaskEngine() == "rvm-sam2";
         rvmInitializerThreshold.Enabled =
-            selected is ("rvm-matanyone2" or "rvm-vitmatte-s") && CanProcess;
+            (selected is ("rvm-matanyone2" or "rvm-vitmatte-s") || rvmSam2) &&
+            CanProcess;
         rvmInitializerThresholdValue.Enabled = rvmInitializerThreshold.Enabled;
         autoAccept.Enabled = CanProcess;
         if (processingTable != null)
@@ -334,7 +350,7 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, vitMatteInferenceDetailRow,
                 selected is "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s");
             SetRowVisible(processingTable, rvmThresholdRow,
-                selected is "rvm-matanyone2" or "rvm-vitmatte-s");
+                selected is "rvm-matanyone2" or "rvm-vitmatte-s" || rvmSam2);
             SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
                 selected == "rvm-vitmatte-s");
             SetRowVisible(processingTable, processingDetailsRow,
@@ -380,6 +396,8 @@ internal sealed class CustomShowEditorForm : Form
     string SelectedMaskEngine()
     {
         string selected = maskEngine.SelectedItem?.ToString() ?? "RVM";
+        if (selected.StartsWith("RVM → SAM2", StringComparison.Ordinal))
+            return "rvm-sam2";
         if (selected.StartsWith("EdgeTAM", StringComparison.Ordinal)) return "edgetam";
         if (selected.StartsWith("SAM2", StringComparison.Ordinal)) return "sam2";
         return "rvm";
@@ -443,13 +461,34 @@ internal sealed class CustomShowEditorForm : Form
 
     void LoadData()
     {
+        loadingPerformerSelection = true;
         profiles = store.LoadPerformers().ToList();
         AddIstripperModels(profiles);
         performer.DataSource = null;
         performer.DisplayMember = nameof(CustomPerformerProfile.DisplayName);
         performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
-        if (showId == null) return;
-        PopulateFromShow(store.LoadManifest(showId), editingExisting: true);
+        if (showId != null)
+            PopulateFromShow(store.LoadManifest(showId), editingExisting: true);
+        loadingPerformerSelection = false;
+        selectedProfile = performer.SelectedItem as CustomPerformerProfile;
+        if (showId == null && queueJobId == null &&
+            !string.IsNullOrWhiteSpace(selectedProfile?.Gender))
+            gender.SelectedItem = selectedProfile.Gender;
+    }
+
+    void RestoreIncompleteSetup(CustomShowIncompleteSetupEntry entry)
+    {
+        CustomShowManifest restored = entry.Setup.Show;
+        source.Text = restored.Source.Path;
+        PopulateFromShow(restored, editingExisting: false);
+        showClips = JsonSerializer.Deserialize<CustomShowClip[]>(
+            JsonSerializer.Serialize(restored.Clips, CustomShowStore.JsonOptions),
+            CustomShowStore.JsonOptions) ?? [];
+        clipDetection = restored.ClipDetection;
+        Text = "Restore Incomplete Custom Show";
+        save.Text = "Continue Processing";
+        UpdateClipButton();
+        UpdateProcessingOptions();
     }
 
     void SelectExistingShow(object? sender, EventArgs e)
@@ -535,7 +574,8 @@ internal sealed class CustomShowEditorForm : Form
         SelectStartingWith(preset, prefix);
         SelectStartingWith(maskEngine, processing.MaskEngine switch
         {
-            "sam2" => "SAM2", "edgetam" => "EdgeTAM", _ => "RVM"
+            "sam2" => "SAM2", "rvm-sam2" => "RVM → SAM2",
+            "edgetam" => "EdgeTAM", _ => "RVM"
         });
         SelectStartingWith(sam2Model, processing.Sam2Model switch
         {
@@ -582,7 +622,8 @@ internal sealed class CustomShowEditorForm : Form
         SelectStartingWith(preset, prefix);
         SelectStartingWith(maskEngine, configuration.LastMaskEngine switch
         {
-            "edgetam" => "EdgeTAM", "rvm" => "RVM", _ => "SAM2"
+            "edgetam" => "EdgeTAM", "rvm" => "RVM",
+            "rvm-sam2" => "RVM → SAM2", _ => "SAM2"
         });
         SelectStartingWith(sam2Model, configuration.LastSam2Model switch
         {
@@ -643,6 +684,7 @@ internal sealed class CustomShowEditorForm : Form
             {
                 IstripperModelId = modelId,
                 ModelName = card.modelName!.Trim(),
+                Gender = Form1.CardGender(card),
                 BirthDate = card.birthdate is DateTime birth && birth != default
                     ? DateOnly.FromDateTime(birth) : null,
                 Hair = card.hair ?? "",
@@ -767,6 +809,7 @@ internal sealed class CustomShowEditorForm : Form
             CustomShowClip[] existingClips = Appending ? show.Clips : [];
             long existingDuration = Appending ? show.Media.DurationMs : 0;
             ApplyFields(show, includeClipLayout: !Appending);
+            AdoptSelectedProfileGender(show.Gender);
             CustomShowStore.ValidateLink(show, selectedProfile);
             if (showId != null) RelinkSource(show);
             if (showId != null && !reprocess)
@@ -858,6 +901,28 @@ internal sealed class CustomShowEditorForm : Form
                     maskDraft = CustomShowMaskDraft.Open(store, source.Text,
                         selectedPreset, selectedSam2Model, selectedMaskEngine,
                         clipsToMask);
+                    CustomShowManifest draftSetup = CloneQueueValue(show);
+                    draftSetup.Source = new() { Mode = "reference",
+                        Path = Path.GetFullPath(source.Text) };
+                    draftSetup.Clips = CloneQueueValue(showClips);
+                    draftSetup.ClipDetection = clipDetection;
+                    draftSetup.Processing = new()
+                    {
+                        Algorithm = selectedPreset,
+                        MattingDetailPx = detail,
+                        VitMatteInferenceDetailPx = selectedPreset is
+                            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+                            ? vitMatteDetail : null,
+                        BatchSize = SelectedBatchSize(),
+                        RvmInitializerAlphaThresholdPercent = selectedPreset is
+                            "rvm-matanyone2" or "rvm-vitmatte-s" ||
+                            selectedMaskEngine == "rvm-sam2"
+                            ? rvmInitializerThreshold.Value : null,
+                        AutoAcceptedAlphaThreshold = autoAccept.Checked ? 25 : null,
+                        Sam2Model = UsesSam2(selectedPreset) ? selectedSam2Model : null,
+                        MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null
+                    };
+                    maskDraft.SaveSetup(draftSetup);
                     for (int index = 0; index < clipsToMask.Length; index++)
                     {
                         CustomShowClip clip = clipsToMask[index];
@@ -865,6 +930,27 @@ internal sealed class CustomShowEditorForm : Form
                         maskDraftFolders[clip.Id] = draftClip;
                         bool hasInitial = initialMasks.ContainsKey(clip.Id);
                         bool hasTracked = sam2Masks.ContainsKey(clip.Id);
+                        string draftInitialMask = Path.Combine(draftClip,
+                            "initial-mask.png");
+                        string draftTrackedMasks = Path.Combine(draftClip,
+                            selectedMaskEngine == "rvm" ? "rvm-masks" : "sam2-masks");
+                        string draftTrackedState = Path.Combine(draftClip,
+                            selectedMaskEngine == "rvm" ? "rvm-review.json" :
+                            "sam2-corrections.json");
+                        if (UsesSam2(selectedPreset) && !hasTracked &&
+                            CompleteTrackedMaskDraft(draftTrackedState,
+                                draftTrackedMasks))
+                        {
+                            sam2Masks[clip.Id] = draftTrackedMasks;
+                            hasTracked = true;
+                        }
+                        if (selectedMaskEngine == "rvm-sam2" && !hasInitial &&
+                            File.Exists(draftInitialMask))
+                        {
+                            initialMasks[clip.Id] = draftInitialMask;
+                            initialMaskFrames[clip.Id] = clip.StartMs;
+                            hasInitial = true;
+                        }
                         if (selectedPreset == "matanyone2" && hasInitial)
                             continue;
                         if (UsesSam2(selectedPreset) && hasTracked)
@@ -886,6 +972,28 @@ internal sealed class CustomShowEditorForm : Form
                             }
                             sam2Masks[clip.Id] = maskSequence;
                             continue;
+                        }
+                        if (!hasInitial && selectedMaskEngine == "rvm-sam2")
+                        {
+                            using CustomShowProcessingForm initializer = new(
+                                async (progress, token) =>
+                                {
+                                    await CustomShowProcessor.GenerateRvmInitialMaskAsync(
+                                        configuration, input, draftInitialMask,
+                                        clip.StartMs, rvmInitializerThreshold.Value,
+                                        progress, token);
+                                    return new CustomShowProcessResult();
+                                }, "Create RVM Person Mask",
+                                processDescription:
+                                    "Creating an automatic person mask for SAM2");
+                            if (initializer.ShowDialog(this) != DialogResult.OK)
+                            {
+                                discardStaging = true;
+                                return;
+                            }
+                            initialMasks[clip.Id] = draftInitialMask;
+                            initialMaskFrames[clip.Id] = clip.StartMs;
+                            hasInitial = true;
                         }
                         if (!hasInitial)
                         {
@@ -937,7 +1045,8 @@ internal sealed class CustomShowEditorForm : Form
                                 clipsToMask.Length == 1 ? null :
                                 $"Clip {index + 1} of {clipsToMask.Length}",
                                 selectedSam2Model, log, correctionState,
-                                selectedMaskEngine);
+                                selectedMaskEngine == "rvm-sam2"
+                                    ? "sam2" : selectedMaskEngine);
                             if (refinement.ShowDialog(this) != DialogResult.OK)
                             {
                                 discardStaging = true;
@@ -1164,7 +1273,7 @@ internal sealed class CustomShowEditorForm : Form
                     }
                     int processingBatchSize = SelectedBatchSize();
                     bool usesInitialMask = selectedPreset is "matanyone2" or
-                        "rvm-matanyone2";
+                        "rvm-matanyone2" || selectedMaskEngine == "rvm-sam2";
                     bool usesSam2 = selectedPreset == "matanyone2" ||
                         (UsesSam2(selectedPreset) && selectedMaskEngine != "rvm");
                     show.Processing = new()
@@ -1176,7 +1285,8 @@ internal sealed class CustomShowEditorForm : Form
                             ? vitMatteDetail : null,
                         BatchSize = processingBatchSize,
                         RvmInitializerAlphaThresholdPercent = selectedPreset is
-                            "rvm-matanyone2" or "rvm-vitmatte-s"
+                            "rvm-matanyone2" or "rvm-vitmatte-s" ||
+                            selectedMaskEngine == "rvm-sam2"
                             ? rvmInitializerThreshold.Value : null,
                         AutoAcceptedAlphaThreshold = autoAccept.Checked ? 25 : null,
                         Sam2Model = usesSam2 ? selectedSam2Model : null,
@@ -1205,7 +1315,7 @@ internal sealed class CustomShowEditorForm : Form
                                         clip.Id, clip.StartMs) + existingDuration)
                                     : null,
                                 Sam2MaskTracking = UsesSam2(selectedPreset) &&
-                                    selectedMaskEngine == "sam2"
+                                    selectedMaskEngine is "sam2" or "rvm-sam2"
                             })).ToArray()
                     };
                     if (!string.IsNullOrWhiteSpace(cover.Text))
@@ -1316,6 +1426,7 @@ internal sealed class CustomShowEditorForm : Form
             CustomShowManifest manifest = operation == CustomShowQueueOperation.New
                 ? existing?.Manifest ?? new() : store.LoadManifest(targetId!);
             ApplyFields(manifest, includeClipLayout: true);
+            AdoptSelectedProfileGender(manifest.Gender);
             manifest.Clips = CloneQueueValue(showClips);
             manifest.ClipDetection = clipDetection;
             manifest.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
@@ -1507,6 +1618,18 @@ internal sealed class CustomShowEditorForm : Form
                     "tracked-masks"), "*.png").Any())));
     }
 
+    static bool CompleteTrackedMaskDraft(string statePath, string masksFolder)
+    {
+        CustomVideoMaskDraft? state = CustomShowMaskDraft.Load<CustomVideoMaskDraft>(
+            statePath);
+        if (state == null || state.FrameCount <= 0 || !Directory.Exists(masksFolder))
+            return false;
+        for (int frame = 1; frame <= state.FrameCount; frame++)
+            if (!File.Exists(Path.Combine(masksFolder, $"{frame:00000000}.png")))
+                return false;
+        return true;
+    }
+
     static void LoadRetainedMasks(string root, CustomShowManifest show,
         string workRoot,
         Dictionary<string, string> initialMasks,
@@ -1678,6 +1801,7 @@ internal sealed class CustomShowEditorForm : Form
                 "edgetam" => [.. markers, "EDGETAM_COMMIT"],
                 "rvm" => [.. markers.Where(value => value != "SAM2_COMMIT"),
                     "RVM_COMMIT"],
+                "rvm-sam2" => [.. markers, "RVM_COMMIT"],
                 _ => markers
             };
         Dictionary<string, string> revisions = [];
@@ -1794,6 +1918,13 @@ internal sealed class CustomShowEditorForm : Form
         }
         show.Media.CoverTitleColor = ColorHex(coverTitleColor.BackColor);
         if (string.IsNullOrWhiteSpace(show.Title)) throw new InvalidDataException("Show title is required.");
+    }
+
+    void AdoptSelectedProfileGender(string showGender)
+    {
+        if (selectedProfile == null ||
+            !string.IsNullOrWhiteSpace(selectedProfile.Gender)) return;
+        selectedProfile.Gender = showGender;
     }
 
     static CustomShowClip[] OffsetClips(IEnumerable<CustomShowClip> clips, long offset,
@@ -2093,6 +2224,73 @@ internal sealed class CustomShowEditorForm : Form
     }
 }
 
+internal sealed class CustomShowIncompletePickerForm : Form
+{
+    sealed record Choice(CustomShowIncompleteSetupEntry Entry, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    readonly ListBox drafts = new() { Dock = DockStyle.Fill };
+    readonly Button restore = new() { Text = "Restore selected setup",
+        AutoSize = true, Enabled = false };
+    internal CustomShowIncompleteSetupEntry? Selected { get; private set; }
+
+    internal CustomShowIncompletePickerForm(CustomShowStore store)
+    {
+        Text = "Restore Incomplete Custom Show";
+        ClientSize = new Size(650, 390);
+        MinimumSize = new Size(480, 300);
+        StartPosition = FormStartPosition.CenterParent;
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill,
+            Padding = new Padding(12), ColumnCount = 1, RowCount = 3 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(new Label
+        {
+            Text = "Select saved clips and masks to continue processing:",
+            AutoSize = true, Margin = new Padding(0, 0, 0, 8)
+        }, 0, 0);
+        layout.Controls.Add(drafts, 0, 1);
+        FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, AutoSize = true,
+            FlowDirection = FlowDirection.RightToLeft,
+            Margin = new Padding(0, 10, 0, 0) };
+        Button cancel = new() { Text = "Cancel", AutoSize = true,
+            DialogResult = DialogResult.Cancel };
+        buttons.Controls.AddRange([cancel, restore]);
+        layout.Controls.Add(buttons, 0, 2);
+        Controls.Add(layout);
+        CancelButton = cancel;
+
+        foreach (CustomShowIncompleteSetupEntry entry in
+            CustomShowMaskDraft.FindIncomplete(store))
+        {
+            CustomShowManifest show = entry.Setup.Show;
+            int masks = Directory.EnumerateFiles(entry.Folder, "*.png",
+                SearchOption.AllDirectories).Count();
+            drafts.Items.Add(new Choice(entry,
+                $"{show.Title} — {show.Clips.Count(clip => clip.Included)} clips, " +
+                $"{masks:N0} saved masks — {entry.Setup.SavedUtc.ToLocalTime():g}"));
+        }
+        if (drafts.Items.Count == 0)
+            drafts.Items.Add("No recoverable incomplete setups were found.");
+        drafts.SelectedIndexChanged += (_, _) => restore.Enabled =
+            drafts.SelectedItem is Choice;
+        drafts.DoubleClick += (_, _) => AcceptSelection();
+        restore.Click += (_, _) => AcceptSelection();
+        AppTheme.Apply(this);
+    }
+
+    void AcceptSelection()
+    {
+        if (drafts.SelectedItem is not Choice choice) return;
+        Selected = choice.Entry;
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+}
+
 internal sealed class CustomShowPickerForm : Form
 {
     sealed record Choice(string Id, string Label)
@@ -2311,6 +2509,7 @@ internal sealed class CustomShowDecisionForm : Form
 internal sealed class CustomPerformerForm : Form
 {
     readonly TextBox name = new();
+    readonly ComboBox gender = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly DateTimePicker birth = new() { Format = DateTimePickerFormat.Short, ShowCheckBox = true };
     readonly NumericUpDown height = Measure(80, 250);
     readonly NumericUpDown bust = Measure(30, 250);
@@ -2327,12 +2526,15 @@ internal sealed class CustomPerformerForm : Form
     {
         Profile = profile == null ? new() : Clone(profile);
         Text = profile == null ? "New Model Profile" : "Edit Model Profile";
-        ClientSize = new Size(500, 470);
+        ClientSize = new Size(500, 510);
         TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12) };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Controls.Add(table);
         Add(table, "Model name", name);
+        gender.Items.Add("(Not set)");
+        gender.Items.AddRange(CustomShowStore.GenderValues);
+        Add(table, "Gender", gender);
         Add(table, "Birth date", birth);
         Add(table, "Height (cm)", Pair(height, useHeight));
         Add(table, "Bust (cm)", Pair(bust, useBust));
@@ -2351,7 +2553,10 @@ internal sealed class CustomPerformerForm : Form
 
     void Read()
     {
-        name.Text = Profile.ModelName; birth.Checked = Profile.BirthDate != null;
+        name.Text = Profile.ModelName;
+        gender.SelectedItem = string.IsNullOrWhiteSpace(Profile.Gender)
+            ? "(Not set)" : Profile.Gender;
+        birth.Checked = Profile.BirthDate != null;
         if (Profile.BirthDate is DateOnly date) birth.Value = date.ToDateTime(TimeOnly.MinValue);
         Set(height, useHeight, Profile.HeightCm); Set(bust, useBust, Profile.BustCm);
         Set(waist, useWaist, Profile.WaistCm); Set(hips, useHips, Profile.HipsCm);
@@ -2364,6 +2569,8 @@ internal sealed class CustomPerformerForm : Form
         try
         {
             Profile.ModelName = name.Text.Trim();
+            Profile.Gender = gender.SelectedIndex <= 0
+                ? null : gender.SelectedItem?.ToString();
             Profile.BirthDate = birth.Checked ? DateOnly.FromDateTime(birth.Value) : null;
             Profile.HeightCm = useHeight.Checked ? height.Value : null;
             Profile.BustCm = useBust.Checked ? bust.Value : null;
@@ -2387,7 +2594,7 @@ internal sealed class CustomPerformerForm : Form
         { int row = table.RowCount++; table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row); control.Dock = DockStyle.Fill; table.Controls.Add(control, 1, row); }
     static CustomPerformerProfile Clone(CustomPerformerProfile p) => new()
         { SchemaVersion=p.SchemaVersion, Id=p.Id, IstripperModelId=p.IstripperModelId,
-          ModelName=p.ModelName, BirthDate=p.BirthDate,
+          ModelName=p.ModelName, Gender=p.Gender, BirthDate=p.BirthDate,
           HeightCm=p.HeightCm, BustCm=p.BustCm, WaistCm=p.WaistCm, HipsCm=p.HipsCm,
           Hair=p.Hair, Ethnicity=p.Ethnicity, City=p.City, Country=p.Country };
 }

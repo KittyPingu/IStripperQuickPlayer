@@ -84,6 +84,7 @@ public partial class Form1
         SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
+        ToolStripMenuItem restore = new("Restore Incomplete Setup...");
         ToolStripMenuItem queues = new("Queues...");
         ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
         ToolStripMenuItem backgroundLock = new(
@@ -98,6 +99,7 @@ public partial class Form1
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
         create.Click += (_, _) => EditCustomShow(null);
+        restore.Click += (_, _) => RestoreIncompleteCustomShow();
         queues.Click += (_, _) => ShowCustomShowQueues();
         stabilize.Click += (_, _) => StabilizeVideo();
         backgroundLock.Click += (_, _) => StabilizeBackgroundVideo();
@@ -112,7 +114,7 @@ public partial class Form1
             { UseShellExecute = true });
         };
         customShowsMenu.DropDownItems.AddRange(
-            [create, queues, stabilize, backgroundLock, removeWatermark, models, setup, settings, open]);
+            [create, restore, queues, stabilize, backgroundLock, removeWatermark, models, setup, settings, open]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
         editCustomShowMenu.Click += (_, _) =>
@@ -609,6 +611,19 @@ public partial class Form1
                 RebindCurrentCustomPlayback();
             }
         }
+    }
+
+    void RestoreIncompleteCustomShow()
+    {
+        CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+        using CustomShowIncompletePickerForm picker = new(store);
+        if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null)
+            return;
+        using CustomShowEditorForm form = new(store, customShowConfiguration,
+            null, false, customShowQueueManager, restoredSetup: picker.Selected);
+        DialogResult result = form.ShowDialog(this);
+        if (result == DialogResult.OK && form.SavedShowId != null)
+            RefreshSavedCustomShow(form.SavedShowId);
     }
 
     async void RefreshSavedCustomShow(string showId)

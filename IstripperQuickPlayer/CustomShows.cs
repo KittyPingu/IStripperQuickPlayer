@@ -105,7 +105,8 @@ internal sealed class CustomShowConfiguration
                 ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or
                  "matanyone2" or "videomama" or "vitmatte-s" or "vitmatte-b"))
                 configuration.LastProcessingAlgorithm = "quality";
-            if (configuration.LastMaskEngine is not ("sam2" or "edgetam" or "rvm"))
+            if (configuration.LastMaskEngine is not
+                ("sam2" or "edgetam" or "rvm" or "rvm-sam2"))
                 configuration.LastMaskEngine = "sam2";
             if (configuration.LastSam2Model is not ("base-plus" or "small" or "tiny"))
                 configuration.LastSam2Model = "base-plus";
@@ -173,6 +174,7 @@ internal sealed class CustomPerformerProfile
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string? IstripperModelId { get; set; }
     public string ModelName { get; set; } = "";
+    public string? Gender { get; set; }
     [JsonIgnore]
     public string DisplayName => string.IsNullOrWhiteSpace(IstripperModelId)
         ? ModelName : $"{ModelName} (iStripper)";
@@ -606,6 +608,9 @@ internal sealed class CustomShowStore
         if (profile.SchemaVersion != 1) throw new InvalidDataException("Unsupported performer schema version.");
         ValidateId(profile.Id, "performer");
         if (string.IsNullOrWhiteSpace(profile.ModelName)) throw new InvalidDataException("Model name is required.");
+        if (!string.IsNullOrWhiteSpace(profile.Gender) &&
+            !GenderValues.Contains(profile.Gender))
+            throw new InvalidDataException("Unknown model gender value.");
         ValidateMeasurement(profile.HeightCm, 80, 250, "height");
         ValidateMeasurement(profile.BustCm, 30, 250, "bust");
         ValidateMeasurement(profile.WaistCm, 30, 250, "waist");
@@ -707,7 +712,8 @@ internal sealed class CustomShowStore
         if (!BatchSizeValues.Contains(processing.BatchSize))
             throw new InvalidDataException("Unknown processing batch size.");
         if (processing.RvmInitializerAlphaThresholdPercent is int initializerThreshold &&
-            (processing.Algorithm is not ("rvm-matanyone2" or "rvm-vitmatte-s") ||
+            (processing.Algorithm is not ("rvm-matanyone2" or "rvm-vitmatte-s") &&
+                processing.MaskEngine != "rvm-sam2" ||
                 initializerThreshold is < 10 or > 90))
             throw new InvalidDataException("Invalid RVM initializer alpha threshold.");
         if (processing.AutoAcceptedAlphaThreshold is int acceptedThreshold &&
@@ -716,7 +722,8 @@ internal sealed class CustomShowStore
         bool trackedMasks = processing.Algorithm is
             "videomama" or "vitmatte-s" or "vitmatte-b";
         string? maskEngine = trackedMasks ? processing.MaskEngine ?? "sam2" : null;
-        if (trackedMasks && maskEngine is not ("sam2" or "rvm" or "edgetam"))
+        if (trackedMasks && maskEngine is not
+            ("sam2" or "rvm" or "edgetam" or "rvm-sam2"))
             throw new InvalidDataException("Unknown mask-generation algorithm.");
         if (!trackedMasks && processing.MaskEngine != null)
             throw new InvalidDataException("Mask-engine metadata is not valid for this algorithm.");
@@ -769,7 +776,8 @@ internal sealed class CustomShowStore
                 throw new InvalidDataException("Initial mask frame lies outside its clip.");
             if (!needsSam2 && (item.InitialMaskFrameMs != null || item.Sam2MaskTracking))
                 throw new InvalidDataException("Mask metadata is not valid for this algorithm.");
-            if (item.Sam2MaskTracking && maskEngine != "sam2")
+            if (item.Sam2MaskTracking && maskEngine is not
+                ("sam2" or "rvm-sam2"))
                 throw new InvalidDataException("SAM2 tracking metadata conflicts with the mask engine.");
         }
         if (seen.Count != included.Count)
@@ -1077,7 +1085,7 @@ internal sealed class CustomShowStore
             CustomPerformerProfile profile = new()
             {
                 IstripperModelId = "test-native-model",
-                ModelName = "Test Model", HeightCm = 170,
+                ModelName = "Test Model", Gender = "Non-Binary", HeightCm = 170,
                 BustCm = 91.44m, WaistCm = 66, HipsCm = 94
             };
             store.SavePerformer(profile);
@@ -1168,7 +1176,8 @@ internal sealed class CustomShowStore
                 Path.Combine(folder, "cover.jpg"), System.Drawing.Imaging.ImageFormat.Jpeg);
             store.SaveManifest(show);
             CustomShowManifest roundTrip = store.LoadManifest(show.Id);
-            if (roundTrip.Processing?.Algorithm != "rvm-matanyone2" ||
+            if (store.LoadPerformer(profile.Id).Gender != "Non-Binary" ||
+                roundTrip.Processing?.Algorithm != "rvm-matanyone2" ||
                 roundTrip.Processing.MattingDetailPx != 512 ||
                 roundTrip.Processing.RvmInitializerAlphaThresholdPercent != 40 ||
                 roundTrip.Processing.AutoAcceptedAlphaThreshold != 25 ||

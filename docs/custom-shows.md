@@ -429,6 +429,11 @@ frames, and is expected to be much slower than RVM or MatAnyone2.
 
 For **VideoMaMa**, **ViTMatte S**, and **ViTMatte B**, QuickPlayer opens a
 resizable review editor for the initial SAM2 or EdgeTAM propagation before matting.
+The **RVM → SAM2** mask-generation option uses RVM to create the initial
+person-oriented mask at the start of each clip, then hands that mask to SAM2.
+It remains fully editable with clicks, painting, pausing, scrubbing, and
+forward/backward correction propagation. The RVM initializer alpha control sets
+the threshold used to create the initial binary person mask.
 The editor displays sampled tracked overlays while the initial pass runs. Its
 timeline always represents the whole clip. Choose **Pause and Correct** to stop
 after the mask currently being calculated. Once paused, scrub, play, or step
@@ -795,6 +800,15 @@ temporary mask drafts were not stored; the first reprocessing pass therefore
 asks for masks again and retains them for later passes. Reprocessing validates
 the complete staged replacement before swapping it into the library. The old
 show is restored if that swap cannot complete.
+
+Mask review is also saved while a new show is still incomplete. Choose
+**Custom Shows â†’ Restore Incomplete Setupâ€¦** to reopen its metadata, complete
+clip layout, initial masks, correction anchors, and generated mask frames. Fully
+generated earlier clips are reused immediately. If generation stopped partway
+through a clip, QuickPlayer resumes from its last contiguous saved mask; it does
+not throw away the completed prefix or restart the earlier clips. The draft is
+removed only after the show publishes successfully or the user explicitly
+discards the processing result.
 
 Before VideoMaMa or ViTMatte processing begins, QuickPlayer compares the selected
 batch with a conservative recommendation based on the NVIDIA GPU's total and

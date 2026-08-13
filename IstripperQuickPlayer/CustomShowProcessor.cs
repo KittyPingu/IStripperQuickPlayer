@@ -49,6 +49,8 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "vitmatte_worker.py");
     internal static string RvmViTMatteWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "rvm_vitmatte_worker.py");
+    internal static string RvmInitialMaskWorkerPath => Path.Combine(
+        AppContext.BaseDirectory, "custom-shows", "rvm_initial_mask_worker.py");
     internal static string ProPainterWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "propainter_worker.py");
     internal static string OmniShotCutWorkerPath => Path.Combine(
@@ -563,6 +565,73 @@ internal static class CustomShowProcessor
             configuration.ProcessingCpuPriority) ? configuration.ProcessingCpuPriority : "normal";
         start.Environment["IQP_GPU_PRIORITY"] = CustomShowConfiguration.IsProcessingPriority(
             configuration.ProcessingGpuPriority) ? configuration.ProcessingGpuPriority : "normal";
+    }
+
+    internal static async Task GenerateRvmInitialMaskAsync(
+        CustomShowConfiguration configuration, string source, string destination,
+        long frameMs, int thresholdPercent,
+        IProgress<CustomShowProgress>? progress, CancellationToken token)
+    {
+        if (!File.Exists(configuration.PythonExecutable))
+            throw new FileNotFoundException(
+                "Configure the Python custom-show environment first.",
+                configuration.PythonExecutable);
+        if (!File.Exists(RvmInitialMaskWorkerPath))
+            throw new FileNotFoundException(
+                "The RVM initial-mask worker is missing.",
+                RvmInitialMaskWorkerPath);
+        ProcessStartInfo start = new(configuration.PythonExecutable)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (string argument in new[]
+        {
+            RvmInitialMaskWorkerPath, "--source", source,
+            "--runtime", RuntimeRoot(configuration), "--mask", destination,
+            "--frame-ms", frameMs.ToString(CultureInfo.InvariantCulture),
+            "--alpha-threshold", (Math.Clamp(thresholdPercent, 10, 90) / 100d)
+                .ToString("0.00", CultureInfo.InvariantCulture)
+        }) start.ArgumentList.Add(argument);
+        start.Environment["IQP_FFMPEG"] = Path.Combine(
+            AppContext.BaseDirectory, "ffmpeg.exe");
+        start.Environment["IQP_FFPROBE"] = Path.Combine(
+            AppContext.BaseDirectory, "ffprobe.exe");
+        ConfigureProcessingPriorities(start, configuration);
+        using Process process = new() { StartInfo = start };
+        StringBuilder errors = new();
+        process.Start();
+        await using ProcessCancellationScope cancellation = new(process, token);
+        Task stderr = Task.Run(async () =>
+        {
+            while (await process.StandardError.ReadLineAsync() is string line)
+                errors.AppendLine(line);
+        });
+        while (await process.StandardOutput.ReadLineAsync() is string line)
+            try
+            {
+                using JsonDocument json = JsonDocument.Parse(line);
+                JsonElement root = json.RootElement;
+                if (root.TryGetProperty("status", out JsonElement status) &&
+                    status.GetString() == "error")
+                    throw new InvalidOperationException(
+                        root.GetProperty("message").GetString());
+                progress?.Report(new CustomShowProgress(
+                    "rvm-initial-mask",
+                    root.TryGetProperty("percent", out JsonElement percent)
+                        ? percent.GetDouble() : 0,
+                    root.TryGetProperty("message", out JsonElement message)
+                        ? message.GetString() ?? "Creating RVM person mask..."
+                        : "Creating RVM person mask..."));
+            }
+            catch (JsonException) { }
+        await process.WaitForExitAsync(CancellationToken.None);
+        await stderr;
+        token.ThrowIfCancellationRequested();
+        if (process.ExitCode != 0 || !File.Exists(destination))
+            throw new InvalidOperationException(errors.Length == 0
+                ? "RVM could not create the SAM2 initialization mask."
+                : errors.ToString().Trim());
     }
 
     internal static string ValidNvencPreset(string? value) => value is

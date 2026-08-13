@@ -11,6 +11,7 @@ internal sealed class CustomShowMaskDraft
 
     internal string Root => root;
     internal string ManifestPath => Path.Combine(root, "draft.json");
+    internal string SetupPath => Path.Combine(root, "setup.json");
 
     CustomShowMaskDraft(string root) => this.root = root;
 
@@ -49,6 +50,55 @@ internal sealed class CustomShowMaskDraft
         string folder = Path.Combine(root, $"clip-{index + 1:000}");
         Directory.CreateDirectory(folder);
         return folder;
+    }
+
+    internal void SaveSetup(CustomShowManifest show)
+    {
+        CustomShowStore.WriteJsonAtomic(SetupPath, new CustomShowIncompleteSetup
+        {
+            SavedUtc = DateTime.UtcNow,
+            Show = show
+        });
+    }
+
+    internal static IReadOnlyList<CustomShowIncompleteSetupEntry> FindIncomplete(
+        CustomShowStore store)
+    {
+        string drafts = Path.Combine(store.Root, ".mask-drafts");
+        if (!Directory.Exists(drafts)) return [];
+        List<CustomShowIncompleteSetupEntry> result = [];
+        foreach (string folder in Directory.EnumerateDirectories(drafts))
+        {
+            CustomShowIncompleteSetup? setup = Load<CustomShowIncompleteSetup>(
+                Path.Combine(folder, "setup.json"));
+            CustomShowMaskDraftManifest? manifest = Load<CustomShowMaskDraftManifest>(
+                Path.Combine(folder, "draft.json"));
+            if (manifest == null || !File.Exists(manifest.SourcePath)) continue;
+            if (setup == null)
+            {
+                setup = new CustomShowIncompleteSetup
+                {
+                    SavedUtc = Directory.GetLastWriteTimeUtc(folder),
+                    Show = new CustomShowManifest
+                    {
+                        Title = Path.GetFileNameWithoutExtension(manifest.SourcePath),
+                        Source = new() { Mode = "reference", Path = manifest.SourcePath },
+                        Clips = manifest.Clips.Select(value => new CustomShowClip
+                        {
+                            StartMs = value.StartMs, EndMs = value.EndMs
+                        }).ToArray(),
+                        Processing = new()
+                        {
+                            Algorithm = manifest.Algorithm,
+                            Sam2Model = manifest.Sam2Model,
+                            MaskEngine = manifest.MaskEngine
+                        }
+                    }
+                };
+            }
+            result.Add(new(folder, setup));
+        }
+        return result.OrderByDescending(value => value.Setup.SavedUtc).ToArray();
     }
 
     internal static T? Load<T>(string path) where T : class
@@ -162,6 +212,16 @@ internal sealed class CustomVideoMaskRange
     public int Start { get; set; }
     public int End { get; set; }
 }
+
+internal sealed class CustomShowIncompleteSetup
+{
+    public int SchemaVersion { get; set; } = 1;
+    public DateTime SavedUtc { get; set; } = DateTime.UtcNow;
+    public CustomShowManifest Show { get; set; } = new();
+}
+
+internal sealed record CustomShowIncompleteSetupEntry(
+    string Folder, CustomShowIncompleteSetup Setup);
 
 internal sealed class CustomRetainedMasksManifest
 {

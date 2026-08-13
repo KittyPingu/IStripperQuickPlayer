@@ -636,6 +636,8 @@ namespace
         HWND window = nullptr;
     };
 
+    bool IsPointOverVisibleMoviePixel(HWND window, POINT point);
+
     BOOL CALLBACK FindVisibleMovieWindowAtPoint(HWND window, LPARAM parameter)
     {
         auto search = reinterpret_cast<MovieWindowAtPoint*>(parameter);
@@ -644,6 +646,10 @@ namespace
             FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS,
                 &bounds, sizeof(bounds))) ||
             !PtInRect(&bounds, search->point))
+        {
+            return TRUE;
+        }
+        if (!IsPointOverVisibleMoviePixel(window, search->point))
         {
             return TRUE;
         }
@@ -6867,6 +6873,79 @@ namespace
         }
 
         return true;
+    }
+
+    bool IsPointOverVisibleMoviePixel(HWND window, POINT point)
+    {
+        __try
+        {
+        void* movie = ActiveMovie();
+        void* animation = IsReadable(movie,
+            MovieAnimationOffset + sizeof(void*))
+            ? *reinterpret_cast<void**>(
+                reinterpret_cast<unsigned char*>(movie) +
+                    MovieAnimationOffset)
+            : nullptr;
+        if (!CanResetAnimationAlpha(animation))
+        {
+            return false;
+        }
+
+        RECT bounds = {};
+        if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS,
+                &bounds, sizeof(bounds))))
+        {
+            return false;
+        }
+        const int windowWidth = bounds.right - bounds.left;
+        const int windowHeight = bounds.bottom - bounds.top;
+        if (windowWidth <= 0 || windowHeight <= 0)
+        {
+            return false;
+        }
+
+        const auto bytes = reinterpret_cast<unsigned char*>(animation);
+        const auto alpha = reinterpret_cast<const unsigned char*>(
+            *reinterpret_cast<void**>(bytes + AnimationAlphaOutputOffset));
+        const int width = *reinterpret_cast<const int*>(
+            bytes + AnimationAlphaWidthOffset);
+        const int height = *reinterpret_cast<const int*>(
+            bytes + AnimationAlphaHeightOffset);
+        if (alpha == nullptr || width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        const int x = std::clamp(static_cast<int>(
+            static_cast<long long>(point.x - bounds.left) * width /
+                windowWidth), 0, width - 1);
+        const int y = std::clamp(static_cast<int>(
+            static_cast<long long>(point.y - bounds.top) * height /
+                windowHeight), 0, height - 1);
+        // Include a tiny neighbourhood so scrolling remains easy on soft,
+        // anti-aliased hair and costume edges without treating the layered
+        // window's transparent rectangle as part of the dancer.
+        constexpr int radius = 2;
+        constexpr unsigned char visibleThreshold = 4;
+        for (int row = std::max(0, y - radius);
+            row <= std::min(height - 1, y + radius); row++)
+        {
+            for (int column = std::max(0, x - radius);
+                column <= std::min(width - 1, x + radius); column++)
+            {
+                if (alpha[static_cast<std::size_t>(row) * width + column] >=
+                    visibleThreshold)
+                {
+                    return true;
+                }
+            }
+        }
+            return false;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
     }
 
     bool ResetAnimationAlpha(void* animation)

@@ -60,7 +60,9 @@ internal sealed class CustomVideoMaskEditorForm : Form
     Process? worker;
     Task<string>? workerError;
     CancellationTokenSource? previewLoadCancellation;
+    int previewRevision;
     int frameCount;
+    int displayedFrame = -1;
     int reviewWidth, reviewHeight;
     double fps = 25;
     bool updating;
@@ -149,6 +151,17 @@ internal sealed class CustomVideoMaskEditorForm : Form
         Controls.Add(root);
         CancelButton = cancel;
 
+        if (!supportsCorrections)
+        {
+            generation.Visible = false;
+            paintMode.Visible = false;
+            brushSize.Visible = false;
+            brushSizeLabel.Visible = false;
+            automatic.Visible = false;
+            undo.Visible = false;
+            updateMasks.Visible = false;
+        }
+
         timeline.PositionChanged += (_, _) =>
         {
             if (!generationComplete && (pauseRequested || generationPaused) &&
@@ -157,6 +170,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
                 timeline.PositionMs = FrameTime(AvailableLastFrame);
                 return;
             }
+            displayedFrame = -1;
+            if (!generationActive && !updating) image.Enabled = false;
             UpdatePosition();
             if (playback.Enabled) LoadPreview();
             else { previewDelay.Stop(); previewDelay.Start(); }
@@ -626,6 +641,11 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (paintMode.Checked) return;
         if (!supportsCorrections || updating || image.Image == null || e.Button is not
             (MouseButtons.Left or MouseButtons.Right)) return;
+        if (displayedFrame != CurrentFrame)
+        {
+            status.Text = "Wait for this frame's preview to finish loading before editing.";
+            return;
+        }
         PointF? point = ImagePoint(e.Location);
         if (point == null) return;
         int frame = CurrentFrame;
@@ -644,6 +664,11 @@ internal sealed class CustomVideoMaskEditorForm : Form
     {
         if (!paintMode.Checked || !supportsCorrections || updating || image.Image == null ||
             e.Button is not (MouseButtons.Left or MouseButtons.Right)) return;
+        if (displayedFrame != CurrentFrame)
+        {
+            status.Text = "Wait for this frame's preview to finish loading before painting.";
+            return;
+        }
         PointF? point = ImagePoint(e.Location);
         if (point == null) return;
         int frame = CurrentFrame;
@@ -862,6 +887,15 @@ internal sealed class CustomVideoMaskEditorForm : Form
             await worker.StandardInput.FlushAsync();
             JsonElement response = await ReadUntilAsync("preview");
             InvalidatePreview(frame);
+            if (paintedMask != null)
+            {
+                // The painted bitmap was based on the currently displayed mask,
+                // so any earlier click result is already baked into it. Do not
+                // resend those old clicks if the user switches back to click
+                // mode; that would resurrect superseded prompt state.
+                points.Remove(frame);
+                labels.Remove(frame);
+            }
             pendingFrame = reset ? -1 : frame;
             pendingRemoval = removeAnchor;
             if (!reset && !removeAnchor)
@@ -1066,7 +1100,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (previewCache.TryGetValue(frame, out Bitmap? cached))
         {
             TouchPreviewCache(frame);
-            SetPreviewImage(new Bitmap(cached));
+            SetPreviewImage(new Bitmap(cached), frame);
             UpdateUndoState(frame);
             return;
         }
@@ -1076,15 +1110,16 @@ internal sealed class CustomVideoMaskEditorForm : Form
         previewLoadCancellation?.Cancel();
         CancellationTokenSource cancellation = new();
         previewLoadCancellation = cancellation;
+        int revision = ++previewRevision;
         PointF[] framePoints = points.GetValueOrDefault(frame)?.ToArray() ?? [];
         int[] frameLabels = labels.GetValueOrDefault(frame)?.ToArray() ?? [];
         _ = LoadPreviewAsync(frame, framePath, maskPath, framePoints, frameLabels,
-            cancellation);
+            revision, cancellation);
     }
 
     async Task LoadPreviewAsync(int frame, string framePath, string maskPath,
         PointF[] framePoints, int[] frameLabels,
-        CancellationTokenSource cancellation)
+        int revision, CancellationTokenSource cancellation)
     {
         try
         {
@@ -1096,14 +1131,15 @@ internal sealed class CustomVideoMaskEditorForm : Form
                     framePoints, frameLabels), cancellation.Token);
             }
             finally { previewLoadLock.Release(); }
-            if (cancellation.IsCancellationRequested || frame != CurrentFrame ||
+            if (cancellation.IsCancellationRequested || revision != previewRevision ||
+                frame != CurrentFrame ||
                 closing || IsDisposed)
             {
                 rendered.Dispose();
                 return;
             }
             AddPreviewCache(frame, new Bitmap(rendered));
-            SetPreviewImage(rendered);
+            SetPreviewImage(rendered, frame);
             UpdateUndoState(frame);
         }
         catch (OperationCanceledException) { }
@@ -1169,6 +1205,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
 
     void InvalidatePreview(int frame)
     {
+        previewLoadCancellation?.Cancel();
+        previewRevision++;
         if (previewCache.Remove(frame, out Bitmap? cached)) cached.Dispose();
         previewCacheOrder.Remove(frame);
     }
@@ -1176,14 +1214,17 @@ internal sealed class CustomVideoMaskEditorForm : Form
     void ClearPreviewCache()
     {
         previewLoadCancellation?.Cancel();
+        previewRevision++;
         foreach (Bitmap cached in previewCache.Values) cached.Dispose();
         previewCache.Clear(); previewCacheOrder.Clear();
     }
 
-    void SetPreviewImage(Bitmap value)
+    void SetPreviewImage(Bitmap value, int frame)
     {
         Image? old = image.Image;
         image.Image = value;
+        displayedFrame = frame;
+        if (!generationActive && !updating) image.Enabled = true;
         old?.Dispose();
     }
 

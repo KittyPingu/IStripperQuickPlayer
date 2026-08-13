@@ -120,10 +120,38 @@ def main():
             send(status="mask", pixels=int(combined.sum()),
                  candidates=candidate_count, automatic=True)
             continue
+        seed_mask = None
+        seed_path = request.get("seedMask")
+        if seed_path and Path(seed_path).is_file():
+            seed = Image.open(seed_path).convert("L").resize(
+                (256, 256), Image.Resampling.NEAREST)
+            seed = np.asarray(seed, dtype=np.uint8)
+            # SAM2 accepts the previous 256x256 mask as logits. Strong finite
+            # logits keep hand-painted foreground/background while allowing the
+            # new point prompt to refine its boundary.
+            seed_mask = np.where(seed >= 128, 8.0, -8.0).astype(np.float32)[None]
         positives = points[labels == 1]
         negatives = points[labels == 0]
-        if not len(positives):
+        if not len(positives) and seed_mask is None:
             send(status="error", message="Left-click at least one person.")
+            continue
+        if seed_mask is not None:
+            prompt_points = points if len(points) else None
+            prompt_labels = labels if len(points) else None
+            with torch.inference_mode(), torch.autocast(device_type=device,
+                    dtype=torch.bfloat16, enabled=bf16):
+                masks, scores, logits = predictor.predict(point_coords=prompt_points,
+                    point_labels=prompt_labels, mask_input=seed_mask,
+                    multimask_output=True)
+            best = int(np.argmax(scores))
+            with torch.inference_mode(), torch.autocast(device_type=device,
+                    dtype=torch.bfloat16, enabled=bf16):
+                refined, _, _ = predictor.predict(point_coords=prompt_points,
+                    point_labels=prompt_labels, mask_input=logits[best][None],
+                    multimask_output=False)
+            combined = refined[0] > 0
+            save_result(image, combined, points, labels, args.mask, args.preview)
+            send(status="mask", pixels=int(combined.sum()), seeded=True)
             continue
         combined = np.zeros(image.shape[:2], dtype=bool)
         for positive in positives:

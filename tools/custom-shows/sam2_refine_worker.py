@@ -343,6 +343,26 @@ class MaskWriter:
         self._raise()
 
 
+def write_preview_mask(torch, object_ids, logits, frame, folder):
+    """Publish an interactive preview before acknowledging its command.
+
+    Propagation benefits from the pipelined MaskWriter, but a paint/click preview
+    is a strict request/response operation. Writing it synchronously prevents a
+    later preview from observing a recycled transfer slot or an older queued
+    image when strokes are submitted in rapid succession.
+    """
+    from PIL import Image
+    ids = object_ids.tolist() if hasattr(object_ids, "tolist") else list(object_ids)
+    if 1 not in ids:
+        raise RuntimeError(f"SAM2 lost the selected foreground at frame {frame + 1}")
+    mask = (logits[ids.index(1)] > 0).squeeze().to(torch.uint8).mul_(255)
+    array = mask.detach().cpu().numpy().copy()
+    path = folder / f"{frame + 1:08d}.png"
+    temporary = path.with_name(path.name + ".preview-" + uuid.uuid4().hex)
+    Image.fromarray(array, "L").save(temporary, "PNG", compress_level=1)
+    os.replace(temporary, path)
+
+
 def correction_limits(frame, correction_frames, total):
     return (max((value for value in correction_frames if value < frame), default=0),
             min((value for value in correction_frames if value > frame), default=total - 1))
@@ -520,13 +540,23 @@ def load_resume_state(path, masks, total, fps, width, height):
                     any(not isinstance(point, list) or len(point) != 2
                         for point in points):
                 return None
+        # A draft is deliberately useful before generation has completed.  Only
+        # require the contiguous prefix that can safely be resumed; stale preview
+        # files after a gap are overwritten when propagation continues.
+        available_end = -1
         for frame in range(total):
             if not (masks / f"{frame + 1:08d}.png").is_file():
-                return None
+                break
+            available_end = frame
+        if available_end < 0:
+            return None
+        if any(int(item["frame"]) > available_end for item in anchors):
+            return None
         from PIL import Image
-        for frame in {0, total - 1, *(int(item["frame"]) for item in anchors)}:
+        for frame in {0, available_end, *(int(item["frame"]) for item in anchors)}:
             with Image.open(masks / f"{frame + 1:08d}.png") as image:
                 if image.size != (width, height): return None
+        value["_availableEnd"] = available_end
         return value
     except (OSError, ValueError, TypeError, KeyError):
         return None
@@ -1072,6 +1102,11 @@ def process(args):
                         masks / f"{frame + 1:08d}.png").convert("L")) >= 128
                     predictor.add_new_mask(state, frame_idx=frame, obj_id=1,
                                            mask=saved)
+                available_end = max(0, min(total - 1,
+                    int(resume.get("_availableEnd", total - 1))))
+                if available_end < total - 1:
+                    continuation = dict(target=total - 1, range_start=0,
+                                        anchor=None, removing=False)
             if execution != "eager": marker.parent.mkdir(parents=True, exist_ok=True); marker.touch()
             prompt_forwards = interactive_forwards(predictor) if optimized else []
             use_compiled_interactive_forwards(prompt_forwards, False)
@@ -1083,7 +1118,25 @@ def process(args):
                      completedStart=0, completedEnd=available_end,
                      availableEnd=available_end, **metadata)
             args.ready_sent = True
-            preview_baselines, auto_cache = {}, {}
+            preview_baselines, preview_mask_baselines, auto_cache = {}, {}, {}
+
+            def remember_preview_mask(frame):
+                if frame in preview_mask_baselines:
+                    return
+                path = masks / f"{frame + 1:08d}.png"
+                preview_mask_baselines[frame] = path.read_bytes() \
+                    if path.is_file() else None
+
+            def restore_preview_mask(frame):
+                path = masks / f"{frame + 1:08d}.png"
+                saved = preview_mask_baselines.pop(frame, None)
+                if saved is None:
+                    try: path.unlink()
+                    except FileNotFoundError: pass
+                    return
+                temporary = path.with_name(path.name + ".reset")
+                temporary.write_bytes(saved)
+                os.replace(temporary, path)
             while True:
                 request = commands.next()
                 if request.get("command") == "quit": break
@@ -1094,27 +1147,38 @@ def process(args):
                     if continuation is None:
                         send(**ready); continue
                     target = continuation["target"]
+                    cursor = continuation.get("cursor", available_end)
                     send(status="generation", phase="forward",
-                         rangeStart=available_end, rangeEnd=target, **metadata)
+                         rangeStart=cursor, rangeEnd=target, **metadata)
                     written, last_frame, paused = propagate(predictor, state, writer,
-                        masks, available_end, total, False, 0, 100,
+                        masks, cursor, total, False, 0, 100,
                         "Updated forward" if continuation["anchor"] is not None
-                        else "Tracked", profiler, target - available_end, mark_step,
+                        else "Tracked", profiler, target - cursor, mark_step,
                         skip_start=True, commands=commands, allow_pause=True)
                     propagated_frames += written
-                    writer.flush(); available_end = last_frame
+                    writer.flush()
+                    if continuation.get("extends_review", True):
+                        available_end = max(available_end, last_frame)
                     terminal = dict(pauseFrame=available_end,
                         completedStart=continuation["range_start"],
-                        completedEnd=available_end, availableEnd=available_end)
+                        completedEnd=last_frame, availableEnd=available_end)
                     if continuation["anchor"] is not None:
                         terminal["anchorFrame"] = continuation["anchor"]
                         terminal["removing"] = continuation["removing"]
                     if paused:
+                        continuation["cursor"] = last_frame
                         send(status="paused", **terminal, **metadata)
                     else:
-                        continuation = None; available_end = total - 1
-                        terminal["availableEnd"] = available_end
-                        send(**ready, **terminal)
+                        parent = continuation.get("resume")
+                        continuation = parent
+                        if continuation is None:
+                            available_end = total - 1
+                            terminal["availableEnd"] = available_end
+                            send(**ready, **terminal)
+                        else:
+                            terminal["pauseFrame"] = available_end
+                            terminal["availableEnd"] = available_end
+                            send(status="paused", **terminal, **metadata)
                     continue
                 if command not in ("prompt", "auto", "mask", "reset", "update",
                                    "remove-preview", "remove"):
@@ -1123,6 +1187,7 @@ def process(args):
                 if not 0 <= frame <= available_end:
                     send(status="error", message="Correction frame is outside the clip"); continue
                 if command not in ("update", "remove"):
+                    remember_preview_mask(frame)
                     if command == "remove-preview":
                         remember_prompt_preview(state, preview_baselines, frame)
                         result = clear_prompts_in_frame(predictor, state, frame,
@@ -1132,17 +1197,24 @@ def process(args):
                                 state, frame_idx=initial_frame, obj_id=1,
                                 mask=initial)
                         _, object_ids, logits = result
-                        writer.submit(object_ids, logits, frame, masks); writer.flush()
+                        write_preview_mask(torch, object_ids, logits, frame, masks)
                         send(status="preview", frame=frame, automatic=False,
                              removed=True); continue
                     if command == "reset":
                         original = clear_prompt_preview(state, preview_baselines, frame)
                         if original is None: raise RuntimeError("The original tracked mask is unavailable")
-                        _, logits = predictor._get_orig_video_res_output(
-                            state, original["pred_masks"].to(device, non_blocking=True))
-                        writer.submit(state["obj_ids"], logits, frame, masks); writer.flush()
+                        # Restore the exact saved PNG rather than converting the
+                        # internal low-resolution tensor again.  Apart from being
+                        # lossless, this avoids shape/size failures in SAM2 after
+                        # a long sequence of mixed click and paint previews.
+                        restore_preview_mask(frame)
                         send(status="preview", frame=frame, automatic=False); continue
                     remember_prompt_preview(state, preview_baselines, frame)
+                    # Propagation leaves its final (often the pause) frame in the
+                    # predictor's single-frame visual cache. Seeking must never
+                    # reuse that embedding for a correction on another frame.
+                    # Force SAM2 to encode the explicitly requested frame.
+                    state["cached_features"] = {}
                     if command == "mask":
                         painted_path = Path(str(request.get("mask", ""))).resolve()
                         if not painted_path.is_file():
@@ -1190,12 +1262,25 @@ def process(args):
                             clear_old_points=True)
                         candidate_count = None
                     profiler.add("correction_prompt", time.perf_counter() - prompted)
-                    writer.submit(object_ids, logits, frame, masks); writer.flush()
+                    if command == "mask":
+                        # Painting is a direct bitmap edit. SAM2 retains that mask
+                        # as its propagation prompt, but its immediate decoded
+                        # logits are not guaranteed to reproduce the input pixel
+                        # for pixel and can lag behind repeated mask prompts.
+                        # Publish the exact bitmap the user just painted.
+                        path = masks / f"{frame + 1:08d}.png"
+                        temporary = path.with_name(
+                            path.name + ".paint-" + uuid.uuid4().hex)
+                        shutil.copyfile(painted_path, temporary)
+                        os.replace(temporary, path)
+                    else:
+                        write_preview_mask(torch, object_ids, logits, frame, masks)
                     send(status="preview", frame=frame, candidates=candidate_count,
                          automatic=command == "auto", painted=command == "mask"); continue
                 removing = command == "remove"
                 if removing:
                     preview_baselines.pop(frame, None)
+                    preview_mask_baselines.pop(frame, None)
                     clear_prompts_in_frame(predictor, state, frame,
                                            need_output=False)
                     correction_frames.discard(frame)
@@ -1204,7 +1289,13 @@ def process(args):
                                                mask=initial)
                         correction_frames.add(initial_frame)
                 clear_stale_memory(predictor, state, frame)
-                previous, following = correction_limits(frame, correction_frames, total)
+                # Corrections made while initial generation is paused must only
+                # rebuild already-generated masks. The outstanding continuation
+                # beyond available_end remains a separate operation.
+                previous, following = correction_limits(
+                    frame, correction_frames, available_end + 1)
+                saved_frontier = available_end
+                saved_continuation = continuation
                 completed_start = previous
                 use_compiled_interactive_forwards(prompt_forwards, True)
                 try:
@@ -1235,18 +1326,26 @@ def process(args):
                     use_compiled_interactive_forwards(prompt_forwards, False)
                 if not removing: correction_frames.add(frame)
                 preview_baselines.pop(frame, None)
-                available_end = last_frame
+                preview_mask_baselines.pop(frame, None)
+                available_end = saved_frontier
                 terminal = dict(anchorFrame=frame, removing=removing,
-                    completedStart=completed_start, completedEnd=available_end,
+                    completedStart=completed_start, completedEnd=last_frame,
                     availableEnd=available_end)
                 if paused:
                     continuation = dict(target=following, range_start=completed_start,
-                                        anchor=frame, removing=removing)
+                                        anchor=frame, removing=removing,
+                                        cursor=last_frame, extends_review=False,
+                                        resume=saved_continuation)
                     send(status="paused", **terminal, **metadata)
                 else:
-                    continuation = None; available_end = total - 1
-                    terminal["availableEnd"] = available_end
-                    send(**ready, **terminal)
+                    continuation = saved_continuation
+                    if continuation is None:
+                        available_end = total - 1
+                        terminal["availableEnd"] = available_end
+                        send(**ready, **terminal)
+                    else:
+                        terminal["pauseFrame"] = available_end
+                        send(status="paused", **terminal, **metadata)
     finally:
         try: writer.close()
         finally:
@@ -1306,6 +1405,15 @@ def self_test():
                         saved.histogram()) if count}
                     assert values <= {0, 255}
             assert not list(folder.glob("*.tmp-*"))
+            # Consecutive interactive previews must publish the latest request,
+            # independent of the propagation writer's three transfer slots.
+            ids = torch.tensor([1])
+            preview = folder / "00000001.png"
+            for value in (-1., 1., -1., 1.):
+                write_preview_mask(torch, ids,
+                    torch.full((1, 2, 2), value), 0, folder)
+            with Image.open(preview) as saved:
+                assert set(saved.getdata()) == {255}
             state_path = folder / "paint-state.json"
             state_path.write_text(json.dumps(dict(schemaVersion=1, frameCount=6,
                 fps=25, reviewWidth=2, reviewHeight=2,
@@ -1322,6 +1430,9 @@ def self_test():
                 "anchors": [{"frame": 4, "mode": "prompt"}]})
             assert load_resume_state(resume, resume_folder, 12, 25.0, 2, 2) is not None
             assert load_resume_state(resume, resume_folder, 11, 25.0, 2, 2) is None
+            (resume_folder / "00000009.png").unlink()
+            partial = load_resume_state(resume, resume_folder, 12, 25.0, 2, 2)
+            assert partial is not None and partial["_availableEnd"] == 7
     except ImportError:
         pass
     print("SAM2 refinement worker self-test passed")

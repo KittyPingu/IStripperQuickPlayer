@@ -9,7 +9,7 @@ namespace IStripperQuickPlayer;
 internal sealed class CustomMaskEditorForm : Form
 {
     sealed record PaintUndoState(string MaskPath, bool HadMask,
-        PointF[] Points, int[] Labels, bool Automatic);
+        PointF[] Points, int[] Labels, bool Automatic, bool HadPaintSeed);
 
     readonly string videoPath;
     readonly CustomShowConfiguration configuration;
@@ -68,6 +68,7 @@ internal sealed class CustomMaskEditorForm : Form
     bool resumeAfterScrub;
     bool closing;
     bool currentAutomatic;
+    bool hasPaintSeed;
     Bitmap? paintingMask;
     Bitmap? paintingSource;
     PointF lastPaintPoint;
@@ -81,6 +82,7 @@ internal sealed class CustomMaskEditorForm : Form
         startMs + timeline.PositionMs);
     string FramePath => Path.Combine(temporary, "selected-frame.png");
     string MaskPath => Path.Combine(temporary, "initial-mask.png");
+    string PaintSeedPath => Path.Combine(temporary, "paint-seed.png");
     string PreviewPath => Path.Combine(temporary, "mask-preview.jpg");
 
     internal CustomMaskEditorForm(string videoPath,
@@ -220,6 +222,7 @@ internal sealed class CustomMaskEditorForm : Form
         automatic.Click += async (_, _) =>
         {
             ClearPaintUndo();
+            ClearPaintSeed();
             await UpdateMaskAsync(true);
         };
         accept.Click += (_, _) =>
@@ -306,6 +309,11 @@ internal sealed class CustomMaskEditorForm : Form
             {
                 CustomShowMaskDraft.CopyAtomic(Path.Combine(draftFolder,
                     "initial-mask.png"), MaskPath);
+                if (points.Count == 0 && !currentAutomatic)
+                {
+                    File.Copy(MaskPath, PaintSeedPath, true);
+                    hasPaintSeed = true;
+                }
                 string savedPreview = Path.Combine(draftFolder,
                     "initial-mask-preview.jpg");
                 if (File.Exists(savedPreview))
@@ -593,7 +601,7 @@ internal sealed class CustomMaskEditorForm : Form
                 $"initial-paint-undo-{++paintRevision}.png");
             if (hadMask) File.Copy(MaskPath, undoPath, true);
             paintUndo.Push(new PaintUndoState(undoPath, hadMask,
-                [.. points], [.. labels], currentAutomatic));
+                [.. points], [.. labels], currentAutomatic, hasPaintSeed));
             paintingMask?.Dispose();
             paintingSource?.Dispose();
             using (Image loadedFrame = LoadImage(FramePath))
@@ -611,7 +619,11 @@ internal sealed class CustomMaskEditorForm : Form
                 using Graphics blank = Graphics.FromImage(paintingMask);
                 blank.Clear(Color.Black);
             }
-            points.Clear(); labels.Clear(); currentAutomatic = false;
+            // The painted bitmap now contains the visible result of the existing
+            // prompts. It becomes the base for subsequent SAM2 clicks.
+            points.Clear();
+            labels.Clear();
+            currentAutomatic = false;
             painting = true;
             paintButton = e.Button;
             lastPaintPoint = point.Value;
@@ -689,6 +701,8 @@ internal sealed class CustomMaskEditorForm : Form
         try
         {
             paintingMask.Save(MaskPath, ImageFormat.Png);
+            File.Copy(MaskPath, PaintSeedPath, true);
+            hasPaintSeed = true;
             RenderPaintPreview(paintingMask, save: true, force: true);
             status.Text = "Painted initial mask ready. Add another stroke or use this mask.";
             SaveDraftState();
@@ -798,6 +812,7 @@ internal sealed class CustomMaskEditorForm : Form
             string request = JsonSerializer.Serialize(new
             {
                 command = useAutomatic ? "auto" : "prompt",
+                seedMask = !useAutomatic && hasPaintSeed ? PaintSeedPath : null,
                 points = points.Select(point => new[] { point.X, point.Y }),
                 labels
             });
@@ -839,12 +854,20 @@ internal sealed class CustomMaskEditorForm : Form
                 if (previous.HadMask)
                 {
                     File.Copy(previous.MaskPath, MaskPath, true);
+                    if (previous.HadPaintSeed)
+                    {
+                        File.Copy(MaskPath, PaintSeedPath, true);
+                        hasPaintSeed = true;
+                    }
+                    else ClearPaintSeed();
                     using Image loadedMask = LoadImage(MaskPath);
                     using Bitmap restored = new(loadedMask);
                     RenderPaintPreview(restored, save: true);
                 }
                 else
                 {
+                    hasPaintSeed = false;
+                    try { if (File.Exists(PaintSeedPath)) File.Delete(PaintSeedPath); } catch { }
                     try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
                     try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
                     SetImage(LoadImage(FramePath));
@@ -864,6 +887,18 @@ internal sealed class CustomMaskEditorForm : Form
         labels.RemoveAt(labels.Count - 1);
         if (points.Count == 0)
         {
+            if (hasPaintSeed && File.Exists(PaintSeedPath))
+            {
+                File.Copy(PaintSeedPath, MaskPath, true);
+                using Image loadedMask = LoadImage(MaskPath);
+                using Bitmap restored = new(loadedMask);
+                RenderPaintPreview(restored, save: true);
+                status.Text = "Last click undone; painted mask restored.";
+                currentAutomatic = false;
+                SaveDraftState();
+                UpdateEnabledState();
+                return;
+            }
             try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
             try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
             if (frameReady && File.Exists(FramePath)) SetImage(LoadImage(FramePath));
@@ -915,6 +950,7 @@ internal sealed class CustomMaskEditorForm : Form
         points.Clear();
         labels.Clear();
         currentAutomatic = false;
+        ClearPaintSeed();
         try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
         try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
         if (frameReady && File.Exists(FramePath)) SetImage(LoadImage(FramePath));
@@ -929,6 +965,7 @@ internal sealed class CustomMaskEditorForm : Form
         points.Clear();
         labels.Clear();
         currentAutomatic = false;
+        ClearPaintSeed();
         try { if (File.Exists(MaskPath)) File.Delete(MaskPath); } catch { }
         try { if (File.Exists(PreviewPath)) File.Delete(PreviewPath); } catch { }
     }
@@ -955,6 +992,12 @@ internal sealed class CustomMaskEditorForm : Form
             PaintUndoState state = paintUndo.Pop();
             try { if (File.Exists(state.MaskPath)) File.Delete(state.MaskPath); } catch { }
         }
+    }
+
+    void ClearPaintSeed()
+    {
+        hasPaintSeed = false;
+        try { if (File.Exists(PaintSeedPath)) File.Delete(PaintSeedPath); } catch { }
     }
 
     void SetImage(Image next)
