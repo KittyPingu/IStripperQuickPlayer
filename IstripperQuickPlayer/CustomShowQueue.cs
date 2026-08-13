@@ -911,6 +911,7 @@ internal static class CustomShowJobRunner
         target.Hotness = source.Hotness; target.PerformerCount = source.PerformerCount;
         target.ClipTypes = source.ClipTypes;
         target.Media.CoverTitleColor = source.Media.CoverTitleColor;
+        target.Media.PhotosFolder = source.Media.PhotosFolder;
     }
 
     static CustomShowClip[] OffsetClips(IEnumerable<CustomShowClip> clips, long offset,

@@ -92,7 +92,12 @@ to replace its processed media while optionally retaining clip divisions and
 masks.
 
 The collapsed **Metadata (optional)** section contains description, tags, dates,
-age override, gender, hotness, performer count, clip types, and cover options.
+age override, gender, hotness, performer count, clip types, cover options, and
+an optional **Photo folder**. Attach a folder of JPG, JPEG, PNG, BMP, or GIF
+images to make them available through the card's **Photos** button and the
+wallpaper feature. QuickPlayer also scans its subfolders. The folder is
+referenced rather than copied into the custom-show library, so keep it
+available or update the setting if it moves.
 Model profiles are reusable. Selecting an official iStripper model uses that
 model's existing metadata and statistics; custom model metadata is editable and
 shared by every linked custom show.

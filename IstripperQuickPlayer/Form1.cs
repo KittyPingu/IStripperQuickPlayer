@@ -5925,16 +5925,45 @@ namespace IStripperQuickPlayer
 
         private async void cmdPhotos_Click(object sender, EventArgs e)
         {
-            if (!string.IsNullOrEmpty(clipListTag))
+            if (string.IsNullOrEmpty(clipListTag)) return;
+            Cursor = Cursors.WaitCursor;
+            try
             {
-                this.Cursor = Cursors.WaitCursor;
-                CardPhotos photos = new CardPhotos();
-                await photos.LoadCardPhotos(client, clipListTag);
-                PhotoViewer p = new PhotoViewer(photos);
+                CardPhotos? photos = await LoadPhotosForCard(clipListTag);
+                if (photos == null || photos.getNumberOfPhotos() == 0)
+                {
+                    MessageBox.Show(this,
+                        "No photos were found for this card. For a custom show, attach a folder in Edit Custom Show Metadata.",
+                        "Photos", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                PhotoViewer p = new(photos);
                 await p.PopulateAsync();
                 p.Show();
-                this.Cursor = Cursors.Arrow;
             }
+            catch (Exception error)
+            {
+                MessageBox.Show(this, $"The photos could not be loaded.\r\n\r\n{error.Message}",
+                    "Photos", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally { Cursor = Cursors.Arrow; }
+        }
+
+        private async Task<CardPhotos?> LoadPhotosForCard(string tag)
+        {
+            string cardTag = tag.Split('\\')[0];
+            ModelCard? card = Datastore.findCardByTag(cardTag);
+            CardPhotos photos = new();
+            if (card?.customShowId != null)
+            {
+                CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+                CustomShowManifest show = store.LoadManifest(card.customShowId);
+                bool loaded = await Task.Run(() =>
+                    photos.LoadLocalPhotos(show.Media.PhotosFolder));
+                return loaded ? photos : null;
+            }
+            await photos.LoadCardPhotos(client, tag);
+            return photos;
         }
 
         private void includeDescriptionInSearchToolStripMenuItem_Click(object sender, EventArgs e)
@@ -6141,10 +6170,7 @@ namespace IStripperQuickPlayer
                 (NotFromCheck || Properties.Settings.Default.AutoWallpaper);
             CardPhotos? photos = null;
             if (canChange && monitorItems.Any(item => item.Checked))
-            {
-                photos = new CardPhotos();
-                await photos.LoadCardPhotos(client, nowPlayingTagShort);
-            }
+                photos = await LoadPhotosForCard(nowPlayingTagShort);
 
             foreach (ToolStripMenuItem item in monitorItems)
             {

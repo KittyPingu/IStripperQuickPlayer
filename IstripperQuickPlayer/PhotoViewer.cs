@@ -26,6 +26,11 @@ namespace IStripperQuickPlayer
         {
             InitializeComponent();
             SetSkin();
+            FormClosed += (_, _) =>
+            {
+                foreach (Bitmap thumbnail in thumbs) thumbnail.Dispose();
+                thumbs = [];
+            };
             _ = TooltipManager.Attach(this, components,
                 Properties.Settings.Default.TooltipInitialDelay);
         }

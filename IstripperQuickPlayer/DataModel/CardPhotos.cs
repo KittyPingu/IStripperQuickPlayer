@@ -15,7 +15,31 @@ namespace IStripperQuickPlayer.DataModel
         private static readonly HttpClient defaultClient = new();
         private string cardTag = "";
         private HttpClient client = defaultClient;
+        private string[] localPhotos = [];
         internal RootPhotos? data;
+
+        public bool LoadLocalPhotos(string? folder)
+        {
+            data = null;
+            localPhotos = [];
+            if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+                return false;
+            HashSet<string> extensions = new(StringComparer.OrdinalIgnoreCase)
+                { ".jpg", ".jpeg", ".png", ".bmp", ".gif" };
+            try
+            {
+                localPhotos = Directory.EnumerateFiles(folder, "*",
+                        SearchOption.AllDirectories)
+                    .Where(path => extensions.Contains(Path.GetExtension(path)))
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+            catch
+            {
+                localPhotos = [];
+            }
+            return localPhotos.Length > 0;
+        }
 
         public async Task<bool> LoadCardPhotos(HttpClient httpClient, string nowPlayingTag)
         {
@@ -29,6 +53,7 @@ namespace IStripperQuickPlayer.DataModel
 
         public int getNumberOfPhotos()
         {
+            if (localPhotos.Length > 0) return localPhotos.Length;
             return data?.photos.Length ?? 0;
         }
 
@@ -37,11 +62,14 @@ namespace IStripperQuickPlayer.DataModel
             ///fileaccess/image/f0953/VGI1446P02119.jpg/6f9?filename=VGI1446P02119.jpg&private=yes&ui=m28734858&uk=EGNILAPABNIHCKLIIDKGOIPABLEBPAKJ&explicit=1&language=en
             string? fullpath = getPhotoFullPath(number);
             if (fullpath == null) return null;
+            if (File.Exists(fullpath)) return LoadLocalImage(fullpath);
             return DownloadImageFromUrl(fullpath);
         }
 
         public string? getPhotoFullPath(int number)
         {
+            if (number >= 0 && number < localPhotos.Length)
+                return localPhotos[number];
             if (data == null || number < 0 || number >= data.photos.Length)
                 return null;
             var p = data.photos[number];
@@ -67,6 +95,12 @@ namespace IStripperQuickPlayer.DataModel
         public string? getRandomWidescreenURL()
         {
             if (getNumberOfPhotos() == 0) return null;
+            if (localPhotos.Length > 0)
+            {
+                string[] widescreen = localPhotos.Where(IsLandscape).ToArray();
+                string[] candidates = widescreen.Length > 0 ? widescreen : localPhotos;
+                return candidates[Random.Shared.Next(candidates.Length)];
+            }
             if (data == null) return null;
             Random rnd = new Random();
             var p = data.photos.Where(c => c.size.width > c.size.height)
@@ -78,11 +112,44 @@ namespace IStripperQuickPlayer.DataModel
 
         public async Task<Bitmap[]> getThumbnails()
         {
+            if (localPhotos.Length > 0)
+                return await Task.Run(() => localPhotos.Select(CreateThumbnail).ToArray());
             if (data == null || data.photos.Length == 0)
                 return Array.Empty<Bitmap>();
 
             return await Task.WhenAll(data.photos.Select(i =>
                 GetImageBitmapFromUrl("http://www.istripper.com/" + i.files.mini)));
+        }
+
+        private static Bitmap CreateThumbnail(string path)
+        {
+            using Image? source = LoadLocalImage(path);
+            if (source == null) return new Bitmap(1, 1);
+            double scale = Math.Min(256d / source.Width, 256d / source.Height);
+            int width = Math.Max(1, (int)Math.Round(source.Width * scale));
+            int height = Math.Max(1, (int)Math.Round(source.Height * scale));
+            Bitmap thumbnail = new(width, height);
+            using Graphics graphics = Graphics.FromImage(thumbnail);
+            graphics.InterpolationMode =
+                System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.DrawImage(source, 0, 0, width, height);
+            return thumbnail;
+        }
+
+        private static Bitmap? LoadLocalImage(string path)
+        {
+            try
+            {
+                using Image source = Image.FromFile(path);
+                return new Bitmap(source);
+            }
+            catch { return null; }
+        }
+
+        private static bool IsLandscape(string path)
+        {
+            using Image? image = LoadLocalImage(path);
+            return image != null && image.Width > image.Height;
         }
 
         async Task<Bitmap> GetImageBitmapFromUrl( string url)

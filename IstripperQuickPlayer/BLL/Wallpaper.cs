@@ -487,6 +487,11 @@ namespace IStripperQuickPlayer.BLL
         {
             try
             {
+                if (File.Exists(url))
+                {
+                    using Image localImage = Image.FromFile(url);
+                    return new Bitmap(localImage);
+                }
                 byte[] imageBytes = await client.GetByteArrayAsync(url)
                     .ConfigureAwait(false);
                 using var ms = new MemoryStream(imageBytes);

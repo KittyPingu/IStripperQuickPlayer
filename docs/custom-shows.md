@@ -2,6 +2,12 @@
 
 Custom shows are normal QuickPlayer library cards backed by a local foreground video and alpha video. They can be searched, sorted, filtered, rated, favourited, dragged, saved in manual queues, selected by automatic queues, and controlled through REST alongside iStripper cards. iStripper still plays official shows; QuickPlayer's transparent player is used only for IDs beginning `custom:`.
 
+The collapsed Metadata section can attach a local **Photo folder** containing
+JPG, JPEG, PNG, BMP, or GIF images. QuickPlayer scans the folder and its
+subfolders for the card's Photos viewer, and makes landscape images available
+to the normal wallpaper feature. This stores a reference to the folder rather
+than copying the images into the custom-show library.
+
 For a concise, task-oriented guide with recommended choices, begin with
 [Creating Custom Shows](../CUSTOM_SHOWS.md). This document is the exact setup,
 format, performance, licensing, and troubleshooting reference.
