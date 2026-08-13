@@ -52,6 +52,7 @@ namespace IStripperQuickPlayer
 
         private const int PlaybackBridgeVersion = 94;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
+        private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
         private const int PlaybackMovieDiscoveryRetryMilliseconds = 100;
         private const int PlaybackForcedReadyMilliseconds = 5_000;
@@ -146,7 +147,10 @@ namespace IStripperQuickPlayer
         private readonly System.Windows.Forms.Timer playbackTimelineTimer =
             new() { Interval = PlaybackTimelineIntervalMilliseconds };
         private readonly System.Windows.Forms.Timer cardOverlayTimer =
-            new() { Interval = 40 };
+            new() { Interval = 75 };
+        private readonly record struct PlaybackPollSnapshot(
+            int Elapsed, int Total, int DecoderKind, int State,
+            int SeekReady, int SeekReadinessMask);
         private readonly ToolStripMenuItem drawCardOverlaysToolStripMenuItem =
             new("Draw Card Overlays") { CheckOnClick = true };
         private readonly ToolStripMenuItem roundCardCornersToolStripMenuItem =
@@ -623,37 +627,45 @@ namespace IStripperQuickPlayer
 
             InitializeComponent();
             DoubleBuffered = true;
+            listModelsNew.RefreshOnItemHoverChanged = false;
             cardOverlayTimer.Tick += (_, _) =>
             {
                 if (!listModelsNew.Visible ||
                     WindowState == FormWindowState.Minimized)
+                {
+                    SetTimerInterval(cardOverlayTimer, 250);
                     return;
+                }
                 bool animationChanged =
                     Properties.Settings.Default.DrawCardOverlays &&
                     CardOverlayLoader.HasAnimatedOverlays &&
-                    CardOverlayLoader.AnimationFrameChanged();
+                    (directCompositionCardOverlays?
+                        .AnimationFrameChanged() ??
+                     CardOverlayLoader.AnimationFrameChanged());
                 if (directCompositionCardOverlays != null)
                 {
                     bool staticChanged =
-                        directCompositionCardOverlays
-                            .HasPendingStaticChanges;
+                        directCompositionCardOverlays.HasPendingStaticChanges;
                     if (animationChanged || staticChanged)
                     {
                         if (!directCompositionCardOverlays.Render(
-                                true, animationChanged && !staticChanged))
+                                true,
+                                animationChanged && !staticChanged))
                             DisableDirectCompositionCardOverlays();
                     }
                 }
                 else if (animationChanged)
                 {
                     listModelsNew.RefreshItems(
-                        listModelsNew.Items.Cast<
-                            Manina.Windows.Forms.ImageListViewItem>()
-                        .Where(item =>
-                            CardOverlayLoader.HasAnimatedOverlay(
-                                item.Tag?.ToString() ?? "")));
+                        listModelsNew.GetCurrentlyVisibleItems()
+                        .Where(item => CardOverlayLoader.HasAnimatedOverlay(
+                            item.Tag?.ToString() ?? "")));
                     RefreshPlayQueueCardOverlays();
                 }
+                SetTimerInterval(cardOverlayTimer,
+                    directCompositionCardOverlays?
+                        .NextAnimationFrameDelay() ??
+                    CardOverlayLoader.NextAnimationFrameDelay());
             };
             cardOverlayTimer.Start();
             trkPlaybackPosition.AccessibleDescription =
@@ -3603,8 +3615,13 @@ namespace IStripperQuickPlayer
                 int elapsed = Math.Clamp((int)(customPlayer.CurrentSeconds * 1000), 0, Math.Max(0, duration));
                 playbackTimelineDurationMilliseconds = duration;
                 playbackLastKnownElapsedMilliseconds = elapsed;
-                trkPlaybackPosition.Maximum = Math.Max(1, duration);
-                if (!playbackTimelineDragging) trkPlaybackPosition.Value = Math.Min(trkPlaybackPosition.Maximum, elapsed);
+                int maximum = Math.Max(1, duration);
+                if (trkPlaybackPosition.Maximum != maximum)
+                    trkPlaybackPosition.Maximum = maximum;
+                int value = Math.Min(maximum, elapsed);
+                if (!playbackTimelineDragging &&
+                    trkPlaybackPosition.Value != value)
+                    trkPlaybackPosition.Value = value;
                 UpdatePlaybackTime(elapsed, duration);
                 trkPlaybackPosition.Enabled = true;
                 return;
@@ -3743,11 +3760,14 @@ namespace IStripperQuickPlayer
 
                 if (string.IsNullOrEmpty(animationPath))
                 {
-                    playbackTimelineTimer.Interval =
-                        PlaybackTimelineIntervalMilliseconds;
+                    SetTimerInterval(playbackTimelineTimer,
+                        PlaybackIdleIntervalMilliseconds);
                     trkPlaybackPosition.Enabled = false;
                     return;
                 }
+
+                SetTimerInterval(playbackTimelineTimer,
+                    PlaybackTimelineIntervalMilliseconds);
 
                 if (!playbackMovieRegistered &&
                     DateTime.UtcNow >= playbackNextMovieDiscoveryAt)
@@ -3782,8 +3802,8 @@ namespace IStripperQuickPlayer
                     if (playbackMovieRegistered)
                     {
                         DisableMovieCapture();
-                        playbackTimelineTimer.Interval =
-                            PlaybackTimelineIntervalMilliseconds;
+                        SetTimerInterval(playbackTimelineTimer,
+                            PlaybackTimelineIntervalMilliseconds);
                         playbackDecoderKind = discoveredDecoderKind;
                         playbackSeekingSupported =
                             playbackDecoderKind is 1 or 2;
@@ -3803,14 +3823,43 @@ namespace IStripperQuickPlayer
                 }
 
                 now = DateTime.UtcNow;
-                int elapsed = await Task.Run(() =>
-                    RequirePlaybackResult("IStripperGetElapsedMilliseconds"));
-                int total = playbackTimelineDurationMilliseconds;
-                if (total <= 0)
+                int cachedTotal = playbackTimelineDurationMilliseconds;
+                int cachedDecoderKind = playbackDecoderKind;
+                bool cachedSeekReady = playbackSeekReady;
+                int previousElapsed = playbackLastKnownElapsedMilliseconds;
+                DateTime previousProgressAt = playbackLastProgressAt;
+                PlaybackPollSnapshot snapshot = await Task.Run(() =>
                 {
-                    total = await Task.Run(() =>
-                        RequirePlaybackResult("IStripperGetTotalMilliseconds"));
-                }
+                    int elapsed = RequirePlaybackResult(
+                        "IStripperGetElapsedMilliseconds");
+                    int total = cachedTotal > 0
+                        ? cachedTotal
+                        : RequirePlaybackResult(
+                            "IStripperGetTotalMilliseconds");
+                    int decoderKind = cachedDecoderKind != 0
+                        ? cachedDecoderKind
+                        : CallPlaybackApi("IStripperGetDecoderKind");
+                    int state = decoderKind == 2 &&
+                        elapsed <= previousElapsed &&
+                        PlaybackReachedEnd(elapsed, total) &&
+                        now - previousProgressAt >= TimeSpan.FromSeconds(2)
+                            ? CallPlaybackApi("IStripperGetState")
+                            : 0;
+                    int seekReady = !cachedSeekReady &&
+                        decoderKind is 1 or 2
+                            ? CallPlaybackApi("IStripperIsSeekReady")
+                            : cachedSeekReady ? 1 : 0;
+                    int readinessMask = !cachedSeekReady &&
+                        decoderKind == 1 && seekReady != 1 &&
+                        elapsed < PlaybackForcedReadyMilliseconds
+                            ? CallPlaybackApi(
+                                "IStripperGetSeekReadinessMask")
+                            : 0;
+                    return new PlaybackPollSnapshot(elapsed, total,
+                        decoderKind, state, seekReady, readinessMask);
+                });
+                int elapsed = snapshot.Elapsed;
+                int total = snapshot.Total;
                 if (formIsClosing || IsDisposed ||
                     !string.Equals(animationPath, GetCurrentAnimationPath(),
                         StringComparison.Ordinal) || playbackBusy)
@@ -3818,15 +3867,11 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                if (playbackDecoderKind == 0)
+                if (playbackDecoderKind == 0 &&
+                    snapshot.DecoderKind is 1 or 2)
                 {
-                    int decoderKind = await Task.Run(() =>
-                        CallPlaybackApi("IStripperGetDecoderKind"));
-                    if (decoderKind is 1 or 2)
-                    {
-                        playbackDecoderKind = decoderKind;
-                        playbackSeekingSupported = true;
-                    }
+                    playbackDecoderKind = snapshot.DecoderKind;
+                    playbackSeekingSupported = true;
                 }
 
                 if (elapsed > playbackLastKnownElapsedMilliseconds)
@@ -3836,8 +3881,7 @@ namespace IStripperQuickPlayer
                 else if (playbackDecoderKind == 2 &&
                     LegacyPlaybackStalledNearEnd(elapsed, total,
                         playbackLastProgressAt, now,
-                        await Task.Run(() =>
-                            CallPlaybackApi("IStripperGetState"))))
+                        snapshot.State))
                 {
                     playbackCompletedAnimationPath = animationPath;
                     playbackNextClipRetryAt = now.AddSeconds(1);
@@ -3845,11 +3889,7 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
-                int seekReadyResult = playbackSeekReady ? 1 :
-                    playbackDecoderKind is 1 or 2
-                        ? await Task.Run(() =>
-                            CallPlaybackApi("IStripperIsSeekReady"))
-                        : 0;
+                int seekReadyResult = snapshot.SeekReady;
                 if (!playbackSeekReady && playbackDecoderKind is 1 or 2 &&
                     seekReadyResult == 1 &&
                     (playbackDecoderKind != 2 || elapsed >= 3_500))
@@ -3877,10 +3917,8 @@ namespace IStripperQuickPlayer
                 }
                 else if (!playbackSeekReady && playbackDecoderKind == 1)
                 {
-                    int readinessMask = await Task.Run(() =>
-                        CallPlaybackApi("IStripperGetSeekReadinessMask"));
                     trkPlaybackPosition.AccessibleDescription =
-                        $"Seek readiness 0x{readinessMask:X}";
+                        $"Seek readiness 0x{snapshot.SeekReadinessMask:X}";
                 }
 
                 int reapplyAfter = playbackDecoderKind == 2 ? 3_500 : 500;
@@ -3918,7 +3956,9 @@ namespace IStripperQuickPlayer
                         trkPlaybackPosition.SmallChange = Math.Min(1_000, maximum);
                         trkPlaybackPosition.LargeChange = Math.Min(10_000, maximum);
                     }
-                    trkPlaybackPosition.Value = Math.Clamp(elapsed, 0, maximum);
+                    int value = Math.Clamp(elapsed, 0, maximum);
+                    if (trkPlaybackPosition.Value != value)
+                        trkPlaybackPosition.Value = value;
                     UpdatePlaybackTime(elapsed, playbackTimelineDurationMilliseconds);
                 }
                 UpdatePlaybackControlsEnabled();
@@ -3939,6 +3979,13 @@ namespace IStripperQuickPlayer
             string text =
                 $"{FormatPlaybackTime(elapsedMilliseconds)} / {FormatPlaybackTime(totalMilliseconds)}";
             lblPlaybackTime.SetDisplayText(text);
+        }
+
+        private static void SetTimerInterval(System.Windows.Forms.Timer timer,
+            int interval)
+        {
+            if (timer.Interval != interval)
+                timer.Interval = interval;
         }
 
         private void trkPlaybackPosition_MouseDown(object sender, MouseEventArgs e)
@@ -4971,8 +5018,8 @@ namespace IStripperQuickPlayer
             void Wake()
             {
                 playbackNextMovieDiscoveryAt = DateTime.MinValue;
-                playbackTimelineTimer.Interval =
-                    PlaybackTransitionIntervalMilliseconds;
+                SetTimerInterval(playbackTimelineTimer,
+                    PlaybackTransitionIntervalMilliseconds);
                 if (!playbackTimelineTimer.Enabled)
                     playbackTimelineTimer.Start();
             }
@@ -6266,9 +6313,13 @@ namespace IStripperQuickPlayer
 
         private void listModelsNew_ItemHover(object sender, ItemHoverEventArgs e)
         {
-            if (e.Item != null && cardRenderer != null &&
-                cardRenderer.mZoomRatio > 0.0f)
-                e.Item.Update();
+            if (directCompositionCardOverlays != null)
+            {
+                directCompositionCardOverlays.SetHoveredItem(e.Item?.Index);
+                return;
+            }
+            if (cardRenderer?.mZoomRatio > 0.0f)
+                listModelsNew.Refresh();
         }
 
         private void splitContainer1_SplitterMoved(object sender, SplitterEventArgs e)
@@ -6609,7 +6660,10 @@ namespace IStripperQuickPlayer
             if (menuCardList.Visible) return;
             if (cardRenderer == null) return;
             cardRenderer.MouseIsOnList = false;
-            listModelsNew.Refresh();
+            if (directCompositionCardOverlays != null)
+                directCompositionCardOverlays.SetHoveredItem(null);
+            else
+                listModelsNew.Refresh();
         }
 
         private void listModelsNew_MouseEnter(object sender, EventArgs e)

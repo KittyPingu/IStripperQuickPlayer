@@ -481,7 +481,8 @@ namespace Manina.Windows.Forms
                     if (!ReferenceEquals(HoveredColumn, oldHoveredColumn))
                         mImageListView.OnColumnHover(new ColumnHoverEventArgs(HoveredColumn, oldHoveredColumn));
 
-                    mImageListView.Refresh();
+                    if (mImageListView.RefreshOnItemHoverChanged)
+                        mImageListView.Refresh();
                 }
 
                 mImageListView.ResumePaint();

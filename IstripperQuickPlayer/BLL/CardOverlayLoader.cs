@@ -23,7 +23,8 @@ internal sealed record CardOverlayChoice(
 }
 
 internal readonly record struct CardOverlayFrame(
-    Bitmap Image, Rectangle Source);
+    Bitmap Image, Rectangle Source, int FrameIndex = 0,
+    int FrameCount = 1, int FrameDuration = 250);
 
 internal sealed class CardOverlayRules
 {
@@ -99,7 +100,8 @@ internal static class CardOverlayLoader
             return new(image, new Rectangle(
                 frame % columns * frameWidth,
                 frame / columns * frameHeight,
-                frameWidth, frameHeight));
+                frameWidth, frameHeight), frame, frameCount,
+                FrameDuration);
         }
 
         internal void Draw(Graphics graphics, Rectangle destination)
@@ -165,6 +167,38 @@ internal static class CardOverlayLoader
         overlaysByCard.TryGetValue(cardTag, out CardOverlay? overlay) &&
         overlay.Animated;
 
+    internal static int NextAnimationFrameDelay(
+        IEnumerable<string>? visibleCardTags = null)
+    {
+        long ticks = Environment.TickCount64;
+        int delay = 250;
+        if (visibleCardTags == null)
+        {
+            foreach (CardOverlay overlay in overlaysByCard.Values)
+                Consider(overlay);
+        }
+        else
+        {
+            foreach (string tag in visibleCardTags)
+            {
+                if (overlaysByCard.TryGetValue(tag,
+                        out CardOverlay? overlay))
+                    Consider(overlay);
+            }
+        }
+        return Math.Clamp(delay, 15, 250);
+
+        void Consider(CardOverlay overlay)
+        {
+            if (overlay.Animated)
+            {
+                int untilNext = overlay.FrameDuration -
+                    (int)(ticks % overlay.FrameDuration);
+                delay = Math.Min(delay, Math.Max(1, untilNext));
+            }
+        }
+    }
+
     internal static bool ShouldDrawFavouriteIcon(
         string cardTag, bool favourite) => ShouldDrawFavouriteIcon(
             favourite, builtInFavouriteCards.Contains(cardTag));
@@ -185,17 +219,36 @@ internal static class CardOverlayLoader
         return false;
     }
 
-    internal static bool AnimationFrameChanged()
+    internal static bool AnimationFrameChanged(
+        IEnumerable<string>? visibleCardTags = null)
     {
         long ticks = Environment.TickCount64;
         long signature = 17;
-        foreach (CardOverlay overlay in overlaysByCard.Values
-            .Where(overlay => overlay.Animated).Distinct())
-            signature = unchecked(signature * 31 + overlay.FrameAt(ticks));
+        if (visibleCardTags == null)
+        {
+            foreach (CardOverlay overlay in overlaysByCard.Values)
+                Add(overlay);
+        }
+        else
+        {
+            foreach (string tag in visibleCardTags)
+            {
+                if (overlaysByCard.TryGetValue(tag,
+                        out CardOverlay? overlay))
+                    Add(overlay);
+            }
+        }
         if (signature == lastAnimationSignature)
             return false;
         lastAnimationSignature = signature;
         return true;
+
+        void Add(CardOverlay overlay)
+        {
+            if (overlay.Animated)
+                signature = unchecked(
+                    signature * 31 + overlay.FrameAt(ticks));
+        }
     }
 
     internal static void Reload(
@@ -1130,9 +1183,10 @@ internal static class CardOverlayLoader
         }
         catch (JsonException) { }
 
+        const int columns = 24;
         Bitmap sheet = new(
-            frameWidth * frameCount,
-            frameHeight,
+            frameWidth * columns,
+            frameHeight * ((frameCount + columns - 1) / columns),
             PixelFormat.Format32bppPArgb);
         using Graphics graphics = Graphics.FromImage(sheet);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -1141,9 +1195,10 @@ internal static class CardOverlayLoader
         const int segments = 96;
         for (int frame = 0; frame < frameCount; frame++)
         {
-            int offsetX = frame * frameWidth;
+            int offsetX = frame % columns * frameWidth;
+            int offsetY = frame / columns * frameHeight;
             graphics.SetClip(new Rectangle(
-                offsetX, 0, frameWidth, frameHeight),
+                offsetX, offsetY, frameWidth, frameHeight),
                 CombineMode.Replace);
             for (int segment = 0; segment < segments; segment++)
             {
@@ -1159,10 +1214,10 @@ internal static class CardOverlayLoader
                     amount);
                 PointF start = BorderPoint(
                     segment / (double)segments,
-                    offsetX, frameWidth, frameHeight);
+                    offsetX, offsetY, frameWidth, frameHeight);
                 PointF end = BorderPoint(
                     (segment + 1) / (double)segments,
-                    offsetX, frameWidth, frameHeight);
+                    offsetX, offsetY, frameWidth, frameHeight);
                 foreach ((float width, int alpha) in new[]
                 {
                     (10f, 18), (7f, 35), (4f, 80), (2f, 220)
@@ -1186,7 +1241,7 @@ internal static class CardOverlayLoader
     }
 
     private static PointF BorderPoint(
-        double position, int offsetX, int width, int height)
+        double position, int offsetX, int offsetY, int width, int height)
     {
         const float inset = 5;
         float horizontal = width - inset * 2;
@@ -1194,17 +1249,17 @@ internal static class CardOverlayLoader
         double distance =
             position * (horizontal + vertical) * 2;
         if (distance <= horizontal)
-            return new(offsetX + inset + (float)distance, inset);
+            return new(offsetX + inset + (float)distance, offsetY + inset);
         distance -= horizontal;
         if (distance <= vertical)
             return new(offsetX + width - inset,
-                inset + (float)distance);
+                offsetY + inset + (float)distance);
         distance -= vertical;
         if (distance <= horizontal)
             return new(offsetX + width - inset - (float)distance,
-                height - inset);
+                offsetY + height - inset);
         return new(offsetX + inset,
-            height - inset - (float)(distance - horizontal));
+            offsetY + height - inset - (float)(distance - horizontal));
     }
 
     private static Color Mix(Color first, Color second, float amount) =>

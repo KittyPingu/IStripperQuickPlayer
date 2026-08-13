@@ -16,6 +16,7 @@ internal static class GlslOverlayRenderer
     private const int Width = 96;
     private const int Height = 144;
     private const int FrameDuration = 100;
+    private const int MaximumAtlasWidth = 4096;
     private static readonly object renderLock = new();
     internal static string? LastError { get; private set; }
 
@@ -103,8 +104,10 @@ internal static class GlslOverlayRenderer
         int vertexArray = GL.GenVertexArray();
         int texture0 = CreateTexture(channel0);
         int texture1 = CreateTexture(channel1);
+        int columns = AtlasColumns(frameCount, width);
+        int rows = (frameCount + columns - 1) / columns;
         DrawingBitmap sheet = new(
-            width * frameCount, height,
+            width * columns, height * rows,
             System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         BitmapData target = sheet.LockBits(
             new Rectangle(Point.Empty, sheet.Size),
@@ -138,7 +141,8 @@ internal static class GlslOverlayRenderer
                 GL.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
                 GL.ReadPixels(0, 0, width, height,
                     GlPixelFormat.Bgra, PixelType.UnsignedByte, pixels);
-                CopyFrame(pixels, row, target, frame, width, height);
+                CopyFrame(pixels, row, target, frame, columns,
+                    width, height);
             }
         }
         catch
@@ -159,10 +163,30 @@ internal static class GlslOverlayRenderer
         return sheet;
     }
 
+    private static int AtlasColumns(int frameCount, int frameWidth)
+    {
+        int maximum = Math.Max(1, Math.Min(frameCount,
+            MaximumAtlasWidth / Math.Max(1, frameWidth)));
+        for (int columns = maximum; columns > 1; columns--)
+        {
+            if (frameCount % columns == 0)
+                return columns;
+        }
+        return maximum;
+    }
+
+    internal static bool VerifyAtlasLayout() =>
+        AtlasColumns(154, 192) == 14 &&
+        AtlasColumns(100, 96) == 25 &&
+        AtlasColumns(63, 96) == 21 &&
+        AtlasColumns(50, 96) == 25;
+
     private static void CopyFrame(
-        byte[] pixels, byte[] row, BitmapData target, int frame,
+        byte[] pixels, byte[] row, BitmapData target, int frame, int columns,
         int width, int height)
     {
+        int destinationX = frame % columns * width;
+        int destinationY = frame / columns * height;
         for (int y = 0; y < height; y++)
         {
             System.Buffer.BlockCopy(
@@ -184,8 +208,8 @@ internal static class GlslOverlayRenderer
                         Math.Max(row[pixel + 1], row[pixel + 2])));
             }
             Marshal.Copy(row, 0,
-                target.Scan0 + y * target.Stride +
-                    frame * width * 4,
+                target.Scan0 + (destinationY + y) * target.Stride +
+                    destinationX * 4,
                 row.Length);
         }
     }

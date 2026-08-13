@@ -473,6 +473,45 @@ namespace IStripperQuickPlayer.BLL
             int itemIndex, out GpuCardVisual visual)
             => gpuCards.TryGetValue(itemIndex, out visual);
 
+        internal bool TryGetPromotedCard(
+            int itemIndex, Rectangle viewport, out GpuCardVisual visual)
+        {
+            if (!gpuCards.TryGetValue(itemIndex, out visual) ||
+                visual.Card.image == null || mZoomRatio <= 0)
+                return false;
+            Rectangle bounds = visual.Bounds;
+            bounds.Inflate((int)(bounds.Width * mZoomRatio),
+                (int)(bounds.Height * mZoomRatio));
+            if (bounds.Bottom > viewport.Bottom)
+                bounds.Y = viewport.Bottom - bounds.Height + 34;
+            if (bounds.Top < viewport.Top) bounds.Y = viewport.Top;
+            if (bounds.Right > viewport.Right)
+                bounds.X = viewport.Right - bounds.Width;
+            if (bounds.Left < viewport.Left) bounds.X = viewport.Left;
+            double ratio = visual.Card.image.Width /
+                (double)visual.Card.image.Height;
+            int inset = CardImageBottomInset(bounds);
+            int dx = Math.Max(0, (int)(bounds.Width -
+                ((bounds.Height - 34) * ratio)) / 2);
+            Rectangle imageBounds = new(bounds.Left + dx, bounds.Top,
+                bounds.Width - dx * 2, bounds.Height - inset);
+            float scale = imageBounds.Width /
+                (float)Math.Max(1, visual.ImageBounds.Width);
+            visual = visual with
+            {
+                Bounds = bounds,
+                ImageBounds = imageBounds,
+                DrawText = false,
+                PlayingFontSize = visual.PlayingFontSize * scale,
+                PlayingBounds = new(imageBounds.Left,
+                    bounds.Top + (int)Math.Round(CardPixels(imageBounds, 60)),
+                    (int)(imageBounds.Width * .7f),
+                    Math.Max(1, (int)Math.Round(
+                        visual.PlayingBounds.Height * scale)))
+            };
+            return true;
+        }
+
         internal void ResetCardScene()
         {
             gpuCards.Clear();
@@ -574,7 +613,9 @@ namespace IStripperQuickPlayer.BLL
                 Rectangle controlBounds = ClientBounds;
                 bool drawText = true;
                 // Zoom on mouse over
-                if (((MouseIsOnList && (state & ItemState.Hovered) != ItemState.None) || CardMenuText == item.Tag.ToString()) && mZoomRatio != 0.0f)
+                if (!DrawWithDirectComposition &&
+                    ((MouseIsOnList && (state & ItemState.Hovered) != ItemState.None) ||
+                     CardMenuText == item.Tag.ToString()) && mZoomRatio != 0.0f)
                 {
                     bounds.Inflate((int)(bounds.Width * mZoomRatio), (int)(bounds.Height * mZoomRatio));
                     if (bounds.Bottom > controlBounds.Bottom)

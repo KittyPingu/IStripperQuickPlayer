@@ -102,6 +102,13 @@ namespace Manina.Windows.Forms
         private int rendererSuspendCount;
         private bool rendererNeedsPaint;
         private System.Timers.Timer lazyRefreshTimer;
+        /// <summary>
+        /// Gets or sets whether changing the hovered item redraws the list.
+        /// Custom composition renderers can handle hover in a separate visual.
+        /// </summary>
+        [Browsable(false), DesignerSerializationVisibility(
+            DesignerSerializationVisibility.Hidden)]
+        public bool RefreshOnItemHoverChanged { get; set; } = true;
         private RefreshDelegateInternal lazyRefreshCallback;
 
         // Layout variables
@@ -1709,6 +1716,20 @@ namespace Manina.Windows.Forms
             rendererNeedsPaint = false;
             base.Invalidate(invalidBounds);
             base.Update();
+        }
+
+        /// <summary>Returns the items intersecting the current viewport.</summary>
+        public IEnumerable<ImageListViewItem> GetCurrentlyVisibleItems()
+        {
+            if (mItems.Count == 0 ||
+                layoutManager.FirstPartiallyVisible < 0 ||
+                layoutManager.LastPartiallyVisible < 0)
+                yield break;
+            int first = Math.Max(0, layoutManager.FirstPartiallyVisible);
+            int last = Math.Min(mItems.Count - 1,
+                layoutManager.LastPartiallyVisible);
+            for (int index = first; index <= last; index++)
+                yield return mItems[index];
         }
         /// <summary>
         /// Suspends painting until a matching ResumePaint call is made.

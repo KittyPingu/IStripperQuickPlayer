@@ -56,12 +56,13 @@ internal static class QuickPlayerCardOverlays
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
         for (int frame = 0; frame < frameCount; frame++)
         {
+            Rectangle frameBounds = FrameBounds(sheet, frame);
             double phase = frame / (double)frameCount * 5 % 1;
             double beat = Heartbeat(phase);
             float size = 40 * (1 + (float)beat * .11f);
             RectangleF bounds = new(
-                frame * Width + Width - 36 - size / 2,
-                38 - size / 2, size, size);
+                frameBounds.Left + Width - 36 - size / 2,
+                frameBounds.Top + 38 - size / 2, size, size);
             using GraphicsPath heart = HeartPath(bounds);
             using SolidBrush fill = new(Mix(
                 Color.FromArgb(255, 91, 151),
@@ -141,9 +142,11 @@ internal static class QuickPlayerCardOverlays
         int width = text == "NEW" ? 68 : 94;
         for (int frame = 0; frame < frameCount; frame++)
         {
+            Rectangle frameBounds = FrameBounds(sheet, frame);
             float pulse = .72f + .28f * (float)Math.Sin(
                 frame / (double)frameCount * Math.PI * 4);
-            Rectangle bounds = new(frame * Width + 14, 14, width, 32);
+            Rectangle bounds = new(frameBounds.Left + 14,
+                frameBounds.Top + 14, width, 32);
             using GraphicsPath badge = RoundedRectangle(bounds, 10);
             using LinearGradientBrush background = new(
                 bounds, Color.FromArgb(235, 48, 53, 66),
@@ -174,6 +177,13 @@ internal static class QuickPlayerCardOverlays
             DrawTextSpark(graphics, letters, bounds,
                 frame / (double)frameCount * Math.Tau);
         }
+    }
+
+    private static Rectangle FrameBounds(Bitmap sheet, int frame)
+    {
+        int columns = Math.Max(1, sheet.Width / Width);
+        return new Rectangle(frame % columns * Width,
+            frame / columns * Height, Width, Height);
     }
 
     private static void DrawTextSpark(

@@ -38,15 +38,19 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     }
 
     private sealed class CardOverlayVisual(
+        IDCompositionVisual container,
         IDCompositionVisual visual,
         IDCompositionVisual playingVisual,
         IDCompositionRectangleClip clip) : IDisposable
     {
+        internal IDCompositionVisual Container { get; } = container;
         internal IDCompositionVisual Visual { get; } = visual;
         internal IDCompositionVisual PlayingVisual { get; } = playingVisual;
         internal IDCompositionRectangleClip Clip { get; } = clip;
         internal SharedOverlaySurface? Surface { get; set; }
         internal DrawingRectangle Bounds { get; set; }
+        internal DrawingRectangle Source { get; set; }
+        internal bool NativeAnimation { get; set; }
         internal bool Rounded { get; set; }
 
         public void Dispose()
@@ -54,6 +58,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             Clip.Dispose();
             PlayingVisual.Dispose();
             Visual.Dispose();
+            Container.Dispose();
         }
     }
 
@@ -77,9 +82,10 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     {
         DrawingRectangle viewport = new(Point.Empty, list.ClientSize);
         (int Index, CardRenderer.GpuCardVisual Visual)? zoomed = null;
-        List<(int Index, CardRenderer.GpuCardVisual Visual,
-            CardOverlayFrame Frame)> cards = [];
-        foreach (ImageListViewItem item in list.Items)
+        overlayCards.Clear();
+        activeOverlayCards.Clear();
+        updatedOverlaySurfaces.Clear();
+        foreach (ImageListViewItem item in list.GetCurrentlyVisibleItems())
         {
             if (list.IsItemVisible(item) == ItemVisibility.NotVisible ||
                 !renderer.TryGetGpuCard(
@@ -88,33 +94,41 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 !visual.Bounds.IntersectsWith(viewport) ||
                 !FitsHorizontally(visual.Bounds, viewport))
                 continue;
-            if (!visual.DrawText)
-                zoomed = (item.Index, visual);
+            if (hoveredItemIndex == item.Index &&
+                renderer.TryGetPromotedCard(item.Index, list.ClientRectangle,
+                    out CardRenderer.GpuCardVisual promoted))
+            {
+                visual = promoted;
+                zoomed = (item.Index, promoted);
+            }
             if (!Properties.Settings.Default.DrawCardOverlays ||
                 !CardOverlayLoader.TryGetFrame(
                     visual.Card.name, out CardOverlayFrame frame) ||
                 frame.Source.Width <= 0 || frame.Source.Height <= 0)
                 continue;
-            cards.Add((item.Index, visual, frame));
+            overlayCards.Add((item.Index, visual, frame));
+            activeOverlayCards.Add(item.Index);
         }
 
-        HashSet<int> active = cards.Select(card => card.Index).ToHashSet();
-        foreach (int removed in cardOverlayVisuals.Keys
-            .Where(index => !active.Contains(index)).ToArray())
+        removedOverlayCards.Clear();
+        foreach (int index in cardOverlayVisuals.Keys)
+        {
+            if (!activeOverlayCards.Contains(index))
+                removedOverlayCards.Add(index);
+        }
+        foreach (int removed in removedOverlayCards)
         {
             CardOverlayVisual visual = cardOverlayVisuals[removed];
-            compositionVisual!.RemoveVisual(visual.PlayingVisual);
-            compositionVisual!.RemoveVisual(visual.Visual);
+            RemoveCardOverlayVisual(removed, visual);
             visual.Dispose();
             cardOverlayVisuals.Remove(removed);
         }
 
-        HashSet<SharedOverlaySurface> updated = [];
-        foreach (var card in cards.OrderBy(card => card.Visual.DrawText))
+        foreach (var card in overlayCards)
         {
             SharedOverlaySurface surface =
                 GetSharedOverlaySurface(card.Frame);
-            if (updated.Add(surface))
+            if (updatedOverlaySurfaces.Add(surface))
             {
                 try
                 {
@@ -135,40 +149,38 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             if (!cardOverlayVisuals.TryGetValue(
                     card.Index, out CardOverlayVisual? overlayVisual))
             {
-                IDCompositionVisual visual =
+                IDCompositionVisual container =
                     compositionDevice!.CreateVisual();
+                IDCompositionVisual visual =
+                    compositionDevice.CreateVisual();
                 IDCompositionVisual playingVisual =
                     compositionDevice.CreateVisual();
                 IDCompositionRectangleClip clip =
                     compositionDevice.CreateRectangleClip();
                 overlayVisual = new CardOverlayVisual(
-                    visual, playingVisual, clip);
-                visual.SetClip(clip);
-                compositionVisual!.AddVisual(visual, true, null);
-                compositionVisual.AddVisual(playingVisual, true, visual);
+                    container, visual, playingVisual, clip);
+                container.SetClip(clip);
+                container.AddVisual(visual, true, null);
+                overlayVisualRoot!.AddVisual(container, true, null);
+                overlayVisualRoot.AddVisual(
+                    playingVisual, true, container);
                 cardOverlayVisuals.Add(card.Index, overlayVisual);
             }
             if (!ReferenceEquals(overlayVisual.Surface, surface))
             {
                 overlayVisual.Visual.SetContent(surface.Surface);
                 overlayVisual.Surface = surface;
+                ConfigureAtlasAnimation(overlayVisual, card.Frame);
             }
 
             DrawingRectangle bounds = card.Visual.ImageBounds;
             bool rounded = Properties.Settings.Default.RoundCardCorners;
             if (overlayVisual.Bounds != bounds ||
+                overlayVisual.Source != card.Frame.Source ||
                 overlayVisual.Rounded != rounded)
             {
-                float scaleX = bounds.Width / (float)surface.Size.Width;
-                float scaleY = bounds.Height / (float)surface.Size.Height;
-                Matrix3x2 scale = Matrix3x2.CreateScale(scaleX, scaleY);
-                overlayVisual.Visual.SetTransform(scale);
-                overlayVisual.Visual.SetOffsetX(bounds.Left);
-                overlayVisual.Visual.SetOffsetY(bounds.Top);
-                SetOverlayClip(
-                    overlayVisual.Clip, surface.Size, rounded);
-                overlayVisual.Bounds = bounds;
-                overlayVisual.Rounded = rounded;
+                PositionOverlayVisual(
+                    overlayVisual, card.Frame, bounds, rounded);
             }
 
             bool playing = renderer.nowPlayingTag ==
@@ -219,7 +231,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 out IDCompositionSurface surface);
             promotedCard = new PromotedCardVisual(visual, surface, size);
             visual.SetContent(surface);
-            compositionVisual!.AddVisual(visual, false, null);
+            promotedVisualRoot!.AddVisual(visual, true, null);
         }
 
         IDXGISurface updateSurface =
@@ -256,59 +268,98 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
         promotedCard.Visual.SetOffsetX(bounds.Left);
         promotedCard.Visual.SetOffsetY(bounds.Top);
-        compositionVisual!.RemoveVisual(promotedCard.Visual);
+        RestorePromotedOverlay();
+        promotedVisualRoot!.RemoveVisual(promotedCard.Visual);
         CardOverlayVisual? overlay = null;
         if (cardOverlayVisuals.TryGetValue(card.Value.Index, out overlay))
         {
-            compositionVisual.RemoveVisual(overlay.PlayingVisual);
-            compositionVisual.RemoveVisual(overlay.Visual);
+            overlayVisualRoot!.RemoveVisual(overlay.PlayingVisual);
+            overlayVisualRoot.RemoveVisual(overlay.Container);
         }
-        compositionVisual.AddVisual(promotedCard.Visual, false, null);
+        promotedVisualRoot.AddVisual(promotedCard.Visual, true, null);
         if (overlay != null)
         {
-            compositionVisual.AddVisual(
-                overlay.Visual, true, promotedCard.Visual);
-            compositionVisual.AddVisual(
-                overlay.PlayingVisual, true, overlay.Visual);
+            promotedVisualRoot.AddVisual(
+                overlay.Container, true, promotedCard.Visual);
+            promotedVisualRoot.AddVisual(
+                overlay.PlayingVisual, true, overlay.Container);
+            promotedOverlayIndex = card.Value.Index;
         }
     }
 
     private void ClearPromotedCard()
     {
+        RestorePromotedOverlay();
         if (promotedCard == null)
             return;
-        compositionVisual?.RemoveVisual(promotedCard.Visual);
+        promotedVisualRoot?.RemoveVisual(promotedCard.Visual);
         promotedCard.Dispose();
         promotedCard = null;
     }
 
+    private void RestorePromotedOverlay()
+    {
+        if (promotedOverlayIndex is not int index ||
+            !cardOverlayVisuals.TryGetValue(index,
+                out CardOverlayVisual? overlay))
+        {
+            promotedOverlayIndex = null;
+            return;
+        }
+        promotedVisualRoot?.RemoveVisual(overlay.PlayingVisual);
+        promotedVisualRoot?.RemoveVisual(overlay.Container);
+        overlayVisualRoot?.AddVisual(overlay.Container, true, null);
+        overlayVisualRoot?.AddVisual(
+            overlay.PlayingVisual, true, overlay.Container);
+        promotedOverlayIndex = null;
+    }
+
+    private void RemoveCardOverlayVisual(
+        int index, CardOverlayVisual overlay)
+    {
+        IDCompositionVisual? owner = promotedOverlayIndex == index
+            ? promotedVisualRoot : overlayVisualRoot;
+        owner?.RemoveVisual(overlay.PlayingVisual);
+        owner?.RemoveVisual(overlay.Container);
+        if (promotedOverlayIndex == index)
+            promotedOverlayIndex = null;
+    }
+
     private void UpdateCardOverlayFrames()
     {
-        HashSet<SharedOverlaySurface> updated = [];
-        foreach ((int index, CardOverlayVisual visual) in cardOverlayVisuals)
+        // Card atlas animation runs on the DirectComposition compositor.
+    }
+
+    private void ConfigureAtlasAnimation(
+        CardOverlayVisual visual, CardOverlayFrame frame)
+    {
+        visual.NativeAnimation = frame.FrameCount > 1;
+        if (!visual.NativeAnimation)
         {
-            if (visual.Surface == null ||
-                !renderer.TryGetGpuCard(
-                    index, out CardRenderer.GpuCardVisual card) ||
-                !CardOverlayLoader.TryGetFrame(
-                    card.Card.name, out CardOverlayFrame frame) ||
-                !updated.Add(visual.Surface))
-                continue;
-            if (failedOverlayUploads.Contains(frame.Image))
-                continue;
-            try
-            {
-                UpdateSharedOverlaySurface(visual.Surface, frame);
-            }
-            catch (Exception exception)
-            {
-                failedOverlayUploads.Add(frame.Image);
-                visual.Visual.SetContent(null);
-                Debug.WriteLine(
-                    $"ERROR animated-overlay-upload-skipped " +
-                    $"index={index} {exception}");
-            }
+            visual.Visual.SetOffsetX(-frame.Source.Left);
+            visual.Visual.SetOffsetY(-frame.Source.Top);
+            return;
         }
+        IDCompositionAnimation x = compositionDevice!.CreateAnimation();
+        IDCompositionAnimation y = compositionDevice.CreateAnimation();
+        double seconds = frame.FrameDuration / 1000d;
+        int columns = Math.Max(1,
+            frame.Image.Width / frame.Source.Width);
+        for (int step = 0; step < frame.FrameCount; step++)
+        {
+            int index = (frame.FrameIndex + step) % frame.FrameCount;
+            x.AddCubic(step * seconds,
+                -(index % columns * frame.Source.Width), 0, 0, 0);
+            y.AddCubic(step * seconds,
+                -(index / columns * frame.Source.Height), 0, 0, 0);
+        }
+        double duration = frame.FrameCount * seconds;
+        x.AddRepeat(duration, duration);
+        y.AddRepeat(duration, duration);
+        visual.Visual.SetOffsetX(x);
+        visual.Visual.SetOffsetY(y);
+        atlasAnimations.Add(x);
+        atlasAnimations.Add(y);
     }
 
     private SharedOverlaySurface GetSharedOverlaySurface(
@@ -317,7 +368,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         if (sharedOverlaySurfaces.TryGetValue(
                 frame.Image, out SharedOverlaySurface? surface))
             return surface;
-        Size size = frame.Source.Size;
+        Size size = frame.Image.Size;
         compositionDevice!.CreateSurface(
             (uint)size.Width, (uint)size.Height,
             DxgiFormat.B8G8R8A8_UNorm,
@@ -332,7 +383,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     private void UpdateSharedOverlaySurface(
         SharedOverlaySurface surface, CardOverlayFrame frame)
     {
-        if (surface.Rendered && surface.Source == frame.Source)
+        if (surface.Rendered)
             return;
 
         IDXGISurface updateSurface =
@@ -357,9 +408,13 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                     Matrix3x2.CreateTranslation(offset.X, offset.Y);
                 d2dContext.BeginDraw();
                 d2dContext.Clear(new D2DColor(0, 0, 0, 0));
-                DrawOverlayFrame(
-                    frame,
-                    new DrawingRectangle(Point.Empty, surface.Size));
+                d2dContext.DrawBitmap(
+                    GetBitmap(frame.Image),
+                    new DrawingRectangle(Point.Empty, surface.Size),
+                    1, Vortice.Direct2D1.InterpolationMode.Linear,
+                    new System.Drawing.RectangleF(
+                        PointF.Empty, frame.Image.Size),
+                    Matrix4x4.Identity);
                 d2dContext.EndDraw();
                 d2dContext.Target = null;
                 d2dContext.Transform = Matrix3x2.Identity;
@@ -369,19 +424,46 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         {
             surface.Surface.EndDraw();
         }
-        surface.Source = frame.Source;
+        surface.Source = new DrawingRectangle(Point.Empty, surface.Size);
         surface.Rendered = true;
         sharedOverlayDrawCount++;
     }
 
-    private static void SetOverlayClip(
-        IDCompositionRectangleClip clip, Size size, bool rounded)
+    private static void PositionOverlayVisual(
+        CardOverlayVisual visual, CardOverlayFrame frame,
+        DrawingRectangle bounds, bool rounded)
     {
-        clip.SetLeft(0);
-        clip.SetTop(0);
-        clip.SetRight(size.Width);
-        clip.SetBottom(size.Height);
-        float radius = rounded ? size.Width * 9f / 162f : 0;
+        float scaleX = bounds.Width / (float)frame.Source.Width;
+        float scaleY = bounds.Height / (float)frame.Source.Height;
+        if (visual.Bounds != bounds || visual.Rounded != rounded)
+        {
+            visual.Container.SetTransform(
+                Matrix3x2.CreateScale(scaleX, scaleY));
+            visual.Container.SetOffsetX(bounds.Left);
+            visual.Container.SetOffsetY(bounds.Top);
+            SetOverlayClip(visual.Clip,
+                new DrawingRectangle(Point.Empty, frame.Source.Size),
+                rounded);
+        }
+        if (!visual.NativeAnimation)
+        {
+            visual.Visual.SetOffsetX(-frame.Source.Left);
+            visual.Visual.SetOffsetY(-frame.Source.Top);
+        }
+        visual.Bounds = bounds;
+        visual.Source = frame.Source;
+        visual.Rounded = rounded;
+    }
+
+    private static void SetOverlayClip(
+        IDCompositionRectangleClip clip, DrawingRectangle source,
+        bool rounded)
+    {
+        clip.SetLeft(source.Left);
+        clip.SetTop(source.Top);
+        clip.SetRight(source.Right);
+        clip.SetBottom(source.Bottom);
+        float radius = rounded ? source.Width * 9f / 162f : 0;
         clip.SetTopLeftRadiusX(radius);
         clip.SetTopLeftRadiusY(radius);
         clip.SetTopRightRadiusX(radius);
@@ -410,6 +492,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         internal List<(
             PictureBox Picture, string CardTag, bool Playing)> Cards { get; }
             = [];
+        internal Dictionary<string, DrawingRectangle> RenderedFrames { get; }
+            = new(StringComparer.OrdinalIgnoreCase);
 
         public void Dispose()
         {
@@ -437,6 +521,16 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     private readonly HashSet<DrawingBitmap> failedOverlayUploads =
         new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<int, CardOverlayVisual> cardOverlayVisuals = [];
+    private readonly List<(int Index, CardRenderer.GpuCardVisual Visual,
+        CardOverlayFrame Frame)> overlayCards = [];
+    private readonly HashSet<int> activeOverlayCards = [];
+    private readonly List<int> removedOverlayCards = [];
+    private readonly HashSet<SharedOverlaySurface> updatedOverlaySurfaces = [];
+    private readonly HashSet<string> activeAnimationTags =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<(Size Size, float Radius),
+        ID2D1RoundedRectangleGeometry> roundedGeometries = [];
+    private readonly List<IDCompositionAnimation> atlasAnimations = [];
     private PromotedCardVisual? promotedCard;
     private readonly Dictionary<(Size Size, float FontSize),
         IDCompositionSurface> playingBannerSurfaces = [];
@@ -458,12 +552,16 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
     private IDCompositionDevice? compositionDevice;
     private IDCompositionTarget? compositionTarget;
     private IDCompositionVisual? compositionVisual;
+    private IDCompositionVisual? overlayVisualRoot;
+    private IDCompositionVisual? promotedVisualRoot;
     private Size surfaceSize;
     private int overlayGeneration = -1;
     private int renderedGpuSceneVersion = -1;
     private int renderedCardCount;
     private int staticSurfaceDrawCount;
     private int sharedOverlayDrawCount;
+    private int? hoveredItemIndex;
+    private int? promotedOverlayIndex;
     private bool disposed;
 
     internal DirectCompositionCardOverlayControl(
@@ -509,6 +607,11 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 compositionDevice.CreateSurfaceFromHwnd(list.Handle, true);
             compositionVisual = compositionDevice.CreateVisual();
             compositionVisual.SetContent(swapChain);
+            overlayVisualRoot = compositionDevice.CreateVisual();
+            promotedVisualRoot = compositionDevice.CreateVisual();
+            compositionVisual.AddVisual(overlayVisualRoot, true, null);
+            compositionVisual.AddVisual(
+                promotedVisualRoot, true, overlayVisualRoot);
             compositionTarget.SetRoot(compositionVisual);
             compositionDevice.Commit();
             CreateTargetBitmap();
@@ -647,7 +750,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                 renderedCardCount = 0;
                 for (int layer = 0; layer < 2; layer++)
                 {
-                    foreach (ImageListViewItem item in list.Items)
+                    foreach (ImageListViewItem item in
+                             list.GetCurrentlyVisibleItems())
                     {
                         if (list.IsItemVisible(item) ==
                                 ItemVisibility.NotVisible ||
@@ -671,7 +775,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             else
                 UpdateCardOverlayVisuals();
             foreach (QueueSurface surface in queueSurfaces.Values)
-                RenderQueueSurface(surface);
+                RenderQueueSurface(surface, animationOnly);
             if (previewSurface != null)
                 RenderPreviewSurface(previewSurface);
             compositionDevice!.Commit();
@@ -709,12 +813,19 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         {
             float radius = Math.Max(
                 2, CardRenderer.CardPixels(imageBounds, 9));
-            RoundedRectangle rounded = new(
-                imageBounds, radius, radius);
-            using ID2D1RoundedRectangleGeometry? mask =
-                Properties.Settings.Default.RoundCardCorners
-                    ? d2dFactory!.CreateRoundedRectangleGeometry(rounded)
-                    : null;
+            ID2D1RoundedRectangleGeometry? mask = null;
+            if (Properties.Settings.Default.RoundCardCorners)
+            {
+                var key = (imageBounds.Size, radius);
+                if (!roundedGeometries.TryGetValue(key, out mask))
+                {
+                    RoundedRectangle rounded = new(
+                        new DrawingRectangle(Point.Empty, imageBounds.Size),
+                        radius, radius);
+                    mask = d2dFactory!.CreateRoundedRectangleGeometry(rounded);
+                    roundedGeometries.Add(key, mask);
+                }
+            }
             if (mask != null)
             {
                 LayerParameters1 layer = new()
@@ -722,7 +833,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                     ContentBounds = ToRaw(imageBounds),
                     GeometricMask = mask,
                     MaskAntialiasMode = AntialiasMode.PerPrimitive,
-                    MaskTransform = Matrix3x2.Identity,
+                    MaskTransform = Matrix3x2.CreateTranslation(
+                        imageBounds.Left, imageBounds.Top),
                     Opacity = 1,
                     LayerOptions = LayerOptions1.None
                 };
@@ -865,7 +977,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             sharedOverlayDrawCount != before + 1)
             return false;
         UpdateSharedOverlaySurface(shared, second);
-        if (sharedOverlayDrawCount != before + 2)
+        if (sharedOverlayDrawCount != before + 1)
             return false;
 
         using IDCompositionVisual firstVisual =
@@ -1008,9 +1120,11 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             queueVisual);
     }
 
-    private void RenderQueueSurface(QueueSurface surface)
+    private void RenderQueueSurface(QueueSurface surface, bool animationOnly)
     {
-        ResizeSurface(surface);
+        bool resized = ResizeSurface(surface);
+        if (animationOnly && !resized && !QueueFramesChanged(surface))
+            return;
 
         d2dContext!.Target = surface.TargetBitmap;
         d2dContext.BeginDraw();
@@ -1030,6 +1144,7 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
                         cardTag, out CardOverlayFrame frame))
                 {
                     DrawOverlayFrame(frame, destination);
+                    surface.RenderedFrames[cardTag] = frame.Source;
                 }
                 if (playing)
                 {
@@ -1047,6 +1162,21 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         }
         d2dContext.EndDraw();
         surface.SwapChain.Present(0, PresentFlags.None);
+    }
+
+
+    private static bool QueueFramesChanged(QueueSurface surface)
+    {
+        foreach ((PictureBox picture, string cardTag, _) in surface.Cards)
+        {
+            if (!picture.Visible || !CardOverlayLoader.TryGetFrame(
+                    cardTag, out CardOverlayFrame frame))
+                continue;
+            if (!surface.RenderedFrames.TryGetValue(cardTag, out var previous) ||
+                previous != frame.Source)
+                return true;
+        }
+        return false;
     }
 
     private void RenderPreviewSurface(QueueSurface surface)
@@ -1172,6 +1302,53 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
             converted?.Dispose();
         }
     }
+
+    internal void SetHoveredItem(int? itemIndex)
+    {
+        if (disposed || hoveredItemIndex == itemIndex)
+            return;
+        hoveredItemIndex = itemIndex;
+        UpdateCardOverlayVisuals();
+        compositionDevice?.Commit();
+    }
+
+    private HashSet<string> CollectActiveAnimationTags()
+    {
+        activeAnimationTags.Clear();
+        foreach (var card in overlayCards)
+            activeAnimationTags.Add(card.Visual.Card.name);
+        foreach (QueueSurface surface in queueSurfaces.Values)
+        {
+            foreach ((PictureBox picture, string cardTag, _) in surface.Cards)
+            {
+                if (picture.Visible)
+                    activeAnimationTags.Add(cardTag);
+            }
+        }
+        return activeAnimationTags;
+    }
+
+    private HashSet<string> CollectQueueAnimationTags()
+    {
+        activeAnimationTags.Clear();
+        foreach (QueueSurface surface in queueSurfaces.Values)
+        {
+            foreach ((PictureBox picture, string cardTag, _) in surface.Cards)
+            {
+                if (picture.Visible)
+                    activeAnimationTags.Add(cardTag);
+            }
+        }
+        return activeAnimationTags;
+    }
+
+    internal bool AnimationFrameChanged() =>
+        CardOverlayLoader.AnimationFrameChanged(
+            CollectQueueAnimationTags());
+
+    internal int NextAnimationFrameDelay() =>
+        CardOverlayLoader.NextAnimationFrameDelay(
+            CollectQueueAnimationTags());
 
     private void DrawOverlayFrame(
         CardOverlayFrame frame, DrawingRectangle destination)
@@ -1313,10 +1490,9 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
     private void ClearSharedOverlays()
     {
-        foreach (CardOverlayVisual visual in cardOverlayVisuals.Values)
+        foreach ((int index, CardOverlayVisual visual) in cardOverlayVisuals)
         {
-            compositionVisual?.RemoveVisual(visual.PlayingVisual);
-            compositionVisual?.RemoveVisual(visual.Visual);
+            RemoveCardOverlayVisual(index, visual);
             visual.Dispose();
         }
         cardOverlayVisuals.Clear();
@@ -1416,6 +1592,13 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         foreach (IDWriteTextFormat format in textFormats.Values)
             format.Dispose();
         textFormats.Clear();
+        foreach (ID2D1RoundedRectangleGeometry geometry in
+                 roundedGeometries.Values)
+            geometry.Dispose();
+        roundedGeometries.Clear();
+        foreach (IDCompositionAnimation animation in atlasAnimations)
+            animation.Dispose();
+        atlasAnimations.Clear();
         ClearPreview();
         foreach (QueueSurface surface in queueSurfaces.Values)
             surface.Dispose();
@@ -1423,6 +1606,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
         if (d2dContext != null)
             d2dContext.Target = null;
         targetBitmap?.Dispose();
+        promotedVisualRoot?.Dispose();
+        overlayVisualRoot?.Dispose();
         compositionVisual?.Dispose();
         compositionTarget?.Dispose();
         compositionDevice?.Dispose();
@@ -1440,7 +1625,8 @@ internal sealed class DirectCompositionCardOverlayControl : IDisposable
 
     internal static bool Verify()
     {
-        if (!VerifyPlayingBannerSize(new Size(98, 22)) ||
+        if (!GlslOverlayRenderer.VerifyAtlasLayout() ||
+            !VerifyPlayingBannerSize(new Size(98, 22)) ||
             !VerifyPlayingBannerSize(Size.Empty))
             return false;
         Vortice.Mathematics.Rect rectangle =
