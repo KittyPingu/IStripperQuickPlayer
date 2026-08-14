@@ -8,6 +8,11 @@ subfolders for the card's Photos viewer, and makes landscape images available
 to the normal wallpaper feature. This stores a reference to the folder rather
 than copying the images into the custom-show library.
 
+Accepting a queue job that uses a newly created custom model writes that model
+profile to the shared performer library immediately. Other show editors can
+therefore select the same model while the first job is still pending or
+processing.
+
 For a concise, task-oriented guide with recommended choices, begin with
 [Creating Custom Shows](../CUSTOM_SHOWS.md). This document is the exact setup,
 format, performance, licensing, and troubleshooting reference.

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using IStripperQuickPlayer.DataModel;
 using Microsoft.VisualBasic.FileIO;
@@ -402,7 +403,7 @@ internal sealed class CustomShowStore
                 continue;
             try
             {
-                CustomShowManifest show = ReadJson<CustomShowManifest>(manifestPath);
+                CustomShowManifest show = ReadManifest(manifestPath);
                 ValidateManifest(show, folder);
                 if (!string.Equals(Path.GetFileName(folder), show.Id,
                         StringComparison.OrdinalIgnoreCase) || !ids.Add(show.Id))
@@ -436,9 +437,30 @@ internal sealed class CustomShowStore
     {
         ValidateId(showId, "show");
         string folder = Path.Combine(ShowsFolder, showId);
-        CustomShowManifest show = ReadJson<CustomShowManifest>(Path.Combine(folder, "show.json"));
+        CustomShowManifest show = ReadManifest(Path.Combine(folder, "show.json"));
         ValidateManifest(show, folder);
         return show;
+    }
+
+    static CustomShowManifest ReadManifest(string path)
+    {
+        // Keep media produced by the retired experimental option playable.
+        // Strict deserialization otherwise rejects its retired provenance fields
+        // before the supported legacy algorithm can be selected.
+        JsonNode? document = JsonNode.Parse(File.ReadAllText(path));
+        if (document is JsonObject root && root["processing"] is JsonObject processing &&
+            processing["algorithm"]?.GetValue<string>() == "rvm-vitmatte-s-temporal")
+        {
+            processing["algorithm"] = "rvm-vitmatte-s";
+            foreach (string property in new[]
+            {
+                "temporalTrimapProfile", "temporalTrimapAlgorithmVersion",
+                "temporalTrimapStateResetCount", "temporalTrimapForegroundErosionPx",
+                "temporalTrimapUnknownDilationPx", "temporalTrimapSettings"
+            }) processing.Remove(property);
+        }
+        return document?.Deserialize<CustomShowManifest>(JsonOptions) ??
+            throw new InvalidDataException("The JSON document is empty.");
     }
 
     internal CustomPerformerProfile LoadPerformer(string performerId)
@@ -730,6 +752,9 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Mask-engine metadata is not valid for this algorithm.");
         bool needsSam2 = processing.Algorithm == "matanyone2" ||
             trackedMasks && maskEngine != "rvm";
+        bool allowsInitialMask = processing.Algorithm is
+            "matanyone2" or "rvm-matanyone2" ||
+            trackedMasks && maskEngine == "rvm-sam2";
         if (needsSam2 && (processing.Sam2Model == null ||
             !Sam2Models.Contains(processing.Sam2Model)))
             throw new InvalidDataException("A valid SAM2 model is required for this algorithm.");
@@ -775,7 +800,8 @@ internal sealed class CustomShowStore
             if (item.InitialMaskFrameMs is long frame &&
                 (frame < clip.StartMs || frame >= clip.EndMs))
                 throw new InvalidDataException("Initial mask frame lies outside its clip.");
-            if (!needsSam2 && (item.InitialMaskFrameMs != null || item.Sam2MaskTracking))
+            if (!allowsInitialMask && item.InitialMaskFrameMs != null ||
+                !needsSam2 && item.Sam2MaskTracking)
                 throw new InvalidDataException("Mask metadata is not valid for this algorithm.");
             if (item.Sam2MaskTracking && maskEngine is not
                 ("sam2" or "rvm-sam2"))
@@ -1170,6 +1196,9 @@ internal sealed class CustomShowStore
                     new CustomClipProcessing
                     {
                         ClipId = clip.Id,
+                        // RVM-MatAnyone records where its automatic initializer
+                        // came from even though it does not run SAM2.
+                        InitialMaskFrameMs = clip.StartMs,
                         Sam2MaskTracking = false
                     }).ToArray()
             };

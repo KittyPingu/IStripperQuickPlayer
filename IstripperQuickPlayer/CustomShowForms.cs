@@ -951,15 +951,32 @@ internal sealed class CustomShowEditorForm : Form
                 if (File.Exists(log)) File.Delete(log);
                 if (reprocess)
                 {
-                    string retained = Path.Combine(store.ShowsFolder, show.Id, "masks");
-                    await Task.Run(() =>
+                    if (keepMasks.Checked)
                     {
-                        if (Directory.Exists(retained))
-                            CopyDirectory(retained, Path.Combine(staging, "masks"));
-                        LoadRetainedMasks(Path.Combine(staging, "masks"), show,
-                            Path.Combine(staging, ".mask-work"), initialMasks,
-                            initialMaskFrames, sam2Masks);
-                    });
+                        using CustomShowProcessingForm retainedPreparation = new(
+                            async (progress, token) =>
+                            {
+                                progress.Report(new CustomShowProgress("preparing", 0,
+                                    "Opening retained masks for the selected clips…"));
+                                await Task.Run(() => LoadRetainedMasks(
+                                    Path.Combine(staging, "masks"), show,
+                                    Path.Combine(staging, ".mask-work"), initialMasks,
+                                    initialMaskFrames, sam2Masks, reprocessClipSet,
+                                    message => progress.Report(new CustomShowProgress(
+                                        "preparing", 0, message))), token);
+                                progress.Report(new CustomShowProgress("preparing", 100,
+                                    "Retained masks ready"));
+                                return new CustomShowProcessResult();
+                            }, "Preparing Retained Masks",
+                            processDescription:
+                                "Loading masks only for the clips selected for reprocessing",
+                            showPreviews: false);
+                        if (retainedPreparation.ShowDialog(this) != DialogResult.OK)
+                        {
+                            discardStaging = true;
+                            return;
+                        }
+                    }
                     if (!keepMasks.Checked)
                         foreach (string clipId in reprocessClipIds)
                         {
@@ -1597,6 +1614,7 @@ internal sealed class CustomShowEditorForm : Form
                 job.InitialMaskFrameMs.Clear();
             }
             if (string.IsNullOrWhiteSpace(cover.Text)) job.CoverAsset = null;
+            SaveNewQueuedPerformer(selectedProfile);
             queueManager.AddOrUpdate(job, queueJobId,
                 string.IsNullOrWhiteSpace(cover.Text) ? null : cover.Text, masks);
             RememberProcessingOptions();
@@ -1614,6 +1632,13 @@ internal sealed class CustomShowEditorForm : Form
             queue.Enabled = true;
         }
         await Task.CompletedTask;
+    }
+
+    void SaveNewQueuedPerformer(CustomPerformerProfile profile)
+    {
+        if (!string.IsNullOrWhiteSpace(profile.IstripperModelId)) return;
+        string path = Path.Combine(store.PerformersFolder, profile.Id + ".json");
+        if (!File.Exists(path)) store.SavePerformer(profile);
     }
 
     static bool SameQueueLayout(CustomShowClip[] first, CustomShowClip[] second) =>
@@ -1704,8 +1729,9 @@ internal sealed class CustomShowEditorForm : Form
             clip.StartMs == saved.StartMs && clip.EndMs == saved.EndMs &&
             (saved.HasInitialMask && File.Exists(Path.Combine(root, saved.ClipId,
                 "initial-mask.png")) || saved.HasTrackedMasks && (
-                File.Exists(Path.Combine(root, saved.ClipId,
-                    saved.TrackedMaskArchive ?? "tracked-masks.iqpmask")) ||
+                Path.Combine(root, saved.ClipId,
+                    saved.TrackedMaskArchive ?? "tracked-masks.iqpmask") is string archive &&
+                File.Exists(archive) && CustomMaskArchive.IsSupportedArchive(archive) ||
                 Directory.Exists(Path.Combine(root, saved.ClipId, "tracked-masks")) &&
                 Directory.EnumerateFiles(Path.Combine(root, saved.ClipId,
                     "tracked-masks"), "*.png").Any())));
@@ -1740,15 +1766,20 @@ internal sealed class CustomShowEditorForm : Form
         string workRoot,
         Dictionary<string, string> initialMasks,
         Dictionary<string, long> initialMaskFrames,
-        Dictionary<string, string> trackedMasks)
+        Dictionary<string, string> trackedMasks,
+        IReadOnlySet<string>? selectedClipIds = null,
+        Action<string>? status = null)
     {
         CustomRetainedMasksManifest? manifest = CustomShowMaskDraft.Load<
             CustomRetainedMasksManifest>(Path.Combine(root, "retained-masks.json"));
         if (manifest == null) return;
         Dictionary<string, CustomShowClip> clips = show.Clips.Where(clip => clip.Included)
             .ToDictionary(clip => clip.Id, StringComparer.OrdinalIgnoreCase);
-        foreach (CustomRetainedMaskClip saved in manifest.Clips)
+        CustomRetainedMaskClip[] selected = manifest.Clips.Where(saved =>
+            selectedClipIds == null || selectedClipIds.Contains(saved.ClipId)).ToArray();
+        for (int savedIndex = 0; savedIndex < selected.Length; savedIndex++)
         {
+            CustomRetainedMaskClip saved = selected[savedIndex];
             if (!clips.TryGetValue(saved.ClipId, out CustomShowClip? clip) ||
                 clip.StartMs != saved.StartMs || clip.EndMs != saved.EndMs) continue;
             string folder = Path.Combine(root, saved.ClipId);
@@ -1761,8 +1792,11 @@ internal sealed class CustomShowEditorForm : Form
                 initialMasks[clip.Id] = initial;
                 initialMaskFrames[clip.Id] = saved.InitialMaskFrameMs ?? clip.StartMs;
             }
-            if (saved.HasTrackedMasks && File.Exists(archive))
+            if (saved.HasTrackedMasks && File.Exists(archive) &&
+                CustomMaskArchive.IsSupportedArchive(archive))
             {
+                status?.Invoke($"Expanding retained masks for selected clip " +
+                    $"{savedIndex + 1}/{selected.Length}…");
                 tracked = Path.Combine(workRoot, saved.ClipId);
                 CustomMaskArchive.Extract(archive, tracked);
             }

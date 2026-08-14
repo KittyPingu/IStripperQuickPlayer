@@ -118,6 +118,18 @@ internal static class CustomMaskArchive
         return info;
     }
 
+    internal static bool IsSupportedArchive(string archive)
+    {
+        try
+        {
+            using FileStream stream = File.OpenRead(archive);
+            using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: true);
+            if (!reader.ReadBytes(Magic.Length).SequenceEqual(Magic)) return false;
+            return reader.ReadInt32() is XorDeltaVersion or Version;
+        }
+        catch (IOException) { return false; }
+    }
+
     static (Info Info, bool XorDeltas) ReadHeader(BinaryReader reader)
     {
         if (!reader.ReadBytes(Magic.Length).SequenceEqual(Magic))

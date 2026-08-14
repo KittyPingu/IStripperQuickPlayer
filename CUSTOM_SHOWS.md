@@ -47,6 +47,9 @@ video that will remain at the recorded path, valid clip divisions, a model
 profile, and all selected processing tools already installed. Open **File >
 Custom Shows > Queues...** to start, reorder, pause, stop, retry, edit, or delete
 jobs. Closing the queue window does not stop processing.
+When a queued show uses a newly created custom model, accepting the queue job
+also saves that model immediately so it can be selected by later shows without
+waiting for processing to finish.
 Use **Remove Completed** to clear all successful history entries after confirming;
 published shows are not deleted.
 

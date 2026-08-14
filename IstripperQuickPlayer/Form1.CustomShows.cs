@@ -788,7 +788,7 @@ public partial class Form1
             job.Operation == CustomShowQueueOperation.Reprocess ? job.TargetShowId : null,
             job.Operation == CustomShowQueueOperation.Reprocess,
             customShowQueueManager, job.Id);
-        if (form.ShowDialog(this) == DialogResult.OK) ShowCustomShowQueues();
+        form.ShowDialog(this);
     }
 
     void ManageCustomModels(IWin32Window? owner = null)
