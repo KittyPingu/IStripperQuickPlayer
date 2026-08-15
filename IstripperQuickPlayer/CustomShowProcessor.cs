@@ -138,7 +138,48 @@ internal static class CustomShowProcessor
             ViTMatteSafeBatch(new(16 * 1024, 15 * 1024), true,
                 1920, 1080) == 1 &&
             ViTMatteSafeBatch(new(24 * 1024, 23 * 1024), true,
-                3840, 2160) == 1;
+                3840, 2160) == 1 &&
+            WorkerErrorMessage(
+                "{\"stage\":\"error\",\"message\":\"Initial mask could not detect a person\"}") ==
+                "Initial mask could not detect a person" &&
+            WorkerErrorMessage(
+                "{\"stage\":\"error\",\"message\":\"RVM could not find a usable person mask in the opening frames\"}") ==
+                "Initial mask could not detect a person in the opening frames." &&
+            WorkerErrorMessage("{\"stage\":\"processing\",\"message\":\"Working\"}") == null;
+    }
+
+    internal static string? WorkerErrorMessage(string line)
+    {
+        try
+        {
+            using JsonDocument json = JsonDocument.Parse(line);
+            JsonElement root = json.RootElement;
+            if (!root.TryGetProperty("stage", out JsonElement stage) ||
+                !string.Equals(stage.GetString(), "error", StringComparison.OrdinalIgnoreCase) ||
+                !root.TryGetProperty("message", out JsonElement message))
+                return null;
+            string? value = message.GetString()?.Trim();
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            return string.Equals(value,
+                "RVM could not find a usable person mask in the opening frames",
+                StringComparison.Ordinal)
+                ? "Initial mask could not detect a person in the opening frames."
+                : value;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    internal static string? WorkerErrorFromLog(string path)
+    {
+        try
+        {
+            string? result = null;
+            foreach (string line in File.ReadLines(path))
+                result = WorkerErrorMessage(line) ?? result;
+            return result;
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
     internal static IReadOnlyList<string> InstalledSam2Models(
@@ -491,6 +532,7 @@ internal static class CustomShowProcessor
 
         using Process process = new() { StartInfo = start };
         StringBuilder log = new();
+        string? workerError = null;
         process.Start();
         await using ProcessCancellationScope cancellationScope =
             new(process, cancellationToken);
@@ -510,6 +552,12 @@ internal static class CustomShowProcessor
                     JsonElement root = json.RootElement;
                     string progressStage = root.TryGetProperty("stage", out var stage)
                         ? stage.GetString() ?? "processing" : "processing";
+                    string progressMessage = root.TryGetProperty("message", out var message)
+                        ? message.GetString() ?? "" : "";
+                    if (string.Equals(progressStage, "error",
+                            StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(progressMessage))
+                        workerError = progressMessage.Trim();
                     bool showingRvmMask =
                         (preset == "rvm-vitmatte-s" &&
                             progressStage == "rvm-masks") ||
@@ -518,7 +566,7 @@ internal static class CustomShowProcessor
                     progress?.Report(new CustomShowProgress(
                         progressStage,
                         root.TryGetProperty("percent", out var percent) ? percent.GetDouble() : 0,
-                        root.TryGetProperty("message", out var message) ? message.GetString() ?? "" : "",
+                        progressMessage,
                         File.Exists(Path.Combine(stagingFolder, "preview-source.jpg"))
                             ? Path.Combine(stagingFolder, "preview-source.jpg") : null,
                         File.Exists(Path.Combine(stagingFolder, "preview-composite.jpg"))
@@ -536,7 +584,8 @@ internal static class CustomShowProcessor
             cancellationToken.ThrowIfCancellationRequested();
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
-                    $"Foreground processing failed (exit code {process.ExitCode}). See processing.log.");
+                    workerError ??
+                    $"Foreground processing failed (exit code {process.ExitCode}).");
             string resultPath = Path.Combine(stagingFolder, "result.json");
             return JsonSerializer.Deserialize<CustomShowProcessResult>(
                 await File.ReadAllTextAsync(resultPath, cancellationToken),

@@ -393,6 +393,15 @@ namespace IStripperQuickPlayer
         {
         }
 
+        protected override bool ProcessCmdKey(ref System.Windows.Forms.Message msg,
+            Keys keyData)
+        {
+            if (keyData == Keys.Escape && customPlayer != null &&
+                listClips.ContainsFocus)
+                return true;
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
         internal Form1(AppOptions options)
         {
             apiOnlyMode = options.ApiOnly;

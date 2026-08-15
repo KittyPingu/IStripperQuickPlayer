@@ -199,58 +199,93 @@ def rvm_frame_score(alpha, threshold=.40):
     return area + confident * .20 - border * 2
 
 
-def automatic_rvm_mask(source, runtime, start, frame_rate, width, height,
-                       sample_count, destination, profiler, threshold=.40):
+def rvm_initializer_offsets(total, fps, maximum_seconds=30):
+    offsets = []
+    for seconds in range(maximum_seconds + 1):
+        frame = round(seconds * fps)
+        if frame >= total:
+            break
+        if not offsets or frame != offsets[-1][1]:
+            offsets.append((seconds, frame))
+    return offsets
+
+
+def automatic_rvm_mask(source, runtime, start, frame_rate, fps, total,
+                       width, height, sample_count, destination, profiler,
+                       threshold=.40):
     import numpy as np
     from PIL import Image
-    emit("initializing", 0, f"Running RVM on the first {sample_count} frames...")
     frame_bytes = width * height * 3
-    command = [executable("ffmpeg"), "-v", "error", "-ss", f"{start:.6f}",
-        "-i", str(source), "-map", "0:v:0", "-vf",
-        f"fps={frame_rate},scale={width}:{height}:flags=bilinear,setsar=1",
-        "-frames:v", str(sample_count), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-    started = time.perf_counter()
-    decoded = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if decoded.returncode != 0:
-        raise RuntimeError(decoded.stderr.decode(errors="replace").strip() or
-                           "RVM initialization frames could not be decoded")
-    count = len(decoded.stdout) // frame_bytes
-    if count <= 0:
-        raise RuntimeError("RVM initialization decoded no frames")
-    frames = np.frombuffer(decoded.stdout[:count * frame_bytes], np.uint8).reshape(
-        count, height, width, 3).copy()
-    profiler.add("rvm_initialization_decode", time.perf_counter() - started)
-    started = time.perf_counter()
     torch, model, device = load_rvm_model(runtime, "quality")
     fp16 = device.type == "cuda" and fast_fp16(torch.cuda.get_device_capability(device))
-    tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).unsqueeze(0).to(
-        device=device, dtype=torch.float32).div_(255)
-    with torch.inference_mode(), torch.autocast(device_type=device.type,
-            dtype=torch.float16, enabled=fp16):
-        _, alpha, *_ = model(tensor, *([None] * 4), downsample_ratio=1)
-    alphas = alpha[0, :, 0].float().cpu().numpy()
-    scores = [rvm_frame_score(value, threshold) for value in alphas]
-    selected = max(range(count), key=lambda index: scores[index])
-    cleaned = clean_rvm_mask(alphas[selected], threshold=threshold)
-    if not cleaned.any():
-        raise RuntimeError("RVM could not find a usable person mask in the opening frames")
-    Image.fromarray(cleaned, "L").save(destination)
-    preview_output = destination.parent
-    for name, image, mode in (("preview-source.jpg", frames[selected], "RGB"),
-                              ("preview-composite.jpg", cleaned, "L")):
-        temporary = preview_output / (name + ".tmp")
-        Image.fromarray(image, mode).save(temporary, "JPEG", quality=88)
-        replace_preview(temporary, preview_output / name)
-    profiler.add("rvm_initialization", time.perf_counter() - started)
-    log_record("rvm_initializer", sampledFrames=count, selectedFrame=selected,
-               threshold=threshold, dilationPixels=3,
-               scores=[round(value, 2) for value in scores])
-    del tensor, alpha, alphas, model
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    emit("initializing", 4,
-         f"RVM selected frame {selected + 1}/{count}; starting MatAnyone 2...")
-    return selected
+    offsets = rvm_initializer_offsets(total, fps)
+    try:
+        for attempt, (offset_seconds, offset_frame) in enumerate(offsets, 1):
+            count_limit = min(sample_count, total - offset_frame)
+            if offset_seconds == 0:
+                message = f"Running RVM on the first {count_limit} frames..."
+            else:
+                message = (f"No person found; retrying RVM at +{offset_seconds}s "
+                           "(maximum +30s)...")
+            emit("initializing", min(3.5, offset_seconds * 3.5 / 30), message)
+            command = [executable("ffmpeg"), "-v", "error", "-ss",
+                f"{start + offset_seconds:.6f}", "-i", str(source), "-map", "0:v:0",
+                "-vf", f"fps={frame_rate},scale={width}:{height}:flags=bilinear,setsar=1",
+                "-frames:v", str(count_limit), "-f", "rawvideo", "-pix_fmt", "rgb24",
+                "pipe:1"]
+            decode_started = time.perf_counter()
+            decoded = subprocess.run(command, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+            if decoded.returncode != 0:
+                raise RuntimeError(decoded.stderr.decode(errors="replace").strip() or
+                                   "RVM initialization frames could not be decoded")
+            count = len(decoded.stdout) // frame_bytes
+            if count <= 0:
+                if offset_seconds == 0:
+                    raise RuntimeError("RVM initialization decoded no frames")
+                break
+            frames = np.frombuffer(decoded.stdout[:count * frame_bytes],
+                                   np.uint8).reshape(count, height, width, 3).copy()
+            profiler.add("rvm_initialization_decode",
+                         time.perf_counter() - decode_started)
+            inference_started = time.perf_counter()
+            tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).unsqueeze(0).to(
+                device=device, dtype=torch.float32).div_(255)
+            with torch.inference_mode(), torch.autocast(device_type=device.type,
+                    dtype=torch.float16, enabled=fp16):
+                _, alpha, *_ = model(tensor, *([None] * 4), downsample_ratio=1)
+            alphas = alpha[0, :, 0].float().cpu().numpy()
+            scores = [rvm_frame_score(value, threshold) for value in alphas]
+            selected = max(range(count), key=lambda index: scores[index])
+            cleaned = clean_rvm_mask(alphas[selected], threshold=threshold)
+            profiler.add("rvm_initialization",
+                         time.perf_counter() - inference_started)
+            del tensor, alpha, alphas
+            if not cleaned.any():
+                continue
+            selected_frame = min(total - 1, offset_frame + selected)
+            Image.fromarray(cleaned, "L").save(destination)
+            preview_output = destination.parent
+            for name, image, mode in (("preview-source.jpg", frames[selected], "RGB"),
+                                      ("preview-composite.jpg", cleaned, "L")):
+                temporary = preview_output / (name + ".tmp")
+                Image.fromarray(image, mode).save(temporary, "JPEG", quality=88)
+                replace_preview(temporary, preview_output / name)
+            log_record("rvm_initializer", attempts=attempt, sampledFrames=count,
+                       selectedFrame=selected_frame,
+                       searchOffsetSeconds=offset_seconds, threshold=threshold,
+                       dilationPixels=3,
+                       scores=[round(value, 2) for value in scores])
+            emit("initializing", 4,
+                 f"RVM selected a person at +{offset_seconds}s; starting MatAnyone 2...")
+            return selected_frame
+        raise RuntimeError(
+            "Initial mask could not detect a person within the first 30 seconds "
+            "of the clip")
+    finally:
+        del model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
 
 def load_model(runtime, device_override=None):
@@ -544,8 +579,8 @@ def _process_once(args, compile_enabled):
             initializer_width, initializer_height = processing_size(
                 width, height, initializer_size)
             selected_index = automatic_rvm_mask(source, runtime, start, frame_rate,
-                initializer_width, initializer_height, min(8, total), mask_path,
-                profiler, args.rvm_alpha_threshold)
+                fps, total, initializer_width, initializer_height, min(8, total),
+                mask_path, profiler, args.rvm_alpha_threshold)
         prepared = work / "source"
         prepared.mkdir()
         extract_earlier_frames(ffmpeg, source, prepared, start, frame_rate,
@@ -1037,6 +1072,9 @@ def main():
         assert cleaned.dtype == np.uint8 and cleaned[10, 10] == 255
         assert cleaned[1, 1] == 0 and set(np.unique(cleaned)) <= {0, 255}
         assert rvm_frame_score(alpha) > rvm_frame_score(np.zeros_like(alpha))
+        assert [seconds for seconds, _ in rvm_initializer_offsets(1200, 30)] == \
+            list(range(31))
+        assert rvm_initializer_offsets(75, 30) == [(0, 0), (1, 30), (2, 60)]
         print("MatAnyone 2 worker self-test passed")
     elif not all((args.source, args.output, args.runtime)) or \
             not args.auto_rvm_init and args.mask is None:

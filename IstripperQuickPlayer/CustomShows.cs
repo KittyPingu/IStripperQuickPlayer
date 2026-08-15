@@ -22,7 +22,7 @@ internal sealed class CustomShowConfiguration
     public string PythonExecutable { get; set; } = FindPythonExecutable();
     public int SmallPlayerVolume { get; set; } = 100;
     public int LargePlayerVolume { get; set; } = 100;
-    public int FullOpacityThreshold { get; set; } = 255;
+    public int FullOpacityThreshold { get; set; } = 200;
     public int Sam2FrameCacheSizeGb { get; set; } = 10;
     public int TransNetPreferredBatchSize { get; set; } = 8;
     public int TransNetCompileCutoffFrames { get; set; } = 16000;

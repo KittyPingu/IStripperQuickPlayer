@@ -86,6 +86,25 @@ internal sealed class CustomShowQueueStore
             if (!job.ReadyToPublish) TryDelete(Work(job.Id));
             changed = true;
         }
+        foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
+            value.Status == CustomShowQueueStatus.Pending &&
+            (value.StartedUtc != null || value.CompletedUtc != null)))
+        {
+            job.StartedUtc = null;
+            job.CompletedUtc = null;
+            changed = true;
+        }
+        foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
+            value.Status == CustomShowQueueStatus.Failed &&
+            value.Error?.StartsWith("Foreground processing failed",
+                StringComparison.Ordinal) == true))
+        {
+            string log = Path.Combine(Assets(job.Id), "processing.log");
+            string? workerError = CustomShowProcessor.WorkerErrorFromLog(log);
+            if (workerError == null) continue;
+            job.Error = workerError;
+            changed = true;
+        }
         if (changed) Save(document);
         return document;
     }
@@ -274,6 +293,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                         ? "Stopped; ready to retry publication"
                         : "Stopped; ready to restart";
                     job.StartedUtc = null;
+                    job.CompletedUtc = null;
                     SaveLocked();
                 }
                 if (!job.ReadyToPublish)
@@ -377,6 +397,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     ? "QuickPlayer closed; ready to retry publication"
                     : "QuickPlayer closed; ready to restart";
                 job.StartedUtc = null;
+                job.CompletedUtc = null;
             }
             SaveLocked();
             cancellation?.Cancel();
@@ -398,6 +419,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                 job.Percent = job.ReadyToPublish ? 100 : 0;
                 job.Message = job.ReadyToPublish ? "Ready to retry publication" : "Pending";
                 job.Error = null;
+                job.StartedUtc = null;
                 job.CompletedUtc = null;
             }
             catch (CustomShowQueueAttentionException error)
@@ -957,7 +979,11 @@ internal static class CustomShowJobRunner
             CustomShowStore shows = new(root);
             CustomShowQueueStore storage = new(shows);
             CustomShowQueueDocument document = new();
-            CustomShowQueueJob pending = new() { Message = "first" };
+            CustomShowQueueJob pending = new()
+            {
+                Message = "first", StartedUtc = DateTime.UtcNow,
+                CompletedUtc = DateTime.UtcNow
+            };
             CustomShowQueueJob running = new()
             {
                 Status = CustomShowQueueStatus.Running, Percent = 67,
@@ -977,6 +1003,7 @@ internal static class CustomShowJobRunner
             storage.Save(document);
             CustomShowQueueDocument loaded = storage.Load();
             if (loaded.Jobs.Count != 3 || loaded.Jobs[0].Id != pending.Id ||
+                loaded.Jobs[0].StartedUtc != null || loaded.Jobs[0].CompletedUtc != null ||
                 loaded.Jobs[1].Status != CustomShowQueueStatus.Pending ||
                 loaded.Jobs[1].Percent != 0 || Directory.Exists(storage.Work(running.Id)))
                 return false;
@@ -1027,6 +1054,7 @@ internal static class CustomShowJobRunner
 
 internal sealed class CustomShowQueueForm : Form
 {
+    const int MessageColumnIndex = 7;
     readonly CustomShowQueueManager manager;
     readonly Action<CustomShowQueueJob> edit;
     readonly QueueGrid grid = new()
@@ -1092,6 +1120,7 @@ internal sealed class CustomShowQueueForm : Form
         open.Click += OpenSelected;
         editButton.Click += (_, _) => { if (Selected() is { } job) edit(job); };
         grid.SelectionChanged += (_, _) => RefreshButtons();
+        grid.CellContentClick += OpenLogLink;
         grid.CellDoubleClick += (_, _) => { if (Selected() is { } job) edit(job); };
         manager.Changed += ManagerChanged;
         timer.Tick += (_, _) =>
@@ -1154,6 +1183,8 @@ internal sealed class CustomShowQueueForm : Form
                     if (!Equals(row.Cells[column].Value, rowValues[column]))
                         row.Cells[column].Value = rowValues[column];
             }
+        for (int rowIndex = 0; rowIndex < jobs.Length; rowIndex++)
+            ConfigureMessageCell(grid.Rows[rowIndex], jobs[rowIndex]);
         if (selected != null && structureChanged)
             foreach (DataGridViewRow row in grid.Rows)
                 if (string.Equals(row.Tag as string, selected, StringComparison.Ordinal))
@@ -1162,6 +1193,35 @@ internal sealed class CustomShowQueueForm : Form
         summary.Text = manager.IsRunning
             ? $"Queue running • {pending} pending" : $"Queue stopped • {pending} pending";
         RefreshButtons();
+    }
+
+    void ConfigureMessageCell(DataGridViewRow row, CustomShowQueueJob job)
+    {
+        bool link = job.Status is (CustomShowQueueStatus.Failed or
+            CustomShowQueueStatus.NeedsAttention) &&
+            File.Exists(manager.ProcessingLog(job.Id));
+        DataGridViewCell current = row.Cells[MessageColumnIndex];
+        if (link == (current is DataGridViewLinkCell)) return;
+        DataGridViewCell replacement = link
+            ? new DataGridViewLinkCell
+            {
+                LinkBehavior = LinkBehavior.HoverUnderline,
+                TrackVisitedState = false
+            }
+            : new DataGridViewTextBoxCell();
+        replacement.Value = current.Value;
+        row.Cells[MessageColumnIndex] = replacement;
+    }
+
+    void OpenLogLink(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex != MessageColumnIndex ||
+            grid.Rows[e.RowIndex].Cells[e.ColumnIndex] is not DataGridViewLinkCell ||
+            grid.Rows[e.RowIndex].Tag is not string id)
+            return;
+        string path = manager.ProcessingLog(id);
+        if (File.Exists(path))
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     }
 
     async void Pause(object? sender, EventArgs e)
@@ -1264,6 +1324,7 @@ internal sealed class CustomShowQueueForm : Form
         {
             get
             {
+                if (job.Status == CustomShowQueueStatus.Pending) return "";
                 if (job.StartedUtc is not DateTime started) return "";
                 TimeSpan elapsed = (job.CompletedUtc ?? DateTime.UtcNow) - started;
                 if (job.Status != CustomShowQueueStatus.Running || job.Percent < 1)
