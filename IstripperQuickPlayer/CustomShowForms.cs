@@ -438,7 +438,6 @@ internal sealed class CustomShowEditorForm : Form
 
     void OpenSam2MattingSetup()
     {
-        if (!CustomShowSam2MattingSetupForm.ConfirmLicence(this)) return;
         string script = Path.Combine(AppContext.BaseDirectory, "custom-shows",
             "setup-sam2matting.ps1");
         if (!File.Exists(script))
@@ -4749,14 +4748,6 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
         AppTheme.Apply(this);
     }
 
-    internal static bool ConfirmLicence(IWin32Window owner) => MessageBox.Show(owner,
-        "Fudan SAM2Matting source and checkpoints are licensed for non-commercial use. " +
-        "QuickPlayer will download the pinned public source and all three checkpoints " +
-        "without storing a Hugging Face token.\n\n" +
-        "Click Yes to acknowledge the non-commercial terms and continue.",
-        "SAM2Matting Licence", MessageBoxButtons.YesNo,
-        MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
-
     async Task Run()
     {
         Append("Installing the pinned SAM2Matting environment and all three checkpoints...");
@@ -4770,8 +4761,7 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
             };
             foreach (string argument in new[]
             {
-                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
-                "-AcceptNonCommercialLicense"
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script
             }) start.ArgumentList.Add(argument);
             process = Process.Start(start) ??
                 throw new InvalidOperationException("PowerShell could not be started.");
@@ -4821,9 +4811,6 @@ internal sealed class CustomShowSetupOptionsForm : Form
     readonly CheckBox sam2Matting = new() { Text =
         "SAM2Matting with SAM2.1-T, SAM2.1-B+, and SAM3 (~3.9 GB, NVIDIA CUDA required)",
         AutoSize = true, Checked = true };
-    readonly CheckBox sam2MattingLicence = new() { Text =
-        "I acknowledge Fudan's non-commercial licence terms for SAM2Matting",
-        AutoSize = true };
     readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
         AutoSize = true, Checked = true };
     readonly CheckBox omniShotCut = new() { Text =
@@ -4855,7 +4842,6 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallStabilo => stabilo.Checked;
     internal bool InstallProPainter => proPainter.Checked;
     internal bool InstallSam2Matting => sam2Matting.Checked;
-    internal bool Sam2MattingLicenceAccepted => sam2MattingLicence.Checked;
 
     internal CustomShowSetupOptionsForm()
     {
@@ -4874,14 +4860,13 @@ internal sealed class CustomShowSetupOptionsForm : Form
         layout.Controls.Add(omniShotCut);
         layout.Controls.Add(matAnyone);
         layout.Controls.Add(sam2Matting);
-        layout.Controls.Add(sam2MattingLicence);
         layout.Controls.Add(videoMaMa);
         layout.Controls.Add(vitMatte);
         layout.Controls.Add(edgeTam);
         layout.Controls.Add(stabilo);
         layout.Controls.Add(proPainter);
         layout.Controls.Add(new Label { Text =
-            "MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; " +
+            "SAM2Matting, MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; " +
             "ViTMatte, SAM2, EdgeTAM, and Stabilo permit commercial use.",
             AutoSize = true, MaximumSize = new Size(810, 0) });
         LinkLabel omniLicence = new() { Text = "Read the OmniShotCut MIT licence", AutoSize = true };
@@ -4926,13 +4911,6 @@ internal sealed class CustomShowSetupOptionsForm : Form
         Button install = new() { Text = "Install / Update", AutoSize = true };
         install.Click += (_, _) =>
         {
-            if (sam2Matting.Checked && !sam2MattingLicence.Checked)
-            {
-                MessageBox.Show(this,
-                    "Acknowledge Fudan's non-commercial licence before installing SAM2Matting.",
-                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
             DialogResult = DialogResult.OK;
             Close();
         };
@@ -4954,8 +4932,8 @@ internal sealed class CustomShowSetupOptionsForm : Form
     {
         using CustomShowSetupOptionsForm form = new();
         return form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
-            form.InstallSam2Matting && !form.Sam2MattingLicenceAccepted &&
-            !form.InstallVideoMaMa && !form.InstallViTMatte && !form.InstallEdgeTam &&
+            form.InstallSam2Matting && !form.InstallVideoMaMa &&
+            !form.InstallViTMatte && !form.InstallEdgeTam &&
             !form.InstallStabilo && !form.InstallProPainter;
     }
 }

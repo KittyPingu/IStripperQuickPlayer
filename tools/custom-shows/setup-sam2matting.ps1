@@ -2,15 +2,10 @@
 param(
     [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'IStripperQuickPlayer\sam2matting-sam3-worker\v1'),
     [string]$PythonLauncher = 'py',
-    [switch]$AcceptNonCommercialLicense,
     [switch]$Repair
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $AcceptNonCommercialLicense) {
-    throw 'Fudan SAM2Matting is non-commercial software. Licence acknowledgement is required.'
-}
-
 Add-Type -AssemblyName System.Net.Http
 $setupLock = [System.Threading.Semaphore]::new(
     1, 1, 'Local\IStripperQuickPlayer.Sam2MattingSetup')
@@ -164,7 +159,6 @@ try {
         alphaEncodingPolicy = 'ffv1-gray16le-linear'
         requirementsLockSha256 = (Get-FileHash -Algorithm SHA256 `
             -LiteralPath $requirementsLock).Hash.ToLowerInvariant()
-        nonCommercialLicenceAcceptedUtc = [DateTime]::UtcNow.ToString('o')
         checkpoints = $files
     }
     $environment | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath `
