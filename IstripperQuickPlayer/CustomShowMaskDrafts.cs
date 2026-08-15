@@ -12,6 +12,7 @@ internal sealed class CustomShowMaskDraft
     internal string Root => root;
     internal string ManifestPath => Path.Combine(root, "draft.json");
     internal string SetupPath => Path.Combine(root, "setup.json");
+    internal string PublishedPath => Path.Combine(root, "published.json");
 
     CustomShowMaskDraft(string root) => this.root = root;
 
@@ -61,8 +62,26 @@ internal sealed class CustomShowMaskDraft
         });
     }
 
+    internal void MarkPublished(CustomShowManifest show)
+    {
+        CustomShowStore.WriteJsonAtomic(PublishedPath, new CustomShowPublishedDraft
+        {
+            PublishedUtc = DateTime.UtcNow,
+            ShowId = show.Id,
+            Title = show.Title
+        });
+    }
+
     internal static IReadOnlyList<CustomShowIncompleteSetupEntry> FindIncomplete(
         CustomShowStore store)
+        => FindDrafts(store, completed: false);
+
+    internal static IReadOnlyList<CustomShowIncompleteSetupEntry> FindCompleted(
+        CustomShowStore store)
+        => FindDrafts(store, completed: true);
+
+    static IReadOnlyList<CustomShowIncompleteSetupEntry> FindDrafts(
+        CustomShowStore store, bool completed)
     {
         string drafts = Path.Combine(store.Root, ".mask-drafts");
         if (!Directory.Exists(drafts)) return [];
@@ -74,6 +93,9 @@ internal sealed class CustomShowMaskDraft
             CustomShowMaskDraftManifest? manifest = Load<CustomShowMaskDraftManifest>(
                 Path.Combine(folder, "draft.json"));
             if (manifest == null || !File.Exists(manifest.SourcePath)) continue;
+            CustomShowManifest? published = PublishedMatch(store, folder, manifest,
+                setup);
+            if ((published != null) != completed) continue;
             if (setup == null)
             {
                 setup = new CustomShowIncompleteSetup
@@ -96,9 +118,63 @@ internal sealed class CustomShowMaskDraft
                     }
                 };
             }
+            if (published != null)
+            {
+                setup.Show.Id = published.Id;
+                setup.Show.Title = published.Title;
+            }
             result.Add(new(folder, setup));
         }
         return result.OrderByDescending(value => value.Setup.SavedUtc).ToArray();
+    }
+
+    static CustomShowManifest? PublishedMatch(CustomShowStore store, string folder,
+        CustomShowMaskDraftManifest draft, CustomShowIncompleteSetup? setup)
+    {
+        CustomShowPublishedDraft? marker = Load<CustomShowPublishedDraft>(
+            Path.Combine(folder, "published.json"));
+        if (marker != null && !string.IsNullOrWhiteSpace(marker.ShowId))
+        {
+            CustomShowManifest? marked = Load<CustomShowManifest>(Path.Combine(
+                store.ShowsFolder, marker.ShowId, "show.json"));
+            if (marked != null) return marked;
+        }
+
+        if (!Directory.Exists(store.ShowsFolder)) return null;
+        foreach (string showFolder in Directory.EnumerateDirectories(store.ShowsFolder))
+        {
+            CustomShowManifest? show = Load<CustomShowManifest>(Path.Combine(
+                showFolder, "show.json"));
+            if (show == null) continue;
+            if (setup != null && !string.IsNullOrWhiteSpace(setup.Show.Id) &&
+                string.Equals(setup.Show.Id, show.Id,
+                    StringComparison.OrdinalIgnoreCase))
+                return show;
+            if (!SamePath(show.Source.Path, draft.SourcePath)) continue;
+            CustomShowClip[] included = show.Clips.Where(clip => clip.Included).ToArray();
+            if (included.Length != draft.Clips.Length) continue;
+            bool sameLayout = included.Zip(draft.Clips).All(pair =>
+                pair.First.StartMs == pair.Second.StartMs &&
+                pair.First.EndMs == pair.Second.EndMs);
+            if (sameLayout) return show;
+        }
+        return null;
+    }
+
+    static bool SamePath(string left, string right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            return false;
+        try
+        {
+            return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception error) when (error is ArgumentException or
+            NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 
     internal static T? Load<T>(string path) where T : class
@@ -218,6 +294,14 @@ internal sealed class CustomShowIncompleteSetup
     public int SchemaVersion { get; set; } = 1;
     public DateTime SavedUtc { get; set; } = DateTime.UtcNow;
     public CustomShowManifest Show { get; set; } = new();
+}
+
+internal sealed class CustomShowPublishedDraft
+{
+    public int SchemaVersion { get; set; } = 1;
+    public DateTime PublishedUtc { get; set; } = DateTime.UtcNow;
+    public string ShowId { get; set; } = "";
+    public string Title { get; set; } = "";
 }
 
 internal sealed record CustomShowIncompleteSetupEntry(

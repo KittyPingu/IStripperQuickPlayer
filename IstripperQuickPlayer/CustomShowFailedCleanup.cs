@@ -84,7 +84,19 @@ internal static class CustomShowFailedCleanup
                 [folder]));
         }
 
-        return result.OrderByDescending(entry => entry.CanDelete)
+        foreach (CustomShowIncompleteSetupEntry draft in
+            CustomShowMaskDraft.FindCompleted(store))
+        {
+            result.Add(Create("completed-mask-draft:" +
+                Path.GetFileName(draft.Folder),
+                DisplayName(draft.Setup.Show.Title,
+                    Path.GetFileName(draft.Folder)),
+                "Completed — leftover masks", "Saved mask draft", null, true,
+                [draft.Folder]));
+        }
+
+        return result.OrderByDescending(entry => entry.LastWriteUtc)
+            .ThenByDescending(entry => entry.CanDelete)
             .ThenBy(entry => entry.Status, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(entry => entry.Show, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
@@ -232,6 +244,7 @@ internal static class CustomShowFailedCleanup
         string[] permitted =
         [
             Path.Combine(root, ".staging"),
+            Path.Combine(root, ".mask-drafts"),
             Path.Combine(root, "queue", "jobs"),
             Path.Combine(root, "queue", "work")
         ];
@@ -291,7 +304,9 @@ internal static class CustomShowFailedCleanup
             return failedEntry.CanDelete && failedEntry.Paths.Length == 2 &&
                 !pendingEntry.CanDelete && pendingEntry.Paths.Length == 2 &&
                 entries.Single(entry => entry.Key == "staging:orphan-show").CanDelete &&
-                entries.All(entry => entry.QueueJobId != completed.Id);
+                entries.All(entry => entry.QueueJobId != completed.Id) &&
+                entries.Zip(entries.Skip(1)).All(pair =>
+                    pair.First.LastWriteUtc >= pair.Second.LastWriteUtc);
         }
         finally { CustomShowQueueStore.TryDelete(root); }
     }

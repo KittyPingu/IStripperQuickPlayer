@@ -868,7 +868,8 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Invalid processing pipeline depth.");
         if (processing.ResolvedExecutionMode is string mode &&
             mode is not ("eager" or "compiled" or "eager-fallback" or
-                "eager-oom-fallback" or "eager-bf16-sdpa"))
+                "eager-oom-fallback" or "eager-bf16-sdpa" or
+                "eager-bf16-sdpa-bounded"))
             throw new InvalidDataException("Invalid resolved processing execution mode.");
         if (processing.Encoder is string encoder &&
             encoder is not ("h264_nvenc" or "libx264"))

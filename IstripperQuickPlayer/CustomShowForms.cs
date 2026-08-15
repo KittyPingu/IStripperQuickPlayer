@@ -51,7 +51,10 @@ internal sealed class CustomShowEditorForm : Form
     readonly ComboBox sam2MattingTracker = new()
         { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
     readonly TextBox foregroundConcepts = new()
-        { Multiline = true, Height = 78, ScrollBars = ScrollBars.Vertical, Text = "person" };
+    {
+        Multiline = true, AcceptsReturn = true, Height = 96, Width = 620,
+        ScrollBars = ScrollBars.Vertical, Text = "person"
+    };
     readonly Label conceptHelp = new()
     {
         AutoSize = true,
@@ -132,8 +135,8 @@ internal sealed class CustomShowEditorForm : Form
             queueJobId == null;
         Text = showId == null ? "Create Custom Show" : this.reprocess
             ? "Reprocess Custom Show" : "Edit Custom Show Metadata";
-        ClientSize = new Size(780, 760);
-        MinimumSize = new Size(650, 650);
+        ClientSize = new Size(900, 760);
+        MinimumSize = new Size(760, 650);
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = false;
         TableLayoutPanel shell = new()
@@ -438,8 +441,14 @@ internal sealed class CustomShowEditorForm : Form
         queue.Visible = queueManager != null && CanProcess && queueAction != null;
         queueBatch.Visible = false;
         if (queueAction != null) queue.Text = queueAction;
-        if (CanProcess) save.Visible = (!sam2Matting || sam3) &&
-            queueJobId == null && queueDraft == null;
+        if (CanProcess)
+        {
+            save.Visible = queueJobId == null && queueDraft == null;
+            if (sam2Matting)
+                save.Text = sam3 ? (reprocess ? "Reprocess and Preview" :
+                    Appending ? "Process and Add Clips" : "Process and Preview") :
+                    "Mask Scenes and Process";
+        }
     }
 
     void OpenSam2MattingSetup()
@@ -1565,7 +1574,11 @@ internal sealed class CustomShowEditorForm : Form
                 // prevents this form from returning DialogResult.OK.
                 SavedShowId = show.Id;
                 if (maskDraft != null && Directory.Exists(maskDraft.Root))
-                    try { await DeleteDirectoryWhenReleasedAsync(maskDraft.Root); }
+                    try
+                    {
+                        maskDraft.MarkPublished(show);
+                        await DeleteDirectoryWhenReleasedAsync(maskDraft.Root);
+                    }
                     catch (Exception cleanupError)
                     {
                         Debug.WriteLine("Could not remove published custom-show mask draft: " +
@@ -1659,34 +1672,62 @@ internal sealed class CustomShowEditorForm : Form
             manifest.ClipDetection = clipDetection;
             manifest.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
             CustomShowProcessingScene[] processingScenes = [];
+            string tracker = SelectedSam2MattingTracker();
             if (algorithm == Sam2MattingSupport.Algorithm)
             {
-                CustomShowClipDetection? plannedDetection = null;
-                CustomShowProcessingScene[]? plannedScenes = null;
-                using CustomShowProcessingForm planning = new(async (progress, token) =>
+                if (tracker == "sam3")
                 {
-                    Progress<int> detectorProgress = new(value => progress.Report(
-                        new CustomShowProgress("scene-analysis", value,
-                            $"Detecting processing scenes… {value}%")));
-                    var planned = await Sam2MattingScenePlanner.DetectAsync(configuration,
-                        source.Text, showClips, detectorProgress, token);
-                    plannedDetection = planned.Detection;
-                    plannedScenes = planned.Scenes;
-                    progress.Report(new CustomShowProgress("scene-analysis", 100,
-                        $"Resolved {planned.Scenes.Length} processing scenes"));
-                    return new CustomShowProcessResult();
-                }, "Detecting SAM2Matting Scenes",
-                    processDescription:
-                        "Resolving immutable hard-cut scenes before the queue job is created",
-                    showPreviews: false);
-                if (planning.ShowDialog(this) != DialogResult.OK) return;
-                clipDetection = plannedDetection ?? throw new InvalidDataException(
-                    "Scene detection did not return detector provenance.");
-                manifest.ClipDetection = clipDetection;
-                processingScenes = plannedScenes ?? throw new InvalidDataException(
-                    "Scene detection did not return a processing plan.");
+                    // SAM3 has no interactive scene prompts, so scene analysis is
+                    // the first unattended queue stage. Freeze the detector choice
+                    // now; the resolved boundaries are persisted by the runner.
+                    clipDetection = Sam2MattingScenePlanner.ResolveRequest(configuration);
+                    manifest.ClipDetection = clipDetection;
+                }
+                else
+                {
+                    long detectionTotalFrames;
+                    using (FfmpegCpuDecoder detectorMedia = new(source.Text,
+                        fastDecode: true))
+                    {
+                        if (!CustomShowStore.TryFrameRate(detectorMedia.FrameRate,
+                                out double detectorFps))
+                            throw new InvalidDataException(
+                                "The source frame rate is invalid.");
+                        detectionTotalFrames = Math.Max(1, checked((long)Math.Round(
+                            detectorMedia.Duration * detectorFps)));
+                    }
+                    CustomShowClipDetection? plannedDetection = null;
+                    CustomShowProcessingScene[]? plannedScenes = null;
+                    using CustomShowProcessingForm planning = new(async (progress, token) =>
+                    {
+                        Progress<int> detectorProgress = new(value =>
+                        {
+                            long analysed = Math.Clamp(checked((long)Math.Round(
+                                detectionTotalFrames * value / 100d)), 0,
+                                detectionTotalFrames);
+                            progress.Report(new CustomShowProgress("scene-analysis", value,
+                                $"Detecting processing scenes… {analysed:N0}/" +
+                                $"{detectionTotalFrames:N0} frames ({value}%)"));
+                        });
+                        var planned = await Sam2MattingScenePlanner.DetectAsync(configuration,
+                            source.Text, showClips, detectorProgress, token);
+                        plannedDetection = planned.Detection;
+                        plannedScenes = planned.Scenes;
+                        progress.Report(new CustomShowProgress("scene-analysis", 100,
+                            $"Resolved {planned.Scenes.Length} processing scenes"));
+                        return new CustomShowProcessResult();
+                    }, "Detecting SAM2Matting Scenes",
+                        processDescription:
+                            "Resolving scenes for the required initial-mask wizard",
+                        showPreviews: false);
+                    if (planning.ShowDialog(this) != DialogResult.OK) return;
+                    clipDetection = plannedDetection ?? throw new InvalidDataException(
+                        "Scene detection did not return detector provenance.");
+                    manifest.ClipDetection = clipDetection;
+                    processingScenes = plannedScenes ?? throw new InvalidDataException(
+                        "Scene detection did not return a processing plan.");
+                }
             }
-            string tracker = SelectedSam2MattingTracker();
             string[] concepts = algorithm == Sam2MattingSupport.Algorithm &&
                 tracker == "sam3"
                 ? Sam2MattingSupport.ParseConcepts(foregroundConcepts.Text) : [];
@@ -1895,7 +1936,7 @@ internal sealed class CustomShowEditorForm : Form
                     }, "Processing SAM2Matting Show",
                     processDescription:
                         "Processing the selected source now, then opening its alpha preview",
-                    showPreviews: false);
+                    showPreviews: tracker == "sam3");
                 if (processing.ShowDialog(this) != DialogResult.OK ||
                     publishedId == null)
                 {

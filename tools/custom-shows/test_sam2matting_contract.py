@@ -5,6 +5,8 @@ from sam2matting_worker import (
     CHECKPOINT_REVISION,
     SOURCE_REVISION,
     normalize_concepts,
+    release_sam2_frame_alpha,
+    tracker_scene_chunk_size,
     validate_scene_contract,
 )
 
@@ -26,6 +28,24 @@ def test_gray16_quantization_endpoints():
     values = [round(max(0.0, min(1.0, value)) * 65535)
               for value in [0.0, 0.5, 1.0]]
     assert values == [0, 32768, 65535]
+
+
+def test_consumed_sam2_alpha_is_removed_from_tracking_state():
+    retained = object()
+    state = {
+        "output_dict_per_obj": {0: {
+            "cond_frame_outputs": {},
+            "non_cond_frame_outputs": {
+                3: {"alpha": retained, "pred_masks": retained},
+                4: {"alpha": retained},
+            },
+        }},
+        "temp_output_dict_per_obj": {},
+    }
+    release_sam2_frame_alpha(state, 3)
+    assert state["output_dict_per_obj"][0]["non_cond_frame_outputs"][3]["alpha"] is None
+    assert state["output_dict_per_obj"][0]["non_cond_frame_outputs"][3]["pred_masks"] is retained
+    assert state["output_dict_per_obj"][0]["non_cond_frame_outputs"][4]["alpha"] is retained
 
 
 def test_concepts_are_trimmed_and_deduplicated_in_first_seen_order():
@@ -56,3 +76,9 @@ def test_scene_contract_requires_exact_gap_free_clip_coverage():
         assert False, "a scene-plan gap must be rejected"
     except RuntimeError:
         pass
+
+
+def test_sam2_prefetch_uses_the_upcoming_scene_size():
+    assert tracker_scene_chunk_size("sam2.1-tiny", 3840, 2160, 180) == 180
+    assert tracker_scene_chunk_size("sam2.1-tiny", 3840, 2160, 315) == 315
+    assert tracker_scene_chunk_size("sam2.1-base-plus", 3840, 2160, 315) == 315

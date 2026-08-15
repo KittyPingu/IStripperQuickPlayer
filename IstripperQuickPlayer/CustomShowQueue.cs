@@ -392,6 +392,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     ? value.Stage : value.Message);
                 progress.Report(value);
             });
+            await EnsureSam3ScenePlanAsync(job, trackedProgress, token);
             string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
                 configuration, storage, trackedProgress, preparePublication, token,
                 reviewBeforePublication);
@@ -451,6 +452,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                 Progress<CustomShowProgress> progress = new(value => UpdateProgress(
                     job.Id, value.Percent, string.IsNullOrWhiteSpace(value.Message)
                         ? value.Stage : value.Message));
+                await EnsureSam3ScenePlanAsync(job, progress, token);
                 string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
                     configuration, storage, progress, preparePublication, token);
                 lock (gate)
@@ -538,13 +540,57 @@ internal sealed class CustomShowQueueManager : IDisposable
             CustomShowQueueStore.TryDelete(work);
     }
 
+    async Task EnsureSam3ScenePlanAsync(CustomShowQueueJob job,
+        IProgress<CustomShowProgress> progress, CancellationToken token)
+    {
+        CustomShowProcessing? options = job.Manifest.Processing;
+        if (options?.Algorithm != Sam2MattingSupport.Algorithm ||
+            options.Tracker != "sam3" || options.Scenes.Length != 0)
+            return;
+        CustomShowClipDetection requested = job.Manifest.ClipDetection ??
+            throw new CustomShowQueueAttentionException(
+                "The queued SAM3 scene-detector settings are missing. Edit the job to review it.");
+        using FfmpegCpuDecoder media = new(job.SourcePath, fastDecode: true);
+        if (!CustomShowStore.TryFrameRate(media.FrameRate, out double fps))
+            throw new CustomShowQueueAttentionException(
+                "The source frame rate is invalid.");
+        long totalFrames = Math.Max(1, checked((long)Math.Round(
+            media.Duration * fps)));
+        Progress<int> detectorProgress = new(value =>
+        {
+            long analysed = Math.Clamp(checked((long)Math.Round(
+                totalFrames * value / 100d)), 0, totalFrames);
+            progress.Report(new CustomShowProgress("scene-analysis", value,
+                $"Detecting processing scenes… {analysed:N0}/{totalFrames:N0} " +
+                $"frames ({value}%)"));
+        });
+        var resolved = await Sam2MattingScenePlanner.DetectAsync(configuration,
+            job.SourcePath, job.Clips, detectorProgress, token, requested);
+        lock (gate)
+        {
+            // Persist exactly once before inference. Retry and restart now use
+            // these immutable boundaries rather than consulting global settings.
+            job.Manifest.ClipDetection = resolved.Detection;
+            job.Manifest.Processing!.Scenes = resolved.Scenes;
+            job.Message = $"Resolved {resolved.Scenes.Length} processing scenes";
+            SaveLocked();
+        }
+        progress.Report(new CustomShowProgress("scene-analysis", 100,
+            $"Resolved {resolved.Scenes.Length} processing scenes"));
+    }
+
     void UpdateProgress(string id, double percent, string message)
     {
         lock (gate)
         {
             CustomShowQueueJob? job = document.Jobs.FirstOrDefault(value => value.Id == id);
             if (job == null || job.Status != CustomShowQueueStatus.Running) return;
-            job.Percent = Math.Clamp(percent, 0, 100);
+            double next = Math.Clamp(percent, 0, 100);
+            // A worker stage with no percentage must not erase valid global
+            // progress from a prior stage. Older SAM2Matting workers emitted
+            // zero during tracking even though the job was still advancing.
+            if (next > 0 || job.Percent <= 0)
+                job.Percent = next;
             job.Message = message;
             if (DateTime.UtcNow - lastSavedUtc >= TimeSpan.FromSeconds(1)) SaveLocked();
         }
@@ -943,17 +989,22 @@ internal static class CustomShowJobRunner
         if (job.Manifest.Processing?.Algorithm == "sam2matting")
         {
             CustomShowProcessing options = job.Manifest.Processing;
+            bool deferredSam3Plan = options.Tracker == "sam3" &&
+                options.Scenes.Length == 0;
             try
             {
-                Sam2MattingScenePlanner.Validate(options.Scenes, job.Clips);
-                using FfmpegCpuDecoder decoder = new(job.SourcePath,
-                    fastDecode: true);
-                if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
-                        out double sceneFps))
-                    throw new InvalidDataException(
-                        "The source frame rate is invalid.");
-                Sam2MattingScenePlanner.ValidateCoverage(options.Scenes,
-                    job.Clips, sceneFps);
+                if (!deferredSam3Plan)
+                {
+                    Sam2MattingScenePlanner.Validate(options.Scenes, job.Clips);
+                    using FfmpegCpuDecoder decoder = new(job.SourcePath,
+                        fastDecode: true);
+                    if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
+                            out double sceneFps))
+                        throw new InvalidDataException(
+                            "The source frame rate is invalid.");
+                    Sam2MattingScenePlanner.ValidateCoverage(options.Scenes,
+                        job.Clips, sceneFps);
+                }
             }
             catch (InvalidDataException error)
             {

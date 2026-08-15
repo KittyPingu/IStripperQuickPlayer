@@ -106,16 +106,23 @@ internal static class Sam2MattingScenePlanner
         CustomShowProcessingScene[] Scenes)> DetectAsync(
         CustomShowConfiguration configuration, string source,
         CustomShowClip[] clips, IProgress<int>? progress,
-        CancellationToken token)
+        CancellationToken token, CustomShowClipDetection? requested = null)
     {
         using FfmpegCpuDecoder decoder = new(source, fastDecode: true);
         long durationMs = checked((long)Math.Round(decoder.Duration * 1000));
         if (!CustomShowStore.TryFrameRate(decoder.FrameRate, out double fps))
             throw new InvalidDataException("The source frame rate is invalid.");
-        string method = ResolveDetector(configuration);
+        string method = requested?.Method ?? ResolveDetector(configuration);
+        if (method == "transnetv2" &&
+            !CustomShowProcessor.IsTransNetV2Installed(configuration) ||
+            method == "omnishotcut" &&
+            !CustomShowProcessor.IsOmniShotCutInstalled(configuration) ||
+            method is not ("ffmpeg" or "transnetv2" or "omnishotcut"))
+            throw new InvalidDataException(
+                $"The queued scene detector '{method}' is no longer installed.");
         using IDisposable? gpuLease = method == "ffmpeg" ? null :
             await CustomShowGpuScheduler.AcquireAsync(token);
-        int sensitivity = method switch
+        int sensitivity = requested?.SensitivityPercent ?? method switch
         {
             "transnetv2" => configuration.TransNetClipDetectionSensitivity,
             "omnishotcut" => configuration.OmniShotCutClipDetectionSensitivity,
@@ -130,6 +137,12 @@ internal static class Sam2MattingScenePlanner
             _ => await CustomSceneDetector.DetectFastAsync(source, durationMs,
                 sensitivity, progress, token)
         };
+        if (!string.IsNullOrWhiteSpace(requested?.ToolRevision) &&
+            !string.Equals(requested.ToolRevision, result.ToolRevision,
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                "The queued scene detector revision has changed. Edit the job to " +
+                "choose the currently installed detector.");
         CustomShowClipDetection detection = new()
         {
             Method = result.Method,
@@ -168,6 +181,40 @@ internal static class Sam2MattingScenePlanner
         Validate(scenes, clips);
         ValidateCoverage(scenes, clips, fps);
         return (detection, [.. scenes]);
+    }
+
+    internal static CustomShowClipDetection ResolveRequest(
+        CustomShowConfiguration configuration)
+    {
+        string method = ResolveDetector(configuration);
+        int sensitivity = method switch
+        {
+            "transnetv2" => configuration.TransNetClipDetectionSensitivity,
+            "omnishotcut" => configuration.OmniShotCutClipDetectionSensitivity,
+            _ => configuration.FastClipDetectionSensitivity
+        };
+        string? marker = method switch
+        {
+            "transnetv2" => "TRANSNETV2_COMMIT",
+            "omnishotcut" => "OMNISHOTCUT_COMMIT",
+            _ => null
+        };
+        string? revision = null;
+        if (marker != null)
+        {
+            string path = Path.Combine(CustomShowProcessor.RuntimeRoot(configuration),
+                marker);
+            if (File.Exists(path)) revision = File.ReadAllText(path).Trim();
+        }
+        return new CustomShowClipDetection
+        {
+            Method = method,
+            ToolRevision = string.IsNullOrWhiteSpace(revision) ? null : revision,
+            SensitivityPercent = sensitivity,
+            TransitionBufferMs = 0,
+            MinimumClipMs = 0,
+            ManuallyEdited = false
+        };
     }
 
     internal static void Validate(IEnumerable<CustomShowProcessingScene> source,

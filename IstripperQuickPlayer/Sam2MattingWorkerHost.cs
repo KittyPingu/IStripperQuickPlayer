@@ -12,6 +12,8 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
     readonly List<string> diagnostics = [];
     readonly System.Threading.Timer idleTimer;
     Process? process;
+    ProcessCancellationScope? processScope;
+    CancellationTokenSource? processLifetime;
     Task? stderrPump;
     string? python;
     string? loadedTracker;
@@ -138,6 +140,9 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
         process = Process.Start(start) ??
             throw new InvalidOperationException(
                 "The persistent SAM2Matting worker could not be started.");
+        processLifetime = new CancellationTokenSource();
+        processScope = new ProcessCancellationScope(process,
+            processLifetime.Token);
         python = requestedPython;
         environmentWriteUtc = writeUtc;
         loadedTracker = null;
@@ -156,7 +161,9 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
         Process running = process is { HasExited: false } value ? value :
             throw new InvalidOperationException(
                 "The persistent SAM2Matting worker is unavailable.");
-        string request = JsonSerializer.Serialize(command, CustomShowStore.JsonOptions);
+        // The host reads one JSON command per physical line. The manifest serializer
+        // is intentionally indented and therefore cannot be used for this protocol.
+        string request = JsonSerializer.Serialize(command);
         await running.StandardInput.WriteLineAsync(request.AsMemory(), token);
         await running.StandardInput.FlushAsync(token);
         while (await running.StandardOutput.ReadLineAsync(token) is string line)
@@ -174,9 +181,24 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
                     string message = root.TryGetProperty("message",
                         out JsonElement messageNode)
                         ? messageNode.GetString() ?? stage : stage;
+                    string? previewSource = root.TryGetProperty("previewSource",
+                        out JsonElement sourceNode) && sourceNode.ValueKind ==
+                            JsonValueKind.String ? sourceNode.GetString() : null;
+                    string? previewComposite = root.TryGetProperty(
+                        "previewComposite", out JsonElement compositeNode) &&
+                        compositeNode.ValueKind == JsonValueKind.String
+                            ? compositeNode.GetString() : null;
+                    string? sourceLabel = root.TryGetProperty("previewSourceLabel",
+                        out JsonElement sourceLabelNode) && sourceLabelNode.ValueKind ==
+                            JsonValueKind.String ? sourceLabelNode.GetString() : null;
+                    string? compositeLabel = root.TryGetProperty(
+                        "previewCompositeLabel", out JsonElement compositeLabelNode) &&
+                        compositeLabelNode.ValueKind == JsonValueKind.String
+                            ? compositeLabelNode.GetString() : null;
                     progress?.Report(new CustomShowProgress(stage,
                         root.TryGetProperty("percent", out JsonElement percent)
-                            ? percent.GetDouble() : 0, message));
+                            ? percent.GetDouble() : 0, message, previewSource,
+                        previewComposite, sourceLabel, compositeLabel));
                     if (stage == "error")
                         throw new InvalidOperationException(message);
                     continue;
@@ -219,9 +241,20 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
     void DiscardHost()
     {
         Process? prior = process;
+        ProcessCancellationScope? priorScope = processScope;
+        CancellationTokenSource? priorLifetime = processLifetime;
         process = null;
+        processScope = null;
+        processLifetime = null;
         loadedTracker = null;
         python = null;
+        try { priorLifetime?.Cancel(); } catch { }
+        try
+        {
+            priorScope?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch { }
+        try { priorLifetime?.Dispose(); } catch { }
         try { if (prior is { HasExited: false }) prior.Kill(true); } catch { }
         try { prior?.Dispose(); } catch { }
         stderrPump = null;

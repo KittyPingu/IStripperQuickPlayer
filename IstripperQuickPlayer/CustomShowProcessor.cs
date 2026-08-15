@@ -1236,12 +1236,12 @@ internal sealed class CustomShowProcessingForm : Form
         double percent)
     {
         if (samples.Count < 4 || percent >= 100) return null;
-        (double startSeconds, double startPercent) = samples[0];
-        (double endSeconds, double endPercent) = samples[^1];
-        double sampleSeconds = endSeconds - startSeconds;
-        double samplePercent = endPercent - startPercent;
-        if (sampleSeconds < 3 || samplePercent <= 0) return null;
-        double seconds = (100 - percent) * sampleSeconds / samplePercent;
+        double elapsedSeconds = samples[^1].Seconds;
+        if (elapsedSeconds < 3 || percent <= 0) return null;
+        // Percent is a global job-work fraction. Use the whole elapsed run,
+        // including setup and earlier chunks, rather than extrapolating from a
+        // fast local chunk or concept transition.
+        double seconds = elapsedSeconds * (100 - percent) / percent;
         return double.IsFinite(seconds) && seconds < TimeSpan.MaxValue.TotalSeconds
             ? TimeSpan.FromSeconds(seconds) : null;
     }
@@ -1276,7 +1276,7 @@ internal sealed class CustomShowProcessingForm : Form
             AddProgressSample(fast, index * 0.05, index * 0.5);
         return EstimateRemaining(
                    [(5, 20), (10, 30), (15, 40), (20, 50)], 50) ==
-               TimeSpan.FromSeconds(25) &&
+               TimeSpan.FromSeconds(20) &&
             EstimateRemaining([(5, 20), (10, 30), (15, 40)], 40) == null &&
             EstimateRemaining(fast, 50) is not null &&
             Math.Abs(EstimateFps([(2, 10L), (7, 60L)])!.Value - 10) < .001 &&
