@@ -55,6 +55,7 @@ SAM3_MAX_UNION_BYTES = 2 * 1024 * 1024 * 1024
 SAM3_MAX_CHUNK_FRAMES = 128
 SAM3_CONTEXT_FRAMES = 16
 SAM3_UNION_DTYPE = "float16"
+_NVENC_AVAILABLE = None
 
 
 class CudaFrameView:
@@ -909,35 +910,78 @@ def concat_alpha_segments(segments, destination, list_path):
     Path(list_path).unlink(missing_ok=True)
 
 
+def nvenc_available():
+    global _NVENC_AVAILABLE
+    if _NVENC_AVAILABLE is not None:
+        return _NVENC_AVAILABLE
+    try:
+        encoders = run_process([
+            ffmpeg(), "-hide_banner", "-encoders",
+        ]).stdout
+        if "h264_nvenc" not in encoders:
+            _NVENC_AVAILABLE = False
+            return False
+        test = subprocess.run([
+            ffmpeg(), "-y", "-v", "error", "-f", "lavfi", "-i",
+            "color=size=256x256:duration=0.05", "-frames:v", "1",
+            "-c:v", "h264_nvenc", "-preset", "p5", "-f", "null", "-",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+           creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
+        _NVENC_AVAILABLE = test.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        _NVENC_AVAILABLE = False
+    return _NVENC_AVAILABLE
+
+
 def encode_foreground(source, destination, start_frame, fps, count,
                       on_frame=None, check_cancelled=None):
     # Use the same canonical frame origin as scene extraction and alpha.  This
     # avoids independently rounding a millisecond clip boundary on VFR input.
     start = max(0.0, float(Fraction(start_frame, 1) / fps))
     duration = count / float(fps)
+    if nvenc_available():
+        codec = ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq",
+                 "-cq", "19"]
+        encoder, preset = "h264_nvenc", "p5"
+    else:
+        codec = ["-c:v", "libx264", "-preset", "medium", "-crf", "18"]
+        encoder, preset = "libx264", "medium"
     run_ffmpeg_progress([
         ffmpeg(), "-y", "-v", "error", "-progress", "pipe:1", "-nostats",
         "-ss", f"{start:.9f}", "-i", source,
         "-t", f"{duration:.9f}", "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", f"fps={fps.numerator}/{fps.denominator}", "-frames:v", str(count),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        *codec,
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", str(destination),
     ], count, on_frame, check_cancelled)
+    return encoder, preset
 
 
 def probe_output(path):
     result = run_process([
-        ffprobe(), "-v", "error", "-count_frames", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate,time_base,codec_name,pix_fmt,nb_read_frames",
+        ffprobe(), "-v", "error", "-count_packets", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,avg_frame_rate,time_base,codec_name,pix_fmt,nb_frames,nb_read_packets",
         "-of", "json", str(path),
     ])
     stream = json.loads(result.stdout)["streams"][0]
+    frame_value = stream.get("nb_read_packets")
+    if frame_value in (None, "N/A"):
+        frame_value = stream.get("nb_frames")
+    if frame_value in (None, "N/A"):
+        # Retain a compatibility fallback for unusual containers that expose
+        # neither packet nor header counts. QuickPlayer's own MP4/Matroska
+        # outputs take the fast packet-count path.
+        fallback = run_process([
+            ffprobe(), "-v", "error", "-count_frames", "-select_streams", "v:0",
+            "-show_entries", "stream=nb_read_frames", "-of", "json", str(path),
+        ])
+        frame_value = json.loads(fallback.stdout)["streams"][0]["nb_read_frames"]
     return {
         "width": int(stream["width"]), "height": int(stream["height"]),
         "frameRate": stream["avg_frame_rate"], "timeBase": stream["time_base"],
         "codec": stream["codec_name"], "pixelFormat": stream["pix_fmt"],
-        "frames": int(stream["nb_read_frames"]),
+        "frames": int(frame_value),
     }
 
 
@@ -1351,11 +1395,12 @@ def run_job(request, loaded=None):
                     alpha_segments, alpha_path,
                     work / f"{clip['id']}-alpha-concat.txt")
             completed_units += decoded_count
-            encode_foreground(source, foreground_path,
-                              int(clip_scenes[0]["startFrame"]),
-                              media["fps"], decoded_count,
-                              foreground_encoding_progress,
-                              lambda: cancelled(request))
+            foreground_encoder, foreground_preset = encode_foreground(
+                source, foreground_path,
+                int(clip_scenes[0]["startFrame"]),
+                media["fps"], decoded_count,
+                foreground_encoding_progress,
+                lambda: cancelled(request))
             completed_units += decoded_count
             emit("validation", 5 + 92 * completed_units /
                  max(1, total_units), "Validating foreground and alpha timing")
@@ -1382,7 +1427,8 @@ def run_job(request, loaded=None):
                 "tracker": tracker,
                 "executionMode": ("eager-bf16-sdpa-bounded"
                                   if tracker == "sam3" else "eager-bf16-sdpa"),
-                "encoder": "libx264", "encoderPreset": "medium",
+                "encoder": foreground_encoder,
+                "encoderPreset": foreground_preset,
                 "firstTimestamp": 0,
                 "lastTimestamp": max(0, decoded_count - 1),
             })

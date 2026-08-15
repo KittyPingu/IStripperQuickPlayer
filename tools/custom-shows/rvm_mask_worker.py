@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate review-sized PNG masks with Robust Video Matting."""
-import argparse, json, shutil, subprocess, sys
+import argparse, json, queue, shutil, subprocess, sys, threading
 from pathlib import Path
 
 from rvm_worker import executable, load_model, probe, replace_preview
@@ -22,6 +22,16 @@ def read_exact(stream, size):
     return None if received == 0 else value if received == size else value[:received]
 
 
+def put_bounded(target, value, errors):
+    while True:
+        try:
+            target.put(value, timeout=.1)
+            return
+        except queue.Full:
+            if not errors.empty():
+                raise errors.get()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
@@ -34,6 +44,7 @@ def main():
     parser.add_argument("--masks-only", action="store_true")
     parser.add_argument("--profile-log", type=Path)
     parser.add_argument("--preview-output", type=Path)
+    parser.add_argument("--chunk-size", type=int, default=12)
     args = parser.parse_args()
 
     import numpy as np
@@ -77,48 +88,89 @@ def main():
     torch, model, device = load_model(runtime, "quality")
     bf16 = device.type == "cuda" and torch.cuda.get_device_capability()[0] >= 8
     rec = [None] * 4
-    with torch.inference_mode(), torch.autocast(device_type=device.type,
-            dtype=torch.bfloat16, enabled=bf16):
-        count = expected if args.masks_only else len(files)
-        index = 0
-        while True:
-            if args.masks_only:
-                data = read_exact(decode.stdout, review_width * review_height * 3)
-                if not data:
+    count = expected if args.masks_only else len(files)
+    chunk_size = max(1, min(32, args.chunk_size))
+    pending = queue.Queue(maxsize=2)
+    writer_errors = queue.Queue()
+    writer_done = object()
+
+    def write_masks():
+        try:
+            written = 0
+            while True:
+                item = pending.get()
+                if item is writer_done:
+                    return
+                first_index, frames, masks = item
+                for offset, (pixels, mask) in enumerate(zip(frames, masks)):
+                    index = first_index + offset
+                    Image.fromarray(mask, "L").save(
+                        args.masks / f"{index + 1:08d}.png", compress_level=1)
+                    written = index + 1
+                    if written == 1 or written == count or written % 10 == 0:
+                        if args.preview_output:
+                            args.preview_output.mkdir(parents=True, exist_ok=True)
+                            for name, image, mode in (
+                                    ("preview-source.jpg", pixels, "RGB"),
+                                    ("preview-composite.jpg", mask, "L")):
+                                temporary = args.preview_output / (name + ".tmp")
+                                Image.fromarray(image, mode).save(
+                                    temporary, "JPEG", quality=88)
+                                replace_preview(temporary, args.preview_output / name)
+                        send(status="progress", percent=10 + 88 * written / count,
+                             message=f"RVM segmented {written}/{count} frames",
+                             frame=written - 1)
+        except BaseException as error:
+            writer_errors.put(error)
+
+    writer = threading.Thread(target=write_masks, name="rvm-mask-writer",
+                              daemon=True)
+    writer.start()
+    index = 0
+    try:
+        with torch.inference_mode(), torch.autocast(device_type=device.type,
+                dtype=torch.bfloat16, enabled=bf16):
+            while index < count:
+                frames = []
+                for offset in range(min(chunk_size, count - index)):
+                    if args.masks_only:
+                        data = read_exact(decode.stdout,
+                                          review_width * review_height * 3)
+                        if not data:
+                            break
+                        if len(data) != review_width * review_height * 3:
+                            raise RuntimeError(
+                                "RVM source decoder returned a partial frame")
+                        pixels = np.frombuffer(data, dtype=np.uint8).reshape(
+                            review_height, review_width, 3).copy()
+                    else:
+                        with Image.open(files[index + offset]) as source_image:
+                            pixels = np.asarray(source_image.convert(
+                                "RGB"), dtype=np.uint8).copy()
+                    frames.append(pixels)
+                if not frames:
                     break
-                if len(data) != review_width * review_height * 3:
-                    raise RuntimeError("RVM source decoder returned a partial frame")
-                pixels = np.frombuffer(data, dtype=np.uint8).reshape(
-                    review_height, review_width, 3).copy()
-            else:
-                if index >= len(files):
-                    break
-                pixels = np.asarray(Image.open(files[index]).convert("RGB"),
-                                    dtype=np.uint8).copy()
-            tensor = torch.from_numpy(pixels).permute(2, 0, 1).unsqueeze(0) \
-                .to(device=device, dtype=torch.float32).div_(255)
-            # RVM returns full review-resolution alpha while its encoder works at
-            # roughly 512 px, matching the fast custom-show RVM path.
-            _, alpha, *rec = model(tensor, *rec,
-                downsample_ratio=min(1.0, 512 / max(review_width, review_height)))
-            mask = (alpha[0, 0].float().cpu().numpy() >=
-                    args.alpha_threshold).astype(np.uint8) * 255
-            Image.fromarray(mask, "L").save(args.masks / f"{index + 1:08d}.png",
-                                             compress_level=1)
-            index += 1
-            if index == 1 or index == count or index % 10 == 0:
-                if args.preview_output:
-                    args.preview_output.mkdir(parents=True, exist_ok=True)
-                    for name, image, mode in (
-                            ("preview-source.jpg", pixels, "RGB"),
-                            ("preview-composite.jpg", mask, "L")):
-                        temporary = args.preview_output / (name + ".tmp")
-                        Image.fromarray(image, mode).save(
-                            temporary, "JPEG", quality=88)
-                        replace_preview(temporary, args.preview_output / name)
-                send(status="progress", percent=10 + 88 * index / count,
-                     message=f"RVM segmented {index}/{count} frames",
-                     frame=index - 1)
+                # RVM is recurrent across the temporal dimension, so processing a
+                # bounded sequence preserves state while amortizing Python, upload,
+                # and kernel-launch overhead across the chunk.
+                tensor = torch.from_numpy(np.stack(frames)).permute(0, 3, 1, 2) \
+                    .unsqueeze(0).to(device=device, dtype=torch.float32).div_(255)
+                _, alpha, *rec = model(tensor, *rec,
+                    downsample_ratio=min(1.0, 512 / max(review_width, review_height)))
+                masks = (alpha[0, :, 0].float().cpu().numpy() >=
+                         args.alpha_threshold).astype(np.uint8) * 255
+                put_bounded(pending, (index, frames, masks), writer_errors)
+                index += len(frames)
+                if not writer_errors.empty():
+                    raise writer_errors.get()
+    finally:
+        if writer_errors.empty():
+            put_bounded(pending, writer_done, writer_errors)
+        writer.join(timeout=30)
+    if not writer_errors.empty():
+        raise writer_errors.get()
+    if writer.is_alive():
+        raise RuntimeError("RVM mask writer did not shut down cleanly")
     generated = len(list(args.masks.glob("*.png")))
     if decode is not None:
         decode.stdout.close()
@@ -128,7 +180,8 @@ def main():
         raise RuntimeError("RVM generated no masks")
     send(status="ready", frameCount=generated, fps=fps, width=review_width,
          height=review_height, device=device.type, precision="BF16" if bf16 else "FP32",
-         optimized=False, execution="eager", checkpoint="RVM ResNet50",
+         optimized=True, execution="chunked-bounded", chunkSize=chunk_size,
+         checkpoint="RVM ResNet50",
          model="rvm", resumed=False, framesFolder=str(args.frames),
          supportsCorrections=False)
     if args.masks_only:
