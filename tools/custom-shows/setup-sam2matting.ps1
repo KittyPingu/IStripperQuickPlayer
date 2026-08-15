@@ -22,9 +22,30 @@ $checkpoints = Join-Path $runtime 'checkpoints'
 $cache = Join-Path $runtime 'cache'
 $requirementsLock = Join-Path $PSScriptRoot 'sam2matting-requirements.lock'
 
+function Get-Sha256([string]$path) {
+    $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString(
+                $algorithm.ComputeHash($stream))).Replace('-', '')
+        } finally { $algorithm.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 function Get-Python310([string]$launcher) {
     if ([System.IO.Path]::GetFileNameWithoutExtension($launcher) -ieq 'py') {
-        $lines = & $launcher -0p 2>$null
+        $savedErrorPreference = $ErrorActionPreference
+        try {
+            # py.exe writes its normal interpreter inventory to stderr. Windows
+            # PowerShell otherwise promotes that output to NativeCommandError
+            # when the setup script uses ErrorActionPreference=Stop.
+            $ErrorActionPreference = 'SilentlyContinue'
+            $lines = & $launcher -0p 2>$null
+            $launcherExitCode = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $savedErrorPreference }
+        if ($launcherExitCode -ne 0) { return $null }
         foreach ($line in $lines) {
             if ($line -match '^\s*-3\.10(?:-\d+)?\s+(.+python\.exe)\s*$') {
                 return $Matches[1].Trim()
@@ -32,10 +53,15 @@ function Get-Python310([string]$launcher) {
         }
         return $null
     }
-    $candidate = & $launcher -c `
-        'import sys; raise SystemExit(1) if sys.version_info[:2] != (3, 10) else print(sys.executable)' `
-        2>$null
-    if ($LASTEXITCODE -eq 0) { return $candidate }
+    $savedErrorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'SilentlyContinue'
+        $candidate = & $launcher -c `
+            'import sys; raise SystemExit(1) if sys.version_info[:2] != (3, 10) else print(sys.executable)' `
+            2>$null
+        $launcherExitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedErrorPreference }
+    if ($launcherExitCode -eq 0) { return $candidate }
     return $null
 }
 
@@ -44,47 +70,79 @@ function Get-VerifiedDownload(
     if ((Test-Path -LiteralPath $Path)) {
         $file = Get-Item -LiteralPath $Path
         if ($file.Length -eq $Size -and
-            (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash -eq $Sha256) {
+            (Get-Sha256 $Path) -eq $Sha256) {
             Write-Host "Using verified $($file.Name)."
             return
         }
     }
     $temporary = "$Path.download"
     try {
-        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-        Write-Host "Downloading $(Split-Path $Path -Leaf)..."
+        $received = if (Test-Path -LiteralPath $temporary) {
+            (Get-Item -LiteralPath $temporary).Length
+        } else { 0L }
+        if ($received -gt $Size) {
+            Remove-Item -LiteralPath $temporary -Force
+            $received = 0L
+        }
+        $verb = if ($received -gt 0) { 'Resuming' } else { 'Downloading' }
+        Write-Host "$verb $(Split-Path $Path -Leaf)..."
         $client = [System.Net.Http.HttpClient]::new()
-        $response = $client.GetAsync($Uri,
+        $request = [System.Net.Http.HttpRequestMessage]::new(
+            [System.Net.Http.HttpMethod]::Get, $Uri)
+        if ($received -gt 0) {
+            $request.Headers.Range = [System.Net.Http.Headers.RangeHeaderValue]::new(
+                $received, $null)
+        }
+        $response = $client.SendAsync($request,
             [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        if ($received -gt 0 -and
+            $response.StatusCode -ne [System.Net.HttpStatusCode]::PartialContent) {
+            $response.Dispose()
+            $request.Dispose()
+            Remove-Item -LiteralPath $temporary -Force
+            $received = 0L
+            $request = [System.Net.Http.HttpRequestMessage]::new(
+                [System.Net.Http.HttpMethod]::Get, $Uri)
+            $response = $client.SendAsync($request,
+                [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        }
         $response.EnsureSuccessStatusCode() | Out-Null
         $input = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-        $output = [System.IO.File]::Open($temporary, [System.IO.FileMode]::Create,
+        $fileMode = if ($received -gt 0) {
+            [System.IO.FileMode]::Append
+        } else { [System.IO.FileMode]::Create }
+        $output = [System.IO.File]::Open($temporary, $fileMode,
             [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         try {
             $buffer = New-Object byte[] (4MB)
-            $received = [long]0
             $next = [DateTime]::UtcNow
             while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
                 $output.Write($buffer, 0, $read)
                 $received += $read
                 if ([DateTime]::UtcNow -ge $next) {
-                    Write-Host ('  {0:N2}/{1:N2} GiB' -f ($received / 1GB), ($Size / 1GB))
+                    Write-Host ('##quickplayer-progress##  {0:N2}/{1:N2} GiB' -f `
+                        ($received / 1GB), ($Size / 1GB))
                     $next = [DateTime]::UtcNow.AddSeconds(2)
                 }
             }
         } finally {
-            $output.Dispose(); $input.Dispose(); $response.Dispose(); $client.Dispose()
+            $output.Dispose(); $input.Dispose(); $response.Dispose()
+            $request.Dispose(); $client.Dispose()
         }
         if ((Get-Item -LiteralPath $temporary).Length -ne $Size) {
             throw "File-size mismatch for $(Split-Path $Path -Leaf)."
         }
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $temporary).Hash
+        $actual = Get-Sha256 $temporary
         if ($actual -ne $Sha256) {
             throw "SHA-256 mismatch for $(Split-Path $Path -Leaf): $actual"
         }
         Move-Item -LiteralPath $temporary -Destination $Path -Force
-    } finally {
-        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    } catch {
+        if ((Test-Path -LiteralPath $temporary) -and
+            (Get-Item -LiteralPath $temporary).Length -ge $Size) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+        throw
     }
 }
 
@@ -157,8 +215,7 @@ try {
         precisionPolicy = 'eager-bf16'
         encoderPolicy = 'quickplayer-h264-aac'
         alphaEncodingPolicy = 'ffv1-gray16le-linear'
-        requirementsLockSha256 = (Get-FileHash -Algorithm SHA256 `
-            -LiteralPath $requirementsLock).Hash.ToLowerInvariant()
+        requirementsLockSha256 = (Get-Sha256 $requirementsLock).ToLowerInvariant()
         checkpoints = $files
     }
     $environment | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath `

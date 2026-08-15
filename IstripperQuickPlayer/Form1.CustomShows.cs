@@ -811,6 +811,16 @@ public partial class Form1
             ReloadCustomCards();
     }
 
+    void CleanupFailedCustomShows(IWin32Window? owner = null)
+    {
+        owner ??= this;
+        if (customShowQueueManager == null) return;
+        using CustomShowFailedCleanupForm form = new(
+            new CustomShowStore(customShowConfiguration.LibraryRoot),
+            customShowQueueManager);
+        form.ShowDialog(owner);
+    }
+
     void ConfigureCustomShows()
     {
         if (customShowQueueManager?.IsRunning == true)
@@ -821,7 +831,7 @@ public partial class Form1
         }
         using CustomShowSettingsForm form = new(customShowConfiguration,
             RestoreIncompleteCustomShow, ManageCustomModels,
-            InstallCustomShowTools);
+            InstallCustomShowTools, CleanupFailedCustomShows);
         if (form.ShowDialog(this) != DialogResult.OK)
             return;
         customShowConfiguration = form.Configuration;

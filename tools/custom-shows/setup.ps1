@@ -24,9 +24,20 @@ if ($PythonLauncher -eq 'py' -and (Test-Path (Join-Path $env:WINDIR 'py.exe'))) 
     $PythonLauncher = Join-Path $env:WINDIR 'py.exe'
 }
 Write-Host "Using Python launcher: $PythonLauncher"
+function Get-Sha256([string]$path) {
+    $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString(
+                $algorithm.ComputeHash($stream))).Replace('-', '')
+        } finally { $algorithm.Dispose() }
+    } finally { $stream.Dispose() }
+}
 function Get-VerifiedDownload([string]$uri, [string]$path, [string]$expectedHash) {
     if ((Test-Path -LiteralPath $path) -and
-        (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash -eq $expectedHash) {
+        (Get-Sha256 $path) -eq $expectedHash) {
         Write-Host "Using existing $(Split-Path $path -Leaf) (verified)."
         return
     }
@@ -59,7 +70,7 @@ function Get-VerifiedDownload([string]$uri, [string]$path, [string]$expectedHash
         } finally {
             $file.Dispose(); $stream.Dispose(); $response.Dispose(); $client.Dispose()
         }
-        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $temporary).Hash
+        $actual = Get-Sha256 $temporary
         if ($actual -ne $expectedHash) { throw "SHA-256 mismatch for $(Split-Path $path -Leaf): $actual" }
         Move-Item -LiteralPath $temporary -Destination $path -Force
     } finally {
@@ -215,7 +226,7 @@ if ($InstallEdgeTam) {
     git -C $edgeTam checkout --detach $edgeTamCommit
     if ($LASTEXITCODE -ne 0) { throw 'EdgeTAM checkout failed.' }
     $edgeCheckpoint = Join-Path $edgeTam 'checkpoints\edgetam.pt'
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $edgeCheckpoint).Hash -ne
+    if ((Get-Sha256 $edgeCheckpoint) -ne
         'ED2D4850B8792C239689B043C47046EC239B6E808A3D9B6AE676C803FD8780DF') {
         throw 'EdgeTAM checkpoint SHA-256 validation failed.'
     }

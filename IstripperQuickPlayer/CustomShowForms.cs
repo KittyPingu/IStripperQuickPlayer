@@ -1,5 +1,6 @@
 using System.Drawing.Imaging;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 namespace IStripperQuickPlayer;
@@ -271,14 +272,20 @@ internal sealed class CustomShowEditorForm : Form
             reprocessClipsRow = AddRow(processingTable, "Clips to reprocess", reprocessClips);
         }
         AddSection(root, "Processing", processingTable);
-        FlowLayoutPanel buttons = Flow(save, queue, queueBatch, cancel);
+        FlowLayoutPanel buttons = Flow(save, queue, cancel);
         buttons.Dock = DockStyle.Fill;
         buttons.Margin = Padding.Empty;
         buttons.Padding = new Padding(12, 8, 12, 10);
         shell.Controls.Add(buttons, 0, 1);
         AcceptButton = save;
         CancelButton = cancel;
-        save.Click += Save;
+        save.Click += (sender, e) =>
+        {
+            if (SelectedPreset() == Sam2MattingSupport.Algorithm)
+                QueueJob(sender, e);
+            else
+                Save(sender, e);
+        };
         queue.Click += QueueJob;
         queueBatch.Click += QueueBatch;
         addToExisting.Click += SelectExistingShow;
@@ -429,11 +436,10 @@ internal sealed class CustomShowEditorForm : Form
                 "Mask Scenes and Queue"
             : QueueAction(selected, autoAccept.Checked);
         queue.Visible = queueManager != null && CanProcess && queueAction != null;
-        queueBatch.Visible = queueManager != null && showId == null &&
-            queueJobId == null && sam2Matting;
+        queueBatch.Visible = false;
         if (queueAction != null) queue.Text = queueAction;
-        if (CanProcess) save.Visible = !sam2Matting && queueJobId == null &&
-            queueDraft == null;
+        if (CanProcess) save.Visible = (!sam2Matting || sam3) &&
+            queueJobId == null && queueDraft == null;
     }
 
     void OpenSam2MattingSetup()
@@ -1603,7 +1609,9 @@ internal sealed class CustomShowEditorForm : Form
 
     async void QueueJob(object? sender, EventArgs e)
     {
-        queue.Enabled = false;
+        bool processNow = ReferenceEquals(sender, save);
+        Button action = processNow ? save : queue;
+        action.Enabled = false;
         string? maskWork = null;
         try
         {
@@ -1867,10 +1875,35 @@ internal sealed class CustomShowEditorForm : Form
             else job.ScenePrompts = [];
             if (string.IsNullOrWhiteSpace(cover.Text)) job.CoverAsset = null;
             SaveNewQueuedPerformer(selectedProfile);
-            queueManager.AddOrUpdate(job, queueJobId,
+            string queuedId = queueManager.AddOrUpdate(job, queueJobId,
                 string.IsNullOrWhiteSpace(cover.Text) ? null : cover.Text, masks,
                 sceneMasks);
             RememberProcessingOptions();
+            if (processNow)
+            {
+                string? publishedId = null;
+                using CustomShowProcessingForm processing = new(
+                    async (progress, token) =>
+                    {
+                        publishedId = await queueManager.RunNowAsync(queuedId,
+                            progress, async (staging, processedShow) =>
+                                await ReviewProcessedShow(staging,
+                                    processedShow.Clips.Where(clip =>
+                                        clip.Included).ToArray()) == DialogResult.OK,
+                            token);
+                        return new CustomShowProcessResult();
+                    }, "Processing SAM2Matting Show",
+                    processDescription:
+                        "Processing the selected source now, then opening its alpha preview",
+                    showPreviews: false);
+                if (processing.ShowDialog(this) != DialogResult.OK ||
+                    publishedId == null)
+                {
+                    queueManager.Delete(queuedId);
+                    return;
+                }
+                SavedShowId = publishedId;
+            }
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -1883,7 +1916,7 @@ internal sealed class CustomShowEditorForm : Form
         {
             CustomMaskEditorForm.CloseSam2MattingWorker();
             if (maskWork != null) CustomShowQueueStore.TryDelete(maskWork);
-            queue.Enabled = true;
+            action.Enabled = true;
         }
         await Task.CompletedTask;
     }
@@ -3418,7 +3451,8 @@ internal sealed class CustomShowSettingsForm : Form
     internal CustomShowSettingsForm(CustomShowConfiguration current,
         Action<IWin32Window?>? restoreIncomplete = null,
         Action<IWin32Window?>? manageModels = null,
-        Func<IWin32Window?, string?>? installTools = null)
+        Func<IWin32Window?, string?>? installTools = null,
+        Action<IWin32Window?>? cleanupFailedShows = null)
     {
         Configuration = new()
         {
@@ -3584,10 +3618,12 @@ internal sealed class CustomShowSettingsForm : Form
         TableLayoutPanel maintenance = SettingsTable();
         maintenanceTab.Controls.Add(maintenance); tabs.TabPages.Add(maintenanceTab);
         AddExplanation(maintenance, "Custom-show maintenance",
-            "Restore unfinished work, maintain model profiles, install processing tools, " +
-            "or open the custom-show library folder.");
+            "Restore unfinished work, clean up failed processing files, maintain model " +
+            "profiles, install processing tools, or open the custom-show library folder.");
         Button restore = new() { Text = "Restore Incomplete Setup...", AutoSize = true,
             Enabled = restoreIncomplete != null };
+        Button cleanupFailed = new() { Text = "Clean Up Failed Shows...", AutoSize = true,
+            Enabled = cleanupFailedShows != null };
         Button modelsButton = new() { Text = "Manage Models...", AutoSize = true,
             Enabled = manageModels != null };
         Button setup = new() { Text = "Install / Update Processing Tools...",
@@ -3596,7 +3632,8 @@ internal sealed class CustomShowSettingsForm : Form
         FlowLayoutPanel maintenanceActions = new() { AutoSize = true,
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
             WrapContents = false, Padding = new Padding(4, 8, 4, 8) };
-        maintenanceActions.Controls.AddRange([restore, modelsButton, setup, openFolder]);
+        maintenanceActions.Controls.AddRange(
+            [restore, cleanupFailed, modelsButton, setup, openFolder]);
         AddWideControl(maintenance, maintenanceActions);
 
         Button validate = new() { Text = "Validate setup", AutoSize = true };
@@ -3637,6 +3674,7 @@ internal sealed class CustomShowSettingsForm : Form
         benchmarkVideoMaMa.Click += (_, _) => BenchmarkVideoMaMa();
         benchmark.Click += (_, _) => BenchmarkCutoffs();
         restore.Click += (_, _) => restoreIncomplete?.Invoke(this);
+        cleanupFailed.Click += (_, _) => cleanupFailedShows?.Invoke(this);
         modelsButton.Click += (_, _) => manageModels?.Invoke(this);
         setup.Click += (_, _) =>
         {
@@ -4722,6 +4760,126 @@ internal sealed class CustomShowTransNetBenchmarkForm : Form
     }
 }
 
+internal sealed class SetupProcessOutput
+{
+    internal const string ProgressPrefix = "##quickplayer-progress##";
+
+    readonly TextBox output;
+    int? progressStart;
+
+    internal SetupProcessOutput(TextBox output) => this.output = output;
+
+    internal async Task PumpAsync(StreamReader reader)
+    {
+        char[] buffer = new char[1024];
+        StringBuilder pending = new();
+        bool pendingCarriageReturn = false;
+        int read;
+        while ((read = await reader.ReadAsync(buffer.AsMemory())) > 0)
+        {
+            for (int index = 0; index < read; index++)
+            {
+                char character = buffer[index];
+                if (pendingCarriageReturn)
+                {
+                    if (character == '\n')
+                    {
+                        HandleLine(pending.ToString());
+                        pending.Clear();
+                        pendingCarriageReturn = false;
+                        continue;
+                    }
+
+                    SetProgress(pending.ToString());
+                    pending.Clear();
+                    pendingCarriageReturn = false;
+                }
+
+                if (character == '\r')
+                    pendingCarriageReturn = true;
+                else if (character == '\n')
+                {
+                    HandleLine(pending.ToString());
+                    pending.Clear();
+                }
+                else
+                    pending.Append(character);
+            }
+        }
+
+        if (pendingCarriageReturn)
+            SetProgress(pending.ToString());
+        else if (pending.Length > 0)
+            HandleLine(pending.ToString());
+    }
+
+    void HandleLine(string line)
+    {
+        if (line.StartsWith(ProgressPrefix, StringComparison.Ordinal))
+            SetProgress(line[ProgressPrefix.Length..]);
+        else
+            AppendLine(line);
+    }
+
+    internal void AppendLine(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        OnUi(() =>
+        {
+            FinishProgressOnUi();
+            output.AppendText(text + Environment.NewLine);
+            ScrollToEnd();
+        });
+    }
+
+    void SetProgress(string text) => OnUi(() =>
+    {
+        progressStart ??= output.TextLength;
+        output.Select(progressStart.Value, output.TextLength - progressStart.Value);
+        output.SelectedText = text;
+        ScrollToEnd();
+    });
+
+    void FinishProgress(string? finalText = null) => OnUi(() =>
+    {
+        if (!string.IsNullOrWhiteSpace(finalText))
+        {
+            progressStart ??= output.TextLength;
+            output.Select(progressStart.Value, output.TextLength - progressStart.Value);
+            output.SelectedText = finalText;
+        }
+        FinishProgressOnUi();
+        ScrollToEnd();
+    });
+
+    void FinishProgressOnUi()
+    {
+        if (!progressStart.HasValue) return;
+        output.AppendText(Environment.NewLine);
+        progressStart = null;
+    }
+
+    void ScrollToEnd()
+    {
+        output.SelectionStart = output.TextLength;
+        output.SelectionLength = 0;
+        output.ScrollToCaret();
+    }
+
+    void OnUi(Action action)
+    {
+        if (output.IsDisposed) return;
+        if (output.InvokeRequired)
+        {
+            try { output.Invoke(action); }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+            return;
+        }
+        action();
+    }
+}
+
 internal sealed class CustomShowSam2MattingSetupForm : Form
 {
     readonly string script;
@@ -4732,12 +4890,14 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
     };
     readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36,
         Text = "Cancel" };
+    readonly SetupProcessOutput outputWriter;
     Process? process;
     bool complete;
 
     internal CustomShowSam2MattingSetupForm(string script)
     {
         this.script = script;
+        outputWriter = new(output);
         Text = "Install SAM2Matting Trackers";
         ClientSize = new Size(900, 520);
         Controls.Add(output);
@@ -4765,11 +4925,10 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
             }) start.ArgumentList.Add(argument);
             process = Process.Start(start) ??
                 throw new InvalidOperationException("PowerShell could not be started.");
-            process.OutputDataReceived += (_, e) => Append(e.Data);
-            process.ErrorDataReceived += (_, e) => Append(e.Data);
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+            Task standardOutput = outputWriter.PumpAsync(process.StandardOutput);
+            Task standardError = outputWriter.PumpAsync(process.StandardError);
             await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
                     $"Setup failed with exit code {process.ExitCode}.");
@@ -4779,7 +4938,6 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
         catch (Exception error)
         {
             Append("Setup failed: " + error.Message);
-            DialogResult = DialogResult.Abort;
         }
         finally
         {
@@ -4788,12 +4946,7 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
         }
     }
 
-    void Append(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
-        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
-        output.AppendText(text + Environment.NewLine);
-    }
+    void Append(string? text) => outputWriter.AppendLine(text);
 
     void CloseSetup()
     {
@@ -4955,6 +5108,7 @@ internal sealed class CustomShowSetupForm : Form
         ScrollBars = ScrollBars.Both, WordWrap = false
     };
     readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
+    readonly SetupProcessOutput outputWriter;
     Process? process;
     bool complete;
     internal bool Succeeded { get; private set; }
@@ -4965,6 +5119,7 @@ internal sealed class CustomShowSetupForm : Form
         bool installProPainter, bool installEdgeTam, bool installStabilo)
     {
         this.script = script;
+        outputWriter = new(output);
         this.installTransNetV2 = installTransNetV2;
         this.installOmniShotCut = installOmniShotCut;
         this.installMatAnyone2 = installMatAnyone2;
@@ -5019,11 +5174,10 @@ internal sealed class CustomShowSetupForm : Form
                 start.ArgumentList.Add("-InstallProPainter");
             process = Process.Start(start) ??
                 throw new InvalidOperationException("PowerShell could not be started.");
-            process.OutputDataReceived += (_, e) => Append(e.Data);
-            process.ErrorDataReceived += (_, e) => Append(e.Data);
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+            Task standardOutput = outputWriter.PumpAsync(process.StandardOutput);
+            Task standardError = outputWriter.PumpAsync(process.StandardError);
             await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
             Succeeded = process.ExitCode == 0;
             Append(Succeeded ? "Setup completed successfully." :
                 $"Setup failed with exit code {process.ExitCode}.");
@@ -5036,12 +5190,7 @@ internal sealed class CustomShowSetupForm : Form
         }
     }
 
-    void Append(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
-        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
-        output.AppendText(text + Environment.NewLine);
-    }
+    void Append(string? text) => outputWriter.AppendLine(text);
 
     void CloseSetup()
     {

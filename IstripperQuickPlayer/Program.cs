@@ -33,6 +33,7 @@ namespace IStripperQuickPlayer
                     ("mask draft round trip", CustomShowMaskDraft.VerifyRoundTrip()),
                     ("mask archive round trip", CustomMaskArchive.VerifyRoundTrip()),
                     ("automatic show queue", CustomShowJobRunner.VerifyQueuePersistence()),
+                    ("failed-show cleanup", CustomShowFailedCleanup.VerifyProtection()),
                     ("automatic queue eligibility", VerifyQueueEligibility()),
                     ("watermark selection", CustomWatermarkRemovalForm.VerifySelection()),
                     ("stabilization settings", CustomVideoStabilizationForm.VerifySettings()),

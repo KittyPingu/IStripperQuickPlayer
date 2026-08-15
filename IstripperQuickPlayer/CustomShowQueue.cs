@@ -360,6 +360,72 @@ internal sealed class CustomShowQueueManager : IDisposable
         OnChanged();
     }
 
+    internal async Task<string> RunNowAsync(string id,
+        IProgress<CustomShowProgress> progress,
+        Func<string, CustomShowManifest, Task<bool>> reviewBeforePublication,
+        CancellationToken token)
+    {
+        CustomShowQueueJob job;
+        lock (gate)
+        {
+            if (loop is { IsCompleted: false })
+                throw new InvalidOperationException(
+                    "Pause queued processing before using Process and Preview.");
+            job = document.Jobs.FirstOrDefault(value => value.Id == id) ??
+                throw new InvalidOperationException("The processing job no longer exists.");
+            if (job.Status != CustomShowQueueStatus.Pending)
+                throw new InvalidOperationException(
+                    "Only a pending job can be processed immediately.");
+            job.Status = CustomShowQueueStatus.Running;
+            job.StartedUtc = DateTime.UtcNow;
+            job.Percent = 0;
+            job.Message = "Starting";
+            job.Error = null;
+            SaveLocked();
+        }
+        OnChanged();
+        try
+        {
+            Progress<CustomShowProgress> trackedProgress = new(value =>
+            {
+                UpdateProgress(id, value.Percent, string.IsNullOrWhiteSpace(value.Message)
+                    ? value.Stage : value.Message);
+                progress.Report(value);
+            });
+            string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
+                configuration, storage, trackedProgress, preparePublication, token,
+                reviewBeforePublication);
+            lock (gate)
+            {
+                job.Status = CustomShowQueueStatus.Completed;
+                job.Percent = 100;
+                job.Message = "Completed";
+                job.CompletedUtc = DateTime.UtcNow;
+                job.PublishedShowId = publishedId;
+                job.ReadyToPublish = false;
+                SaveLocked();
+            }
+            try { published(); } catch (Exception error)
+            { Debug.WriteLine("Could not refresh published custom show: " + error); }
+            OnChanged();
+            return publishedId;
+        }
+        catch
+        {
+            lock (gate)
+            {
+                job.Status = CustomShowQueueStatus.Failed;
+                job.Message = "Process and Preview did not publish";
+                job.CompletedUtc = DateTime.UtcNow;
+                job.ReadyToPublish = false;
+                SaveLocked();
+            }
+            CustomShowQueueStore.TryDelete(storage.Work(job.Id));
+            OnChanged();
+            throw;
+        }
+    }
+
     async Task RunLoop(CancellationToken token)
     {
         while (true)
@@ -565,6 +631,22 @@ internal sealed class CustomShowQueueManager : IDisposable
         OnChanged();
     }
 
+    internal bool DeleteFailed(string id)
+    {
+        lock (gate)
+        {
+            int index = document.Jobs.FindIndex(value => value.Id == id);
+            if (index < 0 ||
+                document.Jobs[index].Status != CustomShowQueueStatus.Failed)
+                return false;
+            document.Jobs.RemoveAt(index);
+            storage.DeleteAssets(id);
+            SaveLocked();
+        }
+        OnChanged();
+        return true;
+    }
+
     internal int RemoveCompleted()
     {
         int removed;
@@ -619,7 +701,8 @@ internal static class CustomShowJobRunner
     internal static async Task<string> RunAsync(CustomShowQueueJob job,
         CustomShowStore store, CustomShowConfiguration configuration,
         CustomShowQueueStore queue, IProgress<CustomShowProgress> progress,
-        Func<string?, Task> preparePublication, CancellationToken token)
+        Func<string?, Task> preparePublication, CancellationToken token,
+        Func<string, CustomShowManifest, Task<bool>>? reviewBeforePublication = null)
     {
         Validate(job, store, configuration, queue);
         string staging = queue.Work(job.Id);
@@ -734,6 +817,13 @@ internal static class CustomShowJobRunner
         store.SavePerformer(job.Performer);
         CustomShowStore.WriteJsonAtomic(Path.Combine(staging, "show.json"), show);
         job.ReadyToPublish = true;
+        if (reviewBeforePublication != null &&
+            !await reviewBeforePublication(staging, show))
+        {
+            job.ReadyToPublish = false;
+            throw new OperationCanceledException(
+                "Process and Preview was cancelled before publication.");
+        }
         await PublishAsync(job, show, staging, store, progress,
             preparePublication, token);
         return show.Id;
