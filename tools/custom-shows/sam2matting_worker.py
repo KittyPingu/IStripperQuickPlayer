@@ -394,14 +394,18 @@ def probe_source(source):
 
 
 def extract_scene(source, directory, start_frame, frame_count, fps,
-                  on_frame=None, check_cancelled=None):
+                  on_frame=None, check_cancelled=None, output_size=None):
     directory.mkdir(parents=True, exist_ok=True)
     start_seconds = float(Fraction(start_frame, 1) / fps)
     filter_rate = f"{fps.numerator}/{fps.denominator}"
+    filters = [f"fps={filter_rate}"]
+    if output_size is not None:
+        size = max(1, int(output_size))
+        filters.append(f"scale={size}:{size}:flags=bicubic")
     command = [
         ffmpeg(), "-y", "-v", "error", "-progress", "pipe:1", "-nostats",
         "-ss", f"{start_seconds:.9f}",
-        "-i", source, "-an", "-vf", f"fps={filter_rate}",
+        "-i", source, "-an", "-vf", ",".join(filters),
         "-frames:v", str(frame_count), "-pix_fmt", "rgb24",
         "-compression_level", "1",
         str(directory / "%08d.png"),
@@ -555,7 +559,8 @@ def release_sam2_frame_alpha(state, frame_index):
 
 def process_sam2_scene(predictor, request, scene, scene_dir, union,
                        completed_units=0, total_units=1, scene_number=1,
-                       scene_total=1, completed_frames=0, total_frames=1):
+                       scene_total=1, completed_frames=0, total_frames=1,
+                       output_width=None, output_height=None):
     import numpy as np
     import torch
     from PIL import Image
@@ -574,6 +579,11 @@ def process_sam2_scene(predictor, request, scene, scene_dir, union,
     state = predictor.init_state(
         video_path=str(scene_dir), offload_video_to_cpu=True,
         offload_state_to_cpu=False, async_loading_frames=True)
+    if output_width is not None and output_height is not None:
+        # Extracted tracking images are already model-sized, but all prompt
+        # coordinates and progressive alpha remain in canonical source space.
+        state["video_width"] = int(output_width)
+        state["video_height"] = int(output_height)
     # Fudan's modified matting predictor bypasses the base predictor's device
     # transfer and reads inference_state["images"] directly in its alpha head.
     # Present a one-frame CUDA cache so tracking and matting share the current
@@ -984,6 +994,8 @@ def run_job(request, loaded=None):
     output.mkdir(parents=True, exist_ok=True)
     emit("preflight", 0, "Validated saved SAM2Matting job contract")
     predictor = loaded if loaded is not None else load_variant(runtime, tracker)
+    sam2_frame_size = (None if tracker == "sam3" else
+                       int(getattr(predictor, "image_size", 1024)))
     scenes_by_clip = {}
     for scene in request["scenes"]:
         scenes_by_clip.setdefault(scene["clipId"].lower(), []).append(scene)
@@ -1115,7 +1127,8 @@ def run_job(request, loaded=None):
                                             int(scene["startFrame"]) + input_offset,
                                             input_count, media["fps"],
                                             extraction_progress,
-                                            lambda: cancelled(request))
+                                            lambda: cancelled(request),
+                                            sam2_frame_size)
                                 else:
                                     while True:
                                         try:
@@ -1205,7 +1218,8 @@ def run_job(request, loaded=None):
                                             next_input_count, media["fps"],
                                             lambda frames, state=next_progress:
                                                 state.__setitem__("frames", frames),
-                                            check_carry_cancelled)
+                                            check_carry_cancelled,
+                                            sam2_frame_size)
                                     carried_prefetch_staging = next_staging_dir
                                     carried_prefetch_progress = next_progress
 
@@ -1250,9 +1264,10 @@ def run_job(request, loaded=None):
                                             process_sam2_scene(
                                                 predictor, request, scene, scene_dir,
                                                 union, completed_units + input_count,
-                                                total_units, completed_scenes + 1,
-                                                total_scenes, completed_frames,
-                                                total_frames)
+                                                 total_units, completed_scenes + 1,
+                                                 total_scenes, completed_frames,
+                                                 total_frames, media["width"],
+                                                 media["height"])
                                     chunk_text = (f", chunk {chunk_index + 1}/"
                                                   f"{len(chunks)}"
                                                   if len(chunks) > 1 else "")
