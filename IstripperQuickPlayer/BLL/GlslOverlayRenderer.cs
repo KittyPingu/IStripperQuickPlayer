@@ -1,7 +1,6 @@
 using OpenTK.Graphics.OpenGL4;
 using OpenTK.Mathematics;
-using OpenTK.Windowing.Common;
-using OpenTK.Windowing.Desktop;
+using OpenTK.Windowing.GraphicsLibraryFramework;
 using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -18,7 +17,18 @@ internal static class GlslOverlayRenderer
     private const int FrameDuration = 100;
     private const int MaximumAtlasWidth = 4096;
     private static readonly object renderLock = new();
+    [ThreadStatic]
+    private static RawGlContext? batchContext;
+    [ThreadStatic]
+    private static int batchDepth;
     internal static string? LastError { get; private set; }
+
+    internal static IDisposable BeginBatch()
+    {
+        System.Threading.Monitor.Enter(renderLock);
+        batchDepth++;
+        return new RenderBatch();
+    }
 
     internal static DrawingBitmap? Render(
         string name, string pixelShader, string parameters,
@@ -48,8 +58,15 @@ internal static class GlslOverlayRenderer
         lock (renderLock)
         {
             LastError = null;
+            RawGlContext? temporaryContext = null;
             try
             {
+                RawGlContext context;
+                if (batchDepth > 0)
+                    context = batchContext ??= new(width, height);
+                else
+                    context = temporaryContext = new(width, height);
+                context.EnsureFramebufferSize(width, height);
                 return RenderCore(
                     pixelShader, ParseColors(parameters, defaultColors),
                     channel0, channel1, rotation, mirrorX,
@@ -63,6 +80,10 @@ internal static class GlslOverlayRenderer
                     exception);
                 return null;
             }
+            finally
+            {
+                temporaryContext?.Dispose();
+            }
         }
     }
 
@@ -72,20 +93,6 @@ internal static class GlslOverlayRenderer
         int rotation, bool mirrorX, int frameCount, int frameDuration,
         int width, int height)
     {
-        GLFWProvider.CheckForMainThread = false;
-        NativeWindowSettings settings = new()
-        {
-            ClientSize = new Vector2i(width, height),
-            StartVisible = false,
-            StartFocused = false,
-            WindowBorder = WindowBorder.Hidden,
-            API = ContextAPI.OpenGL,
-            APIVersion = new Version(3, 3),
-            Profile = ContextProfile.Core
-        };
-        using OpenTK.Windowing.Desktop.NativeWindow window = new(settings);
-        window.Context.MakeCurrent();
-
         int vertexShader = Compile(
             ShaderType.VertexShader, VertexShader);
         int fragmentShader = Compile(
@@ -161,6 +168,105 @@ internal static class GlslOverlayRenderer
         GL.DeleteShader(fragmentShader);
         GL.DeleteShader(vertexShader);
         return sheet;
+    }
+
+    private sealed class RenderBatch : IDisposable
+    {
+        private readonly int threadId = Environment.CurrentManagedThreadId;
+        private bool disposed;
+
+        public void Dispose()
+        {
+            if (disposed)
+                return;
+            if (threadId != Environment.CurrentManagedThreadId)
+                throw new InvalidOperationException(
+                    "The overlay render batch must be disposed on its creating thread.");
+            disposed = true;
+            try
+            {
+                batchDepth--;
+                if (batchDepth == 0)
+                {
+                    batchContext?.Dispose();
+                    batchContext = null;
+                }
+            }
+            finally
+            {
+                System.Threading.Monitor.Exit(renderLock);
+            }
+        }
+    }
+
+    private sealed unsafe class RawGlContext : IDisposable
+    {
+        private Window* window;
+        private bool initialized;
+
+        internal RawGlContext(int width, int height)
+        {
+            try
+            {
+                if (!GLFW.Init())
+                    throw new InvalidOperationException(
+                        "GLFW could not initialize the overlay renderer.");
+                initialized = true;
+                GLFW.DefaultWindowHints();
+                GLFW.WindowHint(WindowHintBool.Visible, false);
+                GLFW.WindowHint(WindowHintBool.Focused, false);
+                GLFW.WindowHint(
+                    WindowHintClientApi.ClientApi, ClientApi.OpenGlApi);
+                GLFW.WindowHint(WindowHintInt.ContextVersionMajor, 3);
+                GLFW.WindowHint(WindowHintInt.ContextVersionMinor, 3);
+                GLFW.WindowHint(
+                    WindowHintOpenGlProfile.OpenGlProfile,
+                    OpenGlProfile.Core);
+                window = GLFW.CreateWindow(
+                    width, height, "QuickPlayer overlay renderer", null, null);
+                if (window == null)
+                    throw new InvalidOperationException(
+                        "GLFW could not create the overlay rendering context.");
+                GLFW.MakeContextCurrent(window);
+                GL.LoadBindings(new GLFWBindingsContext());
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+        }
+
+        internal void EnsureFramebufferSize(int width, int height)
+        {
+            GLFW.MakeContextCurrent(window);
+            GLFW.GetFramebufferSize(
+                window, out int actualWidth, out int actualHeight);
+            if (actualWidth == width && actualHeight == height)
+                return;
+            GLFW.SetWindowSize(window, width, height);
+            GLFW.GetFramebufferSize(
+                window, out actualWidth, out actualHeight);
+            if (actualWidth < width || actualHeight < height)
+                throw new InvalidOperationException(
+                    $"The overlay framebuffer is {actualWidth}x{actualHeight}; " +
+                    $"{width}x{height} was requested.");
+        }
+
+        public void Dispose()
+        {
+            if (window != null)
+            {
+                GLFW.MakeContextCurrent(null);
+                GLFW.DestroyWindow(window);
+                window = null;
+            }
+            if (initialized)
+            {
+                initialized = false;
+                GLFW.Terminate();
+            }
+        }
     }
 
     private static int AtlasColumns(int frameCount, int frameWidth)

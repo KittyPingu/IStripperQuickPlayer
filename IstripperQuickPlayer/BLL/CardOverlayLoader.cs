@@ -290,37 +290,49 @@ internal static class CardOverlayLoader
             Dictionary<string, CardOverlayChoice> catalogue =
                 ReadAvailableOverlayCatalogue(
                     dataPath, mainPath);
-            foreach (string id in showAssignments.Values
+            string[] requestedOverlayIds = showAssignments.Values
                 .Concat(personAssignments.Values)
                 .Concat(rules.OverlayIds())
                 .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Distinct(StringComparer.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            (string Id, CardOverlay Overlay)[] loaded = Task.Run(() =>
             {
-                if (!catalogue.TryGetValue(id, out CardOverlayChoice? choice))
-                    continue;
-                if (QuickPlayerCardOverlays.Contains(choice.Id))
+                using IDisposable batch = GlslOverlayRenderer.BeginBatch();
+                List<(string Id, CardOverlay Overlay)> result = [];
+                try
                 {
-                    CardOverlay? builtIn =
-                        QuickPlayerCardOverlays.Create(choice);
-                    if (builtIn == null)
-                        continue;
-                    overlaysById[id] = builtIn;
-                    loadedOverlays.Add(builtIn);
-                    continue;
+                    foreach (string id in requestedOverlayIds)
+                    {
+                        if (!catalogue.TryGetValue(
+                                id, out CardOverlayChoice? choice))
+                            continue;
+                        CardOverlay? overlay;
+                        if (QuickPlayerCardOverlays.Contains(choice.Id))
+                            overlay = QuickPlayerCardOverlays.Create(choice);
+                        else
+                        {
+                            string? rccPath = FindRcc(
+                                choice.File, overlaysPath, mainPath);
+                            overlay = rccPath == null
+                                ? null : LoadRcc(rccPath, choice);
+                        }
+                        if (overlay != null)
+                            result.Add((id, overlay));
+                    }
+                    return result.ToArray();
                 }
-                string? rccPath = FindRcc(
-                    choice.File, overlaysPath, mainPath);
-                if (rccPath == null)
-                    continue;
-
-                CardOverlay? overlay = Task.Run(
-                    () => LoadRccAsync(rccPath, choice))
-                    .GetAwaiter().GetResult();
-                if (overlay != null)
+                catch
                 {
-                    overlaysById[id] = overlay;
-                    loadedOverlays.Add(overlay);
+                    foreach ((_, CardOverlay overlay) in result)
+                        overlay.Dispose();
+                    throw;
                 }
+            }).GetAwaiter().GetResult();
+            foreach ((string id, CardOverlay overlay) in loaded)
+            {
+                overlaysById[id] = overlay;
+                loadedOverlays.Add(overlay);
             }
 
             HashSet<string> recentCards =
@@ -458,7 +470,7 @@ internal static class CardOverlayLoader
         if (path == null)
             return false;
         using CardOverlay? overlay =
-            Task.Run(() => LoadRccAsync(path, choice))
+            Task.Run(() => LoadRcc(path, choice))
                 .GetAwaiter().GetResult();
         return overlay?.Animated == true &&
             (!choice.File.Equals(
@@ -621,7 +633,7 @@ internal static class CardOverlayLoader
             if (path == null)
                 return null;
             CardOverlay? overlay = Task.Run(
-                () => LoadRccAsync(path, choice))
+                () => LoadRcc(path, choice))
                 .GetAwaiter().GetResult();
             return overlay == null ? null : new Preview(overlay);
         }
@@ -969,7 +981,7 @@ internal static class CardOverlayLoader
         return Encoding.UTF8.GetString(decoded);
     }
 
-    private static async Task<CardOverlay?> LoadRccAsync(
+    private static CardOverlay? LoadRcc(
         string path, CardOverlayChoice choice)
     {
         using FileStream stream = new(path, FileMode.Open, FileAccess.Read,
@@ -1024,9 +1036,9 @@ internal static class CardOverlayLoader
         {
             if (string.IsNullOrWhiteSpace(metadata.PixelShader))
                 return null;
-            using Bitmap? channel0 = await DecodeChannelAsync(
+            using Bitmap? channel0 = DecodeChannel(
                 images, metadata.IChannel0Source);
-            using Bitmap? channel1 = await DecodeChannelAsync(
+            using Bitmap? channel1 = DecodeChannel(
                 images, metadata.IChannel1Source);
             Bitmap? shaderSheet = GlslOverlayRenderer.Render(
                 choice.File, metadata.PixelShader, choice.Parameters,
@@ -1071,9 +1083,9 @@ internal static class CardOverlayLoader
             select image).FirstOrDefault();
 
         Bitmap? sprite = sheet.image.Data == null
-            ? null : await DecodeImageAsync(sheet.image.Data);
+            ? null : DecodeImage(sheet.image.Data);
         Bitmap? staticImage = fallback.Data == null
-            ? null : await DecodeImageAsync(fallback.Data);
+            ? null : DecodeImage(fallback.Data);
         if (sprite == null && staticImage == null)
             return null;
 
@@ -1083,7 +1095,7 @@ internal static class CardOverlayLoader
             metadata.FrameCount, metadata.FrameDuration);
     }
 
-    private static async Task<Bitmap?> DecodeChannelAsync(
+    private static Bitmap? DecodeChannel(
         IEnumerable<(string Name, byte[] Data, int Width, int Height)> images,
         string? source)
     {
@@ -1092,7 +1104,7 @@ internal static class CardOverlayLoader
         string name = Path.GetFileName(source.Replace('/', '\\'));
         byte[]? data = images.FirstOrDefault(image =>
             image.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Data;
-        return data == null ? null : await DecodeImageAsync(data);
+        return data == null ? null : DecodeImage(data);
     }
 
     private static Dictionary<int, RccResource> ReadRccResources(
@@ -1314,7 +1326,7 @@ internal static class CardOverlayLoader
         return false;
     }
 
-    private static async Task<Bitmap?> DecodeImageAsync(byte[] data)
+    private static Bitmap? DecodeImage(byte[] data)
     {
         try
         {
@@ -1330,18 +1342,18 @@ internal static class CardOverlayLoader
         try
         {
             using InMemoryRandomAccessStream stream = new();
-            await stream.WriteAsync(data.AsBuffer()).AsTask()
-                .ConfigureAwait(false);
+            stream.WriteAsync(data.AsBuffer()).AsTask()
+                .GetAwaiter().GetResult();
             stream.Seek(0);
-            BitmapDecoder decoder = await BitmapDecoder.CreateAsync(stream)
-                .AsTask().ConfigureAwait(false);
-            PixelDataProvider pixels = await decoder.GetPixelDataAsync(
+            BitmapDecoder decoder = BitmapDecoder.CreateAsync(stream)
+                .AsTask().GetAwaiter().GetResult();
+            PixelDataProvider pixels = decoder.GetPixelDataAsync(
                     BitmapPixelFormat.Bgra8,
                     BitmapAlphaMode.Premultiplied,
                     new BitmapTransform(),
                     ExifOrientationMode.IgnoreExifOrientation,
                     ColorManagementMode.DoNotColorManage)
-                .AsTask().ConfigureAwait(false);
+                .AsTask().GetAwaiter().GetResult();
             byte[] source = pixels.DetachPixelData();
             Bitmap bitmap = new((int)decoder.PixelWidth,
                 (int)decoder.PixelHeight, PixelFormat.Format32bppPArgb);
