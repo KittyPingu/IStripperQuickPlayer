@@ -30,6 +30,12 @@ internal static class Sam2MattingSupport
         tracker == "sam3" ? promptMode == "text-concepts" :
         promptMode is "initial-mask" or "rvm-initial-mask";
 
+    internal static bool IsSupportedOptionContract(int version, string tracker,
+        string? promptMode) =>
+        version == OptionVersion && IsValidPromptMode(tracker, promptMode) ||
+        version == 2 && IsValidPromptMode(tracker, promptMode) &&
+            promptMode != "rvm-initial-mask";
+
     internal static string CheckpointFile(string? tracker) => tracker switch
     {
         "sam2.1-tiny" => "SAM2Matting-SAM2.1Tiny.pt",
@@ -111,7 +117,12 @@ internal static class Sam2MattingSupport
         IsValidPromptMode("sam2.1-base-plus", "rvm-initial-mask") &&
         IsValidPromptMode("sam3", "text-concepts") &&
         !IsValidPromptMode("sam3", "rvm-initial-mask") &&
-        !IsValidPromptMode("sam2.1-tiny", "text-concepts");
+        !IsValidPromptMode("sam2.1-tiny", "text-concepts") &&
+        IsSupportedOptionContract(2, "sam3", "text-concepts") &&
+        IsSupportedOptionContract(2, "sam2.1-tiny", "initial-mask") &&
+        !IsSupportedOptionContract(2, "sam2.1-tiny", "rvm-initial-mask") &&
+        IsSupportedOptionContract(OptionVersion, "sam2.1-tiny",
+            "rvm-initial-mask");
 }
 
 internal static class Sam2MattingScenePlanner

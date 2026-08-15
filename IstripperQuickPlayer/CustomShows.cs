@@ -868,10 +868,10 @@ internal sealed class CustomShowStore
         bool sam2Matting = processing.Algorithm == Sam2MattingSupport.Algorithm;
         if (sam2Matting)
         {
-            if (processing.ProcessingOptionVersion != Sam2MattingSupport.OptionVersion ||
-                processing.Tracker == null ||
+            if (processing.Tracker == null ||
                 !Sam2MattingSupport.Trackers.Contains(processing.Tracker) ||
-                !Sam2MattingSupport.IsValidPromptMode(processing.Tracker,
+                !Sam2MattingSupport.IsSupportedOptionContract(
+                    processing.ProcessingOptionVersion, processing.Tracker,
                     processing.PromptMode) ||
                 processing.EnvironmentSpecVersion !=
                     Sam2MattingSupport.EnvironmentVersion ||
