@@ -770,8 +770,16 @@ internal sealed class CustomPlayerForm : Form
             (byte)((value + 128u) / 257u);
         bool DecodePair()
         {
-            if (!rgb.DecodeNext(out rgbTick) ||
-                !alpha.DecodeNext(out alphaTick))
+            bool rgbDecoded = false, alphaDecoded = false;
+            long nextRgbTick = 0, nextAlphaTick = 0;
+            // The streams have independent decoder state. Decode them in
+            // parallel so alpha does not serialize behind the foreground.
+            Parallel.Invoke(
+                () => rgbDecoded = rgb.DecodeNext(out nextRgbTick),
+                () => alphaDecoded = alpha.DecodeNext(out nextAlphaTick));
+            rgbTick = nextRgbTick;
+            alphaTick = nextAlphaTick;
+            if (!rgbDecoded || !alphaDecoded)
             {
                 Ended = true;
                 return false;

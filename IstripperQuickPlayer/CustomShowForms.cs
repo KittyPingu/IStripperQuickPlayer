@@ -1753,7 +1753,7 @@ internal sealed class CustomShowEditorForm : Form
                 EncoderPolicy = algorithm == Sam2MattingSupport.Algorithm
                     ? "quickplayer-h264-aac" : null,
                 AlphaEncodingPolicy = algorithm == Sam2MattingSupport.Algorithm
-                    ? "ffv1-gray16le-linear" : null,
+                    ? Sam2MattingSupport.AlphaEncodingPolicy : null,
                 ScenePlanVersion = algorithm == Sam2MattingSupport.Algorithm
                     ? Sam2MattingSupport.ScenePlanVersion : null,
                 Scenes = processingScenes,
@@ -2128,7 +2128,7 @@ internal sealed class CustomShowEditorForm : Form
         AttentionPolicy = "pytorch-sdpa",
         PrecisionPolicy = "bf16-autocast",
         EncoderPolicy = "quickplayer-h264-aac",
-        AlphaEncodingPolicy = "ffv1-gray16le-linear",
+        AlphaEncodingPolicy = Sam2MattingSupport.AlphaEncodingPolicy,
         ScenePlanVersion = Sam2MattingSupport.ScenePlanVersion,
         Scenes = CloneQueueValue(scenes),
         MattingDetailPx = 512,

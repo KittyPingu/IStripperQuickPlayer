@@ -376,6 +376,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/Form1.RestApi.cs
 !/IstripperQuickPlayer/CustomShowQueue.cs
 !/IstripperQuickPlayer/CustomShowFailedCleanup.cs
+!/IstripperQuickPlayer/CustomShowCheckForm.cs
 !/IstripperQuickPlayer/Sam2MattingSupport.cs
 !/IstripperQuickPlayer/Sam2MattingWorkerHost.cs
 !/IstripperQuickPlayer/SharedShaderTextureChannel.cs

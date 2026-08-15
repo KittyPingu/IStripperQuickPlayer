@@ -5,7 +5,8 @@ namespace IStripperQuickPlayer;
 internal static class Sam2MattingSupport
 {
     internal const string Algorithm = "sam2matting";
-    internal const int OptionVersion = 1;
+    internal const int OptionVersion = 2;
+    internal const string AlphaEncodingPolicy = "h264-yuv420p-linear";
     internal const int ScenePlanVersion = 1;
     internal const string EnvironmentVersion = "sam2matting-v1";
     internal const string SourceRevision =

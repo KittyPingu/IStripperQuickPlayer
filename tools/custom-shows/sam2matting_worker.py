@@ -25,6 +25,7 @@ from pathlib import Path
 
 SOURCE_REVISION = "73dd721d77b56749248aefe5e8824d7f61b9d13c"
 CHECKPOINT_REVISION = "4315db9c60d27fde396b09765748a0ca6c97bed5"
+ALPHA_ENCODING_POLICY = "h264-yuv420p-linear"
 CHECKPOINTS = {
     "sam2.1-tiny": (
         "SAM2Matting-SAM2.1Tiny.pt",
@@ -177,12 +178,12 @@ class Sam2AlphaRawSink:
         self.stream = stream
         self.base_frame = int(base_frame)
         self.shape = (int(frame_count), int(height), int(width))
-        self.frame_bytes = int(width) * int(height) * 2
+        self.frame_bytes = int(width) * int(height)
 
     def write_frame(self, frame_index, values):
         import numpy as np
 
-        encoded = np.rint(values * 65535.0).astype("<u2", copy=False)
+        encoded = np.rint(values * 255.0).astype(np.uint8, copy=False)
         self.stream.seek((self.base_frame + int(frame_index)) * self.frame_bytes)
         self.stream.write(encoded.tobytes(order="C"))
 
@@ -778,18 +779,19 @@ def process_sam3_scene(predictor, request, scene_dir, union,
 
 def encode_alpha(raw_path, destination, width, height, fps, count,
                  on_frame=None, check_cancelled=None):
+    codec = alpha_codec_args(width, height)
     run_ffmpeg_progress([
         ffmpeg(), "-y", "-v", "error", "-progress", "pipe:1", "-nostats",
         "-f", "rawvideo",
-        "-pixel_format", "gray16le", "-video_size", f"{width}x{height}",
+        "-pixel_format", "gray", "-video_size", f"{width}x{height}",
         "-framerate", f"{fps.numerator}/{fps.denominator}", "-i", str(raw_path),
-        "-frames:v", str(count), "-an", "-c:v", "ffv1", "-level", "3",
-        "-pix_fmt", "gray16le", "-color_range", "pc", str(destination),
+        "-frames:v", str(count), "-an", *codec,
+        "-pix_fmt", "yuv420p", "-color_range", "pc", str(destination),
     ], count, on_frame, check_cancelled)
 
 
 class FfmpegAlphaStreamSink:
-    """Stream ascending gray16 alpha frames directly into an FFV1 segment."""
+    """Stream ascending 8-bit alpha frames into a playback H.264 segment."""
 
     def __init__(self, destination, width, height, fps, frame_count):
         self.destination = Path(destination)
@@ -797,10 +799,11 @@ class FfmpegAlphaStreamSink:
         self.next_frame = 0
         self.process = subprocess.Popen([
             ffmpeg(), "-y", "-v", "error", "-f", "rawvideo",
-            "-pixel_format", "gray16le", "-video_size", f"{width}x{height}",
+            "-pixel_format", "gray", "-video_size", f"{width}x{height}",
             "-framerate", f"{fps.numerator}/{fps.denominator}",
             "-i", "pipe:0", "-frames:v", str(frame_count), "-an",
-            "-c:v", "ffv1", "-level", "3", "-pix_fmt", "gray16le",
+            *alpha_codec_args(width, height),
+            "-pix_fmt", "yuv420p",
             "-color_range", "pc", str(self.destination),
         ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
            stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -810,9 +813,9 @@ class FfmpegAlphaStreamSink:
 
         if int(frame_index) != self.next_frame:
             raise RuntimeError(
-                f"FFV1 alpha stream expected frame {self.next_frame}, "
+                f"H.264 alpha stream expected frame {self.next_frame}, "
                 f"received {frame_index}")
-        encoded = np.rint(values * 65535.0).astype("<u2", copy=False)
+        encoded = np.rint(values * 255.0).astype(np.uint8, copy=False)
         self.process.stdin.write(encoded.tobytes(order="C"))
         self.next_frame += 1
 
@@ -824,7 +827,7 @@ class FfmpegAlphaStreamSink:
         code = self.process.wait()
         if code != 0 or self.next_frame != self.frame_count:
             raise RuntimeError(
-                f"FFV1 alpha stream failed after {self.next_frame}/"
+                f"H.264 alpha stream failed after {self.next_frame}/"
                 f"{self.frame_count} frames: {diagnostics.strip()}")
 
     def abort(self):
@@ -849,7 +852,7 @@ class Sam2SceneAlphaSink:
             self.forward_path, width, height, fps,
             frame_count - self.prompt_frame)
         self.reverse_path = Path(work) / f"alpha-{scene_id}-reverse.mkv"
-        self.reverse_raw_path = Path(work) / f"alpha-{scene_id}-reverse.gray16le"
+        self.reverse_raw_path = Path(work) / f"alpha-{scene_id}-reverse.gray8"
         self.reverse_stream = None
         self.reverse = None
         if self.prompt_frame > 0:
@@ -891,7 +894,7 @@ class Sam2SceneAlphaSink:
 
 def concat_alpha_segments(segments, destination, list_path):
     if not segments:
-        raise RuntimeError("No FFV1 alpha segments were produced")
+        raise RuntimeError("No H.264 alpha segments were produced")
     if len(segments) == 1:
         os.replace(segments[0], destination)
         return
@@ -933,6 +936,14 @@ def nvenc_available():
     return _NVENC_AVAILABLE
 
 
+def alpha_codec_args(width, height):
+    # NVENC rejects very small frames even when the encoder itself is present.
+    if int(width) >= 256 and int(height) >= 128 and nvenc_available():
+        return ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq",
+                "-cq", "10"]
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", "10"]
+
+
 def encode_foreground(source, destination, start_frame, fps, count,
                       on_frame=None, check_cancelled=None):
     # Use the same canonical frame origin as scene extraction and alpha.  This
@@ -961,7 +972,7 @@ def encode_foreground(source, destination, start_frame, fps, count,
 def probe_output(path):
     result = run_process([
         ffprobe(), "-v", "error", "-count_packets", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate,time_base,codec_name,pix_fmt,nb_frames,nb_read_packets",
+        "-show_entries", "stream=width,height,avg_frame_rate,time_base,codec_name,pix_fmt,color_range,nb_frames,nb_read_packets",
         "-of", "json", str(path),
     ])
     stream = json.loads(result.stdout)["streams"][0]
@@ -981,6 +992,7 @@ def probe_output(path):
         "width": int(stream["width"]), "height": int(stream["height"]),
         "frameRate": stream["avg_frame_rate"], "timeBase": stream["time_base"],
         "codec": stream["codec_name"], "pixelFormat": stream["pix_fmt"],
+        "colorRange": stream.get("color_range"),
         "frames": int(frame_value),
     }
 
@@ -992,7 +1004,7 @@ def write_union(union, raw_stream, check_cancelled=None, start_index=0):
         if check_cancelled is not None:
             check_cancelled()
         alpha = np.asarray(union[index], dtype=np.float32)
-        quantized = np.rint(np.clip(alpha, 0, 1) * 65535.0).astype("<u2")
+        quantized = np.rint(np.clip(alpha, 0, 1) * 255.0).astype(np.uint8)
         raw_stream.write(quantized.tobytes(order="C"))
 
 
@@ -1021,6 +1033,9 @@ def run_job(request, loaded=None):
     runtime = Path(request["runtimePath"])
     environment = marker(runtime)
     tracker = request["tracker"]
+    if request.get("alphaEncodingPolicy") != ALPHA_ENCODING_POLICY:
+        raise RuntimeError(
+            "SAM2Matting requires the current H.264 8-bit alpha output policy")
     checkpoint = cheap_checkpoint_check(runtime, tracker,
                                         request.get("checkpointSha256"))
     if tracker == "sam3" and not request.get("concepts"):
@@ -1082,7 +1097,7 @@ def run_job(request, loaded=None):
                 raise RuntimeError(f"Clip {clip['id']} has no processing scenes")
             clip_dir = output / "clips" / clip["id"]
             clip_dir.mkdir(parents=True, exist_ok=True)
-            raw_path = work / f"{clip['id']}.gray16le"
+            raw_path = work / f"{clip['id']}.gray8"
             decoded_count = 0
             alpha_segments = []
             writer = concurrent.futures.ThreadPoolExecutor(
@@ -1375,7 +1390,7 @@ def run_job(request, loaded=None):
             def alpha_encoding_progress(frames):
                 emit("encoding", 5 + 92 *
                      (completed_units + frames) / max(1, total_units),
-                     f"Encoding lossless alpha • {frames}/{decoded_count} frames")
+                     f"Encoding H.264 alpha • {frames}/{decoded_count} frames")
 
             def foreground_encoding_progress(frames):
                 emit("encoding", 5 + 92 *
@@ -1390,7 +1405,7 @@ def run_job(request, loaded=None):
             else:
                 emit("encoding", 5 + 92 * completed_units /
                      max(1, total_units),
-                     "Finalizing streamed lossless alpha")
+                     "Finalizing streamed H.264 alpha")
                 concat_alpha_segments(
                     alpha_segments, alpha_path,
                     work / f"{clip['id']}-alpha-concat.txt")
@@ -1411,7 +1426,9 @@ def run_job(request, loaded=None):
                     alpha_info["width"] != foreground_info["width"] or
                     alpha_info["height"] != foreground_info["height"] or
                     Fraction(alpha_info["frameRate"]) != Fraction(foreground_info["frameRate"]) or
-                    alpha_info["codec"] != "ffv1" or alpha_info["pixelFormat"] != "gray16le"):
+                    alpha_info["codec"] != "h264" or
+                    alpha_info["pixelFormat"] not in ("yuv420p", "yuvj420p") or
+                    alpha_info["colorRange"] != "pc"):
                 raise RuntimeError("Foreground/alpha validation failed")
             duration_ms = round(decoded_count / float(media["fps"]) * 1000)
             results.append({

@@ -436,6 +436,7 @@ internal static class CustomShowProcessor
             sourceRevision = options.SourceRevision,
             checkpointRevision = options.CheckpointRevision,
             checkpointSha256 = options.CheckpointSha256,
+            alphaEncodingPolicy = options.AlphaEncodingPolicy,
             concepts = options.ForegroundConcepts,
             clips = clips.Select(clip => new
             {
@@ -481,8 +482,8 @@ internal static class CustomShowProcessor
         if (result.Tracker != options.Tracker || result.Clips == null ||
             result.Clips.Any(clip => clip.ForegroundFrameCount !=
                     clip.AlphaFrameCount || clip.DecodedFrameCount !=
-                    clip.AlphaFrameCount || clip.AlphaCodec != "ffv1" ||
-                    clip.AlphaPixelFormat != "gray16le"))
+                    clip.AlphaFrameCount || clip.AlphaCodec != "h264" ||
+                    clip.AlphaPixelFormat is not ("yuv420p" or "yuvj420p")))
             throw new InvalidDataException(
                 "SAM2Matting output validation failed; foreground and linear alpha media do not agree.");
         return result;

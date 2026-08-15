@@ -67,7 +67,10 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
             Check(ffmpeg.avcodec_parameters_to_context(
                 openedCodec, stream->codecpar),
                 "configure video decoder");
-            openedCodec->thread_count = 1;
+            // Let FFmpeg select the codec's optimal frame/slice threading.
+            // A forced single thread cannot sustain real-time playback for a
+            // 4K H.264 foreground paired with a full-resolution alpha stream.
+            openedCodec->thread_count = 0;
             if (fastDecode)
                 openedCodec->flags2 |= ffmpeg.AV_CODEC_FLAG2_FAST;
             Check(ffmpeg.avcodec_open2(

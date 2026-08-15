@@ -1,6 +1,7 @@
 from fractions import Fraction
 
 from sam2matting_worker import (
+    ALPHA_ENCODING_POLICY,
     CHECKPOINTS,
     CHECKPOINT_REVISION,
     SOURCE_REVISION,
@@ -24,10 +25,11 @@ def test_float_max_union_never_adds_alpha():
     assert [max(a, b) for a, b in zip(first, second)] == [0.7, 0.8]
 
 
-def test_gray16_quantization_endpoints():
-    values = [round(max(0.0, min(1.0, value)) * 65535)
+def test_h264_alpha_quantization_endpoints():
+    assert ALPHA_ENCODING_POLICY == "h264-yuv420p-linear"
+    values = [round(max(0.0, min(1.0, value)) * 255)
               for value in [0.0, 0.5, 1.0]]
-    assert values == [0, 32768, 65535]
+    assert values == [0, 128, 255]
 
 
 def test_consumed_sam2_alpha_is_removed_from_tracking_state():

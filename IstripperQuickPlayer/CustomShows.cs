@@ -344,6 +344,12 @@ internal sealed class CustomShowMedia
     public long DurationMs { get; set; }
 }
 
+internal sealed record CustomShowCheckIssue(string Folder, string? ShowId,
+    string Show, string Error, bool CanRepair);
+
+internal sealed record CustomShowCheckReport(int TotalShows, int ValidShows,
+    IReadOnlyList<CustomShowCheckIssue> Issues);
+
 internal sealed class CustomShowStore
 {
     internal static readonly JsonSerializerOptions JsonOptions = new()
@@ -443,15 +449,10 @@ internal sealed class CustomShowStore
                 continue;
             try
             {
-                CustomShowManifest show = ReadManifest(manifestPath);
-                ValidateManifest(show, folder);
-                if (!string.Equals(Path.GetFileName(folder), show.Id,
-                        StringComparison.OrdinalIgnoreCase) || !ids.Add(show.Id))
-                    throw new InvalidDataException("Duplicate or mismatched show ID.");
-                if (!performers.TryGetValue(show.PerformerId, out var performer))
-                    throw new InvalidDataException("The linked performer profile is missing.");
-                ValidateLink(show, performer);
-                ValidateMediaCompatibility(show, folder);
+                (CustomShowManifest show, CustomPerformerProfile performer) =
+                    LoadValidatedManifest(folder, performers);
+                if (!ids.Add(show.Id))
+                    throw new InvalidDataException("Duplicate show ID.");
                 cards.Add(ToModelCard(show, performer, folder, manifestPath, loadImages));
             }
             catch (Exception error)
@@ -461,6 +462,80 @@ internal sealed class CustomShowStore
         }
         return cards;
     }
+
+    internal CustomShowCheckReport CheckShows(
+        IProgress<CustomShowProgress>? progress = null,
+        CancellationToken token = default)
+    {
+        LoadWarnings.Clear();
+        Dictionary<string, CustomPerformerProfile> performers =
+            LoadPerformers().ToDictionary(profile => profile.Id,
+                StringComparer.OrdinalIgnoreCase);
+        string[] folders = Directory.EnumerateDirectories(ShowsFolder)
+            .Where(folder => File.Exists(Path.Combine(folder, "show.json")))
+            .ToArray();
+        List<CustomShowCheckIssue> issues = [];
+        int valid = 0;
+        for (int index = 0; index < folders.Length; index++)
+        {
+            token.ThrowIfCancellationRequested();
+            string folder = folders[index];
+            CustomShowManifest? show = null;
+            bool canRepair = false;
+            try
+            {
+                (show, _) = LoadValidatedManifest(folder, performers);
+                canRepair = true;
+                ValidateMediaCompatibility(show, folder);
+                valid++;
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                string folderId = Path.GetFileName(folder);
+                string? showId = canRepair ? show?.Id : null;
+                issues.Add(new(folder, showId,
+                    show?.Title ?? ReadShowTitleBestEffort(folder) ??
+                        "Unknown show (" + ShortId(folderId) + ")",
+                    error.Message, canRepair));
+            }
+            progress?.Report(new CustomShowProgress("checking",
+                folders.Length == 0 ? 100 : 100d * (index + 1) / folders.Length,
+                $"Checked {index + 1:N0}/{folders.Length:N0} custom shows"));
+        }
+        if (folders.Length == 0)
+            progress?.Report(new CustomShowProgress("checking", 100,
+                "No custom shows found"));
+        return new(folders.Length, valid, issues);
+    }
+
+    static (CustomShowManifest Show, CustomPerformerProfile Performer)
+        LoadValidatedManifest(string folder,
+            IReadOnlyDictionary<string, CustomPerformerProfile> performers)
+    {
+        CustomShowManifest show = ReadManifest(Path.Combine(folder, "show.json"));
+        ValidateManifest(show, folder);
+        if (!string.Equals(Path.GetFileName(folder), show.Id,
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Mismatched show ID.");
+        if (!performers.TryGetValue(show.PerformerId,
+                out CustomPerformerProfile? performer))
+            throw new InvalidDataException("The linked performer profile is missing.");
+        ValidateLink(show, performer);
+        return (show, performer);
+    }
+
+    static string? ReadShowTitleBestEffort(string folder)
+    {
+        try
+        {
+            JsonNode? document = JsonNode.Parse(File.ReadAllText(
+                Path.Combine(folder, "show.json")));
+            return document?["title"]?.GetValue<string>();
+        }
+        catch { return null; }
+    }
+
+    static string ShortId(string id) => id.Length <= 10 ? id : id[..10] + "…";
 
     internal ModelCard LoadCard(string showId, bool loadImage = true)
     {
@@ -577,6 +652,24 @@ internal sealed class CustomShowStore
         string folder = Path.Combine(ShowsFolder, showId);
         if (Directory.Exists(folder))
             FileSystem.DeleteDirectory(folder, UIOption.OnlyErrorDialogs,
+                RecycleOption.SendToRecycleBin);
+    }
+
+    internal void DeleteCheckedShowFolder(string folder)
+    {
+        string fullFolder = Path.GetFullPath(folder).TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string showsRoot = Path.GetFullPath(ShowsFolder).TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+            Path.DirectorySeparatorChar;
+        if (!fullFolder.StartsWith(showsRoot, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetDirectoryName(fullFolder),
+                Path.TrimEndingDirectorySeparator(ShowsFolder),
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "Only a direct child of the custom-show library can be deleted.");
+        if (Directory.Exists(fullFolder))
+            FileSystem.DeleteDirectory(fullFolder, UIOption.OnlyErrorDialogs,
                 RecycleOption.SendToRecycleBin);
     }
 
@@ -791,7 +884,7 @@ internal sealed class CustomShowStore
                 processing.AttentionPolicy != "pytorch-sdpa" ||
                 processing.PrecisionPolicy != "bf16-autocast" ||
                 processing.EncoderPolicy != "quickplayer-h264-aac" ||
-                processing.AlphaEncodingPolicy != "ffv1-gray16le-linear" ||
+                processing.AlphaEncodingPolicy != Sam2MattingSupport.AlphaEncodingPolicy ||
                 processing.ScenePlanVersion != Sam2MattingSupport.ScenePlanVersion)
                 throw new InvalidDataException(
                     "The SAM2Matting processing contract is invalid or unsupported.");
@@ -1457,8 +1550,25 @@ internal sealed class CustomShowStore
             string invalidFolder = Path.Combine(store.ShowsFolder, invalid.Id);
             Directory.CreateDirectory(invalidFolder);
             WriteJsonAtomic(Path.Combine(invalidFolder, "show.json"), invalid);
-            return store.LoadCards(false).Count == 1 &&
+            bool malformedSkipped = store.LoadCards(false).Count == 1 &&
                 store.LoadWarnings.Count == 1;
+            CustomShowCheckReport malformedReport = store.CheckShows();
+            if (!malformedSkipped || malformedReport.TotalShows != 2 ||
+                malformedReport.ValidShows != 1 ||
+                malformedReport.Issues.Count != 1 ||
+                malformedReport.Issues[0].CanRepair)
+                return false;
+
+            CustomShowClip remaining = afterDeletion.Clips.Single(clip =>
+                clip.Included);
+            File.WriteAllText(ResolveRelative(folder, remaining.Media!.Alpha),
+                "invalid alpha video");
+            bool normalLoadTrustsManifest = store.LoadCards(false).Count == 1;
+            CustomShowCheckReport mediaReport = store.CheckShows();
+            return normalLoadTrustsManifest && mediaReport.TotalShows == 2 &&
+                mediaReport.ValidShows == 0 && mediaReport.Issues.Count == 2 &&
+                mediaReport.Issues.Any(issue => issue.CanRepair &&
+                    issue.ShowId == show.Id);
         }
         catch (Exception error)
         {

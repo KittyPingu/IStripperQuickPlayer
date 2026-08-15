@@ -85,6 +85,7 @@ public partial class Form1
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
         ToolStripMenuItem queues = new("Queues...");
+        ToolStripMenuItem check = new("Check Custom Shows...");
         ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
         ToolStripMenuItem backgroundLock = new(
             "Camera / Background Lock (Stabilo + SAM2)...");
@@ -96,13 +97,14 @@ public partial class Form1
             PrepareCustomShowPublicationAsync);
         create.Click += (_, _) => EditCustomShow(null);
         queues.Click += (_, _) => ShowCustomShowQueues();
+        check.Click += async (_, _) => await CheckCustomShowsAsync(check);
         stabilize.Click += (_, _) => StabilizeVideo();
         backgroundLock.Click += (_, _) => StabilizeBackgroundVideo();
         removeWatermark.Click += (_, _) => RemoveVideoWatermark();
         settings.Click += (_, _) => ConfigureCustomShows();
         customShowsMenu.DropDownItems.AddRange(
-            [create, queues, new ToolStripSeparator(), stabilize, backgroundLock,
-                removeWatermark, settings]);
+            [create, queues, check, new ToolStripSeparator(), stabilize,
+                backgroundLock, removeWatermark, settings]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
         editCustomShowMenu.Click += (_, _) =>
@@ -534,7 +536,8 @@ public partial class Form1
             IReadOnlyList<ModelCard> cards = store.LoadCards(!apiOnlyMode);
             Datastore.modelcards ??= [];
             Datastore.modelcards.AddRange(cards);
-            diagnostics?.AppendLine($"Custom shows: loaded={cards.Count} skipped={store.LoadWarnings.Count}");
+            diagnostics?.AppendLine($"Custom shows: loaded={cards.Count} " +
+                $"skipped={store.LoadWarnings.Count} mediaValidation=manifest-only");
             foreach (string warning in store.LoadWarnings)
             {
                 diagnostics?.AppendLine("Custom show skipped: " + warning);
@@ -546,6 +549,46 @@ public partial class Form1
             diagnostics?.AppendLine("Custom show library error: " + error.Message);
             Debug.WriteLine("Custom show library error: " + error);
         }
+    }
+
+    async Task CheckCustomShowsAsync(ToolStripMenuItem menu)
+    {
+        menu.Enabled = false;
+        try
+        {
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            CustomShowCheckReport? report = null;
+            using CustomShowProcessingForm checking = new(
+                async (progress, token) =>
+                {
+                    report = await Task.Run(() => store.CheckShows(progress, token),
+                        token);
+                    return new CustomShowProcessResult();
+                }, "Checking Custom Shows",
+                processDescription:
+                    "Opening each foreground and alpha video to verify the custom-show library",
+                showPreviews: false);
+            if (checking.ShowDialog(this) != DialogResult.OK || report == null)
+                return;
+            if (report.Issues.Count == 0)
+            {
+                MessageBox.Show(this,
+                    report.TotalShows == 0
+                        ? "No custom shows were found."
+                        : $"All {report.ValidShows:N0} custom shows passed the " +
+                            "manifest and foreground/alpha media checks.",
+                    "Check Custom Shows", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            using CustomShowCheckForm results = new(store, report);
+            DialogResult result = results.ShowDialog(this);
+            if (results.DeletedAny) ReloadCustomCards();
+            if (result == DialogResult.Retry && results.RepairShowId != null)
+                EditCustomShow(results.RepairShowId, reprocess: true);
+        }
+        finally { menu.Enabled = true; }
     }
 
     void ReloadCustomCards()
