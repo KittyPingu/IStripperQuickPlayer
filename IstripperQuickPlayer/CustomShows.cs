@@ -20,6 +20,8 @@ internal sealed class CustomShowConfiguration
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "IStripperQuickPlayer", "custom-shows");
     public string PythonExecutable { get; set; } = FindPythonExecutable();
+    public string Sam2MattingPythonExecutable { get; set; } =
+        FindSam2MattingPythonExecutable();
     public int SmallPlayerVolume { get; set; } = 100;
     public int LargePlayerVolume { get; set; } = 100;
     public int FullOpacityThreshold { get; set; } = 200;
@@ -48,6 +50,7 @@ internal sealed class CustomShowConfiguration
     public int VitMatteBasePreferredBatchSize { get; set; } = 1;
     public int VideoMaMaPreferredBatchSize { get; set; } = 1;
     public string LastProcessingAlgorithm { get; set; } = "quality";
+    public string LastSam2MattingTracker { get; set; } = "sam3";
     public string LastMaskEngine { get; set; } = "sam2";
     public string LastSam2Model { get; set; } = "base-plus";
     public int LastMattingDetailPx { get; set; } = 512;
@@ -73,6 +76,9 @@ internal sealed class CustomShowConfiguration
                     File.ReadAllText(FilePath), CustomShowStore.JsonOptions) ?? new();
             if (string.IsNullOrWhiteSpace(configuration.PythonExecutable))
                 configuration.PythonExecutable = FindPythonExecutable();
+            if (string.IsNullOrWhiteSpace(configuration.Sam2MattingPythonExecutable))
+                configuration.Sam2MattingPythonExecutable =
+                    FindSam2MattingPythonExecutable();
             int[] rvmChunks = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
             if (!rvmChunks.Contains(configuration.RvmQualityPreferredChunk))
                 configuration.RvmQualityPreferredChunk = 12;
@@ -104,8 +110,12 @@ internal sealed class CustomShowConfiguration
                 configuration.VideoMaMaPreferredBatchSize = 1;
             if (configuration.LastProcessingAlgorithm is not
                 ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or
-                 "matanyone2" or "videomama" or "vitmatte-s" or "vitmatte-b"))
+                 "matanyone2" or "videomama" or "vitmatte-s" or "vitmatte-b" or
+                 "sam2matting"))
                 configuration.LastProcessingAlgorithm = "quality";
+            if (!Sam2MattingSupport.Trackers.Contains(
+                    configuration.LastSam2MattingTracker))
+                configuration.LastSam2MattingTracker = "sam3";
             if (configuration.LastMaskEngine is not
                 ("sam2" or "edgetam" or "rvm" or "rvm-sam2"))
                 configuration.LastMaskEngine = "sam2";
@@ -140,6 +150,13 @@ internal sealed class CustomShowConfiguration
 
         return TryPython("py") ?? TryPython("py", "-3.11") ??
             TryPython("python") ?? "";
+    }
+
+    internal static string FindSam2MattingPythonExecutable()
+    {
+        string python = Path.Combine(Sam2MattingSupport.RuntimeRoot,
+            "venv", "Scripts", "python.exe");
+        return File.Exists(python) ? python : "";
     }
 
     static string? TryPython(string command, string? launcherVersion = null)
@@ -192,7 +209,7 @@ internal sealed class CustomPerformerProfile
 
 internal sealed class CustomShowManifest
 {
-    public int SchemaVersion { get; set; } = 2;
+    public int SchemaVersion { get; set; } = 3;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string PerformerId { get; set; } = "";
     public string Title { get; set; } = "";
@@ -232,6 +249,19 @@ internal sealed class CustomShowClipDetection
 internal sealed class CustomShowProcessing
 {
     public string Algorithm { get; set; } = "";
+    public int ProcessingOptionVersion { get; set; }
+    public string? Tracker { get; set; }
+    public string? PromptMode { get; set; }
+    public string[] ForegroundConcepts { get; set; } = [];
+    public string? EnvironmentSpecVersion { get; set; }
+    public string? SourceRevision { get; set; }
+    public string? CheckpointRevision { get; set; }
+    public string? CheckpointSha256 { get; set; }
+    public string? AttentionPolicy { get; set; }
+    public string? EncoderPolicy { get; set; }
+    public string? AlphaEncodingPolicy { get; set; }
+    public int? ScenePlanVersion { get; set; }
+    public CustomShowProcessingScene[] Scenes { get; set; } = [];
     public int MattingDetailPx { get; set; }
     public int? VitMatteInferenceDetailPx { get; set; }
     public int BatchSize { get; set; }
@@ -251,6 +281,16 @@ internal sealed class CustomShowProcessing
     public string QuickPlayerVersion { get; set; } = "";
     public Dictionary<string, string> ToolRevisions { get; set; } = [];
     public CustomClipProcessing[] Clips { get; set; } = [];
+}
+
+internal sealed class CustomShowProcessingScene
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string ClipId { get; set; } = "";
+    public long StartFrame { get; set; }
+    public long EndFrameExclusive { get; set; }
+    public long StartMs { get; set; }
+    public long EndMs { get; set; }
 }
 
 internal sealed class CustomClipProcessing
@@ -326,7 +366,7 @@ internal sealed class CustomShowStore
     static readonly HashSet<string> ClipTypeValues = [.. ClipTypeOptions];
     static readonly HashSet<string> ProcessingAlgorithms =
         ["quality", "fast", "matanyone2", "rvm-matanyone2", "videomama",
-         "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s"];
+         "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "sam2matting"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
     static readonly HashSet<int> BatchSizeValues = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
     static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
@@ -448,16 +488,22 @@ internal sealed class CustomShowStore
         // Strict deserialization otherwise rejects its retired provenance fields
         // before the supported legacy algorithm can be selected.
         JsonNode? document = JsonNode.Parse(File.ReadAllText(path));
-        if (document is JsonObject root && root["processing"] is JsonObject processing &&
-            processing["algorithm"]?.GetValue<string>() == "rvm-vitmatte-s-temporal")
+        if (document is JsonObject root)
         {
-            processing["algorithm"] = "rvm-vitmatte-s";
-            foreach (string property in new[]
+            if (root["schemaVersion"]?.GetValue<int>() == 2)
+                root["schemaVersion"] = 3;
+            if (root["processing"] is JsonObject processing &&
+                processing["algorithm"]?.GetValue<string>() ==
+                    "rvm-vitmatte-s-temporal")
             {
-                "temporalTrimapProfile", "temporalTrimapAlgorithmVersion",
-                "temporalTrimapStateResetCount", "temporalTrimapForegroundErosionPx",
-                "temporalTrimapUnknownDilationPx", "temporalTrimapSettings"
-            }) processing.Remove(property);
+                processing["algorithm"] = "rvm-vitmatte-s";
+                foreach (string property in new[]
+                {
+                    "temporalTrimapProfile", "temporalTrimapAlgorithmVersion",
+                    "temporalTrimapStateResetCount", "temporalTrimapForegroundErosionPx",
+                    "temporalTrimapUnknownDilationPx", "temporalTrimapSettings"
+                }) processing.Remove(property);
+            }
         }
         return document?.Deserialize<CustomShowManifest>(JsonOptions) ??
             throw new InvalidDataException("The JSON document is empty.");
@@ -644,7 +690,7 @@ internal sealed class CustomShowStore
 
     internal static void ValidateManifest(CustomShowManifest show, string folder)
     {
-        if (show.SchemaVersion != 2) throw new InvalidDataException(
+        if (show.SchemaVersion != 3) throw new InvalidDataException(
             "This custom show uses the old shared-media format and must be reprocessed.");
         if (show.Source == null || show.Media == null || show.Tags == null ||
             show.ClipTypes == null || show.Clips == null)
@@ -726,6 +772,59 @@ internal sealed class CustomShowStore
         if (processing == null) return;
         if (!ProcessingAlgorithms.Contains(processing.Algorithm))
             throw new InvalidDataException("Unknown custom-show processing algorithm.");
+        bool sam2Matting = processing.Algorithm == Sam2MattingSupport.Algorithm;
+        if (sam2Matting)
+        {
+            if (processing.ProcessingOptionVersion != Sam2MattingSupport.OptionVersion ||
+                processing.Tracker == null ||
+                !Sam2MattingSupport.Trackers.Contains(processing.Tracker) ||
+                processing.PromptMode != (processing.Tracker == "sam3"
+                    ? "text-concepts" : "initial-mask") ||
+                processing.EnvironmentSpecVersion !=
+                    Sam2MattingSupport.EnvironmentVersion ||
+                processing.SourceRevision != Sam2MattingSupport.SourceRevision ||
+                processing.CheckpointRevision !=
+                    Sam2MattingSupport.CheckpointRevision ||
+                !string.Equals(processing.CheckpointSha256,
+                    Sam2MattingSupport.CheckpointSha256(processing.Tracker),
+                    StringComparison.OrdinalIgnoreCase) ||
+                processing.AttentionPolicy != "pytorch-sdpa" ||
+                processing.PrecisionPolicy != "bf16-autocast" ||
+                processing.EncoderPolicy != "quickplayer-h264-aac" ||
+                processing.AlphaEncodingPolicy != "ffv1-gray16le-linear" ||
+                processing.ScenePlanVersion != Sam2MattingSupport.ScenePlanVersion)
+                throw new InvalidDataException(
+                    "The SAM2Matting processing contract is invalid or unsupported.");
+            if (processing.Tracker == "sam3")
+            {
+                string[] normalized = Sam2MattingSupport.ParseConcepts(
+                    string.Join('\n', processing.ForegroundConcepts ?? []));
+                if (!(processing.ForegroundConcepts ?? []).SequenceEqual(normalized))
+                    throw new InvalidDataException(
+                        "SAM3 foreground concepts are not normalized.");
+            }
+            else if ((processing.ForegroundConcepts?.Length ?? 0) != 0)
+                throw new InvalidDataException(
+                    "SAM2.1 trackers do not accept text concepts.");
+            if (processing.Scenes == null)
+                throw new InvalidDataException(
+                    "SAM2Matting scene metadata is missing.");
+            Sam2MattingScenePlanner.Validate(processing.Scenes, clips);
+        }
+        else if (processing.ProcessingOptionVersion != 0 ||
+            processing.Tracker != null || processing.PromptMode != null ||
+            (processing.ForegroundConcepts?.Length ?? 0) != 0 ||
+            processing.EnvironmentSpecVersion != null ||
+            processing.SourceRevision != null ||
+            processing.CheckpointRevision != null ||
+            processing.CheckpointSha256 != null ||
+            processing.AttentionPolicy != null ||
+            processing.EncoderPolicy != null ||
+            processing.AlphaEncodingPolicy != null ||
+            processing.ScenePlanVersion != null ||
+            (processing.Scenes?.Length ?? 0) != 0)
+            throw new InvalidDataException(
+                "SAM2Matting metadata is not valid for this algorithm.");
         if (!MattingDetailValues.Contains(processing.MattingDetailPx))
             throw new InvalidDataException("Unknown matting-detail resolution.");
         if (processing.VitMatteInferenceDetailPx is int vitMatteDetail &&
@@ -760,7 +859,7 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("A valid SAM2 model is required for this algorithm.");
         if (!needsSam2 && processing.Sam2Model != null)
             throw new InvalidDataException("SAM2 model metadata is not valid for this algorithm.");
-        if (processing.ExecutionPolicy != "auto" ||
+        if (processing.ExecutionPolicy != (sam2Matting ? "eager" : "auto") ||
             string.IsNullOrWhiteSpace(processing.PrecisionPolicy))
             throw new InvalidDataException("Invalid processing execution policy.");
         if (processing.EffectiveBatchSize is < 1 or > 24)
@@ -769,13 +868,13 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Invalid processing pipeline depth.");
         if (processing.ResolvedExecutionMode is string mode &&
             mode is not ("eager" or "compiled" or "eager-fallback" or
-                "eager-oom-fallback"))
+                "eager-oom-fallback" or "eager-bf16-sdpa"))
             throw new InvalidDataException("Invalid resolved processing execution mode.");
         if (processing.Encoder is string encoder &&
             encoder is not ("h264_nvenc" or "libx264"))
             throw new InvalidDataException("Invalid processing encoder.");
         if (processing.EncoderPreset is string encoderPreset &&
-            encoderPreset is not ("p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7" or "slow/medium"))
+            encoderPreset is not ("p1" or "p2" or "p3" or "p4" or "p5" or "p6" or "p7" or "slow/medium" or "medium"))
             throw new InvalidDataException("Invalid processing encoder preset.");
         if (processing.RecurrentRefinementSteps is < 0 or > 100)
             throw new InvalidDataException("Invalid recurrent-refinement step count.");
@@ -1095,6 +1194,8 @@ internal sealed class CustomShowStore
             TryFrameRate("30000/1001", out double rate) && rate > 29.9 && rate < 30 &&
             (FindPythonForVerification() is string python &&
                 (python.Length == 0 || File.Exists(python))) &&
+            Sam2MattingSupport.VerifyConceptParser() &&
+            Sam2MattingScenePlanner.VerifySceneValidation() &&
             RejectsTraversal();
     }
 

@@ -1,0 +1,37 @@
+{
+  "environmentSpecVersion": "sam2matting-v1",
+  "sourceRevision": "73dd721d77b56749248aefe5e8824d7f61b9d13c",
+  "checkpointRevision": "4315db9c60d27fde396b09765748a0ca6c97bed5",
+  "python": "3.10",
+  "torch": "2.8.0+cu128",
+  "torchvision": "0.23.0+cu128",
+  "requirementsLock": "sam2matting-requirements.lock",
+  "requirementsLockSha256": "1b7d03ce6f3835ce9b1fa03ccb4d1f08ccab6b780d7a8739b1976485df0a06a2",
+  "baseline": {
+    "precision": "eager-bf16",
+    "attention": "pytorch-sdpa",
+    "compile": false,
+    "torchTensorRt": false,
+    "cudaGraphs": false
+  },
+  "checkpoints": [
+    {
+      "tracker": "sam2.1-tiny",
+      "file": "SAM2Matting-SAM2.1Tiny.pt",
+      "bytes": 215569778,
+      "sha256": "5b9321e3b51bc20f5b84c208746cc083dd3053dd701590f2e88dc8640afcc39d"
+    },
+    {
+      "tracker": "sam2.1-base-plus",
+      "file": "SAM2Matting-SAM2.1Base+.pt",
+      "bytes": 383180506,
+      "sha256": "1f0eb2eda3e8bc9101eafc0b30b8b8fcae1ff83d8fd3adc18e2f3b410fdaae60"
+    },
+    {
+      "tracker": "sam3",
+      "file": "SAM2Matting-SAM3.pt",
+      "bytes": 3509720141,
+      "sha256": "7102d695be6070b39acd67464f93207df725514a688b545ed1267d913d3b9c7d"
+    }
+  ]
+}

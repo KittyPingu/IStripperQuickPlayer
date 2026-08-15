@@ -18,6 +18,8 @@ internal sealed class CustomShowEditorForm : Form
     readonly bool reprocess;
     readonly CustomShowQueueManager? queueManager;
     readonly string? queueJobId;
+    readonly CustomShowQueueJob? queueDraft;
+    readonly string? queueDraftAssetOwnerId;
     readonly CustomShowIncompleteSetupEntry? restoredSetup;
     string? appendShowId;
     readonly TextBox source = new();
@@ -45,6 +47,22 @@ internal sealed class CustomShowEditorForm : Form
     readonly Button coverTitleColor = new() { AutoSize = true,
         BackColor = Color.DeepPink, UseVisualStyleBackColor = false };
     readonly ComboBox preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox sam2MattingTracker = new()
+        { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+    readonly TextBox foregroundConcepts = new()
+        { Multiline = true, Height = 78, ScrollBars = ScrollBars.Vertical, Text = "person" };
+    readonly Label conceptHelp = new()
+    {
+        AutoSize = true,
+        Text = "One independent foreground concept per line. Multi-word phrases are supported."
+    };
+    readonly Label sam2MattingStatus = new() { AutoSize = true, Padding = new Padding(6, 7, 0, 0) };
+    readonly Label sceneMaskSummary = new()
+    {
+        AutoSize = true, Text = "Initial masks: not created",
+        Padding = new Padding(0, 7, 0, 0)
+    };
+    readonly Button openSam2MattingSetup = new() { Text = "Open Setup", AutoSize = true };
     readonly ComboBox maskEngine = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sam2Model = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox mattingDetail = new() { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -69,11 +87,14 @@ internal sealed class CustomShowEditorForm : Form
         CheckOnClick = true, IntegralHeight = false, Visible = false };
     readonly Button save = new() { Text = "Process and Preview", AutoSize = true };
     readonly Button queue = new() { Text = "Queue", AutoSize = true, Visible = false };
+    readonly Button queueBatch = new()
+        { Text = "Queue Batch...", AutoSize = true, Visible = false };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
     TableLayoutPanel? processingTable;
-    int maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
+    int sam2MattingTrackerRow, foregroundConceptsRow, sceneMaskSummaryRow,
+        maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
         rvmThresholdRow,
-        batchSizeRow, processingDetailsRow;
+        batchSizeRow, autoAcceptRow, processingDetailsRow;
     int reprocessingRow = -1;
     int reprocessClipsRow = -1;
     List<CustomPerformerProfile> profiles = [];
@@ -93,7 +114,9 @@ internal sealed class CustomShowEditorForm : Form
     internal CustomShowEditorForm(CustomShowStore store,
         CustomShowConfiguration configuration, string? showId, bool reprocess = false,
         CustomShowQueueManager? queueManager = null, string? queueJobId = null,
-        CustomShowIncompleteSetupEntry? restoredSetup = null)
+        CustomShowIncompleteSetupEntry? restoredSetup = null,
+        CustomShowQueueJob? queueDraft = null,
+        string? queueDraftAssetOwnerId = null)
     {
         this.store = store;
         this.configuration = configuration;
@@ -101,6 +124,8 @@ internal sealed class CustomShowEditorForm : Form
         this.reprocess = reprocess && showId != null;
         this.queueManager = queueManager;
         this.queueJobId = queueJobId;
+        this.queueDraft = queueDraft;
+        this.queueDraftAssetOwnerId = queueDraftAssetOwnerId;
         this.restoredSetup = restoredSetup;
         bool metadataOnly = showId != null && !this.reprocess &&
             queueJobId == null;
@@ -182,8 +207,19 @@ internal sealed class CustomShowEditorForm : Form
             preset.Items.Add("ViTMatte S (editable SAM2 masks)");
         if (metadataOnly || CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
             preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
+        preset.Items.Add("SAM2Matting");
         preset.SelectedIndex = 0;
         AddRow(processingTable, "Processing algorithm", preset);
+        sam2MattingTracker.Items.AddRange([
+            "SAM2.1-T — fastest, initial mask required",
+            "SAM2.1-B+ — higher-capacity tracker, initial mask required",
+            "SAM3 — automatic text concepts"]);
+        sam2MattingTracker.SelectedIndex = 2;
+        sam2MattingTrackerRow = AddRow(processingTable, "Backbone tracker",
+            Flow(sam2MattingTracker, sam2MattingStatus, openSam2MattingSetup));
+        foregroundConceptsRow = AddRow(processingTable, "Foreground concepts",
+            FlowVertical(foregroundConcepts, conceptHelp));
+        sceneMaskSummaryRow = AddRow(processingTable, "Scene prompts", sceneMaskSummary);
         maskEngine.Items.Add("RVM ResNet50 (fast, person-only)");
         IReadOnlyList<string> installedSam2Models = metadataOnly
             ? ["base-plus", "small", "tiny"]
@@ -227,7 +263,7 @@ internal sealed class CustomShowEditorForm : Form
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12, 16, 24]);
         sequenceChunk.SelectedIndex = 0;
         batchSizeRow = AddRow(processingTable, "Processing batch size", sequenceChunk);
-        AddRow(processingTable, "After processing", autoAccept);
+        autoAcceptRow = AddRow(processingTable, "After processing", autoAccept);
         processingDetailsRow = AddRow(processingTable, "Created using", processingDetails);
         if (this.reprocess)
         {
@@ -235,7 +271,7 @@ internal sealed class CustomShowEditorForm : Form
             reprocessClipsRow = AddRow(processingTable, "Clips to reprocess", reprocessClips);
         }
         AddSection(root, "Processing", processingTable);
-        FlowLayoutPanel buttons = Flow(save, queue, cancel);
+        FlowLayoutPanel buttons = Flow(save, queue, queueBatch, cancel);
         buttons.Dock = DockStyle.Fill;
         buttons.Margin = Padding.Empty;
         buttons.Padding = new Padding(12, 8, 12, 10);
@@ -244,12 +280,16 @@ internal sealed class CustomShowEditorForm : Form
         CancelButton = cancel;
         save.Click += Save;
         queue.Click += QueueJob;
+        queueBatch.Click += QueueBatch;
         addToExisting.Click += SelectExistingShow;
         preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions(
             applyRecommendedBatch: true);
         rvmInitializerThreshold.ValueChanged += (_, _) =>
             rvmInitializerThresholdValue.Text = $"{rvmInitializerThreshold.Value}%";
         maskEngine.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
+        sam2MattingTracker.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
+        foregroundConcepts.TextChanged += (_, _) => UpdateProcessingOptions();
+        openSam2MattingSetup.Click += (_, _) => OpenSam2MattingSetup();
         autoAccept.CheckedChanged += (_, _) => UpdateProcessingOptions();
         newPerformer.Click += (_, _) => OpenPerformer(null);
         editPerformer.Click += (_, _) => OpenPerformer(selectedProfile);
@@ -277,8 +317,10 @@ internal sealed class CustomShowEditorForm : Form
         LoadData();
         if (restoredSetup != null) RestoreIncompleteSetup(restoredSetup);
         if (queueJobId != null) LoadQueueJob(queueJobId);
+        else if (queueDraft != null) LoadQueueDraft(queueDraft);
         UpdateProcessingOptions();
-        if (showId == null && queueJobId == null && restoredSetup == null)
+        if (showId == null && queueJobId == null && queueDraft == null &&
+            restoredSetup == null)
             RestoreProcessingOptions();
         FormClosing += (_, _) =>
         {
@@ -332,6 +374,8 @@ internal sealed class CustomShowEditorForm : Form
             (!reprocess || applyRecommendedBatch) && SelectedBatchSize() != 0)
             sequenceChunk.SelectedItem = configuration.VideoMaMaPreferredBatchSize;
         bool rvm = selected is "quality" or "fast";
+        bool sam2Matting = selected == Sam2MattingSupport.Algorithm;
+        bool sam3 = sam2Matting && SelectedSam2MattingTracker() == "sam3";
         mattingDetail.Enabled = (rvm || selected is "matanyone2" or
             "rvm-matanyone2") && CanProcess;
         vitMatteInferenceDetail.Enabled = selected is
@@ -367,12 +411,48 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, processingDetailsRow,
                 processingDetails.Text !=
                     "Recorded in show.json after processing completes.");
+            SetRowVisible(processingTable, sam2MattingTrackerRow, sam2Matting);
+            SetRowVisible(processingTable, foregroundConceptsRow, sam3);
+            SetRowVisible(processingTable, sceneMaskSummaryRow,
+                sam2Matting && !sam3);
+            SetRowVisible(processingTable, autoAcceptRow, !sam2Matting);
             if (reprocessingRow >= 0)
                 SetRowVisible(processingTable, reprocessingRow, reprocess);
         }
-        string? queueAction = QueueAction(selected, autoAccept.Checked);
+        bool installed = !sam2Matting || Sam2MattingSupport.IsInstalled(
+            configuration, SelectedSam2MattingTracker());
+        sam2MattingStatus.Text = installed ? "Installed" : "Setup required";
+        sam2MattingStatus.ForeColor = installed ? Color.ForestGreen : Color.DarkOrange;
+        openSam2MattingSetup.Visible = sam2Matting && !installed;
+        string? queueAction = sam2Matting
+            ? SelectedSam2MattingTracker() == "sam3" ? "Queue" :
+                "Mask Scenes and Queue"
+            : QueueAction(selected, autoAccept.Checked);
         queue.Visible = queueManager != null && CanProcess && queueAction != null;
+        queueBatch.Visible = queueManager != null && showId == null &&
+            queueJobId == null && sam2Matting;
         if (queueAction != null) queue.Text = queueAction;
+        if (CanProcess) save.Visible = !sam2Matting && queueJobId == null &&
+            queueDraft == null;
+    }
+
+    void OpenSam2MattingSetup()
+    {
+        if (!CustomShowSam2MattingSetupForm.ConfirmLicence(this)) return;
+        string script = Path.Combine(AppContext.BaseDirectory, "custom-shows",
+            "setup-sam2matting.ps1");
+        if (!File.Exists(script))
+        {
+            MessageBox.Show(this, "The SAM2Matting setup script is missing:\n" + script,
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        using CustomShowSam2MattingSetupForm setup = new(script);
+        if (setup.ShowDialog(this) != DialogResult.OK) return;
+        configuration.Sam2MattingPythonExecutable =
+            CustomShowConfiguration.FindSam2MattingPythonExecutable();
+        configuration.Save();
+        UpdateProcessingOptions();
     }
 
     bool CanProcess => showId == null || reprocess;
@@ -404,6 +484,13 @@ internal sealed class CustomShowEditorForm : Form
         return "base-plus";
     }
 
+    string SelectedSam2MattingTracker() => sam2MattingTracker.SelectedIndex switch
+    {
+        0 => "sam2.1-tiny",
+        1 => "sam2.1-base-plus",
+        _ => "sam3"
+    };
+
     string SelectedMaskEngine()
     {
         string selected = maskEngine.SelectedItem?.ToString() ?? "RVM";
@@ -426,6 +513,8 @@ internal sealed class CustomShowEditorForm : Form
         if (selected.StartsWith("VideoMaMa", StringComparison.Ordinal)) return "videomama";
         if (selected.StartsWith("ViTMatte S", StringComparison.Ordinal)) return "vitmatte-s";
         if (selected.StartsWith("ViTMatte B", StringComparison.Ordinal)) return "vitmatte-b";
+        if (selected.StartsWith("SAM2Matting", StringComparison.Ordinal))
+            return Sam2MattingSupport.Algorithm;
         return "quality";
     }
 
@@ -433,7 +522,7 @@ internal sealed class CustomShowEditorForm : Form
         "videomama" or "vitmatte-s" or "vitmatte-b";
 
     internal static string? QueueAction(string algorithm, bool autoAccept) =>
-        !autoAccept ? null : algorithm switch
+        algorithm == "sam2matting" ? "Queue" : !autoAccept ? null : algorithm switch
         {
             "quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" => "Queue",
             "matanyone2" => "Mask and Queue",
@@ -444,6 +533,11 @@ internal sealed class CustomShowEditorForm : Form
     {
         CustomShowQueueJob job = queueManager?.Find(id) ??
             throw new InvalidOperationException("The queue job no longer exists.");
+        LoadQueueDraft(job);
+    }
+
+    void LoadQueueDraft(CustomShowQueueJob job)
+    {
         source.Text = job.SourcePath;
         if (!profiles.Any(profile => profile.Id == job.Performer.Id))
         {
@@ -464,11 +558,18 @@ internal sealed class CustomShowEditorForm : Form
         Text = "Edit Queued Custom Show";
         save.Visible = false;
         queue.Text = job.Manifest.Processing?.Algorithm == "matanyone2"
-            ? "Mask and Queue" : "Update Queue Job";
+            ? "Mask and Queue" : job.Manifest.Processing?.Algorithm == "sam2matting" &&
+                job.Manifest.Processing.Tracker != "sam3"
+                ? "Mask Scenes and Update Queue Job" : "Update Queue Job";
+        if (job.Manifest.Processing?.Algorithm == "sam2matting")
+            sceneMaskSummary.Text = job.Manifest.Processing.Tracker == "sam3"
+                ? "Automatic text prompts"
+                : $"{job.ScenePrompts.Length} of {job.Manifest.Processing.Scenes.Length} scenes ready";
         AcceptButton = queue;
         autoAccept.Checked = true;
+        string assetOwner = queueDraftAssetOwnerId ?? job.Id;
         if (job.CoverAsset != null)
-            cover.Text = Path.Combine(queueManager!.AssetFolder(job.Id),
+            cover.Text = Path.Combine(queueManager!.AssetFolder(assetOwner),
                 job.CoverAsset.Replace('/', Path.DirectorySeparatorChar));
         UpdateClipButton();
     }
@@ -627,9 +728,17 @@ internal sealed class CustomShowEditorForm : Form
             "rvm-matanyone2" => "RVM-MatAnyone",
             "rvm-vitmatte-s" => "RVM-ViTMatte S",
             "videomama" => "VideoMaMa", "vitmatte-s" => "ViTMatte S",
-            "vitmatte-b" => "ViTMatte B", _ => "RVM Quality"
+            "vitmatte-b" => "ViTMatte B", "sam2matting" => "SAM2Matting",
+            _ => "RVM Quality"
         };
         SelectStartingWith(preset, prefix);
+        sam2MattingTracker.SelectedIndex = processing.Tracker switch
+        {
+            "sam2.1-tiny" => 0, "sam2.1-base-plus" => 1, _ => 2
+        };
+        if (processing.Algorithm == "sam2matting")
+            foregroundConcepts.Text = string.Join(Environment.NewLine,
+                processing.ForegroundConcepts);
         SelectStartingWith(maskEngine, processing.MaskEngine switch
         {
             "sam2" => "SAM2", "rvm-sam2" => "RVM → SAM2",
@@ -675,9 +784,13 @@ internal sealed class CustomShowEditorForm : Form
             "videomama" => "VideoMaMa",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
+            "sam2matting" => "SAM2Matting",
             _ => "RVM Quality"
         };
         SelectStartingWith(preset, prefix);
+        // A newly authored SAM2Matting job always starts on the automatic
+        // text-prompt path, even if an earlier job used a manual tracker.
+        sam2MattingTracker.SelectedIndex = 2;
         SelectStartingWith(maskEngine, configuration.LastMaskEngine switch
         {
             "edgetam" => "EdgeTAM", "rvm" => "RVM",
@@ -708,6 +821,7 @@ internal sealed class CustomShowEditorForm : Form
     void RememberProcessingOptions()
     {
         configuration.LastProcessingAlgorithm = SelectedPreset();
+        configuration.LastSam2MattingTracker = SelectedSam2MattingTracker();
         configuration.LastMaskEngine = SelectedMaskEngine();
         configuration.LastSam2Model = SelectedSam2Model();
         configuration.LastMattingDetailPx = SelectedMattingResolution();
@@ -765,6 +879,7 @@ internal sealed class CustomShowEditorForm : Form
             "videomama" => "VideoMaMa",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
+            "sam2matting" => $"SAM2Matting ({Sam2MattingSupport.DisplayName(value.Tracker)})",
             _ => value.Algorithm
         };
         string detail = value.MattingDetailPx == 0 ? "full resolution" :
@@ -1494,7 +1609,8 @@ internal sealed class CustomShowEditorForm : Form
         try
         {
             if (queueManager == null) return;
-            if (!autoAccept.Checked)
+            string algorithm = SelectedPreset();
+            if (algorithm != Sam2MattingSupport.Algorithm && !autoAccept.Checked)
                 throw new InvalidDataException(
                     "Queued processing requires automatic acceptance at alpha threshold 25.");
             if (selectedProfile == null)
@@ -1502,6 +1618,11 @@ internal sealed class CustomShowEditorForm : Form
             CustomShowStore.ValidateProfile(selectedProfile);
             if (!File.Exists(source.Text))
                 throw new FileNotFoundException("Select a source video.", source.Text);
+            if (algorithm == Sam2MattingSupport.Algorithm &&
+                !Sam2MattingSupport.IsInstalled(configuration,
+                    SelectedSam2MattingTracker()))
+                throw new InvalidDataException(
+                    "Setup required: install the SAM2Matting environment and all checkpoints.");
             if (!ConfirmGpuBatch()) return;
             if (showClips.Length == 0)
             {
@@ -1516,7 +1637,7 @@ internal sealed class CustomShowEditorForm : Form
                 }];
             }
             CustomShowQueueJob? existing = queueJobId == null
-                ? null : queueManager.Find(queueJobId);
+                ? queueDraft : queueManager.Find(queueJobId);
             CustomShowQueueOperation operation = existing?.Operation ??
                 (Appending ? CustomShowQueueOperation.Append : reprocess
                     ? CustomShowQueueOperation.Reprocess : CustomShowQueueOperation.New);
@@ -1530,10 +1651,64 @@ internal sealed class CustomShowEditorForm : Form
             manifest.Clips = CloneQueueValue(showClips);
             manifest.ClipDetection = clipDetection;
             manifest.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
-            string algorithm = SelectedPreset();
+            CustomShowProcessingScene[] processingScenes = [];
+            if (algorithm == Sam2MattingSupport.Algorithm)
+            {
+                CustomShowClipDetection? plannedDetection = null;
+                CustomShowProcessingScene[]? plannedScenes = null;
+                using CustomShowProcessingForm planning = new(async (progress, token) =>
+                {
+                    Progress<int> detectorProgress = new(value => progress.Report(
+                        new CustomShowProgress("scene-analysis", value,
+                            $"Detecting processing scenes… {value}%")));
+                    var planned = await Sam2MattingScenePlanner.DetectAsync(configuration,
+                        source.Text, showClips, detectorProgress, token);
+                    plannedDetection = planned.Detection;
+                    plannedScenes = planned.Scenes;
+                    progress.Report(new CustomShowProgress("scene-analysis", 100,
+                        $"Resolved {planned.Scenes.Length} processing scenes"));
+                    return new CustomShowProcessResult();
+                }, "Detecting SAM2Matting Scenes",
+                    processDescription:
+                        "Resolving immutable hard-cut scenes before the queue job is created",
+                    showPreviews: false);
+                if (planning.ShowDialog(this) != DialogResult.OK) return;
+                clipDetection = plannedDetection ?? throw new InvalidDataException(
+                    "Scene detection did not return detector provenance.");
+                manifest.ClipDetection = clipDetection;
+                processingScenes = plannedScenes ?? throw new InvalidDataException(
+                    "Scene detection did not return a processing plan.");
+            }
+            string tracker = SelectedSam2MattingTracker();
+            string[] concepts = algorithm == Sam2MattingSupport.Algorithm &&
+                tracker == "sam3"
+                ? Sam2MattingSupport.ParseConcepts(foregroundConcepts.Text) : [];
             manifest.Processing = new()
             {
                 Algorithm = algorithm,
+                ProcessingOptionVersion = algorithm == Sam2MattingSupport.Algorithm
+                    ? Sam2MattingSupport.OptionVersion : 0,
+                Tracker = algorithm == Sam2MattingSupport.Algorithm ? tracker : null,
+                PromptMode = algorithm == Sam2MattingSupport.Algorithm
+                    ? tracker == "sam3" ? "text-concepts" : "initial-mask" : null,
+                ForegroundConcepts = concepts,
+                EnvironmentSpecVersion = algorithm == Sam2MattingSupport.Algorithm
+                    ? Sam2MattingSupport.EnvironmentVersion : null,
+                SourceRevision = algorithm == Sam2MattingSupport.Algorithm
+                    ? Sam2MattingSupport.SourceRevision : null,
+                CheckpointRevision = algorithm == Sam2MattingSupport.Algorithm
+                    ? Sam2MattingSupport.CheckpointRevision : null,
+                CheckpointSha256 = algorithm == Sam2MattingSupport.Algorithm
+                    ? Sam2MattingSupport.CheckpointSha256(tracker) : null,
+                AttentionPolicy = algorithm == Sam2MattingSupport.Algorithm
+                    ? "pytorch-sdpa" : null,
+                EncoderPolicy = algorithm == Sam2MattingSupport.Algorithm
+                    ? "quickplayer-h264-aac" : null,
+                AlphaEncodingPolicy = algorithm == Sam2MattingSupport.Algorithm
+                    ? "ffv1-gray16le-linear" : null,
+                ScenePlanVersion = algorithm == Sam2MattingSupport.Algorithm
+                    ? Sam2MattingSupport.ScenePlanVersion : null,
+                Scenes = processingScenes,
                 MattingDetailPx = SelectedMattingResolution(),
                 VitMatteInferenceDetailPx = algorithm is
                     "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
@@ -1542,10 +1717,13 @@ internal sealed class CustomShowEditorForm : Form
                 RvmInitializerAlphaThresholdPercent = algorithm is
                     "rvm-matanyone2" or "rvm-vitmatte-s"
                     ? rvmInitializerThreshold.Value : null,
-                AutoAcceptedAlphaThreshold = 25,
+                AutoAcceptedAlphaThreshold = algorithm ==
+                    Sam2MattingSupport.Algorithm ? null : 25,
                 Sam2Model = algorithm == "matanyone2" ? SelectedSam2Model() : null,
-                ExecutionPolicy = "auto",
-                PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
+                ExecutionPolicy = algorithm == Sam2MattingSupport.Algorithm
+                    ? "eager" : "auto",
+                PrecisionPolicy = algorithm == Sam2MattingSupport.Algorithm
+                    ? "bf16-autocast" : "fp16-autocast-fp32-cpu-fallback",
                 RecurrentRefinementSteps = algorithm is "matanyone2" or
                     "rvm-matanyone2" ? 11 : 0,
                 ToolRevisions = ReadProcessingRevisions(algorithm, SelectedMaskEngine())
@@ -1562,6 +1740,8 @@ internal sealed class CustomShowEditorForm : Form
             job.Performer = CloneQueueValue(selectedProfile);
             job.Clips = CloneQueueValue(showClips);
             job.SourcePath = Path.GetFullPath(source.Text);
+            job.RequestedOutputPath = Path.Combine(store.ShowsFolder,
+                operation == CustomShowQueueOperation.New ? manifest.Id : targetId!);
             job.SourceLength = sourceInfo.Length;
             job.SourceLastWriteUtcTicks = sourceInfo.LastWriteTimeUtc.Ticks;
             job.TargetShowId = targetId;
@@ -1573,7 +1753,9 @@ internal sealed class CustomShowEditorForm : Form
                 ? SelectedReprocessClipIds() : [];
             job.Percent = 0; job.Message = "Pending"; job.Error = null;
             job.StartedUtc = null; job.CompletedUtc = null;
+            job.PublishedShowId = null; job.ReadyToPublish = false;
             Dictionary<string, string> masks = [];
+            Dictionary<string, string> sceneMasks = [];
             Dictionary<string, long> maskFrames = [];
             HashSet<string> queuedReprocessClips = job.ReprocessClipIds.ToHashSet(
                 StringComparer.OrdinalIgnoreCase);
@@ -1613,10 +1795,82 @@ internal sealed class CustomShowEditorForm : Form
                 job.InitialMaskAssets.Clear();
                 job.InitialMaskFrameMs.Clear();
             }
+            if (algorithm == Sam2MattingSupport.Algorithm)
+            {
+                if (tracker == "sam3")
+                {
+                    job.ScenePrompts = [];
+                }
+                else
+                {
+                    CustomShowProcessingScene[] scenesNeedingProcessing =
+                        processingScenes.Where(scene => clipsNeedingProcessing.Any(clip =>
+                            clip.Id.Equals(scene.ClipId,
+                                StringComparison.OrdinalIgnoreCase))).ToArray();
+                    string promptAssetOwner = queueDraftAssetOwnerId ?? existing?.Id ?? "";
+                    bool promptsStillMatch = masksStillMatch && existing?.Manifest.Processing is
+                        { Algorithm: "sam2matting" } prior && prior.Tracker == tracker &&
+                        SameScenePlan(prior.Scenes, processingScenes) &&
+                        existing.ScenePrompts.Length == scenesNeedingProcessing.Length &&
+                        existing.ScenePrompts.All(prompt =>
+                            File.Exists(Path.Combine(queueManager.AssetFolder(promptAssetOwner),
+                                prompt.InitialMaskAsset.Replace('/',
+                                    Path.DirectorySeparatorChar))));
+                    if (!promptsStillMatch)
+                    {
+                        job.ScenePrompts = [];
+                        maskWork ??= Path.Combine(store.Root, ".queue-mask-work",
+                            Guid.NewGuid().ToString("N"));
+                        Directory.CreateDirectory(maskWork);
+                        using FfmpegCpuDecoder decoder = new(source.Text,
+                            fastDecode: true);
+                        if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
+                                out double fps))
+                            throw new InvalidDataException(
+                                "The source frame rate is invalid.");
+                        for (int index = 0; index < scenesNeedingProcessing.Length; index++)
+                        {
+                            CustomShowProcessingScene scene = scenesNeedingProcessing[index];
+                            string sceneFolder = Path.Combine(maskWork, scene.Id);
+                            using CustomMaskEditorForm editor = new(source.Text,
+                                configuration, scene.StartMs, scene.EndMs,
+                                $"Scene {index + 1} of {scenesNeedingProcessing.Length}",
+                                Sam2MattingSupport.DisplayName(tracker),
+                                allowFrameSelection: true, sam2Model: tracker,
+                                draftFolder: sceneFolder, sam2Matting: true,
+                                showAutomaticMask: false);
+                            if (editor.ShowDialog(this) != DialogResult.OK) return;
+                            string mask = Path.Combine(sceneFolder, "initial-mask.png");
+                            editor.SaveMask(mask);
+                            long promptFrame = Math.Clamp(checked((long)Math.Round(
+                                editor.FrameMs / 1000d * fps,
+                                MidpointRounding.AwayFromZero)), scene.StartFrame,
+                                scene.EndFrameExclusive - 1);
+                            job.ScenePrompts = [.. job.ScenePrompts,
+                                new CustomShowScenePrompt
+                                {
+                                    SceneId = scene.Id, PromptFrame = promptFrame,
+                                    PromptFrameMs = editor.FrameMs
+                                }];
+                            sceneMasks[scene.Id] = mask;
+                            sceneMaskSummary.Text =
+                                $"{index + 1} of {scenesNeedingProcessing.Length} scenes ready";
+                        }
+                    }
+                    else if (queueDraftAssetOwnerId != null)
+                        foreach (CustomShowScenePrompt prompt in job.ScenePrompts)
+                            sceneMasks[prompt.SceneId] = Path.Combine(
+                                queueManager.AssetFolder(queueDraftAssetOwnerId),
+                                prompt.InitialMaskAsset.Replace('/',
+                                    Path.DirectorySeparatorChar));
+                }
+            }
+            else job.ScenePrompts = [];
             if (string.IsNullOrWhiteSpace(cover.Text)) job.CoverAsset = null;
             SaveNewQueuedPerformer(selectedProfile);
             queueManager.AddOrUpdate(job, queueJobId,
-                string.IsNullOrWhiteSpace(cover.Text) ? null : cover.Text, masks);
+                string.IsNullOrWhiteSpace(cover.Text) ? null : cover.Text, masks,
+                sceneMasks);
             RememberProcessingOptions();
             DialogResult = DialogResult.OK;
             Close();
@@ -1628,11 +1882,187 @@ internal sealed class CustomShowEditorForm : Form
         }
         finally
         {
+            CustomMaskEditorForm.CloseSam2MattingWorker();
             if (maskWork != null) CustomShowQueueStore.TryDelete(maskWork);
             queue.Enabled = true;
         }
         await Task.CompletedTask;
     }
+
+    async void QueueBatch(object? sender, EventArgs e)
+    {
+        queueBatch.Enabled = false;
+        string? draftRoot = null;
+        try
+        {
+            if (queueManager == null || SelectedPreset() != Sam2MattingSupport.Algorithm)
+                return;
+            if (selectedProfile == null)
+                throw new InvalidDataException("Select or create a model profile.");
+            CustomShowStore.ValidateProfile(selectedProfile);
+            string tracker = SelectedSam2MattingTracker();
+            if (!Sam2MattingSupport.IsInstalled(configuration, tracker))
+                throw new InvalidDataException(
+                    "Setup required: install the SAM2Matting environment and all checkpoints.");
+            string[] concepts = tracker == "sam3"
+                ? Sam2MattingSupport.ParseConcepts(foregroundConcepts.Text) : [];
+            using OpenFileDialog files = new()
+            {
+                Filter = "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*",
+                Multiselect = true, CheckFileExists = true,
+                Title = "Select videos for the SAM2Matting batch"
+            };
+            if (files.ShowDialog(this) != DialogResult.OK || files.FileNames.Length == 0)
+                return;
+            using CustomShowBatchTitlesForm titles = new(files.FileNames,
+                title.Text.Trim());
+            if (titles.ShowDialog(this) != DialogResult.OK) return;
+            (string Video, string Title)[] selected = titles.Items;
+            List<(string Video, string Title, CustomShowClip Clip,
+                CustomShowClipDetection Detection,
+                CustomShowProcessingScene[] Scenes)> plans = [];
+            using CustomShowProcessingForm planning = new(async (progress, token) =>
+            {
+                for (int index = 0; index < selected.Length; index++)
+                {
+                    (string video, string outputTitle) = selected[index];
+                    using FfmpegCpuDecoder decoder = new(video, fastDecode: true);
+                    CustomShowClip clip = new()
+                    {
+                        StartMs = 0,
+                        EndMs = checked((long)Math.Round(decoder.Duration * 1000)),
+                        Hotness = hotness.SelectedItem?.ToString() ?? "NoNudity",
+                        ClipTypes = clipTypes.CheckedItems.Cast<object>()
+                            .Select(value => value.ToString()!).ToArray()
+                    };
+                    Progress<int> detectionProgress = new(value => progress.Report(
+                        new CustomShowProgress("scene-analysis",
+                            100d * (index + value / 100d) / selected.Length,
+                            $"Video {index + 1}/{selected.Length}: detecting scenes… {value}%")));
+                    var detected = await Sam2MattingScenePlanner.DetectAsync(
+                        configuration, video, [clip], detectionProgress, token);
+                    plans.Add((video, outputTitle, clip,
+                        detected.Detection, detected.Scenes));
+                }
+                progress.Report(new CustomShowProgress("scene-analysis", 100,
+                    $"Resolved scenes for {selected.Length} videos"));
+                return new CustomShowProcessResult();
+            }, "Preparing SAM2Matting Batch",
+                processDescription:
+                    "No queue jobs are committed until every video and scene prompt is valid",
+                showPreviews: false);
+            if (planning.ShowDialog(this) != DialogResult.OK) return;
+
+            draftRoot = Path.Combine(store.Root, ".queue-mask-work",
+                "batch-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(draftRoot);
+            List<CustomShowQueueBatchEntry> entries = [];
+            int sceneNumber = 0;
+            int totalScenes = plans.Sum(plan => plan.Scenes.Length);
+            foreach (var plan in plans)
+            {
+                CustomShowManifest manifest = new();
+                ApplyFields(manifest, includeClipLayout: false);
+                manifest.Title = plan.Title;
+                manifest.Source = new() { Mode = "reference",
+                    Path = Path.GetFullPath(plan.Video) };
+                manifest.Clips = [plan.Clip];
+                manifest.ClipDetection = plan.Detection;
+                manifest.Processing = CreateSam2MattingProcessing(
+                    tracker, concepts, plan.Scenes);
+                FileInfo sourceInfo = new(plan.Video);
+                CustomShowQueueJob job = new()
+                {
+                    Operation = CustomShowQueueOperation.New,
+                    Manifest = manifest,
+                    Performer = CloneQueueValue(selectedProfile),
+                    Clips = [CloneQueueValue(plan.Clip)],
+                    SourcePath = Path.GetFullPath(plan.Video),
+                    SourceLength = sourceInfo.Length,
+                    SourceLastWriteUtcTicks = sourceInfo.LastWriteTimeUtc.Ticks,
+                    RequestedOutputPath = Path.Combine(store.ShowsFolder, manifest.Id)
+                };
+                Dictionary<string, string> sceneMasks = [];
+                if (tracker != "sam3")
+                    foreach (CustomShowProcessingScene scene in plan.Scenes)
+                    {
+                        string sceneFolder = Path.Combine(draftRoot, job.Id, scene.Id);
+                        using CustomMaskEditorForm editor = new(plan.Video,
+                            configuration, scene.StartMs, scene.EndMs,
+                            $"Video {plans.IndexOf(plan) + 1}/{plans.Count}, " +
+                            $"scene {++sceneNumber}/{totalScenes}",
+                            Sam2MattingSupport.DisplayName(tracker),
+                            allowFrameSelection: true, sam2Model: tracker,
+                            draftFolder: sceneFolder, sam2Matting: true,
+                            showAutomaticMask: false);
+                        if (editor.ShowDialog(this) != DialogResult.OK) return;
+                        string mask = Path.Combine(sceneFolder, "initial-mask.png");
+                        editor.SaveMask(mask);
+                        using FfmpegCpuDecoder decoder = new(plan.Video,
+                            fastDecode: true);
+                        if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
+                                out double fps))
+                            throw new InvalidDataException(
+                                "The source frame rate is invalid.");
+                        long promptFrame = Math.Clamp(checked((long)Math.Round(
+                            editor.FrameMs / 1000d * fps,
+                            MidpointRounding.AwayFromZero)), scene.StartFrame,
+                            scene.EndFrameExclusive - 1);
+                        job.ScenePrompts = [.. job.ScenePrompts,
+                            new CustomShowScenePrompt
+                            {
+                                SceneId = scene.Id, PromptFrame = promptFrame,
+                                PromptFrameMs = editor.FrameMs
+                            }];
+                        sceneMasks[scene.Id] = mask;
+                    }
+                entries.Add(new CustomShowQueueBatchEntry(job,
+                    string.IsNullOrWhiteSpace(cover.Text) ? null : cover.Text,
+                    sceneMasks));
+            }
+            SaveNewQueuedPerformer(selectedProfile);
+            queueManager.AddBatch(entries);
+            RememberProcessingOptions();
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            CustomMaskEditorForm.CloseSam2MattingWorker();
+            if (draftRoot != null) CustomShowQueueStore.TryDelete(draftRoot);
+            queueBatch.Enabled = true;
+        }
+        await Task.CompletedTask;
+    }
+
+    CustomShowProcessing CreateSam2MattingProcessing(string tracker,
+        string[] concepts, CustomShowProcessingScene[] scenes) => new()
+    {
+        Algorithm = Sam2MattingSupport.Algorithm,
+        ProcessingOptionVersion = Sam2MattingSupport.OptionVersion,
+        Tracker = tracker,
+        PromptMode = tracker == "sam3" ? "text-concepts" : "initial-mask",
+        ForegroundConcepts = [.. concepts],
+        EnvironmentSpecVersion = Sam2MattingSupport.EnvironmentVersion,
+        SourceRevision = Sam2MattingSupport.SourceRevision,
+        CheckpointRevision = Sam2MattingSupport.CheckpointRevision,
+        CheckpointSha256 = Sam2MattingSupport.CheckpointSha256(tracker),
+        AttentionPolicy = "pytorch-sdpa",
+        PrecisionPolicy = "bf16-autocast",
+        EncoderPolicy = "quickplayer-h264-aac",
+        AlphaEncodingPolicy = "ffv1-gray16le-linear",
+        ScenePlanVersion = Sam2MattingSupport.ScenePlanVersion,
+        Scenes = CloneQueueValue(scenes),
+        MattingDetailPx = 512,
+        BatchSize = 0,
+        AutoAcceptedAlphaThreshold = null,
+        ExecutionPolicy = "eager"
+    };
 
     void SaveNewQueuedPerformer(CustomPerformerProfile profile)
     {
@@ -1648,6 +2078,15 @@ internal sealed class CustomShowEditorForm : Form
             pair.First.EndMs == pair.Second.EndMs &&
             pair.First.Included == pair.Second.Included);
 
+    static bool SameScenePlan(CustomShowProcessingScene[] first,
+        CustomShowProcessingScene[] second) => first.Length == second.Length &&
+        first.Zip(second).All(pair => pair.First.Id == pair.Second.Id &&
+            pair.First.ClipId == pair.Second.ClipId &&
+            pair.First.StartFrame == pair.Second.StartFrame &&
+            pair.First.EndFrameExclusive == pair.Second.EndFrameExclusive &&
+            pair.First.StartMs == pair.Second.StartMs &&
+            pair.First.EndMs == pair.Second.EndMs);
+
     static T CloneQueueValue<T>(T value) => JsonSerializer.Deserialize<T>(
         JsonSerializer.Serialize(value, CustomShowStore.JsonOptions),
         CustomShowStore.JsonOptions)!;
@@ -1655,6 +2094,45 @@ internal sealed class CustomShowEditorForm : Form
     bool ConfirmGpuBatch()
     {
         string algorithm = SelectedPreset();
+        if (algorithm is ("matanyone2" or "rvm-matanyone2") &&
+            SelectedMattingResolution() == 0)
+        {
+            using FfmpegCpuDecoder decoder = new(source.Text, fastDecode: true);
+            if (CustomShowProcessor.MatAnyoneFullResolution4kRisk(algorithm, 0,
+                    decoder.Width, decoder.Height))
+            {
+                CustomShowProcessor.NvidiaMemory? matAnyoneMemory =
+                    CustomShowProcessor.NvidiaMemoryInfo();
+                string memoryText = matAnyoneMemory == null ? "" :
+                    $" The detected GPU has {matAnyoneMemory.TotalMiB / 1024d:0.#} GB total " +
+                    $"and {matAnyoneMemory.FreeMiB / 1024d:0.#} GB currently free.";
+                TaskDialogButton useVeryHigh = new("Use Very High (1024 px)");
+                TaskDialogButton continueFull = new("Continue with Full resolution");
+                TaskDialogButton cancelFullResolution = new("Cancel processing");
+                TaskDialogPage fullResolutionWarning = new()
+                {
+                    Caption = "MatAnyone GPU Memory",
+                    Heading = "Full-resolution 4K MatAnyone is unlikely to fit in GPU memory",
+                    Text = $"The source is {decoder.Width}×{decoder.Height}. Full resolution " +
+                        $"would run MatAnyone at {decoder.Width}×{decoder.Height} and is " +
+                        "expected to exhaust GPU memory." + memoryText +
+                        " Very High limits internal inference to 1024 px while preserving " +
+                        "the source output resolution.",
+                    Icon = TaskDialogIcon.Warning,
+                    AllowCancel = true,
+                    DefaultButton = useVeryHigh
+                };
+                fullResolutionWarning.Buttons.Add(useVeryHigh);
+                fullResolutionWarning.Buttons.Add(continueFull);
+                fullResolutionWarning.Buttons.Add(cancelFullResolution);
+                TaskDialogButton fullResolutionChoice =
+                    TaskDialog.ShowDialog(this, fullResolutionWarning);
+                if (fullResolutionChoice == continueFull) return true;
+                if (fullResolutionChoice != useVeryHigh) return false;
+                mattingDetail.SelectedIndex = 4;
+                return true;
+            }
+        }
         if (algorithm is not ("videomama" or "vitmatte-s" or "vitmatte-b" or
                 "rvm-vitmatte-s") ||
             sequenceChunk.SelectedItem is not int requested) return true;
@@ -2431,6 +2909,68 @@ internal sealed class CustomShowEditorForm : Form
         };
         panel.Controls.AddRange(controls);
         return panel;
+    }
+}
+
+internal sealed class CustomShowBatchTitlesForm : Form
+{
+    readonly DataGridView grid = new()
+    {
+        Dock = DockStyle.Fill, AllowUserToAddRows = false,
+        AllowUserToDeleteRows = false, AutoGenerateColumns = false,
+        RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.CellSelect
+    };
+    readonly string[] videos;
+    internal (string Video, string Title)[] Items => videos.Select((video, index) =>
+        (video, Convert.ToString(grid.Rows[index].Cells[1].Value)?.Trim() ?? ""))
+        .ToArray();
+
+    internal CustomShowBatchTitlesForm(string[] videos, string baseTitle)
+    {
+        this.videos = [.. videos];
+        Text = "Review Batch Output Titles";
+        ClientSize = new Size(820, 440);
+        StartPosition = FormStartPosition.CenterParent;
+        grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Source video", ReadOnly = true,
+            AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 55
+        });
+        grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            HeaderText = "Output title", AutoSizeMode =
+                DataGridViewAutoSizeColumnMode.Fill, FillWeight = 45
+        });
+        foreach (string video in videos)
+        {
+            string filename = Path.GetFileNameWithoutExtension(video);
+            string outputTitle = string.IsNullOrWhiteSpace(baseTitle)
+                ? filename : videos.Length == 1 ? baseTitle : $"{baseTitle} - {filename}";
+            grid.Rows.Add(Path.GetFileName(video), outputTitle);
+        }
+        Button accept = new() { Text = "Continue", AutoSize = true };
+        Button cancel = new() { Text = "Cancel", AutoSize = true,
+            DialogResult = DialogResult.Cancel };
+        accept.Click += (_, _) =>
+        {
+            grid.EndEdit();
+            if (Items.Any(item => string.IsNullOrWhiteSpace(item.Title)))
+            {
+                MessageBox.Show(this, "Every batch item requires an output title.",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            DialogResult = DialogResult.OK;
+            Close();
+        };
+        FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, AutoSize = true,
+            Padding = new Padding(8), FlowDirection = FlowDirection.LeftToRight };
+        buttons.Controls.AddRange([accept, cancel]);
+        Controls.Add(grid);
+        Controls.Add(buttons);
+        AcceptButton = accept;
+        CancelButton = cancel;
+        AppTheme.Apply(this);
     }
 }
 
@@ -4183,8 +4723,107 @@ internal sealed class CustomShowTransNetBenchmarkForm : Form
     }
 }
 
+internal sealed class CustomShowSam2MattingSetupForm : Form
+{
+    readonly string script;
+    readonly TextBox output = new()
+    {
+        Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
+        ScrollBars = ScrollBars.Both, WordWrap = false
+    };
+    readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36,
+        Text = "Cancel" };
+    Process? process;
+    bool complete;
+
+    internal CustomShowSam2MattingSetupForm(string script)
+    {
+        this.script = script;
+        Text = "Install SAM2Matting Trackers";
+        ClientSize = new Size(900, 520);
+        Controls.Add(output);
+        Controls.Add(close);
+        close.Click += (_, _) => CloseSetup();
+        FormClosing += (_, _) => { if (!complete) process?.Kill(true); };
+        Shown += async (_, _) => await Run();
+        AppTheme.Apply(this);
+    }
+
+    internal static bool ConfirmLicence(IWin32Window owner) => MessageBox.Show(owner,
+        "Fudan SAM2Matting source and checkpoints are licensed for non-commercial use. " +
+        "QuickPlayer will download the pinned public source and all three checkpoints " +
+        "without storing a Hugging Face token.\n\n" +
+        "Click Yes to acknowledge the non-commercial terms and continue.",
+        "SAM2Matting Licence", MessageBoxButtons.YesNo,
+        MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+
+    async Task Run()
+    {
+        Append("Installing the pinned SAM2Matting environment and all three checkpoints...");
+        try
+        {
+            ProcessStartInfo start = new("powershell.exe")
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                WorkingDirectory = Path.GetDirectoryName(script)!
+            };
+            foreach (string argument in new[]
+            {
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+                "-AcceptNonCommercialLicense"
+            }) start.ArgumentList.Add(argument);
+            process = Process.Start(start) ??
+                throw new InvalidOperationException("PowerShell could not be started.");
+            process.OutputDataReceived += (_, e) => Append(e.Data);
+            process.ErrorDataReceived += (_, e) => Append(e.Data);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"Setup failed with exit code {process.ExitCode}.");
+            Append("SAM2Matting setup completed successfully.");
+            DialogResult = DialogResult.OK;
+        }
+        catch (Exception error)
+        {
+            Append("Setup failed: " + error.Message);
+            DialogResult = DialogResult.Abort;
+        }
+        finally
+        {
+            complete = true;
+            close.Text = "Close";
+        }
+    }
+
+    void Append(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
+        output.AppendText(text + Environment.NewLine);
+    }
+
+    void CloseSetup()
+    {
+        if (!complete)
+        {
+            try { process?.Kill(true); } catch { }
+            DialogResult = DialogResult.Cancel;
+        }
+        Close();
+    }
+}
+
 internal sealed class CustomShowSetupOptionsForm : Form
 {
+    readonly CheckBox sam2Matting = new() { Text =
+        "SAM2Matting with SAM2.1-T, SAM2.1-B+, and SAM3 (~3.9 GB, NVIDIA CUDA required)",
+        AutoSize = true, Checked = true };
+    readonly CheckBox sam2MattingLicence = new() { Text =
+        "I acknowledge Fudan's non-commercial licence terms for SAM2Matting",
+        AutoSize = true };
     readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
         AutoSize = true, Checked = true };
     readonly CheckBox omniShotCut = new() { Text =
@@ -4215,6 +4854,8 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallEdgeTam => edgeTam.Checked;
     internal bool InstallStabilo => stabilo.Checked;
     internal bool InstallProPainter => proPainter.Checked;
+    internal bool InstallSam2Matting => sam2Matting.Checked;
+    internal bool Sam2MattingLicenceAccepted => sam2MattingLicence.Checked;
 
     internal CustomShowSetupOptionsForm()
     {
@@ -4232,6 +4873,8 @@ internal sealed class CustomShowSetupOptionsForm : Form
         layout.Controls.Add(transNet);
         layout.Controls.Add(omniShotCut);
         layout.Controls.Add(matAnyone);
+        layout.Controls.Add(sam2Matting);
+        layout.Controls.Add(sam2MattingLicence);
         layout.Controls.Add(videoMaMa);
         layout.Controls.Add(vitMatte);
         layout.Controls.Add(edgeTam);
@@ -4253,6 +4896,16 @@ internal sealed class CustomShowSetupOptionsForm : Form
             "https://github.com/cvlab-kaist/VideoMaMa/blob/main/License.md") { UseShellExecute = true });
         layout.Controls.Add(matAnyoneLicence);
         layout.Controls.Add(videoMaMaLicence);
+        LinkLabel sam2MattingLicenceLink = new()
+        {
+            Text = "Read the Fudan SAM2Matting licence and non-commercial notice",
+            AutoSize = true
+        };
+        sam2MattingLicenceLink.LinkClicked += (_, _) => Process.Start(
+            new ProcessStartInfo(
+                "https://github.com/FudanCVL/SAM2Matting/blob/73dd721d77b56749248aefe5e8824d7f61b9d13c/LICENSE")
+            { UseShellExecute = true });
+        layout.Controls.Add(sam2MattingLicenceLink);
         LinkLabel vitMatteLicence = new() { Text = "Read the ViTMatte licence", AutoSize = true };
         vitMatteLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/hustvl/ViTMatte/blob/main/LICENSE") { UseShellExecute = true });
@@ -4270,8 +4923,20 @@ internal sealed class CustomShowSetupOptionsForm : Form
             "https://github.com/sczhou/ProPainter/blob/main/LICENSE") { UseShellExecute = true });
         layout.Controls.Add(proPainterLicence);
         FlowLayoutPanel buttons = new() { AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
-        buttons.Controls.Add(new Button { Text = "Install / Update", AutoSize = true,
-            DialogResult = DialogResult.OK });
+        Button install = new() { Text = "Install / Update", AutoSize = true };
+        install.Click += (_, _) =>
+        {
+            if (sam2Matting.Checked && !sam2MattingLicence.Checked)
+            {
+                MessageBox.Show(this,
+                    "Acknowledge Fudan's non-commercial licence before installing SAM2Matting.",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            DialogResult = DialogResult.OK;
+            Close();
+        };
+        buttons.Controls.Add(install);
         buttons.Controls.Add(new Button { Text = "Cancel", AutoSize = true,
             DialogResult = DialogResult.Cancel });
         layout.Controls.Add(buttons);
@@ -4279,7 +4944,8 @@ internal sealed class CustomShowSetupOptionsForm : Form
         AcceptButton = (Button)buttons.Controls[0];
         CancelButton = (Button)buttons.Controls[1];
         AppTheme.Apply(this);
-        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor = vitMatteLicence.LinkColor = edgeTamLicence.LinkColor = stabiloLicence.LinkColor =
+        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor =
+            sam2MattingLicenceLink.LinkColor = vitMatteLicence.LinkColor = edgeTamLicence.LinkColor = stabiloLicence.LinkColor =
             proPainterLicence.LinkColor =
             Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
     }
@@ -4288,6 +4954,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     {
         using CustomShowSetupOptionsForm form = new();
         return form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
+            form.InstallSam2Matting && !form.Sam2MattingLicenceAccepted &&
             !form.InstallVideoMaMa && !form.InstallViTMatte && !form.InstallEdgeTam &&
             !form.InstallStabilo && !form.InstallProPainter;
     }

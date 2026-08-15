@@ -11,7 +11,7 @@ internal enum CustomShowQueueStatus { Pending, Running, Completed, Failed, Needs
 
 internal sealed class CustomShowQueueDocument
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public List<CustomShowQueueJob> Jobs { get; set; } = [];
 }
 
@@ -24,6 +24,7 @@ internal sealed class CustomShowQueueJob
     public CustomPerformerProfile Performer { get; set; } = new();
     public CustomShowClip[] Clips { get; set; } = [];
     public string SourcePath { get; set; } = "";
+    public string RequestedOutputPath { get; set; } = "";
     public long SourceLength { get; set; }
     public long SourceLastWriteUtcTicks { get; set; }
     public string? TargetShowId { get; set; }
@@ -31,6 +32,7 @@ internal sealed class CustomShowQueueJob
     public string? CoverAsset { get; set; }
     public Dictionary<string, string> InitialMaskAssets { get; set; } = [];
     public Dictionary<string, long> InitialMaskFrameMs { get; set; } = [];
+    public CustomShowScenePrompt[] ScenePrompts { get; set; } = [];
     public bool KeepExistingMasks { get; set; }
     public string[] ReprocessClipIds { get; set; } = [];
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
@@ -42,6 +44,17 @@ internal sealed class CustomShowQueueJob
     public string? PublishedShowId { get; set; }
     public bool ReadyToPublish { get; set; }
 }
+
+internal sealed class CustomShowScenePrompt
+{
+    public string SceneId { get; set; } = "";
+    public long PromptFrame { get; set; }
+    public long PromptFrameMs { get; set; }
+    public string InitialMaskAsset { get; set; } = "";
+}
+
+internal sealed record CustomShowQueueBatchEntry(CustomShowQueueJob Job,
+    string? CoverSource, IReadOnlyDictionary<string, string> SceneMasks);
 
 internal sealed class CustomShowQueueStore
 {
@@ -69,9 +82,30 @@ internal sealed class CustomShowQueueStore
             try { File.Move(FilePath, invalid, true); } catch { }
             return new();
         }
-        if (document.SchemaVersion != 1)
+        if (document.SchemaVersion is not (1 or 2))
             throw new InvalidDataException("Unsupported custom-show queue version.");
-        bool changed = false;
+        bool changed = document.SchemaVersion == 1;
+        if (changed) document.SchemaVersion = 2;
+        foreach (CustomShowQueueJob job in document.Jobs)
+        {
+            if (job.Manifest.SchemaVersion == 2)
+            {
+                job.Manifest.SchemaVersion = 3;
+                changed = true;
+            }
+            if (job.ScenePrompts == null)
+            {
+                job.ScenePrompts = [];
+                changed = true;
+            }
+            if (string.IsNullOrWhiteSpace(job.RequestedOutputPath))
+            {
+                job.RequestedOutputPath = job.Operation == CustomShowQueueOperation.New
+                    ? Path.Combine(shows.ShowsFolder, job.Manifest.Id)
+                    : Path.Combine(shows.ShowsFolder, job.TargetShowId ?? job.Manifest.Id);
+                changed = true;
+            }
+        }
         foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
             value.Status == CustomShowQueueStatus.Running))
         {
@@ -169,7 +203,8 @@ internal sealed class CustomShowQueueManager : IDisposable
         job => job.Status == CustomShowQueueStatus.Running); } }
 
     internal string AddOrUpdate(CustomShowQueueJob job, string? existingId,
-        string? coverSource, IReadOnlyDictionary<string, string> masks)
+        string? coverSource, IReadOnlyDictionary<string, string> masks,
+        IReadOnlyDictionary<string, string>? sceneMasks = null)
     {
         lock (gate)
         {
@@ -212,10 +247,94 @@ internal sealed class CustomShowQueueManager : IDisposable
                 job.InitialMaskAssets[clipId] = Path.GetRelativePath(assets, destination)
                     .Replace('\\', '/');
             }
+            if (sceneMasks != null)
+            {
+                Dictionary<string, CustomShowScenePrompt> prompts = job.ScenePrompts
+                    .ToDictionary(value => value.SceneId,
+                        StringComparer.OrdinalIgnoreCase);
+                foreach ((string sceneId, string source) in sceneMasks)
+                {
+                    if (!prompts.TryGetValue(sceneId,
+                            out CustomShowScenePrompt? prompt))
+                        throw new InvalidDataException(
+                            "A SAM2Matting mask does not match a queued scene.");
+                    string destination = Path.Combine(assets, "scene-masks",
+                        sceneId + ".png");
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    if (!string.Equals(Path.GetFullPath(source),
+                            Path.GetFullPath(destination),
+                            StringComparison.OrdinalIgnoreCase))
+                        File.Copy(source, destination, true);
+                    prompt.InitialMaskAsset = Path.GetRelativePath(assets, destination)
+                        .Replace('\\', '/');
+                }
+            }
             SaveLocked();
         }
         OnChanged();
         return job.Id;
+    }
+
+    internal string[] AddBatch(IReadOnlyList<CustomShowQueueBatchEntry> entries)
+    {
+        if (entries.Count == 0) return [];
+        string[] ids = entries.Select(entry => entry.Job.Id).ToArray();
+        if (ids.Distinct(StringComparer.OrdinalIgnoreCase).Count() != ids.Length)
+            throw new InvalidDataException("Batch queue jobs require unique identities.");
+        lock (gate)
+        {
+            if (entries.Any(entry =>
+                    entry.Job.Operation != CustomShowQueueOperation.New) ||
+                document.Jobs.Any(existing => ids.Contains(existing.Id,
+                    StringComparer.OrdinalIgnoreCase)))
+                throw new InvalidDataException(
+                    "Only distinct new custom shows can be committed as a batch.");
+            try
+            {
+                foreach (CustomShowQueueBatchEntry entry in entries)
+                {
+                    CustomShowQueueJob job = entry.Job;
+                    string assets = storage.Assets(job.Id);
+                    Directory.CreateDirectory(assets);
+                    if (!string.IsNullOrWhiteSpace(entry.CoverSource))
+                    {
+                        string destination = Path.Combine(assets,
+                            "cover" + Path.GetExtension(entry.CoverSource));
+                        File.Copy(entry.CoverSource, destination, true);
+                        job.CoverAsset = Path.GetRelativePath(assets, destination)
+                            .Replace('\\', '/');
+                    }
+                    Dictionary<string, CustomShowScenePrompt> prompts = job.ScenePrompts
+                        .ToDictionary(prompt => prompt.SceneId,
+                            StringComparer.OrdinalIgnoreCase);
+                    foreach ((string sceneId, string source) in entry.SceneMasks)
+                    {
+                        if (!prompts.TryGetValue(sceneId,
+                                out CustomShowScenePrompt? prompt))
+                            throw new InvalidDataException(
+                                "A batch scene mask does not match its saved scene.");
+                        string destination = Path.Combine(assets, "scene-masks",
+                            sceneId + ".png");
+                        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                        File.Copy(source, destination, true);
+                        prompt.InitialMaskAsset = Path.GetRelativePath(assets, destination)
+                            .Replace('\\', '/');
+                    }
+                    CustomShowJobRunner.Validate(job, shows, configuration, storage);
+                    document.Jobs.Add(job);
+                }
+                SaveLocked();
+            }
+            catch
+            {
+                document.Jobs.RemoveAll(job => ids.Contains(job.Id,
+                    StringComparer.OrdinalIgnoreCase));
+                foreach (string id in ids) storage.DeleteAssets(id);
+                throw;
+            }
+        }
+        OnChanged();
+        return ids;
     }
 
     internal CustomShowQueueJob? Find(string id)
@@ -671,7 +790,7 @@ internal static class CustomShowJobRunner
     {
         if (job.Manifest.Processing?.Algorithm is not
             ("quality" or "fast" or "rvm-matanyone2" or
-             "rvm-vitmatte-s" or "matanyone2"))
+             "rvm-vitmatte-s" or "matanyone2" or "sam2matting"))
             throw new CustomShowQueueAttentionException(
                 "This processing algorithm cannot run unattended.");
         bool installed = job.Manifest.Processing.Algorithm switch
@@ -679,11 +798,15 @@ internal static class CustomShowJobRunner
             "rvm-matanyone2" => CustomShowProcessor.IsRvmMatAnyone2Installed(configuration),
             "rvm-vitmatte-s" => CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration),
             "matanyone2" => CustomShowProcessor.IsMatAnyone2Installed(configuration),
+            "sam2matting" => Sam2MattingSupport.IsInstalled(configuration,
+                job.Manifest.Processing.Tracker),
             _ => File.Exists(CustomShowProcessor.WorkerPath)
         };
         if (!installed)
             throw new CustomShowQueueAttentionException(
-                "The selected processing tools are not currently installed.");
+                job.Manifest.Processing.Algorithm == "sam2matting"
+                    ? "Setup required: install or repair the SAM2Matting environment and checkpoints."
+                    : "The selected processing tools are not currently installed.");
         if (!File.Exists(job.SourcePath))
             throw new CustomShowQueueAttentionException("The source video no longer exists.");
         if (job.Clips.Length == 0 || !job.Clips.Any(clip => clip.Included) ||
@@ -727,6 +850,64 @@ internal static class CustomShowJobRunner
                         mask.Replace('/', Path.DirectorySeparatorChar))))
                     throw new CustomShowQueueAttentionException(
                         "A MatAnyone initial mask is missing. Edit and mask the job again.");
+        if (job.Manifest.Processing?.Algorithm == "sam2matting")
+        {
+            CustomShowProcessing options = job.Manifest.Processing;
+            try
+            {
+                Sam2MattingScenePlanner.Validate(options.Scenes, job.Clips);
+                using FfmpegCpuDecoder decoder = new(job.SourcePath,
+                    fastDecode: true);
+                if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
+                        out double sceneFps))
+                    throw new InvalidDataException(
+                        "The source frame rate is invalid.");
+                Sam2MattingScenePlanner.ValidateCoverage(options.Scenes,
+                    job.Clips, sceneFps);
+            }
+            catch (InvalidDataException error)
+            {
+                throw new CustomShowQueueAttentionException(error.Message);
+            }
+            if (string.IsNullOrWhiteSpace(job.RequestedOutputPath))
+                throw new CustomShowQueueAttentionException(
+                    "The queued output target is missing. Edit the job to review it.");
+            if (options.Tracker == "sam3")
+            {
+                if (job.ScenePrompts.Length != 0)
+                    throw new CustomShowQueueAttentionException(
+                        "SAM3 jobs cannot contain saved scene masks.");
+                try { _ = Sam2MattingSupport.ParseConcepts(
+                    string.Join('\n', options.ForegroundConcepts)); }
+                catch (InvalidDataException error)
+                {
+                    throw new CustomShowQueueAttentionException(error.Message);
+                }
+            }
+            else
+            {
+                CustomShowProcessingScene[] scenes = options.Scenes.Where(scene =>
+                    ClipsToProcess(job, job.Clips).Any(clip =>
+                        clip.Id.Equals(scene.ClipId,
+                            StringComparison.OrdinalIgnoreCase))).ToArray();
+                if (job.ScenePrompts.Length != scenes.Length)
+                    throw new CustomShowQueueAttentionException(
+                        "Every SAM2.1 processing scene requires exactly one saved initial mask.");
+                Dictionary<string, CustomShowProcessingScene> byId = scenes.ToDictionary(
+                    scene => scene.Id, StringComparer.OrdinalIgnoreCase);
+                foreach (CustomShowScenePrompt prompt in job.ScenePrompts)
+                    if (!byId.TryGetValue(prompt.SceneId,
+                            out CustomShowProcessingScene? scene) ||
+                        prompt.PromptFrame < scene.StartFrame ||
+                        prompt.PromptFrame >= scene.EndFrameExclusive ||
+                        string.IsNullOrWhiteSpace(prompt.InitialMaskAsset) ||
+                        !File.Exists(Path.Combine(queue.Assets(job.Id),
+                            prompt.InitialMaskAsset.Replace('/',
+                                Path.DirectorySeparatorChar))))
+                        throw new CustomShowQueueAttentionException(
+                            "A SAM2.1 scene mask is missing or does not match its saved prompt frame.");
+            }
+        }
     }
 
     static async Task<CustomShowProcessResult> ProcessClips(CustomShowQueueJob job,
@@ -740,6 +921,18 @@ internal static class CustomShowJobRunner
         CustomShowProcessing options = job.Manifest.Processing!;
         CustomShowClip[] included = clips.Where(value => value.Included).ToArray();
         long total = included.Sum(value => Math.Max(1, value.EndMs - value.StartMs));
+        if (options.Algorithm == "sam2matting")
+        {
+            CustomShowProcessResult result = await CustomShowProcessor.RunSam2MattingAsync(
+                configuration, job, included, staging, queue.Assets(job.Id), log,
+                progress, token);
+            if (result.Clips == null || result.Clips.Length != included.Length)
+                throw new InvalidDataException(
+                    "SAM2Matting returned an incomplete clip result contract.");
+            for (int index = 0; index < included.Length; index++)
+                SetMedia(included[index], result.Clips[index]);
+            return result;
+        }
         if (options.Algorithm is "quality" or "fast")
         {
             CustomShowProcessJob[] jobs = included.Select(clip => new CustomShowProcessJob(
@@ -1057,6 +1250,7 @@ internal sealed class CustomShowQueueForm : Form
     const int MessageColumnIndex = 7;
     readonly CustomShowQueueManager manager;
     readonly Action<CustomShowQueueJob> edit;
+    readonly Action<CustomShowQueueJob, string> duplicate;
     readonly QueueGrid grid = new()
     {
         Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false,
@@ -1073,6 +1267,8 @@ internal sealed class CustomShowQueueForm : Form
     readonly Button up = new() { Text = "Move Up", AutoSize = true };
     readonly Button down = new() { Text = "Move Down", AutoSize = true };
     readonly Button editButton = new() { Text = "Edit", AutoSize = true };
+    readonly Button duplicateButton = new() { Text = "Duplicate", AutoSize = true };
+    readonly Button details = new() { Text = "Details", AutoSize = true };
     readonly Button delete = new() { Text = "Delete", AutoSize = true };
     readonly Button removeCompleted = new() { Text = "Remove Completed", AutoSize = true };
     readonly Button retry = new() { Text = "Retry", AutoSize = true };
@@ -1083,9 +1279,10 @@ internal sealed class CustomShowQueueForm : Form
     volatile bool refreshPending = true;
 
     internal CustomShowQueueForm(CustomShowQueueManager manager,
-        Action<CustomShowQueueJob> edit)
+        Action<CustomShowQueueJob> edit,
+        Action<CustomShowQueueJob, string> duplicate)
     {
-        this.manager = manager; this.edit = edit;
+        this.manager = manager; this.edit = edit; this.duplicate = duplicate;
         Text = "Automatic Custom-Show Queue";
         ClientSize = new Size(1180, 520);
         MinimumSize = new Size(820, 360);
@@ -1106,8 +1303,8 @@ internal sealed class CustomShowQueueForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(12, 5, 12, 12)
         };
-        buttons.Controls.AddRange([run, pause, stop, up, down, editButton, retry, open,
-            delete, removeCompleted]);
+        buttons.Controls.AddRange([run, pause, stop, up, down, editButton,
+            duplicateButton, details, retry, open, delete, removeCompleted]);
         layout.Controls.Add(buttons, 0, 2); Controls.Add(layout);
         run.Click += (_, _) => manager.Run();
         pause.Click += Pause;
@@ -1119,6 +1316,8 @@ internal sealed class CustomShowQueueForm : Form
         removeCompleted.Click += RemoveCompleted;
         open.Click += OpenSelected;
         editButton.Click += (_, _) => { if (Selected() is { } job) edit(job); };
+        duplicateButton.Click += (_, _) => DuplicateSelected();
+        details.Click += (_, _) => ShowDetails();
         grid.SelectionChanged += (_, _) => RefreshButtons();
         grid.CellContentClick += OpenLogLink;
         grid.CellDoubleClick += (_, _) => { if (Selected() is { } job) edit(job); };
@@ -1275,6 +1474,55 @@ internal sealed class CustomShowQueueForm : Form
             Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
+    void DuplicateSelected()
+    {
+        if (Selected() is not { } source ||
+            source.Status == CustomShowQueueStatus.Running) return;
+        CustomShowQueueJob draft = JsonSerializer.Deserialize<CustomShowQueueJob>(
+            JsonSerializer.Serialize(source, CustomShowStore.JsonOptions),
+            CustomShowStore.JsonOptions)!;
+        draft.Id = Guid.NewGuid().ToString("N");
+        draft.Manifest.Id = Guid.NewGuid().ToString("N");
+        draft.Manifest.Title = string.IsNullOrWhiteSpace(draft.Manifest.Title)
+            ? "Copy" : draft.Manifest.Title + " copy";
+        draft.Operation = CustomShowQueueOperation.New;
+        draft.TargetShowId = null;
+        draft.TargetManifestSha256 = null;
+        draft.RequestedOutputPath = manager.PublishedShowFolder(draft.Manifest.Id);
+        draft.Status = CustomShowQueueStatus.Pending;
+        draft.Percent = 0;
+        draft.Message = "Draft";
+        draft.Error = null;
+        draft.CreatedUtc = DateTime.UtcNow;
+        draft.StartedUtc = null;
+        draft.CompletedUtc = null;
+        draft.PublishedShowId = null;
+        draft.ReadyToPublish = false;
+        duplicate(draft, source.Id);
+    }
+
+    void ShowDetails()
+    {
+        if (Selected() is not { } job) return;
+        CustomShowProcessing? processing = job.Manifest.Processing;
+        string prompt = processing?.Tracker == "sam3"
+            ? "Text concepts: " + string.Join(", ", processing.ForegroundConcepts)
+            : processing?.Algorithm == "sam2matting"
+                ? $"Initial masks: {job.ScenePrompts.Length}/{processing.Scenes.Length} scenes"
+                : "Prompt: existing pipeline";
+        string detail =
+            $"Tracker: {(processing?.Tracker == null ? "—" : Sam2MattingSupport.DisplayName(processing.Tracker))}\r\n" +
+            $"Prompt type: {processing?.PromptMode ?? "—"}\r\n{prompt}\r\n" +
+            $"Checkpoint revision: {processing?.CheckpointRevision ?? "—"}\r\n" +
+            $"Scene detector: {job.Manifest.ClipDetection?.Method ?? "—"} " +
+            $"({job.Manifest.ClipDetection?.ToolRevision ?? "saved settings"})\r\n" +
+            $"Output policy: {processing?.EncoderPolicy ?? "existing"}; " +
+            $"{processing?.AlphaEncodingPolicy ?? "existing"}\r\n" +
+            $"Input: {job.SourcePath}\r\nOutput: {job.RequestedOutputPath}";
+        MessageBox.Show(this, detail, $"Queue Details — {job.Manifest.Title}",
+            MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
     CustomShowQueueJob? Selected() => SelectedId() is string id ? manager.Find(id) : null;
     string? SelectedId() => grid.CurrentRow?.Tag as string;
 
@@ -1284,6 +1532,8 @@ internal sealed class CustomShowQueueForm : Form
         bool editable = job != null && job.Status != CustomShowQueueStatus.Running;
         up.Enabled = down.Enabled = editable && job!.Status != CustomShowQueueStatus.Completed;
         editButton.Enabled = editable;
+        duplicateButton.Enabled = editable;
+        details.Enabled = job != null;
         delete.Enabled = editable;
         removeCompleted.Enabled = manager.Jobs.Any(value =>
             value.Status == CustomShowQueueStatus.Completed);
@@ -1314,7 +1564,9 @@ internal sealed class CustomShowQueueForm : Form
         public string Operation => job.Operation.ToString();
         public string Title => job.Manifest.Title;
         public string Model => job.Performer.ModelName;
-        public string Algorithm => job.Manifest.Processing?.Algorithm ?? "";
+        public string Algorithm => job.Manifest.Processing?.Algorithm == "sam2matting"
+            ? Sam2MattingSupport.DisplayName(job.Manifest.Processing.Tracker)
+            : job.Manifest.Processing?.Algorithm ?? "";
         public string Source => Path.GetFileName(job.SourcePath);
         public string Status => job.Status == CustomShowQueueStatus.NeedsAttention
             ? "Needs attention" : job.Status.ToString();

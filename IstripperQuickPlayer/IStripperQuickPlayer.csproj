@@ -104,6 +104,30 @@
     <Content Include="..\tools\custom-shows\setup.ps1" Link="custom-shows\setup.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\custom-shows\sam2matting_worker.py" Link="custom-shows\sam2matting_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam2matting_mask_worker.py" Link="custom-shows\sam2matting_mask_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\setup-sam2matting.ps1" Link="custom-shows\setup-sam2matting.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam2matting-environment.lock" Link="custom-shows\sam2matting-environment.lock">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam2matting-requirements.in" Link="custom-shows\sam2matting-requirements.in">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam2matting-requirements.lock" Link="custom-shows\sam2matting-requirements.lock">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\benchmark_sam2matting.py" Link="custom-shows\benchmark_sam2matting.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\test_sam2matting_contract.py" Link="custom-shows\test_sam2matting_contract.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="dependencies\avcodec-62.dll;dependencies\avformat-62.dll;dependencies\avutil-60.dll;dependencies\swresample-6.dll;dependencies\swscale-9.dll;dependencies\ffmpeg.exe;dependencies\ffprobe.exe;dependencies\FFmpeg-*.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>

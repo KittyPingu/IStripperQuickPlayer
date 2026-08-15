@@ -568,6 +568,9 @@ internal sealed class CustomPlayerForm : Form
         ApplyOpacityThresholds(200, 20, 200) == 255 &&
         ApplyOpacityThresholds(99, 100, 50) == 0 &&
         ApplyOpacityThresholds(100, 100, 50) == 255 &&
+        PairedRenderer.Alpha16ToByte(0) == 0 &&
+        PairedRenderer.Alpha16ToByte(32768) == 128 &&
+        PairedRenderer.Alpha16ToByte(65535) == 255 &&
         TimestampStreamToAdvance(100, 110, 20) == 0 &&
         TimestampStreamToAdvance(100, 142, 20) == -1 &&
         TimestampStreamToAdvance(142, 100, 20) == 1 &&
@@ -656,6 +659,7 @@ internal sealed class CustomPlayerForm : Form
         int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1;
         double clockSeconds, rate = 1;
         readonly byte[] alphaRow;
+        readonly bool alpha16;
         internal int Width => rgb.Width; internal int Height => rgb.Height;
         internal double Duration { get; }
         internal bool Ended { get; private set; }
@@ -675,7 +679,8 @@ internal sealed class CustomPlayerForm : Form
                 !PairDurationMatches(rgb.Duration, alpha.Duration, rgb.FrameDuration))
                 throw new InvalidDataException("Foreground and alpha dimensions, frame rate, or duration do not match.");
             Duration = Math.Min(rgb.Duration, alpha.Duration);
-            alphaRow = new byte[Width];
+            alpha16 = alpha.IsGray16;
+            alphaRow = new byte[checked(Width * (alpha16 ? 2 : 1))];
             audio = InternalAudioPlayer.TryOpen(foreground);
             device = D3D11.D3D11CreateDevice(DriverType.Hardware,
                 DeviceCreationFlags.BgraSupport, Vortice.Direct3D.FeatureLevel.Level_11_1,
@@ -693,7 +698,8 @@ internal sealed class CustomPlayerForm : Form
                 alphaMode: DxgiAlphaMode.Premultiplied));
             back = swap.GetBuffer<ID3D11Texture2D>(0); target = device!.CreateRenderTargetView(back);
             yTex = Texture(Width, Height); uTex = Texture((Width+1)/2, (Height+1)/2);
-            vTex = Texture((Width+1)/2, (Height+1)/2); aTex = Texture(Width, Height);
+            vTex = Texture((Width+1)/2, (Height+1)/2); aTex = Texture(Width, Height,
+                alpha16 ? DxgiFormat.R16_UNorm : DxgiFormat.R8_UNorm);
             thresholdTex = Texture(1, 1, DxgiFormat.R8G8_UNorm);
             yView=device.CreateShaderResourceView(yTex); uView=device.CreateShaderResourceView(uTex);
             vView=device.CreateShaderResourceView(vTex); aView=device.CreateShaderResourceView(aTex);
@@ -747,14 +753,21 @@ internal sealed class CustomPlayerForm : Form
             {
                 int sourceY = Math.Min(Height - 1, y * Height / size.Height);
                 Marshal.Copy(alphaPlane + sourceY * (int)pitch,
-                    alphaRow, 0, Width);
+                    alphaRow, 0, alphaRow.Length);
                 int destination = y * size.Width;
                 for (int x = 0; x < size.Width; x++)
-                    pixels[destination + x] = alphaRow[
-                        Math.Min(Width - 1, x * Width / size.Width)];
+                {
+                    int sourceX = Math.Min(Width - 1, x * Width / size.Width);
+                    pixels[destination + x] = alpha16
+                        ? Alpha16ToByte((ushort)(alphaRow[sourceX * 2] |
+                            alphaRow[sourceX * 2 + 1] << 8))
+                        : alphaRow[sourceX];
+                }
             }
             return new AlphaHitMap(pixels, size.Width, size.Height);
         }
+        internal static byte Alpha16ToByte(ushort value) =>
+            (byte)((value + 128u) / 257u);
         bool DecodePair()
         {
             if (!rgb.DecodeNext(out rgbTick) ||

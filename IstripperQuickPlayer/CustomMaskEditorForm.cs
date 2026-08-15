@@ -8,6 +8,12 @@ namespace IStripperQuickPlayer;
 
 internal sealed class CustomMaskEditorForm : Form
 {
+    static readonly SemaphoreSlim Sam2MattingWorkerGate = new(1, 1);
+    static readonly object Sam2MattingWorkerSync = new();
+    static Process? sharedSam2MattingWorker;
+    static Task<string>? sharedSam2MattingError;
+    static string? sharedSam2MattingTracker;
+    static IDisposable? sharedSam2MattingGpuLease;
     sealed record PaintUndoState(string MaskPath, bool HadMask,
         PointF[] Points, int[] Labels, bool Automatic, bool HadPaintSeed);
 
@@ -19,6 +25,7 @@ internal sealed class CustomMaskEditorForm : Form
     readonly double frameDurationMs;
     readonly bool allowFrameSelection;
     readonly string sam2Model;
+    readonly bool sam2Matting;
     readonly string? draftFolder;
     readonly string temporary = Path.Combine(Path.GetTempPath(),
         "iqp-mask-" + Guid.NewGuid().ToString("N"));
@@ -58,6 +65,7 @@ internal sealed class CustomMaskEditorForm : Form
     CancellationTokenSource? previewCancellation;
     CancellationTokenSource? streamCancellation;
     Process? worker;
+    IDisposable? gpuLease;
     Task<string>? workerError;
     long playStartMs;
     long displayedFrameMs = -1;
@@ -67,6 +75,7 @@ internal sealed class CustomMaskEditorForm : Form
     bool frameReady;
     bool resumeAfterScrub;
     bool closing;
+    bool sharedWorkerLease;
     bool currentAutomatic;
     bool hasPaintSeed;
     Bitmap? paintingMask;
@@ -86,7 +95,8 @@ internal sealed class CustomMaskEditorForm : Form
         CustomShowConfiguration configuration, long startMs, long endMs,
         string? clipLabel = null, string algorithm = "MatAnyone 2",
         bool allowFrameSelection = false, string sam2Model = "base-plus",
-        string? draftFolder = null)
+        string? draftFolder = null, bool sam2Matting = false,
+        bool showAutomaticMask = true)
     {
         this.videoPath = videoPath;
         this.configuration = configuration;
@@ -94,6 +104,7 @@ internal sealed class CustomMaskEditorForm : Form
         this.endMs = endMs;
         this.allowFrameSelection = allowFrameSelection;
         this.sam2Model = sam2Model;
+        this.sam2Matting = sam2Matting;
         this.draftFolder = draftFolder;
         durationMs = Math.Max(1, endMs - startMs);
         try
@@ -137,6 +148,7 @@ internal sealed class CustomMaskEditorForm : Form
             DialogResult = DialogResult.Cancel };
         actions.Controls.AddRange([paintMode, brushSize, brushSizeLabel, clear,
             undo, automatic, accept, cancel, status]);
+        automatic.Visible = showAutomaticMask;
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         CancelButton = cancel;
@@ -232,6 +244,8 @@ internal sealed class CustomMaskEditorForm : Form
             previewCancellation?.Cancel();
             streamCancellation?.Cancel();
             StopWorker();
+            gpuLease?.Dispose();
+            gpuLease = null;
         };
         AppTheme.Apply(this);
         UpdateEnabledState();
@@ -291,6 +305,9 @@ internal sealed class CustomMaskEditorForm : Form
         try
         {
             status.Text = "Extracting the selected frame...";
+            if (!sam2Matting)
+                gpuLease = await CustomShowGpuScheduler.AcquireAsync(
+                    CancellationToken.None);
             Directory.CreateDirectory(temporary);
             await ExtractFrameAsync(FrameMs, CancellationToken.None);
             SetSource(LoadBitmap(FramePath));
@@ -323,14 +340,35 @@ internal sealed class CustomMaskEditorForm : Form
                 SetSource(LoadBitmap(FramePath));
                 displayedFrameMs = FrameMs;
             }
-            string python = configuration.PythonExecutable;
-            string runtime = Path.GetFullPath(Path.Combine(
-                Path.GetDirectoryName(python)!, "..", ".."));
+            string python = sam2Matting ? configuration.Sam2MattingPythonExecutable :
+                configuration.PythonExecutable;
+            string runtime = sam2Matting ? Sam2MattingSupport.RuntimeRoot :
+                Path.GetFullPath(Path.Combine(Path.GetDirectoryName(python)!, "..", ".."));
             string workerPath = Path.Combine(AppContext.BaseDirectory,
-                "custom-shows", "sam_mask_worker.py");
-            if (!File.Exists(Path.Combine(runtime, "SAM2_COMMIT")))
+                "custom-shows", sam2Matting ? "sam2matting_mask_worker.py" :
+                    "sam_mask_worker.py");
+            if (sam2Matting ? !Sam2MattingSupport.IsInstalled(configuration,
+                    sam2Model) : !File.Exists(Path.Combine(runtime, "SAM2_COMMIT")))
                 throw new InvalidOperationException(
                     "Interactive masking is not installed. Run Install / Update Processing Tools and select this algorithm.");
+            if (sam2Matting)
+            {
+                await Sam2MattingWorkerGate.WaitAsync();
+                sharedWorkerLease = true;
+                if (sharedSam2MattingGpuLease == null)
+                    sharedSam2MattingGpuLease = await
+                        CustomShowGpuScheduler.AcquireAsync(CancellationToken.None);
+                lock (Sam2MattingWorkerSync)
+                    if (sharedSam2MattingWorker is { HasExited: false } &&
+                        sharedSam2MattingTracker != sam2Model)
+                    {
+                        try { sharedSam2MattingWorker.Kill(true); } catch { }
+                        sharedSam2MattingWorker.Dispose();
+                        sharedSam2MattingWorker = null;
+                        sharedSam2MattingError = null;
+                        sharedSam2MattingTracker = null;
+                    }
+            }
             ProcessStartInfo start = new(python)
             {
                 UseShellExecute = false, CreateNoWindow = true,
@@ -339,22 +377,56 @@ internal sealed class CustomMaskEditorForm : Form
             };
             foreach (string argument in new[] { workerPath, "--runtime", runtime,
                 "--image", FramePath, "--mask", MaskPath, "--preview", PreviewPath,
-                "--model", sam2Model })
+                sam2Matting ? "--tracker" : "--model", sam2Model })
                 start.ArgumentList.Add(argument);
-            worker = Process.Start(start) ??
-                throw new InvalidOperationException("Python could not be started.");
-            workerError = worker.StandardError.ReadToEndAsync();
-            JsonElement ready = await ReadResponseAsync();
-            if (ready.GetProperty("status").GetString() != "ready")
-                throw new InvalidOperationException(ResponseError(ready));
+            bool reused = false;
+            string readyDescription = "";
+            if (sam2Matting)
+                lock (Sam2MattingWorkerSync)
+                    if (sharedSam2MattingWorker is { HasExited: false })
+                    {
+                        worker = sharedSam2MattingWorker;
+                        workerError = sharedSam2MattingError;
+                        reused = true;
+                    }
+            if (!reused)
+            {
+                worker = Process.Start(start) ??
+                    throw new InvalidOperationException("Python could not be started.");
+                workerError = worker.StandardError.ReadToEndAsync();
+                if (sam2Matting)
+                    lock (Sam2MattingWorkerSync)
+                    {
+                        sharedSam2MattingWorker = worker;
+                        sharedSam2MattingError = workerError;
+                        sharedSam2MattingTracker = sam2Model;
+                    }
+                JsonElement ready = await ReadResponseAsync();
+                if (ready.GetProperty("status").GetString() != "ready")
+                    throw new InvalidOperationException(ResponseError(ready));
+                readyDescription = $"{ready.GetProperty("checkpoint").GetString()} ready on " +
+                    $"{ready.GetProperty("device").GetString()?.ToUpperInvariant()}/" +
+                    ready.GetProperty("precision").GetString();
+            }
+            else
+            {
+                await worker!.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new
+                {
+                    command = "load", image = FramePath,
+                    mask = MaskPath, preview = PreviewPath
+                }));
+                await worker.StandardInput.FlushAsync();
+                JsonElement loaded = await ReadResponseAsync();
+                if (loaded.GetProperty("status").GetString() != "loaded")
+                    throw new InvalidOperationException(ResponseError(loaded));
+                readyDescription = $"{sam2Model} reused on CUDA/BF16";
+            }
             workerFrameMs = displayedFrameMs;
             workerReady = true;
             status.Text = File.Exists(MaskPath)
                 ? $"Recovered saved mask at {Format(FrameMs - startMs)} with " +
                     $"{points.Count} undoable click{(points.Count == 1 ? "" : "s")}."
-                : $"{ready.GetProperty("checkpoint").GetString()} ready on " +
-                    $"{ready.GetProperty("device").GetString()?.ToUpperInvariant()}/" +
-                    ready.GetProperty("precision").GetString() +
+                : readyDescription +
                     (allowFrameSelection
                         ? "; choose the best frame, then create its mask." : "");
             UpdateEnabledState();
@@ -625,6 +697,9 @@ internal sealed class CustomMaskEditorForm : Form
         }
         catch (Exception error)
         {
+            gpuLease?.Dispose();
+            gpuLease = null;
+            ReleaseSharedWorkerLease();
             paintingMask?.Dispose(); paintingMask = null;
             painting = false; image.Capture = false;
             MessageBox.Show(this, error.Message, Text,
@@ -737,7 +812,8 @@ internal sealed class CustomMaskEditorForm : Form
         status.Text = "Preparing the selected frame for SAM2...";
         await worker!.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new
         {
-            command = "load", image = FramePath
+            command = "load", image = FramePath,
+            mask = MaskPath, preview = PreviewPath
         }));
         await worker.StandardInput.FlushAsync();
         JsonElement response = await ReadResponseAsync();
@@ -759,6 +835,7 @@ internal sealed class CustomMaskEditorForm : Form
             {
                 command = useAutomatic ? "auto" : "prompt",
                 seedMask = !useAutomatic && hasPaintSeed ? PaintSeedPath : null,
+                mask = MaskPath, preview = PreviewPath,
                 points = points.Select(point => new[] { point.X, point.Y }),
                 labels
             });
@@ -1014,9 +1091,42 @@ internal sealed class CustomMaskEditorForm : Form
 
     void StopWorker()
     {
+        if (sam2Matting)
+        {
+            worker = null;
+            workerError = null;
+            ReleaseSharedWorkerLease();
+            return;
+        }
         try { if (worker is { HasExited: false }) worker.Kill(true); } catch { }
         worker?.Dispose();
         worker = null;
+    }
+
+    void ReleaseSharedWorkerLease()
+    {
+        if (!sharedWorkerLease) return;
+        sharedWorkerLease = false;
+        Sam2MattingWorkerGate.Release();
+    }
+
+    internal static void CloseSam2MattingWorker()
+    {
+        lock (Sam2MattingWorkerSync)
+        {
+            try
+            {
+                if (sharedSam2MattingWorker is { HasExited: false })
+                    sharedSam2MattingWorker.Kill(true);
+            }
+            catch { }
+            sharedSam2MattingWorker?.Dispose();
+            sharedSam2MattingWorker = null;
+            sharedSam2MattingError = null;
+            sharedSam2MattingTracker = null;
+            sharedSam2MattingGpuLease?.Dispose();
+            sharedSam2MattingGpuLease = null;
+        }
     }
 
     protected override void Dispose(bool disposing)

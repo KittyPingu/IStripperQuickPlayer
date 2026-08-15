@@ -13,9 +13,20 @@ internal sealed record CustomShowProgress(
 
 internal sealed class CustomShowProcessResult
 {
+    public string? ClipId { get; set; }
     public int Width { get; set; }
     public int Height { get; set; }
     public string FrameRate { get; set; } = "";
+    public string? TimeBase { get; set; }
+    public long? DecodedFrameCount { get; set; }
+    public long? ForegroundFrameCount { get; set; }
+    public long? AlphaFrameCount { get; set; }
+    public string? ForegroundCodec { get; set; }
+    public string? AlphaCodec { get; set; }
+    public string? AlphaPixelFormat { get; set; }
+    public string? Tracker { get; set; }
+    public long? FirstTimestamp { get; set; }
+    public long? LastTimestamp { get; set; }
     public long? InitialMaskFrameMs { get; set; }
     public long DurationMs { get; set; }
     public string? ForegroundMode { get; set; }
@@ -57,6 +68,8 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "omnishotcut_worker.py");
     internal static string StabiloWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "stabilo_worker.py");
+    internal static string Sam2MattingWorkerPath => Path.Combine(
+        AppContext.BaseDirectory, "custom-shows", "sam2matting_worker.py");
 
     internal static string Sam2FrameCacheRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -145,8 +158,21 @@ internal static class CustomShowProcessor
             WorkerErrorMessage(
                 "{\"stage\":\"error\",\"message\":\"RVM could not find a usable person mask in the opening frames\"}") ==
                 "Initial mask could not detect a person in the opening frames." &&
+            WorkerErrorMessage(
+                "{\"stage\":\"error\",\"message\":\"CUDA error: out of memory\\nSearch for cudaErrorMemoryAllocation\"}") ==
+                "GPU out of memory. Reduce Matting detail and retry." &&
+            MatAnyoneFullResolution4kRisk("rvm-matanyone2", 0, 3840, 2160) &&
+            MatAnyoneFullResolution4kRisk("matanyone2", 0, 2160, 3840) &&
+            !MatAnyoneFullResolution4kRisk("rvm-matanyone2", 1024, 3840, 2160) &&
+            !MatAnyoneFullResolution4kRisk("rvm-matanyone2", 0, 1920, 1080) &&
+            !MatAnyoneFullResolution4kRisk("quality", 0, 3840, 2160) &&
             WorkerErrorMessage("{\"stage\":\"processing\",\"message\":\"Working\"}") == null;
     }
+
+    internal static bool MatAnyoneFullResolution4kRisk(string algorithm,
+        int mattingDetailPx, int width, int height) =>
+        algorithm is ("matanyone2" or "rvm-matanyone2") &&
+        mattingDetailPx == 0 && (long)width * height >= 3840L * 2160;
 
     internal static string? WorkerErrorMessage(string line)
     {
@@ -160,6 +186,13 @@ internal static class CustomShowProcessor
                 return null;
             string? value = message.GetString()?.Trim();
             if (string.IsNullOrWhiteSpace(value)) return null;
+            if (value.Contains("CUDA error: out of memory",
+                    StringComparison.OrdinalIgnoreCase) ||
+                value.Contains("CUDA out of memory",
+                    StringComparison.OrdinalIgnoreCase) ||
+                value.Contains("cudaErrorMemoryAllocation",
+                    StringComparison.OrdinalIgnoreCase))
+                return "GPU out of memory. Reduce Matting detail and retry.";
             return string.Equals(value,
                 "RVM could not find a usable person mask in the opening frames",
                 StringComparison.Ordinal)
@@ -369,6 +402,172 @@ internal static class CustomShowProcessor
         finally { try { Directory.Delete(runtime, true); } catch { } }
     }
 
+    internal static async Task<CustomShowProcessResult> RunSam2MattingAsync(
+        CustomShowConfiguration configuration, CustomShowQueueJob job,
+        CustomShowClip[] clips, string stagingFolder, string jobAssets,
+        string logPath, IProgress<CustomShowProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        CustomShowProcessing options = job.Manifest.Processing ??
+            throw new InvalidDataException("SAM2Matting processing settings are missing.");
+        if (!File.Exists(configuration.Sam2MattingPythonExecutable))
+            throw new FileNotFoundException(
+                "Install the SAM2Matting Python 3.10 environment first.",
+                configuration.Sam2MattingPythonExecutable);
+        if (!File.Exists(Sam2MattingWorkerPath))
+            throw new FileNotFoundException(
+                "The SAM2Matting adapter worker is missing.", Sam2MattingWorkerPath);
+        Directory.CreateDirectory(stagingFolder);
+        string cancelPath = Path.Combine(stagingFolder, ".sam2matting-cancel");
+        try { File.Delete(cancelPath); } catch { }
+        HashSet<string> included = clips.Select(clip => clip.Id).ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
+        string requestPath = Path.Combine(stagingFolder, "sam2matting-request.json");
+        CustomShowStore.WriteJsonAtomic(requestPath, new
+        {
+            protocolVersion = 1,
+            type = "run",
+            jobId = job.Id,
+            sourcePath = job.SourcePath,
+            outputPath = stagingFolder,
+            runtimePath = Sam2MattingSupport.RuntimeRoot,
+            cancelPath,
+            tracker = options.Tracker,
+            sourceRevision = options.SourceRevision,
+            checkpointRevision = options.CheckpointRevision,
+            checkpointSha256 = options.CheckpointSha256,
+            concepts = options.ForegroundConcepts,
+            clips = clips.Select(clip => new
+            {
+                id = clip.Id, startMs = clip.StartMs, endMs = clip.EndMs
+            }).ToArray(),
+            scenes = options.Scenes.Where(scene => included.Contains(scene.ClipId)),
+            prompts = job.ScenePrompts.Where(prompt => options.Scenes.Any(scene =>
+                    included.Contains(scene.ClipId) && scene.Id.Equals(prompt.SceneId,
+                        StringComparison.OrdinalIgnoreCase)))
+                .Select(prompt => new
+                {
+                    sceneId = prompt.SceneId,
+                    promptFrame = prompt.PromptFrame,
+                    promptFrameMs = prompt.PromptFrameMs,
+                    initialMaskPath = Path.Combine(jobAssets,
+                        prompt.InitialMaskAsset.Replace('/', Path.DirectorySeparatorChar))
+                }).ToArray()
+        });
+        using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(
+            cancellationToken);
+        CustomShowProcessResult result;
+        try
+        {
+            try
+            {
+                result = await Sam2MattingWorkerHost.RunAsync(configuration,
+                    options.Tracker!, requestPath, cancelPath, logPath, progress,
+                    cancellationToken);
+            }
+            catch (Exception error) when (!cancellationToken.IsCancellationRequested &&
+                error is EndOfStreamException or IOException)
+            {
+                progress?.Report(new CustomShowProgress("worker-restart", 0,
+                    "Persistent worker unavailable; using the isolated fallback"));
+                result = await RunSam2MattingOneShotAsync(configuration, requestPath,
+                    cancelPath, logPath, progress, cancellationToken);
+            }
+        }
+        finally
+        {
+            try { File.Delete(cancelPath); } catch { }
+        }
+        if (result.Tracker != options.Tracker || result.Clips == null ||
+            result.Clips.Any(clip => clip.ForegroundFrameCount !=
+                    clip.AlphaFrameCount || clip.DecodedFrameCount !=
+                    clip.AlphaFrameCount || clip.AlphaCodec != "ffv1" ||
+                    clip.AlphaPixelFormat != "gray16le"))
+            throw new InvalidDataException(
+                "SAM2Matting output validation failed; foreground and linear alpha media do not agree.");
+        return result;
+    }
+
+    static async Task<CustomShowProcessResult> RunSam2MattingOneShotAsync(
+        CustomShowConfiguration configuration, string requestPath,
+        string cancelPath, string logPath, IProgress<CustomShowProgress>? progress,
+        CancellationToken token)
+    {
+        ProcessStartInfo start = new(configuration.Sam2MattingPythonExecutable)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            WorkingDirectory = Sam2MattingSupport.RuntimeRoot
+        };
+        foreach (string argument in new[]
+        {
+            Sam2MattingWorkerPath, "--request", requestPath
+        }) start.ArgumentList.Add(argument);
+        start.Environment["IQP_FFMPEG"] = Path.Combine(
+            AppContext.BaseDirectory, "ffmpeg.exe");
+        start.Environment["IQP_FFPROBE"] = Path.Combine(
+            AppContext.BaseDirectory, "ffprobe.exe");
+        start.Environment["PYTHONUNBUFFERED"] = "1";
+        ConfigureProcessingPriorities(start, configuration);
+        using Process process = Process.Start(start) ??
+            throw new InvalidOperationException(
+                "The isolated SAM2Matting worker could not be started.");
+        StringBuilder log = new();
+        Task stderr = Task.Run(async () =>
+        {
+            while (await process.StandardError.ReadLineAsync() is string line)
+                lock (log) log.AppendLine(line);
+        });
+        using CancellationTokenRegistration cancellation = token.Register(() =>
+        {
+            try { File.WriteAllText(cancelPath, "cancel"); } catch { }
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+                try { if (!process.HasExited) process.Kill(true); } catch { }
+            });
+        });
+        try
+        {
+            while (await process.StandardOutput.ReadLineAsync() is string line)
+            {
+                lock (log) log.AppendLine(line);
+                try
+                {
+                    using JsonDocument document = JsonDocument.Parse(line);
+                    JsonElement root = document.RootElement;
+                    if (!root.TryGetProperty("stage", out JsonElement stageNode))
+                        continue;
+                    string stage = stageNode.GetString() ?? "processing";
+                    string message = root.TryGetProperty("message",
+                        out JsonElement messageNode)
+                        ? messageNode.GetString() ?? stage : stage;
+                    progress?.Report(new CustomShowProgress(stage,
+                        root.TryGetProperty("percent", out JsonElement percent)
+                            ? percent.GetDouble() : 0, message));
+                }
+                catch (JsonException) { }
+            }
+            await process.WaitForExitAsync(CancellationToken.None);
+            await stderr;
+            token.ThrowIfCancellationRequested();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"SAM2Matting processing failed (exit code {process.ExitCode}).");
+            return JsonSerializer.Deserialize<CustomShowProcessResult>(
+                await File.ReadAllTextAsync(Path.Combine(
+                    Path.GetDirectoryName(requestPath)!, "result.json"), token),
+                CustomShowStore.JsonOptions) ?? throw new InvalidDataException(
+                    "The isolated SAM2Matting worker returned an invalid result.");
+        }
+        finally
+        {
+            string text;
+            lock (log) text = log.ToString();
+            await File.AppendAllTextAsync(logPath, text, CancellationToken.None);
+        }
+    }
+
     internal static async Task<CustomShowProcessResult> RunAsync(
         CustomShowConfiguration configuration, string source,
         string stagingFolder, string preset, string? initialMask,
@@ -382,6 +581,8 @@ internal static class CustomShowProcessor
         int rvmInitializerAlphaThresholdPercent = 40,
         int vitMatteInferenceDetailPx = 1024)
     {
+        using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(
+            cancellationToken);
         string python = configuration.PythonExecutable;
         if (!File.Exists(python))
             throw new FileNotFoundException(
@@ -555,9 +756,8 @@ internal static class CustomShowProcessor
                     string progressMessage = root.TryGetProperty("message", out var message)
                         ? message.GetString() ?? "" : "";
                     if (string.Equals(progressStage, "error",
-                            StringComparison.OrdinalIgnoreCase) &&
-                        !string.IsNullOrWhiteSpace(progressMessage))
-                        workerError = progressMessage.Trim();
+                            StringComparison.OrdinalIgnoreCase))
+                        workerError = WorkerErrorMessage(line) ?? workerError;
                     bool showingRvmMask =
                         (preset == "rvm-vitmatte-s" &&
                             progressStage == "rvm-masks") ||

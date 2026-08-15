@@ -709,7 +709,8 @@ public partial class Form1
     {
         if (customShowQueueManager == null) return;
         if (customShowQueueForm is null || customShowQueueForm.IsDisposed)
-            customShowQueueForm = new(customShowQueueManager, EditCustomShowQueueJob);
+            customShowQueueForm = new(customShowQueueManager, EditCustomShowQueueJob,
+                DuplicateCustomShowQueueJob);
         customShowQueueForm.Show(this);
         customShowQueueForm.BringToFront();
     }
@@ -791,6 +792,16 @@ public partial class Form1
         form.ShowDialog(this);
     }
 
+    void DuplicateCustomShowQueueJob(CustomShowQueueJob draft, string assetOwnerId)
+    {
+        CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+        using CustomShowEditorForm form = new(store, customShowConfiguration,
+            null, queueManager: customShowQueueManager,
+            queueDraft: draft, queueDraftAssetOwnerId: assetOwnerId);
+        if (form.ShowDialog(this) == DialogResult.OK)
+            customShowQueueManager?.Run();
+    }
+
     void ManageCustomModels(IWin32Window? owner = null)
     {
         owner ??= this;
@@ -849,6 +860,20 @@ public partial class Form1
                 options.InstallProPainter, options.InstallEdgeTam,
                 options.InstallStabilo);
             if (form.ShowDialog(owner) != DialogResult.OK) return null;
+            if (options.InstallSam2Matting)
+            {
+                string sam2MattingScript = Path.Combine(AppContext.BaseDirectory,
+                    "custom-shows", "setup-sam2matting.ps1");
+                if (!File.Exists(sam2MattingScript))
+                    throw new FileNotFoundException(
+                        "The SAM2Matting setup script is missing.", sam2MattingScript);
+                using CustomShowSam2MattingSetupForm sam2MattingSetup =
+                    new(sam2MattingScript);
+                if (sam2MattingSetup.ShowDialog(owner) != DialogResult.OK)
+                    return null;
+                customShowConfiguration.Sam2MattingPythonExecutable =
+                    CustomShowConfiguration.FindSam2MattingPythonExecutable();
+            }
             string python = CustomShowConfiguration.FindPythonExecutable();
             if (!File.Exists(python) ||
                 !python.Contains("rvm-runtime", StringComparison.OrdinalIgnoreCase))

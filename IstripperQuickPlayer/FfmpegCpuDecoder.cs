@@ -241,14 +241,19 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
     internal (IntPtr Data, uint RowPitch) GrayPlane()
     {
         if (PixelFormat is not AVPixelFormat.AV_PIX_FMT_GRAY8 and
+            not AVPixelFormat.AV_PIX_FMT_GRAY16LE and
             not AVPixelFormat.AV_PIX_FMT_YUV420P and
             not AVPixelFormat.AV_PIX_FMT_YUVJ420P)
             throw new NotSupportedException(
-                $"Alpha playback requires GRAY8 or YUV420P; found {PixelFormat}.");
+                $"Alpha playback requires GRAY8, GRAY16LE, or YUV420P; found {PixelFormat}.");
         if (frame->data[0] == null || frame->linesize[0] <= 0)
             throw new InvalidDataException("FFmpeg returned an invalid alpha plane.");
         return ((IntPtr)frame->data[0], checked((uint)frame->linesize[0]));
     }
+
+    internal bool IsGray16 => PixelFormat == AVPixelFormat.AV_PIX_FMT_GRAY16LE ||
+        codecContext->pix_fmt == AVPixelFormat.AV_PIX_FMT_GRAY16LE ||
+        (AVPixelFormat)stream->codecpar->format == AVPixelFormat.AV_PIX_FMT_GRAY16LE;
 
     static void Check(int result, string operation)
     {
