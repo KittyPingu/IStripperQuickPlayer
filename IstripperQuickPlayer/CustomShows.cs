@@ -871,8 +871,8 @@ internal sealed class CustomShowStore
             if (processing.ProcessingOptionVersion != Sam2MattingSupport.OptionVersion ||
                 processing.Tracker == null ||
                 !Sam2MattingSupport.Trackers.Contains(processing.Tracker) ||
-                processing.PromptMode != (processing.Tracker == "sam3"
-                    ? "text-concepts" : "initial-mask") ||
+                !Sam2MattingSupport.IsValidPromptMode(processing.Tracker,
+                    processing.PromptMode) ||
                 processing.EnvironmentSpecVersion !=
                     Sam2MattingSupport.EnvironmentVersion ||
                 processing.SourceRevision != Sam2MattingSupport.SourceRevision ||
@@ -926,9 +926,13 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Unknown ViTMatte inference-detail resolution.");
         if (!BatchSizeValues.Contains(processing.BatchSize))
             throw new InvalidDataException("Unknown processing batch size.");
-        if (processing.RvmInitializerAlphaThresholdPercent is int initializerThreshold &&
+        bool sam2MattingRvmInitializer = sam2Matting &&
+            processing.PromptMode == "rvm-initial-mask";
+        if (sam2Matting && sam2MattingRvmInitializer !=
+                (processing.RvmInitializerAlphaThresholdPercent is int) ||
+            processing.RvmInitializerAlphaThresholdPercent is int initializerThreshold &&
             (processing.Algorithm is not ("rvm-matanyone2" or "rvm-vitmatte-s") &&
-                processing.MaskEngine != "rvm-sam2" ||
+                processing.MaskEngine != "rvm-sam2" && !sam2MattingRvmInitializer ||
                 initializerThreshold is < 10 or > 90))
             throw new InvalidDataException("Invalid RVM initializer alpha threshold.");
         if (processing.AutoAcceptedAlphaThreshold is int acceptedThreshold &&
@@ -1289,6 +1293,7 @@ internal sealed class CustomShowStore
             (FindPythonForVerification() is string python &&
                 (python.Length == 0 || File.Exists(python))) &&
             Sam2MattingSupport.VerifyConceptParser() &&
+            Sam2MattingSupport.VerifyPromptModes() &&
             Sam2MattingScenePlanner.VerifySceneValidation() &&
             RejectsTraversal();
     }

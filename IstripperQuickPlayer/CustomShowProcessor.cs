@@ -42,6 +42,7 @@ internal sealed class CustomShowProcessResult
 }
 
 internal sealed record CustomShowProcessJob(string Output, long StartMs, long EndMs);
+internal sealed record RvmInitialMaskTarget(string Destination, long FrameMs);
 
 internal static class CustomShowProcessor
 {
@@ -821,7 +822,32 @@ internal static class CustomShowProcessor
         CustomShowConfiguration configuration, string source, string destination,
         long frameMs, int thresholdPercent,
         IProgress<CustomShowProgress>? progress, CancellationToken token)
+        => await GenerateRvmInitialMasksAsync(configuration, source,
+            [new(destination, frameMs)], thresholdPercent, progress, token);
+
+    internal static bool IsRvmInitialMaskInstalled(
+        CustomShowConfiguration configuration)
     {
+        try
+        {
+            string runtime = RuntimeRoot(configuration);
+            return File.Exists(configuration.PythonExecutable) &&
+                OptionalToolInstalled(configuration, "RVM_COMMIT", "rvm") &&
+                new FileInfo(Path.Combine(runtime, "checkpoints",
+                    "rvm_resnet50.pth")) is { Exists: true, Length: > 0 } &&
+                File.Exists(RvmInitialMaskWorkerPath);
+        }
+        catch { return false; }
+    }
+
+    internal static async Task GenerateRvmInitialMasksAsync(
+        CustomShowConfiguration configuration, string source,
+        IReadOnlyList<RvmInitialMaskTarget> targets, int thresholdPercent,
+        IProgress<CustomShowProgress>? progress, CancellationToken token)
+    {
+        if (targets.Count == 0)
+            throw new InvalidDataException(
+                "At least one RVM initialization mask is required.");
         if (!File.Exists(configuration.PythonExecutable))
             throw new FileNotFoundException(
                 "Configure the Python custom-show environment first.",
@@ -830,6 +856,24 @@ internal static class CustomShowProcessor
             throw new FileNotFoundException(
                 "The RVM initial-mask worker is missing.",
                 RvmInitialMaskWorkerPath);
+        if (!IsRvmInitialMaskInstalled(configuration))
+            throw new InvalidOperationException(
+                "Setup required: install or repair the Robust Video Matting processing tools.");
+        string requestFolder = Path.GetDirectoryName(targets[0].Destination) ??
+            Path.GetTempPath();
+        Directory.CreateDirectory(requestFolder);
+        string requestPath = Path.Combine(requestFolder,
+            ".rvm-initial-masks-" + Guid.NewGuid().ToString("N") + ".json");
+        CustomShowStore.WriteJsonAtomic(requestPath, new
+        {
+            source = Path.GetFullPath(source),
+            alphaThreshold = Math.Clamp(thresholdPercent, 10, 90) / 100d,
+            items = targets.Select(target => new
+            {
+                mask = Path.GetFullPath(target.Destination),
+                frameMs = target.FrameMs
+            }).ToArray()
+        });
         ProcessStartInfo start = new(configuration.PythonExecutable)
         {
             UseShellExecute = false, CreateNoWindow = true,
@@ -837,51 +881,54 @@ internal static class CustomShowProcessor
         };
         foreach (string argument in new[]
         {
-            RvmInitialMaskWorkerPath, "--source", source,
-            "--runtime", RuntimeRoot(configuration), "--mask", destination,
-            "--frame-ms", frameMs.ToString(CultureInfo.InvariantCulture),
-            "--alpha-threshold", (Math.Clamp(thresholdPercent, 10, 90) / 100d)
-                .ToString("0.00", CultureInfo.InvariantCulture)
+            RvmInitialMaskWorkerPath, "--runtime", RuntimeRoot(configuration),
+            "--request", requestPath
         }) start.ArgumentList.Add(argument);
         start.Environment["IQP_FFMPEG"] = Path.Combine(
             AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(
             AppContext.BaseDirectory, "ffprobe.exe");
         ConfigureProcessingPriorities(start, configuration);
-        using Process process = new() { StartInfo = start };
-        StringBuilder errors = new();
-        process.Start();
-        await using ProcessCancellationScope cancellation = new(process, token);
-        Task stderr = Task.Run(async () =>
+        try
         {
-            while (await process.StandardError.ReadLineAsync() is string line)
-                errors.AppendLine(line);
-        });
-        while (await process.StandardOutput.ReadLineAsync() is string line)
-            try
+            using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(token);
+            using Process process = new() { StartInfo = start };
+            StringBuilder errors = new();
+            process.Start();
+            await using ProcessCancellationScope cancellation = new(process, token);
+            Task stderr = Task.Run(async () =>
             {
-                using JsonDocument json = JsonDocument.Parse(line);
-                JsonElement root = json.RootElement;
-                if (root.TryGetProperty("status", out JsonElement status) &&
-                    status.GetString() == "error")
-                    throw new InvalidOperationException(
-                        root.GetProperty("message").GetString());
-                progress?.Report(new CustomShowProgress(
-                    "rvm-initial-mask",
-                    root.TryGetProperty("percent", out JsonElement percent)
-                        ? percent.GetDouble() : 0,
-                    root.TryGetProperty("message", out JsonElement message)
-                        ? message.GetString() ?? "Creating RVM person mask..."
-                        : "Creating RVM person mask..."));
-            }
-            catch (JsonException) { }
-        await process.WaitForExitAsync(CancellationToken.None);
-        await stderr;
-        token.ThrowIfCancellationRequested();
-        if (process.ExitCode != 0 || !File.Exists(destination))
-            throw new InvalidOperationException(errors.Length == 0
-                ? "RVM could not create the SAM2 initialization mask."
-                : errors.ToString().Trim());
+                while (await process.StandardError.ReadLineAsync() is string line)
+                    errors.AppendLine(line);
+            });
+            while (await process.StandardOutput.ReadLineAsync() is string line)
+                try
+                {
+                    using JsonDocument json = JsonDocument.Parse(line);
+                    JsonElement root = json.RootElement;
+                    if (root.TryGetProperty("status", out JsonElement status) &&
+                        status.GetString() == "error")
+                        throw new InvalidOperationException(
+                            root.GetProperty("message").GetString());
+                    progress?.Report(new CustomShowProgress(
+                        "rvm-initial-mask",
+                        root.TryGetProperty("percent", out JsonElement percent)
+                            ? percent.GetDouble() : 0,
+                        root.TryGetProperty("message", out JsonElement message)
+                            ? message.GetString() ?? "Creating RVM person masks..."
+                            : "Creating RVM person masks..."));
+                }
+                catch (JsonException) { }
+            await process.WaitForExitAsync(CancellationToken.None);
+            await stderr;
+            token.ThrowIfCancellationRequested();
+            if (process.ExitCode != 0 || targets.Any(target =>
+                    !File.Exists(target.Destination)))
+                throw new InvalidOperationException(errors.Length == 0
+                    ? "RVM could not create every SAM2 initialization mask."
+                    : errors.ToString().Trim());
+        }
+        finally { try { File.Delete(requestPath); } catch { } }
     }
 
     internal static string ValidNvencPreset(string? value) => value is
@@ -1036,6 +1083,9 @@ internal sealed class CustomShowProcessingForm : Form
         AccessibleName = "Composited result preview" };
     readonly GroupBox sourceGroup;
     readonly GroupBox compositeGroup;
+    readonly TableLayoutPanel layout;
+    readonly TableLayoutPanel previews;
+    readonly bool previewsEnabled;
     readonly CancellationTokenSource cancellation = new();
     readonly Stopwatch elapsed = new();
     readonly System.Windows.Forms.Timer clock = new() { Interval = 1000 };
@@ -1056,22 +1106,22 @@ internal sealed class CustomShowProcessingForm : Form
         bool showPreviews = true)
     {
         this.operation = operation;
+        previewsEnabled = showPreviews;
         Text = text;
-        ClientSize = showPreviews ? new Size(1000, 680) : new Size(620, 190);
-        MinimumSize = showPreviews ? new Size(700, 500) : new Size(500, 180);
+        ClientSize = new Size(620, 190);
+        MinimumSize = new Size(500, 180);
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill,
+        layout = new() { Dock = DockStyle.Fill,
             RowCount = 5, ColumnCount = 1 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,
             processDescription == null ? 0 : 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        layout.RowStyles.Add(new RowStyle(showPreviews ? SizeType.Percent :
-            SizeType.Absolute, showPreviews ? 100 : 0));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         this.processDescription.Text = processDescription ?? "";
-        TableLayoutPanel previews = new() { Dock = DockStyle.Fill,
+        previews = new() { Dock = DockStyle.Fill, Visible = false,
             RowCount = 1, ColumnCount = 2, Padding = new Padding(8) };
         previews.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         previews.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -1155,6 +1205,7 @@ internal sealed class CustomShowProcessingForm : Form
             source.SetSourceOwned(nextSource);
             composite.SetSourceOwned(nextComposite);
             lastPreviewUtc = written;
+            ShowPreviewArea();
         }
         catch (IOException) { }
         catch (ArgumentException) { }
@@ -1186,6 +1237,17 @@ internal sealed class CustomShowProcessingForm : Form
             (fps == null ? "FPS: estimating...  •  " : $"FPS: {fps.Value:0.0}  •  ") +
             (remaining == null ? "Remaining: estimating..." :
                 $"Remaining: ~{FormatDuration(remaining.Value)}");
+    }
+
+    void ShowPreviewArea()
+    {
+        if (!previewsEnabled || previews.Visible) return;
+        previews.Visible = true;
+        layout.RowStyles[2].SizeType = SizeType.Percent;
+        layout.RowStyles[2].Height = 100;
+        MinimumSize = new Size(700, 500);
+        ClientSize = new Size(1000, 680);
+        CenterToParent();
     }
 
     void AddFrameSample(string message, double seconds)

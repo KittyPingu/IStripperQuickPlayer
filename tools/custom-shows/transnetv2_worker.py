@@ -189,18 +189,22 @@ def resolution_bucket(info):
                      max(width, height) >= 3800 and min(width, height) >= 1600) else "standard"
 
 
-def decode_command(ffmpeg, source, mode):
+def decode_command(ffmpeg, source, mode, start_ms=0, end_ms=None):
     common = [ffmpeg, "-v", "error"]
+    if start_ms > 0:
+        common += ["-ss", f"{start_ms / 1000:.6f}"]
+    duration_ms = None if end_ms is None else max(1, end_ms - start_ms)
+    bounded = [] if duration_ms is None else ["-t", f"{duration_ms / 1000:.6f}"]
     if mode == "legacy":
         return common + ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
-            "-i", source, "-map", "0:v:0", "-an", "-vf",
+            "-i", source] + bounded + ["-map", "0:v:0", "-an", "-vf",
             "scale_cuda=48:28,hwdownload,format=nv12,format=rgb24,crop=48:27",
             "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
     if mode == "cpu-fast":
-        return common + ["-i", source, "-map", "0:v:0", "-an", "-vf",
+        return common + ["-i", source] + bounded + ["-map", "0:v:0", "-an", "-vf",
             "scale=48:27:flags=fast_bilinear", "-pix_fmt", "rgb24",
             "-f", "rawvideo", "pipe:1"]
-    return common + ["-i", source, "-map", "0:v:0", "-an", "-s", "48x27",
+    return common + ["-i", source] + bounded + ["-map", "0:v:0", "-an", "-s", "48x27",
         "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
 
 
@@ -511,6 +515,8 @@ def main():
                         default="auto")
     parser.add_argument("--profile-log", type=Path)
     parser.add_argument("--threshold-probability", type=float, default=.5)
+    parser.add_argument("--start-ms", type=int, default=0)
+    parser.add_argument("--end-ms", type=int)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test: self_test(); return
@@ -527,6 +533,13 @@ def main():
     model_load_seconds = time.perf_counter() - model_load_started
     probe_started = time.perf_counter()
     info = source_info(args.source, ffprobe)
+    args.start_ms = max(0, args.start_ms)
+    if args.end_ms is not None and args.end_ms > args.start_ms:
+        info["duration"] = min(info["duration"] - args.start_ms / 1000,
+                               (args.end_ms - args.start_ms) / 1000)
+    else:
+        args.end_ms = None
+        info["duration"] = max(0, info["duration"] - args.start_ms / 1000)
     probe_seconds = time.perf_counter() - probe_started
     expected = round(info["fps"] * info["duration"])
     batch = max(1, min(64, args.batch_size))
@@ -565,7 +578,8 @@ def main():
         while True:
             try:
                 return run_pipeline(args, torch, model, device,
-                    decode_command(ffmpeg, args.source, mode), batch, use_fp16,
+                    decode_command(ffmpeg, args.source, mode,
+                                   args.start_ms, args.end_ms), batch, use_fp16,
                     expected, execution)
             except torch.cuda.OutOfMemoryError:
                 if device.type != "cuda" or batch <= 1: raise

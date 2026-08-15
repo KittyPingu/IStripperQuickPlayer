@@ -215,10 +215,12 @@ internal sealed class CustomShowEditorForm : Form
         preset.SelectedIndex = 0;
         AddRow(processingTable, "Processing algorithm", preset);
         sam2MattingTracker.Items.AddRange([
-            "SAM2.1-T — fastest, initial mask required",
-            "SAM2.1-B+ — higher-capacity tracker, initial mask required",
+            "SAM2.1-T — fastest, interactive initial mask",
+            "SAM2.1-B+ — higher-capacity, interactive initial mask",
+            "RVM → SAM2.1-T — automatic person mask",
+            "RVM → SAM2.1-B+ — automatic person mask",
             "SAM3 — automatic text concepts"]);
-        sam2MattingTracker.SelectedIndex = 2;
+        sam2MattingTracker.SelectedIndex = 4;
         sam2MattingTrackerRow = AddRow(processingTable, "Backbone tracker",
             Flow(sam2MattingTracker, sam2MattingStatus, openSam2MattingSetup));
         foregroundConceptsRow = AddRow(processingTable, "Foreground concepts",
@@ -297,7 +299,17 @@ internal sealed class CustomShowEditorForm : Form
         rvmInitializerThreshold.ValueChanged += (_, _) =>
             rvmInitializerThresholdValue.Text = $"{rvmInitializerThreshold.Value}%";
         maskEngine.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
-        sam2MattingTracker.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
+        sam2MattingTracker.SelectedIndexChanged += (_, _) =>
+        {
+            sceneMaskSummary.Text = SelectedSam2MattingPromptMode() switch
+            {
+                "rvm-initial-mask" =>
+                    "RVM creates one automatic person mask per scene",
+                "text-concepts" => "Automatic text prompts",
+                _ => "Initial masks: not created"
+            };
+            UpdateProcessingOptions();
+        };
         foregroundConcepts.TextChanged += (_, _) => UpdateProcessingOptions();
         openSam2MattingSetup.Click += (_, _) => OpenSam2MattingSetup();
         autoAccept.CheckedChanged += (_, _) => UpdateProcessingOptions();
@@ -385,7 +397,10 @@ internal sealed class CustomShowEditorForm : Form
             sequenceChunk.SelectedItem = configuration.VideoMaMaPreferredBatchSize;
         bool rvm = selected is "quality" or "fast";
         bool sam2Matting = selected == Sam2MattingSupport.Algorithm;
-        bool sam3 = sam2Matting && SelectedSam2MattingTracker() == "sam3";
+        string sam2MattingPromptMode = SelectedSam2MattingPromptMode();
+        bool sam3 = sam2Matting && sam2MattingPromptMode == "text-concepts";
+        bool rvmSam2Matting = sam2Matting &&
+            sam2MattingPromptMode == "rvm-initial-mask";
         mattingDetail.Enabled = (rvm || selected is "matanyone2" or
             "rvm-matanyone2") && CanProcess;
         vitMatteInferenceDetail.Enabled = selected is
@@ -399,7 +414,8 @@ internal sealed class CustomShowEditorForm : Form
         bool rvmSam2 = UsesSam2(selected) &&
             SelectedMaskEngine() == "rvm-sam2";
         rvmInitializerThreshold.Enabled =
-            (selected is ("rvm-matanyone2" or "rvm-vitmatte-s") || rvmSam2) &&
+            (selected is ("rvm-matanyone2" or "rvm-vitmatte-s") || rvmSam2 ||
+                rvmSam2Matting) &&
             CanProcess;
         rvmInitializerThresholdValue.Enabled = rvmInitializerThreshold.Enabled;
         autoAccept.Enabled = CanProcess;
@@ -415,7 +431,8 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, vitMatteInferenceDetailRow,
                 selected is "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s");
             SetRowVisible(processingTable, rvmThresholdRow,
-                selected is "rvm-matanyone2" or "rvm-vitmatte-s" || rvmSam2);
+                selected is "rvm-matanyone2" or "rvm-vitmatte-s" || rvmSam2 ||
+                rvmSam2Matting);
             SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
                 selected == "rvm-vitmatte-s");
             SetRowVisible(processingTable, processingDetailsRow,
@@ -429,14 +446,18 @@ internal sealed class CustomShowEditorForm : Form
             if (reprocessingRow >= 0)
                 SetRowVisible(processingTable, reprocessingRow, reprocess);
         }
-        bool installed = !sam2Matting || Sam2MattingSupport.IsInstalled(
+        bool sam2Installed = !sam2Matting || Sam2MattingSupport.IsInstalled(
             configuration, SelectedSam2MattingTracker());
-        sam2MattingStatus.Text = installed ? "Installed" : "Setup required";
+        bool rvmInstalled = !rvmSam2Matting ||
+            CustomShowProcessor.IsRvmInitialMaskInstalled(configuration);
+        bool installed = sam2Installed && rvmInstalled;
+        sam2MattingStatus.Text = installed ? "Installed" : !sam2Installed
+            ? "Setup required" : "RVM setup required";
         sam2MattingStatus.ForeColor = installed ? Color.ForestGreen : Color.DarkOrange;
-        openSam2MattingSetup.Visible = sam2Matting && !installed;
+        openSam2MattingSetup.Visible = sam2Matting && !sam2Installed;
         string? queueAction = sam2Matting
-            ? SelectedSam2MattingTracker() == "sam3" ? "Queue" :
-                "Mask Scenes and Queue"
+            ? sam3 ? "Queue" : rvmSam2Matting
+                ? "Create RVM Masks and Queue" : "Mask Scenes and Queue"
             : QueueAction(selected, autoAccept.Checked);
         queue.Visible = queueManager != null && CanProcess && queueAction != null;
         queueBatch.Visible = false;
@@ -447,6 +468,7 @@ internal sealed class CustomShowEditorForm : Form
             if (sam2Matting)
                 save.Text = sam3 ? (reprocess ? "Reprocess and Preview" :
                     Appending ? "Process and Add Clips" : "Process and Preview") :
+                    rvmSam2Matting ? "Create RVM Masks and Process" :
                     "Mask Scenes and Process";
         }
     }
@@ -500,9 +522,16 @@ internal sealed class CustomShowEditorForm : Form
 
     string SelectedSam2MattingTracker() => sam2MattingTracker.SelectedIndex switch
     {
-        0 => "sam2.1-tiny",
-        1 => "sam2.1-base-plus",
+        0 or 2 => "sam2.1-tiny",
+        1 or 3 => "sam2.1-base-plus",
         _ => "sam3"
+    };
+
+    string SelectedSam2MattingPromptMode() => sam2MattingTracker.SelectedIndex switch
+    {
+        2 or 3 => "rvm-initial-mask",
+        4 => "text-concepts",
+        _ => "initial-mask"
     };
 
     string SelectedMaskEngine()
@@ -573,12 +602,16 @@ internal sealed class CustomShowEditorForm : Form
         save.Visible = false;
         queue.Text = job.Manifest.Processing?.Algorithm == "matanyone2"
             ? "Mask and Queue" : job.Manifest.Processing?.Algorithm == "sam2matting" &&
-                job.Manifest.Processing.Tracker != "sam3"
-                ? "Mask Scenes and Update Queue Job" : "Update Queue Job";
+                job.Manifest.Processing.PromptMode == "initial-mask"
+                ? "Mask Scenes and Update Queue Job" :
+                job.Manifest.Processing?.PromptMode == "rvm-initial-mask"
+                    ? "Create RVM Masks and Update Queue Job" : "Update Queue Job";
         if (job.Manifest.Processing?.Algorithm == "sam2matting")
-            sceneMaskSummary.Text = job.Manifest.Processing.Tracker == "sam3"
+            sceneMaskSummary.Text = job.Manifest.Processing.PromptMode == "text-concepts"
                 ? "Automatic text prompts"
-                : $"{job.ScenePrompts.Length} of {job.Manifest.Processing.Scenes.Length} scenes ready";
+                : $"{job.ScenePrompts.Length} of {job.Manifest.Processing.Scenes.Length} " +
+                    (job.Manifest.Processing.PromptMode == "rvm-initial-mask"
+                        ? "automatic RVM scene masks ready" : "scenes ready");
         AcceptButton = queue;
         autoAccept.Checked = true;
         string assetOwner = queueDraftAssetOwnerId ?? job.Id;
@@ -748,7 +781,9 @@ internal sealed class CustomShowEditorForm : Form
         SelectStartingWith(preset, prefix);
         sam2MattingTracker.SelectedIndex = processing.Tracker switch
         {
-            "sam2.1-tiny" => 0, "sam2.1-base-plus" => 1, _ => 2
+            "sam2.1-tiny" when processing.PromptMode == "rvm-initial-mask" => 2,
+            "sam2.1-base-plus" when processing.PromptMode == "rvm-initial-mask" => 3,
+            "sam2.1-tiny" => 0, "sam2.1-base-plus" => 1, _ => 4
         };
         if (processing.Algorithm == "sam2matting")
             foregroundConcepts.Text = string.Join(Environment.NewLine,
@@ -804,7 +839,7 @@ internal sealed class CustomShowEditorForm : Form
         SelectStartingWith(preset, prefix);
         // A newly authored SAM2Matting job always starts on the automatic
         // text-prompt path, even if an earlier job used a manual tracker.
-        sam2MattingTracker.SelectedIndex = 2;
+        sam2MattingTracker.SelectedIndex = 4;
         SelectStartingWith(maskEngine, configuration.LastMaskEngine switch
         {
             "edgetam" => "EdgeTAM", "rvm" => "RVM",
@@ -1630,6 +1665,8 @@ internal sealed class CustomShowEditorForm : Form
         {
             if (queueManager == null) return;
             string algorithm = SelectedPreset();
+            string selectedSam2MattingPromptMode =
+                SelectedSam2MattingPromptMode();
             if (algorithm != Sam2MattingSupport.Algorithm && !autoAccept.Checked)
                 throw new InvalidDataException(
                     "Queued processing requires automatic acceptance at alpha threshold 25.");
@@ -1643,6 +1680,11 @@ internal sealed class CustomShowEditorForm : Form
                     SelectedSam2MattingTracker()))
                 throw new InvalidDataException(
                     "Setup required: install the SAM2Matting environment and all checkpoints.");
+            if (algorithm == Sam2MattingSupport.Algorithm &&
+                selectedSam2MattingPromptMode == "rvm-initial-mask" &&
+                !CustomShowProcessor.IsRvmInitialMaskInstalled(configuration))
+                throw new InvalidDataException(
+                    "Setup required: install or repair the Robust Video Matting processing tools.");
             if (!ConfirmGpuBatch()) return;
             if (showClips.Length == 0)
             {
@@ -1673,6 +1715,7 @@ internal sealed class CustomShowEditorForm : Form
             manifest.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
             CustomShowProcessingScene[] processingScenes = [];
             string tracker = SelectedSam2MattingTracker();
+            string promptMode = selectedSam2MattingPromptMode;
             if (algorithm == Sam2MattingSupport.Algorithm)
             {
                 if (tracker == "sam3")
@@ -1693,8 +1736,10 @@ internal sealed class CustomShowEditorForm : Form
                                 out double detectorFps))
                             throw new InvalidDataException(
                                 "The source frame rate is invalid.");
-                        detectionTotalFrames = Math.Max(1, checked((long)Math.Round(
-                            detectorMedia.Duration * detectorFps)));
+                        detectionTotalFrames = Math.Max(1, showClips
+                            .Where(value => value.Included).Sum(value => Math.Max(1,
+                                Sam2MattingScenePlanner.Frame(value.EndMs, detectorFps) -
+                                Sam2MattingScenePlanner.Frame(value.StartMs, detectorFps))));
                     }
                     CustomShowClipDetection? plannedDetection = null;
                     CustomShowProcessingScene[]? plannedScenes = null;
@@ -1718,7 +1763,9 @@ internal sealed class CustomShowEditorForm : Form
                         return new CustomShowProcessResult();
                     }, "Detecting SAM2Matting Scenes",
                         processDescription:
-                            "Resolving scenes for the required initial-mask wizard",
+                            promptMode == "rvm-initial-mask"
+                                ? "Resolving scenes for automatic RVM initialization"
+                                : "Resolving scenes for the required initial-mask wizard",
                         showPreviews: false);
                     if (planning.ShowDialog(this) != DialogResult.OK) return;
                     clipDetection = plannedDetection ?? throw new InvalidDataException(
@@ -1738,7 +1785,7 @@ internal sealed class CustomShowEditorForm : Form
                     ? Sam2MattingSupport.OptionVersion : 0,
                 Tracker = algorithm == Sam2MattingSupport.Algorithm ? tracker : null,
                 PromptMode = algorithm == Sam2MattingSupport.Algorithm
-                    ? tracker == "sam3" ? "text-concepts" : "initial-mask" : null,
+                    ? promptMode : null,
                 ForegroundConcepts = concepts,
                 EnvironmentSpecVersion = algorithm == Sam2MattingSupport.Algorithm
                     ? Sam2MattingSupport.EnvironmentVersion : null,
@@ -1763,7 +1810,9 @@ internal sealed class CustomShowEditorForm : Form
                     ? SelectedVitMatteInferenceResolution() : null,
                 BatchSize = SelectedBatchSize(),
                 RvmInitializerAlphaThresholdPercent = algorithm is
-                    "rvm-matanyone2" or "rvm-vitmatte-s"
+                    "rvm-matanyone2" or "rvm-vitmatte-s" ||
+                    algorithm == Sam2MattingSupport.Algorithm &&
+                    promptMode == "rvm-initial-mask"
                     ? rvmInitializerThreshold.Value : null,
                 AutoAcceptedAlphaThreshold = algorithm ==
                     Sam2MattingSupport.Algorithm ? null : 25,
@@ -1774,7 +1823,9 @@ internal sealed class CustomShowEditorForm : Form
                     ? "bf16-autocast" : "fp16-autocast-fp32-cpu-fallback",
                 RecurrentRefinementSteps = algorithm is "matanyone2" or
                     "rvm-matanyone2" ? 11 : 0,
-                ToolRevisions = ReadProcessingRevisions(algorithm, SelectedMaskEngine())
+                ToolRevisions = ReadProcessingRevisions(algorithm,
+                    promptMode == "rvm-initial-mask"
+                        ? "rvm-sam2" : SelectedMaskEngine())
             };
             FileInfo sourceInfo = new(source.Text);
             CustomShowQueueJob job = existing ?? new();
@@ -1858,6 +1909,10 @@ internal sealed class CustomShowEditorForm : Form
                     string promptAssetOwner = queueDraftAssetOwnerId ?? existing?.Id ?? "";
                     bool promptsStillMatch = masksStillMatch && existing?.Manifest.Processing is
                         { Algorithm: "sam2matting" } prior && prior.Tracker == tracker &&
+                        prior.PromptMode == promptMode &&
+                        (promptMode != "rvm-initial-mask" ||
+                            prior.RvmInitializerAlphaThresholdPercent ==
+                                rvmInitializerThreshold.Value) &&
                         SameScenePlan(prior.Scenes, processingScenes) &&
                         existing.ScenePrompts.Length == scenesNeedingProcessing.Length &&
                         existing.ScenePrompts.All(prompt =>
@@ -1870,39 +1925,78 @@ internal sealed class CustomShowEditorForm : Form
                         maskWork ??= Path.Combine(store.Root, ".queue-mask-work",
                             Guid.NewGuid().ToString("N"));
                         Directory.CreateDirectory(maskWork);
-                        using FfmpegCpuDecoder decoder = new(source.Text,
-                            fastDecode: true);
-                        if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
-                                out double fps))
-                            throw new InvalidDataException(
-                                "The source frame rate is invalid.");
-                        for (int index = 0; index < scenesNeedingProcessing.Length; index++)
+                        if (promptMode == "rvm-initial-mask")
                         {
-                            CustomShowProcessingScene scene = scenesNeedingProcessing[index];
-                            string sceneFolder = Path.Combine(maskWork, scene.Id);
-                            using CustomMaskEditorForm editor = new(source.Text,
-                                configuration, scene.StartMs, scene.EndMs,
-                                $"Scene {index + 1} of {scenesNeedingProcessing.Length}",
-                                Sam2MattingSupport.DisplayName(tracker),
-                                allowFrameSelection: true, sam2Model: tracker,
-                                draftFolder: sceneFolder, sam2Matting: true,
-                                showAutomaticMask: false);
-                            if (editor.ShowDialog(this) != DialogResult.OK) return;
-                            string mask = Path.Combine(sceneFolder, "initial-mask.png");
-                            editor.SaveMask(mask);
-                            long promptFrame = Math.Clamp(checked((long)Math.Round(
-                                editor.FrameMs / 1000d * fps,
-                                MidpointRounding.AwayFromZero)), scene.StartFrame,
-                                scene.EndFrameExclusive - 1);
-                            job.ScenePrompts = [.. job.ScenePrompts,
-                                new CustomShowScenePrompt
+                            RvmInitialMaskTarget[] targets =
+                                scenesNeedingProcessing.Select(scene =>
                                 {
-                                    SceneId = scene.Id, PromptFrame = promptFrame,
-                                    PromptFrameMs = editor.FrameMs
-                                }];
-                            sceneMasks[scene.Id] = mask;
+                                    string mask = Path.Combine(maskWork, scene.Id,
+                                        "initial-mask.png");
+                                    job.ScenePrompts = [.. job.ScenePrompts,
+                                        new CustomShowScenePrompt
+                                        {
+                                            SceneId = scene.Id,
+                                            PromptFrame = scene.StartFrame,
+                                            PromptFrameMs = scene.StartMs
+                                        }];
+                                    sceneMasks[scene.Id] = mask;
+                                    return new RvmInitialMaskTarget(mask,
+                                        scene.StartMs);
+                                }).ToArray();
+                            using CustomShowProcessingForm initializer = new(
+                                async (progress, token) =>
+                                {
+                                    await CustomShowProcessor.GenerateRvmInitialMasksAsync(
+                                        configuration, source.Text, targets,
+                                        rvmInitializerThreshold.Value, progress, token);
+                                    return new CustomShowProcessResult();
+                                }, "Creating SAM2Matting RVM Masks",
+                                processDescription:
+                                    "Creating one automatic RVM person mask per scene",
+                                showPreviews: false);
+                            if (initializer.ShowDialog(this) != DialogResult.OK) return;
                             sceneMaskSummary.Text =
-                                $"{index + 1} of {scenesNeedingProcessing.Length} scenes ready";
+                                $"{targets.Length} of {targets.Length} automatic RVM scene masks ready";
+                        }
+                        else
+                        {
+                            using FfmpegCpuDecoder decoder = new(source.Text,
+                                fastDecode: true);
+                            if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
+                                    out double fps))
+                                throw new InvalidDataException(
+                                    "The source frame rate is invalid.");
+                            for (int index = 0;
+                                 index < scenesNeedingProcessing.Length; index++)
+                            {
+                                CustomShowProcessingScene scene =
+                                    scenesNeedingProcessing[index];
+                                string sceneFolder = Path.Combine(maskWork, scene.Id);
+                                using CustomMaskEditorForm editor = new(source.Text,
+                                    configuration, scene.StartMs, scene.EndMs,
+                                    $"Scene {index + 1} of {scenesNeedingProcessing.Length}",
+                                    Sam2MattingSupport.DisplayName(tracker),
+                                    allowFrameSelection: true, sam2Model: tracker,
+                                    draftFolder: sceneFolder, sam2Matting: true,
+                                    showAutomaticMask: false);
+                                if (editor.ShowDialog(this) != DialogResult.OK) return;
+                                string mask = Path.Combine(sceneFolder,
+                                    "initial-mask.png");
+                                editor.SaveMask(mask);
+                                long promptFrame = Math.Clamp(checked((long)Math.Round(
+                                    editor.FrameMs / 1000d * fps,
+                                    MidpointRounding.AwayFromZero)), scene.StartFrame,
+                                    scene.EndFrameExclusive - 1);
+                                job.ScenePrompts = [.. job.ScenePrompts,
+                                    new CustomShowScenePrompt
+                                    {
+                                        SceneId = scene.Id, PromptFrame = promptFrame,
+                                        PromptFrameMs = editor.FrameMs
+                                    }];
+                                sceneMasks[scene.Id] = mask;
+                                sceneMaskSummary.Text =
+                                    $"{index + 1} of {scenesNeedingProcessing.Length} scenes ready";
+                            }
                         }
                     }
                     else if (queueDraftAssetOwnerId != null)
@@ -1974,9 +2068,14 @@ internal sealed class CustomShowEditorForm : Form
                 throw new InvalidDataException("Select or create a model profile.");
             CustomShowStore.ValidateProfile(selectedProfile);
             string tracker = SelectedSam2MattingTracker();
+            string promptMode = SelectedSam2MattingPromptMode();
             if (!Sam2MattingSupport.IsInstalled(configuration, tracker))
                 throw new InvalidDataException(
                     "Setup required: install the SAM2Matting environment and all checkpoints.");
+            if (promptMode == "rvm-initial-mask" &&
+                !CustomShowProcessor.IsRvmInitialMaskInstalled(configuration))
+                throw new InvalidDataException(
+                    "Setup required: install or repair the Robust Video Matting processing tools.");
             string[] concepts = tracker == "sam3"
                 ? Sam2MattingSupport.ParseConcepts(foregroundConcepts.Text) : [];
             using OpenFileDialog files = new()
@@ -2042,7 +2141,7 @@ internal sealed class CustomShowEditorForm : Form
                 manifest.Clips = [plan.Clip];
                 manifest.ClipDetection = plan.Detection;
                 manifest.Processing = CreateSam2MattingProcessing(
-                    tracker, concepts, plan.Scenes);
+                    tracker, promptMode, concepts, plan.Scenes);
                 FileInfo sourceInfo = new(plan.Video);
                 CustomShowQueueJob job = new()
                 {
@@ -2056,7 +2155,38 @@ internal sealed class CustomShowEditorForm : Form
                     RequestedOutputPath = Path.Combine(store.ShowsFolder, manifest.Id)
                 };
                 Dictionary<string, string> sceneMasks = [];
-                if (tracker != "sam3")
+                if (promptMode == "rvm-initial-mask")
+                {
+                    RvmInitialMaskTarget[] targets = plan.Scenes.Select(scene =>
+                    {
+                        string mask = Path.Combine(draftRoot, job.Id, scene.Id,
+                            "initial-mask.png");
+                        job.ScenePrompts = [.. job.ScenePrompts,
+                            new CustomShowScenePrompt
+                            {
+                                SceneId = scene.Id,
+                                PromptFrame = scene.StartFrame,
+                                PromptFrameMs = scene.StartMs
+                            }];
+                        sceneMasks[scene.Id] = mask;
+                        return new RvmInitialMaskTarget(mask, scene.StartMs);
+                    }).ToArray();
+                    using CustomShowProcessingForm initializer = new(
+                        async (progress, token) =>
+                        {
+                            await CustomShowProcessor.GenerateRvmInitialMasksAsync(
+                                configuration, plan.Video, targets,
+                                rvmInitializerThreshold.Value, progress, token);
+                            return new CustomShowProcessResult();
+                        }, "Creating SAM2Matting RVM Masks",
+                        processDescription:
+                            $"Creating automatic person masks for video " +
+                            $"{plans.IndexOf(plan) + 1}/{plans.Count}",
+                        showPreviews: false);
+                    if (initializer.ShowDialog(this) != DialogResult.OK) return;
+                    sceneNumber += plan.Scenes.Length;
+                }
+                else if (tracker != "sam3")
                     foreach (CustomShowProcessingScene scene in plan.Scenes)
                     {
                         string sceneFolder = Path.Combine(draftRoot, job.Id, scene.Id);
@@ -2114,12 +2244,13 @@ internal sealed class CustomShowEditorForm : Form
     }
 
     CustomShowProcessing CreateSam2MattingProcessing(string tracker,
-        string[] concepts, CustomShowProcessingScene[] scenes) => new()
+        string promptMode, string[] concepts,
+        CustomShowProcessingScene[] scenes) => new()
     {
         Algorithm = Sam2MattingSupport.Algorithm,
         ProcessingOptionVersion = Sam2MattingSupport.OptionVersion,
         Tracker = tracker,
-        PromptMode = tracker == "sam3" ? "text-concepts" : "initial-mask",
+        PromptMode = promptMode,
         ForegroundConcepts = [.. concepts],
         EnvironmentSpecVersion = Sam2MattingSupport.EnvironmentVersion,
         SourceRevision = Sam2MattingSupport.SourceRevision,
@@ -2133,8 +2264,12 @@ internal sealed class CustomShowEditorForm : Form
         Scenes = CloneQueueValue(scenes),
         MattingDetailPx = 512,
         BatchSize = 0,
+        RvmInitializerAlphaThresholdPercent = promptMode == "rvm-initial-mask"
+            ? rvmInitializerThreshold.Value : null,
         AutoAcceptedAlphaThreshold = null,
-        ExecutionPolicy = "eager"
+        ExecutionPolicy = "eager",
+        ToolRevisions = ReadProcessingRevisions(Sam2MattingSupport.Algorithm,
+            promptMode == "rvm-initial-mask" ? "rvm-sam2" : "sam2")
     };
 
     void SaveNewQueuedPerformer(CustomPerformerProfile profile)
@@ -2532,6 +2667,7 @@ internal sealed class CustomShowEditorForm : Form
             "matanyone2" => ["MATANYONE2_COMMIT", "SAM2_COMMIT"],
             "rvm-matanyone2" => ["MATANYONE2_COMMIT", "RVM_COMMIT"],
             "rvm-vitmatte-s" => ["VITMATTE_S_REVISION", "RVM_COMMIT"],
+            "sam2matting" when maskEngine == "rvm-sam2" => ["RVM_COMMIT"],
             "videomama" => ["VIDEOMAMA_COMMIT", "VIDEOMAMA_SVD_REVISION",
                 "VIDEOMAMA_MODEL_REVISION", "SAM2_COMMIT"],
             "vitmatte-s" => ["VITMATTE_S_REVISION", "SAM2_COMMIT"],

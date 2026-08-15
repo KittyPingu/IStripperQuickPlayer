@@ -56,6 +56,7 @@ SAM3_MAX_UNION_BYTES = 2 * 1024 * 1024 * 1024
 SAM3_MAX_CHUNK_FRAMES = 128
 SAM3_CONTEXT_FRAMES = 16
 SAM3_UNION_DTYPE = "float16"
+SAM3_WORKING_EDGE = 1008
 _NVENC_AVAILABLE = None
 
 
@@ -314,6 +315,13 @@ def validate_scene_contract(request, fps):
         raise RuntimeError("A saved scene references an unknown clip")
 
 
+def sam3_working_size(width, height):
+    scale = min(1.0, SAM3_WORKING_EDGE / max(1, int(width), int(height)))
+    working_width = max(2, int(round(int(width) * scale / 2)) * 2)
+    working_height = max(2, int(round(int(height) * scale / 2)) * 2)
+    return working_width, working_height
+
+
 def sam3_chunk_size(width, height):
     bytes_per_frame = max(1, int(width) * int(height) * 4)
     return max(1, min(SAM3_MAX_CHUNK_FRAMES,
@@ -356,7 +364,7 @@ def prepare_sam3_chunk(source, directory, union_path, start_frame, frame_count,
                        width, height, fps, on_frame=None,
                        check_cancelled=None):
     extract_scene(source, directory, start_frame, frame_count, fps, on_frame,
-                  check_cancelled)
+                  check_cancelled, (width, height))
     if check_cancelled is not None:
         check_cancelled()
     prepare_union(union_path, (frame_count, height, width))
@@ -402,8 +410,13 @@ def extract_scene(source, directory, start_frame, frame_count, fps,
     filter_rate = f"{fps.numerator}/{fps.denominator}"
     filters = [f"fps={filter_rate}"]
     if output_size is not None:
-        size = max(1, int(output_size))
-        filters.append(f"scale={size}:{size}:flags=bicubic")
+        if isinstance(output_size, (tuple, list)):
+            output_width = max(1, int(output_size[0]))
+            output_height = max(1, int(output_size[1]))
+        else:
+            output_width = output_height = max(1, int(output_size))
+        filters.append(
+            f"scale={output_width}:{output_height}:flags=bicubic")
     command = [
         ffmpeg(), "-y", "-v", "error", "-progress", "pipe:1", "-nostats",
         "-ss", f"{start_seconds:.9f}",
@@ -778,14 +791,19 @@ def process_sam3_scene(predictor, request, scene_dir, union,
 
 
 def encode_alpha(raw_path, destination, width, height, fps, count,
-                 on_frame=None, check_cancelled=None):
+                 on_frame=None, check_cancelled=None,
+                 raw_width=None, raw_height=None):
     codec = alpha_codec_args(width, height)
+    input_width = int(raw_width or width)
+    input_height = int(raw_height or height)
+    scaling = ([] if (input_width, input_height) == (int(width), int(height))
+               else ["-vf", f"scale={int(width)}:{int(height)}:flags=bilinear"])
     run_ffmpeg_progress([
         ffmpeg(), "-y", "-v", "error", "-progress", "pipe:1", "-nostats",
         "-f", "rawvideo",
-        "-pixel_format", "gray", "-video_size", f"{width}x{height}",
+        "-pixel_format", "gray", "-video_size", f"{input_width}x{input_height}",
         "-framerate", f"{fps.numerator}/{fps.denominator}", "-i", str(raw_path),
-        "-frames:v", str(count), "-an", *codec,
+        "-frames:v", str(count), "-an", *scaling, *codec,
         "-pix_fmt", "yuv420p", "-color_range", "pc", str(destination),
     ], count, on_frame, check_cancelled)
 
@@ -1049,6 +1067,10 @@ def run_job(request, loaded=None):
         normalized = normalize_concepts(request.get("concepts"))
         if normalized != request.get("concepts") or request.get("prompts"):
             raise RuntimeError("SAM3 concepts are not normalized or the job contains scene masks")
+        sam3_width, sam3_height = sam3_working_size(
+            media["width"], media["height"])
+    else:
+        sam3_width = sam3_height = None
     output = Path(request["outputPath"])
     output.mkdir(parents=True, exist_ok=True)
     emit("preflight", 0, "Validated saved SAM2Matting job contract")
@@ -1077,7 +1099,7 @@ def run_job(request, loaded=None):
         # Count overlap work as well as output frames so ETA covers the complete
         # job rather than becoming optimistic at every bounded-session restart.
         if tracker == "sam3":
-            chunk_size = sam3_chunk_size(media["width"], media["height"])
+            chunk_size = sam3_chunk_size(sam3_width, sam3_height)
             session_frames = sum(sum(chunk[1] for chunk in frame_chunks(
                 int(scene["endFrameExclusive"] - scene["startFrame"]),
                 chunk_size, min(SAM3_CONTEXT_FRAMES, chunk_size - 1)))
@@ -1114,7 +1136,10 @@ def run_job(request, loaded=None):
                         cancelled(request)
                         scene_count = int(scene["endFrameExclusive"] - scene["startFrame"])
                         chunk_size = tracker_scene_chunk_size(
-                            tracker, media["width"], media["height"], scene_count)
+                            tracker,
+                            sam3_width if tracker == "sam3" else media["width"],
+                            sam3_height if tracker == "sam3" else media["height"],
+                            scene_count)
                         context_frames = (min(SAM3_CONTEXT_FRAMES,
                                               chunk_size - 1)
                                           if tracker == "sam3" and
@@ -1176,8 +1201,8 @@ def run_job(request, loaded=None):
                                         prepare_sam3_chunk(
                                             source, scene_dir, union_path,
                                             int(scene["startFrame"]) + input_offset,
-                                            input_count, media["width"],
-                                            media["height"], media["fps"],
+                                            input_count, sam3_width,
+                                            sam3_height, media["fps"],
                                             extraction_progress,
                                             lambda: cancelled(request))
                                     else:
@@ -1223,8 +1248,8 @@ def run_job(request, loaded=None):
                                         prepare_sam3_chunk, source, next_dir,
                                         next_union_path,
                                         int(scene["startFrame"]) + next_offset,
-                                        next_input_count, media["width"],
-                                        media["height"], media["fps"],
+                                        next_input_count, sam3_width,
+                                        sam3_height, media["fps"],
                                         lambda frames, state=prefetched_progress:
                                             state.__setitem__("frames", frames),
                                         check_prefetch_cancelled)
@@ -1235,7 +1260,9 @@ def run_job(request, loaded=None):
                                         next_scene["endFrameExclusive"] -
                                         next_scene["startFrame"])
                                     next_chunk_size = tracker_scene_chunk_size(
-                                        tracker, media["width"], media["height"],
+                                        tracker,
+                                        sam3_width if tracker == "sam3" else media["width"],
+                                        sam3_height if tracker == "sam3" else media["height"],
                                         next_scene_count)
                                     next_context_frames = (min(
                                         SAM3_CONTEXT_FRAMES,
@@ -1264,8 +1291,8 @@ def run_job(request, loaded=None):
                                             next_staging_dir,
                                             next_union_path,
                                             int(next_scene["startFrame"]) + next_offset,
-                                            next_input_count, media["width"],
-                                            media["height"], media["fps"],
+                                            next_input_count, sam3_width,
+                                            sam3_height, media["fps"],
                                             lambda frames, state=next_progress:
                                                 state.__setitem__("frames", frames),
                                             check_carry_cancelled)
@@ -1286,8 +1313,8 @@ def run_job(request, loaded=None):
                                     union = np.memmap(
                                         union_path, mode="r+",
                                         dtype=SAM3_UNION_DTYPE,
-                                        shape=(input_count, media["height"],
-                                               media["width"]))
+                                        shape=(input_count, sam3_height,
+                                               sam3_width))
                                 else:
                                     prompt = next(
                                         (item for item in request["prompts"]
@@ -1401,7 +1428,7 @@ def run_job(request, loaded=None):
                 encode_alpha(
                     raw_path, alpha_path, media["width"], media["height"],
                     media["fps"], decoded_count, alpha_encoding_progress,
-                    lambda: cancelled(request))
+                    lambda: cancelled(request), sam3_width, sam3_height)
             else:
                 emit("encoding", 5 + 92 * completed_units /
                      max(1, total_units),

@@ -1389,7 +1389,8 @@ internal static class CustomSceneDetector
         "custom-shows", "omnishotcut_worker.py");
 
     internal static async Task<SceneDetectionResult> DetectFastAsync(string source, long durationMs,
-        int sensitivityPercent, IProgress<int>? progress, CancellationToken token)
+        int sensitivityPercent, IProgress<int>? progress, CancellationToken token,
+        long startMs = 0, long? endMs = null)
     {
         string ffmpeg = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         ProcessStartInfo start = new(ffmpeg)
@@ -1400,7 +1401,12 @@ internal static class CustomSceneDetector
         double threshold = CustomClipEditorForm.DetectionThreshold(sensitivityPercent);
         string sceneFilter = "scale=320:-2,select='gte(scene,0)'," +
             "metadata=print:key=lavfi.scene_score";
-        foreach (string argument in new[] { "-v", "info", "-nostats", "-i", source,
+        long boundedEndMs = Math.Clamp(endMs ?? durationMs, startMs + 1, durationMs);
+        long boundedDurationMs = boundedEndMs - startMs;
+        foreach (string argument in new[] { "-v", "info", "-nostats",
+            "-ss", (startMs / 1000d).ToString("0.######", CultureInfo.InvariantCulture),
+            "-i", source,
+            "-t", (boundedDurationMs / 1000d).ToString("0.######", CultureInfo.InvariantCulture),
             "-an", "-vf", sceneFilter,
             "-fps_mode", "vfr", "-f", "null", "-", "-progress", "pipe:1" })
             start.ArgumentList.Add(argument);
@@ -1413,8 +1419,9 @@ internal static class CustomSceneDetector
         {
             while (await process.StandardOutput.ReadLineAsync(token) is string line)
                 if (line.StartsWith("out_time_us=", StringComparison.Ordinal) &&
-                    long.TryParse(line[12..], out long microseconds) && durationMs > 0)
-                    progress?.Report((int)Math.Clamp(microseconds / 1000d / durationMs * 100, 0, 99));
+                    long.TryParse(line[12..], out long microseconds) && boundedDurationMs > 0)
+                    progress?.Report((int)Math.Clamp(
+                        microseconds / 1000d / boundedDurationMs * 100, 0, 99));
         }, token);
         StringBuilder errors = new();
         Task readScenes = Task.Run(async () =>
@@ -1452,19 +1459,19 @@ internal static class CustomSceneDetector
         List<long> result = [];
         foreach (long cut in candidates.Where(value => value.Score >= threshold)
                      .Select(value => value.TimeMs)
-                     .Where(value => value >= 250 && value <= durationMs - 250)
+                     .Where(value => value >= 250 && value <= boundedDurationMs - 250)
                      .Distinct().Order())
             if (result.Count == 0 || cut - result[^1] >= 500) result.Add(cut);
         return new SceneDetectionResult("ffmpeg", [.. result], [],
             SensitivityDataFormat: "ffmpeg-scene-gzip-json-v1",
             SensitivityData: CustomClipEditorForm.CompressSensitivityData(
                 candidates.Where(value => value.TimeMs >= 250 &&
-                    value.TimeMs <= durationMs - 250).ToArray()));
+                    value.TimeMs <= boundedDurationMs - 250).ToArray()));
     }
 
     internal static async Task<SceneDetectionResult> DetectTransNetAsync(CustomShowConfiguration configuration,
         string source, int sensitivityPercent, IProgress<int>? progress,
-        CancellationToken token)
+        CancellationToken token, long startMs = 0, long? endMs = null)
     {
         if (!File.Exists(configuration.PythonExecutable))
             throw new FileNotFoundException("Configure the custom-show Python environment first.",
@@ -1500,7 +1507,10 @@ internal static class CustomSceneDetector
                 _ => "auto"
             },
             "--profile-log", Path.Combine(configuration.LibraryRoot, ".logs",
-                "transnetv2.ndjson")
+                "transnetv2.ndjson"),
+            "--start-ms", Math.Max(0, startMs).ToString(CultureInfo.InvariantCulture),
+            "--end-ms", Math.Max(startMs + 1, endMs ?? long.MaxValue)
+                .ToString(CultureInfo.InvariantCulture)
         }) start.ArgumentList.Add(argument);
         start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
@@ -1553,7 +1563,8 @@ internal static class CustomSceneDetector
 
     internal static async Task<SceneDetectionResult> DetectOmniShotCutAsync(
         CustomShowConfiguration configuration, string source, int sensitivityPercent,
-        IProgress<int>? progress, CancellationToken token)
+        IProgress<int>? progress, CancellationToken token,
+        long startMs = 0, long? endMs = null)
     {
         if (!File.Exists(configuration.PythonExecutable))
             throw new FileNotFoundException("Configure the custom-show Python environment first.",
@@ -1578,7 +1589,10 @@ internal static class CustomSceneDetector
             "--sensitivity-percent", Math.Clamp(sensitivityPercent, 1, 100)
                 .ToString(CultureInfo.InvariantCulture),
             "--profile-log", Path.Combine(configuration.LibraryRoot, ".logs",
-                "omnishotcut.ndjson")
+                "omnishotcut.ndjson"),
+            "--start-ms", Math.Max(0, startMs).ToString(CultureInfo.InvariantCulture),
+            "--end-ms", Math.Max(startMs + 1, endMs ?? long.MaxValue)
+                .ToString(CultureInfo.InvariantCulture)
         }) start.ArgumentList.Add(argument);
         start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");

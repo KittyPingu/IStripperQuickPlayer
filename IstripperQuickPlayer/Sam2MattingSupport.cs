@@ -5,7 +5,7 @@ namespace IStripperQuickPlayer;
 internal static class Sam2MattingSupport
 {
     internal const string Algorithm = "sam2matting";
-    internal const int OptionVersion = 2;
+    internal const int OptionVersion = 3;
     internal const string AlphaEncodingPolicy = "h264-yuv420p-linear";
     internal const int ScenePlanVersion = 1;
     internal const string EnvironmentVersion = "sam2matting-v1";
@@ -25,6 +25,10 @@ internal static class Sam2MattingSupport
         "sam2.1-base-plus" => "SAM2.1-B+",
         _ => "SAM3"
     };
+
+    internal static bool IsValidPromptMode(string tracker, string? promptMode) =>
+        tracker == "sam3" ? promptMode == "text-concepts" :
+        promptMode is "initial-mask" or "rvm-initial-mask";
 
     internal static string CheckpointFile(string? tracker) => tracker switch
     {
@@ -99,6 +103,15 @@ internal static class Sam2MattingSupport
         return parsed.SequenceEqual(
             ["person", "Bicycle", "handbag held by a person"]);
     }
+
+    internal static bool VerifyPromptModes() =>
+        IsValidPromptMode("sam2.1-tiny", "initial-mask") &&
+        IsValidPromptMode("sam2.1-tiny", "rvm-initial-mask") &&
+        IsValidPromptMode("sam2.1-base-plus", "initial-mask") &&
+        IsValidPromptMode("sam2.1-base-plus", "rvm-initial-mask") &&
+        IsValidPromptMode("sam3", "text-concepts") &&
+        !IsValidPromptMode("sam3", "rvm-initial-mask") &&
+        !IsValidPromptMode("sam2.1-tiny", "text-concepts");
 }
 
 internal static class Sam2MattingScenePlanner
@@ -129,14 +142,54 @@ internal static class Sam2MattingScenePlanner
             "omnishotcut" => configuration.OmniShotCutClipDetectionSensitivity,
             _ => configuration.FastClipDetectionSensitivity
         };
-        SceneDetectionResult result = method switch
+        CustomShowClip[] includedClips = clips.Where(value => value.Included)
+            .OrderBy(value => value.StartMs).ToArray();
+        if (includedClips.Length == 0)
+            throw new InvalidDataException("At least one included clip is required.");
+        long selectedDurationMs = Math.Max(1, includedClips.Sum(value =>
+            Math.Max(1, value.EndMs - value.StartMs)));
+        long completedDurationMs = 0;
+        List<long> boundaries = [];
+        List<SceneDetectionRange> ranges = [];
+        SceneDetectionResult? firstResult = null;
+        foreach (CustomShowClip clip in includedClips)
         {
-            "transnetv2" => await CustomSceneDetector.DetectTransNetAsync(
-                configuration, source, sensitivity, progress, token),
-            "omnishotcut" => await CustomSceneDetector.DetectOmniShotCutAsync(
-                configuration, source, sensitivity, progress, token),
-            _ => await CustomSceneDetector.DetectFastAsync(source, durationMs,
-                sensitivity, progress, token)
+            long clipDurationMs = Math.Max(1, clip.EndMs - clip.StartMs);
+            long completedBeforeClip = completedDurationMs;
+            Progress<int> clipProgress = new(value => progress?.Report((int)Math.Clamp(
+                (completedBeforeClip + clipDurationMs * Math.Clamp(value, 0, 100) / 100d) /
+                selectedDurationMs * 100, 0, 99)));
+            SceneDetectionResult clipResult = method switch
+            {
+                "transnetv2" => await CustomSceneDetector.DetectTransNetAsync(
+                    configuration, source, sensitivity, clipProgress, token,
+                    clip.StartMs, clip.EndMs),
+                "omnishotcut" => await CustomSceneDetector.DetectOmniShotCutAsync(
+                    configuration, source, sensitivity, clipProgress, token,
+                    clip.StartMs, clip.EndMs),
+                _ => await CustomSceneDetector.DetectFastAsync(source, durationMs,
+                    sensitivity, clipProgress, token, clip.StartMs, clip.EndMs)
+            };
+            firstResult ??= clipResult;
+            boundaries.AddRange(clipResult.BoundariesMs.Select(value =>
+                checked(value + clip.StartMs)));
+            ranges.AddRange(clipResult.Ranges.Select(value => value with
+            {
+                StartMs = checked(value.StartMs + clip.StartMs),
+                EndMs = checked(value.EndMs + clip.StartMs)
+            }));
+            completedDurationMs += clipDurationMs;
+        }
+        progress?.Report(100);
+        SceneDetectionResult result = (firstResult ?? throw new InvalidDataException(
+            "Scene detection did not return a result.")) with
+        {
+            BoundariesMs = [.. boundaries],
+            Ranges = [.. ranges],
+            // Detector score streams are relative to each bounded clip and cannot
+            // be safely reapplied as one source-wide stream.
+            SensitivityDataFormat = null,
+            SensitivityData = null
         };
         if (!string.IsNullOrWhiteSpace(requested?.ToolRevision) &&
             !string.Equals(requested.ToolRevision, result.ToolRevision,
@@ -162,7 +215,7 @@ internal static class Sam2MattingScenePlanner
         long[] cutFrames = result.BoundariesMs.Select(value => Frame(value, fps))
             .Where(value => value > 0 && value < totalFrames).Distinct().Order().ToArray();
         List<CustomShowProcessingScene> scenes = [];
-        foreach (CustomShowClip clip in clips.Where(value => value.Included))
+        foreach (CustomShowClip clip in includedClips)
         {
             long clipStart = Math.Clamp(Frame(clip.StartMs, fps), 0, totalFrames - 1);
             long clipEnd = Math.Clamp(Frame(clip.EndMs, fps), clipStart + 1, totalFrames);
@@ -305,7 +358,7 @@ internal static class Sam2MattingScenePlanner
         return "ffmpeg";
     }
 
-    static long Frame(long milliseconds, double fps) => checked((long)Math.Round(
+    internal static long Frame(long milliseconds, double fps) => checked((long)Math.Round(
         milliseconds / 1000d * fps, MidpointRounding.AwayFromZero));
     static long Milliseconds(long frame, double fps) => checked((long)Math.Round(
         frame / fps * 1000d, MidpointRounding.AwayFromZero));

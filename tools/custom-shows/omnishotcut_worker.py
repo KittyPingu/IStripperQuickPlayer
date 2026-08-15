@@ -172,16 +172,21 @@ def resolve_decode_mode(requested: str, info: dict) -> str:
     return "legacy" if info["codec"] == "av1" and source_pixels >= 7_000_000 else "cpu"
 
 
-def decode_command(ffmpeg: str, source: str, mode: str, width: int, height: int):
+def decode_command(ffmpeg: str, source: str, mode: str, width: int, height: int,
+                   start_ms: int = 0, end_ms: int | None = None):
     common = [ffmpeg, "-hide_banner", "-loglevel", "error"]
+    if start_ms > 0:
+        common += ["-ss", f"{start_ms / 1000:.6f}"]
+    duration_ms = None if end_ms is None else max(1, end_ms - start_ms)
+    bounded = [] if duration_ms is None else ["-t", f"{duration_ms / 1000:.6f}"]
     if mode == "legacy":
         return common + ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
-            "-i", source, "-map", "0:v:0", "-an", "-sn", "-dn", "-vf",
+            "-i", source] + bounded + ["-map", "0:v:0", "-an", "-sn", "-dn", "-vf",
             f"scale_cuda={width}:{height},hwdownload,format=nv12,format=rgb24",
             "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
     scaler = (f"scale={width}:{height}:flags=fast_bilinear" if mode == "cpu-fast"
               else f"scale={width}:{height}")
-    return common + ["-i", source, "-map", "0:v:0", "-an", "-sn", "-dn",
+    return common + ["-i", source] + bounded + ["-map", "0:v:0", "-an", "-sn", "-dn",
         "-vf", scaler, "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
 
 
@@ -697,6 +702,15 @@ def run(args):
     ffmpeg = os.environ.get("IQP_FFMPEG", "ffmpeg")
     ffprobe = os.environ.get("IQP_FFPROBE", "ffprobe")
     info = source_info(args.source, ffprobe)
+    args.start_ms = max(0, args.start_ms)
+    if args.end_ms is not None and args.end_ms > args.start_ms:
+        bounded_duration = min(info["duration"] - args.start_ms / 1000,
+                               (args.end_ms - args.start_ms) / 1000)
+    else:
+        args.end_ms = None
+        bounded_duration = max(0, info["duration"] - args.start_ms / 1000)
+    info["duration"] = bounded_duration
+    info["expected_frames"] = max(1, round(bounded_duration * float(info["rate"])))
     if info["vfr_approximation"]:
         print("Warning: variable-frame-rate timestamps are approximated using avg_frame_rate.",
               file=sys.stderr, flush=True)
@@ -716,7 +730,8 @@ def run(args):
     fallback = False
 
     def execute(mode):
-        command = decode_command(ffmpeg, args.source, mode, width, height)
+        command = decode_command(ffmpeg, args.source, mode, width, height,
+                                 args.start_ms, args.end_ms)
         if args.pipeline_mode == "serial":
             return run_serial(model, transform, command, info, chunk_size, width,
                               height, 100)
@@ -833,6 +848,8 @@ def main():
     parser.add_argument("--window-batch", type=int, default=1,
                         help=argparse.SUPPRESS)
     parser.add_argument("--sensitivity-percent", type=int, default=100)
+    parser.add_argument("--start-ms", type=int, default=0)
+    parser.add_argument("--end-ms", type=int)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:

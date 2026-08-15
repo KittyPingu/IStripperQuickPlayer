@@ -554,8 +554,9 @@ internal sealed class CustomShowQueueManager : IDisposable
         if (!CustomShowStore.TryFrameRate(media.FrameRate, out double fps))
             throw new CustomShowQueueAttentionException(
                 "The source frame rate is invalid.");
-        long totalFrames = Math.Max(1, checked((long)Math.Round(
-            media.Duration * fps)));
+        long totalFrames = Math.Max(1, job.Clips.Where(value => value.Included).Sum(
+            value => Math.Max(1, Sam2MattingScenePlanner.Frame(value.EndMs, fps) -
+                Sam2MattingScenePlanner.Frame(value.StartMs, fps))));
         Progress<int> detectorProgress = new(value =>
         {
             long analysed = Math.Clamp(checked((long)Math.Round(
@@ -1649,11 +1650,15 @@ internal sealed class CustomShowQueueForm : Form
         string prompt = processing?.Tracker == "sam3"
             ? "Text concepts: " + string.Join(", ", processing.ForegroundConcepts)
             : processing?.Algorithm == "sam2matting"
-                ? $"Initial masks: {job.ScenePrompts.Length}/{processing.Scenes.Length} scenes"
+                ? $"{(processing.PromptMode == "rvm-initial-mask" ?
+                    "Automatic RVM initial masks" : "Interactive initial masks")}: " +
+                    $"{job.ScenePrompts.Length}/{processing.Scenes.Length} scenes"
                 : "Prompt: existing pipeline";
         string detail =
             $"Tracker: {(processing?.Tracker == null ? "—" : Sam2MattingSupport.DisplayName(processing.Tracker))}\r\n" +
             $"Prompt type: {processing?.PromptMode ?? "—"}\r\n{prompt}\r\n" +
+            (processing?.RvmInitializerAlphaThresholdPercent is int threshold
+                ? $"RVM initializer alpha: {threshold}%\r\n" : "") +
             $"Checkpoint revision: {processing?.CheckpointRevision ?? "—"}\r\n" +
             $"Scene detector: {job.Manifest.ClipDetection?.Method ?? "—"} " +
             $"({job.Manifest.ClipDetection?.ToolRevision ?? "saved settings"})\r\n" +
