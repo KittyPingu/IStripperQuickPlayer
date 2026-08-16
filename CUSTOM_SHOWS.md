@@ -146,6 +146,11 @@ hard cut, the value is applied on both sides: **±1.5 seconds** creates one skip
 Review the results: skipped clips are not processed or published, and every
 included clip restarts the selected matting model at its boundary.
 
+After publishing, right-click a custom clip and choose **Trim Custom Clip...**
+to set playback start and end markers against a DirectComposition preview.
+Trimming is non-destructive: reopening the editor restores the saved markers,
+and **Reset to full clip** makes all of the processed media playable again.
+
 ## Processing methods
 
 ### Recommended methods
@@ -155,6 +160,21 @@ strongest complete-person matte, cleans it, and uses it to initialize MatAnyone
 2. The **RVM initializer alpha** slider controls how readily faint RVM alpha is
 kept. The 40% default is a balanced choice; reduce it to retain more hair, dark
 clothing, or motion-blurred limbs, and raise it to reject weak background haze.
+Enable **RVM mask refresh** to keep RVM running during forward propagation and
+inject persistent foreground that MatAnyone has missed. A missing region must
+remain for three frames before its eroded core is added to MatAnyone's bounded
+memory, with a 15-frame cooldown between corrections. This can recover people or
+held objects that enter later, at the cost of extra processing time and GPU memory.
+**RVM refresh strength** controls how strongly that eroded core overrides the
+current MatAnyone alpha (25–100%, default 100%). Lower it for gentler corrections
+when RVM includes uncertain foreground.
+
+For **MatAnyone 2** and **RVM-MatAnyone**, **Max memory frames** controls the
+recent detailed-memory window (2–30 frames without long-term memory, or 6–14
+frames with it). **Use compressed long-term memory** consolidates older entries
+up to 4,000 tokens with a 500-token consolidation buffer. The default remains
+five frames with long-term memory disabled; enabling it initially selects fourteen.
+Lower the maximum frames if processing exhausts GPU memory.
 
 **MatAnyone 2** opens an initial-mask editor for each included clip. Scrub to a
 clear frame, left-click or paint foreground, and right-click or paint unwanted

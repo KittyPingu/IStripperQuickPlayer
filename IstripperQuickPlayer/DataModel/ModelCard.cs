@@ -57,7 +57,7 @@ namespace IStripperQuickPlayer
         internal byte? q;
         internal byte? n;
         internal byte? s;
-        internal int? folderSize;
+        internal long? folderSize;
         internal string description;
         internal string outfit;
         internal string? hair;

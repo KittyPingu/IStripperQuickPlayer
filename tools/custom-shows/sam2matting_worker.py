@@ -315,6 +315,14 @@ def validate_scene_contract(request, fps):
         raise RuntimeError("A saved scene references an unknown clip")
 
 
+def frame_rates_match(first, second):
+    """Allow the tiny rational rounding imposed by Matroska's 1 ms time base."""
+    first = Fraction(first)
+    second = Fraction(second)
+    difference = abs(float(first - second))
+    return difference <= max(float(first), float(second)) * 0.00001
+
+
 def sam3_working_size(width, height):
     scale = min(1.0, SAM3_WORKING_EDGE / max(1, int(width), int(height)))
     working_width = max(2, int(round(int(width) * scale / 2)) * 2)
@@ -456,7 +464,9 @@ def install_float32_sam2_image_loader():
     misc._load_img_as_tensor = load_img_as_float32
 
     class ParallelVideoFrameLoader:
-        """Decode ahead without allowing an unbounded number of worker threads."""
+        """Keep only a small rolling CPU-frame prefetch around the current frame."""
+
+        PREFETCH_FRAMES = 6
 
         def __init__(self, img_paths, image_size, offload_video_to_cpu,
                      img_mean, img_std, compute_device):
@@ -466,21 +476,20 @@ def install_float32_sam2_image_loader():
             self.img_mean = img_mean
             self.img_std = img_std
             self.compute_device = compute_device
-            self.images = [None] * len(img_paths)
+            self._length = len(img_paths)
+            self._cache = {}
             self.video_height = None
             self.video_width = None
-            self.exception = None
-            self._lock = threading.Lock()
             self._executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(3, max(1, len(img_paths))),
                 thread_name_prefix="sam2matting-frame-load")
             self._futures = {}
+            self._last_index = None
             first, height, width = self._load(0)
-            self.images[0] = first
+            self._cache[0] = first
             self.video_height = height
             self.video_width = width
-            for index in range(1, len(img_paths)):
-                self._futures[index] = self._executor.submit(self._load, index)
+            self._schedule(0, 1)
 
         def _load(self, index):
             image, height, width = misc._load_img_as_tensor(
@@ -491,31 +500,51 @@ def install_float32_sam2_image_loader():
             return image, height, width
 
         def __getitem__(self, index):
-            if self.exception is not None:
-                raise RuntimeError("Failure in parallel frame loader") from self.exception
-            image = self.images[index]
-            if image is not None:
-                return image
+            index = int(index)
+            if index < 0 or index >= self._length:
+                raise IndexError(index)
+            direction = (-1 if self._last_index is not None and
+                         index < self._last_index else 1)
             try:
-                with self._lock:
+                image = self._cache.pop(index, None)
+                if image is None:
                     future = self._futures.pop(index, None)
-                result = future.result() if future is not None else self._load(index)
-                image, height, width = result
-                self.images[index] = image
+                    result = (future.result() if future is not None
+                              else self._load(index))
+                    image, height, width = result
+                else:
+                    height, width = self.video_height, self.video_width
+                self._cache.clear()
+                self._cache[index] = image
                 self.video_height = height
                 self.video_width = width
+                self._last_index = index
+                self._schedule(index, direction)
                 return image
             except Exception as error:
-                self.exception = error
                 raise RuntimeError("Failure in parallel frame loader") from error
 
+        def _schedule(self, index, direction):
+            wanted = {
+                candidate for offset in range(1, self.PREFETCH_FRAMES + 1)
+                if 0 <= (candidate := index + direction * offset) < self._length
+            }
+            for candidate, future in list(self._futures.items()):
+                if candidate not in wanted:
+                    future.cancel()
+                    self._futures.pop(candidate, None)
+            for candidate in wanted:
+                if candidate not in self._futures:
+                    self._futures[candidate] = self._executor.submit(
+                        self._load, candidate)
+
         def __len__(self):
-            return len(self.images)
+            return self._length
 
         def close(self):
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._futures.clear()
-            self.images.clear()
+            self._cache.clear()
 
     misc.AsyncVideoFrameLoader = ParallelVideoFrameLoader
 
@@ -572,6 +601,35 @@ def release_sam2_frame_alpha(state, frame_index):
                     frame["alpha"] = None
 
 
+def sam2_tracking_history(predictor):
+    """Number of non-conditioning frames the next SAM2 step can reference."""
+    memory = max(0, int(getattr(predictor, "num_maskmem", 1)) - 1)
+    stride = max(1, int(getattr(
+        predictor, "memory_temporal_stride_for_eval", 1)))
+    pointers = max(0, int(getattr(
+        predictor, "max_obj_ptrs_in_encoder", 1)) - 1)
+    return max(1, memory * stride, pointers)
+
+
+def prune_sam2_tracking_state(state, frame_index, reverse, history,
+                              forward_bridge=None):
+    """Drop propagated states that cannot be referenced by a future step."""
+    bridge_start, bridge_end = forward_bridge or (0, 0)
+    for obj_index, output in state.get("output_dict_per_obj", {}).items():
+        non_cond = output.get("non_cond_frame_outputs", {})
+        if reverse:
+            stale = [value for value in non_cond
+                     if value > frame_index + history]
+        else:
+            stale = [value for value in non_cond
+                     if value < frame_index - history and
+                     not bridge_start <= value < bridge_end]
+        for value in stale:
+            non_cond.pop(value, None)
+            state.get("frames_tracked_per_obj", {}).get(
+                obj_index, {}).pop(value, None)
+
+
 def process_sam2_scene(predictor, request, scene, scene_dir, union,
                        completed_units=0, total_units=1, scene_number=1,
                        scene_total=1, completed_frames=0, total_frames=1,
@@ -589,8 +647,8 @@ def process_sam2_scene(predictor, request, scene, scene_dir, union,
     # Fudan's default retains every resized source frame on CUDA. A long 4K
     # scene can therefore exhaust a 16 GB card before tracking state and alpha
     # heads are included. Keep the source-frame tensor cache in system memory
-    # and load it asynchronously, while retaining tracker state on the GPU for
-    # substantially better throughput than full state offload.
+    # and load it asynchronously. Tracker state stays on the GPU for throughput,
+    # but is pruned to the exact temporal history later steps can reference.
     state = predictor.init_state(
         video_path=str(scene_dir), offload_video_to_cpu=True,
         offload_state_to_cpu=False, async_loading_frames=True)
@@ -613,12 +671,19 @@ def process_sam2_scene(predictor, request, scene, scene_dir, union,
         )
         count = union.shape[0]
         forward_count = count - local_prompt
+        history = sam2_tracking_history(predictor)
+        # A later reverse pass initially consults the first few forward states.
+        # Preserve only that dependency bridge while the forward pass advances.
+        forward_bridge = (local_prompt + 1,
+                          min(count, local_prompt + history + 1))
         for index, _, _, alpha, _ in predictor.propagate_in_video(
                 state, start_frame_idx=local_prompt,
                 max_frame_num_to_track=count - local_prompt, reverse=False):
             cancelled(request)
             transfers.submit(index, alpha)
             release_sam2_frame_alpha(state, index)
+            prune_sam2_tracking_state(
+                state, index, False, history, forward_bridge)
             del alpha
             if index % 10 == 0:
                 tracked = index - local_prompt + 1
@@ -635,6 +700,7 @@ def process_sam2_scene(predictor, request, scene, scene_dir, union,
                 cancelled(request)
                 transfers.submit(index, alpha)
                 release_sam2_frame_alpha(state, index)
+                prune_sam2_tracking_state(state, index, True, history)
                 del alpha
                 if index % 10 == 0:
                     tracked = forward_count + local_prompt - index
@@ -1452,7 +1518,8 @@ def run_job(request, loaded=None):
                     foreground_info["frames"] != decoded_count or
                     alpha_info["width"] != foreground_info["width"] or
                     alpha_info["height"] != foreground_info["height"] or
-                    Fraction(alpha_info["frameRate"]) != Fraction(foreground_info["frameRate"]) or
+                    not frame_rates_match(alpha_info["frameRate"],
+                                          foreground_info["frameRate"]) or
                     alpha_info["codec"] != "h264" or
                     alpha_info["pixelFormat"] not in ("yuv420p", "yuvj420p") or
                     alpha_info["colorRange"] != "pc"):
@@ -1469,8 +1536,7 @@ def run_job(request, loaded=None):
                 "alphaCodec": alpha_info["codec"],
                 "alphaPixelFormat": alpha_info["pixelFormat"],
                 "tracker": tracker,
-                "executionMode": ("eager-bf16-sdpa-bounded"
-                                  if tracker == "sam3" else "eager-bf16-sdpa"),
+                "executionMode": "eager-bf16-sdpa-bounded",
                 "encoder": foreground_encoder,
                 "encoderPreset": foreground_preset,
                 "firstTimestamp": 0,
@@ -1479,8 +1545,7 @@ def run_job(request, loaded=None):
             raw_path.unlink(missing_ok=True)
         first = results[0]
         contract = {**first, "clips": results, "tracker": tracker,
-                    "executionMode": ("eager-bf16-sdpa-bounded"
-                                      if tracker == "sam3" else "eager-bf16-sdpa")}
+                    "executionMode": "eager-bf16-sdpa-bounded"}
         temporary = output / "result.json.tmp"
         temporary.write_text(json.dumps(contract, indent=2), encoding="utf-8")
         os.replace(temporary, output / "result.json")
@@ -1613,6 +1678,36 @@ def validate(runtime, full_hash=False):
                       "checkpointRevision": CHECKPOINT_REVISION}), flush=True)
 
 
+def self_test():
+    class Predictor:
+        num_maskmem = 7
+        memory_temporal_stride_for_eval = 1
+        max_obj_ptrs_in_encoder = 16
+
+    if sam2_tracking_history(Predictor()) != 15:
+        raise RuntimeError("SAM2 tracking-history calculation failed")
+    if not frame_rates_match("19001/317", "60000/1001") or \
+            frame_rates_match("25/1", "30/1"):
+        raise RuntimeError("SAM2 output frame-rate tolerance failed")
+    state = {
+        "output_dict_per_obj": {0: {
+            "cond_frame_outputs": {0: {}},
+            "non_cond_frame_outputs": {
+                index: {"alpha": None} for index in range(100)},
+        }},
+        "frames_tracked_per_obj": {0: {index: {} for index in range(100)}},
+    }
+    prune_sam2_tracking_state(state, 99, False, 15, (1, 16))
+    remaining = state["output_dict_per_obj"][0]["non_cond_frame_outputs"]
+    if set(remaining) != set(range(1, 16)) | set(range(84, 100)):
+        raise RuntimeError("Forward SAM2 state pruning failed")
+    prune_sam2_tracking_state(state, 0, True, 15)
+    if set(remaining) != set(range(1, 16)):
+        raise RuntimeError("Reverse SAM2 state pruning failed")
+    print(json.dumps({"status": "ok", "selfTest": "sam2-bounded-state"}),
+          flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--request")
@@ -1620,8 +1715,11 @@ def main():
     parser.add_argument("--runtime")
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--full-hash", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
-    if args.validate:
+    if args.self_test:
+        self_test()
+    elif args.validate:
         validate(args.runtime, args.full_hash)
     elif args.host:
         host_main(args.runtime)

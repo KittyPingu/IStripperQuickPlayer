@@ -29,6 +29,11 @@ PIPELINE_SLOTS = 3
 QUEUE_DEPTH = 2
 PREVIEW_INTERVAL = .5
 PREVIEW_MAXIMUM = (960, 540)
+RVM_REFRESH_MISSING_RATIO = .01
+RVM_REFRESH_PERSISTENCE = 3
+RVM_REFRESH_COOLDOWN = 15
+LONG_TERM_MAX_TOKENS = 4000
+LONG_TERM_BUFFER_TOKENS = 500
 
 
 def log_record(kind, **values):
@@ -208,6 +213,28 @@ def rvm_initializer_offsets(total, fps, maximum_seconds=30):
         if not offsets or frame != offsets[-1][1]:
             offsets.append((seconds, frame))
     return offsets
+
+
+def rvm_refresh_candidate(missing_pixels, rvm_pixels, total_pixels):
+    minimum_pixels = max(16, round(total_pixels * 100 / (512 * 512)))
+    return (missing_pixels > minimum_pixels and rvm_pixels > 0 and
+            missing_pixels / rvm_pixels > RVM_REFRESH_MISSING_RATIO)
+
+
+def valid_memory_configuration(max_mem_frames, use_long_term):
+    return (2 <= max_mem_frames <= 30 and
+            (not use_long_term or 6 <= max_mem_frames <= 14))
+
+
+def corrected_rvm_refresh_mask(torch, matanyone_alpha, rvm_foreground,
+                               refresh_strength=1):
+    if matanyone_alpha.ndim != 2 or rvm_foreground.ndim != 2:
+        raise RuntimeError("RVM refresh requires two-dimensional alpha masks")
+    inverse = (~rvm_foreground).float()[None, None]
+    rvm_core = (1 - torch.nn.functional.max_pool2d(
+        inverse, kernel_size=5, stride=1, padding=2))[0, 0]
+    return torch.maximum(matanyone_alpha,
+                         rvm_core * refresh_strength).mul(255)
 
 
 def automatic_rvm_mask(source, runtime, start, frame_rate, fps, total,
@@ -593,6 +620,13 @@ def _process_once(args, compile_enabled):
         load_started = time.perf_counter()
         device_override = None if args.device == "auto" else args.device
         torch, InferenceCore, model, device = load_model(runtime, device_override)
+        model.cfg.use_long_term = args.use_long_term
+        if args.use_long_term:
+            model.cfg.long_term.max_mem_frames = args.max_mem_frames
+            model.cfg.long_term.max_num_tokens = LONG_TERM_MAX_TOKENS
+            model.cfg.long_term.buffer_tokens = LONG_TERM_BUFFER_TOKENS
+        else:
+            model.cfg.max_mem_frames = args.max_mem_frames
         profiler.add("model_load", time.perf_counter() - load_started)
         fp16 = device.type == "cuda" and fast_fp16(torch.cuda.get_device_capability(device))
         if args.precision_mode == "half" and device.type == "cuda":
@@ -626,6 +660,10 @@ def _process_once(args, compile_enabled):
             (process_width, process_height), Image.Resampling.NEAREST)
         mask_tensor = torch.from_numpy(np.asarray(mask, dtype=np.uint8).copy()).float().to(device)
         transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
+        rvm_refresh_model = None
+        rvm_refresh_state = [None] * 4
+        rvm_missing_streak = 0
+        last_rvm_refresh = -RVM_REFRESH_COOLDOWN
 
         def upload(slot):
             if device.type == "cuda":
@@ -668,7 +706,19 @@ def _process_once(args, compile_enabled):
                 slot.alpha_cpu.copy_(alpha)
                 profiler.add("alpha_conversion_download", time.perf_counter() - started)
 
-        def step(slot, processor, first_frame=False):
+        def update_rvm(frame_tensor):
+            nonlocal rvm_refresh_state
+            if rvm_refresh_model is None:
+                return None
+            with torch.inference_mode(), torch.amp.autocast(
+                    device_type=device.type, enabled=fp16):
+                _, rvm_alpha, *rvm_refresh_state = rvm_refresh_model(
+                    frame_tensor.unsqueeze(0).unsqueeze(0),
+                    *rvm_refresh_state, downsample_ratio=1)
+            return rvm_alpha[0, 0, 0].float().clamp(0, 1)
+
+        def step(slot, processor, first_frame=False, allow_rvm_refresh=False):
+            nonlocal rvm_missing_streak, last_rvm_refresh
             frame_tensor = upload(slot)
             try:
                 if device.type == "cuda":
@@ -683,6 +733,35 @@ def _process_once(args, compile_enabled):
                             output_prob = processor.step(frame_tensor, first_frame_pred=True)
                     else:
                         output_prob = processor.step(frame_tensor)
+                    rvm_alpha = update_rvm(frame_tensor)
+                    if rvm_alpha is not None and allow_rvm_refresh:
+                        ma_alpha = processor.output_prob_to_mask(
+                            output_prob).float().clamp(0, 1)
+                        rvm_foreground = rvm_alpha > args.rvm_alpha_threshold
+                        missing_pixels = int((rvm_foreground &
+                            (ma_alpha <= .20)).sum().item())
+                        rvm_pixels = int(rvm_foreground.sum().item())
+                        if rvm_refresh_candidate(missing_pixels, rvm_pixels,
+                                                 rvm_foreground.numel()):
+                            rvm_missing_streak += 1
+                        else:
+                            rvm_missing_streak = 0
+                        if (rvm_missing_streak >= RVM_REFRESH_PERSISTENCE and
+                                slot.index - last_rvm_refresh >=
+                                RVM_REFRESH_COOLDOWN):
+                            corrected = corrected_rvm_refresh_mask(
+                                torch, ma_alpha, rvm_foreground,
+                                args.rvm_refresh_strength)
+                            output_prob = processor.step(frame_tensor,
+                                corrected, objects=[1])
+                            log_record("rvm_mask_refresh",
+                                frame=slot.index,
+                                missingPixels=missing_pixels,
+                                rvmPixels=rvm_pixels,
+                                missingRatio=round(
+                                    missing_pixels / max(rvm_pixels, 1), 6))
+                            last_rvm_refresh = slot.index
+                            rvm_missing_streak = 0
                 if device.type == "cuda":
                     end_event.record()
                     slot.gpu_timings.append((
@@ -804,6 +883,14 @@ def _process_once(args, compile_enabled):
             alpha_map.flush()
             del backward
 
+        if args.rvm_mask_refresh:
+            emit("startup", progress_base,
+                 "Loading RVM for persistent foreground refresh...")
+            rvm_torch, rvm_refresh_model, rvm_device = load_rvm_model(
+                runtime, "quality")
+            if rvm_torch is not torch or rvm_device != device:
+                raise RuntimeError("RVM and MatAnyone must use the same processing device")
+
         decode = encode = None
         count = 0
         try:
@@ -865,6 +952,8 @@ def _process_once(args, compile_enabled):
                     started = time.perf_counter()
                     slot.direct_alpha = np.array(alpha_map[slot.index], copy=True)
                     profiler.add("backward_cache_io", time.perf_counter() - started)
+                    if rvm_refresh_model is not None:
+                        update_rvm(upload(slot))
                 elif slot.index == selected_index:
                     emit("inference", min(99, progress_base + completed_work *
                          (99 - progress_base) / work_total),
@@ -876,7 +965,7 @@ def _process_once(args, compile_enabled):
                             "createdUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                         }))
                 else:
-                    step(slot, forward)
+                    step(slot, forward, allow_rvm_refresh=True)
 
             def consume_forward(slot):
                 nonlocal count
@@ -963,6 +1052,12 @@ def _process_once(args, compile_enabled):
         "sourceResize": "ffmpeg-bilinear",
         "alphaResize": "ffmpeg-bilinear",
         "selectedFrame": selected_index,
+        "rvmMaskRefresh": args.rvm_mask_refresh,
+        "rvmRefreshStrength": args.rvm_refresh_strength,
+        "maxMemFrames": args.max_mem_frames,
+        "useLongTerm": args.use_long_term,
+        "longTermMaxTokens": LONG_TERM_MAX_TOKENS if args.use_long_term else 0,
+        "longTermBufferTokens": LONG_TERM_BUFFER_TOKENS if args.use_long_term else 0,
     }, compile_stats)
     emit("complete", 100, "MatAnyone 2 foreground and alpha are ready for preview")
 
@@ -985,7 +1080,12 @@ def process(args):
                pipeline=args.pipeline_mode, compileRequested=args.compile_mode,
                compileEnabled=enabled, compileBreakEvenFrames=break_even,
                previews=not args.disable_previews, resizeBackend=args.resize_backend,
-               precisionMode=args.precision_mode)
+               precisionMode=args.precision_mode,
+               maxMemFrames=args.max_mem_frames,
+               useLongTerm=args.use_long_term,
+               rvmRefreshStrength=args.rvm_refresh_strength,
+               longTermMaxTokens=LONG_TERM_MAX_TOKENS if args.use_long_term else 0,
+               longTermBufferTokens=LONG_TERM_BUFFER_TOKENS if args.use_long_term else 0)
     try:
         _process_once(args, enabled)
     except RuntimeError as error:
@@ -1005,6 +1105,10 @@ def main():
     parser.add_argument("--mask", type=Path)
     parser.add_argument("--auto-rvm-init", action="store_true")
     parser.add_argument("--rvm-alpha-threshold", type=float, default=.40)
+    parser.add_argument("--rvm-mask-refresh", action="store_true")
+    parser.add_argument("--rvm-refresh-strength", type=float, default=1)
+    parser.add_argument("--max-mem-frames", type=int, default=5)
+    parser.add_argument("--use-long-term", action="store_true")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--start-ms", type=int, default=0)
@@ -1075,6 +1179,27 @@ def main():
         assert [seconds for seconds, _ in rvm_initializer_offsets(1200, 30)] == \
             list(range(31))
         assert rvm_initializer_offsets(75, 30) == [(0, 0), (1, 30), (2, 60)]
+        assert rvm_refresh_candidate(101, 1000, 512 * 512)
+        assert not rvm_refresh_candidate(100, 1000, 512 * 512)
+        assert not rvm_refresh_candidate(101, 20_000, 512 * 512)
+        assert valid_memory_configuration(2, False)
+        assert valid_memory_configuration(5, False)
+        assert valid_memory_configuration(6, True)
+        assert valid_memory_configuration(14, True)
+        assert not valid_memory_configuration(5, True)
+        assert not valid_memory_configuration(15, True)
+        assert not valid_memory_configuration(31, False)
+        assert LONG_TERM_MAX_TOKENS > LONG_TERM_BUFFER_TOKENS + 128
+        refresh_alpha = torch.zeros((12, 12))
+        refresh_foreground = torch.zeros((12, 12), dtype=torch.bool)
+        refresh_foreground[2:10, 2:10] = True
+        refresh_mask = corrected_rvm_refresh_mask(
+            torch, refresh_alpha, refresh_foreground)
+        assert refresh_mask.ndim == 2 and refresh_mask.shape == (12, 12)
+        assert refresh_mask[6, 6] == 255 and refresh_mask[2, 2] == 0
+        gentle_refresh = corrected_rvm_refresh_mask(
+            torch, refresh_alpha, refresh_foreground, .75)
+        assert gentle_refresh[6, 6] == 191.25
         print("MatAnyone 2 worker self-test passed")
     elif not all((args.source, args.output, args.runtime)) or \
             not args.auto_rvm_init and args.mask is None:
@@ -1082,6 +1207,11 @@ def main():
     else:
         if not .10 <= args.rvm_alpha_threshold <= .90:
             parser.error("--rvm-alpha-threshold must be between 0.10 and 0.90")
+        if not .25 <= args.rvm_refresh_strength <= 1:
+            parser.error("--rvm-refresh-strength must be between 0.25 and 1.00")
+        if not valid_memory_configuration(args.max_mem_frames,
+                                          args.use_long_term):
+            parser.error("--max-mem-frames must be 2-30, or 6-14 with --use-long-term")
         if args.device == "cpu":
             os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
         process(args)

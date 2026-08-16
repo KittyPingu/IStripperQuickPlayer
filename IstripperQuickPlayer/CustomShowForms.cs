@@ -78,6 +78,25 @@ internal sealed class CustomShowEditorForm : Form
           SmallChange = 1, LargeChange = 5, Width = 260, Height = 32 };
     readonly Label rvmInitializerThresholdValue = new() { Text = "40%", AutoSize = true,
         Margin = new Padding(3, 7, 3, 3) };
+    readonly CheckBox rvmMatAnyoneMaskRefresh = new()
+    {
+        Text = "Inject persistent new RVM foreground into MatAnyone memory",
+        AutoSize = true
+    };
+    readonly TrackBar rvmMatAnyoneRefreshStrength = new()
+        { Minimum = 25, Maximum = 100, Value = 100, TickFrequency = 5,
+          SmallChange = 1, LargeChange = 5, Width = 260, Height = 32 };
+    readonly Label rvmMatAnyoneRefreshStrengthValue = new()
+        { Text = "100%", AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+    readonly NumericUpDown matAnyoneMaxMemoryFrames = new()
+        { Minimum = 2, Maximum = 30, Value = 5, Width = 70 };
+    readonly CheckBox matAnyoneUseLongTermMemory = new()
+        { Text = "Use compressed long-term memory", AutoSize = true };
+    readonly Label matAnyoneMemoryWarning = new()
+    {
+        Text = "Above Standard matting detail, lower max frames to avoid exhausting VRAM.",
+        AutoSize = true
+    };
     readonly CheckBox autoAccept = new()
         { Text = "Automatically accept result with alpha threshold 25", AutoSize = true };
     readonly TextBox processingDetails = new() { ReadOnly = true, Multiline = true,
@@ -97,7 +116,8 @@ internal sealed class CustomShowEditorForm : Form
     TableLayoutPanel? processingTable;
     int sam2MattingTrackerRow, foregroundConceptsRow, sceneMaskSummaryRow,
         maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
-        rvmThresholdRow,
+        rvmThresholdRow, rvmMaskRefreshRow, rvmMaskRefreshStrengthRow,
+        matAnyoneMemoryRow,
         batchSizeRow, autoAcceptRow, processingDetailsRow;
     int reprocessingRow = -1;
     int reprocessClipsRow = -1;
@@ -105,6 +125,8 @@ internal sealed class CustomShowEditorForm : Form
     CustomPerformerProfile? selectedProfile;
     CustomShowClip[] showClips = [];
     CustomShowClipDetection? clipDetection;
+    bool clipLayoutConfirmed;
+    bool clipEditorConfirmedThisSession;
     string? originalCoverTitle;
     string? originalCoverPerformerId;
     string? originalCoverModelName;
@@ -163,6 +185,14 @@ internal sealed class CustomShowEditorForm : Form
         TableLayoutPanel basic = SectionTable();
         AddFileRow(basic, "Source video", source,
             "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*");
+        source.TextChanged += (_, _) =>
+        {
+            showClips = [];
+            clipDetection = null;
+            clipLayoutConfirmed = false;
+            clipEditorConfirmedThisSession = false;
+            UpdateClipButton();
+        };
         if (showId == null) AddRow(basic, "", addToExisting);
         AddRow(basic, "Show title", title);
         AddRow(basic, "Model profile", performer,
@@ -265,6 +295,17 @@ internal sealed class CustomShowEditorForm : Form
             "ViTMatte inference detail", vitMatteInferenceDetail);
         rvmThresholdRow = AddRow(processingTable, "RVM initializer alpha", Flow(rvmInitializerThreshold,
             rvmInitializerThresholdValue));
+        rvmMaskRefreshRow = AddRow(processingTable, "RVM mask refresh",
+            rvmMatAnyoneMaskRefresh);
+        rvmMaskRefreshStrengthRow = AddRow(processingTable,
+            "RVM refresh strength", Flow(rvmMatAnyoneRefreshStrength,
+                rvmMatAnyoneRefreshStrengthValue));
+        matAnyoneMemoryRow = AddRow(processingTable, "MatAnyone memory",
+            FlowVertical(Flow(matAnyoneMaxMemoryFrames, new Label
+                {
+                    Text = "max frames", AutoSize = true,
+                    Margin = new Padding(3, 7, 12, 3)
+                }, matAnyoneUseLongTermMemory), matAnyoneMemoryWarning));
         sequenceChunk.Items.Add("Auto");
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12, 16, 24]);
         sequenceChunk.SelectedIndex = 0;
@@ -298,13 +339,33 @@ internal sealed class CustomShowEditorForm : Form
             applyRecommendedBatch: true);
         rvmInitializerThreshold.ValueChanged += (_, _) =>
             rvmInitializerThresholdValue.Text = $"{rvmInitializerThreshold.Value}%";
+        rvmMatAnyoneRefreshStrength.ValueChanged += (_, _) =>
+            rvmMatAnyoneRefreshStrengthValue.Text =
+                $"{rvmMatAnyoneRefreshStrength.Value}%";
+        rvmMatAnyoneMaskRefresh.CheckedChanged += (_, _) =>
+            UpdateProcessingOptions();
+        matAnyoneUseLongTermMemory.CheckedChanged += (_, _) =>
+        {
+            bool useLongTermDefault = matAnyoneUseLongTermMemory.Checked &&
+                matAnyoneMaxMemoryFrames.Value <
+                    CustomShowConfiguration.MatAnyoneLongTermMinimumMemoryFrames;
+            matAnyoneMaxMemoryFrames.Minimum =
+                matAnyoneUseLongTermMemory.Checked
+                    ? CustomShowConfiguration.MatAnyoneLongTermMinimumMemoryFrames : 2;
+            matAnyoneMaxMemoryFrames.Maximum =
+                matAnyoneUseLongTermMemory.Checked
+                    ? CustomShowConfiguration.MatAnyoneLongTermMaximumMemoryFrames : 30;
+            if (useLongTermDefault)
+                matAnyoneMaxMemoryFrames.Value =
+                    CustomShowConfiguration.MatAnyoneLongTermMaximumMemoryFrames;
+        };
         maskEngine.SelectedIndexChanged += (_, _) => UpdateProcessingOptions();
         sam2MattingTracker.SelectedIndexChanged += (_, _) =>
         {
             sceneMaskSummary.Text = SelectedSam2MattingPromptMode() switch
             {
                 "rvm-initial-mask" =>
-                    "RVM creates one automatic person mask per scene",
+                    "RVM will create one automatic person mask per scene when the job runs",
                 "text-concepts" => "Automatic text prompts",
                 _ => "Initial masks: not created"
             };
@@ -418,6 +479,13 @@ internal sealed class CustomShowEditorForm : Form
                 rvmSam2Matting) &&
             CanProcess;
         rvmInitializerThresholdValue.Enabled = rvmInitializerThreshold.Enabled;
+        rvmMatAnyoneMaskRefresh.Enabled = selected == "rvm-matanyone2" && CanProcess;
+        rvmMatAnyoneRefreshStrength.Enabled =
+            rvmMatAnyoneRefreshStrengthValue.Enabled =
+                rvmMatAnyoneMaskRefresh.Enabled && rvmMatAnyoneMaskRefresh.Checked;
+        bool matAnyone = selected is "matanyone2" or "rvm-matanyone2";
+        matAnyoneMaxMemoryFrames.Enabled = matAnyoneUseLongTermMemory.Enabled =
+            matAnyone && CanProcess;
         autoAccept.Enabled = CanProcess;
         if (processingTable != null)
         {
@@ -433,6 +501,11 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, rvmThresholdRow,
                 selected is "rvm-matanyone2" or "rvm-vitmatte-s" || rvmSam2 ||
                 rvmSam2Matting);
+            SetRowVisible(processingTable, rvmMaskRefreshRow,
+                selected == "rvm-matanyone2");
+            SetRowVisible(processingTable, rvmMaskRefreshStrengthRow,
+                selected == "rvm-matanyone2");
+            SetRowVisible(processingTable, matAnyoneMemoryRow, matAnyone);
             SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
                 selected == "rvm-vitmatte-s");
             SetRowVisible(processingTable, processingDetailsRow,
@@ -456,19 +529,19 @@ internal sealed class CustomShowEditorForm : Form
         sam2MattingStatus.ForeColor = installed ? Color.ForestGreen : Color.DarkOrange;
         openSam2MattingSetup.Visible = sam2Matting && !sam2Installed;
         string? queueAction = sam2Matting
-            ? sam3 ? "Queue" : rvmSam2Matting
-                ? "Create RVM Masks and Queue" : "Mask Scenes and Queue"
+            ? sam3 || rvmSam2Matting ? "Queue" : "Mask Scenes and Queue"
             : QueueAction(selected, autoAccept.Checked);
         queue.Visible = queueManager != null && CanProcess && queueAction != null;
         queueBatch.Visible = false;
         if (queueAction != null) queue.Text = queueAction;
         if (CanProcess)
         {
-            save.Visible = queueJobId == null && queueDraft == null;
+            save.Visible = sam2Matting ||
+                queueJobId == null && queueDraft == null;
             if (sam2Matting)
-                save.Text = sam3 ? (reprocess ? "Reprocess and Preview" :
+                save.Text = sam3 || rvmSam2Matting
+                    ? (reprocess ? "Reprocess and Preview" :
                     Appending ? "Process and Add Clips" : "Process and Preview") :
-                    rvmSam2Matting ? "Create RVM Masks and Process" :
                     "Mask Scenes and Process";
         }
     }
@@ -592,6 +665,7 @@ internal sealed class CustomShowEditorForm : Form
         PopulateFromShow(job.Manifest, editingExisting: false);
         showClips = JsonSerializer.Deserialize<CustomShowClip[]>(JsonSerializer.Serialize(
             job.Clips, CustomShowStore.JsonOptions), CustomShowStore.JsonOptions) ?? [];
+        clipLayoutConfirmed = showClips.Length > 0;
         if (job.Operation == CustomShowQueueOperation.Reprocess)
             PopulateReprocessClips(job.ReprocessClipIds.Length == 0 ? null :
                 job.ReprocessClipIds.ToHashSet(StringComparer.OrdinalIgnoreCase));
@@ -599,19 +673,19 @@ internal sealed class CustomShowEditorForm : Form
         appendShowId = job.Operation == CustomShowQueueOperation.Append
             ? job.TargetShowId : null;
         Text = "Edit Queued Custom Show";
-        save.Visible = false;
         queue.Text = job.Manifest.Processing?.Algorithm == "matanyone2"
             ? "Mask and Queue" : job.Manifest.Processing?.Algorithm == "sam2matting" &&
                 job.Manifest.Processing.PromptMode == "initial-mask"
-                ? "Mask Scenes and Update Queue Job" :
-                job.Manifest.Processing?.PromptMode == "rvm-initial-mask"
-                    ? "Create RVM Masks and Update Queue Job" : "Update Queue Job";
+                ? "Mask Scenes and Update Queue Job" : "Update Queue Job";
         if (job.Manifest.Processing?.Algorithm == "sam2matting")
             sceneMaskSummary.Text = job.Manifest.Processing.PromptMode == "text-concepts"
                 ? "Automatic text prompts"
                 : $"{job.ScenePrompts.Length} of {job.Manifest.Processing.Scenes.Length} " +
                     (job.Manifest.Processing.PromptMode == "rvm-initial-mask"
-                        ? "automatic RVM scene masks ready" : "scenes ready");
+                        ? job.ScenePrompts.Length == 0
+                            ? "automatic RVM scene masks will be created when the job runs"
+                            : "automatic RVM scene masks ready"
+                        : "scenes ready");
         AcceptButton = queue;
         autoAccept.Checked = true;
         string assetOwner = queueDraftAssetOwnerId ?? job.Id;
@@ -646,6 +720,7 @@ internal sealed class CustomShowEditorForm : Form
         showClips = JsonSerializer.Deserialize<CustomShowClip[]>(
             JsonSerializer.Serialize(restored.Clips, CustomShowStore.JsonOptions),
             CustomShowStore.JsonOptions) ?? [];
+        clipLayoutConfirmed = showClips.Length > 0;
         clipDetection = restored.ClipDetection;
         Text = "Restore Incomplete Custom Show";
         save.Text = "Continue Processing";
@@ -662,6 +737,8 @@ internal sealed class CustomShowEditorForm : Form
         PopulateFromShow(show, editingExisting: false);
         showClips = [];
         clipDetection = null;
+        clipLayoutConfirmed = false;
+        clipEditorConfirmedThisSession = false;
         addToExisting.Text = $"Adding to: {show.Title}";
         save.Text = "Process and Add Clips";
         Text = "Add Video to Existing Custom Show";
@@ -703,6 +780,7 @@ internal sealed class CustomShowEditorForm : Form
         {
             showClips = show.Clips;
             clipDetection = show.ClipDetection;
+            clipLayoutConfirmed = showClips.Length > 0;
             PopulateReprocessClips();
         }
         if (show.Processing is CustomShowProcessing processing)
@@ -721,6 +799,8 @@ internal sealed class CustomShowEditorForm : Form
                 vitMatteInferenceDetail.Enabled =
                 sequenceChunk.Enabled = sam2Model.Enabled =
                 rvmInitializerThreshold.Enabled = rvmInitializerThresholdValue.Enabled =
+                rvmMatAnyoneRefreshStrength.Enabled =
+                rvmMatAnyoneRefreshStrengthValue.Enabled =
                 autoAccept.Enabled = false;
         UpdateClipButton();
         UpdateReprocessClipSelectionAvailability();
@@ -810,6 +890,17 @@ internal sealed class CustomShowEditorForm : Form
         rvmInitializerThreshold.Value = Math.Clamp(
             processing.RvmInitializerAlphaThresholdPercent ?? 40,
             rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
+        rvmMatAnyoneMaskRefresh.Checked = processing.RvmMatAnyoneMaskRefresh;
+        rvmMatAnyoneRefreshStrength.Value = Math.Clamp(
+            processing.RvmMatAnyoneRefreshStrengthPercent,
+            rvmMatAnyoneRefreshStrength.Minimum,
+            rvmMatAnyoneRefreshStrength.Maximum);
+        matAnyoneUseLongTermMemory.Checked =
+            processing.MatAnyoneUseLongTermMemory;
+        matAnyoneMaxMemoryFrames.Value = Math.Clamp(
+            processing.MatAnyoneMaxMemoryFrames,
+            (int)matAnyoneMaxMemoryFrames.Minimum,
+            (int)matAnyoneMaxMemoryFrames.Maximum);
         autoAccept.Checked = processing.AutoAcceptedAlphaThreshold == 25;
     }
 
@@ -862,6 +953,17 @@ internal sealed class CustomShowEditorForm : Form
         rvmInitializerThreshold.Value = Math.Clamp(
             configuration.LastRvmInitializerAlphaThresholdPercent,
             rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
+        rvmMatAnyoneMaskRefresh.Checked = configuration.LastRvmMatAnyoneMaskRefresh;
+        rvmMatAnyoneRefreshStrength.Value = Math.Clamp(
+            configuration.LastRvmMatAnyoneRefreshStrengthPercent,
+            rvmMatAnyoneRefreshStrength.Minimum,
+            rvmMatAnyoneRefreshStrength.Maximum);
+        matAnyoneUseLongTermMemory.Checked =
+            configuration.LastMatAnyoneUseLongTermMemory;
+        matAnyoneMaxMemoryFrames.Value = Math.Clamp(
+            configuration.LastMatAnyoneMaxMemoryFrames,
+            (int)matAnyoneMaxMemoryFrames.Minimum,
+            (int)matAnyoneMaxMemoryFrames.Maximum);
         autoAccept.Checked = configuration.LastAutoAcceptAlphaThreshold;
         UpdateProcessingOptions();
         SelectBatchSize(configuration.LastProcessingBatchSize);
@@ -879,6 +981,13 @@ internal sealed class CustomShowEditorForm : Form
         configuration.LastProcessingBatchSize = SelectedBatchSize();
         configuration.LastRvmInitializerAlphaThresholdPercent =
             rvmInitializerThreshold.Value;
+        configuration.LastRvmMatAnyoneMaskRefresh = rvmMatAnyoneMaskRefresh.Checked;
+        configuration.LastRvmMatAnyoneRefreshStrengthPercent =
+            rvmMatAnyoneRefreshStrength.Value;
+        configuration.LastMatAnyoneMaxMemoryFrames =
+            (int)matAnyoneMaxMemoryFrames.Value;
+        configuration.LastMatAnyoneUseLongTermMemory =
+            matAnyoneUseLongTermMemory.Checked;
         configuration.LastAutoAcceptAlphaThreshold = autoAccept.Checked;
         configuration.Save();
     }
@@ -953,9 +1062,16 @@ internal sealed class CustomShowEditorForm : Form
             $"; {value.Encoder} {value.EncoderPreset}";
         string initializer = value.RvmInitializerAlphaThresholdPercent is int threshold ?
             $"; RVM initializer alpha {threshold}%" : "";
+        string refresh = value.RvmMatAnyoneMaskRefresh
+            ? $"; RVM mask refresh {value.RvmMatAnyoneRefreshStrengthPercent}%"
+            : "";
+        string memory = value.Algorithm is "matanyone2" or "rvm-matanyone2"
+            ? $"; memory {value.MatAnyoneMaxMemoryFrames} frames" +
+                (value.MatAnyoneUseLongTermMemory ? " + long-term" : "")
+            : "";
         string accepted = value.AutoAcceptedAlphaThreshold is int alpha ?
             $"; automatically accepted at alpha {alpha}" : "";
-        return $"{algorithm}{detailText}; batch {requestedBatch}{effective}{sam2}{mask}{initializer}{accepted}{execution}{encoder}\r\n" +
+        return $"{algorithm}{detailText}; batch {requestedBatch}{effective}{sam2}{mask}{initializer}{refresh}{memory}{accepted}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -984,6 +1100,8 @@ internal sealed class CustomShowEditorForm : Form
         if (form.ShowDialog(this) != DialogResult.OK) return;
         showClips = form.Clips;
         clipDetection = form.Detection;
+        clipLayoutConfirmed = true;
+        clipEditorConfirmedThisSession = true;
         if (reprocess && !SameQueueLayout(priorLayout, showClips))
             reprocessLayoutChanged = true;
         if (reprocess && !RetainedMasksMatch(showClips))
@@ -1003,6 +1121,25 @@ internal sealed class CustomShowEditorForm : Form
         int skipped = showClips.Length - included;
         editClips.Text = skipped == 0 ? $"Edit {included} clips..." :
             $"Edit {included} clips ({skipped} skipped)...";
+    }
+
+    bool ConfirmAutomaticRvmSceneCreation()
+    {
+        if (clipLayoutConfirmed) return true;
+        DialogResult choice = MessageBox.Show(this,
+            "No clip layout has been confirmed yet. RVM initialization should " +
+            "normally use clips you have reviewed in the clip editor.\r\n\r\n" +
+            "Choose Yes to open the clip editor now.\r\n" +
+            "Choose No to let QuickPlayer try to detect processing scenes " +
+            "automatically.\r\n" +
+            "Choose Cancel to stop.",
+            "Create clips before RVM initialization?",
+            MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button1);
+        if (choice == DialogResult.Cancel) return false;
+        if (choice == DialogResult.No) return true;
+        EditClips(null, EventArgs.Empty);
+        return clipLayoutConfirmed;
     }
 
     void OpenPerformer(CustomPerformerProfile? profile)
@@ -1177,6 +1314,16 @@ internal sealed class CustomShowEditorForm : Form
                             "rvm-matanyone2" or "rvm-vitmatte-s" ||
                             selectedMaskEngine == "rvm-sam2"
                             ? rvmInitializerThreshold.Value : null,
+                        RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
+                            rvmMatAnyoneMaskRefresh.Checked,
+                        RvmMatAnyoneRefreshStrengthPercent = selectedPreset ==
+                            "rvm-matanyone2" ? rvmMatAnyoneRefreshStrength.Value : 100,
+                        MatAnyoneMaxMemoryFrames = selectedPreset is
+                            "matanyone2" or "rvm-matanyone2"
+                            ? (int)matAnyoneMaxMemoryFrames.Value : 5,
+                        MatAnyoneUseLongTermMemory = selectedPreset is
+                            "matanyone2" or "rvm-matanyone2" &&
+                            matAnyoneUseLongTermMemory.Checked,
                         AutoAcceptedAlphaThreshold = autoAccept.Checked ? 25 : null,
                         Sam2Model = UsesSam2(selectedPreset) ? selectedSam2Model : null,
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null
@@ -1397,6 +1544,15 @@ internal sealed class CustomShowEditorForm : Form
                                     clip.Id, clip.StartMs),
                                  rvmInitializerAlphaThresholdPercent:
                                     rvmInitializerThreshold.Value,
+                                 rvmMatAnyoneMaskRefresh:
+                                    selectedPreset == "rvm-matanyone2" &&
+                                    rvmMatAnyoneMaskRefresh.Checked,
+                                 rvmMatAnyoneRefreshStrengthPercent:
+                                    rvmMatAnyoneRefreshStrength.Value,
+                                 matAnyoneMaxMemoryFrames:
+                                    (int)matAnyoneMaxMemoryFrames.Value,
+                                 matAnyoneUseLongTermMemory:
+                                    matAnyoneUseLongTermMemory.Checked,
                                  vitMatteInferenceDetailPx: vitMatteDetail);
                             if (selectedPreset == "rvm-vitmatte-s" &&
                                 !sam2Masks.ContainsKey(clip.Id))
@@ -1549,6 +1705,16 @@ internal sealed class CustomShowEditorForm : Form
                             "rvm-matanyone2" or "rvm-vitmatte-s" ||
                             selectedMaskEngine == "rvm-sam2"
                             ? rvmInitializerThreshold.Value : null,
+                        RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
+                            rvmMatAnyoneMaskRefresh.Checked,
+                        RvmMatAnyoneRefreshStrengthPercent = selectedPreset ==
+                            "rvm-matanyone2" ? rvmMatAnyoneRefreshStrength.Value : 100,
+                        MatAnyoneMaxMemoryFrames = selectedPreset is
+                            "matanyone2" or "rvm-matanyone2"
+                            ? (int)matAnyoneMaxMemoryFrames.Value : 5,
+                        MatAnyoneUseLongTermMemory = selectedPreset is
+                            "matanyone2" or "rvm-matanyone2" &&
+                            matAnyoneUseLongTermMemory.Checked,
                         AutoAcceptedAlphaThreshold = autoAccept.Checked ? 25 : null,
                         Sam2Model = usesSam2 ? selectedSam2Model : null,
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null,
@@ -1685,6 +1851,9 @@ internal sealed class CustomShowEditorForm : Form
                 !CustomShowProcessor.IsRvmInitialMaskInstalled(configuration))
                 throw new InvalidDataException(
                     "Setup required: install or repair the Robust Video Matting processing tools.");
+            if (algorithm == Sam2MattingSupport.Algorithm &&
+                selectedSam2MattingPromptMode == "rvm-initial-mask" &&
+                !ConfirmAutomaticRvmSceneCreation()) return;
             if (!ConfirmGpuBatch()) return;
             if (showClips.Length == 0)
             {
@@ -1718,7 +1887,21 @@ internal sealed class CustomShowEditorForm : Form
             string promptMode = selectedSam2MattingPromptMode;
             if (algorithm == Sam2MattingSupport.Algorithm)
             {
-                if (tracker == "sam3")
+                if (clipLayoutConfirmed)
+                {
+                    CustomShowProcessingScene[] retainedScenes =
+                        existing?.Manifest.Processing?.Scenes ?? [];
+                    processingScenes = !clipEditorConfirmedThisSession &&
+                        retainedScenes.Length > 0
+                            ? CloneQueueValue(retainedScenes)
+                            : Sam2MattingScenePlanner.FromConfirmedClips(
+                                source.Text, showClips);
+                    // The confirmed clip layout is authoritative regardless of
+                    // which detector originally proposed it. Keep that detector's
+                    // provenance, but do not run it again.
+                    manifest.ClipDetection = clipDetection;
+                }
+                else if (tracker == "sam3")
                 {
                     // SAM3 has no interactive scene prompts, so scene analysis is
                     // the first unattended queue stage. Freeze the detector choice
@@ -1743,6 +1926,9 @@ internal sealed class CustomShowEditorForm : Form
                     }
                     CustomShowClipDetection? plannedDetection = null;
                     CustomShowProcessingScene[]? plannedScenes = null;
+                    CustomShowClipDetection? reusableDetection =
+                        Sam2MattingScenePlanner.ReusableDetection(
+                            configuration, clipDetection);
                     using CustomShowProcessingForm planning = new(async (progress, token) =>
                     {
                         Progress<int> detectorProgress = new(value =>
@@ -1755,7 +1941,8 @@ internal sealed class CustomShowEditorForm : Form
                                 $"{detectionTotalFrames:N0} frames ({value}%)"));
                         });
                         var planned = await Sam2MattingScenePlanner.DetectAsync(configuration,
-                            source.Text, showClips, detectorProgress, token);
+                            source.Text, showClips, detectorProgress, token,
+                            reusableDetection);
                         plannedDetection = planned.Detection;
                         plannedScenes = planned.Scenes;
                         progress.Report(new CustomShowProgress("scene-analysis", 100,
@@ -1814,6 +2001,16 @@ internal sealed class CustomShowEditorForm : Form
                     algorithm == Sam2MattingSupport.Algorithm &&
                     promptMode == "rvm-initial-mask"
                     ? rvmInitializerThreshold.Value : null,
+                RvmMatAnyoneMaskRefresh = algorithm == "rvm-matanyone2" &&
+                    rvmMatAnyoneMaskRefresh.Checked,
+                RvmMatAnyoneRefreshStrengthPercent = algorithm == "rvm-matanyone2"
+                    ? rvmMatAnyoneRefreshStrength.Value : 100,
+                MatAnyoneMaxMemoryFrames = algorithm is
+                    "matanyone2" or "rvm-matanyone2"
+                    ? (int)matAnyoneMaxMemoryFrames.Value : 5,
+                MatAnyoneUseLongTermMemory = algorithm is
+                    "matanyone2" or "rvm-matanyone2" &&
+                    matAnyoneUseLongTermMemory.Checked,
                 AutoAcceptedAlphaThreshold = algorithm ==
                     Sam2MattingSupport.Algorithm ? null : 25,
                 Sam2Model = algorithm == "matanyone2" ? SelectedSam2Model() : null,
@@ -1850,7 +2047,11 @@ internal sealed class CustomShowEditorForm : Form
             job.KeepExistingMasks = reprocess && keepMasks.Checked;
             job.ReprocessClipIds = operation == CustomShowQueueOperation.Reprocess
                 ? SelectedReprocessClipIds() : [];
-            job.Percent = 0; job.Message = "Pending"; job.Error = null;
+            job.Percent = 0;
+            job.Message = promptMode == "rvm-initial-mask"
+                ? "Pending; RVM masks will be created when the job runs"
+                : "Pending";
+            job.Error = null;
             job.StartedUtc = null; job.CompletedUtc = null;
             job.PublishedShowId = null; job.ReadyToPublish = false;
             Dictionary<string, string> masks = [];
@@ -1922,44 +2123,17 @@ internal sealed class CustomShowEditorForm : Form
                     if (!promptsStillMatch)
                     {
                         job.ScenePrompts = [];
-                        maskWork ??= Path.Combine(store.Root, ".queue-mask-work",
-                            Guid.NewGuid().ToString("N"));
-                        Directory.CreateDirectory(maskWork);
                         if (promptMode == "rvm-initial-mask")
                         {
-                            RvmInitialMaskTarget[] targets =
-                                scenesNeedingProcessing.Select(scene =>
-                                {
-                                    string mask = Path.Combine(maskWork, scene.Id,
-                                        "initial-mask.png");
-                                    job.ScenePrompts = [.. job.ScenePrompts,
-                                        new CustomShowScenePrompt
-                                        {
-                                            SceneId = scene.Id,
-                                            PromptFrame = scene.StartFrame,
-                                            PromptFrameMs = scene.StartMs
-                                        }];
-                                    sceneMasks[scene.Id] = mask;
-                                    return new RvmInitialMaskTarget(mask,
-                                        scene.StartMs);
-                                }).ToArray();
-                            using CustomShowProcessingForm initializer = new(
-                                async (progress, token) =>
-                                {
-                                    await CustomShowProcessor.GenerateRvmInitialMasksAsync(
-                                        configuration, source.Text, targets,
-                                        rvmInitializerThreshold.Value, progress, token);
-                                    return new CustomShowProcessResult();
-                                }, "Creating SAM2Matting RVM Masks",
-                                processDescription:
-                                    "Creating one automatic RVM person mask per scene",
-                                showPreviews: false);
-                            if (initializer.ShowDialog(this) != DialogResult.OK) return;
                             sceneMaskSummary.Text =
-                                $"{targets.Length} of {targets.Length} automatic RVM scene masks ready";
+                                $"{scenesNeedingProcessing.Length} automatic RVM scene masks " +
+                                "will be created when the job runs";
                         }
                         else
                         {
+                            maskWork ??= Path.Combine(store.Root, ".queue-mask-work",
+                                Guid.NewGuid().ToString("N"));
+                            Directory.CreateDirectory(maskWork);
                             using FfmpegCpuDecoder decoder = new(source.Text,
                                 fastDecode: true);
                             if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
@@ -2125,9 +2299,6 @@ internal sealed class CustomShowEditorForm : Form
                 showPreviews: false);
             if (planning.ShowDialog(this) != DialogResult.OK) return;
 
-            draftRoot = Path.Combine(store.Root, ".queue-mask-work",
-                "batch-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(draftRoot);
             List<CustomShowQueueBatchEntry> entries = [];
             int sceneNumber = 0;
             int totalScenes = plans.Sum(plan => plan.Scenes.Length);
@@ -2152,41 +2323,21 @@ internal sealed class CustomShowEditorForm : Form
                     SourcePath = Path.GetFullPath(plan.Video),
                     SourceLength = sourceInfo.Length,
                     SourceLastWriteUtcTicks = sourceInfo.LastWriteTimeUtc.Ticks,
-                    RequestedOutputPath = Path.Combine(store.ShowsFolder, manifest.Id)
+                    RequestedOutputPath = Path.Combine(store.ShowsFolder, manifest.Id),
+                    Message = promptMode == "rvm-initial-mask"
+                        ? "Pending; RVM masks will be created when the job runs"
+                        : "Pending"
                 };
                 Dictionary<string, string> sceneMasks = [];
                 if (promptMode == "rvm-initial-mask")
                 {
-                    RvmInitialMaskTarget[] targets = plan.Scenes.Select(scene =>
-                    {
-                        string mask = Path.Combine(draftRoot, job.Id, scene.Id,
-                            "initial-mask.png");
-                        job.ScenePrompts = [.. job.ScenePrompts,
-                            new CustomShowScenePrompt
-                            {
-                                SceneId = scene.Id,
-                                PromptFrame = scene.StartFrame,
-                                PromptFrameMs = scene.StartMs
-                            }];
-                        sceneMasks[scene.Id] = mask;
-                        return new RvmInitialMaskTarget(mask, scene.StartMs);
-                    }).ToArray();
-                    using CustomShowProcessingForm initializer = new(
-                        async (progress, token) =>
-                        {
-                            await CustomShowProcessor.GenerateRvmInitialMasksAsync(
-                                configuration, plan.Video, targets,
-                                rvmInitializerThreshold.Value, progress, token);
-                            return new CustomShowProcessResult();
-                        }, "Creating SAM2Matting RVM Masks",
-                        processDescription:
-                            $"Creating automatic person masks for video " +
-                            $"{plans.IndexOf(plan) + 1}/{plans.Count}",
-                        showPreviews: false);
-                    if (initializer.ShowDialog(this) != DialogResult.OK) return;
-                    sceneNumber += plan.Scenes.Length;
+                    job.ScenePrompts = [];
                 }
                 else if (tracker != "sam3")
+                {
+                    draftRoot ??= Path.Combine(store.Root, ".queue-mask-work",
+                        "batch-" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(draftRoot);
                     foreach (CustomShowProcessingScene scene in plan.Scenes)
                     {
                         string sceneFolder = Path.Combine(draftRoot, job.Id, scene.Id);
@@ -2219,6 +2370,7 @@ internal sealed class CustomShowEditorForm : Form
                             }];
                         sceneMasks[scene.Id] = mask;
                     }
+                }
                 entries.Add(new CustomShowQueueBatchEntry(job,
                     string.IsNullOrWhiteSpace(cover.Text) ? null : cover.Text,
                     sceneMasks));
@@ -3671,6 +3823,12 @@ internal sealed class CustomShowSettingsForm : Form
             LastProcessingBatchSize = current.LastProcessingBatchSize,
             LastRvmInitializerAlphaThresholdPercent =
                 current.LastRvmInitializerAlphaThresholdPercent,
+            LastRvmMatAnyoneMaskRefresh = current.LastRvmMatAnyoneMaskRefresh,
+            LastRvmMatAnyoneRefreshStrengthPercent =
+                current.LastRvmMatAnyoneRefreshStrengthPercent,
+            LastMatAnyoneMaxMemoryFrames = current.LastMatAnyoneMaxMemoryFrames,
+            LastMatAnyoneUseLongTermMemory =
+                current.LastMatAnyoneUseLongTermMemory,
             LastAutoAcceptAlphaThreshold = current.LastAutoAcceptAlphaThreshold
         };
         Text = "Custom Show Settings"; ClientSize = new Size(900, 700);

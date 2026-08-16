@@ -394,6 +394,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/Controls/PlaybackSeekBar.cs
 !/IstripperQuickPlayer/Controls/BufferedLabel.cs
 !/IstripperQuickPlayer/CustomPlayerForm.cs
+!/IstripperQuickPlayer/CustomClipTrimForm.cs
 !/IstripperQuickPlayer/CustomClipEditorForm.cs
 !/IstripperQuickPlayer/CustomMaskEditorForm.cs
 !/IstripperQuickPlayer/CustomVideoMaskEditorForm.cs

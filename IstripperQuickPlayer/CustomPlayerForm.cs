@@ -210,16 +210,39 @@ internal sealed class CustomPlayerForm : Form
             renderer.AttachWindow(window.handle, window.width, window.height);
             renderer.Play();
             bool firstFramePresented = false;
+            bool refreshPausedFrame = true;
             while (!renderer.Ended && renderer.CurrentTime < RangeEndSeconds)
             {
                 cancellation.Token.ThrowIfCancellationRequested();
                 double seek = BitConverter.Int64BitsToDouble(Interlocked.Exchange(
                     ref requestedSeekBits, BitConverter.DoubleToInt64Bits(double.NaN)));
-                if (!double.IsNaN(seek)) renderer.Seek(Math.Clamp(
-                    rangeStartSeconds + seek, rangeStartSeconds, RangeEndSeconds));
+                if (!double.IsNaN(seek))
+                {
+                    renderer.Seek(Math.Clamp(rangeStartSeconds + seek,
+                        rangeStartSeconds, RangeEndSeconds));
+                    refreshPausedFrame = true;
+                }
                 double rate = BitConverter.Int64BitsToDouble(Volatile.Read(ref requestedRateBits));
                 if (Math.Abs(renderer.PlaybackRate - rate) > .0001) renderer.PlaybackRate = rate;
-                if (paused) { renderer.Pause(); await Task.Delay(15, cancellation.Token); continue; }
+                if (paused)
+                {
+                    renderer.Pause();
+                    if (refreshPausedFrame && renderer.TryRenderDue(
+                            captureHitMap: true, out AlphaHitMap? pausedAlpha))
+                    {
+                        refreshPausedFrame = false;
+                        if (pausedAlpha != null)
+                            Volatile.Write(ref hitTestAlpha, pausedAlpha);
+                        if (!firstFramePresented)
+                        {
+                            firstFramePresented = true;
+                            BeginInvoke(() => FirstFramePresented?.Invoke(
+                                this, EventArgs.Empty));
+                        }
+                    }
+                    else await Task.Delay(15, cancellation.Token);
+                    continue;
+                }
                 renderer.Play();
                 if (!preloadRequested &&
                     RangeEndSeconds - renderer.CurrentTime <= 5)
@@ -285,8 +308,15 @@ internal sealed class CustomPlayerForm : Form
         workArea.Bottom - size.Height);
 
     internal void TogglePause() => paused = !paused;
-    internal void SeekTo(double seconds) => Interlocked.Exchange(ref requestedSeekBits,
-        BitConverter.DoubleToInt64Bits(Math.Clamp(seconds, 0, DurationSeconds)));
+    internal void SetPaused(bool value) => paused = value;
+    internal void SeekTo(double seconds)
+    {
+        double duration = renderer == null && requestedRangeEndSeconds > 0
+            ? Math.Max(0, requestedRangeEndSeconds - rangeStartSeconds)
+            : DurationSeconds;
+        Interlocked.Exchange(ref requestedSeekBits,
+            BitConverter.DoubleToInt64Bits(Math.Clamp(seconds, 0, duration)));
+    }
     internal void SeekBy(double seconds) => SeekTo(CurrentSeconds + seconds);
     internal void SetRate(double rate) => Interlocked.Exchange(ref requestedRateBits,
         BitConverter.DoubleToInt64Bits(Math.Clamp(rate, .25, 4)));

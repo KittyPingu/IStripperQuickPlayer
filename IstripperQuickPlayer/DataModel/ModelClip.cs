@@ -11,7 +11,7 @@ namespace IStripperQuickPlayer
     internal class ModelClip
     {
         internal string? clipName;
-        internal int? size;
+        internal long? size;
         internal int? scCode;
         internal bool? isEnabled;
         internal HotnessCode? hotnessCode;

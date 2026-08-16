@@ -393,6 +393,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                 progress.Report(value);
             });
             await EnsureSam3ScenePlanAsync(job, trackedProgress, token);
+            await EnsureRvmScenePromptsAsync(job, trackedProgress, token);
             string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
                 configuration, storage, trackedProgress, preparePublication, token,
                 reviewBeforePublication);
@@ -453,6 +454,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     job.Id, value.Percent, string.IsNullOrWhiteSpace(value.Message)
                         ? value.Stage : value.Message));
                 await EnsureSam3ScenePlanAsync(job, progress, token);
+                await EnsureRvmScenePromptsAsync(job, progress, token);
                 string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
                     configuration, storage, progress, preparePublication, token);
                 lock (gate)
@@ -578,6 +580,85 @@ internal sealed class CustomShowQueueManager : IDisposable
         }
         progress.Report(new CustomShowProgress("scene-analysis", 100,
             $"Resolved {resolved.Scenes.Length} processing scenes"));
+    }
+
+    async Task EnsureRvmScenePromptsAsync(CustomShowQueueJob job,
+        IProgress<CustomShowProgress> progress, CancellationToken token)
+    {
+        CustomShowProcessing? options = job.Manifest.Processing;
+        if (options?.Algorithm != Sam2MattingSupport.Algorithm ||
+            options.PromptMode != "rvm-initial-mask")
+            return;
+        if (!CustomShowProcessor.IsRvmInitialMaskInstalled(configuration))
+            throw new CustomShowQueueAttentionException(
+                "Setup required: install or repair the Robust Video Matting processing tools.");
+        HashSet<string> selectedClipIds = job.Clips.Where(clip => clip.Included)
+            .Select(clip => clip.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (job.Operation == CustomShowQueueOperation.Reprocess &&
+            job.ReprocessClipIds.Length > 0)
+            selectedClipIds.IntersectWith(job.ReprocessClipIds);
+        CustomShowProcessingScene[] scenes = options.Scenes.Where(scene =>
+            selectedClipIds.Contains(scene.ClipId)).ToArray();
+        if (scenes.Length == 0)
+            throw new CustomShowQueueAttentionException(
+                "The queued RVM/SAM2.1 processing scenes are missing. Edit the job to review it.");
+        string assets = storage.Assets(job.Id);
+        bool promptsReady = job.ScenePrompts.Length == scenes.Length &&
+            job.ScenePrompts.All(prompt =>
+                scenes.Any(scene => scene.Id.Equals(prompt.SceneId,
+                    StringComparison.OrdinalIgnoreCase) &&
+                    prompt.PromptFrame == scene.StartFrame &&
+                    prompt.PromptFrameMs == scene.StartMs) &&
+                !string.IsNullOrWhiteSpace(prompt.InitialMaskAsset) &&
+                File.Exists(Path.Combine(assets, prompt.InitialMaskAsset.Replace('/',
+                    Path.DirectorySeparatorChar))));
+        if (promptsReady) return;
+
+        string temporary = Path.Combine(assets,
+            ".rvm-scene-masks-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            RvmInitialMaskTarget[] targets = scenes.Select(scene =>
+                new RvmInitialMaskTarget(Path.Combine(temporary, scene.Id + ".png"),
+                    scene.StartMs)).ToArray();
+            Progress<CustomShowProgress> initializerProgress = new(value =>
+                progress.Report(value with
+                {
+                    Message = $"RVM initialization: {value.Message}"
+                }));
+            await CustomShowProcessor.GenerateRvmInitialMasksAsync(configuration,
+                job.SourcePath, targets,
+                options.RvmInitializerAlphaThresholdPercent ?? 40,
+                initializerProgress, token);
+
+            string destinationFolder = Path.Combine(assets, "scene-masks");
+            Directory.CreateDirectory(destinationFolder);
+            CustomShowScenePrompt[] prompts = new CustomShowScenePrompt[scenes.Length];
+            for (int index = 0; index < scenes.Length; index++)
+            {
+                CustomShowProcessingScene scene = scenes[index];
+                string destination = Path.Combine(destinationFolder, scene.Id + ".png");
+                File.Copy(targets[index].Destination, destination, true);
+                prompts[index] = new CustomShowScenePrompt
+                {
+                    SceneId = scene.Id,
+                    PromptFrame = scene.StartFrame,
+                    PromptFrameMs = scene.StartMs,
+                    InitialMaskAsset = Path.GetRelativePath(assets, destination)
+                        .Replace('\\', '/')
+                };
+            }
+            lock (gate)
+            {
+                job.ScenePrompts = prompts;
+                job.Message = $"Created {prompts.Length} automatic RVM scene masks";
+                SaveLocked();
+            }
+        }
+        finally
+        {
+            CustomShowQueueStore.TryDelete(temporary);
+        }
     }
 
     void UpdateProgress(string id, double percent, string message)
@@ -944,6 +1025,11 @@ internal static class CustomShowJobRunner
                 job.Manifest.Processing.Algorithm == "sam2matting"
                     ? "Setup required: install or repair the SAM2Matting environment and checkpoints."
                     : "The selected processing tools are not currently installed.");
+        if (job.Manifest.Processing.Algorithm == "sam2matting" &&
+            job.Manifest.Processing.PromptMode == "rvm-initial-mask" &&
+            !CustomShowProcessor.IsRvmInitialMaskInstalled(configuration))
+            throw new CustomShowQueueAttentionException(
+                "Setup required: install or repair the Robust Video Matting processing tools.");
         if (!File.Exists(job.SourcePath))
             throw new CustomShowQueueAttentionException("The source video no longer exists.");
         if (job.Clips.Length == 0 || !job.Clips.Any(clip => clip.Included) ||
@@ -1026,7 +1112,7 @@ internal static class CustomShowJobRunner
                     throw new CustomShowQueueAttentionException(error.Message);
                 }
             }
-            else
+            else if (options.PromptMode != "rvm-initial-mask")
             {
                 CustomShowProcessingScene[] scenes = options.Scenes.Where(scene =>
                     ClipsToProcess(job, job.Clips).Any(clip =>
@@ -1117,6 +1203,11 @@ internal static class CustomShowJobRunner
                     job.InitialMaskFrameMs.GetValueOrDefault(clip.Id, clip.StartMs),
                 rvmInitializerAlphaThresholdPercent:
                     options.RvmInitializerAlphaThresholdPercent ?? 40,
+                rvmMatAnyoneMaskRefresh: options.RvmMatAnyoneMaskRefresh,
+                rvmMatAnyoneRefreshStrengthPercent:
+                    options.RvmMatAnyoneRefreshStrengthPercent,
+                matAnyoneMaxMemoryFrames: options.MatAnyoneMaxMemoryFrames,
+                matAnyoneUseLongTermMemory: options.MatAnyoneUseLongTermMemory,
                 vitMatteInferenceDetailPx:
                     options.VitMatteInferenceDetailPx ?? 1024);
             if (options.Algorithm == "rvm-vitmatte-s")
@@ -1650,9 +1741,13 @@ internal sealed class CustomShowQueueForm : Form
         string prompt = processing?.Tracker == "sam3"
             ? "Text concepts: " + string.Join(", ", processing.ForegroundConcepts)
             : processing?.Algorithm == "sam2matting"
-                ? $"{(processing.PromptMode == "rvm-initial-mask" ?
-                    "Automatic RVM initial masks" : "Interactive initial masks")}: " +
-                    $"{job.ScenePrompts.Length}/{processing.Scenes.Length} scenes"
+                ? processing.PromptMode == "rvm-initial-mask" &&
+                    job.ScenePrompts.Length == 0
+                    ? $"Automatic RVM initial masks: pending; created when the job runs " +
+                        $"for {processing.Scenes.Length} scenes"
+                    : $"{(processing.PromptMode == "rvm-initial-mask" ?
+                        "Automatic RVM initial masks" : "Interactive initial masks")}: " +
+                        $"{job.ScenePrompts.Length}/{processing.Scenes.Length} scenes"
                 : "Prompt: existing pipeline";
         string detail =
             $"Tracker: {(processing?.Tracker == null ? "—" : Sam2MattingSupport.DisplayName(processing.Tracker))}\r\n" +

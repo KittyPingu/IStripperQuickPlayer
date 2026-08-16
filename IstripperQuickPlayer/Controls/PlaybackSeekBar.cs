@@ -14,6 +14,8 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
     private int minimum;
     private int maximum = 1;
     private int value;
+    private int? rangeStart;
+    private int? rangeEnd;
     private bool dragging;
     private readonly ToolTip hoverTip = new()
     {
@@ -97,6 +99,30 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
 
     [DefaultValue(false)]
     public bool ShowTimeToolTip { get; set; }
+
+    [DefaultValue(null)]
+    public int? RangeStart
+    {
+        get => rangeStart;
+        set
+        {
+            if (rangeStart == value) return;
+            rangeStart = value;
+            Invalidate();
+        }
+    }
+
+    [DefaultValue(null)]
+    public int? RangeEnd
+    {
+        get => rangeEnd;
+        set
+        {
+            if (rangeEnd == value) return;
+            rangeEnd = value;
+            Invalidate();
+        }
+    }
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -239,6 +265,25 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
                 track.Top,
                 activeWidth,
                 track.Height);
+        if (rangeStart is int selectionStart && rangeEnd is int selectionEnd)
+        {
+            int startX = ValueToX(Math.Clamp(selectionStart, minimum, maximum));
+            int endX = ValueToX(Math.Clamp(selectionEnd, minimum, maximum));
+            if (endX > startX)
+            {
+                using SolidBrush selectionBrush = new(
+                    Enabled ? Color.FromArgb(96, 0, 190, 120) :
+                    Color.FromArgb(72, 100, 120, 110));
+                e.Graphics.FillRectangle(selectionBrush, startX, track.Top,
+                    endX - startX, track.Height);
+            }
+            using Pen markerPen = new(
+                Enabled ? Color.FromArgb(255, 140, 0) : Color.Gray, 2);
+            e.Graphics.DrawLine(markerPen, startX, track.Top - 7,
+                startX, track.Bottom + 7);
+            e.Graphics.DrawLine(markerPen, endX, track.Top - 7,
+                endX, track.Bottom + 7);
+        }
 
         e.Graphics.SmoothingMode =
             System.Drawing.Drawing2D.SmoothingMode.AntiAlias;

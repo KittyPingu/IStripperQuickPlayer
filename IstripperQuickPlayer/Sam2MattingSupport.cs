@@ -127,6 +127,64 @@ internal static class Sam2MattingSupport
 
 internal static class Sam2MattingScenePlanner
 {
+    internal static CustomShowProcessingScene[] FromConfirmedClips(
+        string source, CustomShowClip[] clips)
+    {
+        using FfmpegCpuDecoder decoder = new(source, fastDecode: true);
+        if (!CustomShowStore.TryFrameRate(decoder.FrameRate, out double fps))
+            throw new InvalidDataException("The source frame rate is invalid.");
+        long totalFrames = Math.Max(1, checked((long)Math.Round(
+            decoder.Duration * fps)));
+        CustomShowProcessingScene[] scenes = clips
+            .Where(clip => clip.Included)
+            .OrderBy(clip => clip.StartMs)
+            .Select(clip =>
+            {
+                long start = Math.Clamp(Frame(clip.StartMs, fps), 0,
+                    totalFrames - 1);
+                long end = Math.Clamp(Frame(clip.EndMs, fps), start + 1,
+                    totalFrames);
+                return new CustomShowProcessingScene
+                {
+                    Id = SceneId(clip.Id, start, end),
+                    ClipId = clip.Id,
+                    StartFrame = start,
+                    EndFrameExclusive = end,
+                    StartMs = Milliseconds(start, fps),
+                    EndMs = Milliseconds(end, fps)
+                };
+            }).ToArray();
+        Validate(scenes, clips);
+        ValidateCoverage(scenes, clips, fps);
+        return scenes;
+    }
+
+    internal static CustomShowClipDetection? ReusableDetection(
+        CustomShowConfiguration configuration, CustomShowClipDetection? detection)
+    {
+        if (detection == null || string.IsNullOrWhiteSpace(
+                detection.SensitivityDataFormat) ||
+            string.IsNullOrWhiteSpace(detection.SensitivityData)) return null;
+        CustomShowClipDetection current = ResolveRequest(configuration);
+        if (!string.Equals(detection.Method, current.Method,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(detection.ToolRevision, current.ToolRevision,
+                StringComparison.OrdinalIgnoreCase)) return null;
+        return new CustomShowClipDetection
+        {
+            Method = detection.Method,
+            ToolRevision = detection.ToolRevision,
+            OverlapFrames = detection.OverlapFrames,
+            SensitivityPercent = current.SensitivityPercent,
+            SensitivityDataFormat = detection.SensitivityDataFormat,
+            SensitivityData = detection.SensitivityData,
+            DetectionFrameRate = detection.DetectionFrameRate,
+            TransitionBufferMs = 0,
+            MinimumClipMs = 0,
+            ManuallyEdited = false
+        };
+    }
+
     internal static async Task<(CustomShowClipDetection Detection,
         CustomShowProcessingScene[] Scenes)> DetectAsync(
         CustomShowConfiguration configuration, string source,
@@ -145,63 +203,75 @@ internal static class Sam2MattingScenePlanner
             method is not ("ffmpeg" or "transnetv2" or "omnishotcut"))
             throw new InvalidDataException(
                 $"The queued scene detector '{method}' is no longer installed.");
-        using IDisposable? gpuLease = method == "ffmpeg" ? null :
-            await CustomShowGpuScheduler.AcquireAsync(token);
         int sensitivity = requested?.SensitivityPercent ?? method switch
         {
             "transnetv2" => configuration.TransNetClipDetectionSensitivity,
             "omnishotcut" => configuration.OmniShotCutClipDetectionSensitivity,
             _ => configuration.FastClipDetectionSensitivity
         };
+        bool reuseScores = requested != null &&
+            !string.IsNullOrWhiteSpace(requested.SensitivityDataFormat) &&
+            !string.IsNullOrWhiteSpace(requested.SensitivityData);
+        using IDisposable? gpuLease = method == "ffmpeg" || reuseScores ? null :
+            await CustomShowGpuScheduler.AcquireAsync(token);
         CustomShowClip[] includedClips = clips.Where(value => value.Included)
             .OrderBy(value => value.StartMs).ToArray();
         if (includedClips.Length == 0)
             throw new InvalidDataException("At least one included clip is required.");
         long selectedDurationMs = Math.Max(1, includedClips.Sum(value =>
             Math.Max(1, value.EndMs - value.StartMs)));
-        long completedDurationMs = 0;
-        List<long> boundaries = [];
-        List<SceneDetectionRange> ranges = [];
-        SceneDetectionResult? firstResult = null;
-        foreach (CustomShowClip clip in includedClips)
+        SceneDetectionResult result;
+        if (reuseScores)
         {
-            long clipDurationMs = Math.Max(1, clip.EndMs - clip.StartMs);
-            long completedBeforeClip = completedDurationMs;
-            Progress<int> clipProgress = new(value => progress?.Report((int)Math.Clamp(
-                (completedBeforeClip + clipDurationMs * Math.Clamp(value, 0, 100) / 100d) /
-                selectedDurationMs * 100, 0, 99)));
-            SceneDetectionResult clipResult = method switch
-            {
-                "transnetv2" => await CustomSceneDetector.DetectTransNetAsync(
-                    configuration, source, sensitivity, clipProgress, token,
-                    clip.StartMs, clip.EndMs),
-                "omnishotcut" => await CustomSceneDetector.DetectOmniShotCutAsync(
-                    configuration, source, sensitivity, clipProgress, token,
-                    clip.StartMs, clip.EndMs),
-                _ => await CustomSceneDetector.DetectFastAsync(source, durationMs,
-                    sensitivity, clipProgress, token, clip.StartMs, clip.EndMs)
-            };
-            firstResult ??= clipResult;
-            boundaries.AddRange(clipResult.BoundariesMs.Select(value =>
-                checked(value + clip.StartMs)));
-            ranges.AddRange(clipResult.Ranges.Select(value => value with
-            {
-                StartMs = checked(value.StartMs + clip.StartMs),
-                EndMs = checked(value.EndMs + clip.StartMs)
-            }));
-            completedDurationMs += clipDurationMs;
+            result = CustomClipEditorForm.RebuildDetection(requested!, sensitivity);
+            progress?.Report(100);
         }
-        progress?.Report(100);
-        SceneDetectionResult result = (firstResult ?? throw new InvalidDataException(
-            "Scene detection did not return a result.")) with
+        else
         {
-            BoundariesMs = [.. boundaries],
-            Ranges = [.. ranges],
-            // Detector score streams are relative to each bounded clip and cannot
-            // be safely reapplied as one source-wide stream.
-            SensitivityDataFormat = null,
-            SensitivityData = null
-        };
+            long completedDurationMs = 0;
+            List<long> boundaries = [];
+            List<SceneDetectionRange> ranges = [];
+            SceneDetectionResult? firstResult = null;
+            foreach (CustomShowClip clip in includedClips)
+            {
+                long clipDurationMs = Math.Max(1, clip.EndMs - clip.StartMs);
+                long completedBeforeClip = completedDurationMs;
+                Progress<int> clipProgress = new(value => progress?.Report((int)Math.Clamp(
+                    (completedBeforeClip + clipDurationMs * Math.Clamp(value, 0, 100) / 100d) /
+                    selectedDurationMs * 100, 0, 99)));
+                SceneDetectionResult clipResult = method switch
+                {
+                    "transnetv2" => await CustomSceneDetector.DetectTransNetAsync(
+                        configuration, source, sensitivity, clipProgress, token,
+                        clip.StartMs, clip.EndMs),
+                    "omnishotcut" => await CustomSceneDetector.DetectOmniShotCutAsync(
+                        configuration, source, sensitivity, clipProgress, token,
+                        clip.StartMs, clip.EndMs),
+                    _ => await CustomSceneDetector.DetectFastAsync(source, durationMs,
+                        sensitivity, clipProgress, token, clip.StartMs, clip.EndMs)
+                };
+                firstResult ??= clipResult;
+                boundaries.AddRange(clipResult.BoundariesMs.Select(value =>
+                    checked(value + clip.StartMs)));
+                ranges.AddRange(clipResult.Ranges.Select(value => value with
+                {
+                    StartMs = checked(value.StartMs + clip.StartMs),
+                    EndMs = checked(value.EndMs + clip.StartMs)
+                }));
+                completedDurationMs += clipDurationMs;
+            }
+            progress?.Report(100);
+            result = (firstResult ?? throw new InvalidDataException(
+                "Scene detection did not return a result.")) with
+            {
+                BoundariesMs = [.. boundaries],
+                Ranges = [.. ranges],
+                // Detector score streams are relative to each bounded clip and cannot
+                // be safely reapplied as one source-wide stream.
+                SensitivityDataFormat = null,
+                SensitivityData = null
+            };
+        }
         if (!string.IsNullOrWhiteSpace(requested?.ToolRevision) &&
             !string.Equals(requested.ToolRevision, result.ToolRevision,
                 StringComparison.OrdinalIgnoreCase))

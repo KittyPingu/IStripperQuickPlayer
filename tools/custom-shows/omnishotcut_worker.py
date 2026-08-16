@@ -97,6 +97,21 @@ def source_info(source: str, ffprobe: str) -> dict:
     }
 
 
+def normalize_range(args, info: dict):
+    source_duration = info["duration"]
+    args.start_ms = max(0, args.start_ms)
+    if args.end_ms is not None and args.end_ms > args.start_ms:
+        bounded_duration = max(0, min(source_duration - args.start_ms / 1000,
+                                      (args.end_ms - args.start_ms) / 1000))
+        if args.end_ms >= round(source_duration * 1000):
+            args.end_ms = None
+    else:
+        args.end_ms = None
+        bounded_duration = max(0, source_duration - args.start_ms / 1000)
+    info["duration"] = bounded_duration
+    info["expected_frames"] = max(1, round(bounded_duration * float(info["rate"])))
+
+
 def milliseconds(frame: int, rate: Fraction) -> int:
     numerator = frame * rate.denominator * 1000
     return (numerator + rate.numerator // 2) // rate.numerator
@@ -702,15 +717,7 @@ def run(args):
     ffmpeg = os.environ.get("IQP_FFMPEG", "ffmpeg")
     ffprobe = os.environ.get("IQP_FFPROBE", "ffprobe")
     info = source_info(args.source, ffprobe)
-    args.start_ms = max(0, args.start_ms)
-    if args.end_ms is not None and args.end_ms > args.start_ms:
-        bounded_duration = min(info["duration"] - args.start_ms / 1000,
-                               (args.end_ms - args.start_ms) / 1000)
-    else:
-        args.end_ms = None
-        bounded_duration = max(0, info["duration"] - args.start_ms / 1000)
-    info["duration"] = bounded_duration
-    info["expected_frames"] = max(1, round(bounded_duration * float(info["rate"])))
+    normalize_range(args, info)
     if info["vfr_approximation"]:
         print("Warning: variable-frame-rate timestamps are approximated using avg_frame_rate.",
               file=sys.stderr, flush=True)
@@ -833,6 +840,11 @@ def self_test():
                                         "height": 2160}) == "cpu"
     assert resolve_decode_mode("auto", {"codec": "av1", "width": 3840,
                                         "height": 2160}) == "legacy"
+    unbounded = SimpleNamespace(start_ms=0, end_ms=2**63 - 1)
+    unbounded_info = {"duration": 4379.442, "rate": Fraction(60000, 1001)}
+    normalize_range(unbounded, unbounded_info)
+    assert unbounded.end_ms is None
+    assert unbounded_info["duration"] == 4379.442
     emit(stage="self-test", percent=100, ok=True)
 
 

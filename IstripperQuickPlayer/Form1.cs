@@ -230,6 +230,8 @@ namespace IStripperQuickPlayer
         private bool restoringBackup;
         private volatile bool panicActive;
         private IntPtr panicMovieWindow;
+        private CustomPlayerForm? panicCustomPlayer;
+        private bool panicCustomPlayerWasPlaying;
         private int spaceRightOfListModel = 0;
         private int spaceBelowClipList = 0;
         private Size lastAdjustedClientSize;
@@ -336,7 +338,10 @@ namespace IStripperQuickPlayer
             }
 
             panicActive = true;
-            customPlayer?.HidePlayer();
+            panicCustomPlayer = customPlayer;
+            panicCustomPlayerWasPlaying = panicCustomPlayer is { Paused: false };
+            panicCustomPlayer?.SetPaused(true);
+            panicCustomPlayer?.HidePlayer();
             playbackCompletedAnimationPath = "";
             playbackRequestedAnimationPath = "";
             playbackRequestedAnimationAt = DateTime.MinValue;
@@ -383,8 +388,17 @@ namespace IStripperQuickPlayer
             if (!apiOnlyMode)
                 Wallpaper.ResumeQuickPlayerDesktop();
             panicMovieWindow = IntPtr.Zero;
-            customPlayer?.ShowPlayer();
+            CustomPlayerForm? player = panicCustomPlayer;
+            bool resumeCustomPlayer = panicCustomPlayerWasPlaying;
+            panicCustomPlayer = null;
+            panicCustomPlayerWasPlaying = false;
             panicActive = false;
+            if (customPlayer == player)
+            {
+                player?.ShowPlayer();
+                if (resumeCustomPlayer)
+                    player?.SetPaused(false);
+            }
             if (!apiOnlyMode)
                 panicResumeButton.Visible = false;
         }

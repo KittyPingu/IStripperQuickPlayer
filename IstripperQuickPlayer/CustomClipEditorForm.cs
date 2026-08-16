@@ -59,7 +59,12 @@ internal sealed class CustomClipEditorForm : Form
         Padding = new Padding(8, 6, 0, 0) };
     readonly Button addDivider = new() { Text = "Add divider here", AutoSize = true };
     readonly Button removeDivider = new() { Text = "Remove divider before clip", AutoSize = true };
+    readonly Button importSetup = new() { Text = "Import clip setup...", AutoSize = true };
     readonly Button autoDetect = new() { Text = "Auto-detect clips", AutoSize = true };
+    readonly Button reapplyDetection = new()
+    {
+        Text = "Reapply detected clips", AutoSize = true, Enabled = false
+    };
     readonly ComboBox detector = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 190 };
     readonly Label sensitivityLabel = new() { Text = "Sensitivity: 50%",
@@ -212,13 +217,19 @@ internal sealed class CustomClipEditorForm : Form
                 DetectorId(item) == "omnishotcut");
         detector.SelectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
         LoadDetectorSensitivity(existingDetection);
+        long retainedBufferMs = existingDetection?.TransitionBufferMs ?? 0;
+        skipTransitions.Checked = retainedBufferMs > 0;
+        transitionSeconds.Value = Math.Clamp(
+            (retainedBufferMs > 0 ? retainedBufferMs : 500) / 1000m,
+            transitionSeconds.Minimum, transitionSeconds.Maximum);
+        transitionSeconds.Enabled = skipTransitions.Checked;
         shortClipSeconds.Value = Math.Clamp(
             (existingDetection?.MinimumClipMs ?? 20_000) / 1000m,
             shortClipSeconds.Minimum, shortClipSeconds.Maximum);
-        actions.Controls.AddRange([addDivider, removeDivider,
+        actions.Controls.AddRange([addDivider, removeDivider, importSetup,
             detector, skipTransitions, transitionSeconds,
             transitionSecondsLabel, shortClipLabel, shortClipSeconds,
-            autoDetect, ok, cancel]);
+            reapplyDetection, autoDetect, ok, cancel]);
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         AcceptButton = ok;
@@ -239,8 +250,9 @@ internal sealed class CustomClipEditorForm : Form
         timeline.DurationMs = durationMs;
         timeline.Clips = clips;
         timeline.AllowDividerDragging = allowBoundaryEditing;
-        addDivider.Visible = removeDivider.Visible = autoDetect.Visible =
+        addDivider.Visible = removeDivider.Visible = importSetup.Visible = autoDetect.Visible =
             detector.Visible = allowBoundaryEditing;
+        reapplyDetection.Visible = allowBoundaryEditing && HasReusableDetectionData();
         sensitivityLabel.Visible = sensitivity.Visible =
             allowBoundaryEditing && DetectorSupportsSensitivity();
         skipTransitions.Visible = transitionSeconds.Visible =
@@ -291,6 +303,8 @@ internal sealed class CustomClipEditorForm : Form
             LoadSelectedAlphaThreshold();
         addDivider.Click += (_, _) => AddDivider();
         removeDivider.Click += (_, _) => RemoveDivider();
+        importSetup.Click += (_, _) => ImportClipSetup();
+        reapplyDetection.Click += (_, _) => ReapplyDetectionSettings();
         autoDetect.Click += async (_, _) => await AutoDetectAsync();
         detector.SelectedIndexChanged += (_, _) =>
         {
@@ -306,7 +320,12 @@ internal sealed class CustomClipEditorForm : Form
             ApplySensitivityChange(allowConfirmation: false);
         };
         skipTransitions.CheckedChanged += (_, _) =>
+        {
             transitionSeconds.Enabled = skipTransitions.Checked;
+            UpdateReapplyDetectionButton();
+        };
+        transitionSeconds.ValueChanged += (_, _) => UpdateReapplyDetectionButton();
+        shortClipSeconds.ValueChanged += (_, _) => UpdateReapplyDetectionButton();
         ok.Click += (_, _) => AcceptClips();
         previousFrame.Click += (_, _) => StepFrame(-1);
         play.Click += (_, _) => TogglePlayback();
@@ -316,6 +335,7 @@ internal sealed class CustomClipEditorForm : Form
         previewDelay.Tick += (_, _) => { previewDelay.Stop(); _ = LoadPreviewAsync(timeline.PositionMs); };
         FormClosed += (_, _) => { playback.Stop(); previewDelay.Stop(); sensitivityDelay.Stop(); previewCancellation?.Cancel(); streamCancellation?.Cancel(); detectionCancellation?.Cancel(); };
         RefreshGrid(0);
+        UpdateReapplyDetectionButton();
         UpdatePosition();
         RequestPreview();
         AppTheme.Apply(this);
@@ -355,6 +375,56 @@ internal sealed class CustomClipEditorForm : Form
         MarkDetectionManuallyEdited();
         timeline.Invalidate();
         RefreshGrid(index - 1);
+    }
+
+    void ImportClipSetup()
+    {
+        using OpenFileDialog dialog = new()
+        {
+            Title = "Import clip setup from a custom show",
+            Filter = "Custom show manifest (show.json)|show.json|JSON files (*.json)|*.json",
+            FileName = "show.json",
+            RestoreDirectory = true
+        };
+        string? showsFolder = configuration == null ? null :
+            Path.Combine(configuration.LibraryRoot, "shows");
+        if (showsFolder != null && Directory.Exists(showsFolder))
+            dialog.InitialDirectory = showsFolder;
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(dialog.FileName));
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("clips", out JsonElement clipElement))
+                throw new InvalidDataException("The selected JSON file has no clips array.");
+            CustomShowClip[] source = clipElement.Deserialize<CustomShowClip[]>(
+                CustomShowStore.JsonOptions) ??
+                throw new InvalidDataException("The selected clips array is empty.");
+            CustomShowClip[] imported = PrepareImportedClips(
+                source, durationMs, frameDurationMs);
+
+            clips.Clear();
+            clips.AddRange(imported);
+            clipDetection = null;
+            reapplyDetection.Visible = false;
+            timeline.PositionMs = 0;
+            timeline.Invalidate();
+            RefreshGrid(0);
+            UpdateReapplyDetectionButton();
+            UpdatePosition();
+            RequestPreview();
+            MessageBox.Show(this,
+                $"Imported {clips.Count} clip segments. Generated media references " +
+                "from the original show were not copied.",
+                "Clip Setup Imported", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, "The clip setup could not be imported.\n\n" + error.Message,
+                "Import Clip Setup", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     void RefreshGrid(int selected)
@@ -545,6 +615,11 @@ internal sealed class CustomClipEditorForm : Form
     internal static double DetectionThreshold(int sensitivityPercent) =>
         1 - Math.Clamp(sensitivityPercent, 1, 99) / 100d;
 
+    internal static bool DetectionSettingsChanged(CustomShowClipDetection detection,
+        long transitionBufferMs, long minimumClipMs) =>
+        detection.TransitionBufferMs != transitionBufferMs ||
+        detection.MinimumClipMs != minimumClipMs;
+
     void SaveDetectorPreference()
     {
         if (configuration == null || detector.SelectedItem == null) return;
@@ -643,10 +718,52 @@ internal sealed class CustomClipEditorForm : Form
     bool HasReusableSensitivityData() => clipDetection != null &&
         string.Equals(clipDetection.Method,
             DetectorId(detector.SelectedItem?.ToString()), StringComparison.Ordinal) &&
+        HasReusableDetectionData();
+
+    bool HasReusableDetectionData() => clipDetection != null &&
         !string.IsNullOrWhiteSpace(clipDetection.SensitivityDataFormat) &&
         !string.IsNullOrWhiteSpace(clipDetection.SensitivityData);
 
+    long RequestedTransitionBufferMs() => skipTransitions.Checked
+        ? checked((long)Math.Round(transitionSeconds.Value * 1000)) : 0;
+
+    long RequestedMinimumClipMs() => checked((long)Math.Round(
+        shortClipSeconds.Value * 1000));
+
+    void UpdateReapplyDetectionButton()
+    {
+        reapplyDetection.Enabled = reapplyDetection.Visible && clipDetection != null &&
+            DetectionSettingsChanged(clipDetection, RequestedTransitionBufferMs(),
+                RequestedMinimumClipMs());
+    }
+
+    void ReapplyDetectionSettings()
+    {
+        if (clipDetection == null || !HasReusableDetectionData()) return;
+        SaveSelectedMetadata();
+        if (clipDetection.ManuallyEdited && MessageBox.Show(this,
+                "Reapplying the retained detection will replace divider positions, " +
+                "added or removed segments, and included/skipped changes made since " +
+                "the last detection. The video will not be analysed again.\n\nContinue?",
+                "Reapply Detected Clips", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+        int retainedSensitivity = clipDetection.SensitivityPercent ??
+            (clipDetection.Method == "ffmpeg" ? 65 :
+             clipDetection.Method == "transnetv2" ? 50 : 100);
+        RebuildRetainedClips(retainedSensitivity, RequestedTransitionBufferMs(),
+            RequestedMinimumClipMs());
+    }
+
     void ApplyRetainedSensitivity(int sensitivityPercent)
+    {
+        if (clipDetection == null) return;
+        RebuildRetainedClips(sensitivityPercent, clipDetection.TransitionBufferMs,
+            clipDetection.MinimumClipMs);
+    }
+
+    void RebuildRetainedClips(int sensitivityPercent, long bufferMs,
+        long minimumClipMs)
     {
         if (clipDetection == null) return;
         SceneDetectionResult result;
@@ -658,15 +775,32 @@ internal sealed class CustomClipEditorForm : Form
                 Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
+        StopPlayback(requestPreview: false);
+        CustomShowClip[] previous = clips.Select(Clone).ToArray();
         CustomShowClip seed = Clone(clips.FirstOrDefault(clip => clip.Included) ?? clips[0]);
         int selected = ClipIndexAt(clips, timeline.PositionMs);
+        CustomShowClip[] rebuilt = BuildDetectedClips(seed, result, durationMs,
+            bufferMs, minimumClipMs);
+        foreach (CustomShowClip clip in rebuilt)
+        {
+            long midpoint = clip.StartMs + (clip.EndMs - clip.StartMs) / 2;
+            CustomShowClip? metadata = previous.FirstOrDefault(value =>
+                midpoint >= value.StartMs && midpoint < value.EndMs);
+            if (metadata == null) continue;
+            clip.Hotness = metadata.Hotness;
+            clip.ClipTypes = [.. metadata.ClipTypes];
+            clip.AlphaThreshold = metadata.AlphaThreshold;
+        }
         clips.Clear();
-        clips.AddRange(BuildDetectedClips(seed, result, durationMs,
-            clipDetection.TransitionBufferMs, clipDetection.MinimumClipMs));
+        clips.AddRange(rebuilt);
         clipDetection.SensitivityPercent = sensitivityPercent;
+        clipDetection.TransitionBufferMs = bufferMs;
+        clipDetection.MinimumClipMs = minimumClipMs;
         clipDetection.ManuallyEdited = false;
         timeline.Invalidate();
         RefreshGrid(Math.Clamp(selected, 0, clips.Count - 1));
+        UpdateReapplyDetectionButton();
+        RequestPreview();
     }
 
     void MarkDetectionManuallyEdited()
@@ -684,8 +818,8 @@ internal sealed class CustomClipEditorForm : Form
             return;
         StopPlayback(requestPreview: false);
         SaveSelectedMetadata();
-        autoDetect.Enabled = detector.Enabled = skipTransitions.Enabled =
-            transitionSeconds.Enabled = shortClipSeconds.Enabled = addDivider.Enabled =
+        autoDetect.Enabled = reapplyDetection.Enabled = detector.Enabled = skipTransitions.Enabled =
+            transitionSeconds.Enabled = shortClipSeconds.Enabled = importSetup.Enabled = addDivider.Enabled =
             removeDivider.Enabled = timeline.Enabled = false;
         Cursor = Cursors.WaitCursor;
         detectionCancellation?.Cancel();
@@ -724,10 +858,8 @@ internal sealed class CustomClipEditorForm : Form
                 return;
             }
             CustomShowClip seed = Clone(clips.FirstOrDefault(clip => clip.Included) ?? clips[0]);
-            long bufferMs = skipTransitions.Checked
-                ? checked((long)Math.Round(transitionSeconds.Value * 1000)) : 0;
-            long minimumClipMs = checked((long)Math.Round(
-                shortClipSeconds.Value * 1000));
+            long bufferMs = RequestedTransitionBufferMs();
+            long minimumClipMs = RequestedMinimumClipMs();
             CustomShowClip[] detected = BuildDetectedClips(
                 seed, result, durationMs, bufferMs, minimumClipMs);
             clips.Clear();
@@ -750,6 +882,8 @@ internal sealed class CustomClipEditorForm : Form
                 validRanges.FirstOrDefault()?.StartMs ?? 0);
             timeline.Invalidate();
             RefreshGrid(0);
+            reapplyDetection.Visible = HasReusableDetectionData();
+            UpdateReapplyDetectionButton();
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -766,9 +900,11 @@ internal sealed class CustomClipEditorForm : Form
             {
                 autoDetect.Text = "Auto-detect clips";
                 autoDetect.Enabled = detector.Enabled = skipTransitions.Enabled =
-                    shortClipSeconds.Enabled = addDivider.Enabled = timeline.Enabled = true;
+                    shortClipSeconds.Enabled = importSetup.Enabled = addDivider.Enabled =
+                    timeline.Enabled = true;
                 transitionSeconds.Enabled = skipTransitions.Checked;
                 removeDivider.Enabled = SelectedIndex > 0;
+                UpdateReapplyDetectionButton();
                 Cursor = Cursors.Default;
                 grid.Cursor = Cursors.Default;
                 RequestPreview();
@@ -990,6 +1126,33 @@ internal sealed class CustomClipEditorForm : Form
         }
     };
 
+    internal static CustomShowClip[] PrepareImportedClips(
+        IReadOnlyList<CustomShowClip> source, long durationMs, double frameDurationMs)
+    {
+        if (source.Count == 0)
+            throw new InvalidDataException("The selected show has no clip setup.");
+        if (source.Any(clip => clip.ClipTypes == null || clip.DetectionLabels == null))
+            throw new InvalidDataException("The selected show has invalid clip metadata.");
+        long toleranceMs = Math.Max(1, checked((long)Math.Ceiling(frameDurationMs)));
+        if (Math.Abs((double)source[^1].EndMs - durationMs) > toleranceMs)
+            throw new InvalidDataException(
+                $"The saved setup is {Format(source[^1].EndMs)} long, but the current " +
+                $"video is {Format(durationMs)} long. Choose a show created from the same video.");
+
+        CustomShowClip[] imported = source.Select(Clone).ToArray();
+        foreach (CustomShowClip clip in imported)
+        {
+            clip.Id = Guid.NewGuid().ToString("N");
+            clip.Source = null;
+            clip.SourceStartMs = null;
+            clip.SourceEndMs = null;
+            clip.Media = null;
+        }
+        imported[^1].EndMs = durationMs;
+        CustomShowStore.ValidateClips(imported, durationMs);
+        return imported;
+    }
+
     static CustomShowClipDetection? CloneDetection(CustomShowClipDetection? value) =>
         value == null ? null : new()
         {
@@ -1170,7 +1333,7 @@ internal sealed class CustomClipEditorForm : Form
         return candidates.Where(value => selectedFrames.Contains(value.EndFrame));
     }
 
-    static SceneDetectionResult RebuildDetection(CustomShowClipDetection detection,
+    internal static SceneDetectionResult RebuildDetection(CustomShowClipDetection detection,
         int sensitivityPercent)
     {
         double threshold = DetectionThreshold(sensitivityPercent);
@@ -1275,7 +1438,8 @@ internal sealed class CustomClipEditorForm : Form
         CustomShowClipDetection retainedFast = new()
         {
             Method = "ffmpeg", SensitivityDataFormat = "ffmpeg-scene-gzip-json-v1",
-            SensitivityData = CompressSensitivityData(fastCandidates)
+            SensitivityData = CompressSensitivityData(fastCandidates),
+            TransitionBufferMs = 500, MinimumClipMs = 20_000
         };
         SceneDetectionResult rebuiltFast = RebuildDetection(retainedFast, 65);
         float[] transNetScores = [-1f, -1f, -1f, 1f, -1f];
@@ -1301,6 +1465,20 @@ internal sealed class CustomClipEditorForm : Form
             SensitivityData = CompressSensitivityData(omniData)
         };
         SceneDetectionResult rebuiltOmni = RebuildDetection(retainedOmni, 50);
+        CustomShowClip importFirst = new()
+        {
+            StartMs = 0, EndMs = 400, Included = false,
+            Source = new() { Mode = "video", Path = "old.mp4" },
+            SourceStartMs = 10, SourceEndMs = 410,
+            Media = new() { Foreground = "old-foreground.mp4", Alpha = "old-alpha.mp4" }
+        };
+        CustomShowClip importSecond = new()
+        {
+            StartMs = 400, EndMs = 1_000, Hotness = "Topless",
+            ClipTypes = ["Standing", "Prop"]
+        };
+        CustomShowClip[] imported = PrepareImportedClips(
+            [importFirst, importSecond], 1_005, 10);
         return first.EndMs == second.StartMs && second.EndMs == 1_000 &&
             first.Id != second.Id && !second.Included &&
             ClipIndexAt([first, second], 399) == 0 &&
@@ -1316,6 +1494,9 @@ internal sealed class CustomClipEditorForm : Form
             NextIncludeCheckState(CheckState.Indeterminate) == CheckState.Checked &&
             Math.Abs(DetectionThreshold(65) - .35) < .0001 &&
             Math.Abs(DetectionThreshold(50) - .5) < .0001 &&
+            !DetectionSettingsChanged(retainedFast, 500, 20_000) &&
+            DetectionSettingsChanged(retainedFast, 1_000, 20_000) &&
+            DetectionSettingsChanged(retainedFast, 500, 10_000) &&
             detected.Length == 5 && detected[0].Included &&
             detected[0].StartMs == 0 && detected[0].EndMs == 14_000 &&
             !detected[1].Included && detected[1].EndMs == 16_000 &&
@@ -1349,6 +1530,13 @@ internal sealed class CustomClipEditorForm : Form
             rebuiltOmni.Ranges.Length == 2 &&
             rebuiltOmni.Ranges[0].EndMs == 20_000 &&
             rebuiltOmni.Ranges[1].EndMs == 30_000 &&
+            imported.Length == 2 && imported[0].EndMs == imported[1].StartMs &&
+            imported[1].EndMs == 1_005 && !imported[0].Included &&
+            imported[1].Hotness == "Topless" &&
+            imported[1].ClipTypes.SequenceEqual(["Standing", "Prop"]) &&
+            imported.All(clip => clip.Source == null && clip.SourceStartMs == null &&
+                clip.SourceEndMs == null && clip.Media == null) &&
+            imported[0].Id != importFirst.Id && imported[1].Id != importSecond.Id &&
             VerifyOmniShotCutPolicies() &&
             CustomSceneDetector.MonotonicProgress(18, 5) == 18 &&
             CustomSceneDetector.MonotonicProgress(18, 20) == 20;
@@ -1399,10 +1587,10 @@ internal static class CustomSceneDetector
             RedirectStandardOutput = true, RedirectStandardError = true
         };
         double threshold = CustomClipEditorForm.DetectionThreshold(sensitivityPercent);
-        string sceneFilter = "scale=320:-2,select='gte(scene,0)'," +
-            "metadata=print:key=lavfi.scene_score";
         long boundedEndMs = Math.Clamp(endMs ?? durationMs, startMs + 1, durationMs);
         long boundedDurationMs = boundedEndMs - startMs;
+        string sceneFilter = "scale=320:-2:flags=fast_bilinear," +
+            "select='gte(scene,0)',metadata=print:key=lavfi.scene_score";
         foreach (string argument in new[] { "-v", "info", "-nostats",
             "-ss", (startMs / 1000d).ToString("0.######", CultureInfo.InvariantCulture),
             "-i", source,
@@ -1490,8 +1678,8 @@ internal static class CustomSceneDetector
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
-        foreach (string argument in new[]
-        {
+        List<string> arguments =
+        [
             TransNetWorkerPath, "--source", source, "--runtime", runtime,
             "--batch-size", Math.Clamp(configuration.TransNetPreferredBatchSize, 1, 64)
                 .ToString(CultureInfo.InvariantCulture),
@@ -1508,10 +1696,12 @@ internal static class CustomSceneDetector
             },
             "--profile-log", Path.Combine(configuration.LibraryRoot, ".logs",
                 "transnetv2.ndjson"),
-            "--start-ms", Math.Max(0, startMs).ToString(CultureInfo.InvariantCulture),
-            "--end-ms", Math.Max(startMs + 1, endMs ?? long.MaxValue)
-                .ToString(CultureInfo.InvariantCulture)
-        }) start.ArgumentList.Add(argument);
+            "--start-ms", Math.Max(0, startMs).ToString(CultureInfo.InvariantCulture)
+        ];
+        if (endMs is long boundedEndMs)
+            arguments.AddRange(["--end-ms", Math.Max(startMs + 1, boundedEndMs)
+                .ToString(CultureInfo.InvariantCulture)]);
+        foreach (string argument in arguments) start.ArgumentList.Add(argument);
         start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
         using Process process = Process.Start(start) ??
@@ -1583,17 +1773,19 @@ internal static class CustomSceneDetector
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
-        foreach (string argument in new[]
-        {
+        List<string> arguments =
+        [
             OmniShotCutWorkerPath, "--source", source, "--runtime", runtime,
             "--sensitivity-percent", Math.Clamp(sensitivityPercent, 1, 100)
                 .ToString(CultureInfo.InvariantCulture),
             "--profile-log", Path.Combine(configuration.LibraryRoot, ".logs",
                 "omnishotcut.ndjson"),
-            "--start-ms", Math.Max(0, startMs).ToString(CultureInfo.InvariantCulture),
-            "--end-ms", Math.Max(startMs + 1, endMs ?? long.MaxValue)
-                .ToString(CultureInfo.InvariantCulture)
-        }) start.ArgumentList.Add(argument);
+            "--start-ms", Math.Max(0, startMs).ToString(CultureInfo.InvariantCulture)
+        ];
+        if (endMs is long boundedEndMs)
+            arguments.AddRange(["--end-ms", Math.Max(startMs + 1, boundedEndMs)
+                .ToString(CultureInfo.InvariantCulture)]);
+        foreach (string argument in arguments) start.ArgumentList.Add(argument);
         start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
         using Process process = Process.Start(start) ??

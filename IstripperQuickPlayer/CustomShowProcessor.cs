@@ -162,6 +162,9 @@ internal static class CustomShowProcessor
             WorkerErrorMessage(
                 "{\"stage\":\"error\",\"message\":\"CUDA error: out of memory\\nSearch for cudaErrorMemoryAllocation\"}") ==
                 "GPU out of memory. Reduce Matting detail and retry." &&
+            Sam2WorkerErrorMessage(
+                "CUDA error: out of memory\nSearch for cudaErrorMemoryAllocation") ==
+                "SAM2 ran out of GPU memory. Close other GPU-heavy apps and retry." &&
             MatAnyoneFullResolution4kRisk("rvm-matanyone2", 0, 3840, 2160) &&
             MatAnyoneFullResolution4kRisk("matanyone2", 0, 2160, 3840) &&
             !MatAnyoneFullResolution4kRisk("rvm-matanyone2", 1024, 3840, 2160) &&
@@ -201,6 +204,19 @@ internal static class CustomShowProcessor
                 : value;
         }
         catch (JsonException) { return null; }
+    }
+
+    internal static string Sam2WorkerErrorMessage(string value)
+    {
+        value = value.Trim();
+        return value.Contains("CUDA error: out of memory",
+                   StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("CUDA out of memory",
+                   StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("cudaErrorMemoryAllocation",
+                   StringComparison.OrdinalIgnoreCase)
+            ? "SAM2 ran out of GPU memory. Close other GPU-heavy apps and retry."
+            : value;
     }
 
     internal static string? WorkerErrorFromLog(string path)
@@ -515,6 +531,7 @@ internal static class CustomShowProcessor
             throw new InvalidOperationException(
                 "The isolated SAM2Matting worker could not be started.");
         StringBuilder log = new();
+        string? workerError = null;
         Task stderr = Task.Run(async () =>
         {
             while (await process.StandardError.ReadLineAsync() is string line)
@@ -544,6 +561,9 @@ internal static class CustomShowProcessor
                     string message = root.TryGetProperty("message",
                         out JsonElement messageNode)
                         ? messageNode.GetString() ?? stage : stage;
+                    if (string.Equals(stage, "error",
+                            StringComparison.OrdinalIgnoreCase))
+                        workerError = Sam2WorkerErrorMessage(message);
                     progress?.Report(new CustomShowProgress(stage,
                         root.TryGetProperty("percent", out JsonElement percent)
                             ? percent.GetDouble() : 0, message));
@@ -555,6 +575,7 @@ internal static class CustomShowProcessor
             token.ThrowIfCancellationRequested();
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
+                    workerError ??
                     $"SAM2Matting processing failed (exit code {process.ExitCode}).");
             return JsonSerializer.Deserialize<CustomShowProcessResult>(
                 await File.ReadAllTextAsync(Path.Combine(
@@ -581,6 +602,10 @@ internal static class CustomShowProcessor
         IReadOnlyList<CustomShowProcessJob>? jobs = null,
         long? maskFrameMs = null,
         int rvmInitializerAlphaThresholdPercent = 40,
+        bool rvmMatAnyoneMaskRefresh = false,
+        int rvmMatAnyoneRefreshStrengthPercent = 100,
+        int matAnyoneMaxMemoryFrames = 5,
+        bool matAnyoneUseLongTermMemory = false,
         int vitMatteInferenceDetailPx = 1024)
     {
         using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(
@@ -624,15 +649,18 @@ internal static class CustomShowProcessor
             if (preset == "rvm-matanyone2" && !File.Exists(initialMask))
             {
                 start.ArgumentList.Add("--auto-rvm-init");
-                start.ArgumentList.Add("--rvm-alpha-threshold");
-                start.ArgumentList.Add((Math.Clamp(rvmInitializerAlphaThresholdPercent,
-                    10, 90) / 100d).ToString("0.00",
-                    System.Globalization.CultureInfo.InvariantCulture));
             }
             else
             {
                 start.ArgumentList.Add("--mask");
                 start.ArgumentList.Add(initialMask!);
+            }
+            if (preset == "rvm-matanyone2")
+            {
+                start.ArgumentList.Add("--rvm-alpha-threshold");
+                start.ArgumentList.Add((Math.Clamp(rvmInitializerAlphaThresholdPercent,
+                    10, 90) / 100d).ToString("0.00",
+                    System.Globalization.CultureInfo.InvariantCulture));
             }
             start.ArgumentList.Add("--max-size");
             start.ArgumentList.Add(mattingResolution.ToString());
@@ -644,6 +672,23 @@ internal static class CustomShowProcessor
             start.ArgumentList.Add("--compile-cutoff-frames");
             start.ArgumentList.Add(Math.Max(1,
                 configuration.MatAnyone2CompileCutoffFrames).ToString());
+            if (preset == "rvm-matanyone2" && rvmMatAnyoneMaskRefresh)
+            {
+                start.ArgumentList.Add("--rvm-mask-refresh");
+                start.ArgumentList.Add("--rvm-refresh-strength");
+                start.ArgumentList.Add((Math.Clamp(
+                    rvmMatAnyoneRefreshStrengthPercent, 25, 100) / 100d)
+                    .ToString(CultureInfo.InvariantCulture));
+            }
+            start.ArgumentList.Add("--max-mem-frames");
+            start.ArgumentList.Add(Math.Clamp(matAnyoneMaxMemoryFrames,
+                matAnyoneUseLongTermMemory
+                    ? CustomShowConfiguration.MatAnyoneLongTermMinimumMemoryFrames : 2,
+                matAnyoneUseLongTermMemory
+                    ? CustomShowConfiguration.MatAnyoneLongTermMaximumMemoryFrames : 30)
+                .ToString());
+            if (matAnyoneUseLongTermMemory)
+                start.ArgumentList.Add("--use-long-term");
         }
         else if (preset is "videomama" or "vitmatte-s" or "vitmatte-b")
         {
@@ -1068,6 +1113,17 @@ internal static class CustomShowProcessor
 
 internal sealed class CustomShowProcessingForm : Form
 {
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            const int WsExComposited = 0x02000000;
+            CreateParams value = base.CreateParams;
+            value.ExStyle |= WsExComposited;
+            return value;
+        }
+    }
+
     readonly ProgressBar bar = new() { Dock = DockStyle.Top, Height = 28 };
     readonly Label processDescription = new()
     {

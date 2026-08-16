@@ -88,8 +88,10 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
             DiscardHost();
             throw;
         }
-        catch (Exception) when (process == null || process.HasExited)
+        catch (Exception)
         {
+            // A CUDA failure can leave the persistent interpreter's allocator or
+            // stream state unusable even when the Python host stays alive.
             DiscardHost();
             token.ThrowIfCancellationRequested();
             throw;
@@ -206,9 +208,15 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
                 string? type = root.TryGetProperty("type", out JsonElement typeNode)
                     ? typeNode.GetString() : null;
                 if (type == "error")
-                    throw new InvalidOperationException(root.TryGetProperty("message",
-                        out JsonElement message) ? message.GetString() :
-                        "SAM2Matting worker protocol failure.");
+                {
+                    string message = root.TryGetProperty("message",
+                        out JsonElement messageNode)
+                        ? messageNode.GetString() ??
+                            "SAM2Matting worker protocol failure."
+                        : "SAM2Matting worker protocol failure.";
+                    throw new InvalidOperationException(
+                        CustomShowProcessor.Sam2WorkerErrorMessage(message));
+                }
                 if (type == responseType) return root.Clone();
             }
         }

@@ -55,6 +55,22 @@ def source_info(source, ffprobe):
         "height": int(stream.get("height") or 0), "pixFmt": stream.get("pix_fmt") or "unknown"}
 
 
+def normalize_range(args, info):
+    source_duration = info["duration"]
+    args.start_ms = max(0, args.start_ms)
+    if args.end_ms is not None and args.end_ms > args.start_ms:
+        info["duration"] = max(0, min(source_duration - args.start_ms / 1000,
+                                      (args.end_ms - args.start_ms) / 1000))
+        # An unbounded caller used to send Int64.MaxValue here. Besides being
+        # unnecessary, that overflows FFmpeg's duration parser before it can
+        # decode a frame. Omit -t whenever the requested range reaches EOF.
+        if args.end_ms >= round(source_duration * 1000):
+            args.end_ms = None
+    else:
+        args.end_ms = None
+        info["duration"] = max(0, source_duration - args.start_ms / 1000)
+
+
 def load_model(runtime):
     import torch
     folder = runtime / "transnetv2"
@@ -268,12 +284,18 @@ class WindowProducer:
                     stderr_tail.append(line.decode(errors="replace").rstrip())
             stderr_thread = threading.Thread(target=drain_error, daemon=True)
             stderr_thread.start()
-            self._produce(self.process.stdout)
+            decode_error = None
+            try:
+                self._produce(self.process.stdout)
+            except DecodeFailure as error:
+                decode_error = error
             exit_code = self.process.wait()
             if stderr_thread: stderr_thread.join(timeout=2)
             self.producer_seconds = time.perf_counter() - started
             if exit_code:
                 raise DecodeFailure("\n".join(stderr_tail) or "FFmpeg video decode failed")
+            if decode_error:
+                raise decode_error
         except BaseException as error:
             self.error = error
         finally:
@@ -500,6 +522,14 @@ def self_test():
     for codec in ("hevc", "vp9", "av1"):
         assert resolve_decode_mode(automatic, {}, True, {"codec": codec}) == "legacy"
     assert resolve_decode_mode(automatic, {}, False, {"codec": "hevc"}) == "cpu"
+    unbounded = SimpleNamespace(start_ms=0, end_ms=2**63 - 1)
+    unbounded_info = {"duration": 4379.442}
+    normalize_range(unbounded, unbounded_info)
+    assert unbounded.end_ms is None and unbounded_info["duration"] == 4379.442
+    bounded = SimpleNamespace(start_ms=1000, end_ms=3000)
+    bounded_info = {"duration": 10.0}
+    normalize_range(bounded, bounded_info)
+    assert bounded.end_ms == 3000 and bounded_info["duration"] == 2.0
     print("TransNetV2 worker self-test passed")
 
 
@@ -533,13 +563,7 @@ def main():
     model_load_seconds = time.perf_counter() - model_load_started
     probe_started = time.perf_counter()
     info = source_info(args.source, ffprobe)
-    args.start_ms = max(0, args.start_ms)
-    if args.end_ms is not None and args.end_ms > args.start_ms:
-        info["duration"] = min(info["duration"] - args.start_ms / 1000,
-                               (args.end_ms - args.start_ms) / 1000)
-    else:
-        args.end_ms = None
-        info["duration"] = max(0, info["duration"] - args.start_ms / 1000)
+    normalize_range(args, info)
     probe_seconds = time.perf_counter() - probe_started
     expected = round(info["fps"] * info["duration"])
     batch = max(1, min(64, args.batch_size))

@@ -28,6 +28,8 @@ public partial class Form1
     readonly ToolStripMenuItem reprocessCustomShowMenu = new("Reprocess Custom Show...");
     readonly ToolStripMenuItem deleteCustomShowMenu = new("Delete Custom Show");
     readonly ContextMenuStrip customClipContextMenu = new();
+    readonly ToolStripMenuItem trimCustomClipMenu =
+        new("Trim Custom Clip...");
     readonly ToolStripMenuItem deleteCustomClipMenu =
         new("Delete Custom Clip...");
     readonly ToolStripMenuItem customClipHotnessMenu = new("Hotness");
@@ -164,6 +166,11 @@ public partial class Form1
             PersistContextClipAlphaThreshold();
             await DeleteSelectedCustomClipAsync();
         };
+        trimCustomClipMenu.Click += async (_, _) =>
+        {
+            PersistContextClipAlphaThreshold();
+            await TrimSelectedCustomClipAsync();
+        };
         foreach (string hotness in CustomShowStore.HotnessOptions)
         {
             string label = hotness switch
@@ -190,7 +197,7 @@ public partial class Form1
             customClipAlphaHost, new ToolStripSeparator(),
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
-            deleteCustomClipMenu]);
+            trimCustomClipMenu, deleteCustomClipMenu]);
         customClipContextMenu.Opening += (sender, eventArgs) =>
         {
             bool custom = TryGetSelectedCustomClip(
@@ -208,6 +215,7 @@ public partial class Form1
             customClipAlphaHost.Visible = custom;
             customClipHotnessMenu.Visible = custom;
             customClipTypesMenu.Visible = custom;
+            trimCustomClipMenu.Visible = custom;
             deleteCustomClipMenu.Visible = custom;
             eventArgs.Cancel = !custom;
         };
@@ -1059,6 +1067,97 @@ public partial class Form1
         clip = card.clips.FirstOrDefault(value => string.Equals(
             value.clipName, clipName, StringComparison.OrdinalIgnoreCase))!;
         return clip != null;
+    }
+
+    async Task TrimSelectedCustomClipAsync()
+    {
+        if (!TryGetSelectedCustomClip(out ModelCard card,
+                out ModelClip modelClip) || card.customShowId == null ||
+            card.clips == null || string.IsNullOrWhiteSpace(modelClip.clipName))
+            return;
+
+        string animationPath = GetAnimationPath(modelClip);
+        bool selectedIsPlaying = string.Equals(customPlayerAnimationPath,
+            animationPath, StringComparison.OrdinalIgnoreCase);
+        bool wasPaused = customPlayer?.Paused == true;
+        if (selectedIsPlaying)
+        {
+            customPlayer?.SetPaused(true);
+            customPlayer?.HidePlayer();
+        }
+
+        try
+        {
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            CustomShowManifest show = store.LoadManifest(card.customShowId);
+            CustomShowClip[] included = show.Clips.Where(value =>
+                value.Included).ToArray();
+            int index = card.clips.IndexOf(modelClip);
+            if (index < 0 || index >= included.Length ||
+                included[index].Media is not CustomClipMedia media)
+                throw new InvalidDataException(
+                    "The selected clip no longer matches the saved show.");
+
+            string folder = Path.Combine(store.ShowsFolder, show.Id);
+            using CustomClipTrimForm trim = new(
+                $"{card.outfit} (Clip {modelClip.clipNumber})",
+                CustomShowStore.ResolveRelative(folder, media.Foreground),
+                CustomShowStore.ResolveRelative(folder, media.Alpha), media,
+                included[index].AlphaThreshold,
+                customShowConfiguration.FullOpacityThreshold);
+            DialogResult result;
+            try { result = trim.ShowDialog(this); }
+            finally { await trim.ClosePreviewAsync(); }
+
+            if (result != DialogResult.OK)
+            {
+                if (selectedIsPlaying && customPlayer != null)
+                {
+                    customPlayer.ShowPlayer();
+                    customPlayer.SetPaused(wasPaused);
+                }
+                return;
+            }
+
+            media.PlaybackStartMs = trim.StartMs;
+            media.PlaybackEndMs = trim.EndMs == media.DurationMs
+                ? null : trim.EndMs;
+            store.SaveManifest(show);
+
+            if (selectedIsPlaying)
+                StopCustomPlayback(restoreIstripper: false);
+            selectingClipForContextMenu = true;
+            try
+            {
+                ReloadCustomCards();
+                RebindCurrentCustomPlayback();
+                if (Datastore.findCardByTag(card.name!) != null)
+                    loadListClips(card.name!);
+            }
+            finally
+            {
+                selectingClipForContextMenu = false;
+            }
+            RebuildAutomaticQueue();
+
+            if (selectedIsPlaying && RequestAnimationPlayback(animationPath) &&
+                wasPaused)
+                customPlayer?.SetPaused(true);
+            SetPlaybackStatus(trim.StartMs == 0 && trim.EndMs == media.DurationMs
+                ? "Custom clip trim reset to the full processed clip."
+                : $"Custom clip trimmed to {TimeSpan.FromMilliseconds(
+                    trim.EndMs - trim.StartMs):g}.");
+        }
+        catch (Exception error)
+        {
+            if (selectedIsPlaying && customPlayer != null)
+            {
+                customPlayer.ShowPlayer();
+                customPlayer.SetPaused(wasPaused);
+            }
+            MessageBox.Show(this, error.Message, "Trim Custom Clip",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     async Task DeleteSelectedCustomClipAsync()

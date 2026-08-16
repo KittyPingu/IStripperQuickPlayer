@@ -12,6 +12,9 @@ namespace IStripperQuickPlayer;
 
 internal sealed class CustomShowConfiguration
 {
+    internal const int MatAnyoneLongTermMinimumMemoryFrames = 6;
+    internal const int MatAnyoneLongTermMaximumMemoryFrames = 14;
+
     internal static string FilePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "IStripperQuickPlayer", "custom-shows-settings.json");
@@ -58,6 +61,10 @@ internal sealed class CustomShowConfiguration
     // Zero means the worker should choose and learn an adaptive batch size.
     public int LastProcessingBatchSize { get; set; }
     public int LastRvmInitializerAlphaThresholdPercent { get; set; } = 40;
+    public bool LastRvmMatAnyoneMaskRefresh { get; set; }
+    public int LastRvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
+    public int LastMatAnyoneMaxMemoryFrames { get; set; } = 5;
+    public bool LastMatAnyoneUseLongTermMemory { get; set; }
     public bool LastAutoAcceptAlphaThreshold { get; set; }
 
     internal int Sam2CompileCutoffFrames(string model) => model switch
@@ -131,6 +138,18 @@ internal sealed class CustomShowConfiguration
                 configuration.LastProcessingBatchSize = 0;
             configuration.LastRvmInitializerAlphaThresholdPercent = Math.Clamp(
                 configuration.LastRvmInitializerAlphaThresholdPercent, 10, 90);
+            configuration.LastRvmMatAnyoneRefreshStrengthPercent = Math.Clamp(
+                configuration.LastRvmMatAnyoneRefreshStrengthPercent, 25, 100);
+            configuration.LastMatAnyoneMaxMemoryFrames =
+                configuration.LastMatAnyoneUseLongTermMemory &&
+                    configuration.LastMatAnyoneMaxMemoryFrames <
+                        MatAnyoneLongTermMinimumMemoryFrames
+                    ? MatAnyoneLongTermMaximumMemoryFrames
+                    : Math.Clamp(configuration.LastMatAnyoneMaxMemoryFrames,
+                        configuration.LastMatAnyoneUseLongTermMemory
+                            ? MatAnyoneLongTermMinimumMemoryFrames : 2,
+                        configuration.LastMatAnyoneUseLongTermMemory
+                            ? MatAnyoneLongTermMaximumMemoryFrames : 30);
             return configuration;
         }
         catch { return new(); }
@@ -266,6 +285,10 @@ internal sealed class CustomShowProcessing
     public int? VitMatteInferenceDetailPx { get; set; }
     public int BatchSize { get; set; }
     public int? RvmInitializerAlphaThresholdPercent { get; set; }
+    public bool RvmMatAnyoneMaskRefresh { get; set; }
+    public int RvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
+    public int MatAnyoneMaxMemoryFrames { get; set; } = 5;
+    public bool MatAnyoneUseLongTermMemory { get; set; }
     public int? AutoAcceptedAlphaThreshold { get; set; }
     public string? Sam2Model { get; set; }
     public string? MaskEngine { get; set; }
@@ -324,6 +347,8 @@ internal sealed class CustomClipMedia
     public int Height { get; set; }
     public string FrameRate { get; set; } = "";
     public long DurationMs { get; set; }
+    public long PlaybackStartMs { get; set; }
+    public long? PlaybackEndMs { get; set; }
 }
 
 internal sealed class CustomShowSource
@@ -820,6 +845,11 @@ internal sealed class CustomShowStore
             if (clip.Media is not CustomClipMedia media) continue;
             ValidateMediaFields(media.Width, media.Height, media.FrameRate,
                 media.DurationMs, "Clip media");
+            long playbackEnd = PlaybackEnd(media);
+            if (media.PlaybackStartMs < 0 || playbackEnd <= media.PlaybackStartMs ||
+                playbackEnd > media.DurationMs)
+                throw new InvalidDataException(
+                    "Clip playback trim must be inside the processed media duration.");
         }
         IEnumerable<string> paths = show.Clips.Where(clip => clip.Included)
             .SelectMany(clip => new[] { clip.Media!.Foreground, clip.Media.Alpha })
@@ -935,6 +965,23 @@ internal sealed class CustomShowStore
                 processing.MaskEngine != "rvm-sam2" && !sam2MattingRvmInitializer ||
                 initializerThreshold is < 10 or > 90))
             throw new InvalidDataException("Invalid RVM initializer alpha threshold.");
+        if (processing.RvmMatAnyoneMaskRefresh &&
+            processing.Algorithm != "rvm-matanyone2")
+            throw new InvalidDataException(
+                "RVM mask refresh is only valid for RVM-MatAnyone processing.");
+        if (processing.RvmMatAnyoneRefreshStrengthPercent is < 25 or > 100 ||
+            processing.Algorithm != "rvm-matanyone2" &&
+                processing.RvmMatAnyoneRefreshStrengthPercent != 100)
+            throw new InvalidDataException("Invalid RVM mask refresh strength.");
+        bool matAnyone = processing.Algorithm is "matanyone2" or "rvm-matanyone2";
+        if (processing.MatAnyoneMaxMemoryFrames is < 2 or > 30 ||
+            processing.MatAnyoneUseLongTermMemory &&
+                processing.MatAnyoneMaxMemoryFrames is <
+                    CustomShowConfiguration.MatAnyoneLongTermMinimumMemoryFrames or >
+                    CustomShowConfiguration.MatAnyoneLongTermMaximumMemoryFrames ||
+            !matAnyone && (processing.MatAnyoneMaxMemoryFrames != 5 ||
+                processing.MatAnyoneUseLongTermMemory))
+            throw new InvalidDataException("Invalid MatAnyone memory configuration.");
         if (processing.AutoAcceptedAlphaThreshold is int acceptedThreshold &&
             acceptedThreshold is < 0 or > 255)
             throw new InvalidDataException("Invalid automatically accepted alpha threshold.");
@@ -1145,7 +1192,7 @@ internal sealed class CustomShowStore
         long mediaSize = playableMedia.Sum(media =>
             new FileInfo(ResolveRelative(folder, media.Foreground)).Length +
             new FileInfo(ResolveRelative(folder, media.Alpha)).Length);
-        long playableDuration = playableMedia.Sum(media => media.DurationMs);
+        long playableDuration = playableMedia.Sum(PlaybackDuration);
         ModelCard card = new()
         {
             name = "custom:" + show.Id,
@@ -1182,7 +1229,7 @@ internal sealed class CustomShowStore
             bestResolution = ResolutionFor(show.Media.Height),
             frameCount = TryFrameRate(show.Media.FrameRate, out double fps)
                 ? (int)Math.Min(int.MaxValue, Math.Round(fps * playableDuration / 1000d)) : 0,
-            folderSize = (int)Math.Min(int.MaxValue, mediaSize),
+            folderSize = mediaSize,
             inCollection = true,
             cardDownloaded = true,
             cardDownloaded2 = true,
@@ -1198,16 +1245,23 @@ internal sealed class CustomShowStore
                 CustomClipMedia media = clip.Media!;
                 string clipForeground = ResolveRelative(folder, media.Foreground);
                 string clipAlpha = ResolveRelative(folder, media.Alpha);
-                int size = (int)Math.Min(int.MaxValue,
-                    new FileInfo(clipForeground).Length + new FileInfo(clipAlpha).Length);
+                long size = checked(new FileInfo(clipForeground).Length +
+                    new FileInfo(clipAlpha).Length);
                 string clipName = playableMedia.Length == 1
                     ? card.name : $"{card.name}:{clip.Id}";
                 return CreateClip(clipName, clipForeground, clipAlpha,
                     size, index + 1, clip.Hotness, clip.ClipTypes,
-                    clip.AlphaThreshold, 0, media.DurationMs);
+                    clip.AlphaThreshold, media.PlaybackStartMs,
+                    PlaybackEnd(media));
             }).ToList();
         return card;
     }
+
+    internal static long PlaybackEnd(CustomClipMedia media) =>
+        media.PlaybackEndMs ?? media.DurationMs;
+
+    internal static long PlaybackDuration(CustomClipMedia media) =>
+        PlaybackEnd(media) - media.PlaybackStartMs;
 
     static void ValidateClipSource(CustomShowClip clip, string folder)
     {
@@ -1237,7 +1291,7 @@ internal sealed class CustomShowStore
     }
 
     static ModelClip CreateClip(string name, string foreground, string alpha,
-        int size, int number, string hotness, string[] types,
+        long size, int number, string hotness, string[] types,
         int alphaThreshold, long startMs, long endMs) => new()
     {
         clipName = name,
@@ -1376,10 +1430,17 @@ internal sealed class CustomShowStore
                     DurationMs = clip.EndMs - clip.StartMs
                 };
             }
+            CustomClipMedia trimmedFixture = show.Clips[0].Media!;
+            trimmedFixture.PlaybackStartMs = 100;
+            trimmedFixture.PlaybackEndMs = 300;
             show.Processing = new()
             {
                 Algorithm = "rvm-matanyone2", MattingDetailPx = 512,
                 BatchSize = 3, RvmInitializerAlphaThresholdPercent = 40,
+                RvmMatAnyoneMaskRefresh = true,
+                RvmMatAnyoneRefreshStrengthPercent = 75,
+                MatAnyoneMaxMemoryFrames = 10,
+                MatAnyoneUseLongTermMemory = true,
                 AutoAcceptedAlphaThreshold = 25,
                 ExecutionPolicy = "auto",
                 ResolvedExecutionMode = "eager",
@@ -1410,6 +1471,10 @@ internal sealed class CustomShowStore
                 roundTrip.Processing?.Algorithm != "rvm-matanyone2" ||
                 roundTrip.Processing.MattingDetailPx != 512 ||
                 roundTrip.Processing.RvmInitializerAlphaThresholdPercent != 40 ||
+                !roundTrip.Processing.RvmMatAnyoneMaskRefresh ||
+                roundTrip.Processing.RvmMatAnyoneRefreshStrengthPercent != 75 ||
+                roundTrip.Processing.MatAnyoneMaxMemoryFrames != 10 ||
+                !roundTrip.Processing.MatAnyoneUseLongTermMemory ||
                 roundTrip.Processing.AutoAcceptedAlphaThreshold != 25 ||
                 roundTrip.Processing.Sam2Model != null ||
                 roundTrip.Processing.ResolvedExecutionMode != "eager" ||
@@ -1422,6 +1487,8 @@ internal sealed class CustomShowStore
                 roundTrip.ClipDetection?.Method != "omnishotcut" ||
                 roundTrip.ClipDetection.OverlapFrames != 20 ||
                 !roundTrip.ClipDetection.ManuallyEdited ||
+                roundTrip.Clips[0].Media?.PlaybackStartMs != 100 ||
+                roundTrip.Clips[0].Media?.PlaybackEndMs != 300 ||
                 !roundTrip.Clips[1].DetectionLabels.SequenceEqual(["Fade"]) ||
                 !roundTrip.Clips[2].DetectionLabels.Contains("Hard Cut"))
             {
@@ -1490,7 +1557,8 @@ internal sealed class CustomShowStore
                 cards[0].gender != "Non-Binary" ||
                 cards[0].modelAge != 24 || cards[0].bust != 36 ||
                 cards[0].height != "5.7" || loadedClips?.Count != 2 ||
-                loadedClips[0].customEndMs != 400 ||
+                loadedClips[0].customStartMs != 100 ||
+                loadedClips[0].customEndMs != 300 ||
                 loadedClips[0].customAlphaThreshold != 24 ||
                 loadedClips[1].customStartMs != 0 ||
                 loadedClips[1].hotnessCode != HotnessCode.topless)
