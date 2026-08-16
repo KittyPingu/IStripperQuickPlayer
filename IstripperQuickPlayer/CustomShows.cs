@@ -629,6 +629,19 @@ internal sealed class CustomShowStore
     {
         ValidateProfile(profile);
         EnsureCreated();
+        foreach (string path in Directory.EnumerateFiles(
+                     PerformersFolder, "*.json", System.IO.SearchOption.TopDirectoryOnly))
+        {
+            CustomPerformerProfile existing;
+            try { existing = ReadJson<CustomPerformerProfile>(path); }
+            catch { continue; }
+            if (!string.Equals(existing.Id, profile.Id,
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.ModelName.Trim(), profile.ModelName.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    $"A custom model named '{profile.ModelName.Trim()}' already exists.");
+        }
         WriteJsonAtomic(Path.Combine(PerformersFolder, profile.Id + ".json"), profile);
     }
 
@@ -1377,6 +1390,20 @@ internal sealed class CustomShowStore
                 BustCm = 91.44m, WaistCm = 66, HipsCm = 94
             };
             store.SavePerformer(profile);
+            bool duplicateNameRejected = false;
+            try
+            {
+                store.SavePerformer(new CustomPerformerProfile
+                {
+                    ModelName = " test model ", Gender = "Non-Binary"
+                });
+            }
+            catch (InvalidDataException) { duplicateNameRejected = true; }
+            if (!duplicateNameRejected)
+            {
+                Console.Error.WriteLine("Duplicate custom model name was accepted.");
+                return false;
+            }
             CustomShowManifest show = new()
             {
                 PerformerId = profile.Id, Title = "Test Show",

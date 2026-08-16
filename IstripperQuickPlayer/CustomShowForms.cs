@@ -1144,7 +1144,7 @@ internal sealed class CustomShowEditorForm : Form
 
     void OpenPerformer(CustomPerformerProfile? profile)
     {
-        using CustomPerformerForm form = new(profile);
+        using CustomPerformerForm form = new(profile, profiles);
         if (form.ShowDialog(this) != DialogResult.OK) return;
         if (profile != null)
             SavedPerformerChanged = true;
@@ -3637,10 +3637,13 @@ internal sealed class CustomPerformerForm : Form
     readonly CheckBox useHips = new() { Text = "Set" };
     readonly TextBox hair = new(), ethnicity = new(), city = new(), country = new();
     internal CustomPerformerProfile Profile { get; private set; }
+    readonly IReadOnlyList<CustomPerformerProfile> existingProfiles;
 
-    internal CustomPerformerForm(CustomPerformerProfile? profile)
+    internal CustomPerformerForm(CustomPerformerProfile? profile,
+        IEnumerable<CustomPerformerProfile>? existingProfiles = null)
     {
         Profile = profile == null ? new() : Clone(profile);
+        this.existingProfiles = existingProfiles?.ToArray() ?? [];
         Text = profile == null ? "New Model Profile" : "Edit Model Profile";
         ClientSize = new Size(500, 510);
         TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12) };
@@ -3695,6 +3698,13 @@ internal sealed class CustomPerformerForm : Form
             Profile.Hair = hair.Text.Trim(); Profile.Ethnicity = ethnicity.Text.Trim();
             Profile.City = city.Text.Trim(); Profile.Country = country.Text.Trim();
             CustomShowStore.ValidateProfile(Profile);
+            if (existingProfiles.Any(existing =>
+                    !string.Equals(existing.Id, Profile.Id,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.ModelName.Trim(), Profile.ModelName,
+                        StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidDataException(
+                    $"A custom model named '{Profile.ModelName}' already exists.");
             DialogResult = DialogResult.OK; Close();
         }
         catch (Exception error) { MessageBox.Show(this, error.Message, Text); }
@@ -3736,9 +3746,17 @@ internal sealed class CustomModelManagerForm : Form
     void Reload() { list.DataSource = null; list.DataSource = store.LoadPerformers(); }
     void Edit(CustomPerformerProfile? profile)
     {
-        using CustomPerformerForm form = new(profile);
+        using CustomPerformerForm form = new(profile, store.LoadPerformers());
         if (form.ShowDialog(this) != DialogResult.OK) return;
-        store.SavePerformer(form.Profile); Reload(); DialogResult = DialogResult.OK;
+        try
+        {
+            store.SavePerformer(form.Profile); Reload(); DialogResult = DialogResult.OK;
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 }
 
