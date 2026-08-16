@@ -140,6 +140,16 @@ def safe_window(requested: int, width: int, height: int,
     return min(requested, limit)
 
 
+def discard_buffer_before(sequencer, start: int) -> None:
+    """Discard completed items without resetting a streaming sequencer."""
+    if start <= sequencer.start_pos:
+        return
+    if start > sequencer.end_pos or sequencer.buffer is None:
+        raise RuntimeError("ProPainter attempted to discard undecoded source frames")
+    sequencer.buffer = sequencer.buffer[start - sequencer.start_pos:]
+    sequencer.start_pos = start
+
+
 def process(args: argparse.Namespace) -> None:
     runtime = Path(args.runtime).resolve()
     source, mask, output = (Path(value).resolve() for value in
@@ -326,6 +336,11 @@ def process(args: argparse.Namespace) -> None:
                         [cv2.IMWRITE_JPEG_QUALITY, 88])
                     os.replace(temporary_source, preview_source)
                     os.replace(temporary_output, preview_output)
+                # ProPainter trims its scaled tensor buffers, but not the raw
+                # sequencers used by the full-resolution final compositor.  Drop
+                # frames already emitted so long videos remain bounded in RAM.
+                discard_buffer_before(raw_frames, completed)
+                discard_buffer_before(raw_masks, completed)
                 emit("inpainting", 10 + min(completed, total_frames) / total_frames * 84,
                      f"Removed object from {min(completed, total_frames):,}/{total_frames:,} frames")
         encode.stdin.close()
@@ -364,10 +379,18 @@ def process(args: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
+    class FakeSequencer:
+        start_pos = 2
+        end_pos = 6
+        buffer = [2, 3, 4, 5]
+
     assert float(Fraction("30000/1001")) > 29.9
     assert MODEL_FILES[0].startswith("raft_things-")
     assert safe_window(40, 1920, 1080, 1, 16) == 12
     assert safe_window(40, 1920, 1080, .5, 16) == 40
+    fake = FakeSequencer()
+    discard_buffer_before(fake, 6)
+    assert fake.start_pos == fake.end_pos == 6 and fake.buffer == []
     print("ProPainter worker self-test passed")
 
 
