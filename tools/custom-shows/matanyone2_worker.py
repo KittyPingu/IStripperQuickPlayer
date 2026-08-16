@@ -914,10 +914,11 @@ def _process_once(args, compile_enabled):
                 corrected, dtype=np.uint8).copy()).float().to(device)
             if slot.download_done is not None:
                 slot.download_done.synchronize()
+            processor.clear_non_permanent_memory()
             with torch.inference_mode(), torch.amp.autocast(
                     device_type=device.type, enabled=fp16):
                 output_prob = processor.step(frame_tensor, corrected_tensor,
-                                             objects=[1])
+                                             objects=[1], force_permanent=True)
             download_alpha(slot, processor, output_prob)
             log_record("interactive_correction", frame=slot.index)
 
@@ -1024,7 +1025,8 @@ def _process_once(args, compile_enabled):
                     gc.collect()
                     if device.type == "cuda":
                         torch.cuda.empty_cache()
-                    forward, replayed_alpha = replay_forward_to(slot.index)
+                    forward, replayed_alpha = replay_forward_to(
+                        slot.index, target_index)
                     slot.alpha_cpu.copy_(torch.from_numpy(replayed_alpha))
                     slot.download_done = None
                     slot.alpha_gpu = None
@@ -1185,7 +1187,7 @@ def _process_once(args, compile_enabled):
 
             forward = new_processor()
 
-            def replay_forward_to(current_index):
+            def replay_forward_to(current_index, correction_index):
                 nonlocal rvm_refresh_state, rvm_missing_streak, last_rvm_refresh
                 checkpoint_index = max((index for index in checkpoint_files
                                         if index < current_index), default=None)
@@ -1231,17 +1233,29 @@ def _process_once(args, compile_enabled):
                         interactive_alpha_ready[history_index] = True
                         if raw_alpha is not None:
                             raw_alpha[index] = replayed_alpha
+                        if index >= correction_index:
+                            save_preview(frame, replayed_alpha,
+                                         force=index == correction_index)
                         save_processor_checkpoint(index, replay_processor)
                         replay_done = index - replay_start + 1
                         now = time.perf_counter()
-                        if (now - last_replay_progress >= .5 or
+                        if (index == correction_index or
+                                now - last_replay_progress >= .5 or
                                 replay_done == replay_total):
                             replay_fps = replay_done / max(
                                 now - replay_started, .001)
+                            if index >= correction_index:
+                                corrected_done = index - correction_index + 1
+                                corrected_total = current_index - correction_index + 1
+                                replay_message = (f"Replaying corrected MatAnyone 2 "
+                                    f"frames {corrected_done}/{corrected_total} "
+                                    f"({replay_fps:.1f} FPS)")
+                            else:
+                                replay_message = ("Restoring MatAnyone 2 memory "
+                                    f"before correction ({replay_done}/{replay_total})")
                             emit("replaying", min(99, progress_base +
                                 completed_work * (99 - progress_base) / work_total),
-                                f"Replaying MatAnyone 2 memory {replay_done}/"
-                                f"{replay_total} frames ({replay_fps:.1f} FPS)")
+                                replay_message)
                             last_replay_progress = now
                     replay.stdout.close()
                     if replay.wait() != 0:

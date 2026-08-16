@@ -516,8 +516,9 @@ internal sealed class CustomMaskEditorForm : Form
         streamCancellation?.Cancel();
         streamCancellation = new CancellationTokenSource();
         double speed = slowMotion.Checked ? .25 : 1;
-        _ = Task.Run(() => StreamPreviewAsync(FrameMs, speed,
-            streamCancellation.Token));
+        _ = Task.Run(() => frameSeedProvider == null
+            ? StreamPreviewAsync(FrameMs, speed, streamCancellation.Token)
+            : StreamMaskedPreviewAsync(FrameMs, speed, streamCancellation.Token));
         UpdateEnabledState();
     }
 
@@ -534,6 +535,7 @@ internal sealed class CustomMaskEditorForm : Form
 
     void PlaybackTick()
     {
+        if (frameSeedProvider != null) return;
         timeline.PositionMs = Math.Min(durationMs,
             playStartMs + (long)Math.Round(playClock.ElapsedMilliseconds *
                 (slowMotion.Checked ? .25 : 1)));
@@ -578,20 +580,27 @@ internal sealed class CustomMaskEditorForm : Form
         {
             CustomMaskFrameSeed? seed = frameSeedProvider == null ? null :
                 await frameSeedProvider(atMs, cancellation.Token);
+            if (cancellation.IsCancellationRequested || FrameMs != atMs)
+            {
+                DeleteFrameSeed(seed);
+                return;
+            }
             if (seed != null)
+            {
                 CustomShowMaskDraft.CopyAtomic(seed.FramePath, FramePath);
+                if (File.Exists(seed.MaskPath))
+                    CustomShowMaskDraft.CopyAtomic(seed.MaskPath, MaskPath);
+            }
             else await ExtractFrameAsync(atMs, cancellation.Token);
             if (cancellation.IsCancellationRequested || FrameMs != atMs) return;
             displayedFrameMs = atMs;
             frameReady = true;
             if (seed != null && File.Exists(seed.MaskPath))
             {
-                CustomShowMaskDraft.CopyAtomic(seed.MaskPath, MaskPath);
                 File.Copy(MaskPath, PaintSeedPath, true);
                 hasPaintSeed = true;
                 SetPreviewFromFiles();
-                try { File.Delete(seed.FramePath); } catch { }
-                try { File.Delete(seed.MaskPath); } catch { }
+                DeleteFrameSeed(seed);
             }
             else SetSource(LoadBitmap(FramePath));
             status.Text = paintOnly
@@ -649,6 +658,72 @@ internal sealed class CustomMaskEditorForm : Form
             }
         }
         catch (EndOfStreamException) { }
+        catch (OperationCanceledException) { }
+        catch (InvalidOperationException) when (IsDisposed || !IsHandleCreated) { }
+    }
+
+    async Task StreamMaskedPreviewAsync(long atMs, double speed,
+        CancellationToken token)
+    {
+        long stepMs = Math.Max(1, (long)Math.Round(frameDurationMs));
+        try
+        {
+            for (long currentMs = atMs; currentMs < endMs; currentMs += stepMs)
+            {
+                Stopwatch frameClock = Stopwatch.StartNew();
+                CustomMaskFrameSeed? seed = await frameSeedProvider!(currentMs, token);
+                if (seed == null) throw new InvalidDataException(
+                    "MatAnyone did not return the playback frame and mask.");
+                Bitmap? source = null;
+                Bitmap? mask = null;
+                try
+                {
+                    source = LoadBitmap(seed.FramePath);
+                    mask = LoadBitmap(seed.MaskPath);
+                }
+                catch
+                {
+                    source?.Dispose();
+                    mask?.Dispose();
+                    throw;
+                }
+                finally { DeleteFrameSeed(seed); }
+                try
+                {
+                    if (!IsHandleCreated || IsDisposed)
+                    {
+                        source.Dispose();
+                        mask.Dispose();
+                        break;
+                    }
+                    Invoke(() =>
+                    {
+                        if (token.IsCancellationRequested || !playback.Enabled)
+                        {
+                            source.Dispose();
+                            mask.Dispose();
+                            return;
+                        }
+                        timeline.PositionMs = Math.Clamp(currentMs - startMs,
+                            0, durationMs);
+                        displayedFrameMs = currentMs;
+                        image.SetPreviewOwned(source, mask, [], []);
+                        status.Text = $"Playing MatAnyone mask · {Format(currentMs - startMs)}";
+                    });
+                }
+                catch
+                {
+                    source.Dispose();
+                    mask.Dispose();
+                    throw;
+                }
+                int delay = (int)Math.Round(stepMs / speed -
+                    frameClock.Elapsed.TotalMilliseconds);
+                if (delay > 0) await Task.Delay(delay, token);
+            }
+            if (!token.IsCancellationRequested && IsHandleCreated && !IsDisposed)
+                Invoke(() => StopPlayback());
+        }
         catch (OperationCanceledException) { }
         catch (InvalidOperationException) when (IsDisposed || !IsHandleCreated) { }
     }
@@ -747,6 +822,13 @@ internal sealed class CustomMaskEditorForm : Form
             MessageBox.Show(this, error.Message, Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    static void DeleteFrameSeed(CustomMaskFrameSeed? seed)
+    {
+        if (seed == null) return;
+        try { File.Delete(seed.FramePath); } catch { }
+        try { File.Delete(seed.MaskPath); } catch { }
     }
 
     void Image_MouseMove(object? sender, MouseEventArgs e)
