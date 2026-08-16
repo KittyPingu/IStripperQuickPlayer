@@ -302,7 +302,8 @@ inclusion and metadata edits.
 the source ranges, included/skipped states, hotness, clip types, and detection
 labels into the editor, gives every imported segment a new ID, removes generated
 media references, and adjusts the final range to the current source duration.
-The imported ranges must still be contiguous and valid for the current video.
+The saved and current durations must match within one frame, and the imported
+ranges must remain contiguous and valid.
 TransNet inference runs on CUDA when available and FFmpeg
 uses CUDA decode/scale where the source codec supports it, with automatic CPU
 decode fallback. Clear **Include this segment as a playable
@@ -401,7 +402,8 @@ initialization and MatAnyone recurrent state restart after every retained scene
 cut. MatAnyone 2 produces the final alpha.
 For this preset, the selected **Matting detail** applies to MatAnyone's
 frame-by-frame processing, not to the RVM initializer. The initializer is capped
-at 512 px on the short side and RVM is unloaded before MatAnyone starts. Thus,
+at 512 px on the short side. RVM is unloaded before MatAnyone starts unless mask
+refresh is enabled. Thus,
 selecting **Very High (1024 px)** can use most of a 16 GB GPU even though the
 brief RVM stage remains at 512 px. Lowering Matting detail reduces MatAnyone's
 processing time and VRAM use; it does not change the dimensions of the published
@@ -468,7 +470,7 @@ Interactive alpha history is a temporary memory-mapped byte array at MatAnyone's
 processing resolution; matching inference RGB frames are retained as temporary
 JPEGs for correction review. The worker also serializes mutable MatAnyone state to
 temporary Torch checkpoint files every 250 frames. An earlier correction restores
-the nearest checkpoint before the anchor instead of replaying from the beginning,
+the nearest checkpoint with memory-mapped Torch loading instead of replaying from the beginning,
 invalidates later checkpoints, then rebuilds them while replaying. At the anchor,
 QuickPlayer clears non-permanent working and compressed long-term entries and adds
 the edited mask as permanent memory, so later frames propagate from the
