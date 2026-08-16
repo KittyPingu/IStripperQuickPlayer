@@ -1440,8 +1440,10 @@ internal sealed class CustomShowProcessingForm : Form
 
     void RefreshStatus()
     {
-        TimeSpan? remaining = EstimateRemaining(progressSamples, percent);
         double? fps = EstimateFps(frameSamples);
+        TimeSpan? remaining = frameSampleTotal > 0 && frameSamples.Count > 0
+            ? EstimateFrameRemaining(frameSamples, frameSampleTotal, fps)
+            : EstimateRemaining(progressSamples, percent);
         status.Text = $"{statusMessage}{Environment.NewLine}Elapsed {FormatDuration(elapsed.Elapsed)}  •  " +
             (fps == null ? "FPS: estimating...  •  " : $"FPS: {fps.Value:0.0}  •  ") +
             (remaining == null ? "Remaining: estimating..." :
@@ -1510,6 +1512,18 @@ internal sealed class CustomShowProcessingForm : Form
         return double.IsFinite(fps) && fps > 0 ? fps : null;
     }
 
+    static TimeSpan? EstimateFrameRemaining(
+        IReadOnlyList<(double Seconds, long Frames)> samples,
+        long totalFrames, double? fps)
+    {
+        if (samples.Count == 0 || totalFrames <= 0 || fps is not > 0)
+            return null;
+        long remainingFrames = Math.Max(0, totalFrames - samples[^1].Frames);
+        double seconds = remainingFrames / fps.Value;
+        return double.IsFinite(seconds) && seconds < TimeSpan.MaxValue.TotalSeconds
+            ? TimeSpan.FromSeconds(seconds) : null;
+    }
+
     static TimeSpan? EstimateRemaining(
         IReadOnlyList<(double Seconds, double Percent)> samples,
         double percent)
@@ -1559,6 +1573,9 @@ internal sealed class CustomShowProcessingForm : Form
             EstimateRemaining([(5, 20), (10, 30), (15, 40)], 40) == null &&
             EstimateRemaining(fast, 50) is not null &&
             Math.Abs(EstimateFps([(2, 10L), (7, 60L)])!.Value - 10) < .001 &&
+            EstimateFrameRemaining([(2, 10L), (7, 60L)], 960, 10) ==
+                TimeSpan.FromSeconds(90) &&
+            EstimateFrameRemaining([(2, 10L)], 960, null) == null &&
             TryParseFrameCount("8,590", out long formattedFrames) &&
             formattedFrames == 8_590 &&
             TryParseFrameProgress("Removed object from 6,200/14,960 frames",
