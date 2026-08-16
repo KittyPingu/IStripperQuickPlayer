@@ -89,9 +89,9 @@ internal sealed class CustomShowEditorForm : Form
     readonly Label rvmMatAnyoneRefreshStrengthValue = new()
         { Text = "100%", AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
     readonly NumericUpDown matAnyoneMaxMemoryFrames = new()
-        { Minimum = 2, Maximum = 30, Value = 5, Width = 70 };
+        { Minimum = 6, Maximum = 14, Value = 14, Width = 70 };
     readonly CheckBox matAnyoneUseLongTermMemory = new()
-        { Text = "Use compressed long-term memory", AutoSize = true };
+        { Text = "Use compressed long-term memory", AutoSize = true, Checked = true };
     readonly Label matAnyoneMemoryWarning = new()
     {
         Text = "Above Standard matting detail, lower max frames to avoid exhausting VRAM.",
@@ -1553,7 +1553,9 @@ internal sealed class CustomShowEditorForm : Form
                                     (int)matAnyoneMaxMemoryFrames.Value,
                                  matAnyoneUseLongTermMemory:
                                     matAnyoneUseLongTermMemory.Checked,
-                                 vitMatteInferenceDetailPx: vitMatteDetail);
+                                 vitMatteInferenceDetailPx: vitMatteDetail,
+                                 matAnyoneInteractiveCorrections:
+                                    selectedPreset == "matanyone2");
                             if (selectedPreset == "rvm-vitmatte-s" &&
                                 !sam2Masks.ContainsKey(clip.Id))
                             {
@@ -1591,7 +1593,10 @@ internal sealed class CustomShowEditorForm : Form
                             Width = first!.Width, Height = first.Height,
                             FrameRate = first.FrameRate, DurationMs = showClips[^1].EndMs
                         };
-                    });
+                    }, correctionConfiguration: selectedPreset == "matanyone2"
+                            ? configuration : null,
+                        correctionSource: selectedPreset == "matanyone2" ? input : null,
+                        correctionSam2Model: selectedSam2Model);
                     DialogResult processingResult = processing.ShowDialog(this);
                     if (processingResult != DialogResult.OK || processing.Result == null)
                     {
@@ -3826,6 +3831,7 @@ internal sealed class CustomShowSettingsForm : Form
             LastRvmMatAnyoneMaskRefresh = current.LastRvmMatAnyoneMaskRefresh,
             LastRvmMatAnyoneRefreshStrengthPercent =
                 current.LastRvmMatAnyoneRefreshStrengthPercent,
+            MatAnyoneMemoryDefaultsVersion = current.MatAnyoneMemoryDefaultsVersion,
             LastMatAnyoneMaxMemoryFrames = current.LastMatAnyoneMaxMemoryFrames,
             LastMatAnyoneUseLongTermMemory =
                 current.LastMatAnyoneUseLongTermMemory,

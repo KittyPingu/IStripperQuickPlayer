@@ -63,8 +63,9 @@ internal sealed class CustomShowConfiguration
     public int LastRvmInitializerAlphaThresholdPercent { get; set; } = 40;
     public bool LastRvmMatAnyoneMaskRefresh { get; set; }
     public int LastRvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
-    public int LastMatAnyoneMaxMemoryFrames { get; set; } = 5;
-    public bool LastMatAnyoneUseLongTermMemory { get; set; }
+    public int MatAnyoneMemoryDefaultsVersion { get; set; } = 1;
+    public int LastMatAnyoneMaxMemoryFrames { get; set; } = 14;
+    public bool LastMatAnyoneUseLongTermMemory { get; set; } = true;
     public bool LastAutoAcceptAlphaThreshold { get; set; }
 
     internal int Sam2CompileCutoffFrames(string model) => model switch
@@ -140,6 +141,12 @@ internal sealed class CustomShowConfiguration
                 configuration.LastRvmInitializerAlphaThresholdPercent, 10, 90);
             configuration.LastRvmMatAnyoneRefreshStrengthPercent = Math.Clamp(
                 configuration.LastRvmMatAnyoneRefreshStrengthPercent, 25, 100);
+            if (configuration.MatAnyoneMemoryDefaultsVersion < 1)
+            {
+                configuration.MatAnyoneMemoryDefaultsVersion = 1;
+                configuration.LastMatAnyoneMaxMemoryFrames = 14;
+                configuration.LastMatAnyoneUseLongTermMemory = true;
+            }
             configuration.LastMatAnyoneMaxMemoryFrames =
                 configuration.LastMatAnyoneUseLongTermMemory &&
                     configuration.LastMatAnyoneMaxMemoryFrames <

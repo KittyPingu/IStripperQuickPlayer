@@ -173,7 +173,7 @@ For **MatAnyone 2** and **RVM-MatAnyone**, **Max memory frames** controls the
 recent detailed-memory window (2–30 frames without long-term memory, or 6–14
 frames with it). **Use compressed long-term memory** consolidates older entries
 up to 4,000 tokens with a 500-token consolidation buffer. The default remains
-five frames with long-term memory disabled; enabling it initially selects fourteen.
+fourteen frames with long-term memory enabled.
 Lower the maximum frames if processing exhausts GPU memory.
 
 **MatAnyone 2** opens an initial-mask editor for each included clip. Scrub to a

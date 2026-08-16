@@ -426,10 +426,7 @@ internal sealed class DxgiMaskPreviewControl : Control
         context.PSSetSampler(0, sampler); context.Draw(3, 0);
         context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1);
         context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3);
-        // The preview is disposable visual feedback. If DWM has not consumed
-        // the previous frame, drop this one instead of ever stalling behind a
-        // saturated CUDA queue.
-        PresentNonBlocking(swap);
+        PresentFrame(swap);
     }
 
     static void PresentBlack(ID3D11DeviceContext context, IDXGISwapChain1 swap)
@@ -437,15 +434,14 @@ internal sealed class DxgiMaskPreviewControl : Control
         using ID3D11Texture2D back = swap.GetBuffer<ID3D11Texture2D>(0);
         using ID3D11RenderTargetView target = context.Device.CreateRenderTargetView(back);
         context.ClearRenderTargetView(target, new Vortice.Mathematics.Color4(0, 0, 0, 1));
-        PresentNonBlocking(swap);
+        PresentFrame(swap);
     }
 
-    static void PresentNonBlocking(IDXGISwapChain1 swap)
-    {
-        var result = swap.Present(0, PresentFlags.DoNotWait);
-        if (result.Failure && result != Vortice.DXGI.ResultCode.WasStillDrawing)
-            result.CheckError();
-    }
+    // Rendering already runs on a dedicated thread. Waiting for DWM here is
+    // safe; dropping a failed non-blocking Present can expose an uninitialized
+    // flip-model buffer after resize.
+    static void PresentFrame(IDXGISwapChain1 swap) =>
+        swap.Present(1, PresentFlags.None).CheckError();
 
     static Size ValidSize(Size value) => new(Math.Max(1, value.Width), Math.Max(1, value.Height));
 

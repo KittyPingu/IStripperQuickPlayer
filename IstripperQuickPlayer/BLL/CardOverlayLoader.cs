@@ -24,7 +24,7 @@ internal sealed record CardOverlayChoice(
 
 internal readonly record struct CardOverlayFrame(
     Bitmap Image, Rectangle Source, int FrameIndex = 0,
-    int FrameCount = 1, int FrameDuration = 250);
+    int FrameCount = 1, double FrameDuration = 250);
 
 internal sealed class CardOverlayRules
 {
@@ -61,6 +61,9 @@ internal static class CardOverlayLoader
 {
     private const string AllOverlaysMachineHash =
         "6AF076CABE8384C27B6BB920D4C9CCF7F517D41DBF0F1B5D9C40862FA1568D86";
+    // Qt Quick uses a one-second total animation when legacy sprite metadata
+    // specifies neither a frame rate nor a per-frame duration.
+    private const double DefaultSpriteAnimationDuration = 1000;
 
     private sealed record SpriteVariant(
         string Source, int FrameWidth, int FrameHeight);
@@ -81,13 +84,13 @@ internal static class CardOverlayLoader
     internal sealed class CardOverlay(
         Bitmap? spriteSheet, Bitmap? staticImage,
         int frameWidth, int frameHeight, int frameCount,
-        int frameDuration) : IDisposable
+        double frameDuration) : IDisposable
     {
         internal bool Animated => spriteSheet != null && frameCount > 1;
-        internal int FrameDuration => Math.Max(1, frameDuration);
+        internal double FrameDuration => Math.Max(1, frameDuration);
 
         internal int FrameAt(long ticks) =>
-            (int)((ticks / Math.Max(1, frameDuration)) % frameCount);
+            (int)((long)Math.Floor(ticks / FrameDuration) % frameCount);
 
         internal CardOverlayFrame Frame(long ticks)
         {
@@ -128,8 +131,8 @@ internal static class CardOverlayLoader
             get
             {
                 long ticks = Environment.TickCount64;
-                return Math.Max(1, overlay.FrameDuration -
-                    (int)(ticks % overlay.FrameDuration));
+                return Math.Max(1, (int)Math.Ceiling(
+                    overlay.FrameDuration - ticks % overlay.FrameDuration));
             }
         }
 
@@ -192,8 +195,8 @@ internal static class CardOverlayLoader
         {
             if (overlay.Animated)
             {
-                int untilNext = overlay.FrameDuration -
-                    (int)(ticks % overlay.FrameDuration);
+                int untilNext = (int)Math.Ceiling(
+                    overlay.FrameDuration - ticks % overlay.FrameDuration);
                 delay = Math.Min(delay, Math.Max(1, untilNext));
             }
         }
@@ -473,6 +476,7 @@ internal static class CardOverlayLoader
             Task.Run(() => LoadRcc(path, choice))
                 .GetAwaiter().GetResult();
         return overlay?.Animated == true &&
+            VerifyFrameDurationFallback() &&
             (!choice.File.Equals(
                 "borderGlow", StringComparison.OrdinalIgnoreCase) ||
                 HasInwardGlow(overlay)) &&
@@ -1092,8 +1096,18 @@ internal static class CardOverlayLoader
         return new(sprite, staticImage,
             sheet.variant?.FrameWidth ?? staticImage!.Width,
             sheet.variant?.FrameHeight ?? staticImage!.Height,
-            metadata.FrameCount, metadata.FrameDuration);
+            metadata.FrameCount, EffectiveFrameDuration(
+                metadata.FrameCount, metadata.FrameDuration));
     }
+
+    private static double EffectiveFrameDuration(
+        int frameCount, int frameDuration) => frameDuration > 0
+        ? frameDuration
+        : DefaultSpriteAnimationDuration / Math.Max(1, frameCount);
+
+    private static bool VerifyFrameDurationFallback() =>
+        Math.Abs(EffectiveFrameDuration(120, 0) - 1000d / 120) < .0001 &&
+        EffectiveFrameDuration(120, 33) == 33;
 
     private static Bitmap? DecodeChannel(
         IEnumerable<(string Name, byte[] Data, int Width, int Height)> images,

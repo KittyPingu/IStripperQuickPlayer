@@ -9,7 +9,10 @@ namespace IStripperQuickPlayer;
 internal sealed record CustomShowProgress(
     string Stage, double Percent, string Message,
     string? PreviewSource = null, string? PreviewComposite = null,
-    string? PreviewSourceLabel = null, string? PreviewCompositeLabel = null);
+    string? PreviewSourceLabel = null, string? PreviewCompositeLabel = null,
+    string? InteractiveControlFolder = null,
+    long? CorrectionFrameMs = null, string? CorrectionMask = null,
+    long? CorrectionStartMs = null, string? CorrectionFrame = null);
 
 internal sealed class CustomShowProcessResult
 {
@@ -604,9 +607,10 @@ internal static class CustomShowProcessor
         int rvmInitializerAlphaThresholdPercent = 40,
         bool rvmMatAnyoneMaskRefresh = false,
         int rvmMatAnyoneRefreshStrengthPercent = 100,
-        int matAnyoneMaxMemoryFrames = 5,
-        bool matAnyoneUseLongTermMemory = false,
-        int vitMatteInferenceDetailPx = 1024)
+        int matAnyoneMaxMemoryFrames = 14,
+        bool matAnyoneUseLongTermMemory = true,
+        int vitMatteInferenceDetailPx = 1024,
+        bool matAnyoneInteractiveCorrections = false)
     {
         using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(
             cancellationToken);
@@ -689,6 +693,12 @@ internal static class CustomShowProcessor
                 .ToString());
             if (matAnyoneUseLongTermMemory)
                 start.ArgumentList.Add("--use-long-term");
+            if (preset == "matanyone2" && matAnyoneInteractiveCorrections)
+            {
+                start.ArgumentList.Add("--interactive-control");
+                start.ArgumentList.Add(Path.Combine(stagingFolder,
+                    ".matanyone-control"));
+            }
         }
         else if (preset is "videomama" or "vitmatte-s" or "vitmatte-b")
         {
@@ -810,6 +820,9 @@ internal static class CustomShowProcessor
                             progressStage == "rvm-masks") ||
                         (preset == "rvm-matanyone2" &&
                             progressStage == "initializing");
+                    string? interactiveControl = preset == "matanyone2" &&
+                        matAnyoneInteractiveCorrections
+                        ? Path.Combine(stagingFolder, ".matanyone-control") : null;
                     progress?.Report(new CustomShowProgress(
                         progressStage,
                         root.TryGetProperty("percent", out var percent) ? percent.GetDouble() : 0,
@@ -822,7 +835,16 @@ internal static class CustomShowProcessor
                             ? "Original input" : null,
                         preset is "rvm-vitmatte-s" or "rvm-matanyone2"
                             ? showingRvmMask ? "RVM mask" : "Composited result"
-                            : null));
+                            : null,
+                        interactiveControl,
+                        root.TryGetProperty("correctionFrameMs", out var frameMs)
+                            ? frameMs.GetInt64() : null,
+                        root.TryGetProperty("correctionMask", out var correctionMask)
+                            ? correctionMask.GetString() : null,
+                        root.TryGetProperty("correctionStartMs", out var correctionStartMs)
+                            ? correctionStartMs.GetInt64() : null,
+                        root.TryGetProperty("correctionFrame", out var correctionFrame)
+                            ? correctionFrame.GetString() : null));
                 }
                 catch (JsonException) { }
             }
@@ -1113,26 +1135,40 @@ internal static class CustomShowProcessor
 
 internal sealed class CustomShowProcessingForm : Form
 {
-    protected override CreateParams CreateParams
+    sealed class BufferedTableLayoutPanel : TableLayoutPanel
     {
-        get
+        internal BufferedTableLayoutPanel()
         {
-            const int WsExComposited = 0x02000000;
-            CreateParams value = base.CreateParams;
-            value.ExStyle |= WsExComposited;
-            return value;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer, true);
         }
     }
 
+    sealed class BufferedGroupBox : GroupBox
+    {
+        internal BufferedGroupBox() => SetStyle(ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    sealed class BufferedLabel : Label
+    {
+        internal BufferedLabel() => SetStyle(ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
     readonly ProgressBar bar = new() { Dock = DockStyle.Top, Height = 28 };
-    readonly Label processDescription = new()
+    readonly Label processDescription = new BufferedLabel
     {
         Dock = DockStyle.Fill,
         TextAlign = ContentAlignment.MiddleCenter,
         Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold)
     };
-    readonly Label status = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
+    readonly Label status = new BufferedLabel
+        { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
     readonly Button cancel = new() { Dock = DockStyle.Bottom, Text = "Cancel", Height = 36 };
+    readonly Button pauseAndCorrect = new()
+        { Text = "Pause and correct mask", Dock = DockStyle.Fill, Enabled = false };
     readonly DxgiMaskPreviewControl source = new() { Dock = DockStyle.Fill,
         AccessibleName = "Original input preview" };
     readonly DxgiMaskPreviewControl composite = new() { Dock = DockStyle.Fill,
@@ -1141,7 +1177,11 @@ internal sealed class CustomShowProcessingForm : Form
     readonly GroupBox compositeGroup;
     readonly TableLayoutPanel layout;
     readonly TableLayoutPanel previews;
+    readonly TableLayoutPanel actions;
     readonly bool previewsEnabled;
+    readonly CustomShowConfiguration? correctionConfiguration;
+    readonly string? correctionSource;
+    readonly string correctionSam2Model;
     readonly CancellationTokenSource cancellation = new();
     readonly Stopwatch elapsed = new();
     readonly System.Windows.Forms.Timer clock = new() { Interval = 1000 };
@@ -1153,31 +1193,39 @@ internal sealed class CustomShowProcessingForm : Form
     double percent;
     long frameSampleTotal = -1;
     DateTime lastPreviewUtc;
+    string? interactiveControlFolder;
+    bool correctionOpen;
     internal CustomShowProcessResult? Result { get; private set; }
 
     internal CustomShowProcessingForm(Func<IProgress<CustomShowProgress>,
         CancellationToken, Task<CustomShowProcessResult>> operation,
         string text = "Processing Custom Show", string sourceLabel = "Original input",
         string compositeLabel = "Composited result", string? processDescription = null,
-        bool showPreviews = true)
+        bool showPreviews = true,
+        CustomShowConfiguration? correctionConfiguration = null,
+        string? correctionSource = null, string correctionSam2Model = "base-plus")
     {
         this.operation = operation;
         previewsEnabled = showPreviews;
+        this.correctionConfiguration = correctionConfiguration;
+        this.correctionSource = correctionSource;
+        this.correctionSam2Model = correctionSam2Model;
+        DoubleBuffered = true;
         Text = text;
-        ClientSize = new Size(620, 190);
-        MinimumSize = new Size(500, 180);
+        ClientSize = new Size(620, 198);
+        MinimumSize = new Size(500, 188);
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
-        layout = new() { Dock = DockStyle.Fill,
+        layout = new BufferedTableLayoutPanel { Dock = DockStyle.Fill,
             RowCount = 5, ColumnCount = 1 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,
             processDescription == null ? 0 : 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         this.processDescription.Text = processDescription ?? "";
-        previews = new() { Dock = DockStyle.Fill, Visible = false,
+        previews = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, Visible = false,
             RowCount = 1, ColumnCount = 2, Padding = new Padding(8) };
         previews.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         previews.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -1189,9 +1237,16 @@ internal sealed class CustomShowProcessingForm : Form
         layout.Controls.Add(bar, 0, 1);
         layout.Controls.Add(previews, 0, 2);
         layout.Controls.Add(status, 0, 3);
-        layout.Controls.Add(cancel, 0, 4);
+        actions = new() { Dock = DockStyle.Fill, ColumnCount = 2 };
+        pauseAndCorrect.Visible = false;
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 0));
+        actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        actions.Controls.Add(pauseAndCorrect, 0, 0);
+        actions.Controls.Add(cancel, 1, 0);
+        layout.Controls.Add(actions, 0, 4);
         Controls.Add(layout);
         cancel.Click += (_, _) => { cancel.Enabled = false; status.Text = "Cancelling..."; cancellation.Cancel(); };
+        pauseAndCorrect.Click += (_, _) => RequestCorrectionPause();
         clock.Tick += (_, _) => RefreshStatus();
         Shown += (_, e) =>
         {
@@ -1225,6 +1280,14 @@ internal sealed class CustomShowProcessingForm : Form
                 if (!string.IsNullOrWhiteSpace(value.PreviewCompositeLabel))
                     compositeGroup.Text = value.PreviewCompositeLabel;
                 UpdatePreview(value.PreviewSource, value.PreviewComposite);
+                if (!string.IsNullOrWhiteSpace(value.InteractiveControlFolder))
+                {
+                    interactiveControlFolder = value.InteractiveControlFolder;
+                    pauseAndCorrect.Enabled = !correctionOpen && value.Stage != "paused";
+                }
+                if (value.Stage == "paused" && value.CorrectionFrameMs is long &&
+                    !string.IsNullOrWhiteSpace(value.CorrectionMask) && !correctionOpen)
+                    BeginInvoke(() => CorrectPausedMask(value));
             });
             Result = await operation(progress, cancellation.Token);
             DialogResult = DialogResult.OK;
@@ -1241,7 +1304,7 @@ internal sealed class CustomShowProcessingForm : Form
 
     static GroupBox PreviewGroup(string text, Control picture)
     {
-        GroupBox group = new() { Text = text, Dock = DockStyle.Fill,
+        GroupBox group = new BufferedGroupBox { Text = text, Dock = DockStyle.Fill,
             Padding = new Padding(6) };
         group.Controls.Add(picture);
         return group;
@@ -1275,6 +1338,96 @@ internal sealed class CustomShowProcessingForm : Form
         return new Bitmap(source);
     }
 
+    void RequestCorrectionPause()
+    {
+        if (interactiveControlFolder == null || correctionOpen) return;
+        Directory.CreateDirectory(interactiveControlFolder);
+        File.WriteAllText(Path.Combine(interactiveControlFolder, "pause.request"), "pause");
+        pauseAndCorrect.Text = "Pausing...";
+        pauseAndCorrect.Enabled = false;
+    }
+
+    void CorrectPausedMask(CustomShowProgress progress)
+    {
+        if (correctionOpen || correctionConfiguration == null ||
+            correctionSource == null || interactiveControlFolder == null ||
+            progress.CorrectionFrameMs is not long frameMs ||
+            progress.CorrectionMask == null) return;
+        correctionOpen = true;
+        pauseAndCorrect.Text = "Correcting mask...";
+        pauseAndCorrect.Enabled = false;
+        string resume = Path.Combine(interactiveControlFolder, "resume.request");
+        try
+        {
+            string draft = Path.Combine(interactiveControlFolder,
+                "editor-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(draft);
+            CustomShowMaskDraft.CopyAtomic(progress.CorrectionMask,
+                Path.Combine(draft, "initial-mask.png"));
+            if (!string.IsNullOrWhiteSpace(progress.CorrectionFrame))
+                CustomShowMaskDraft.CopyAtomic(progress.CorrectionFrame,
+                    Path.Combine(draft, "initial-frame.png"));
+            CustomShowStore.WriteJsonAtomic(Path.Combine(draft, "initial-mask.json"),
+                new CustomInitialMaskDraft { FrameMs = frameMs });
+            long correctionStartMs = progress.CorrectionStartMs ?? frameMs;
+            using CustomMaskEditorForm editor = new(correctionSource,
+                correctionConfiguration, correctionStartMs, checked(frameMs + 1),
+                algorithm: "MatAnyone 2 correction", sam2Model: correctionSam2Model,
+                draftFolder: draft, showAutomaticMask: false,
+                allowFrameSelection: true, paintOnly: true,
+                frameSeedProvider: LoadCorrectionMaskAsync);
+            if (editor.ShowDialog(this) == DialogResult.OK)
+            {
+                string accepted = Path.Combine(draft, "accepted-mask.png");
+                editor.SaveMask(accepted);
+                File.WriteAllText(Path.Combine(interactiveControlFolder,
+                    "correction-frame-ms.txt"),
+                    editor.FrameMs.ToString(CultureInfo.InvariantCulture));
+                CustomShowMaskDraft.CopyAtomic(accepted, Path.Combine(
+                    interactiveControlFolder, "corrected-mask.png"));
+            }
+            else File.WriteAllText(resume, "resume");
+        }
+        catch (Exception error)
+        {
+            File.WriteAllText(resume, "resume");
+            MessageBox.Show(this, error.Message, "Correct MatAnyone Mask",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            correctionOpen = false;
+            pauseAndCorrect.Text = "Pause and correct mask";
+        }
+    }
+
+    async Task<CustomMaskFrameSeed?> LoadCorrectionMaskAsync(long frameMs,
+        CancellationToken token)
+    {
+        if (interactiveControlFolder == null) return null;
+        string id = Guid.NewGuid().ToString("N");
+        string request = Path.Combine(interactiveControlFolder,
+            "mask-request.json");
+        string temporary = request + ".tmp-" + id;
+        string mask = Path.Combine(interactiveControlFolder,
+            $"requested-mask-{id}.png");
+        string frame = Path.Combine(interactiveControlFolder,
+            $"requested-frame-{id}.png");
+        string ready = Path.Combine(interactiveControlFolder,
+            $"requested-mask-{id}.ready");
+        Directory.CreateDirectory(interactiveControlFolder);
+        await File.WriteAllTextAsync(temporary,
+            JsonSerializer.Serialize(new { id, frameMs }), token);
+        File.Move(temporary, request, true);
+        while (!File.Exists(ready))
+            await Task.Delay(25, token);
+        try { File.Delete(ready); } catch { }
+        return File.Exists(mask) && File.Exists(frame)
+            ? new CustomMaskFrameSeed(frame, mask)
+            : throw new InvalidDataException(
+                "MatAnyone did not return the selected frame and mask.");
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -1299,6 +1452,13 @@ internal sealed class CustomShowProcessingForm : Form
     {
         if (!previewsEnabled || previews.Visible) return;
         previews.Visible = true;
+        if (correctionConfiguration != null &&
+            !string.IsNullOrWhiteSpace(correctionSource))
+        {
+            pauseAndCorrect.Visible = true;
+            actions.ColumnStyles[0].Width = 50;
+            actions.ColumnStyles[1].Width = 50;
+        }
         layout.RowStyles[2].SizeType = SizeType.Percent;
         layout.RowStyles[2].Height = 100;
         MinimumSize = new Size(700, 500);

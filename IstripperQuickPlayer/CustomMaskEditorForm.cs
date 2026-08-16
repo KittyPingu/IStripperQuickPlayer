@@ -6,6 +6,8 @@ using System.Text.Json;
 
 namespace IStripperQuickPlayer;
 
+internal sealed record CustomMaskFrameSeed(string FramePath, string MaskPath);
+
 internal sealed class CustomMaskEditorForm : Form
 {
     static readonly SemaphoreSlim Sam2MattingWorkerGate = new(1, 1);
@@ -26,6 +28,9 @@ internal sealed class CustomMaskEditorForm : Form
     readonly bool allowFrameSelection;
     readonly string sam2Model;
     readonly bool sam2Matting;
+    readonly bool paintOnly;
+    readonly Func<long, CancellationToken, Task<CustomMaskFrameSeed?>>?
+        frameSeedProvider;
     readonly string? draftFolder;
     readonly string temporary = Path.Combine(Path.GetTempPath(),
         "iqp-mask-" + Guid.NewGuid().ToString("N"));
@@ -96,7 +101,9 @@ internal sealed class CustomMaskEditorForm : Form
         string? clipLabel = null, string algorithm = "MatAnyone 2",
         bool allowFrameSelection = false, string sam2Model = "base-plus",
         string? draftFolder = null, bool sam2Matting = false,
-        bool showAutomaticMask = true)
+        bool showAutomaticMask = true, bool paintOnly = false,
+        Func<long, CancellationToken, Task<CustomMaskFrameSeed?>>?
+            frameSeedProvider = null)
     {
         this.videoPath = videoPath;
         this.configuration = configuration;
@@ -105,6 +112,8 @@ internal sealed class CustomMaskEditorForm : Form
         this.allowFrameSelection = allowFrameSelection;
         this.sam2Model = sam2Model;
         this.sam2Matting = sam2Matting;
+        this.paintOnly = paintOnly;
+        this.frameSeedProvider = frameSeedProvider;
         this.draftFolder = draftFolder;
         durationMs = Math.Max(1, endMs - startMs);
         try
@@ -123,7 +132,11 @@ internal sealed class CustomMaskEditorForm : Form
 
         Label instructions = new() { Dock = DockStyle.Fill, Height = 44,
             TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10, 0, 0, 0),
-            Text = allowFrameSelection
+            Text = paintOnly && allowFrameSelection
+                ? "Scrub backward to the frame to correct, paint foreground with the left button and background with the right button, then use this mask."
+                : paintOnly
+                ? "Paint foreground with the left button and background with the right button, then use this mask."
+                : allowFrameSelection
                 ? "Choose any frame, then click to prompt SAM2 or enable Paint mask for exact brush edits."
                 : "Click to prompt SAM2, or enable Paint mask and drag to edit the foreground directly." };
         TableLayoutPanel root = new() { Dock = DockStyle.Fill, RowCount = 5,
@@ -148,7 +161,7 @@ internal sealed class CustomMaskEditorForm : Form
             DialogResult = DialogResult.Cancel };
         actions.Controls.AddRange([paintMode, brushSize, brushSizeLabel, clear,
             undo, automatic, accept, cancel, status]);
-        automatic.Visible = showAutomaticMask;
+        automatic.Visible = showAutomaticMask && !paintOnly;
         root.Controls.Add(actions, 0, 4);
         Controls.Add(root);
         CancelButton = cancel;
@@ -202,6 +215,7 @@ internal sealed class CustomMaskEditorForm : Form
             image.Cursor = Cursors.Default;
             image.SetBrush(null, brushSize.Value);
         };
+        if (paintOnly) paintMode.Checked = true;
         brushSize.ValueChanged += (_, _) =>
         {
             brushSizeLabel.Text = $"{brushSize.Value} px";
@@ -305,11 +319,15 @@ internal sealed class CustomMaskEditorForm : Form
         try
         {
             status.Text = "Extracting the selected frame...";
-            if (!sam2Matting)
+            if (!sam2Matting && !paintOnly)
                 gpuLease = await CustomShowGpuScheduler.AcquireAsync(
                     CancellationToken.None);
             Directory.CreateDirectory(temporary);
-            await ExtractFrameAsync(FrameMs, CancellationToken.None);
+            string? savedFrame = draftFolder == null ? null : Path.Combine(
+                draftFolder, "initial-frame.png");
+            if (savedFrame != null && File.Exists(savedFrame))
+                CustomShowMaskDraft.CopyAtomic(savedFrame, FramePath);
+            else await ExtractFrameAsync(FrameMs, CancellationToken.None);
             SetSource(LoadBitmap(FramePath));
             displayedFrameMs = FrameMs;
             frameReady = true;
@@ -328,17 +346,26 @@ internal sealed class CustomMaskEditorForm : Form
                 if (File.Exists(savedPreview))
                 {
                     CustomShowMaskDraft.CopyAtomic(savedPreview, PreviewPath);
-                    SetPreviewFromFiles();
                 }
+                SetPreviewFromFiles();
             }
             using (Bitmap check = LoadBitmap(FramePath))
-            if (IsMostlyBlack(check))
+            if (!paintOnly && IsMostlyBlack(check))
             {
                 timeline.PositionMs = Math.Min(durationMs,
                     Math.Min(3_000, durationMs / 2));
                 await ExtractFrameAsync(FrameMs, CancellationToken.None);
                 SetSource(LoadBitmap(FramePath));
                 displayedFrameMs = FrameMs;
+            }
+            if (paintOnly)
+            {
+                workerReady = true;
+                status.Text = allowFrameSelection
+                    ? "Scrub backward if needed, paint the MatAnyone mask, then use this mask."
+                    : "Paint the paused MatAnyone mask, then use this mask.";
+                UpdateEnabledState();
+                return;
             }
             string python = sam2Matting ? configuration.Sam2MattingPythonExecutable :
                 configuration.PythonExecutable;
@@ -549,12 +576,27 @@ internal sealed class CustomMaskEditorForm : Form
         previewCancellation = cancellation;
         try
         {
-            await ExtractFrameAsync(atMs, cancellation.Token);
+            CustomMaskFrameSeed? seed = frameSeedProvider == null ? null :
+                await frameSeedProvider(atMs, cancellation.Token);
+            if (seed != null)
+                CustomShowMaskDraft.CopyAtomic(seed.FramePath, FramePath);
+            else await ExtractFrameAsync(atMs, cancellation.Token);
             if (cancellation.IsCancellationRequested || FrameMs != atMs) return;
-            SetSource(LoadBitmap(FramePath));
             displayedFrameMs = atMs;
             frameReady = true;
-            status.Text = $"Frame {Format(atMs - startMs)} ready; click the foreground to create its mask.";
+            if (seed != null && File.Exists(seed.MaskPath))
+            {
+                CustomShowMaskDraft.CopyAtomic(seed.MaskPath, MaskPath);
+                File.Copy(MaskPath, PaintSeedPath, true);
+                hasPaintSeed = true;
+                SetPreviewFromFiles();
+                try { File.Delete(seed.FramePath); } catch { }
+                try { File.Delete(seed.MaskPath); } catch { }
+            }
+            else SetSource(LoadBitmap(FramePath));
+            status.Text = paintOnly
+                ? $"Frame {Format(atMs - startMs)} ready with its MatAnyone mask; paint corrections."
+                : $"Frame {Format(atMs - startMs)} ready; click the foreground to create its mask.";
         }
         catch (OperationCanceledException) { }
         catch (Exception error)

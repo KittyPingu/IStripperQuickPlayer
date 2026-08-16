@@ -3,6 +3,7 @@
 import argparse
 from collections import deque
 import ctypes
+import gc
 import json
 import math
 import os
@@ -34,6 +35,7 @@ RVM_REFRESH_PERSISTENCE = 3
 RVM_REFRESH_COOLDOWN = 15
 LONG_TERM_MAX_TOKENS = 4000
 LONG_TERM_BUFFER_TOKENS = 500
+INTERACTIVE_CHECKPOINT_INTERVAL = 250
 
 
 def log_record(kind, **values):
@@ -135,6 +137,20 @@ def preview_size(width, height):
 def mask_frame_index(mask_frame_ms, start_ms, fps, total):
     return max(0, min(total - 1,
         round(max(0, mask_frame_ms - start_ms) * fps / 1000)))
+
+
+def interactive_anchor_index(frame_ms, start_ms, fps, total,
+                             selected_index, current_index):
+    index = mask_frame_index(frame_ms, start_ms, fps, total)
+    if index < selected_index or index > current_index:
+        raise ValueError("correction frame is outside the available MatAnyone history")
+    return index
+
+
+def interactive_checkpoint_frame(frame_index, selected_index,
+                                 interval=INTERACTIVE_CHECKPOINT_INTERVAL):
+    return frame_index >= selected_index and \
+        (frame_index - selected_index + 1) % interval == 0
 
 
 def binary_dilate(mask, iterations=3):
@@ -574,6 +590,18 @@ def _process_once(args, compile_enabled):
     profiler = StageProfiler()
     source, output = args.source.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    interactive = args.interactive_control.resolve() \
+        if args.interactive_control else None
+    if interactive is not None:
+        interactive.mkdir(parents=True, exist_ok=True)
+        for name in ("pause.request", "resume.request", "corrected-mask.png",
+                     "paused-mask.png", "correction-frame-ms.txt",
+                     "paused-frame.png", "mask-request.json",
+                     "mask-request.processing.json"):
+            (interactive / name).unlink(missing_ok=True)
+        for pattern in ("requested-mask-*", "requested-frame-*"):
+            for path in interactive.glob(pattern):
+                path.unlink(missing_ok=True)
     width, height, frame_rate, fps, source_duration = probe(source)
     process_width, process_height = processing_size(width, height, args.max_size)
     start = args.start_ms / 1000
@@ -608,12 +636,41 @@ def _process_once(args, compile_enabled):
             selected_index = automatic_rvm_mask(source, runtime, start, frame_rate,
                 fps, total, initializer_width, initializer_height, min(8, total),
                 mask_path, profiler, args.rvm_alpha_threshold)
+        correction_start_ms = round((start + selected_index / fps) * 1000)
+        correction_anchors = {}
+        checkpoint_folder = work / "interactive-checkpoints"
+        checkpoint_files = {}
+        if interactive is not None:
+            checkpoint_folder.mkdir()
+            for path in interactive.glob("correction-*.png"):
+                try:
+                    frame_ms = int(path.stem.removeprefix("correction-"))
+                    index = interactive_anchor_index(frame_ms, args.start_ms, fps,
+                        total, selected_index, total - 1)
+                    correction_anchors[index] = path
+                except ValueError:
+                    path.unlink(missing_ok=True)
         prepared = work / "source"
         prepared.mkdir()
         extract_earlier_frames(ffmpeg, source, prepared, start, frame_rate,
                                process_width, process_height, selected_index, profiler)
         prepared_bytes = sum(path.stat().st_size for path in prepared.glob("*.jpg"))
         profiler.set_temp_bytes(prepared_bytes)
+        interactive_alpha = None
+        interactive_alpha_path = work / "interactive-alpha.u8"
+        interactive_frames = work / "interactive-frames"
+        interactive_alpha_ready = [False] * max(0, total - selected_index)
+        if interactive is not None:
+            interactive_frames.mkdir()
+            history_bytes = ((total - selected_index) * process_width *
+                             process_height)
+            if shutil.disk_usage(work).free < history_bytes + 64 * 1024 * 1024:
+                raise RuntimeError("Insufficient temporary disk space for interactive "
+                                   f"mask history: need {history_bytes / (1024 ** 2):.0f} MB")
+            interactive_alpha = np.memmap(interactive_alpha_path, mode="w+",
+                dtype=np.uint8, shape=(total - selected_index,
+                                      process_height, process_width))
+            profiler.set_temp_bytes(prepared_bytes + history_bytes)
 
         progress_base = 5 if selected_index else 0
         emit("startup", progress_base, "Loading MatAnyone 2...")
@@ -655,6 +712,44 @@ def _process_once(args, compile_enabled):
 
         def new_processor():
             return InferenceCore(model, cfg=model.cfg, device=device)
+
+        def save_processor_checkpoint(frame_index, processor):
+            if interactive is None or not interactive_checkpoint_frame(
+                    frame_index, selected_index):
+                return
+            path = checkpoint_folder / f"{frame_index:08d}.pt"
+            temporary = path.with_suffix(".tmp")
+            torch.save({
+                "curr_ti": processor.curr_ti,
+                "last_mem_ti": processor.last_mem_ti,
+                "object_manager": processor.object_manager,
+                "memory": processor.memory,
+                "last_mask": processor.last_mask,
+                "last_pix_feat": processor.last_pix_feat,
+                "last_msk_value": processor.last_msk_value,
+            }, temporary)
+            os.replace(temporary, path)
+            checkpoint_files[frame_index] = path
+            log_record("interactive_checkpoint", frame=frame_index,
+                       bytes=path.stat().st_size)
+
+        def restore_processor_checkpoint(frame_index):
+            state = torch.load(checkpoint_files[frame_index], map_location=device,
+                               mmap=True, weights_only=False)
+            processor = new_processor()
+            processor.curr_ti = state["curr_ti"]
+            processor.last_mem_ti = state["last_mem_ti"]
+            processor.object_manager = state["object_manager"]
+            processor.memory = state["memory"]
+            processor.memory.object_manager = processor.object_manager
+            processor.last_mask = state["last_mask"]
+            processor.last_pix_feat = state["last_pix_feat"]
+            processor.last_msk_value = state["last_msk_value"]
+            return processor
+
+        def invalidate_checkpoints(frame_index):
+            for index in [value for value in checkpoint_files if value >= frame_index]:
+                checkpoint_files.pop(index).unlink(missing_ok=True)
 
         mask = Image.open(mask_path).convert("L").resize(
             (process_width, process_height), Image.Resampling.NEAREST)
@@ -770,6 +865,7 @@ def _process_once(args, compile_enabled):
                     profiler.add("warmup" if first_frame else "processor_step",
                                  time.perf_counter() - started)
                 download_alpha(slot, processor, output_prob)
+                return frame_tensor
             except BaseException as error:
                 if compile_enabled:
                     raise RuntimeError(f"compiled MatAnyone execution failed: {error}") from error
@@ -809,6 +905,140 @@ def _process_once(args, compile_enabled):
                 replace_preview(temporary, output / name)
             last_preview = now
             profiler.add("preview_generation", time.perf_counter() - started)
+
+        def apply_correction_mask(slot, processor, frame_tensor, corrected_path):
+            with Image.open(corrected_path) as corrected_image:
+                corrected = corrected_image.convert("L").resize(
+                    (process_width, process_height), Image.Resampling.NEAREST)
+            corrected_tensor = torch.from_numpy(np.asarray(
+                corrected, dtype=np.uint8).copy()).float().to(device)
+            if slot.download_done is not None:
+                slot.download_done.synchronize()
+            with torch.inference_mode(), torch.amp.autocast(
+                    device_type=device.type, enabled=fp16):
+                output_prob = processor.step(frame_tensor, corrected_tensor,
+                                             objects=[1])
+            download_alpha(slot, processor, output_prob)
+            log_record("interactive_correction", frame=slot.index)
+
+        def apply_interactive_correction(slot, processor, frame_tensor):
+            nonlocal forward
+            if interactive is None or not (interactive / "pause.request").is_file():
+                return
+            if slot.download_done is not None:
+                slot.download_done.synchronize()
+            paused_mask = interactive / "paused-mask.png"
+            temporary = interactive / "paused-mask.tmp.png"
+            Image.fromarray(slot.alpha_cpu.numpy(), "L").resize(
+                (width, height), Image.Resampling.NEAREST).save(temporary, "PNG")
+            os.replace(temporary, paused_mask)
+            paused_frame = interactive / "paused-frame.png"
+            temporary_frame = interactive / "paused-frame.tmp.png"
+            Image.fromarray(slot.input_cpu.numpy(), "RGB").resize(
+                (width, height), Image.Resampling.BILINEAR).save(
+                    temporary_frame, "PNG")
+            os.replace(temporary_frame, paused_frame)
+            (interactive / "pause.request").unlink(missing_ok=True)
+            frame_ms = round((start + slot.index / fps) * 1000)
+            print(json.dumps({"stage": "paused", "percent": min(99,
+                progress_base + completed_work * (99 - progress_base) / work_total),
+                "message": f"MatAnyone 2 paused at frame {slot.index + 1}/{total}",
+                "correctionFrameMs": frame_ms,
+                "correctionStartMs": correction_start_ms,
+                "correctionMask": str(paused_mask),
+                "correctionFrame": str(paused_frame)}), flush=True)
+            corrected_path = interactive / "corrected-mask.png"
+            resume_path = interactive / "resume.request"
+            correction_frame_path = interactive / "correction-frame-ms.txt"
+            request_path = interactive / "mask-request.json"
+            processing_request_path = interactive / "mask-request.processing.json"
+            pending_request = None
+            while not corrected_path.is_file() and not resume_path.is_file():
+                if pending_request is None and request_path.is_file():
+                    try:
+                        os.replace(request_path, processing_request_path)
+                        pending_request = json.loads(
+                            processing_request_path.read_text())
+                    except FileNotFoundError:
+                        pass
+                    finally:
+                        processing_request_path.unlink(missing_ok=True)
+                if pending_request is not None:
+                    requested_ms = int(pending_request["frameMs"])
+                    requested_index = interactive_anchor_index(requested_ms,
+                        args.start_ms, fps, total, selected_index, slot.index)
+                    history_index = requested_index - selected_index
+                    requested_alpha = None
+                    if requested_index == slot.index:
+                        requested_alpha = slot.alpha_cpu.numpy()
+                    elif interactive_alpha_ready[history_index]:
+                        requested_alpha = np.array(
+                            interactive_alpha[history_index], copy=True)
+                    if requested_alpha is not None:
+                        request_id = str(pending_request["id"])
+                        if len(request_id) != 32 or any(
+                                value not in "0123456789abcdef" for value in request_id):
+                            raise ValueError("invalid interactive mask request")
+                        requested_mask = interactive / f"requested-mask-{request_id}.png"
+                        requested_temporary = interactive / \
+                            f"requested-mask-{request_id}.tmp.png"
+                        Image.fromarray(requested_alpha, "L").resize(
+                            (width, height), Image.Resampling.NEAREST).save(
+                                requested_temporary, "PNG")
+                        os.replace(requested_temporary, requested_mask)
+                        requested_frame = interactive / \
+                            f"requested-frame-{request_id}.png"
+                        requested_frame_temporary = interactive / \
+                            f"requested-frame-{request_id}.tmp.png"
+                        if requested_index == slot.index:
+                            requested_rgb = Image.fromarray(
+                                slot.input_cpu.numpy(), "RGB")
+                        else:
+                            requested_rgb = Image.open(
+                                interactive_frames / f"{requested_index:08d}.jpg")
+                        with requested_rgb:
+                            requested_rgb.resize((width, height),
+                                Image.Resampling.BILINEAR).save(
+                                    requested_frame_temporary, "PNG")
+                        os.replace(requested_frame_temporary, requested_frame)
+                        (interactive / f"requested-mask-{request_id}.ready").write_text(
+                            str(requested_ms))
+                        pending_request = None
+                time.sleep(.05)
+            if corrected_path.is_file():
+                selected_frame_ms = frame_ms
+                if correction_frame_path.is_file():
+                    selected_frame_ms = int(correction_frame_path.read_text().strip())
+                target_index = interactive_anchor_index(selected_frame_ms,
+                    args.start_ms, fps, total, selected_index, slot.index)
+                anchor_path = interactive / f"correction-{selected_frame_ms}.png"
+                os.replace(corrected_path, anchor_path)
+                correction_anchors[target_index] = anchor_path
+                invalidate_checkpoints(target_index)
+                if target_index < slot.index:
+                    emit("replaying", min(99, progress_base + completed_work *
+                         (99 - progress_base) / work_total),
+                         f"Replaying MatAnyone 2 memory through frame {slot.index + 1}...")
+                    forward = None
+                    processor = None
+                    gc.collect()
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    forward, replayed_alpha = replay_forward_to(slot.index)
+                    slot.alpha_cpu.copy_(torch.from_numpy(replayed_alpha))
+                    slot.download_done = None
+                    slot.alpha_gpu = None
+                else:
+                    apply_correction_mask(slot, processor, frame_tensor, anchor_path)
+                    save_processor_checkpoint(slot.index, processor)
+            corrected_path.unlink(missing_ok=True)
+            resume_path.unlink(missing_ok=True)
+            paused_mask.unlink(missing_ok=True)
+            paused_frame.unlink(missing_ok=True)
+            correction_frame_path.unlink(missing_ok=True)
+            emit("inference", min(99, progress_base + completed_work *
+                 (99 - progress_base) / work_total),
+                 "MatAnyone 2 resumed after mask review")
 
         work_total = total + selected_index
         completed_work = 0
@@ -900,27 +1130,35 @@ def _process_once(args, compile_enabled):
             decode = source_and_foreground_encoder(ffmpeg, source, output, start,
                 duration, frame_rate, width, height, total, video_codec,
                 process_width, process_height, "bilinear")
-            encode = alpha_encoder(ffmpeg, output, frame_rate, width, height, total,
-                process_width, process_height, alpha_codec, scale="bilinear")
+            if interactive is None:
+                encode = alpha_encoder(ffmpeg, output, frame_rate, width, height,
+                    total, process_width, process_height, alpha_codec,
+                    scale="bilinear")
             frame_bytes = process_width * process_height * 3
+
+            def read_frame(pipe):
+                value = bytearray(frame_bytes)
+                view, received = memoryview(value), 0
+                while received < frame_bytes:
+                    size = pipe.readinto(view[received:])
+                    if not size:
+                        break
+                    received += size
+                if not received:
+                    return None
+                if received != frame_bytes:
+                    raise RuntimeError("source decoder returned a partial frame")
+                return np.frombuffer(value, np.uint8).reshape(
+                    process_height, process_width, 3)
 
             def forward_items():
                 for index in range(total):
                     started = time.perf_counter()
-                    value = bytearray(frame_bytes)
-                    view, received = memoryview(value), 0
-                    while received < frame_bytes:
-                        size = decode.stdout.readinto(view[received:])
-                        if not size:
-                            break
-                        received += size
+                    frame = read_frame(decode.stdout)
                     profiler.add("decode_read", time.perf_counter() - started)
-                    if not received:
+                    if frame is None:
                         return
-                    if received != frame_bytes:
-                        raise RuntimeError("source decoder returned a partial frame")
-                    yield index, np.frombuffer(value, np.uint8).reshape(
-                        process_height, process_width, 3)
+                    yield index, frame
 
             def prepare_forward(slot, item):
                 index, frame = item
@@ -947,6 +1185,73 @@ def _process_once(args, compile_enabled):
 
             forward = new_processor()
 
+            def replay_forward_to(current_index):
+                nonlocal rvm_refresh_state, rvm_missing_streak, last_rvm_refresh
+                checkpoint_index = max((index for index in checkpoint_files
+                                        if index < current_index), default=None)
+                replay_start = selected_index if checkpoint_index is None else \
+                    checkpoint_index + 1
+                replay = subprocess.Popen([ffmpeg, "-v", "error", "-ss",
+                    f"{start:.6f}", "-i", str(source), "-vf",
+                    (f"fps={frame_rate},scale={width}:{height}:flags=lanczos,"
+                     f"setsar=1,format=rgb24,scale={process_width}:"
+                     f"{process_height}:flags=bilinear"), "-frames:v",
+                    str(current_index + 1), "-f", "rawvideo", "-pix_fmt",
+                    "rgb24", "pipe:1"], stdout=subprocess.PIPE)
+                replay_processor = new_processor() if checkpoint_index is None else \
+                    restore_processor_checkpoint(checkpoint_index)
+                rvm_refresh_state = [None] * 4
+                rvm_missing_streak = 0
+                last_rvm_refresh = -RVM_REFRESH_COOLDOWN
+                replay_slot = FrameSlot(torch, process_height, process_width, device)
+                replay_total = current_index - replay_start + 1
+                replay_started = time.perf_counter()
+                last_replay_progress = 0.0
+                try:
+                    for index in range(current_index + 1):
+                        frame = read_frame(replay.stdout)
+                        if frame is None:
+                            raise RuntimeError("correction replay ended early")
+                        if index < replay_start:
+                            continue
+                        replay_slot.reset()
+                        replay_slot.index = index
+                        replay_slot.input_cpu.copy_(torch.from_numpy(frame.copy()))
+                        replay_tensor = step(replay_slot, replay_processor,
+                            first_frame=index == selected_index,
+                            allow_rvm_refresh=index > selected_index)
+                        if index in correction_anchors:
+                            apply_correction_mask(replay_slot, replay_processor,
+                                replay_tensor, correction_anchors[index])
+                        if replay_slot.download_done is not None:
+                            replay_slot.download_done.synchronize()
+                        history_index = index - selected_index
+                        replayed_alpha = replay_slot.alpha_cpu.numpy()
+                        interactive_alpha[history_index] = replayed_alpha
+                        interactive_alpha_ready[history_index] = True
+                        if raw_alpha is not None:
+                            raw_alpha[index] = replayed_alpha
+                        save_processor_checkpoint(index, replay_processor)
+                        replay_done = index - replay_start + 1
+                        now = time.perf_counter()
+                        if (now - last_replay_progress >= .5 or
+                                replay_done == replay_total):
+                            replay_fps = replay_done / max(
+                                now - replay_started, .001)
+                            emit("replaying", min(99, progress_base +
+                                completed_work * (99 - progress_base) / work_total),
+                                f"Replaying MatAnyone 2 memory {replay_done}/"
+                                f"{replay_total} frames ({replay_fps:.1f} FPS)")
+                            last_replay_progress = now
+                    replay.stdout.close()
+                    if replay.wait() != 0:
+                        raise RuntimeError("correction replay decoder failed")
+                    return replay_processor, np.array(
+                        interactive_alpha[current_index - selected_index], copy=True)
+                except BaseException:
+                    replay.kill()
+                    raise
+
             def infer_forward(slot):
                 if slot.index < selected_index:
                     started = time.perf_counter()
@@ -958,14 +1263,24 @@ def _process_once(args, compile_enabled):
                     emit("inference", min(99, progress_base + completed_work *
                          (99 - progress_base) / work_total),
                          "Resetting MatAnyone 2 for forward propagation...")
-                    step(slot, forward, first_frame=True)
+                    frame_tensor = step(slot, forward, first_frame=True)
+                    if slot.index in correction_anchors:
+                        apply_correction_mask(slot, forward, frame_tensor,
+                                              correction_anchors[slot.index])
+                    save_processor_checkpoint(slot.index, forward)
+                    apply_interactive_correction(slot, forward, frame_tensor)
                     if compile_enabled and not (runtime / COMPILE_READY).is_file():
                         (runtime / COMPILE_READY).write_text(json.dumps({
                             "detail": args.max_size,
                             "createdUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                         }))
                 else:
-                    step(slot, forward, allow_rvm_refresh=True)
+                    frame_tensor = step(slot, forward, allow_rvm_refresh=True)
+                    if slot.index in correction_anchors:
+                        apply_correction_mask(slot, forward, frame_tensor,
+                                              correction_anchors[slot.index])
+                    save_processor_checkpoint(slot.index, forward)
+                    apply_interactive_correction(slot, forward, frame_tensor)
 
             def consume_forward(slot):
                 nonlocal count
@@ -973,15 +1288,23 @@ def _process_once(args, compile_enabled):
                                   else slot.alpha_cpu.numpy())
                 if raw_alpha is not None:
                     raw_alpha[slot.index] = internal_alpha
+                if interactive_alpha is not None and slot.index >= selected_index:
+                    history_index = slot.index - selected_index
+                    interactive_alpha[history_index] = internal_alpha
+                    Image.fromarray(slot.input_cpu.numpy(), "RGB").save(
+                        interactive_frames / f"{slot.index:08d}.jpg", "JPEG",
+                        quality=90)
+                    interactive_alpha_ready[history_index] = True
                 save_preview(slot.preview_frame, internal_alpha,
                              force=slot.index == total - 1)
                 started = time.perf_counter()
-                output_bytes = memoryview(internal_alpha).cast("B")
-                while output_bytes:
-                    written = encode.stdin.write(output_bytes)
-                    if not written:
-                        raise RuntimeError("FFmpeg output encoder closed unexpectedly")
-                    output_bytes = output_bytes[written:]
+                if encode is not None:
+                    output_bytes = memoryview(internal_alpha).cast("B")
+                    while output_bytes:
+                        written = encode.stdin.write(output_bytes)
+                        if not written:
+                            raise RuntimeError("FFmpeg output encoder closed unexpectedly")
+                        output_bytes = output_bytes[written:]
                 profiler.add("encoder_write", time.perf_counter() - started)
                 count += 1
                 work_done(f"Processed {count}/{total} frames")
@@ -990,12 +1313,30 @@ def _process_once(args, compile_enabled):
                             prepare_forward, infer_forward, consume_forward,
                             args.pipeline_mode).run(forward_items())
             finalize_started = time.perf_counter()
-            encode.stdin.close()
+            if encode is not None:
+                encode.stdin.close()
             decode.stdout.close()
             if decode.wait() != 0:
                 raise RuntimeError("source normalization/foreground encoding failed")
-            if encode.wait() != 0:
+            if encode is not None and encode.wait() != 0:
                 raise RuntimeError("FFmpeg alpha encoding failed")
+            if interactive is not None:
+                encode = alpha_encoder(ffmpeg, output, frame_rate, width, height,
+                    total, process_width, process_height, alpha_codec,
+                    scale="bilinear")
+                for index in range(total):
+                    alpha = alpha_map[index] if index < selected_index else \
+                        interactive_alpha[index - selected_index]
+                    output_bytes = memoryview(alpha).cast("B")
+                    while output_bytes:
+                        written = encode.stdin.write(output_bytes)
+                        if not written:
+                            raise RuntimeError(
+                                "FFmpeg output encoder closed unexpectedly")
+                        output_bytes = output_bytes[written:]
+                encode.stdin.close()
+                if encode.wait() != 0:
+                    raise RuntimeError("FFmpeg alpha encoding failed")
             profiler.add("encoder_finalize", time.perf_counter() - finalize_started)
         except BaseException:
             if decode is not None:
@@ -1006,6 +1347,12 @@ def _process_once(args, compile_enabled):
                 except Exception: pass
             raise
         finally:
+            if interactive_alpha is not None:
+                try:
+                    interactive_alpha.flush()
+                    interactive_alpha._mmap.close()
+                except Exception:
+                    pass
             if alpha_map is not None:
                 try:
                     alpha_map.flush()
@@ -1059,6 +1406,8 @@ def _process_once(args, compile_enabled):
         "longTermMaxTokens": LONG_TERM_MAX_TOKENS if args.use_long_term else 0,
         "longTermBufferTokens": LONG_TERM_BUFFER_TOKENS if args.use_long_term else 0,
     }, compile_stats)
+    if interactive is not None:
+        shutil.rmtree(interactive, ignore_errors=True)
     emit("complete", 100, "MatAnyone 2 foreground and alpha are ready for preview")
 
 
@@ -1086,17 +1435,24 @@ def process(args):
                rvmRefreshStrength=args.rvm_refresh_strength,
                longTermMaxTokens=LONG_TERM_MAX_TOKENS if args.use_long_term else 0,
                longTermBufferTokens=LONG_TERM_BUFFER_TOKENS if args.use_long_term else 0)
-    try:
-        _process_once(args, enabled)
-    except RuntimeError as error:
-        if not enabled or not str(error).startswith("compiled MatAnyone execution failed:"):
-            raise
-        log_record("compile_fallback", error=str(error))
-        emit("startup", 0, "MatAnyone 2 optimization failed; retrying safely in eager mode...")
+    def clear_partial_outputs():
         for name in ("foreground.mp4", "alpha.mkv", "result.json"):
             try: (args.output.resolve() / name).unlink(missing_ok=True)
             except OSError: pass
-        _process_once(args, False)
+
+    while True:
+        try:
+            _process_once(args, enabled)
+            return
+        except RuntimeError as error:
+            if not enabled or not str(error).startswith(
+                    "compiled MatAnyone execution failed:"):
+                raise
+            enabled = False
+            log_record("compile_fallback", error=str(error))
+            emit("startup", 0,
+                 "MatAnyone 2 optimization failed; retrying safely in eager mode...")
+            clear_partial_outputs()
 
 
 def main():
@@ -1109,6 +1465,7 @@ def main():
     parser.add_argument("--rvm-refresh-strength", type=float, default=1)
     parser.add_argument("--max-mem-frames", type=int, default=5)
     parser.add_argument("--use-long-term", action="store_true")
+    parser.add_argument("--interactive-control", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--start-ms", type=int, default=0)
@@ -1148,6 +1505,15 @@ def main():
         assert mask_frame_index(5_000, 1_000, 25, 200) == 100
         assert mask_frame_index(0, 1_000, 25, 200) == 0
         assert mask_frame_index(99_000, 1_000, 25, 200) == 199
+        assert interactive_anchor_index(3_000, 1_000, 25, 200, 20, 100) == 50
+        assert interactive_checkpoint_frame(249, 0)
+        assert interactive_checkpoint_frame(519, 20)
+        assert not interactive_checkpoint_frame(518, 20)
+        try:
+            interactive_anchor_index(1_000, 1_000, 25, 200, 20, 100)
+            raise AssertionError("correction before initial mask should be rejected")
+        except ValueError:
+            pass
         import numpy as np
         import torch
         order = []
