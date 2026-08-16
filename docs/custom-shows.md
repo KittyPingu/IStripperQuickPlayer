@@ -298,6 +298,11 @@ are skipped and defaults to 20 seconds. **Show skipped clips in grid** hides or
 reveals excluded segments. Clicking or scrubbing the timeline selects the related
 grid row and scrolls it into view. Detection labels remain visible on each segment and survive manual
 inclusion and metadata edits.
+**Import clip setup...** accepts an existing custom show's `show.json`. It copies
+the source ranges, included/skipped states, hotness, clip types, and detection
+labels into the editor, gives every imported segment a new ID, removes generated
+media references, and adjusts the final range to the current source duration.
+The imported ranges must still be contiguous and valid for the current video.
 TransNet inference runs on CUDA when available and FFmpeg
 uses CUDA decode/scale where the source codec supports it, with automatic CPU
 decode fallback. Clear **Include this segment as a playable
@@ -386,13 +391,14 @@ generation, and FFmpeg encoding. Published frames remain strictly ordered and
 each included clip starts with fresh recurrent state.
 
 The **RVM-MatAnyone** preset is fully automatic. For every included clip it runs
-RVM ResNet50 over up to the first eight frames, selects the strongest usable
-complete-person matte, thresholds alpha at 0.40, removes tiny disconnected
-regions, fills small enclosed holes, and dilates the mask by three pixels. RVM is
-then released before MatAnyone 2 loads and uses the selected frame and cleaned
-binary mask. Since detected scenes are processed as separate clips, this
+RVM ResNet50 over up to eight frames, selects the strongest usable complete-person
+matte, thresholds alpha at 0.40, removes tiny disconnected regions, fills small
+enclosed holes, and dilates the mask by three pixels. If no usable person is
+found, it retries once per second up to 30 seconds into the clip. MatAnyone 2 then
+uses the selected frame and cleaned binary mask. Since detected scenes are
+processed as separate clips, this
 initialization and MatAnyone recurrent state restart after every retained scene
-cut. RVM supplies only the initializer; MatAnyone 2 produces the final alpha.
+cut. MatAnyone 2 produces the final alpha.
 For this preset, the selected **Matting detail** applies to MatAnyone's
 frame-by-frame processing, not to the RVM initializer. The initializer is capped
 at 512 px on the short side and RVM is unloaded before MatAnyone starts. Thus,
@@ -403,6 +409,25 @@ foreground or alpha video. **RVM initializer alpha** controls the automatic
 binary-mask cutoff from 10% to 90% and defaults to 40%. Lower values retain more
 hair, motion-blurred limbs, dark clothing, and faint edges; higher values require
 greater RVM confidence but can remove weak background haze.
+
+With **RVM mask refresh** disabled, RVM is released before MatAnyone loads. When
+enabled, RVM remains active during forward propagation. A region is considered
+missing when RVM places it above the configured initializer-alpha threshold while
+MatAnyone remains at or below 0.20. More than 1% of RVM foreground, plus a
+resolution-scaled absolute minimum, must remain missing for three frames. After a
+15-frame cooldown, QuickPlayer forms a conservative core with a 5×5 erosion,
+combines it with the current MatAnyone alpha, and injects the result as an ordinary
+MatAnyone memory update. **RVM refresh strength** scales the core from 25% to
+100%. This can add later people or held objects, but retains both models in VRAM
+and adds RVM inference to every forward frame.
+
+For MatAnyone 2 and RVM-MatAnyone, **Max memory frames** accepts 2–30 without
+long-term memory or 6–14 with it. Compressed long-term memory is enabled by
+default with fourteen detailed frames, a 4,000-token limit, and a 500-token
+consolidation buffer. These limits bound memory growth but do not guarantee that
+every detail/resolution fits a particular GPU. Above Standard detail, lower Max
+memory frames first if dedicated VRAM fills or processing spills into shared GPU
+memory.
 
 The optional **MatAnyone 2** algorithm opens an initial-mask editor for every
 included clip before processing. Play, scrub, use 0.25x slow motion, or step a
@@ -429,6 +454,26 @@ sequential. This bidirectional behavior follows the
 and its [middle-frame two-pass implementation](https://github.com/FuouM/ComfyUI-MatAnyone/blob/main/mat_anyone2.py#L100-L166),
 rather than the official MatAnyone 2 command-line interface's first-frame-only
 workflow.
+
+During interactive **Process and Preview** for plain MatAnyone 2, **Pause and
+correct mask** waits for the current inference frame and opens its exact RGB frame
+with the predicted alpha already loaded. The editor can scrub backward from the
+pause point to the original mask frame, step frame-by-frame, or play synchronized
+RGB/alpha pairs with the green overlay. It cannot inspect frames that have not yet
+been processed. Accepting a mask on the paused frame updates memory directly;
+accepting one on an earlier frame replays MatAnyone forward from that correction
+to the pause point while the processing preview and replay counter advance.
+
+Interactive alpha history is a temporary memory-mapped byte array at MatAnyone's
+processing resolution; matching inference RGB frames are retained as temporary
+JPEGs for correction review. The worker also serializes mutable MatAnyone state to
+temporary Torch checkpoint files every 250 frames. An earlier correction restores
+the nearest checkpoint before the anchor instead of replaying from the beginning,
+invalidates later checkpoints, then rebuilds them while replaying. At the anchor,
+QuickPlayer clears non-permanent working and compressed long-term entries and adds
+the edited mask as permanent memory, so later frames propagate from the
+authoritative correction. The history, RGB cache, and checkpoints live under the
+clip's staging work directory and are removed with that temporary work.
 
 The optional **VideoMaMa High Quality** algorithm reuses that initial mask,
 tracks it across each clip with SAM2, and refines the resulting masks in
@@ -708,7 +753,12 @@ downscale it or creates and pipes a full-resolution RGBA frame. Input and output
 long clips do not accumulate frames in RAM or VRAM and output order remains
 strictly chronological. Middle-frame propagation stores backward alpha in one
 preallocated temporary memory-mapped array instead of thousands of PNG files.
-The mapping is removed after success, cancellation, or failure.
+Interactive processing additionally stores forward alpha history in a second
+memory-mapped array, matching review RGB frames, and restartable processor
+checkpoints every 250 frames. These files support backward scrubbing and
+correction replay without retaining the decoded clip in RAM or restarting from
+frame zero. The temporary mappings and checkpoints are removed after success,
+cancellation, or failure.
 
 On the reference Ryzen 7 7800X3D/RTX 4080, a 1,000-frame 1920x1080 clip at
 Standard (512 px) detail improved from 11.19 FPS in the former serial path to
@@ -822,7 +872,7 @@ the complete staged replacement before swapping it into the library. The old
 show is restored if that swap cannot complete.
 
 Mask review is also saved while a new show is still incomplete. Choose
-**Custom Shows â†’ Restore Incomplete Setupâ€¦** to reopen its metadata, complete
+**Custom Shows → Restore Incomplete Setup…** to reopen its metadata, complete
 clip layout, initial masks, correction anchors, and generated mask frames. Fully
 generated earlier clips are reused immediately. If generation stopped partway
 through a clip, QuickPlayer resumes from its last contiguous saved mask; it does

@@ -224,6 +224,10 @@ The initial-mask and tracked-mask editors support:
 - **Ctrl+P** to toggle painting and **Ctrl+Z** to undo;
 - playback, scrubbing, slow motion, and frame stepping.
 
+During interactive MatAnyone 2 processing, use **Pause and correct mask** to
+scrub back to an earlier processed frame, edit its predicted mask, and replay the
+correction forward. Overlay playback shows the synchronized RGB and mask.
+
 For ViTMatte and VideoMaMa, mask generation can be interrupted with **Pause and
 Correct**. The timeline always represents the whole clip; after pausing, scrub
 back to any generated frame, correct the first tracking error, and choose
