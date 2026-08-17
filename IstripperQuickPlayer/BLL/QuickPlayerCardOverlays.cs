@@ -72,8 +72,8 @@ internal static class QuickPlayerCardOverlays
         for (int frame = 0; frame < frameCount; frame++)
         {
             Rectangle frameBounds = FrameBounds(sheet, frame);
-            Rectangle bounds = new(frameBounds.Left + 8,
-                frameBounds.Top + 7, 48, 50);
+            Rectangle bounds = new(frameBounds.Left + 3,
+                frameBounds.Top + 2, 48, 50);
             using GraphicsPath letter = new();
             letter.AddString("C", font.FontFamily, (int)font.Style,
                 font.Size, bounds, format);
