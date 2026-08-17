@@ -7,10 +7,10 @@ from collections import defaultdict
 from pathlib import Path
 
 from rvm_worker import executable, probe
-from videomama_worker import (SAM2_COMMIT, SAM2_MODELS, load_sam2, model_size,
-                              sam2_model, sam2_vos_cache_marker,
-                              sam2_vos_optimized, sam2_vos_uses_cudagraphs,
-                              use_on_demand_sam2_frames)
+from custom_show_worker import (SAM2_COMMIT, SAM2_MODELS, load_sam2, model_size,
+                                sam2_model, sam2_vos_cache_marker,
+                                sam2_vos_optimized, sam2_vos_uses_cudagraphs,
+                                use_on_demand_sam2_frames)
 from sam_mask_worker import automatic_candidates, select_automatic_foreground
 
 CACHE_SCHEMA = 1

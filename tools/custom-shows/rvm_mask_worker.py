@@ -4,7 +4,7 @@ import argparse, json, queue, shutil, subprocess, sys, threading
 from pathlib import Path
 
 from rvm_worker import executable, load_model, probe, replace_preview
-from videomama_worker import model_size
+from custom_show_worker import model_size
 
 
 def send(**values):

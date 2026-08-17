@@ -64,8 +64,7 @@ Choose **File > Custom Shows > Install / Update Processing Tools...**.
 - RVM is part of the core processing setup and is used by RVM Quality, RVM Fast,
   RVM-MatAnyone, and RVM-ViTMatte S.
 - TransNetV2 is the recommended optional clip detector and is selected by
-  default. VideoMaMa, OmniShotCut, EdgeTAM, Stabilo, and ProPainter are optional
-  specialist tools.
+  default. OmniShotCut, EdgeTAM, Stabilo, and ProPainter are specialist tools.
 
 Leave the installer open until it reports completion. It creates an isolated
 Python environment under
@@ -79,8 +78,8 @@ After installation:
 3. Click **Validate setup**.
 
 An NVIDIA CUDA GPU is strongly recommended. CPU fallback exists for some
-methods, but MatAnyone, ViTMatte, VideoMaMa, and mask tracking are generally too
-slow for normal CPU-only use.
+methods, but MatAnyone, ViTMatte, and mask tracking are generally too slow for
+normal CPU-only use.
 
 ## Create or extend a show
 
@@ -200,9 +199,6 @@ always faster and can force Windows into very slow shared GPU memory.
   refinement.
 - **ViTMatte B** uses a larger backbone. It is slower and can consume much more
   VRAM; use it only after S and with a conservative batch.
-- **VideoMaMa High Quality** uses editable masks and diffusion-based processing.
-  It is experimental, CUDA-only, very slow, and requires substantial VRAM and
-  temporary disk space.
 
 The form remembers the previous algorithm, mask engine, model, detail, batch,
 RVM threshold, and automatic-accept choice. It shows only controls that apply to
@@ -211,8 +207,8 @@ the selected method.
 For editable-mask methods, **SAM2 Base+** is the most robust mask generator and
 the recommended default; Small and Tiny trade some robustness for speed.
 **EdgeTAM** is the faster optional alternative when installed. The chosen mask
-engine tracks the binary subject mask; MatAnyone, ViTMatte, or VideoMaMa then
-performs the selected final processing.
+engine tracks the binary subject mask; MatAnyone or ViTMatte then performs the
+selected final processing.
 
 ## Create and correct masks
 
@@ -228,8 +224,8 @@ During interactive MatAnyone 2 processing, use **Pause and correct mask** to
 scrub back to an earlier processed frame, edit its predicted mask, and replay the
 correction forward. Overlay playback shows the synchronized RGB and mask.
 
-For ViTMatte and VideoMaMa, mask generation can be interrupted with **Pause and
-Correct**. The timeline always represents the whole clip; after pausing, scrub
+For ViTMatte, mask generation can be interrupted with **Pause and Correct**. The
+timeline always represents the whole clip; after pausing, scrub
 back to any generated frame, correct the first tracking error, and choose
 **Update masks**. During backward propagation, use **Stop backward propagation**
 once the correction has travelled far enough. Continue correcting later drift,
@@ -239,8 +235,8 @@ Mask work is saved as a resumable draft if processing is cancelled or fails.
 Published shows also retain reusable masks: initial masks as PNG and tracked
 sequences as lossless one-bit, Zstandard-compressed `.iqpmask`
 archives. Reprocessing with **Keep existing masks** avoids masking again and can
-reuse masks across MatAnyone 2, RVM-MatAnyone, VideoMaMa, and ViTMatte where the
-workflow is compatible.
+reuse masks across MatAnyone 2, RVM-MatAnyone, and ViTMatte where the workflow is
+compatible.
 
 ## Process, review, or queue
 
@@ -255,8 +251,8 @@ image. With automatic acceptance enabled:
 
 - RVM Quality, RVM Fast, RVM-MatAnyone, and RVM-ViTMatte S can be queued directly.
 - MatAnyone 2 requires **Mask and Queue** so its initial masks exist first.
-- VideoMaMa and manually masked ViTMatte currently run through the interactive
-  workflow rather than the automatic queue.
+- Manually masked ViTMatte currently runs through the interactive workflow rather
+  than the automatic queue.
 
 The queue runs one show at a time. It verifies that referenced sources and target
 shows have not changed, preserves conflicts as **Needs attention**, and retains
@@ -291,12 +287,12 @@ included clips are appended.
 
 - Begin MatAnyone/RVM processing at **Standard (512 px)**. Lower detail if VRAM
   fills; raise it only for a visible edge-quality improvement.
-- Prefer **Auto** batch for RVM, ViTMatte, RVM-ViTMatte, and VideoMaMa. It starts
-  from current VRAM and effective inference size, adjusts from live memory use,
+- Prefer **Auto** batch for RVM, ViTMatte, and RVM-ViTMatte. It starts from
+  current VRAM and effective inference size, adjusts from live memory use,
   and remembers successful values for similar future runs. Manual values remain
   available when repeatability is required.
-- QuickPlayer warns when a requested ViTMatte or VideoMaMa batch is unlikely to
-  fit and lets you use the suggested value or continue deliberately.
+- QuickPlayer warns when a requested ViTMatte batch is unlikely to fit and lets
+  you use the suggested value or continue deliberately.
 - If Task Manager shows dedicated VRAM full and shared GPU memory growing,
   cancel and lower detail or batch size. Shared-memory spill can slow the whole
   desktop dramatically.

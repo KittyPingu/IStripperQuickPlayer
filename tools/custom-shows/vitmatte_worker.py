@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rvm_worker import emit, executable, probe
-from videomama_worker import (alpha_encoder, output_codecs,
-                              source_and_foreground_encoder, write_preview)
+from custom_show_worker import (alpha_encoder, output_codecs,
+                                source_and_foreground_encoder, write_preview)
 
 MODELS = {
     "s": ("vitmatte-s", "VITMATTE_S_REVISION",

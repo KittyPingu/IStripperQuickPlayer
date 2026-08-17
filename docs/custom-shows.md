@@ -25,8 +25,8 @@ its simpler matte quality is sufficient. Start RVM and MatAnyone methods at
 **Standard (512 px)** detail.
 RVM-ViTMatte S has a separate **ViTMatte inference detail** setting that defaults
 to 1024 px. Published media retains the source dimensions, and the unrelated
-RVM/MatAnyone Matting detail selector is hidden. See the end-user guide before using the more specialised
-VideoMaMa or ViTMatte B workflows.
+RVM/MatAnyone Matting detail selector is hidden. See the end-user guide before
+using the more specialised ViTMatte B workflow.
 
 One measured queued 1920x1080 source was 38 minutes long and divided into 18
 clips. On the reference machine it took approximately **7 minutes with RVM
@@ -53,20 +53,19 @@ QuickPlayer pins:
 - Optional [TransNetV2](https://github.com/soCzech/TransNetV2) PyTorch source commit `85cef72af9a916bdfd7cc94a670c9cdfbf12d1ed` and converted-weight SHA-256 `46520D66D4BF60414A4D82E0E94A92442FF950E34517A3718B2E54815E642B53`.
 - Optional [OmniShotCut](https://github.com/UVA-Computer-Vision-Lab/OmniShotCut) commit `23ad6fb41b296fb9258b0e7825125a914573b906`, official checkpoint revision `7f646c4ff4bb843e18c013481fb5d9ed2b068c6b`, and checkpoint SHA-256 `5948EA78E00626C0E6C5E742E64873EF872CF4A5071D2A0841AED51C3E686CFA`.
 - Optional [MatAnyone2](https://github.com/pq-yang/MatAnyone2) commit `0079197acd6d16a741f71558809c06c586c579e0` and checkpoint SHA-256 `5E9821E4087231427376B437C85BB6E072B41E582314F06FD524F75BC4AF5914`.
-- Optional [VideoMaMa](https://github.com/cvlab-kaist/VideoMaMa) commit `d5cce3e0ffe3b6429c147e658bb28bcfb576374c`, model revision `e289a7acc8403c4fbe4dea2a1de5a9749ebc9bf5`, and inference UNet SHA-256 `F2442BF16EDEDAD25C1C272AE7535B6411C43CEE5C27B012BB6F7FDA72D07B8C`.
-- VideoMaMa's SVD inference components use revision `9e43909513c6714f1bc78bcb44d96e733cd242aa`; every mask-guided algorithm uses [SAM2](https://github.com/facebookresearch/sam2) commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`. Setup verifies Hiera Base+ SHA-256 `A2345AEDE8715AB1D5D31B4A509FB160C5A4AF1970F199D9054CCFB746C004C5`, Small `6D1AA6F30DE5C92224F8172114DE081D104BBD23DD9DC5C58996F0CAD5DC4D38`, and Tiny `7402E0D864FA82708A20FBD15BC84245C2F26DFF0EB43A4B5B93452DEB34BE69`.
+- Every mask-guided algorithm uses [SAM2](https://github.com/facebookresearch/sam2) commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`; setup verifies the Hiera Base+, Small, and Tiny checkpoints.
 - Optional [ViTMatte](https://github.com/hustvl/ViTMatte) S revision `6a58ad7646403c1df626fbd746900aec7361ea1d` and B revision `bf486d01a7d9e3dbcc8400f7942835caf0eaf76e`; setup SHA-256 verifies both official Hugging Face model repositories.
 - Optional [streaming ProPainter](https://github.com/osmr/propainter) commit `c8983a445720450bf2fd976cab0adb1cad19547d` and PyTorchCV `0.0.74`. Its RAFT, flow-completion, and ProPainter files are verified against upstream SHA-1 values `d74fed4b7511a95ca9713b69ff19a132210a1016`, `a865ddc0281f27ff0814939a8c0101e936678312`, and `5f3cc1e7083fb5c49a7e5c574a06d41c763550a5`.
 
 ## Exact setup
 
 The simplest method is **File → Custom Shows → Install / Update Processing
-Tools…**. TransNetV2 and MatAnyone 2 + SAM2 are selected by default; VideoMaMa,
-ViTMatte, and ProPainter are initially cleared. Select the tools to install or
+Tools…**. TransNetV2 and MatAnyone 2 + SAM2 are selected by default; ViTMatte
+and ProPainter are initially cleared. Select the tools to install or
 update in the choices dialog, then leave
 the setup window open until it finishes. Selecting any mask-guided method
-installs SAM2 for interactive source-frame selection. VideoMaMa and ViTMatte also
-use SAM2 for the editable tracked-mask workflow. QuickPlayer selects the isolated Python automatically. If no
+installs SAM2 for interactive source-frame selection. ViTMatte uses SAM2 for the
+editable tracked-mask workflow. QuickPlayer selects the isolated Python automatically. If no
 compatible Python is installed and Windows Package Manager is available, setup
 installs Python 3.12 for the current user first.
 
@@ -98,13 +97,6 @@ switches can be combined:
 .\custom-shows\setup.ps1 -InstallTransNetV2 -InstallMatAnyone2
 ```
 
-Add `-InstallVideoMaMa` for the CUDA-only high-quality backend. This downloads
-roughly 8 GB of verified inference weights and also installs SAM2:
-
-```powershell
-.\custom-shows\setup.ps1 -InstallVideoMaMa
-```
-
 Add `-InstallViTMatte` to install both ViTMatte S and B plus SAM2:
 
 ```powershell
@@ -124,11 +116,10 @@ The default isolated runtime is `%LOCALAPPDATA%\IStripperQuickPlayer\rvm-runtime
 .\custom-shows\setup.ps1 -RuntimeRoot 'D:\QuickPlayer-RVM' -PythonLauncher 'C:\Windows\py.exe'
 ```
 
-The script creates `venv`, checks out exact commits, downloads verified weights, and rejects mismatched checkpoints. Optional TransNetV2 is installed under `<runtime>\transnetv2`; OmniShotCut uses `<runtime>\omnishotcut` and `<runtime>\checkpoints\OmniShotCut_ckpt.pth`; MatAnyone2 uses `<runtime>\matanyone2`; VideoMaMa uses `<runtime>\videomama*`; shared SAM2 uses `<runtime>\sam2`; streaming ProPainter uses `<runtime>\propainter-streaming` and `<runtime>\propainter-streaming-weights`. TensorFlow and research/demo-only OmniShotCut and VideoMaMa dependencies are not installed. Rerunning setup retains every existing source or weight file whose hash already matches. Legacy `<runtime>\segment-anything` files are no longer used and may be deleted. It prints download progress and the Python executable to select in QuickPlayer.
-
-QuickPlayer only lists TransNetV2, OmniShotCut, MatAnyone2, VideoMaMa, ViTMatte, and ProPainter in operational
-selectors when their installation markers, source folders, workers, and required
-model files are present. The setup choices remain visible so missing tools can be installed.
+QuickPlayer only lists TransNetV2, OmniShotCut, MatAnyone2, ViTMatte, and
+ProPainter in operational selectors when their installation markers, source
+folders, workers, and required model files are present. The setup choices remain
+visible so missing tools can be installed.
 
 ## Automatic processing queue
 
@@ -142,8 +133,8 @@ open the normal processing or result-review windows.
 RVM-MatAnyone requires the MatAnyone 2 installation. RVM-ViTMatte S requires the
 ViTMatte installation. All selected tools must validate before a job is queued,
 and the referenced source must remain at the same path until processing finishes.
-VideoMaMa and the manually corrected ViTMatte workflows are interactive and are
-not currently eligible for the automatic queue.
+The manually corrected ViTMatte workflow is interactive and is not currently
+eligible for the automatic queue.
 
 Queue state and job-owned covers/masks are stored under `<custom-library>\queue`.
 Source videos remain referenced and are checked for size/timestamp changes before
@@ -310,9 +301,9 @@ decode fallback. Clear **Include this segment as a playable
 clip** to mark a segment as skipped; it remains editable in the manifest but is
 not exposed to queues or playback. The values on the
 main creation form remain overall card metadata. Every included segment is
-processed independently into its own foreground/alpha pair. This resets RVM or
-MatAnyone2 recurrent state and VideoMaMa/SAM2 tracking at every clip boundary; skipped segments are not
-processed.
+processed independently into its own foreground/alpha pair. This resets RVM,
+MatAnyone2 recurrent state, and SAM2 tracking at every clip boundary; skipped
+segments are not processed.
 
 OmniShotCut decodes directly through bundled FFmpeg at the checkpoint's
 128×96 input size. Its bounded worker decodes into three reusable pinned frame
@@ -477,16 +468,8 @@ the edited mask as permanent memory, so later frames propagate from the
 authoritative correction. The history, RGB cache, and checkpoints live under the
 clip's staging work directory and are removed with that temporary work.
 
-The optional **VideoMaMa High Quality** algorithm reuses that initial mask,
-tracks it across each clip with SAM2, and refines the resulting masks in
-configurable VideoMaMa groups. Its internal frame size preserves aspect ratio while
-staying within approximately 1024×576 pixels; the alpha is resized back to the
-source display dimensions before encoding. It requires NVIDIA CUDA, about 8 GB
-of installed weights, substantial temporary disk space for normalized clip
-frames, and is expected to be much slower than RVM or MatAnyone2.
-
-For **VideoMaMa**, **ViTMatte S**, and **ViTMatte B**, QuickPlayer opens a
-resizable review editor for the initial SAM2 or EdgeTAM propagation before matting.
+For **ViTMatte S** and **ViTMatte B**, QuickPlayer opens a resizable review editor
+for the initial SAM2 or EdgeTAM propagation before matting.
 The **RVM → SAM2** mask-generation option uses RVM to create the initial
 person-oriented mask at the start of each clip, then hands that mask to SAM2.
 It remains fully editable with clicks, painting, pausing, scrubbing, and
@@ -531,8 +514,8 @@ Initial and per-frame masks are saved as resumable drafts under
 `<custom-library>\.mask-drafts`. If conversion is cancelled or fails after mask
 setup, starting the same source again with the same algorithm, SAM2 model, and
 included clip boundaries reopens each editor at its saved mask frame. Initial
-clicks and their complete undo history are restored. VideoMaMa and ViTMatte also
-reuse every generated per-frame mask, correction marker, correction range, and
+clicks and their complete undo history are restored. ViTMatte also reuses every
+generated per-frame mask, correction marker, correction range, and
 per-anchor click/undo history, so the expensive initial SAM2 tracking pass is not
 repeated. Changing the source file or clip layout creates a separate draft.
 Successful publication and the explicit **Discard** actions remove the matching
@@ -680,19 +663,13 @@ recurrent state. Quality and Fast each default to 12 frames, following the
 official RVM conversion guidance. Values 1, 2, 3, 4, 6, 8, 12, 16, and 24 are
 available. If a chunk exceeds GPU memory, QuickPlayer halves it and remembers the
 successful size for every remaining chunk and clip in that job instead of
-repeatedly retrying the oversized allocation.
-The same batch selector controls ViTMatte inference and VideoMaMa groups. **Auto**
-is the default for genuinely batched workflows: RVM, ViTMatte, RVM-ViTMatte, and
-VideoMaMa. It starts conservatively from the algorithm, effective inference
-dimensions, current free VRAM, GPU identity, and VRAM capacity. It increments
+repeatedly retrying the oversized allocation. The same batch selector controls
+ViTMatte inference. **Auto** is the default for genuinely batched workflows: RVM,
+ViTMatte, and RVM-ViTMatte. It starts conservatively from the algorithm, effective
+inference dimensions, current free VRAM, GPU identity, and VRAM capacity. It increments
 after healthy measurements and decrements on a CUDA memory limit. Successful
 effective values are stored in the runtime performance policy and reused as the
-initial suggestion for matching later runs. The VideoMaMa manual default is
-visible under **Custom Show Settings > Matting & masks >
-VideoMaMa**. **Benchmark VideoMaMa batch...** runs real 1024x576 diffusion
-inference with increasing batches, monitors whole-GPU VRAM, stops after memory
-pressure or an out-of-memory result, and copies the fastest safe value into the
-setting after confirmation.
+initial suggestion for matching later runs.
 
 **CPU priority** and **GPU priority** in Custom Show Settings apply to newly
 started processing workers and both default to **Normal**. Lower priorities can
@@ -722,8 +699,8 @@ and FP32 fallbacks use the same ordered pipeline.
 **Custom Shows > Settings** stores separate preferred chunks for Quality and
 Fast and a global custom-show NVENC effort preset from `p1` (fastest) through
 `p7` (most encoding effort); `p5` is the default. It applies to RVM, MatAnyone2,
-ViTMatte, and VideoMaMa. The existing CQ values are unchanged, and libx264
-remains the automatic fallback when NVENC is unavailable. Use
+and ViTMatte. The existing CQ values are unchanged, and libx264 remains the
+automatic fallback when NVENC is unavailable. Use
 **Benchmark RVM...** to run the cancellable 1,000-frame 1080p/4K full-pipeline
 sweep. Results are copied into the form only after **Use results**, and the
 Settings dialog must still be accepted to save them.
@@ -848,8 +825,8 @@ original source through a different installed algorithm without creating a
 second card. **Keep existing clip divisions** is enabled by default. Clear it
 to unlock divider editing before processing. **Keep existing masks** reuses the
 retained initial and tracked masks, so changing among ViTMatte S, ViTMatte B,
-VideoMaMa, and MatAnyone 2 does not require drawing the same mask again. Clear
-it to generate and review new masks.
+and MatAnyone 2 does not require drawing the same mask again. Clear it to generate
+and review new masks.
 
 While **Keep existing clip divisions** remains enabled, **Clips to reprocess**
 lists every playable clip and initially checks all of them. Uncheck clips whose
@@ -882,14 +859,13 @@ not throw away the completed prefix or restart the earlier clips. The draft is
 removed only after the show publishes successfully or the user explicitly
 discards the processing result.
 
-Before VideoMaMa or ViTMatte processing begins, QuickPlayer compares the selected
-batch with a conservative recommendation based on the NVIDIA GPU's total and
+Before ViTMatte processing begins, QuickPlayer compares the selected batch with
+a conservative recommendation based on the NVIDIA GPU's total and
 currently free VRAM. ViTMatte also accounts for the S/B model and source
 resolution. If the batch is too large, QuickPlayer shows the detected memory and
 offers to select the safer batch; cancelling returns to the form without starting
-mask review or processing. A completed VideoMaMa benchmark also writes a
-GPU-specific policy, allowing the worker to use the measured safe batch on that
-GPU while retaining the conservative generic cap on unbenchmarked hardware.
+mask review or processing. A GPU-specific policy lets the worker reuse the
+measured safe batch while retaining the conservative generic cap on unbenchmarked hardware.
 ViTMatte retains its out-of-memory batch reduction as a final safeguard.
 
 ## Playback and queues
@@ -995,7 +971,6 @@ the tensor-path number above remains useful when comparing devices in isolation.
 - **CUDA unavailable**: processing automatically uses CPU/FP32 and libx264. This is functional but much slower, especially for MatAnyone2. To restore GPU processing, install a compatible NVIDIA driver and confirm `& <python> -c "import torch; print(torch.cuda.is_available())"` prints `True`.
 - **Checkpoint validation failed**: delete only the named file in `<runtime>\checkpoints` and rerun setup. Do not bypass the hash check.
 - **MatAnyone2/SAM unavailable**: rerun processing-tools setup with MatAnyone2 checked. It is one option because SAM is required to create the initial mask.
-- **VideoMaMa unavailable**: rerun setup with VideoMaMa checked. It remains hidden until VideoMaMa, SAM2, and all required model files are installed. CUDA is mandatory.
 - **ViTMatte unavailable**: rerun setup with ViTMatte checked. S and B remain hidden until their models and SAM2 are installed.
 - **RVM commit validation failed**: rerun setup; `<runtime>\RVM_COMMIT` and the detached checkout must match the pinned commit.
 - **FFmpeg/libavcodec 62 missing**: repair the QuickPlayer FFmpeg 8 dependency bundle. Run **Validate setup** again.
@@ -1007,4 +982,8 @@ the tensor-path number above remains useful when comparing devices in isolation.
 
 ## Licensing
 
-Robust Video Matting is GPL-3.0; its repository and weights are fetched directly from the upstream project. OmniShotCut is MIT and setup retains its checked-out `LICENSE` plus `OMNISHOTCUT_COMMIT` revision marker. MatAnyone2 and ProPainter use the S-Lab License 1.0 and are limited to non-commercial use unless their authors grant permission. VideoMaMa code is CC BY-NC 4.0 and its checkpoint is subject to the Stability AI Community License. ViTMatte is MIT; SAM and SAM2 are Apache 2.0. The custom player uses FFmpeg 8, FFmpeg.AutoGen, NAudio, Direct3D 11, and DirectComposition. QuickPlayer distributions must retain the bundled FFmpeg/GPL library licence and version notices. No proprietary HD3/SSV parser, decryption, or rights code is used by custom shows.
+Robust Video Matting is GPL-3.0; its repository and weights are fetched directly
+from the upstream project. OmniShotCut is MIT. MatAnyone2 and ProPainter use the
+S-Lab License 1.0 and are limited to non-commercial use unless their authors grant
+permission. ViTMatte is MIT; SAM and SAM2 are Apache 2.0. The custom player uses
+FFmpeg 8, FFmpeg.AutoGen, NAudio, Direct3D 11, and DirectComposition.

@@ -235,8 +235,6 @@ internal sealed class CustomShowEditorForm : Form
             preset.Items.Add("RVM-ViTMatte S (automatic full RVM masks)");
         if (metadataOnly || CustomShowProcessor.IsMatAnyone2Installed(configuration))
             preset.Items.Add("MatAnyone 2 (interactive initial mask)");
-        if (metadataOnly || CustomShowProcessor.IsVideoMaMaInstalled(configuration))
-            preset.Items.Add("VideoMaMa High Quality (SAM2 + diffusion)");
         if (metadataOnly || CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
             preset.Items.Add("ViTMatte S (editable SAM2 masks)");
         if (metadataOnly || CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
@@ -453,9 +451,6 @@ internal sealed class CustomShowEditorForm : Form
                 .OrderBy(value => Math.Abs(value - recommended)).First();
             sequenceChunk.SelectedItem = closest;
         }
-        else if (CanProcess && selected == "videomama" &&
-            (!reprocess || applyRecommendedBatch) && SelectedBatchSize() != 0)
-            sequenceChunk.SelectedItem = configuration.VideoMaMaPreferredBatchSize;
         bool rvm = selected is "quality" or "fast";
         bool sam2Matting = selected == Sam2MattingSupport.Algorithm;
         string sam2MattingPromptMode = SelectedSam2MattingPromptMode();
@@ -626,7 +621,6 @@ internal sealed class CustomShowEditorForm : Form
         if (selected.StartsWith("RVM-ViTMatte S", StringComparison.Ordinal))
             return "rvm-vitmatte-s";
         if (selected.StartsWith("MatAnyone", StringComparison.Ordinal)) return "matanyone2";
-        if (selected.StartsWith("VideoMaMa", StringComparison.Ordinal)) return "videomama";
         if (selected.StartsWith("ViTMatte S", StringComparison.Ordinal)) return "vitmatte-s";
         if (selected.StartsWith("ViTMatte B", StringComparison.Ordinal)) return "vitmatte-b";
         if (selected.StartsWith("SAM2Matting", StringComparison.Ordinal))
@@ -635,7 +629,7 @@ internal sealed class CustomShowEditorForm : Form
     }
 
     static bool UsesSam2(string selectedPreset) => selectedPreset is
-        "videomama" or "vitmatte-s" or "vitmatte-b";
+        "vitmatte-s" or "vitmatte-b";
 
     internal static string? QueueAction(string algorithm, bool autoAccept) =>
         algorithm == "sam2matting" ? "Queue" : !autoAccept ? null : algorithm switch
@@ -854,7 +848,7 @@ internal sealed class CustomShowEditorForm : Form
             "fast" => "RVM Fast", "matanyone2" => "MatAnyone",
             "rvm-matanyone2" => "RVM-MatAnyone",
             "rvm-vitmatte-s" => "RVM-ViTMatte S",
-            "videomama" => "VideoMaMa", "vitmatte-s" => "ViTMatte S",
+            "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B", "sam2matting" => "SAM2Matting",
             _ => "RVM Quality"
         };
@@ -921,7 +915,6 @@ internal sealed class CustomShowEditorForm : Form
             "rvm-matanyone2" => "RVM-MatAnyone",
             "rvm-vitmatte-s" => "RVM-ViTMatte S",
             "matanyone2" => "MatAnyone",
-            "videomama" => "VideoMaMa",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
             "sam2matting" => "SAM2Matting",
@@ -1034,7 +1027,6 @@ internal sealed class CustomShowEditorForm : Form
             "matanyone2" => "MatAnyone 2",
             "rvm-matanyone2" => "RVM-MatAnyone (automatic)",
             "rvm-vitmatte-s" => "RVM-ViTMatte S (automatic)",
-            "videomama" => "VideoMaMa",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
             "sam2matting" => $"SAM2Matting ({Sam2MattingSupport.DisplayName(value.Tracker)})",
@@ -1408,7 +1400,6 @@ internal sealed class CustomShowEditorForm : Form
                                 $"Clip {index + 1} of {clipsToMask.Length}",
                                 selectedPreset switch
                                 {
-                                    "videomama" => "VideoMaMa",
                                     "vitmatte-s" => "ViTMatte S",
                                     "vitmatte-b" => "ViTMatte B",
                                     _ => "MatAnyone 2"
@@ -2498,32 +2489,21 @@ internal sealed class CustomShowEditorForm : Form
                 return true;
             }
         }
-        if (algorithm is not ("videomama" or "vitmatte-s" or "vitmatte-b" or
+        if (algorithm is not ("vitmatte-s" or "vitmatte-b" or
                 "rvm-vitmatte-s") ||
             sequenceChunk.SelectedItem is not int requested) return true;
         CustomShowProcessor.NvidiaMemory? memory =
             CustomShowProcessor.NvidiaMemoryInfo();
         if (memory == null) return true;
-        int suggested;
-        string name;
-        if (algorithm == "videomama")
-        {
-            suggested = Math.Max(CustomShowProcessor.VideoMaMaSafeBatch(memory),
-                configuration.VideoMaMaPreferredBatchSize);
-            name = "VideoMaMa";
-        }
-        else
-        {
-            using FfmpegCpuDecoder decoder = new(source.Text, fastDecode: true);
-            bool baseModel = algorithm == "vitmatte-b";
-            int detail = SelectedVitMatteInferenceResolution();
-            double scale = detail <= 0 ? 1 : Math.Min(1d,
-                detail / (double)Math.Max(decoder.Width, decoder.Height));
-            suggested = CustomShowProcessor.ViTMatteSafeBatch(memory, baseModel,
-                Math.Max(1, (int)Math.Round(decoder.Width * scale)),
-                Math.Max(1, (int)Math.Round(decoder.Height * scale)));
-            name = baseModel ? "ViTMatte-B" : "ViTMatte-S";
-        }
+        using FfmpegCpuDecoder vitMatteDecoder = new(source.Text, fastDecode: true);
+        bool baseModel = algorithm == "vitmatte-b";
+        int detail = SelectedVitMatteInferenceResolution();
+        double scale = detail <= 0 ? 1 : Math.Min(1d,
+            detail / (double)Math.Max(vitMatteDecoder.Width, vitMatteDecoder.Height));
+        int suggested = CustomShowProcessor.ViTMatteSafeBatch(memory, baseModel,
+            Math.Max(1, (int)Math.Round(vitMatteDecoder.Width * scale)),
+            Math.Max(1, (int)Math.Round(vitMatteDecoder.Height * scale)));
+        string name = baseModel ? "ViTMatte-B" : "ViTMatte-S";
         if (requested <= suggested) return true;
         TaskDialogButton useSuggested = new(
             $"Use suggested batch size {suggested}");
@@ -2825,8 +2805,6 @@ internal sealed class CustomShowEditorForm : Form
             "rvm-matanyone2" => ["MATANYONE2_COMMIT", "RVM_COMMIT"],
             "rvm-vitmatte-s" => ["VITMATTE_S_REVISION", "RVM_COMMIT"],
             "sam2matting" when maskEngine == "rvm-sam2" => ["RVM_COMMIT"],
-            "videomama" => ["VIDEOMAMA_COMMIT", "VIDEOMAMA_SVD_REVISION",
-                "VIDEOMAMA_MODEL_REVISION", "SAM2_COMMIT"],
             "vitmatte-s" => ["VITMATTE_S_REVISION", "SAM2_COMMIT"],
             "vitmatte-b" => ["VITMATTE_B_REVISION", "SAM2_COMMIT"],
             _ => []
@@ -3791,7 +3769,6 @@ internal sealed class CustomShowSettingsForm : Form
     readonly NumericUpDown vitMatteBaseCutoff = CutoffInput();
     readonly NumericUpDown vitMatteSmallBatch = BatchInput();
     readonly NumericUpDown vitMatteBaseBatch = BatchInput();
-    readonly NumericUpDown videoMaMaBatch = BatchInput();
     readonly Label validation = new() { AutoSize = true };
     readonly Label transNetStatus = StatusLabel();
     readonly Label rvmStatus = StatusLabel();
@@ -3837,7 +3814,6 @@ internal sealed class CustomShowSettingsForm : Form
             VitMatteBaseCompileCutoffFrames = current.VitMatteBaseCompileCutoffFrames,
             VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
             VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize,
-            VideoMaMaPreferredBatchSize = current.VideoMaMaPreferredBatchSize,
             LastProcessingAlgorithm = current.LastProcessingAlgorithm,
             LastMaskEngine = current.LastMaskEngine,
             LastSam2Model = current.LastSam2Model,
@@ -3891,7 +3867,7 @@ internal sealed class CustomShowSettingsForm : Form
         nvencPreset.Items.AddRange(["p1", "p2", "p3", "p4", "p5", "p6", "p7"]);
         AddChoice(general, "Output NVENC preset", nvencPreset);
         AddExplanation(general, "Output encoding",
-            "The NVENC preset applies to RVM, MatAnyone2, VideoMaMa, and ViTMatte output. " +
+            "The NVENC preset applies to RVM, MatAnyone2, and ViTMatte output. " +
             "It is not used by scene detection.");
 
         TabPage transNetTab = new("TransNetV2");
@@ -3934,7 +3910,7 @@ internal sealed class CustomShowSettingsForm : Form
         TabPage modelsTab = new("Matting && masks");
         TableLayoutPanel models = SettingsTable();
         modelsTab.Controls.Add(models); tabs.TabPages.Add(modelsTab);
-        AddExplanation(models, "MatAnyone2, SAM2, ViTMatte, and VideoMaMa",
+        AddExplanation(models, "MatAnyone2, SAM2, and ViTMatte",
             "The model-cutoff benchmark tests MatAnyone2, SAM2, and ViTMatte. At or above a displayed " +
             "minimum, compilation is still used only when the status below says it is available.");
         GroupBox matAnyoneGroup = SettingsGroup("MatAnyone2", out TableLayoutPanel matAnyoneTable);
@@ -3954,16 +3930,6 @@ internal sealed class CustomShowSettingsForm : Form
         AddBatch(vitMatteTable, "S preferred batch", vitMatteSmallBatch);
         AddBatch(vitMatteTable, "B preferred batch", vitMatteBaseBatch);
         AddWideControl(models, vitMatteGroup);
-        GroupBox videoMaMaGroup = SettingsGroup("VideoMaMa", out TableLayoutPanel videoMaMaTable);
-        AddBatch(videoMaMaTable, "Preferred batch", videoMaMaBatch);
-        Button benchmarkVideoMaMa = new() { Text = "Benchmark VideoMaMa batch...", AutoSize = true };
-        Label videoMaMaHelp = new() { AutoSize = true, MaximumSize = new Size(620, 0),
-            Text = "Tests the installed model at 1024x576 and saves the fastest safe batch for this GPU." };
-        FlowLayoutPanel videoMaMaBenchmarkRow = new() { AutoSize = true, WrapContents = false };
-        videoMaMaBenchmarkRow.Controls.Add(benchmarkVideoMaMa);
-        AddWideControl(videoMaMaTable, videoMaMaBenchmarkRow);
-        AddWideControl(videoMaMaTable, videoMaMaHelp);
-        AddWideControl(models, videoMaMaGroup);
         Button benchmark = new() { Text = "Benchmark MatAnyone2 + SAM2 + ViTMatte...",
             AutoSize = true };
         Label cutoffHelp = new() { AutoSize = true,
@@ -4024,13 +3990,11 @@ internal sealed class CustomShowSettingsForm : Form
         vitMatteBaseCutoff.Value = ClampCutoff(Configuration.VitMatteBaseCompileCutoffFrames);
         vitMatteSmallBatch.Value = ClampBatch(Configuration.VitMatteSmallPreferredBatchSize);
         vitMatteBaseBatch.Value = ClampBatch(Configuration.VitMatteBasePreferredBatchSize);
-        videoMaMaBatch.Value = ClampBatch(Configuration.VideoMaMaPreferredBatchSize);
         sam2CacheUsage.Text = "Calculating usage...";
         Shown += async (_, _) => { await UpdateCacheUsageAsync(); RefreshCompilationStatus(); };
         clearCache.Click += async (_, _) => await ClearSam2CacheAsync(clearCache);
         benchmarkTransNet.Click += (_, _) => BenchmarkTransNet();
         benchmarkRvm.Click += (_, _) => BenchmarkRvm();
-        benchmarkVideoMaMa.Click += (_, _) => BenchmarkVideoMaMa();
         benchmark.Click += (_, _) => BenchmarkCutoffs();
         restore.Click += (_, _) => restoreIncomplete?.Invoke(this);
         cleanupFailed.Click += (_, _) => cleanupFailedShows?.Invoke(this);
@@ -4322,7 +4286,6 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.VitMatteBaseCompileCutoffFrames = (int)vitMatteBaseCutoff.Value;
             Configuration.VitMatteSmallPreferredBatchSize = (int)vitMatteSmallBatch.Value;
             Configuration.VitMatteBasePreferredBatchSize = (int)vitMatteBaseBatch.Value;
-            Configuration.VideoMaMaPreferredBatchSize = (int)videoMaMaBatch.Value;
             Directory.CreateDirectory(Configuration.LibraryRoot);
             DialogResult = DialogResult.OK;
             Close();
@@ -4438,32 +4401,6 @@ internal sealed class CustomShowSettingsForm : Form
         rvmFastCutoff.Value = ClampCompileCutoff(form.Result.RvmFastCompileCutoffFrames);
         RefreshCompilationStatus();
         validation.Text = "RVM benchmark completed; review the values and click OK to save them.";
-    }
-
-    void BenchmarkVideoMaMa()
-    {
-        if (!File.Exists(python.Text))
-        {
-            MessageBox.Show(this, "Select the processing-environment Python executable first.",
-                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-        if (MessageBox.Show(this,
-            "This benchmark loads VideoMaMa and tests increasing frame batches at its normal " +
-            "1024x576 model resolution. It uses the GPU heavily and stops before larger batches " +
-            "after an out-of-memory or unsafe-memory result. Close other GPU-heavy work first.\n\nRun it now?",
-            "Benchmark VideoMaMa batch", MessageBoxButtons.YesNo,
-            MessageBoxIcon.Information) != DialogResult.Yes) return;
-        CustomShowConfiguration benchmarkConfiguration = new()
-        {
-            LibraryRoot = root.Text,
-            PythonExecutable = python.Text,
-            VideoMaMaPreferredBatchSize = (int)videoMaMaBatch.Value
-        };
-        using CustomShowVideoMaMaBenchmarkForm form = new(benchmarkConfiguration);
-        if (form.ShowDialog(this) != DialogResult.OK || form.Result == null) return;
-        videoMaMaBatch.Value = ClampBatch(form.Result.VideoMaMaPreferredBatchSize);
-        validation.Text = "VideoMaMa benchmark completed; review the preferred batch and click OK to save it.";
     }
 
     static int DecodeModeIndex(string? value) => value?.ToLowerInvariant() switch
@@ -4804,99 +4741,6 @@ internal sealed class CustomShowCutoffBenchmarkForm : Form
     static string FormatDuration(TimeSpan value) => value.TotalHours >= 1
         ? $"{(int)value.TotalHours}:{value.Minutes:00}:{value.Seconds:00}"
         : $"{value.Minutes:00}:{value.Seconds:00}";
-
-    void Append(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text) || IsDisposed) return;
-        if (InvokeRequired) { BeginInvoke(() => Append(text)); return; }
-        output.AppendText(text + Environment.NewLine);
-    }
-
-    void CloseBenchmark()
-    {
-        if (!complete)
-        {
-            try { process?.Kill(true); } catch { }
-            DialogResult = DialogResult.Cancel;
-        }
-        else if (Result != null) DialogResult = DialogResult.OK;
-        Close();
-    }
-}
-
-internal sealed class CustomShowVideoMaMaBenchmarkForm : Form
-{
-    readonly CustomShowConfiguration configuration;
-    readonly TextBox output = new()
-    {
-        Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
-        ScrollBars = ScrollBars.Both, WordWrap = false
-    };
-    readonly Button close = new() { Dock = DockStyle.Bottom, Height = 36, Text = "Cancel" };
-    Process? process;
-    bool complete;
-    internal CustomShowConfiguration? Result { get; private set; }
-
-    internal CustomShowVideoMaMaBenchmarkForm(CustomShowConfiguration configuration)
-    {
-        this.configuration = configuration;
-        Text = "Benchmark VideoMaMa Batch Size";
-        ClientSize = new Size(920, 560);
-        Controls.Add(output); Controls.Add(close);
-        close.Click += (_, _) => CloseBenchmark();
-        FormClosing += (_, _) => { if (!complete) try { process?.Kill(true); } catch { } };
-        Shown += async (_, _) => await RunAsync();
-        AppTheme.Apply(this);
-    }
-
-    async Task RunAsync()
-    {
-        string resultPath = Path.Combine(Path.GetTempPath(),
-            "iqp-videomama-" + Guid.NewGuid().ToString("N") + ".json");
-        try
-        {
-            Append("Loading VideoMaMa and measuring real inference batches. Settings are unchanged until you use the result.");
-            ProcessStartInfo start = new(configuration.PythonExecutable)
-            {
-                UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true
-            };
-            foreach (string argument in new[]
-            {
-                Path.Combine(AppContext.BaseDirectory, "custom-shows", "benchmark_videomama.py"),
-                "--runtime", CustomShowProcessor.RuntimeRoot(configuration),
-                "--output", resultPath
-            }) start.ArgumentList.Add(argument);
-            process = Process.Start(start) ?? throw new InvalidOperationException(
-                "Python could not start the VideoMaMa benchmark.");
-            Task standardOutput = PumpAsync(process.StandardOutput);
-            Task standardError = PumpAsync(process.StandardError);
-            await process.WaitForExitAsync();
-            await Task.WhenAll(standardOutput, standardError);
-            if (process.ExitCode != 0)
-                throw new InvalidOperationException(
-                    $"VideoMaMa benchmark failed with exit code {process.ExitCode}.");
-            Result = JsonSerializer.Deserialize<CustomShowConfiguration>(
-                await File.ReadAllTextAsync(resultPath), CustomShowStore.JsonOptions) ??
-                throw new InvalidDataException("The benchmark did not return a VideoMaMa batch size.");
-            Append($"Recommended VideoMaMa batch: {Result.VideoMaMaPreferredBatchSize} frames.");
-        }
-        catch (Exception error)
-        {
-            if (!IsDisposed) Append("Benchmark failed: " + error.Message);
-        }
-        finally
-        {
-            complete = true;
-            if (!IsDisposed) close.Text = Result == null ? "Close" : "Use result";
-            try { File.Delete(resultPath); } catch { }
-        }
-    }
-
-    async Task PumpAsync(StreamReader reader)
-    {
-        while (await reader.ReadLineAsync() is string line) Append(line);
-    }
 
     void Append(string text)
     {
@@ -5331,9 +5175,6 @@ internal sealed class CustomShowSetupOptionsForm : Form
     readonly CheckBox matAnyone = new() { Text =
         "MatAnyone 2 + SAM2 Base+/Small/Tiny interactive masking (~900 MB)", AutoSize = true,
         Checked = true };
-    readonly CheckBox videoMaMa = new() { Text =
-        "VideoMaMa high-quality matting + SAM2 (~8 GB, NVIDIA CUDA required)",
-        AutoSize = true };
     readonly CheckBox vitMatte = new() { Text =
         "ViTMatte S + B with editable SAM2 video masks (~900 MB)", AutoSize = true };
     readonly CheckBox edgeTam = new() { Text =
@@ -5348,7 +5189,6 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallTransNetV2 => transNet.Checked;
     internal bool InstallOmniShotCut => omniShotCut.Checked;
     internal bool InstallMatAnyone2 => matAnyone.Checked;
-    internal bool InstallVideoMaMa => videoMaMa.Checked;
     internal bool InstallViTMatte => vitMatte.Checked;
     internal bool InstallEdgeTam => edgeTam.Checked;
     internal bool InstallStabilo => stabilo.Checked;
@@ -5372,13 +5212,12 @@ internal sealed class CustomShowSetupOptionsForm : Form
         layout.Controls.Add(omniShotCut);
         layout.Controls.Add(matAnyone);
         layout.Controls.Add(sam2Matting);
-        layout.Controls.Add(videoMaMa);
         layout.Controls.Add(vitMatte);
         layout.Controls.Add(edgeTam);
         layout.Controls.Add(stabilo);
         layout.Controls.Add(proPainter);
         layout.Controls.Add(new Label { Text =
-            "SAM2Matting, MatAnyone 2, VideoMaMa, and ProPainter are non-commercial; " +
+            "SAM2Matting, MatAnyone 2, and ProPainter are non-commercial; " +
             "ViTMatte, SAM2, EdgeTAM, and Stabilo permit commercial use.",
             AutoSize = true, MaximumSize = new Size(810, 0) });
         LinkLabel omniLicence = new() { Text = "Read the OmniShotCut MIT licence", AutoSize = true };
@@ -5388,11 +5227,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         LinkLabel matAnyoneLicence = new() { Text = "Read the MatAnyone 2 licence", AutoSize = true };
         matAnyoneLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/pq-yang/MatAnyone2/blob/main/LICENSE.txt") { UseShellExecute = true });
-        LinkLabel videoMaMaLicence = new() { Text = "Read the VideoMaMa licence", AutoSize = true };
-        videoMaMaLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
-            "https://github.com/cvlab-kaist/VideoMaMa/blob/main/License.md") { UseShellExecute = true });
         layout.Controls.Add(matAnyoneLicence);
-        layout.Controls.Add(videoMaMaLicence);
         LinkLabel sam2MattingLicenceLink = new()
         {
             Text = "Read the Fudan SAM2Matting licence and non-commercial notice",
@@ -5434,7 +5269,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         AcceptButton = (Button)buttons.Controls[0];
         CancelButton = (Button)buttons.Controls[1];
         AppTheme.Apply(this);
-        omniLicence.LinkColor = matAnyoneLicence.LinkColor = videoMaMaLicence.LinkColor =
+        omniLicence.LinkColor = matAnyoneLicence.LinkColor =
             sam2MattingLicenceLink.LinkColor = vitMatteLicence.LinkColor = edgeTamLicence.LinkColor = stabiloLicence.LinkColor =
             proPainterLicence.LinkColor =
             Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
@@ -5444,7 +5279,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     {
         using CustomShowSetupOptionsForm form = new();
         return form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
-            form.InstallSam2Matting && !form.InstallVideoMaMa &&
+            form.InstallSam2Matting &&
             !form.InstallViTMatte && !form.InstallEdgeTam &&
             !form.InstallStabilo && !form.InstallProPainter;
     }
@@ -5456,7 +5291,6 @@ internal sealed class CustomShowSetupForm : Form
     readonly bool installTransNetV2;
     readonly bool installOmniShotCut;
     readonly bool installMatAnyone2;
-    readonly bool installVideoMaMa;
     readonly bool installViTMatte;
     readonly bool installEdgeTam;
     readonly bool installStabilo;
@@ -5474,7 +5308,7 @@ internal sealed class CustomShowSetupForm : Form
 
     internal CustomShowSetupForm(string script, bool installTransNetV2,
         bool installOmniShotCut,
-        bool installMatAnyone2, bool installVideoMaMa, bool installViTMatte,
+        bool installMatAnyone2, bool installViTMatte,
         bool installProPainter, bool installEdgeTam, bool installStabilo)
     {
         this.script = script;
@@ -5482,7 +5316,6 @@ internal sealed class CustomShowSetupForm : Form
         this.installTransNetV2 = installTransNetV2;
         this.installOmniShotCut = installOmniShotCut;
         this.installMatAnyone2 = installMatAnyone2;
-        this.installVideoMaMa = installVideoMaMa;
         this.installViTMatte = installViTMatte;
         this.installProPainter = installProPainter;
         this.installEdgeTam = installEdgeTam;
@@ -5521,8 +5354,6 @@ internal sealed class CustomShowSetupForm : Form
                 start.ArgumentList.Add("-InstallOmniShotCut");
             if (installMatAnyone2)
                 start.ArgumentList.Add("-InstallMatAnyone2");
-            if (installVideoMaMa)
-                start.ArgumentList.Add("-InstallVideoMaMa");
             if (installViTMatte)
                 start.ArgumentList.Add("-InstallViTMatte");
             if (installEdgeTam)

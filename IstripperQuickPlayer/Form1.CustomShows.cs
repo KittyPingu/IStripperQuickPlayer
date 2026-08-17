@@ -760,10 +760,18 @@ public partial class Form1
     {
         if (customShowQueueManager == null) return;
         if (customShowQueueForm is null || customShowQueueForm.IsDisposed)
+        {
             customShowQueueForm = new(customShowQueueManager, EditCustomShowQueueJob,
                 DuplicateCustomShowQueueJob);
-        customShowQueueForm.Show(this);
+            customShowQueueForm.Show(this);
+            return;
+        }
+        if (!customShowQueueForm.Visible)
+            customShowQueueForm.Show(this);
+        if (customShowQueueForm.WindowState == FormWindowState.Minimized)
+            customShowQueueForm.WindowState = FormWindowState.Normal;
         customShowQueueForm.BringToFront();
+        customShowQueueForm.Activate();
     }
 
     void QueueShowPublished()
@@ -916,8 +924,7 @@ public partial class Form1
         {
             using CustomShowSetupForm form = new(script,
                 options.InstallTransNetV2, options.InstallOmniShotCut,
-                options.InstallMatAnyone2,
-                options.InstallVideoMaMa, options.InstallViTMatte,
+                options.InstallMatAnyone2, options.InstallViTMatte,
                 options.InstallProPainter, options.InstallEdgeTam,
                 options.InstallStabilo);
             if (form.ShowDialog(owner) != DialogResult.OK) return null;

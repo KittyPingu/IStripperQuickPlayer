@@ -5,7 +5,6 @@ param(
     [switch]$InstallTransNetV2,
     [switch]$InstallOmniShotCut,
     [switch]$InstallMatAnyone2,
-    [switch]$InstallVideoMaMa,
     [switch]$InstallViTMatte,
     [switch]$InstallEdgeTam,
     [switch]$InstallStabilo,
@@ -182,7 +181,7 @@ print("SAM2 compiler verified")
     if ($LASTEXITCODE -ne 0) { throw 'SAM2 compiler verification failed.' }
     [System.IO.File]::WriteAllText($sam2Marker, $sam2Commit)
 }
-if ($InstallMatAnyone2 -or $InstallVideoMaMa -or $InstallViTMatte -or $InstallStabilo) { Install-Sam2 }
+if ($InstallMatAnyone2 -or $InstallViTMatte -or $InstallStabilo) { Install-Sam2 }
 if ($InstallStabilo) {
     $stabiloCommit = '52ebd524d26fb940b868dc9d7eeb3e2602f895a3'
     $stabilo = Join-Path $runtime 'stabilo'
@@ -347,45 +346,6 @@ if ($InstallViTMatte) {
     }
     [System.IO.File]::WriteAllText((Join-Path $runtime 'VITMATTE_S_REVISION'), $smallRevision)
     [System.IO.File]::WriteAllText((Join-Path $runtime 'VITMATTE_B_REVISION'), $baseRevision)
-}
-if ($InstallVideoMaMa) {
-    $videoMaMaCommit = 'd5cce3e0ffe3b6429c147e658bb28bcfb576374c'
-    $svdRevision = '9e43909513c6714f1bc78bcb44d96e733cd242aa'
-    $modelRevision = 'e289a7acc8403c4fbe4dea2a1de5a9749ebc9bf5'
-    $videoMaMa = Join-Path $runtime 'videomama'
-    $svd = Join-Path $runtime 'videomama-base'
-    $videoMaMaModel = Join-Path $runtime 'videomama-model'
-    $videoMaMaMarker = Join-Path $runtime 'VIDEOMAMA_COMMIT'
-    Remove-Item -LiteralPath $videoMaMaMarker -Force -ErrorAction SilentlyContinue
-    Write-Host 'Installing optional VideoMaMa high-quality matting and SAM2...'
-    & $python -m pip install diffusers==0.35.2 transformers==4.57.0 `
-        accelerate==1.10.1 einops==0.8.1 safetensors==0.6.2
-    if ($LASTEXITCODE -ne 0) { throw 'VideoMaMa Python package installation failed.' }
-    if (-not (Test-Path (Join-Path $videoMaMa '.git'))) {
-        git clone https://github.com/cvlab-kaist/VideoMaMa.git $videoMaMa
-    }
-    git -C $videoMaMa fetch --depth 1 origin $videoMaMaCommit
-    git -C $videoMaMa checkout --detach $videoMaMaCommit
-    New-Item -ItemType Directory -Force -Path `
-        (Join-Path $svd 'feature_extractor'),(Join-Path $svd 'image_encoder'), `
-        (Join-Path $svd 'vae'),(Join-Path $videoMaMaModel 'unet') | Out-Null
-    $downloads = @(
-        @{ Uri="https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/$svdRevision/feature_extractor/preprocessor_config.json?download=true"; Path=(Join-Path $svd 'feature_extractor\preprocessor_config.json'); Hash='4DB495644E3E5BD8FCAC52F70E7FC0B413C911086021ACF73AC30E5911166E95' },
-        @{ Uri="https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/$svdRevision/image_encoder/config.json?download=true"; Path=(Join-Path $svd 'image_encoder\config.json'); Hash='65DA4496F116D2B297FE864E0F31242FBC57E26A5D95B93310F2034E1E90D0EC' },
-        @{ Uri="https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/$svdRevision/image_encoder/model.fp16.safetensors?download=true"; Path=(Join-Path $svd 'image_encoder\model.fp16.safetensors'); Hash='AE616C24393DD1854372B0639E5541666F7521CBE219669255E865CB7F89466A' },
-        @{ Uri="https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/$svdRevision/vae/config.json?download=true"; Path=(Join-Path $svd 'vae\config.json'); Hash='8F34272DB69F7E2C615DA6142CA3F9FDCD7B682BCFD903CEB15035FEA79A8303' },
-        @{ Uri="https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt/resolve/$svdRevision/vae/diffusion_pytorch_model.fp16.safetensors?download=true"; Path=(Join-Path $svd 'vae\diffusion_pytorch_model.fp16.safetensors'); Hash='AF602CD0EB4AD6086EC94FBF1438DFB1BE5EC9AC03FD0215640854E90D6463A3' },
-        @{ Uri="https://huggingface.co/SammyLim/VideoMaMa/resolve/$modelRevision/unet/config.json?download=true"; Path=(Join-Path $videoMaMaModel 'unet\config.json'); Hash='D93F866DAA31851058CA16A18E35B22DC9D3655D61E991B67D120FF333BF8176' },
-        @{ Uri="https://huggingface.co/SammyLim/VideoMaMa/resolve/$modelRevision/unet/diffusion_pytorch_model.safetensors?download=true"; Path=(Join-Path $videoMaMaModel 'unet\diffusion_pytorch_model.safetensors'); Hash='F2442BF16EDEDAD25C1C272AE7535B6411C43CEE5C27B012BB6F7FDA72D07B8C' }
-    )
-    foreach ($download in $downloads) {
-        Get-VerifiedDownload $download.Uri $download.Path $download.Hash
-    }
-    & $python -c "import sys, torch; sys.path.insert(0, sys.argv[1]); from pipeline_svd_mask import VideoInferencePipeline; from sam2.build_sam import build_sam2_video_predictor; assert torch.cuda.is_available(), 'VideoMaMa requires NVIDIA CUDA'; print('VideoMaMa and SAM2 imports verified')" $videoMaMa
-    if ($LASTEXITCODE -ne 0) { throw 'VideoMaMa verification failed.' }
-    [System.IO.File]::WriteAllText($videoMaMaMarker, $videoMaMaCommit)
-    [System.IO.File]::WriteAllText((Join-Path $runtime 'VIDEOMAMA_SVD_REVISION'), $svdRevision)
-    [System.IO.File]::WriteAllText((Join-Path $runtime 'VIDEOMAMA_MODEL_REVISION'), $modelRevision)
 }
 if ($InstallProPainter) {
     $proPainterCommit = 'c8983a445720450bf2fd976cab0adb1cad19547d'

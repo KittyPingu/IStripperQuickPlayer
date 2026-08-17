@@ -4,7 +4,7 @@ import argparse, json, sys
 from pathlib import Path
 
 SAM2_COMMIT = "2b90b9f5ceec907a1c18123530e92e794ad901a4"
-from videomama_worker import sam2_model
+from custom_show_worker import sam2_model
 
 def send(**value):
     print(json.dumps(value), flush=True)

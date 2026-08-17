@@ -58,8 +58,6 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "rvm_worker.py");
     internal static string MatAnyoneWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "matanyone2_worker.py");
-    internal static string VideoMaMaWorkerPath => Path.Combine(
-        AppContext.BaseDirectory, "custom-shows", "videomama_worker.py");
     internal static string ViTMatteWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "vitmatte_worker.py");
     internal static string RvmViTMatteWorkerPath => Path.Combine(
@@ -100,12 +98,6 @@ internal static class CustomShowProcessor
                 ? new(total, free) : null;
         }
         catch { return null; }
-    }
-
-    internal static int VideoMaMaSafeBatch(NvidiaMemory memory)
-    {
-        int usable = Math.Min(memory.TotalMiB, memory.FreeMiB);
-        return usable < 20 * 1024 ? 1 : usable < 32 * 1024 ? 2 : 4;
     }
 
     internal static int ViTMatteSafeBatch(NvidiaMemory memory, bool baseModel,
@@ -150,8 +142,6 @@ internal static class CustomShowProcessor
         return result?.ForegroundMode == "source" && result.InitialMaskFrameMs == 1033 &&
             result.Clips?.Length == 1 &&
             result.AdditionalProperties?.ContainsKey("futureWorkerMetadata") == true &&
-            VideoMaMaSafeBatch(new(16 * 1024, 15 * 1024)) == 1 &&
-            VideoMaMaSafeBatch(new(48 * 1024, 40 * 1024)) == 4 &&
             ViTMatteSafeBatch(new(16 * 1024, 15 * 1024), true,
                 1920, 1080) == 1 &&
             ViTMatteSafeBatch(new(24 * 1024, 23 * 1024), true,
@@ -295,16 +285,6 @@ internal static class CustomShowProcessor
         File.Exists(Path.Combine(RuntimeRoot(configuration), "checkpoints",
             "rvm_resnet50.pth")) && File.Exists(MatAnyoneWorkerPath);
 
-    internal static bool IsVideoMaMaInstalled(CustomShowConfiguration configuration) =>
-        OptionalToolInstalled(configuration, "VIDEOMAMA_COMMIT", "videomama") &&
-        OptionalToolInstalled(configuration, "SAM2_COMMIT", "sam2") &&
-        File.Exists(Path.Combine(RuntimeRoot(configuration), "videomama-base", "image_encoder",
-            "model.fp16.safetensors")) &&
-        File.Exists(Path.Combine(RuntimeRoot(configuration), "videomama-base", "vae",
-            "diffusion_pytorch_model.fp16.safetensors")) &&
-        File.Exists(Path.Combine(RuntimeRoot(configuration), "videomama-model", "unet",
-            "diffusion_pytorch_model.safetensors")) && File.Exists(VideoMaMaWorkerPath);
-
     internal static bool IsViTMatteSmallInstalled(CustomShowConfiguration configuration) =>
         OptionalToolInstalled(configuration, "VITMATTE_S_REVISION", "vitmatte-s") &&
         OptionalToolInstalled(configuration, "SAM2_COMMIT", "sam2") &&
@@ -373,24 +353,19 @@ internal static class CustomShowProcessor
             };
             if (IsTransNetV2Installed(configuration) || IsOmniShotCutInstalled(configuration) ||
                 IsMatAnyone2Installed(configuration) ||
-                IsRvmMatAnyone2Installed(configuration) || IsVideoMaMaInstalled(configuration) ||
+                IsRvmMatAnyone2Installed(configuration) ||
                 IsViTMatteSmallInstalled(configuration) ||
                 IsRvmViTMatteSmallInstalled(configuration) ||
                 IsViTMatteBaseInstalled(configuration) || IsProPainterInstalled(configuration) ||
                 IsStabiloInstalled(configuration))
                 return false;
             foreach (string directory in new[] { "checkpoints", "transnetv2", "omnishotcut",
-                "matanyone2", "rvm",
-                "videomama", "sam2", "vitmatte-s", "vitmatte-b",
+                "matanyone2", "rvm", "sam2", "vitmatte-s", "vitmatte-b",
                 "propainter-streaming", "stabilo",
-                Path.Combine("videomama-base", "image_encoder"),
-                Path.Combine("videomama-base", "vae"),
-                Path.Combine("videomama-model", "unet"),
                 "propainter-streaming-weights" })
                 Directory.CreateDirectory(Path.Combine(runtime, directory));
             foreach (string marker in new[] { "TRANSNETV2_COMMIT", "OMNISHOTCUT_COMMIT",
-                "MATANYONE2_COMMIT", "RVM_COMMIT",
-                "VIDEOMAMA_COMMIT", "SAM2_COMMIT",
+                "MATANYONE2_COMMIT", "RVM_COMMIT", "SAM2_COMMIT",
                 "VITMATTE_S_REVISION", "VITMATTE_B_REVISION",
                 "PROPAINTER_STREAMING_COMMIT", "STABILO_COMMIT" })
                 File.WriteAllText(Path.Combine(runtime, marker), "installed");
@@ -398,11 +373,6 @@ internal static class CustomShowProcessor
                 OmniShotCutRevision);
             File.WriteAllText(Path.Combine(runtime, "STABILO_COMMIT"),
                 StabiloRevision);
-            foreach (string model in new[] {
-                Path.Combine("videomama-base", "image_encoder", "model.fp16.safetensors"),
-                Path.Combine("videomama-base", "vae", "diffusion_pytorch_model.fp16.safetensors"),
-                Path.Combine("videomama-model", "unet", "diffusion_pytorch_model.safetensors") })
-                File.WriteAllBytes(Path.Combine(runtime, model), []);
             File.WriteAllBytes(Path.Combine(runtime, "propainter-streaming-weights",
                 "propainter-0000-5f3cc1e7.pth"), []);
             File.WriteAllBytes(Path.Combine(runtime, "vitmatte-s", "model.safetensors"), []);
@@ -413,7 +383,7 @@ internal static class CustomShowProcessor
             return IsTransNetV2Installed(configuration) &&
                 IsOmniShotCutInstalled(configuration) &&
                 IsMatAnyone2Installed(configuration) &&
-                IsRvmMatAnyone2Installed(configuration) && IsVideoMaMaInstalled(configuration) &&
+                IsRvmMatAnyone2Installed(configuration) &&
                 IsViTMatteSmallInstalled(configuration) &&
                 IsRvmViTMatteSmallInstalled(configuration) &&
                 IsViTMatteBaseInstalled(configuration) &&
@@ -622,7 +592,6 @@ internal static class CustomShowProcessor
         {
             "matanyone2" or "rvm-matanyone2" => MatAnyoneWorkerPath,
             "rvm-vitmatte-s" => RvmViTMatteWorkerPath,
-            "videomama" => VideoMaMaWorkerPath,
             "vitmatte-s" or "vitmatte-b" => ViTMatteWorkerPath,
             _ => WorkerPath
         };
@@ -630,7 +599,7 @@ internal static class CustomShowProcessor
             throw new FileNotFoundException("The processing worker is missing.", worker);
         if (preset == "matanyone2" && !File.Exists(initialMask))
             throw new FileNotFoundException("Create the initial foreground mask first.", initialMask);
-        if (preset is "videomama" or "vitmatte-s" or "vitmatte-b" &&
+        if (preset is "vitmatte-s" or "vitmatte-b" &&
             !Directory.Exists(maskFolder))
             throw new DirectoryNotFoundException(
                 "Review and accept the SAM2 video masks before processing.");
@@ -700,7 +669,7 @@ internal static class CustomShowProcessor
                     ".matanyone-control"));
             }
         }
-        else if (preset is "videomama" or "vitmatte-s" or "vitmatte-b")
+        else if (preset is "vitmatte-s" or "vitmatte-b")
         {
             start.ArgumentList.Add("--mask-folder");
             start.ArgumentList.Add(maskFolder!);

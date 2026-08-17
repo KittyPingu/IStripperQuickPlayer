@@ -51,7 +51,6 @@ internal sealed class CustomShowConfiguration
     public int VitMatteBaseCompileCutoffFrames { get; set; } = 16000;
     public int VitMatteSmallPreferredBatchSize { get; set; } = 2;
     public int VitMatteBasePreferredBatchSize { get; set; } = 1;
-    public int VideoMaMaPreferredBatchSize { get; set; } = 1;
     public string LastProcessingAlgorithm { get; set; } = "quality";
     public string LastSam2MattingTracker { get; set; } = "sam3";
     public string LastMaskEngine { get; set; } = "sam2";
@@ -79,9 +78,14 @@ internal sealed class CustomShowConfiguration
     {
         try
         {
+            JsonNode? settings = JsonNode.Parse(File.ReadAllText(FilePath));
+            // Retired processing options are removed before strict deserialization
+            // so settings written by older releases remain usable.
+            if (settings is JsonObject settingsObject)
+                settingsObject.Remove("videoMaMaPreferredBatchSize");
             CustomShowConfiguration configuration =
-                JsonSerializer.Deserialize<CustomShowConfiguration>(
-                    File.ReadAllText(FilePath), CustomShowStore.JsonOptions) ?? new();
+                settings?.Deserialize<CustomShowConfiguration>(
+                    CustomShowStore.JsonOptions) ?? new();
             if (string.IsNullOrWhiteSpace(configuration.PythonExecutable))
                 configuration.PythonExecutable = FindPythonExecutable();
             if (string.IsNullOrWhiteSpace(configuration.Sam2MattingPythonExecutable))
@@ -114,11 +118,9 @@ internal sealed class CustomShowConfiguration
                 configuration.TransNetClipDetectionSensitivity, 1, 99);
             configuration.OmniShotCutClipDetectionSensitivity = Math.Clamp(
                 configuration.OmniShotCutClipDetectionSensitivity, 1, 100);
-            if (!rvmChunks.Contains(configuration.VideoMaMaPreferredBatchSize))
-                configuration.VideoMaMaPreferredBatchSize = 1;
             if (configuration.LastProcessingAlgorithm is not
                 ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or
-                 "matanyone2" or "videomama" or "vitmatte-s" or "vitmatte-b" or
+                 "matanyone2" or "vitmatte-s" or "vitmatte-b" or
                  "sam2matting"))
                 configuration.LastProcessingAlgorithm = "quality";
             if (!Sam2MattingSupport.Trackers.Contains(
@@ -403,8 +405,10 @@ internal sealed class CustomShowStore
          "Glass", "Sign", "Prop", "Full Legs", "Side"];
     static readonly HashSet<string> ClipTypeValues = [.. ClipTypeOptions];
     static readonly HashSet<string> ProcessingAlgorithms =
-        ["quality", "fast", "matanyone2", "rvm-matanyone2", "videomama",
-         "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "sam2matting"];
+        ["quality", "fast", "matanyone2", "rvm-matanyone2",
+         "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "sam2matting",
+         // Retained only so already-published shows remain playable.
+         "videomama"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
     static readonly HashSet<int> BatchSizeValues = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
     static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
@@ -1006,7 +1010,7 @@ internal sealed class CustomShowStore
             acceptedThreshold is < 0 or > 255)
             throw new InvalidDataException("Invalid automatically accepted alpha threshold.");
         bool trackedMasks = processing.Algorithm is
-            "videomama" or "vitmatte-s" or "vitmatte-b";
+            "vitmatte-s" or "vitmatte-b" or "videomama";
         string? maskEngine = trackedMasks ? processing.MaskEngine ?? "sam2" : null;
         if (trackedMasks && maskEngine is not
             ("sam2" or "rvm" or "edgetam" or "rvm-sam2"))

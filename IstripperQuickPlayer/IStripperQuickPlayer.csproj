@@ -56,10 +56,7 @@
     <Content Include="..\tools\custom-shows\matanyone2_worker.py" Link="custom-shows\matanyone2_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="..\tools\custom-shows\videomama_worker.py" Link="custom-shows\videomama_worker.py">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-    <Content Include="..\tools\custom-shows\benchmark_videomama.py" Link="custom-shows\benchmark_videomama.py">
+    <Content Include="..\tools\custom-shows\custom_show_worker.py" Link="custom-shows\custom_show_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\tools\custom-shows\vitmatte_worker.py" Link="custom-shows\vitmatte_worker.py">
@@ -237,6 +234,12 @@
   </Target>
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
     <Exec Command="xcopy /d /q /y &quot;$(ProjectDir)dependencies\*.*&quot; &quot;$(TargetDir)&quot;&#xD;&#xA;" />
+  </Target>
+  <Target Name="RemoveRetiredVideoMaMaWorkers"
+          AfterTargets="CopyFilesToOutputDirectory;Publish">
+    <Delete Files="$(OutDir)custom-shows\videomama_worker.py;$(OutDir)custom-shows\benchmark_videomama.py" />
+    <Delete Condition="'$(PublishDir)' != ''"
+            Files="$(PublishDir)custom-shows\videomama_worker.py;$(PublishDir)custom-shows\benchmark_videomama.py" />
   </Target>
 	
 </Project>

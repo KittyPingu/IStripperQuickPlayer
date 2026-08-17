@@ -19,8 +19,8 @@ from pathlib import Path
 
 from rvm_worker import (digest, emit, executable, fast_fp16, load_model as load_rvm_model,
                         probe, replace_preview)
-from videomama_worker import (alpha_encoder, output_codecs,
-                              source_and_foreground_encoder)
+from custom_show_worker import (alpha_encoder, output_codecs,
+                                source_and_foreground_encoder)
 
 COMMIT = "0079197acd6d16a741f71558809c06c586c579e0"
 WEIGHTS_HASH = "5e9821e4087231427376b437c85bb6e072b41e582314f06fd524f75bc4af5914"

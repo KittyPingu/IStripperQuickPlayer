@@ -5,7 +5,7 @@ from pathlib import Path
 
 from matanyone2_worker import clean_rvm_mask
 from rvm_worker import executable, fast_fp16, load_model, probe
-from videomama_worker import model_size
+from custom_show_worker import model_size
 
 
 def send(**values):
