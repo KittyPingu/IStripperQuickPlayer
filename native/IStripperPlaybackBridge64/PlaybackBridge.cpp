@@ -2804,15 +2804,16 @@ namespace
                 const LONG accumulated = InterlockedExchangeAdd(
                     &g_playerWheelDelta, delta) + delta;
                 const int steps = accumulated / WHEEL_DELTA;
-                if (steps == 0 || ResizeMovieWindow(steps))
+                if (steps != 0 && g_wheelResizeMessage != 0)
                 {
-                    if (steps != 0)
-                    {
-                        InterlockedExchangeAdd(&g_playerWheelDelta,
-                            -steps * WHEEL_DELTA);
-                    }
-                    return 1;
+                    InterlockedExchangeAdd(&g_playerWheelDelta,
+                        -steps * WHEEL_DELTA);
+                    PostMessageW(HWND_BROADCAST, g_wheelResizeMessage,
+                        static_cast<WPARAM>(steps),
+                        static_cast<LPARAM>(InterlockedCompareExchange(
+                            &g_playerMode, 0, 0)));
                 }
+                return 1;
             }
         }
         return CallNextHookEx(g_movieMouseHook, code, wParam, lParam);
@@ -3159,9 +3160,12 @@ namespace
         return BridgeSuccess;
     }
 
-    HRESULT SetPlayerWheelResize(bool enabled)
+    HRESULT SetPlayerWheelResize(SIZE_T options)
     {
+        const bool enabled = (options & 1) != 0;
         InterlockedExchange(&g_playerWheelResize, enabled ? 1 : 0);
+        InterlockedExchange(
+            &g_playerWheelWhileLocked, (options & 2) != 0 ? 1 : 0);
         InterlockedExchange(&g_playerWheelDelta, 0);
         InterlockedExchange(&g_playerVolumeWheelDelta, 0);
 
@@ -3198,15 +3202,6 @@ namespace
             return watcherResult < 0 ? watcherResult :
                 HRESULT_FROM_WIN32(ERROR_HOOK_NOT_INSTALLED);
         }
-        return BridgeSuccess;
-    }
-
-    HRESULT SetPlayerWheelWhileLocked(bool enabled)
-    {
-        InterlockedExchange(
-            &g_playerWheelWhileLocked, enabled ? 1 : 0);
-        InterlockedExchange(&g_playerWheelDelta, 0);
-        InterlockedExchange(&g_playerVolumeWheelDelta, 0);
         return BridgeSuccess;
     }
 
@@ -9707,11 +9702,11 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerClickThrough(
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerWheelResize(
-    SIZE_T enabled)
+    SIZE_T options)
 {
     __try
     {
-        return SetPlayerWheelResize(enabled != 0);
+        return SetPlayerWheelResize(options);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -9723,19 +9718,6 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
     SIZE_T mode)
 {
     return SetPlayerMode(mode);
-}
-
-extern "C" __declspec(dllexport) HRESULT WINAPI
-IStripperSetPlayerWheelWhileLocked(SIZE_T enabled)
-{
-    __try
-    {
-        return SetPlayerWheelWhileLocked(enabled != 0);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return E_UNEXPECTED;
-    }
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerVolume(

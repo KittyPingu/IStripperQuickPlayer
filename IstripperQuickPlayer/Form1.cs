@@ -2947,15 +2947,29 @@ namespace IStripperQuickPlayer
         {
             if (message.Msg == WheelResizeMessage)
             {
-                int percent = message.WParam.ToInt32();
-                RememberManualPlayerSize(
-                    GetCurrentAnimationPath(),
-                    Volatile.Read(ref playerMode), percent);
-                if (Properties.Settings.Default.EnablePlayerWheelResize &&
-                    percent is >= 10 and <= 200)
+                int steps = unchecked((int)message.WParam.ToInt64());
+                int mode = message.LParam.ToInt32();
+                if (steps != 0 && mode is 1 or 2 &&
+                    Properties.Settings.Default.EnablePlayerWheelResize)
                 {
-                    LockStateOverlay.ShowTextForProcess(
-                        vghd_procID, $"{percent}%");
+                    string animationPath = GetCurrentAnimationPath();
+                    int current = PlayerSizeForAnimation(
+                        animationPath, mode, mode == 1 ? 100 : 30);
+                    int percent = Math.Clamp(
+                        current + steps * 2, mode == 1 ? 60 : 10, 200);
+                    int result = SetVghdPlayerSizePercent(mode, percent);
+                    if (result >= 0)
+                    {
+                        RememberManualPlayerSize(
+                            animationPath, mode, percent);
+                        LockStateOverlay.ShowTextForProcess(
+                            vghd_procID, $"{percent}%");
+                    }
+                    else
+                    {
+                        SetPlaybackStatus(
+                            $"Player size update failed (0x{result:X8}).");
+                    }
                 }
                 return;
             }
@@ -3232,14 +3246,6 @@ namespace IStripperQuickPlayer
                         throw new COMException(
                             $"Player wheel resize setup failed (0x{wheelResizeResult:X8}).",
                             wheelResizeResult);
-                    }
-                    int wheelWhileLockedResult = SetVghdPlayerWheelWhileLocked(
-                        Properties.Settings.Default.AllowWheelWhileLocked);
-                    if (wheelWhileLockedResult < 0)
-                    {
-                        throw new COMException(
-                            $"Locked player wheel setup failed (0x{wheelWhileLockedResult:X8}).",
-                            wheelWhileLockedResult);
                     }
                     CaptureNormalPlayerSizes();
                     QueueConfiguredPlayerSize();
@@ -4548,20 +4554,11 @@ namespace IStripperQuickPlayer
                 return unchecked((int)0x80070015);
             }
 
-            return CallPlaybackBridgeApi("IStripperSetPlayerWheelResize",
-                enabled ? 1UL : 0UL);
-        }
-
-        private int SetVghdPlayerWheelWhileLocked(bool enabled)
-        {
-            if (!playerLockBridgeLoaded || vghd_procID == 0)
-            {
-                return unchecked((int)0x80070015);
-            }
-
+            ulong options = enabled ? 1UL : 0UL;
+            if (Properties.Settings.Default.AllowWheelWhileLocked)
+                options |= 2UL;
             return CallPlaybackBridgeApi(
-                "IStripperSetPlayerWheelWhileLocked",
-                enabled ? 1UL : 0UL);
+                "IStripperSetPlayerWheelResize", options);
         }
 
         private int SetVghdPlayerMode(int mode)
@@ -7113,7 +7110,8 @@ namespace IStripperQuickPlayer
             if (!playerLockBridgeLoaded)
                 return;
 
-            int result = SetVghdPlayerWheelWhileLocked(enabled);
+            int result = SetVghdPlayerWheelResize(
+                Properties.Settings.Default.EnablePlayerWheelResize);
             if (result < 0)
             {
                 SetPlaybackStatus(
