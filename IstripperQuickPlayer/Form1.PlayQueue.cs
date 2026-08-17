@@ -2844,14 +2844,6 @@ namespace IStripperQuickPlayer
                                 QueueStartProtectionMilliseconds);
                     }
                 }
-                else if (IsForcedAnimationProposal(proposed))
-                {
-                    queuedAnimationPendingPath = "";
-                    queuedAnimationPendingConfirmed = false;
-                    queuedAnimationProtectedUntil = DateTime.MinValue;
-                    ClearQueuedCardSession();
-                    return false;
-                }
                 else if (ShouldKeepQueuedAnimationPending(
                     queuedAnimationPendingConfirmed,
                     queuedAnimationProtectedUntil, DateTime.UtcNow,
@@ -2875,15 +2867,18 @@ namespace IStripperQuickPlayer
                     StringComparison.OrdinalIgnoreCase))
                 return false;
 
-            if (IsForcedAnimationProposal(proposed))
-                return false;
-
             if (string.Equals(proposed, nowPlayingPath,
                     StringComparison.OrdinalIgnoreCase))
                 return false;
 
             if (!apiOnlyMode && !CurrentAnimationReachedQueueAdvancePoint())
-                return false;
+            {
+                if (string.IsNullOrEmpty(nowPlayingPath))
+                    return false;
+                selected = nowPlayingPath;
+                forceAnimation = true;
+                return true;
+            }
 
             if (!TryTakeQueuedAnimation(out selected, out string cardTag))
                 return false;
@@ -2912,13 +2907,6 @@ namespace IStripperQuickPlayer
         private static bool ShouldKeepQueuedAnimationPending(bool confirmed,
             DateTime protectedUntil, DateTime now, bool currentReachedEnd) =>
             !confirmed || now < protectedUntil || !currentReachedEnd;
-
-        private static bool IsForcedAnimationProposal(string proposed)
-        {
-            string forced = GetPlaybackRegistryValue("ForceAnim");
-            return string.Equals(proposed, forced,
-                StringComparison.OrdinalIgnoreCase);
-        }
 
         private void SelectQueuedCard(string cardTag, string animationPath)
         {

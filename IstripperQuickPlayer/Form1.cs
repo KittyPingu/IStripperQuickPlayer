@@ -3780,12 +3780,7 @@ namespace IStripperQuickPlayer
                     {
                         if (string.IsNullOrEmpty(playbackRequestedAnimationPath) &&
                             string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
-                            (previousAnimationReachedEnd ||
-                             Properties.Settings.Default.EnablePlayQueue &&
-                             (activeQueuedCard != null ||
-                              activeManualQueueEntry != null ||
-                              manualPlayQueue.Count > 0 ||
-                              automaticPlayQueue.Count > 0)))
+                            previousAnimationReachedEnd)
                         {
                             playbackCompletedAnimationPath = previousAnimationPath;
                             playbackNextClipRetryAt =
@@ -4728,13 +4723,6 @@ namespace IStripperQuickPlayer
                     .Replace("\0", string.Empty);
             if (keyname == "CurrentAnim" && !apiOnlyMode)
                 QueueConfiguredPlayerSize(str);
-            if (!apiOnlyMode && keyname == "CurrentAnim" &&
-                (GetAsyncKeyState(VirtualKeyLeftButton) & 0x8000) != 0)
-            {
-                Volatile.Write(ref playbackInputQuietUntilTicks,
-                    DateTime.UtcNow.AddSeconds(1).Ticks);
-                return false;
-            }
             if (data.Length < 1)
             {
                 if (apiOnlyMode && keyname == "CurrentAnim")
