@@ -242,6 +242,18 @@ def valid_memory_configuration(max_mem_frames, use_long_term):
             (not use_long_term or 6 <= max_mem_frames <= 14))
 
 
+def resolved_frame_count(expected, decoded):
+    if decoded == expected:
+        return decoded
+    # Some MP4 edit lists advertise one more frame than FFmpeg can decode. A
+    # clean decoder exit confirms this is an end-of-stream metadata mismatch,
+    # not a partial frame or decoder failure (both are rejected earlier).
+    if decoded == expected - 1:
+        return decoded
+    raise RuntimeError(
+        f"source decoder returned {decoded} of {expected} expected frames")
+
+
 def corrected_rvm_refresh_mask(torch, matanyone_alpha, rvm_foreground,
                                refresh_strength=1):
     if matanyone_alpha.ndim != 2 or rvm_foreground.ndim != 2:
@@ -1384,8 +1396,14 @@ def _process_once(args, compile_enabled):
         raw_alpha.flush()
         del raw_alpha
 
-    if count != total:
-        raise RuntimeError(f"source decoder returned {count} of {total} expected frames")
+    expected_total = total
+    total = resolved_frame_count(expected_total, count)
+    if total != expected_total:
+        log_record("decoder_frame_count_adjustment", expectedFrames=expected_total,
+                   decodedFrames=total, reason="clean EOF one frame early")
+        if args.raw_alpha_output:
+            with args.raw_alpha_output.open("r+b") as raw_alpha_file:
+                raw_alpha_file.truncate(total * process_width * process_height)
     initial_mask_frame_ms = round((start + selected_index / fps) * 1000)
     (output / "result.json").write_text(json.dumps({"width": width, "height": height,
         "frameRate": frame_rate, "durationMs": round(count * 1000 / fps),
@@ -1569,6 +1587,13 @@ def main():
         assert not valid_memory_configuration(5, True)
         assert not valid_memory_configuration(15, True)
         assert not valid_memory_configuration(31, False)
+        assert resolved_frame_count(5386, 5386) == 5386
+        assert resolved_frame_count(5386, 5385) == 5385
+        try:
+            resolved_frame_count(5386, 5384)
+            raise AssertionError("multi-frame truncation should be rejected")
+        except RuntimeError:
+            pass
         assert LONG_TERM_MAX_TOKENS > LONG_TERM_BUFFER_TOKENS + 128
         refresh_alpha = torch.zeros((12, 12))
         refresh_foreground = torch.zeros((12, 12), dtype=torch.bool)

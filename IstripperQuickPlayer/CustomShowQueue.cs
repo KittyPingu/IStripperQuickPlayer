@@ -832,6 +832,7 @@ internal static class CustomShowJobRunner
         Func<string?, Task> preparePublication, CancellationToken token,
         Func<string, CustomShowManifest, Task<bool>>? reviewBeforePublication = null)
     {
+        ResolvePerformer(job, store);
         Validate(job, store, configuration, queue);
         string staging = queue.Work(job.Id);
         if (job.ReadyToPublish && Directory.Exists(staging))
@@ -942,7 +943,6 @@ internal static class CustomShowJobRunner
         show.Processing = Processing(job, result, show.Clips, clipsToProcess,
             previousProcessing, offset);
         await SaveCover(job, show, staging, queue, token);
-        store.SavePerformer(job.Performer);
         CustomShowStore.WriteJsonAtomic(Path.Combine(staging, "show.json"), show);
         job.ReadyToPublish = true;
         if (reviewBeforePublication != null &&
@@ -955,6 +955,21 @@ internal static class CustomShowJobRunner
         await PublishAsync(job, show, staging, store, progress,
             preparePublication, token);
         return show.Id;
+    }
+
+    static void ResolvePerformer(CustomShowQueueJob job, CustomShowStore store)
+    {
+        CustomPerformerProfile? existing = store.LoadPerformers().FirstOrDefault(value =>
+            string.Equals(value.ModelName.Trim(), job.Performer.ModelName.Trim(),
+                StringComparison.OrdinalIgnoreCase));
+        if (existing == null || string.Equals(existing.Id, job.Performer.Id,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            store.SavePerformer(job.Performer);
+            return;
+        }
+        job.Performer = existing;
+        job.Manifest.PerformerId = existing.Id;
     }
 
     static async Task PublishAsync(CustomShowQueueJob job, CustomShowManifest show,
@@ -1404,6 +1419,23 @@ internal static class CustomShowJobRunner
                 return false;
             CustomShowStore shows = new(root);
             CustomShowQueueStore storage = new(shows);
+            CustomPerformerProfile savedPerformer = new()
+            {
+                ModelName = "Existing model", IstripperModelId = "123"
+            };
+            shows.SavePerformer(savedPerformer);
+            CustomShowQueueJob duplicatePerformer = new()
+            {
+                Performer = new()
+                {
+                    ModelName = "existing MODEL", IstripperModelId = "456"
+                }
+            };
+            duplicatePerformer.Manifest.PerformerId = duplicatePerformer.Performer.Id;
+            ResolvePerformer(duplicatePerformer, shows);
+            if (duplicatePerformer.Performer.Id != savedPerformer.Id ||
+                duplicatePerformer.Manifest.PerformerId != savedPerformer.Id)
+                return false;
             CustomShowQueueDocument document = new();
             CustomShowQueueJob pending = new()
             {
