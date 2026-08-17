@@ -43,10 +43,17 @@ namespace IStripperQuickPlayer
         internal async Task PopulateAsync()
         {
             if (photos == null) return;
+            Text = "Photos — Loading thumbnails...";
             listView1.BeginUpdate();
             imageList1.Images.Add(new Bitmap(256,256,System.Drawing.Imaging.PixelFormat.Format24bppRgb));
 
-            thumbs = await photos.getThumbnails();
+            Bitmap[] loaded = await photos.getThumbnails();
+            if (IsDisposed || Disposing)
+            {
+                foreach (Bitmap thumbnail in loaded) thumbnail.Dispose();
+                return;
+            }
+            thumbs = loaded;
             for (int i = 0; i < thumbs.Length; i++)
             {
                 listView1.Items.Add(new ListViewItem(i.ToString(), i));
@@ -54,6 +61,7 @@ namespace IStripperQuickPlayer
             //listView1.Items.Add(new ListViewItem(i.ToString(),i));
             
             listView1.EndUpdate();
+            Text = $"Photos ({thumbs.Length})";
         }
 
         private void listView1_DrawItem(object sender, DrawListViewItemEventArgs e)

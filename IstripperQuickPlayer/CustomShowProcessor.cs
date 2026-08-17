@@ -991,7 +991,8 @@ internal static class CustomShowProcessor
 
     internal static async Task GenerateCoverAsync(string source, string destination,
         long positionMs, string modelName, string showTitle, Color titleColor,
-        CancellationToken token)
+        CancellationToken token, string modelFont = "Segoe Script",
+        string titleFont = "Segoe UI")
     {
         ProcessStartInfo start = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"))
         {
@@ -1012,23 +1013,30 @@ internal static class CustomShowProcessor
             throw new InvalidOperationException("Cover generation failed: " + error.Trim());
         using Image image = Image.FromFile(destination);
         using Bitmap cover = new(image);
-        DrawCoverText(cover, modelName, showTitle, titleColor);
+        DrawCoverText(cover, modelName, showTitle, titleColor, modelFont, titleFont);
         image.Dispose();
         cover.Save(destination, System.Drawing.Imaging.ImageFormat.Jpeg);
     }
 
-    static void DrawCoverText(Bitmap cover, string modelName, string showTitle,
-        Color titleColor)
+    internal static void DrawCoverText(Bitmap cover, string modelName, string showTitle,
+        Color titleColor, string modelFont = "Segoe Script",
+        string titleFont = "Segoe UI")
     {
         using Graphics graphics = Graphics.FromImage(cover);
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-        using Font modelFont = FittedFont(graphics, modelName, "Segoe Script", 74, 540);
-        using Font titleFont = FittedFont(graphics, showTitle.ToUpperInvariant(),
-            "Segoe UI", 42, 540, FontStyle.Bold);
-        DrawCentered(graphics, modelName, modelFont, Color.White, 700);
-        DrawCentered(graphics, showTitle.ToUpperInvariant(), titleFont, titleColor, 810);
+        using Font fittedModelFont = FittedFont(graphics, modelName,
+            AvailableFont(modelFont, "Segoe Script"), 74, 540);
+        using Font fittedTitleFont = FittedFont(graphics, showTitle.ToUpperInvariant(),
+            AvailableFont(titleFont, "Segoe UI"), 42, 540, FontStyle.Bold);
+        DrawCentered(graphics, modelName, fittedModelFont, Color.White, 700);
+        DrawCentered(graphics, showTitle.ToUpperInvariant(), fittedTitleFont,
+            titleColor, 810);
     }
+
+    static string AvailableFont(string requested, string fallback) =>
+        FontFamily.Families.Any(value => string.Equals(value.Name, requested,
+            StringComparison.OrdinalIgnoreCase)) ? requested : fallback;
 
     static Font FittedFont(Graphics graphics, string text, string family,
         float size, float width, FontStyle style = FontStyle.Regular)

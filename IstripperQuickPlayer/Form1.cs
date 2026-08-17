@@ -64,6 +64,20 @@ namespace IStripperQuickPlayer
 
         private float cardScale = 1.0f;
         private Panel clipListHost = null!;
+        private readonly Label lblClipListTitle = new()
+        {
+            AutoEllipsis = true,
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 11F, FontStyle.Bold,
+                GraphicsUnit.Point),
+            Margin = Padding.Empty,
+            Name = "lblClipListTitle",
+            Padding = new Padding(0, 5, 0, 5),
+            Text = "Model: —   Show: —",
+            TextAlign = ContentAlignment.MiddleLeft,
+            UseMnemonic = false
+        };
         private bool cardScaleInitialized;
         private readonly Controls.PlaybackSeekBar cardScaleSeekBar = new()
         {
@@ -2267,6 +2281,8 @@ namespace IStripperQuickPlayer
             ModelCard? card = Datastore.findCardByTag(cardTag);
             if (card == null) return;
             clipListTag = cardTag;
+            lblClipListTitle.Text =
+                $"Model: {card.modelName}   Show: {card.outfit}";
             if (myData != null)
                 txtUserTags.Text = string.Join(",", myData.GetCardTags(cardTag));
             listClips.BeginUpdate();
@@ -5949,7 +5965,9 @@ namespace IStripperQuickPlayer
         private async void cmdPhotos_Click(object sender, EventArgs e)
         {
             if (string.IsNullOrEmpty(clipListTag)) return;
+            cmdPhotos.Enabled = false;
             Cursor = Cursors.WaitCursor;
+            PhotoViewer? viewer = null;
             try
             {
                 CardPhotos? photos = await LoadPhotosForCard(clipListTag);
@@ -5960,16 +5978,22 @@ namespace IStripperQuickPlayer
                         "Photos", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
-                PhotoViewer p = new(photos);
-                await p.PopulateAsync();
-                p.Show();
+                viewer = new PhotoViewer(photos);
+                viewer.Show(this);
+                Cursor = Cursors.Arrow;
+                await viewer.PopulateAsync();
             }
             catch (Exception error)
             {
+                if (viewer is { IsDisposed: false }) viewer.Close();
                 MessageBox.Show(this, $"The photos could not be loaded.\r\n\r\n{error.Message}",
                     "Photos", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-            finally { Cursor = Cursors.Arrow; }
+            finally
+            {
+                Cursor = Cursors.Arrow;
+                cmdPhotos.Enabled = true;
+            }
         }
 
         private async Task<CardPhotos?> LoadPhotosForCard(string tag)
@@ -6547,16 +6571,18 @@ namespace IStripperQuickPlayer
                 ColumnCount = 1,
                 Dock = DockStyle.Top,
                 Name = "clipHeaderLayout",
-                RowCount = 4
+                RowCount = 5
             };
             clipHeader.ColumnStyles.Add(
                 new ColumnStyle(SizeType.Percent, 100));
-            for (int row = 0; row < 4; row++)
+            for (int row = 0; row < 5; row++)
                 clipHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             clipHeader.Controls.Add(nowPlayingRow, 0, 0);
             clipHeader.Controls.Add(playbackRow, 0, 1);
             clipHeader.Controls.Add(timelineRow, 0, 2);
             clipHeader.Controls.Add(clipFilterRow, 0, 3);
+            lblClipListTitle.Height = lblClipListTitle.Font.Height + 12;
+            clipHeader.Controls.Add(lblClipListTitle, 0, 4);
             panelClip.Controls.Clear();
             panelClip.AutoSize = true;
             panelClip.AutoSizeMode = AutoSizeMode.GrowAndShrink;

@@ -858,9 +858,12 @@ shutdown before moving any media. Choose **Retry** to process again, **Open Log*
 for diagnostics, or **Discard** to remove staging. A cover is generated from the middle of the
 source unless a custom image was selected. Generated covers embed the model name
 in white script and the uppercase show title in the colour selected on the
-creation form. Generated and selected covers use the official-style 2:3 portrait
+creation form. The metadata section optionally selects separate installed fonts
+for the model name and show title; existing shows default to Segoe Script and
+Segoe UI. Generated and selected covers use the official-style 2:3 portrait
 ratio (`600×900`) so custom cards retain the normal library size and alignment.
-User-supplied covers are not given the text overlay.
+User-supplied covers are used as the background and receive the same model-name
+and show-title text overlay as automatically generated covers.
 
 ## Models and metadata
 
@@ -878,7 +881,8 @@ as Female for filtering, except VirtuaGuy cards, which are treated as Male.
 
 Right-click a custom card and choose **Edit Custom Show Metadata…**. Official iStripper metadata remains read-only.
 Changing ordinary metadata preserves the existing cover. An automatic cover is
-regenerated only when its title, linked model, or title colour changes; selecting
+regenerated only when its title, linked model, title colour, or either cover font
+changes; selecting
 a new custom cover replaces it. Therefore an unrelated metadata edit does not
 require the referenced original source to still exist.
 
