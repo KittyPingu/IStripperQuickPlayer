@@ -445,6 +445,9 @@ internal static class CustomShowProcessor
                         prompt.InitialMaskAsset.Replace('/', Path.DirectorySeparatorChar))
                 }).ToArray()
         });
+        // The interactive mask editor keeps its SAM2Matting model alive for reuse.
+        // Release that worker and its scheduler lease before full-show processing.
+        CustomMaskEditorForm.CloseSam2MattingWorker();
         using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(
             cancellationToken);
         CustomShowProcessResult result;
