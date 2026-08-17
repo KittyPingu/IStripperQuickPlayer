@@ -3947,6 +3947,15 @@ namespace IStripperQuickPlayer
                 {
                     playbackLastProgressAt = now;
                 }
+                if (Properties.Settings.Default.EnablePlayQueue &&
+                    string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
+                    PlaybackReachedEnd(elapsed, total))
+                {
+                    playbackCompletedAnimationPath = animationPath;
+                    playbackNextClipRetryAt = now.AddSeconds(1);
+                    GetNextClip(null, animationPath);
+                    return;
+                }
                 else if (playbackDecoderKind == 2 &&
                     LegacyPlaybackStalledNearEnd(elapsed, total,
                         playbackLastProgressAt, now,
