@@ -2200,7 +2200,7 @@ internal sealed class CustomShowEditorForm : Form
                     }, "Processing SAM2Matting Show",
                     processDescription:
                         "Processing the selected source now, then opening its alpha preview",
-                    showPreviews: tracker == "sam3");
+                    showPreviews: true);
                 if (processing.ShowDialog(this) != DialogResult.OK ||
                     publishedId == null)
                 {

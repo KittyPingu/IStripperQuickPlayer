@@ -396,7 +396,7 @@ internal sealed class CustomShowQueueManager : IDisposable
             await EnsureRvmScenePromptsAsync(job, trackedProgress, token);
             string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
                 configuration, storage, trackedProgress, preparePublication, token,
-                reviewBeforePublication);
+                reviewBeforePublication, generatePreviews: true);
             lock (gate)
             {
                 job.Status = CustomShowQueueStatus.Completed;
@@ -830,7 +830,8 @@ internal static class CustomShowJobRunner
         CustomShowStore store, CustomShowConfiguration configuration,
         CustomShowQueueStore queue, IProgress<CustomShowProgress> progress,
         Func<string?, Task> preparePublication, CancellationToken token,
-        Func<string, CustomShowManifest, Task<bool>>? reviewBeforePublication = null)
+        Func<string, CustomShowManifest, Task<bool>>? reviewBeforePublication = null,
+        bool generatePreviews = false)
     {
         ResolvePerformer(job, store);
         Validate(job, store, configuration, queue);
@@ -894,7 +895,7 @@ internal static class CustomShowJobRunner
             LoadRetainedMasks(staging, clipsToProcess, initialMasks, retainedMasks);
         CustomShowProcessResult result = await ProcessClips(job, clipsToProcess, staging,
             configuration, queue, log, initialMasks, retainedMasks,
-            generatedMasks, progress, token);
+            generatedMasks, progress, token, generatePreviews);
         if (generatedMasks.Count > 0 && job.Operation != CustomShowQueueOperation.Append)
         {
             FileInfo sourceInfo = new(job.SourcePath);
@@ -1159,7 +1160,8 @@ internal static class CustomShowJobRunner
         IReadOnlyDictionary<string, string> retainedInitialMasks,
         IReadOnlyDictionary<string, string> retainedTrackedMasks,
         Dictionary<string, string> generatedMasks,
-        IProgress<CustomShowProgress> progress, CancellationToken token)
+        IProgress<CustomShowProgress> progress, CancellationToken token,
+        bool generatePreviews)
     {
         CustomShowProcessing options = job.Manifest.Processing!;
         CustomShowClip[] included = clips.Where(value => value.Included).ToArray();
@@ -1168,7 +1170,7 @@ internal static class CustomShowJobRunner
         {
             CustomShowProcessResult result = await CustomShowProcessor.RunSam2MattingAsync(
                 configuration, job, included, staging, queue.Assets(job.Id), log,
-                progress, token);
+                progress, token, generatePreviews);
             if (result.Clips == null || result.Clips.Length != included.Length)
                 throw new InvalidDataException(
                     "SAM2Matting returned an incomplete clip result contract.");

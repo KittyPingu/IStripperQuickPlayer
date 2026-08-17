@@ -633,7 +633,7 @@ def prune_sam2_tracking_state(state, frame_index, reverse, history,
 def process_sam2_scene(predictor, request, scene, scene_dir, union,
                        completed_units=0, total_units=1, scene_number=1,
                        scene_total=1, completed_frames=0, total_frames=1,
-                       output_width=None, output_height=None):
+                       output_width=None, output_height=None, preview_dir=None):
     import numpy as np
     import torch
     from PIL import Image
@@ -680,36 +680,56 @@ def process_sam2_scene(predictor, request, scene, scene_dir, union,
                 state, start_frame_idx=local_prompt,
                 max_frame_num_to_track=count - local_prompt, reverse=False):
             cancelled(request)
+            show_preview = preview_dir is not None and (
+                index % 32 == 0 or index + 1 == count)
+            source_preview = composite_preview = None
+            if show_preview:
+                source_preview, composite_preview = write_detection_preview(
+                    scene_dir, index, alpha_array(alpha), preview_dir)
             transfers.submit(index, alpha)
             release_sam2_frame_alpha(state, index)
             prune_sam2_tracking_state(
                 state, index, False, history, forward_bridge)
             del alpha
-            if index % 10 == 0:
+            if index % 10 == 0 or show_preview:
                 tracked = index - local_prompt + 1
                 emit("tracking", 5 + 92 *
                      (completed_units + tracked) / max(1, total_units),
                      f"Scene {scene_number}/{scene_total} • forward frame "
                      f"{index + 1}/{count} • overall "
                      f"{min(total_frames, completed_frames + tracked)}/"
-                     f"{total_frames} frames")
+                     f"{total_frames} frames",
+                     previewSource=source_preview,
+                     previewComposite=composite_preview,
+                     previewSourceLabel="Current source frame",
+                     previewCompositeLabel="Matted foreground on green")
         if local_prompt > 0:
             for index, _, _, alpha, _ in predictor.propagate_in_video(
                     state, start_frame_idx=local_prompt - 1,
                     max_frame_num_to_track=local_prompt, reverse=True):
                 cancelled(request)
+                show_preview = preview_dir is not None and (
+                    index % 32 == 0 or index == 0)
+                source_preview = composite_preview = None
+                if show_preview:
+                    source_preview, composite_preview = write_detection_preview(
+                        scene_dir, index, alpha_array(alpha), preview_dir)
                 transfers.submit(index, alpha)
                 release_sam2_frame_alpha(state, index)
                 prune_sam2_tracking_state(state, index, True, history)
                 del alpha
-                if index % 10 == 0:
+                if index % 10 == 0 or show_preview:
                     tracked = forward_count + local_prompt - index
                     emit("tracking", 5 + 92 *
                          (completed_units + tracked) / max(1, total_units),
                          f"Scene {scene_number}/{scene_total} • reverse frame "
                          f"{local_prompt - index}/{local_prompt} • overall "
                          f"{min(total_frames, completed_frames + tracked)}/"
-                         f"{total_frames} frames")
+                         f"{total_frames} frames",
+                         previewSource=source_preview,
+                         previewComposite=composite_preview,
+                         previewSourceLabel="Current source frame",
+                         previewCompositeLabel="Matted foreground on green")
         transfers.finish()
     finally:
         try:
@@ -1409,7 +1429,9 @@ def run_job(request, loaded=None):
                                             process_sam3_scene(
                                                 predictor, request, scene_dir, union,
                                                 tracking_base_units, total_units,
-                                                work / "previews", context, count,
+                                                work / "previews" if request.get(
+                                                    "generatePreviews") else None,
+                                                context, count,
                                                 completed_scenes + 1, total_scenes,
                                                 completed_frames, total_frames)
                                         else:
@@ -1419,7 +1441,9 @@ def run_job(request, loaded=None):
                                                  total_units, completed_scenes + 1,
                                                  total_scenes, completed_frames,
                                                  total_frames, media["width"],
-                                                 media["height"])
+                                                 media["height"],
+                                                 work / "previews" if request.get(
+                                                     "generatePreviews") else None)
                                     chunk_text = (f", chunk {chunk_index + 1}/"
                                                   f"{len(chunks)}"
                                                   if len(chunks) > 1 else "")

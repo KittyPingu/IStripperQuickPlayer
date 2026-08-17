@@ -14,7 +14,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         "iqp-sam2-" + Guid.NewGuid().ToString("N"));
     readonly DxgiMaskPreviewControl image = new() { Dock = DockStyle.Fill,
         BackColor = Color.Black,
-        Enabled = false, TabStop = true,
+        Enabled = false, TabStop = true, Cursor = Cursors.Cross,
         AccessibleName = "SAM2 tracked foreground mask" };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill,
         Height = 60, AllowDividerDragging = false };
@@ -222,7 +222,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
         paintMode.CheckedChanged += (_, _) =>
         {
             brushSize.Enabled = supportsCorrections && paintMode.Checked && !updating;
-            image.Cursor = Cursors.Default;
+            image.Cursor = paintMode.Checked ? Cursors.Default : Cursors.Cross;
             image.SetBrush(null, brushSize.Value);
         };
         brushSize.ValueChanged += (_, _) =>

@@ -36,7 +36,7 @@ internal sealed class CustomMaskEditorForm : Form
         "iqp-mask-" + Guid.NewGuid().ToString("N"));
     readonly DxgiMaskPreviewControl image = new() { Dock = DockStyle.Fill,
         BackColor = Color.Black,
-        Enabled = false, TabStop = true,
+        Enabled = false, TabStop = true, Cursor = Cursors.Cross,
         AccessibleName = "Initial foreground mask image" };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill,
         Height = 60, AllowDividerDragging = false,
@@ -212,7 +212,7 @@ internal sealed class CustomMaskEditorForm : Form
         paintMode.CheckedChanged += (_, _) =>
         {
             brushSize.Enabled = paintMode.Checked && image.Enabled;
-            image.Cursor = Cursors.Default;
+            image.Cursor = paintMode.Checked ? Cursors.Default : Cursors.Cross;
             image.SetBrush(null, brushSize.Value);
         };
         if (paintOnly) paintMode.Checked = true;

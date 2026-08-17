@@ -396,7 +396,7 @@ internal static class CustomShowProcessor
         CustomShowConfiguration configuration, CustomShowQueueJob job,
         CustomShowClip[] clips, string stagingFolder, string jobAssets,
         string logPath, IProgress<CustomShowProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool generatePreviews = false)
     {
         CustomShowProcessing options = job.Manifest.Processing ??
             throw new InvalidDataException("SAM2Matting processing settings are missing.");
@@ -427,6 +427,7 @@ internal static class CustomShowProcessor
             checkpointRevision = options.CheckpointRevision,
             checkpointSha256 = options.CheckpointSha256,
             alphaEncodingPolicy = options.AlphaEncodingPolicy,
+            generatePreviews,
             concepts = options.ForegroundConcepts,
             clips = clips.Select(clip => new
             {
@@ -540,9 +541,24 @@ internal static class CustomShowProcessor
                     if (string.Equals(stage, "error",
                             StringComparison.OrdinalIgnoreCase))
                         workerError = Sam2WorkerErrorMessage(message);
+                    string? previewSource = root.TryGetProperty("previewSource",
+                        out JsonElement sourceNode) && sourceNode.ValueKind ==
+                            JsonValueKind.String ? sourceNode.GetString() : null;
+                    string? previewComposite = root.TryGetProperty(
+                        "previewComposite", out JsonElement compositeNode) &&
+                        compositeNode.ValueKind == JsonValueKind.String
+                            ? compositeNode.GetString() : null;
+                    string? sourceLabel = root.TryGetProperty("previewSourceLabel",
+                        out JsonElement sourceLabelNode) && sourceLabelNode.ValueKind ==
+                            JsonValueKind.String ? sourceLabelNode.GetString() : null;
+                    string? compositeLabel = root.TryGetProperty(
+                        "previewCompositeLabel", out JsonElement compositeLabelNode) &&
+                        compositeLabelNode.ValueKind == JsonValueKind.String
+                            ? compositeLabelNode.GetString() : null;
                     progress?.Report(new CustomShowProgress(stage,
                         root.TryGetProperty("percent", out JsonElement percent)
-                            ? percent.GetDouble() : 0, message));
+                            ? percent.GetDouble() : 0, message, previewSource,
+                        previewComposite, sourceLabel, compositeLabel));
                 }
                 catch (JsonException) { }
             }
