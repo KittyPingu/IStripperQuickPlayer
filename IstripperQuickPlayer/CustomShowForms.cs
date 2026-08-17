@@ -429,6 +429,8 @@ internal sealed class CustomShowEditorForm : Form
 
     void PopulateCoverFonts()
     {
+        ConfigureCoverFontPreview(coverModelFont);
+        ConfigureCoverFontPreview(coverTitleFont);
         string[] families = FontFamily.Families.Select(value => value.Name)
             .Distinct(StringComparer.CurrentCultureIgnoreCase)
             .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase)
@@ -437,6 +439,40 @@ internal sealed class CustomShowEditorForm : Form
         coverTitleFont.Items.AddRange(families);
         SelectCoverFont(coverModelFont, "Segoe Script", FontFamily.GenericSansSerif.Name);
         SelectCoverFont(coverTitleFont, "Segoe UI", FontFamily.GenericSansSerif.Name);
+    }
+
+    static void ConfigureCoverFontPreview(ComboBox selector)
+    {
+        selector.DrawMode = DrawMode.OwnerDrawFixed;
+        selector.ItemHeight = 30;
+        selector.DropDownWidth = Math.Max(selector.DropDownWidth, 320);
+        selector.DrawItem += DrawCoverFontItem;
+    }
+
+    static void DrawCoverFontItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ComboBox selector || e.Index < 0 ||
+            e.Index >= selector.Items.Count) return;
+        e.DrawBackground();
+        string name = selector.Items[e.Index]?.ToString() ?? "";
+        Font? previewFont = null;
+        try
+        {
+            using FontFamily family = new(name);
+            FontStyle style = family.IsStyleAvailable(FontStyle.Regular)
+                ? FontStyle.Regular : family.IsStyleAvailable(FontStyle.Bold)
+                ? FontStyle.Bold : family.IsStyleAvailable(FontStyle.Italic)
+                ? FontStyle.Italic : FontStyle.Bold | FontStyle.Italic;
+            previewFont = new Font(family, 12, style, GraphicsUnit.Point);
+        }
+        catch (ArgumentException) { }
+        Color color = (e.State & DrawItemState.Selected) != 0
+            ? SystemColors.HighlightText : selector.ForeColor;
+        TextRenderer.DrawText(e.Graphics, name, previewFont ?? selector.Font,
+            e.Bounds, color, TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        previewFont?.Dispose();
+        e.DrawFocusRectangle();
     }
 
     static void SelectCoverFont(ComboBox selector, string? requested, string fallback)

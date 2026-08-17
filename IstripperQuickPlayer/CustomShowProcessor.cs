@@ -1286,7 +1286,8 @@ internal sealed class CustomShowProcessingForm : Form
                 if (!string.IsNullOrWhiteSpace(value.InteractiveControlFolder))
                 {
                     interactiveControlFolder = value.InteractiveControlFolder;
-                    pauseAndCorrect.Enabled = !correctionOpen && value.Stage != "paused";
+                    pauseAndCorrect.Enabled = !correctionOpen &&
+                        value.Stage == "inference";
                 }
                 if (value.Stage == "paused" && value.CorrectionFrameMs is long &&
                     !string.IsNullOrWhiteSpace(value.CorrectionMask) && !correctionOpen)

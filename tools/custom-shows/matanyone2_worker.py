@@ -1058,13 +1058,13 @@ def _process_once(args, compile_enabled):
         completed_work = 0
         progress_lock = threading.Lock()
 
-        def work_done(message):
+        def work_done(message, stage="inference"):
             nonlocal completed_work
             with progress_lock:
                 completed_work += 1
                 percent = min(99, progress_base + completed_work *
                               (99 - progress_base) / work_total)
-            emit("inference", percent, message)
+            emit(stage, percent, message)
 
         alpha_map = None
         alpha_map_path = work / "backward-alpha.u8"
@@ -1084,7 +1084,7 @@ def _process_once(args, compile_enabled):
                 prepared / f"{selected_index:08d}.jpg").convert("RGB"))
             warm_slot = FrameSlot(torch, process_height, process_width, device)
             warm_slot.input_cpu.copy_(torch.from_numpy(selected_frame.copy()))
-            emit("inference", progress_base,
+            emit("backward", progress_base,
                  "Warming up MatAnyone 2 on the selected middle frame...")
             step(warm_slot, backward, first_frame=True)
             if warm_slot.download_done is not None:
@@ -1119,7 +1119,9 @@ def _process_once(args, compile_enabled):
                 alpha_map[slot.index] = slot.alpha_cpu.numpy()
                 profiler.add("backward_cache_io", time.perf_counter() - started)
                 save_preview(slot.frame, slot.alpha_cpu.numpy())
-                work_done(f"Propagated backward {selected_index - slot.index}/{selected_index} frames")
+                work_done(
+                    f"Propagated backward {selected_index - slot.index}/{selected_index} frames",
+                    "backward")
 
             BoundedPipeline(torch, device, process_width, process_height, profiler,
                             prepare_backward, infer_backward, consume_backward,

@@ -1070,7 +1070,8 @@ internal sealed class CustomClipEditorForm : Form
         previewCancellation = cancellation;
         try
         {
-            ProcessStartInfo start = PreviewProcessStart(atMs);
+            ProcessStartInfo start = PreviewProcessStart(
+                PreviewFramePosition(atMs, frameDurationMs, durationMs));
             foreach (string argument in new[] { "-i", videoPath,
                 "-frames:v", "1", "-vf",
                 "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2",
@@ -1400,6 +1401,14 @@ internal sealed class CustomClipEditorForm : Form
             (long)Math.Round((Math.Round(position / frameDurationMs) +
                 Math.Sign(direction)) * frameDurationMs), 0, durationMs);
 
+    internal static long PreviewFramePosition(long position,
+        double frameDurationMs, long durationMs)
+    {
+        long lastFrame = Math.Max(0, durationMs - Math.Max(1,
+            (long)Math.Ceiling(frameDurationMs)));
+        return Math.Clamp(position, 0, lastFrame);
+    }
+
     internal static CheckState NextIncludeCheckState(CheckState current) =>
         current == CheckState.Checked
             ? CheckState.Unchecked : CheckState.Checked;
@@ -1485,6 +1494,8 @@ internal sealed class CustomClipEditorForm : Form
             ClipIndexAt([first, second], 1_000) == 1 &&
             FrameStep(1_000, 1, 40, 2_000) == 1_040 &&
             FrameStep(1_000, -1, 40, 2_000) == 960 &&
+            PreviewFramePosition(2_000, 40, 2_000) == 1_960 &&
+            PreviewFramePosition(1_500, 40, 2_000) == 1_500 &&
             SegmentSeekPosition(first, false, 40, 1_000) == 0 &&
             SegmentSeekPosition(first, true, 40, 1_000) == 360 &&
             SegmentSeekPosition(second, true, 40, 1_000) == 960 &&

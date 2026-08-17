@@ -170,6 +170,8 @@ internal sealed class CustomMaskEditorForm : Form
     MouseButtons paintButton;
     bool painting;
     int paintRevision;
+    bool previewLoading;
+    long queuedPreviewMs = -1;
 
     internal long FrameMs => Math.Min(Math.Max(startMs, endMs - 1),
         startMs + timeline.PositionMs);
@@ -279,7 +281,22 @@ internal sealed class CustomMaskEditorForm : Form
         previewDelay.Tick += async (_, _) =>
         {
             previewDelay.Stop();
-            await LoadSelectedFrameAsync(FrameMs);
+            queuedPreviewMs = FrameMs;
+            if (previewLoading) return;
+            previewLoading = true;
+            try
+            {
+                while (queuedPreviewMs >= 0 && !playback.Enabled && !closing)
+                {
+                    long atMs = queuedPreviewMs;
+                    queuedPreviewMs = -1;
+                    await LoadSelectedFrameAsync(atMs);
+                }
+            }
+            finally
+            {
+                previewLoading = false;
+            }
         };
         image.MouseClick += Image_MouseClick;
         image.MouseDown += Image_MouseDown;
@@ -588,6 +605,7 @@ internal sealed class CustomMaskEditorForm : Form
         if (!allowFrameSelection || updatingMask) return;
         if (timeline.PositionMs >= durationMs) timeline.PositionMs = 0;
         previewDelay.Stop();
+        queuedPreviewMs = -1;
         previewCancellation?.Cancel();
         ResetMaskSelection();
         frameReady = false;
@@ -654,14 +672,13 @@ internal sealed class CustomMaskEditorForm : Form
 
     async Task LoadSelectedFrameAsync(long atMs)
     {
-        previewCancellation?.Cancel();
         CancellationTokenSource cancellation = new();
         previewCancellation = cancellation;
         try
         {
             CustomMaskFrameSeed? seed = frameSeedProvider == null ? null :
                 await frameSeedProvider(atMs, cancellation.Token);
-            if (cancellation.IsCancellationRequested || FrameMs != atMs)
+            if (cancellation.IsCancellationRequested)
             {
                 DeleteFrameSeed(seed);
                 return;
@@ -673,9 +690,9 @@ internal sealed class CustomMaskEditorForm : Form
                     CustomShowMaskDraft.CopyAtomic(seed.MaskPath, MaskPath);
             }
             else await ExtractFrameAsync(atMs, cancellation.Token);
-            if (cancellation.IsCancellationRequested || FrameMs != atMs) return;
+            if (cancellation.IsCancellationRequested) return;
             displayedFrameMs = atMs;
-            frameReady = true;
+            frameReady = FrameMs == atMs;
             if (seed != null && File.Exists(seed.MaskPath))
             {
                 File.Copy(MaskPath, PaintSeedPath, true);
@@ -684,9 +701,11 @@ internal sealed class CustomMaskEditorForm : Form
                 DeleteFrameSeed(seed);
             }
             else SetSource(LoadBitmap(FramePath));
-            status.Text = paintOnly
-                ? $"Frame {Format(atMs - startMs)} ready with its MatAnyone mask; paint corrections."
-                : $"Frame {Format(atMs - startMs)} ready; click the foreground to create its mask.";
+            status.Text = frameReady
+                ? paintOnly
+                    ? $"Frame {Format(atMs - startMs)} ready with its MatAnyone mask; paint corrections."
+                    : $"Frame {Format(atMs - startMs)} ready; click the foreground to create its mask."
+                : "Seeking selected frame...";
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
