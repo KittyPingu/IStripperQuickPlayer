@@ -230,6 +230,9 @@
     <Setting Name="EnablePlayerWheelResize" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
     </Setting>
+    <Setting Name="AllowWheelWhileLocked" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
     <Setting Name="IStripperSmallPlayerVolume" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">-1</Value>
     </Setting>

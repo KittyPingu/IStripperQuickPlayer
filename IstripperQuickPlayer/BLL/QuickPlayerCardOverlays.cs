@@ -18,7 +18,8 @@ internal static class QuickPlayerCardOverlays
         new("quickplayer-favourite", "QuickPlayer · Favourite",
             "quickPlayerFavourite",
             "{\"color0\":\"#FF3D8D\",\"color1\":\"#9B4DFF\"," +
-            "\"color2\":\"#FFE4F1\"}")
+            "\"color2\":\"#FFE4F1\"}"),
+        new("quickplayer-custom", "QuickPlayer · Custom", "quickPlayerCustom")
     ];
 
     internal static bool Contains(string id) =>
@@ -30,14 +31,19 @@ internal static class QuickPlayerCardOverlays
     {
         bool favourite = choice.Id.Equals(
             "quickplayer-favourite", StringComparison.OrdinalIgnoreCase);
+        bool custom = choice.Id.Equals(
+            "quickplayer-custom", StringComparison.OrdinalIgnoreCase);
         Bitmap? sheet = GlslOverlayRenderer.Render(
-            choice.File, favourite ? FavouriteShader : BorderShader,
+            choice.File, custom ? TransparentShader :
+                favourite ? FavouriteShader : BorderShader,
             choice.Parameters, [null, null, null, null, null],
             null, null, 0, false,
             out int frameCount, out int frameDuration, Width, Height);
         if (sheet == null)
             return null;
-        if (favourite)
+        if (custom)
+            DrawCustomLetter(sheet, frameCount);
+        else if (favourite)
             DrawHeart(sheet, frameCount);
         else
             DrawLabel(sheet, frameCount,
@@ -47,6 +53,48 @@ internal static class QuickPlayerCardOverlays
                     ? Color.FromArgb(55, 242, 255)
                     : Color.FromArgb(255, 181, 46));
         return new(sheet, null, Width, Height, frameCount, frameDuration);
+    }
+
+    private static void DrawCustomLetter(Bitmap sheet, int frameCount)
+    {
+        using Graphics graphics = Graphics.FromImage(sheet);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        graphics.TextRenderingHint =
+            System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        using Font font = new("Segoe UI Black", 40, FontStyle.Bold,
+            GraphicsUnit.Pixel);
+        using StringFormat format = new()
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center
+        };
+        for (int frame = 0; frame < frameCount; frame++)
+        {
+            Rectangle frameBounds = FrameBounds(sheet, frame);
+            Rectangle bounds = new(frameBounds.Left + 8,
+                frameBounds.Top + 7, 48, 50);
+            using GraphicsPath letter = new();
+            letter.AddString("C", font.FontFamily, (int)font.Style,
+                font.Size, bounds, format);
+            using LinearGradientBrush fill = new(bounds,
+                Color.FromArgb(238, 102, 217, 255),
+                Color.FromArgb(238, 173, 91, 255),
+                LinearGradientMode.ForwardDiagonal);
+            using Pen shadow = new(Color.FromArgb(210, 8, 13, 25), 4f)
+            {
+                LineJoin = LineJoin.Round
+            };
+            using Pen edge = new(Color.FromArgb(230, 224, 250, 255), 1.35f)
+            {
+                LineJoin = LineJoin.Round
+            };
+            graphics.DrawPath(shadow, letter);
+            graphics.FillPath(fill, letter);
+            graphics.DrawPath(edge, letter);
+            DrawTextSpark(graphics, letter, bounds,
+                frame / (double)frameCount * Math.Tau);
+        }
     }
 
     private static void DrawHeart(Bitmap sheet, int frameCount)
@@ -239,6 +287,12 @@ internal static class QuickPlayerCardOverlays
         path.CloseFigure();
         return path;
     }
+
+    private const string TransparentShader = """
+        void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+            fragColor = vec4(0.0);
+        }
+        """;
 
     private const string BorderShader = """
         uniform vec3 color0;

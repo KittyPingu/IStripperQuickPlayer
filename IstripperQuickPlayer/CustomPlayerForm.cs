@@ -17,10 +17,16 @@ internal sealed class CustomPlayerForm : Form
 {
     const int WsExNoRedirectionBitmap = 0x00200000, WsExTransparent = 0x20,
         WsExLayered = 0x80000, WsExToolWindow = 0x80, WsExNoActivate = 0x08000000;
-    const int GwlExStyle = -20, WmNcHitTest = 0x84, WmMouseWheel = 0x20A,
+    const int GwlExStyle = -20, WmNcHitTest = 0x84,
+        WmLeftButtonDown = 0x201, WmLeftButtonUp = 0x202,
+        WmRightButtonDown = 0x204, WmRightButtonUp = 0x205,
+        WmMiddleButtonDown = 0x207, WmMiddleButtonUp = 0x208,
+        WmMouseWheel = 0x20A, WmXButtonDown = 0x20B, WmXButtonUp = 0x20C,
         WmEnterSizeMove = 0x231, WmExitSizeMove = 0x232,
         HtTransparent = -1, HtClient = 1, HtCaption = 2,
-        WhMouseLl = 14, HcAction = 0, VkControl = 0x11;
+        WhMouseLl = 14, HcAction = 0, VkControl = 0x11,
+        GwHwndNext = 2, CwpSkipInvisible = 1, CwpSkipDisabled = 2,
+        CwpSkipTransparent = 4;
     delegate IntPtr LowLevelMouseProc(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)]
     struct LowLevelMouseData
@@ -31,10 +37,16 @@ internal sealed class CustomPlayerForm : Form
         internal uint Time;
         internal UIntPtr ExtraInfo;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    struct NativeRectangle
+    {
+        internal int Left, Top, Right, Bottom;
+    }
     internal sealed record AlphaHitMap(byte[] Pixels, int Width, int Height);
     static readonly LowLevelMouseProc globalWheelProc = GlobalWheelCallback;
+    static readonly object globalMouseSync = new();
+    static readonly List<CustomPlayerForm> globalMousePlayers = [];
     static IntPtr globalWheelHook;
-    static CustomPlayerForm? globalWheelOwner;
     readonly string foregroundPath, alphaPath;
     readonly bool suppressErrorDialog;
     readonly double rangeStartSeconds, requestedRangeEndSeconds;
@@ -45,7 +57,8 @@ internal sealed class CustomPlayerForm : Form
     readonly Stopwatch settleClock = new();
     PairedRenderer? renderer;
     AlphaHitMap? hitTestAlpha;
-    volatile bool paused, locked, clickThroughLocked, wheelResize;
+    volatile bool paused, locked, clickThroughLocked, wheelResize,
+        allowWheelWhileLocked;
     bool? mouseTransparent;
     bool movingWindow;
     bool windowConfigured;
@@ -93,6 +106,22 @@ internal sealed class CustomPlayerForm : Form
         IntPtr message, IntPtr data);
     [DllImport("user32.dll")]
     static extern short GetKeyState(int key);
+    [DllImport("user32.dll")]
+    static extern IntPtr GetWindow(IntPtr window, uint command);
+    [DllImport("user32.dll")]
+    static extern bool GetWindowRect(IntPtr window, out NativeRectangle rectangle);
+    [DllImport("user32.dll")]
+    static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")]
+    static extern bool IsWindowEnabled(IntPtr window);
+    [DllImport("user32.dll")]
+    static extern bool ScreenToClient(IntPtr window, ref Point point);
+    [DllImport("user32.dll")]
+    static extern IntPtr ChildWindowFromPointEx(IntPtr parent, Point point,
+        uint flags);
+    [DllImport("user32.dll")]
+    static extern bool PostMessage(IntPtr window, uint message,
+        IntPtr wParam, IntPtr lParam);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr GetModuleHandle(string? moduleName);
 
@@ -338,6 +367,12 @@ internal sealed class CustomPlayerForm : Form
         wheelDelta = 0;
         UpdateGlobalWheelHook();
     }
+    internal void SetAllowWheelWhileLocked(bool value)
+    {
+        allowWheelWhileLocked = value;
+        wheelDelta = 0;
+        volumeWheelDelta = 0;
+    }
     internal void SetVolumePercent(int percent)
     {
         volumePercent = Math.Clamp(percent, 0, 100);
@@ -441,48 +476,149 @@ internal sealed class CustomPlayerForm : Form
 
     void UpdateGlobalWheelHook()
     {
-        bool needed = locked && clickThroughLocked && IsHandleCreated &&
-            Visible && !IsDisposed;
+        bool needed = IsHandleCreated && Visible && !IsDisposed;
         if (!needed)
         {
             ReleaseGlobalWheelHook();
             return;
         }
-        globalWheelOwner = this;
-        if (globalWheelHook == IntPtr.Zero)
-            globalWheelHook = SetWindowsHookEx(
-                WhMouseLl, globalWheelProc, GetModuleHandle(null), 0);
+        lock (globalMouseSync)
+        {
+            if (!globalMousePlayers.Contains(this))
+                globalMousePlayers.Add(this);
+            if (globalWheelHook == IntPtr.Zero)
+                globalWheelHook = SetWindowsHookEx(
+                    WhMouseLl, globalWheelProc, GetModuleHandle(null), 0);
+        }
     }
 
     void ReleaseGlobalWheelHook()
     {
-        if (globalWheelOwner != this) return;
-        globalWheelOwner = null;
-        if (globalWheelHook == IntPtr.Zero) return;
-        UnhookWindowsHookEx(globalWheelHook);
-        globalWheelHook = IntPtr.Zero;
+        lock (globalMouseSync)
+        {
+            globalMousePlayers.Remove(this);
+            if (globalMousePlayers.Count > 0 || globalWheelHook == IntPtr.Zero)
+                return;
+            UnhookWindowsHookEx(globalWheelHook);
+            globalWheelHook = IntPtr.Zero;
+        }
     }
 
     static IntPtr GlobalWheelCallback(int code, IntPtr message, IntPtr data)
     {
-        CustomPlayerForm? player = globalWheelOwner;
-        if (code == HcAction && message.ToInt64() == WmMouseWheel &&
-            player is { IsDisposed: false, Visible: true })
+        uint mouseMessage = unchecked((uint)message.ToInt64());
+        if (code == HcAction && IsForwardableMouseMessage(mouseMessage))
         {
             LowLevelMouseData mouse = Marshal.PtrToStructure<LowLevelMouseData>(data);
-            if (player.RectangleToScreen(player.ClientRectangle).Contains(mouse.Point))
+            CustomPlayerForm? player = PlayerAt(mouse.Point);
+            if (player == null)
+                return CallNextHookEx(globalWheelHook, code, message, data);
+            bool inside = player.RectangleToScreen(
+                player.ClientRectangle).Contains(mouse.Point);
+            bool alphaVisible = inside &&
+                player.IsAlphaVisible(player.PointToClient(mouse.Point));
+            bool passThrough = inside &&
+                (player.locked && player.clickThroughLocked || !alphaVisible);
+            if (mouseMessage == WmMouseWheel &&
+                (!player.locked || player.allowWheelWhileLocked) &&
+                ShouldCaptureWheel(inside, alphaVisible))
             {
                 int delta = (short)((mouse.MouseData >> 16) & 0xffff);
                 bool control = (GetKeyState(VkControl) & 0x8000) != 0;
                 if (player.HandleWheel(delta, control))
                     return new IntPtr(1);
             }
+            else if (passThrough && player.ForwardMouseToUnderlyingWindow(
+                         mouse.Point, mouseMessage, mouse.MouseData,
+                         (GetKeyState(VkControl) & 0x8000) != 0))
+                return new IntPtr(1);
         }
         return CallNextHookEx(globalWheelHook, code, message, data);
     }
 
+    static CustomPlayerForm? PlayerAt(Point screenPoint)
+    {
+        lock (globalMouseSync)
+        {
+            for (int index = globalMousePlayers.Count - 1; index >= 0; index--)
+            {
+                CustomPlayerForm player = globalMousePlayers[index];
+                if (player.IsDisposed || !player.Visible)
+                    continue;
+                if (player.RectangleToScreen(
+                        player.ClientRectangle).Contains(screenPoint))
+                    return player;
+            }
+        }
+        return null;
+    }
+
+    static bool ShouldCaptureWheel(bool insidePlayer, bool alphaVisible) =>
+        insidePlayer && alphaVisible;
+
+    static bool IsForwardableMouseMessage(uint message) => message is
+        WmLeftButtonDown or WmLeftButtonUp or WmRightButtonDown or
+        WmRightButtonUp or
+        WmMiddleButtonDown or WmMiddleButtonUp or WmMouseWheel or
+        WmXButtonDown or WmXButtonUp;
+
+    bool ForwardMouseToUnderlyingWindow(Point screenPoint, uint message,
+        uint mouseData, bool control)
+    {
+        IntPtr target = UnderlyingWindowAt(screenPoint);
+        if (target == IntPtr.Zero) return false;
+        long keys = MouseMessageKeys(message, mouseData, control);
+        Point coordinates = screenPoint;
+        if (message != WmMouseWheel)
+            ScreenToClient(target, ref coordinates);
+        long packedCoordinates = (ushort)coordinates.X |
+            ((long)(ushort)coordinates.Y << 16);
+        return PostMessage(target, message, new IntPtr(keys),
+            new IntPtr(packedCoordinates));
+    }
+
+    static long MouseMessageKeys(uint message, uint mouseData, bool control)
+    {
+        long keys = control ? 0x0008 : 0;
+        if (message == WmMouseWheel)
+            return keys | ((long)(mouseData & 0xffff0000));
+        if (message is WmLeftButtonDown) keys |= 0x0001;
+        if (message is WmRightButtonDown) keys |= 0x0002;
+        if (message is WmMiddleButtonDown) keys |= 0x0010;
+        if (message is WmXButtonDown or WmXButtonUp)
+            keys |= (long)(mouseData & 0xffff0000);
+        return keys;
+    }
+
+    IntPtr UnderlyingWindowAt(Point screenPoint)
+    {
+        for (IntPtr candidate = GetWindow(Handle, GwHwndNext);
+             candidate != IntPtr.Zero;
+             candidate = GetWindow(candidate, GwHwndNext))
+        {
+            if (!IsWindowVisible(candidate) || !IsWindowEnabled(candidate) ||
+                !GetWindowRect(candidate, out NativeRectangle bounds) ||
+                screenPoint.X < bounds.Left || screenPoint.X >= bounds.Right ||
+                screenPoint.Y < bounds.Top || screenPoint.Y >= bounds.Bottom)
+                continue;
+            IntPtr target = candidate;
+            while (true)
+            {
+                Point clientPoint = screenPoint;
+                if (!ScreenToClient(target, ref clientPoint)) break;
+                IntPtr child = ChildWindowFromPointEx(target, clientPoint,
+                    CwpSkipInvisible | CwpSkipDisabled | CwpSkipTransparent);
+                if (child == IntPtr.Zero || child == target) break;
+                target = child;
+            }
+            return target;
+        }
+        return IntPtr.Zero;
+    }
+
     bool HandleWheel(int delta, bool control)
     {
+        if (locked && !allowWheelWhileLocked) return false;
         if (control)
         {
             volumeWheelDelta += delta;
@@ -565,6 +701,14 @@ internal sealed class CustomPlayerForm : Form
         {
             long value = message.WParam.ToInt64();
             int delta = (short)((value >> 16) & 0xffff);
+            long coordinates = message.LParam.ToInt64();
+            Point screenPoint = new((short)(coordinates & 0xffff),
+                (short)((coordinates >> 16) & 0xffff));
+            if (!IsAlphaVisible(PointToClient(screenPoint)) &&
+                ForwardMouseToUnderlyingWindow(screenPoint, WmMouseWheel,
+                    unchecked((uint)value),
+                    (value & 0xffff & 0x0008) != 0))
+                return;
             if (HandleWheel(delta, (value & 0xffff & 0x0008) != 0))
                 return;
         }
@@ -593,6 +737,9 @@ internal sealed class CustomPlayerForm : Form
         UseTransparentWindowStyle(true, true) &&
         !IsVisibleAlpha(0, 0) && !IsVisibleAlpha(15, 16) &&
         IsVisibleAlpha(16, 16) && IsVisibleAlpha(255, 255) &&
+        !ShouldCaptureWheel(true, false) &&
+        ShouldCaptureWheel(true, true) &&
+        !ShouldCaptureWheel(false, true) &&
         ApplyOpacityThresholds(10, 20, 200) == 0 &&
         ApplyOpacityThresholds(100, 20, 200) == 100 &&
         ApplyOpacityThresholds(200, 20, 200) == 255 &&

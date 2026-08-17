@@ -368,8 +368,11 @@ namespace
     LONG volatile g_playerLocked = 0;
     LONG volatile g_playerClickThrough = 0;
     LONG volatile g_playerWheelResize = 0;
+    LONG volatile g_playerWheelWhileLocked = 0;
     LONG volatile g_playerWheelDelta = 0;
     LONG volatile g_playerVolumeWheelDelta = 0;
+    LONG volatile g_playerSmallSizePercent = 0;
+    LONG volatile g_playerLargeSizePercent = 0;
     LONG volatile g_playerMode = 2;
     std::uintptr_t g_liveVtableRva = 0;
     PVOID volatile g_liveObject = nullptr;
@@ -2725,20 +2728,37 @@ namespace
         const bool large = mode == 1;
         const wchar_t* valueName = large
             ? L"expectedLargeHeightPercent" : L"expectedHeightPercent";
-        DWORD currentPercent = large ? 100 : 30;
-        DWORD valueSize = sizeof(currentPercent);
-        const LSTATUS readResult = RegGetValueW(HKEY_CURRENT_USER,
-            L"Software\\Totem\\vghd\\player", valueName,
-            RRF_RT_REG_DWORD, nullptr, &currentPercent, &valueSize);
-        if (readResult != ERROR_SUCCESS && readResult != ERROR_FILE_NOT_FOUND)
+        LONG volatile* cachedPercent = large
+            ? &g_playerLargeSizePercent : &g_playerSmallSizePercent;
+        LONG currentPercent = InterlockedCompareExchange(
+            cachedPercent, 0, 0);
+        if (currentPercent == 0)
         {
-            return false;
+            DWORD registryPercent = large ? 100 : 30;
+            DWORD valueSize = sizeof(registryPercent);
+            const LSTATUS readResult = RegGetValueW(HKEY_CURRENT_USER,
+                L"Software\\Totem\\vghd\\player", valueName,
+                RRF_RT_REG_DWORD, nullptr, &registryPercent, &valueSize);
+            if (readResult != ERROR_SUCCESS &&
+                readResult != ERROR_FILE_NOT_FOUND)
+            {
+                return false;
+            }
+            currentPercent = static_cast<LONG>(registryPercent);
         }
         const DWORD newPercent = static_cast<DWORD>(std::clamp(
             static_cast<int>(currentPercent) + steps * 2,
             large ? 60 : 10, 200));
-        return newPercent == currentPercent ||
-            SetMovieWindowPercent(mode, newPercent, true);
+        if (newPercent == static_cast<DWORD>(currentPercent))
+        {
+            return true;
+        }
+        if (!SetMovieWindowPercent(mode, newPercent, true))
+        {
+            return false;
+        }
+        InterlockedExchange(cachedPercent, static_cast<LONG>(newPercent));
+        return true;
     }
 
     LRESULT CALLBACK MovieMouseHook(int code, WPARAM wParam, LPARAM lParam)
@@ -2751,6 +2771,13 @@ namespace
                 reinterpret_cast<LPARAM>(&search));
             if (search.window != nullptr)
             {
+                if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+                    InterlockedCompareExchange(
+                        &g_playerWheelWhileLocked, 0, 0) == 0)
+                {
+                    return CallNextHookEx(
+                        g_movieMouseHook, code, wParam, lParam);
+                }
                 const int delta = GET_WHEEL_DELTA_WPARAM(mouse->mouseData);
                 if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
                 {
@@ -3174,6 +3201,15 @@ namespace
         return BridgeSuccess;
     }
 
+    HRESULT SetPlayerWheelWhileLocked(bool enabled)
+    {
+        InterlockedExchange(
+            &g_playerWheelWhileLocked, enabled ? 1 : 0);
+        InterlockedExchange(&g_playerWheelDelta, 0);
+        InterlockedExchange(&g_playerVolumeWheelDelta, 0);
+        return BridgeSuccess;
+    }
+
     HRESULT SetPlayerMode(SIZE_T mode)
     {
         if (mode < 1 || mode > 3)
@@ -3182,6 +3218,11 @@ namespace
         }
         const LONG previous = InterlockedExchange(
             &g_playerMode, static_cast<LONG>(mode));
+        if (previous != static_cast<LONG>(mode))
+        {
+            InterlockedExchange(&g_playerSmallSizePercent, 0);
+            InterlockedExchange(&g_playerLargeSizePercent, 0);
+        }
         if (previous == 3 && mode != 3)
         {
             void* pendingCard = nullptr;
@@ -3209,9 +3250,15 @@ namespace
         {
             return E_INVALIDARG;
         }
-        return SetMovieWindowPercent(
-            static_cast<LONG>(mode), percent, false)
-            ? BridgeSuccess : E_FAIL;
+        if (!SetMovieWindowPercent(
+                static_cast<LONG>(mode), percent, false))
+        {
+            return E_FAIL;
+        }
+        InterlockedExchange(mode == 1
+            ? &g_playerLargeSizePercent : &g_playerSmallSizePercent,
+            static_cast<LONG>(percent));
+        return BridgeSuccess;
     }
 
     HRESULT SetPlayerLarge(bool large)
@@ -9676,6 +9723,19 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
     SIZE_T mode)
 {
     return SetPlayerMode(mode);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetPlayerWheelWhileLocked(SIZE_T enabled)
+{
+    __try
+    {
+        return SetPlayerWheelWhileLocked(enabled != 0);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerVolume(

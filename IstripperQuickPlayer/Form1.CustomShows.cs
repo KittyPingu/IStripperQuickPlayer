@@ -1366,6 +1366,8 @@ public partial class Form1
         player.SetLocked(playerlocked);
         player.SetClickThroughLocked(Properties.Settings.Default.ClickThroughLockedPlayer);
         player.SetWheelResize(Properties.Settings.Default.EnablePlayerWheelResize);
+        player.SetAllowWheelWhileLocked(
+            Properties.Settings.Default.AllowWheelWhileLocked);
         player.VolumeChanged += percent => BeginInvoke(() =>
         {
             if (customPlayer == player)

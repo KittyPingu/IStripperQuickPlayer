@@ -937,6 +937,18 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool AllowWheelWhileLocked {
+            get {
+                return ((bool)(this["AllowWheelWhileLocked"]));
+            }
+            set {
+                this["AllowWheelWhileLocked"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("-1")]
         public int IStripperSmallPlayerVolume {
             get {

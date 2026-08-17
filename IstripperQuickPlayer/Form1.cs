@@ -192,6 +192,8 @@ namespace IStripperQuickPlayer
             new("Click through locked player") { CheckOnClick = true };
         private readonly ToolStripMenuItem wheelResizePlayerToolStripMenuItem =
             new("Resize player with mouse wheel") { CheckOnClick = true };
+        private readonly ToolStripMenuItem allowWheelWhileLockedToolStripMenuItem =
+            new("Allow Resize while Locked") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
             new("Playback History...");
         private readonly ToolStripMenuItem libraryHealthCheckToolStripMenuItem =
@@ -782,6 +784,14 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.EnablePlayerWheelResize =
                     wheelResizePlayerToolStripMenuItem.Checked;
                 ChangePlayerWheelResize();
+            };
+            allowWheelWhileLockedToolStripMenuItem.Checked =
+                Properties.Settings.Default.AllowWheelWhileLocked;
+            allowWheelWhileLockedToolStripMenuItem.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.AllowWheelWhileLocked =
+                    allowWheelWhileLockedToolStripMenuItem.Checked;
+                ChangePlayerWheelWhileLocked();
             };
             settingsToolStripMenuItem.DropDownItems.Insert(
                 settingsToolStripMenuItem.DropDownItems.IndexOf(
@@ -3223,6 +3233,14 @@ namespace IStripperQuickPlayer
                             $"Player wheel resize setup failed (0x{wheelResizeResult:X8}).",
                             wheelResizeResult);
                     }
+                    int wheelWhileLockedResult = SetVghdPlayerWheelWhileLocked(
+                        Properties.Settings.Default.AllowWheelWhileLocked);
+                    if (wheelWhileLockedResult < 0)
+                    {
+                        throw new COMException(
+                            $"Locked player wheel setup failed (0x{wheelWhileLockedResult:X8}).",
+                            wheelWhileLockedResult);
+                    }
                     CaptureNormalPlayerSizes();
                     QueueConfiguredPlayerSize();
                 }
@@ -4531,6 +4549,18 @@ namespace IStripperQuickPlayer
             }
 
             return CallPlaybackBridgeApi("IStripperSetPlayerWheelResize",
+                enabled ? 1UL : 0UL);
+        }
+
+        private int SetVghdPlayerWheelWhileLocked(bool enabled)
+        {
+            if (!playerLockBridgeLoaded || vghd_procID == 0)
+            {
+                return unchecked((int)0x80070015);
+            }
+
+            return CallPlaybackBridgeApi(
+                "IStripperSetPlayerWheelWhileLocked",
                 enabled ? 1UL : 0UL);
         }
 
@@ -7072,6 +7102,22 @@ namespace IStripperQuickPlayer
             {
                 SetPlaybackStatus(
                     $"Player wheel resize update failed (0x{result:X8}).");
+            }
+        }
+
+        private void ChangePlayerWheelWhileLocked()
+        {
+            bool enabled =
+                Properties.Settings.Default.AllowWheelWhileLocked;
+            customPlayer?.SetAllowWheelWhileLocked(enabled);
+            if (!playerLockBridgeLoaded)
+                return;
+
+            int result = SetVghdPlayerWheelWhileLocked(enabled);
+            if (result < 0)
+            {
+                SetPlaybackStatus(
+                    $"Locked player wheel update failed (0x{result:X8}).");
             }
         }
 
