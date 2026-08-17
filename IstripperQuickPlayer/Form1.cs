@@ -446,6 +446,8 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(
                 PlaybackSourceAllowed(fullscreen: false, custom: true));
             System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(10_000, 135_000));
+            System.Diagnostics.Debug.Assert(!PlaybackReachedEnd(132_999, 135_000));
+            System.Diagnostics.Debug.Assert(PlaybackReachedEnd(133_000, 135_000));
             System.Diagnostics.Debug.Assert(PlaybackReachedEnd(134_000, 135_000));
             DateTime replacementCheck = DateTime.UtcNow;
             System.Diagnostics.Debug.Assert(!PlaybackReplacementExpired("clip",
@@ -4523,10 +4525,10 @@ namespace IStripperQuickPlayer
         private bool PlaybackReachedEnd(int elapsed, int total)
         {
             int transitionAllowance = (int)Math.Ceiling(
-                Math.Max(1.0, requestedPlaybackSpeed) * 5_000);
+                requestedPlaybackSpeed * 2_000);
             return total > 0 &&
                 elapsed >= Math.Max(0, total -
-                    Math.Max(2_000, transitionAllowance));
+                    Math.Max(1_000, transitionAllowance));
         }
 
         private void BeginAnimationReplacement(string animationPath)
