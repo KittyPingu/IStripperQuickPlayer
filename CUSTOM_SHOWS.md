@@ -11,19 +11,22 @@ licences, and implementation details are in the
 
 ## Recommended workflow
 
-For most users, choose one of these three methods:
+For most users, choose one of these methods:
 
 | Method | Choose it when | Starting point |
 | --- | --- | --- |
 | **RVM-MatAnyone** | You want a good automatic workflow without drawing a mask. RVM chooses a complete-person starting mask and MatAnyone 2 produces the final alpha. | **Standard (512 px)** detail. |
 | **MatAnyone 2** | You want to choose the exact person or people and manually correct the initial mask before processing. | Scrub to a clear frame, create the mask, then use **Standard (512 px)** detail. |
 | **RVM-ViTMatte S** | You want a fully automatic RVM mask for every frame followed by softer ViTMatte edge refinement. | Keep the recommended ViTMatte-S batch; lower it if VRAM is tight. |
+| **SAM2Matting** | You want scene-aware tracking, automatic text concepts with SAM3, or a SAM2.1 initial mask for each detected scene. | Start with **SAM3** for automatic text prompts or **RVM → SAM2.1-B+** for automatic person masks. |
 
 **RVM-MatAnyone is the recommended automatic starting point.** Use plain
 **MatAnyone 2** when subject selection matters, there are several people, or
 RVM includes the wrong foreground. Try **RVM-ViTMatte S** when hair and soft-edge
 quality justify a slower, more VRAM-intensive run. Use **RVM Quality** when you
 want a very fast automatic result and its simpler matte quality is sufficient.
+Use **SAM2Matting** when scene changes inside a clip need independent prompts or
+when SAM3 text concepts are a better fit than person-only automatic masking.
 
 Higher **Matting detail** can improve fine edges in RVM and MatAnyone-based
 methods, but increases processing time and VRAM use. It does not change the
@@ -63,6 +66,9 @@ Choose **File > Custom Shows > Install / Update Processing Tools...**.
   its editable workflow. The same install also enables **RVM-ViTMatte S**.
 - RVM is part of the core processing setup and is used by RVM Quality, RVM Fast,
   RVM-MatAnyone, and RVM-ViTMatte S.
+- **SAM2Matting** has a separate setup button beside its backbone selector. It
+  installs an isolated Python 3.10 runtime and the SAM2.1-T, SAM2.1-B+, and SAM3
+  checkpoints under `%LOCALAPPDATA%\IStripperQuickPlayer\sam2matting-sam3-worker\v1`.
 - TransNetV2 is the recommended optional clip detector and is selected by
   default. OmniShotCut, EdgeTAM, Stabilo, and ProPainter are specialist tools.
 
@@ -187,6 +193,21 @@ mask sequence for reprocessing. It normally uses more VRAM and runs more slowly
 than RVM-MatAnyone. Start with the recommended batch size; larger batches are not
 always faster and can force Windows into very slow shared GPU memory.
 
+**SAM2Matting** first divides every included clip into processing scenes. Choose:
+
+- **SAM2.1-T** for the fastest interactive per-scene masks;
+- **SAM2.1-B+** for higher-capacity interactive per-scene masks;
+- **RVM → SAM2.1-T/B+** to generate one automatic person mask per scene when the
+  job runs; or
+- **SAM3** to enter one foreground concept per line for automatic text-prompted
+  detection. SAM3 can target described objects as well as people.
+
+Interactive SAM2.1 modes open the same click/paint mask editor for every scene.
+Left-click or paint foreground and right-click or paint unwanted regions. RVM
+initialization and SAM3 can be queued without opening mask editors. Processing
+now expands the progress window with current-source and matted-foreground
+previews; background queue jobs skip preview generation.
+
 ### Other methods
 
 - **RVM Quality (ResNet50)** is the built-in automatic whole-person method. It is
@@ -199,6 +220,9 @@ always faster and can force Windows into very slow shared GPU memory.
   refinement.
 - **ViTMatte B** uses a larger backbone. It is slower and can consume much more
   VRAM; use it only after S and with a conservative batch.
+
+**VideoMaMa is no longer a processing option.** QuickPlayer retains only enough
+legacy manifest support to load and play shows created with older versions.
 
 The form remembers the previous algorithm, mask engine, model, detail, batch,
 RVM threshold, and automatic-accept choice. It shows only controls that apply to
@@ -251,6 +275,9 @@ image. With automatic acceptance enabled:
 
 - RVM Quality, RVM Fast, RVM-MatAnyone, and RVM-ViTMatte S can be queued directly.
 - MatAnyone 2 requires **Mask and Queue** so its initial masks exist first.
+- SAM2Matting can be queued directly. Interactive SAM2.1 modes collect all
+  required scene masks before saving the job; RVM-initialized SAM2.1 and SAM3
+  create their prompts automatically when the job runs.
 - Manually masked ViTMatte currently runs through the interactive workflow rather
   than the automatic queue.
 

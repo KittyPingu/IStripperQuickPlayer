@@ -27,13 +27,20 @@ RVM-ViTMatte S has a separate **ViTMatte inference detail** setting that default
 to 1024 px. Published media retains the source dimensions, and the unrelated
 RVM/MatAnyone Matting detail selector is hidden. See the end-user guide before
 using the more specialised ViTMatte B workflow.
+**SAM2Matting** is the scene-aware alternative: SAM2.1 Tiny/Base+ use an initial
+mask for each detected scene, while SAM3 detects one or more line-separated text
+concepts automatically. Unlike the original person-oriented pipelines, SAM3 can
+target described objects as well as people.
 
 One measured queued 1920x1080 source was 38 minutes long and divided into 18
 clips. On the reference machine it took approximately **7 minutes with RVM
 Quality**, **42 minutes with RVM-MatAnyone**, and **2 hours 30 minutes with
 RVM-ViTMatte S**.
 
-Only process videos you have permission to use. V1 mattes people (one or more visible people) and links each show to one primary reusable model profile. It does not segment arbitrary objects; SAM2 correction clicks refine person masks.
+Only process videos you have permission to use. The RVM, MatAnyone, ViTMatte,
+and SAM2.1 workflows matte one or more visible people and link each show to one
+primary reusable model profile. SAM3 can instead segment the objects described
+by its foreground concepts. SAM2 correction clicks refine prompted masks.
 
 ## Requirements
 
@@ -55,6 +62,7 @@ QuickPlayer pins:
 - Optional [MatAnyone2](https://github.com/pq-yang/MatAnyone2) commit `0079197acd6d16a741f71558809c06c586c579e0` and checkpoint SHA-256 `5E9821E4087231427376B437C85BB6E072B41E582314F06FD524F75BC4AF5914`.
 - Every mask-guided algorithm uses [SAM2](https://github.com/facebookresearch/sam2) commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`; setup verifies the Hiera Base+, Small, and Tiny checkpoints.
 - Optional [ViTMatte](https://github.com/hustvl/ViTMatte) S revision `6a58ad7646403c1df626fbd746900aec7361ea1d` and B revision `bf486d01a7d9e3dbcc8400f7942835caf0eaf76e`; setup SHA-256 verifies both official Hugging Face model repositories.
+- Optional [SAM2Matting](https://github.com/FudanCVL/SAM2Matting) source revision `73dd721d77b56749248aefe5e8824d7f61b9d13c`. Its separate Python 3.10 environment verifies the SAM2.1 Tiny, SAM2.1 Base+, and SAM3 checkpoints by exact size and SHA-256 before use.
 - Optional [streaming ProPainter](https://github.com/osmr/propainter) commit `c8983a445720450bf2fd976cab0adb1cad19547d` and PyTorchCV `0.0.74`. Its RAFT, flow-completion, and ProPainter files are verified against upstream SHA-1 values `d74fed4b7511a95ca9713b69ff19a132210a1016`, `a865ddc0281f27ff0814939a8c0101e936678312`, and `5f3cc1e7083fb5c49a7e5c574a06d41c763550a5`.
 
 ## Exact setup
@@ -121,10 +129,66 @@ ProPainter in operational selectors when their installation markers, source
 folders, workers, and required model files are present. The setup choices remain
 visible so missing tools can be installed.
 
+### SAM2Matting setup and processing contract
+
+Select **SAM2Matting** in the Create/Reprocess form and use **Install / repair...**
+beside **Backbone tracker**. This launches the dedicated setup script. From a
+published or build output folder it can also be run directly:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\custom-shows\setup-sam2matting.ps1
+```
+
+SAM2Matting intentionally uses a separate Python 3.10 environment at
+`%LOCALAPPDATA%\IStripperQuickPlayer\sam2matting-sam3-worker\v1`. The normal
+`rvm-runtime` Python is not interchangeable. Setup pins the source and checkpoint
+revisions, installs the locked dependencies, downloads all three checkpoints,
+and validates the environment. Use `-Repair` to rebuild an incompatible runtime.
+The SAM3 checkpoint is approximately 3.5 GB, so allow time and disk space for
+the first installation.
+
+The available backbone/prompt combinations are:
+
+| Selector | Tracker | Prompt mode | Intended use |
+| --- | --- | --- | --- |
+| **SAM2.1-T** | `sam2.1-tiny` | `initial-mask` | Fastest interactive mask for every scene. |
+| **SAM2.1-B+** | `sam2.1-base-plus` | `initial-mask` | Higher-capacity interactive mask for every scene. |
+| **RVM → SAM2.1-T** | `sam2.1-tiny` | `rvm-initial-mask` | Automatic person mask created for every scene when processing starts. |
+| **RVM → SAM2.1-B+** | `sam2.1-base-plus` | `rvm-initial-mask` | Higher-capacity tracking from automatic RVM person masks. |
+| **SAM3** | `sam3` | `text-concepts` | Automatic detection from one foreground concept per line. |
+
+QuickPlayer builds a deterministic scene plan inside the confirmed included
+clips using the configured FFmpeg, TransNetV2, or OmniShotCut detector. Interactive
+SAM2.1 modes require exactly one saved initial mask per scene. The RVM modes defer
+those masks until the job runs. SAM3 accepts 1–64 unique, non-empty concepts of
+at most 200 characters each and never stores scene-mask prompts.
+
+SAM2Matting is always queue-capable. Interactive SAM2.1 jobs open the click/paint
+mask editor for every scene before the job is committed; RVM-initialized SAM2.1
+and SAM3 can be committed immediately. The queue validates the exact option,
+scene-plan, source, checkpoint, and prompt contract before processing. Immediate
+**Process** runs show current-source and foreground-on-green previews in the
+progress form. Background queue jobs deliberately do not generate those JPEG
+previews.
+
+The worker uses eager BF16 and CUDA, processes each scene independently, and
+streams linear 8-bit alpha into H.264 `yuv420p`/`yuvj420p` media. SAM2.1 tracks
+forward from its prompt and then backward when needed. SAM3 uses bounded chunks
+with prior-frame context so long and high-resolution scenes do not retain an
+unbounded union or source-frame set. Published foreground and alpha outputs must
+have identical decoded frame counts, dimensions, and timing.
+
+VideoMaMa is not installed, offered, or accepted for new processing or queue
+jobs. Its identifier remains valid only when loading legacy published manifests,
+so shows created by older QuickPlayer versions remain playable.
+
 ## Automatic processing queue
 
 Select **Automatically accept result with alpha threshold 25** to enable **Queue**
-for RVM Quality/Fast, RVM-MatAnyone, and RVM-ViTMatte S. MatAnyone 2 instead shows
+for RVM Quality/Fast, RVM-MatAnyone, and RVM-ViTMatte S. SAM2Matting is queueable
+regardless of this checkbox because its prompt requirements are resolved before
+or during the job. MatAnyone 2 instead shows
 **Mask and Queue** and collects its initial mask for each included clip before the
 job is added. Open **Custom Shows → Queues...** to reorder, edit, delete, retry,
 run, pause, stop, and monitor jobs. The queue runs one show at a time and does not
@@ -898,7 +962,7 @@ The transparent player keeps RGB and alpha decoders synchronized and rejects dim
       <clip-id>/
         foreground.mp4
         alpha.mkv
-        initial-mask.png     # MatAnyone2 clips only
+        initial-mask.png     # retained prompt/initializer when applicable
         result.json
 ```
 

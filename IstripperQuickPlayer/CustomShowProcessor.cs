@@ -1171,6 +1171,7 @@ internal sealed class CustomShowProcessingForm : Form
     readonly string? correctionSource;
     readonly string correctionSam2Model;
     readonly CancellationTokenSource cancellation = new();
+    readonly SemaphoreSlim previewLoadLock = new(1, 1);
     readonly Stopwatch elapsed = new();
     readonly System.Windows.Forms.Timer clock = new() { Interval = 1000 };
     readonly Func<IProgress<CustomShowProgress>, CancellationToken,
@@ -1181,6 +1182,10 @@ internal sealed class CustomShowProcessingForm : Form
     double percent;
     long frameSampleTotal = -1;
     DateTime lastPreviewUtc;
+    CancellationTokenSource? previewLoadCancellation;
+    string? pendingPreviewSource, pendingPreviewComposite;
+    bool previewReloadPending, closing;
+    int previewRevision;
     string? interactiveControlFolder;
     bool correctionOpen;
     internal CustomShowProcessResult? Result { get; private set; }
@@ -1301,21 +1306,64 @@ internal sealed class CustomShowProcessingForm : Form
     void UpdatePreview(string? sourcePath, string? compositePath)
     {
         if (sourcePath == null || compositePath == null) return;
+        pendingPreviewSource = sourcePath;
+        pendingPreviewComposite = compositePath;
+        if (previewLoadLock.CurrentCount == 0)
+        {
+            previewReloadPending = true;
+            previewLoadCancellation?.Cancel();
+            return;
+        }
+        previewReloadPending = false;
+        previewLoadCancellation?.Cancel();
+        CancellationTokenSource loading = new();
+        previewLoadCancellation = loading;
+        int revision = ++previewRevision;
+        _ = LoadPreviewAsync(sourcePath, compositePath, revision, loading);
+    }
+
+    async Task LoadPreviewAsync(string sourcePath, string compositePath,
+        int revision, CancellationTokenSource loading)
+    {
+        Bitmap? nextSource = null, nextComposite = null;
         try
         {
-            DateTime sourceWritten = File.GetLastWriteTimeUtc(sourcePath),
-                compositeWritten = File.GetLastWriteTimeUtc(compositePath),
-                written = sourceWritten > compositeWritten ? sourceWritten : compositeWritten;
-            if (written <= lastPreviewUtc) return;
-            Bitmap nextSource = LoadPreview(sourcePath),
-                nextComposite = LoadPreview(compositePath);
+            await previewLoadLock.WaitAsync(loading.Token);
+            DateTime written = DateTime.MinValue;
+            (nextSource, nextComposite, written) = await Task.Run(() =>
+            {
+                DateTime sourceWritten = File.GetLastWriteTimeUtc(sourcePath),
+                    compositeWritten = File.GetLastWriteTimeUtc(compositePath);
+                DateTime latest = sourceWritten > compositeWritten
+                    ? sourceWritten : compositeWritten;
+                return (LoadPreview(sourcePath), LoadPreview(compositePath), latest);
+            }, loading.Token);
+            if (loading.IsCancellationRequested || revision != previewRevision ||
+                closing || IsDisposed || written <= lastPreviewUtc) return;
             source.SetSourceOwned(nextSource);
             composite.SetSourceOwned(nextComposite);
+            nextSource = nextComposite = null;
             lastPreviewUtc = written;
             ShowPreviewArea();
         }
+        catch (OperationCanceledException) { }
         catch (IOException) { }
         catch (ArgumentException) { }
+        finally
+        {
+            nextSource?.Dispose();
+            nextComposite?.Dispose();
+            if (previewLoadLock.CurrentCount == 0) previewLoadLock.Release();
+            if (ReferenceEquals(previewLoadCancellation, loading))
+                previewLoadCancellation = null;
+            loading.Dispose();
+            if (previewReloadPending && !closing && !IsDisposed && !Disposing)
+            {
+                previewReloadPending = false;
+                BeginInvoke(() => UpdatePreview(pendingPreviewSource,
+                    pendingPreviewComposite));
+            }
+        }
     }
 
     static Bitmap LoadPreview(string path)
@@ -1420,6 +1468,8 @@ internal sealed class CustomShowProcessingForm : Form
     {
         if (disposing)
         {
+            closing = true;
+            previewLoadCancellation?.Cancel();
             cancellation.Dispose();
             clock.Dispose();
         }

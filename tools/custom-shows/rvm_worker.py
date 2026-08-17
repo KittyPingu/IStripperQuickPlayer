@@ -27,6 +27,17 @@ WEIGHTS = {
 SENTINEL = object()
 
 
+def auto_batch_plan(learned, healthy_headroom, heuristic):
+    """Return the initial batch and exploration ceiling for this worker."""
+    safe = learned if learned and healthy_headroom else heuristic
+    ceiling = safe if learned and healthy_headroom else min(24, safe + 4)
+    return safe, ceiling
+
+
+def auto_batch_policy_key(device_name, total_memory, preset, width, height):
+    return f"{device_name}|{total_memory}|{preset}|{width}x{height}"
+
+
 def emit(stage, percent=0, message=""):
     print(json.dumps({"stage": stage, "percent": percent, "message": message}), flush=True)
 
@@ -291,6 +302,7 @@ class RvmExecution:
         self.stable_batches = 0
         self.policy_path = args.runtime / "rvm-auto-batch-policy-v1.json"
         self.policy_key = None
+        self.auto_batch_shape = None
         self.expected_frames = expected_frames
         self.compiled_model = None
         self.compile_attempted = False
@@ -366,6 +378,10 @@ class RvmExecution:
     def configure_auto_batch(self, width, height):
         if not self.auto_batch:
             return
+        shape = (int(width), int(height))
+        if self.auto_batch_shape == shape:
+            return
+        self.auto_batch_shape = shape
         if self.device.type == "cuda":
             properties = self.torch.cuda.get_device_properties(self.device)
             free, total = self.torch.cuda.mem_get_info(self.device)
@@ -374,8 +390,8 @@ class RvmExecution:
             vram_cap = 4 if usable_gib < 8 else 8 if usable_gib < 12 else \
                 12 if usable_gib < 20 else 24
             heuristic = max(1, min(vram_cap, round(12 * detail_scale)))
-            self.policy_key = (f"{properties.name}|{properties.total_memory}|"
-                               f"{self.args.preset}|{width}x{height}")
+            self.policy_key = auto_batch_policy_key(properties.name,
+                properties.total_memory, self.args.preset, width, height)
             learned = None
             try:
                 policy = json.loads(self.policy_path.read_text(encoding="utf-8"))
@@ -384,13 +400,15 @@ class RvmExecution:
                 learned = max(1, min(24, int(learned)))
             except (OSError, ValueError, TypeError):
                 pass
-            # Reuse a learned value when the GPU is currently healthy. Otherwise
-            # begin conservatively and let measurements grow it again.
+            # A healthy learned value has already completed the exploration done
+            # by an earlier worker. Keep it fixed so every new process does not
+            # repeat cuDNN tuning for several larger temporal batch shapes.
             healthy_headroom = free >= max(2 * 1024 ** 3, total * .20)
-            self.safe_chunk = learned if learned and healthy_headroom else heuristic
+            self.safe_chunk, self.slot_capacity = auto_batch_plan(
+                learned, healthy_headroom, heuristic)
         else:
             self.safe_chunk = 1
-        self.slot_capacity = min(24, self.safe_chunk + 4)
+            self.slot_capacity = 1
 
     def save_auto_batch(self):
         if not self.auto_batch or not self.policy_key:
@@ -423,6 +441,24 @@ def validate(runtime):
             raise RuntimeError("preview lock handling validation failed")
     if aggregate_percent(10, 90, 100, 50) != 55:
         raise RuntimeError("multi-clip progress validation failed")
+    if auto_batch_plan(13, True, 9) != (13, 13):
+        raise RuntimeError("learned auto batch should not be re-explored")
+    if auto_batch_plan(None, True, 9) != (9, 13):
+        raise RuntimeError("new auto batch exploration validation failed")
+    if auto_batch_plan(13, False, 9) != (9, 13):
+        raise RuntimeError("low-headroom auto batch fallback validation failed")
+    base_key = auto_batch_policy_key("GPU", 16, "fast", 768, 432)
+    if base_key == auto_batch_policy_key("GPU", 16, "quality", 768, 432) or \
+            base_key == auto_batch_policy_key("GPU", 16, "fast", 512, 288) or \
+            base_key == auto_batch_policy_key("GPU", 16, "fast", 768, 576):
+        raise RuntimeError("auto batch policy resolution/preset isolation failed")
+    execution = RvmExecution.__new__(RvmExecution)
+    execution.auto_batch = True
+    execution.auto_batch_shape = (1024, 576)
+    execution.safe_chunk = 13
+    execution.configure_auto_batch(1024, 576)
+    if execution.safe_chunk != 13:
+        raise RuntimeError("multi-clip auto batch retention failed")
     if min(3, max(1, int(min(2 * 1024 ** 3, 32 * 1024 ** 3 * .125) //
                          (12 * 1920 * 1080 * 7)))) != 3:
         raise RuntimeError("pipeline depth calculation validation failed")
@@ -820,6 +856,9 @@ def process(args, execution, report=emit):
                     raise
                 execution.safe_chunk = max(1, length - 1) if execution.auto_batch \
                     else max(1, length // 2)
+                if execution.auto_batch:
+                    execution.slot_capacity = min(execution.slot_capacity,
+                                                  execution.safe_chunk)
                 execution.stable_batches = 0
                 execution.disable_compile("CUDA out of memory")
                 if device.type == "cuda":
@@ -981,10 +1020,11 @@ def main():
     parser.add_argument("--job", action="append", default=[])
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--validate", action="store_true")
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.runtime = args.runtime.resolve()
     os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(args.runtime / "torchinductor-rvm")
-    if args.validate:
+    if args.validate or args.self_test:
         validate(args.runtime)
         return
     if not args.source or not args.output:
