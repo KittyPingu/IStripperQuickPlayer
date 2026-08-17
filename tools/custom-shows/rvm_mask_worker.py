@@ -32,7 +32,32 @@ def put_bounded(target, value, errors):
                 raise errors.get()
 
 
+def finish_decode(process):
+    # The fps filter can leave buffered output after the requested mask count.
+    # Drain it before closing the read end so FFmpeg can flush and report its
+    # real decode status instead of failing with a synthetic broken pipe.
+    while process.stdout.read(1024 * 1024):
+        pass
+    process.stdout.close()
+    return process.wait()
+
+
+def self_test():
+    process = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys; sys.stdout.buffer.write(b'x' * 1048576)"],
+        stdout=subprocess.PIPE)
+    if len(read_exact(process.stdout, 1024)) != 1024:
+        raise RuntimeError("decode drain self-test could not read its prefix")
+    if finish_decode(process) != 0:
+        raise RuntimeError("decode drain self-test failed")
+    send(status="ok", message="rvm-mask self-test passed")
+
+
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--runtime", type=Path, required=True)
@@ -173,8 +198,7 @@ def main():
         raise RuntimeError("RVM mask writer did not shut down cleanly")
     generated = len(list(args.masks.glob("*.png")))
     if decode is not None:
-        decode.stdout.close()
-        if decode.wait() != 0:
+        if finish_decode(decode) != 0:
             raise RuntimeError("RVM source decoding failed")
     if not generated:
         raise RuntimeError("RVM generated no masks")
