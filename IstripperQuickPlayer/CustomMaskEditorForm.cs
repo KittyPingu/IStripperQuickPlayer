@@ -8,6 +8,88 @@ namespace IStripperQuickPlayer;
 
 internal sealed record CustomMaskFrameSeed(string FramePath, string MaskPath);
 
+internal sealed class HoldRepeatButton : IDisposable
+{
+    const int InitialDelayMs = 400;
+    const int RepeatIntervalMs = 75;
+
+    static int heldButtonCount;
+
+    readonly Button button;
+    readonly Action action;
+    readonly System.Windows.Forms.Timer timer = new() { Interval = InitialDelayMs };
+    bool held;
+
+    internal HoldRepeatButton(Button button, Action action)
+    {
+        this.button = button;
+        this.action = action;
+        button.MouseDown += Button_MouseDown;
+        button.MouseUp += Button_MouseUp;
+        button.KeyDown += Button_KeyDown;
+        timer.Tick += Timer_Tick;
+        button.Disposed += Button_Disposed;
+    }
+
+    void Button_MouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || !button.Enabled) return;
+        if (!held) heldButtonCount++;
+        held = true;
+        action();
+        timer.Interval = InitialDelayMs;
+        timer.Start();
+    }
+
+    void Button_MouseUp(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left) Stop();
+    }
+
+    void Button_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode is not (Keys.Space or Keys.Enter) || !button.Enabled) return;
+        e.Handled = e.SuppressKeyPress = true;
+        action();
+    }
+
+    void Timer_Tick(object? sender, EventArgs e)
+    {
+        if (!held || (Control.MouseButtons & MouseButtons.Left) == 0)
+        {
+            Stop();
+            return;
+        }
+        timer.Interval = RepeatIntervalMs;
+        action();
+    }
+
+    void Stop()
+    {
+        if (held) heldButtonCount--;
+        held = false;
+        timer.Stop();
+    }
+
+    internal static void SchedulePreview(System.Windows.Forms.Timer previewTimer)
+    {
+        if (heldButtonCount == 0) previewTimer.Stop();
+        if (!previewTimer.Enabled) previewTimer.Start();
+    }
+
+    void Button_Disposed(object? sender, EventArgs e) => Dispose();
+
+    public void Dispose()
+    {
+        Stop();
+        timer.Dispose();
+        button.MouseDown -= Button_MouseDown;
+        button.MouseUp -= Button_MouseUp;
+        button.KeyDown -= Button_KeyDown;
+        button.Disposed -= Button_Disposed;
+    }
+}
+
 internal sealed class CustomMaskEditorForm : Form
 {
     static readonly SemaphoreSlim Sam2MattingWorkerGate = new(1, 1);
@@ -189,9 +271,9 @@ internal sealed class CustomMaskEditorForm : Form
             if (resumeAfterScrub) StartPlayback(); else RequestPreview();
             resumeAfterScrub = false;
         };
-        previousFrame.Click += (_, _) => StepFrame(-1);
+        _ = new HoldRepeatButton(previousFrame, () => StepFrame(-1));
         play.Click += (_, _) => TogglePlayback();
-        nextFrame.Click += (_, _) => StepFrame(1);
+        _ = new HoldRepeatButton(nextFrame, () => StepFrame(1));
         slowMotion.CheckedChanged += (_, _) => RestartPlayback();
         playback.Tick += (_, _) => PlaybackTick();
         previewDelay.Tick += async (_, _) =>
@@ -567,8 +649,7 @@ internal sealed class CustomMaskEditorForm : Form
         ResetMaskSelection();
         UpdateEnabledState();
         status.Text = "Seeking selected frame...";
-        previewDelay.Stop();
-        previewDelay.Start();
+        HoldRepeatButton.SchedulePreview(previewDelay);
     }
 
     async Task LoadSelectedFrameAsync(long atMs)

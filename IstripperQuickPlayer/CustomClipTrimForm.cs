@@ -76,8 +76,8 @@ internal sealed class CustomClipTrimForm : Form
             Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel
         };
 
-        previousFrame.Click += (_, _) => Step(-frameMs);
-        nextFrame.Click += (_, _) => Step(frameMs);
+        _ = new HoldRepeatButton(previousFrame, () => Step(-frameMs));
+        _ = new HoldRepeatButton(nextFrame, () => Step(frameMs));
         goStart.Click += (_, _) => Seek(StartMs);
         goEnd.Click += (_, _) => Seek(Math.Max(StartMs, EndMs - frameMs));
         setStart.Click += (_, _) => SetStartMarker();

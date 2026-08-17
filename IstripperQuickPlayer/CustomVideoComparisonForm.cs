@@ -122,9 +122,9 @@ internal sealed class CustomVideoComparisonForm : Form
         CancelButton = close;
 
         rewind.Click += (_, _) => SeekBy(-5_000);
-        previousFrame.Click += (_, _) => SeekBy(-frameDurationMs);
+        _ = new HoldRepeatButton(previousFrame, () => SeekBy(-frameDurationMs));
         play.Click += (_, _) => TogglePlayback();
-        nextFrame.Click += (_, _) => SeekBy(frameDurationMs);
+        _ = new HoldRepeatButton(nextFrame, () => SeekBy(frameDurationMs));
         forward.Click += (_, _) => SeekBy(5_000);
         timeline.Scroll += (_, _) => TimelineChanged();
         timeline.MouseDown += (_, _) => BeginScrub();
@@ -250,8 +250,7 @@ internal sealed class CustomVideoComparisonForm : Form
     void RequestFrame()
     {
         if (playing) return;
-        previewDelay.Stop();
-        previewDelay.Start();
+        HoldRepeatButton.SchedulePreview(previewDelay);
     }
 
     async Task ShowFrameAsync(long atMs)

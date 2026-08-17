@@ -327,9 +327,9 @@ internal sealed class CustomClipEditorForm : Form
         transitionSeconds.ValueChanged += (_, _) => UpdateReapplyDetectionButton();
         shortClipSeconds.ValueChanged += (_, _) => UpdateReapplyDetectionButton();
         ok.Click += (_, _) => AcceptClips();
-        previousFrame.Click += (_, _) => StepFrame(-1);
+        _ = new HoldRepeatButton(previousFrame, () => StepFrame(-1));
         play.Click += (_, _) => TogglePlayback();
-        nextFrame.Click += (_, _) => StepFrame(1);
+        _ = new HoldRepeatButton(nextFrame, () => StepFrame(1));
         slowMotion.CheckedChanged += (_, _) => RestartPlayback();
         playback.Tick += (_, _) => PlaybackTick();
         previewDelay.Tick += (_, _) => { previewDelay.Stop(); _ = LoadPreviewAsync(timeline.PositionMs); };
@@ -1014,8 +1014,7 @@ internal sealed class CustomClipEditorForm : Form
     void RequestPreview()
     {
         if (playback.Enabled) return;
-        previewDelay.Stop();
-        previewDelay.Start();
+        HoldRepeatButton.SchedulePreview(previewDelay);
     }
 
     async Task StreamPreviewAsync(long atMs, double speed, CancellationToken token)

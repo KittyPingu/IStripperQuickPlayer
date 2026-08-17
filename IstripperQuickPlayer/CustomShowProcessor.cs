@@ -1248,6 +1248,8 @@ internal sealed class CustomShowProcessingForm : Form
         Controls.Add(layout);
         cancel.Click += (_, _) => { cancel.Enabled = false; status.Text = "Cancelling..."; cancellation.Cancel(); };
         pauseAndCorrect.Click += (_, _) => RequestCorrectionPause();
+        source.Click += (_, _) => PauseAndCorrectFromPreview();
+        composite.Click += (_, _) => PauseAndCorrectFromPreview();
         clock.Tick += (_, _) => RefreshStatus();
         Shown += (_, e) =>
         {
@@ -1389,6 +1391,12 @@ internal sealed class CustomShowProcessingForm : Form
         File.WriteAllText(Path.Combine(interactiveControlFolder, "pause.request"), "pause");
         pauseAndCorrect.Text = "Pausing...";
         pauseAndCorrect.Enabled = false;
+    }
+
+    void PauseAndCorrectFromPreview()
+    {
+        if (pauseAndCorrect.Visible && pauseAndCorrect.Enabled)
+            pauseAndCorrect.PerformClick();
     }
 
     void CorrectPausedMask(CustomShowProgress progress)

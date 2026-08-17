@@ -190,7 +190,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             if (!generationActive && !updating) image.Enabled = false;
             UpdatePosition();
             if (playback.Enabled) LoadPreview();
-            else { previewDelay.Stop(); previewDelay.Start(); }
+            else HoldRepeatButton.SchedulePreview(previewDelay);
         };
         timeline.FixedMarkerClicked += _ =>
         {
@@ -199,8 +199,8 @@ internal sealed class CustomVideoMaskEditorForm : Form
         };
         previewDelay.Tick += (_, _) => { previewDelay.Stop(); LoadPreview(); };
         workerClock.Tick += (_, _) => UpdateWorkerStatus();
-        previous.Click += (_, _) => SetFrame(CurrentFrame - 1);
-        next.Click += (_, _) => SetFrame(CurrentFrame + 1);
+        _ = new HoldRepeatButton(previous, () => SetFrame(CurrentFrame - 1));
+        _ = new HoldRepeatButton(next, () => SetFrame(CurrentFrame + 1));
         play.Click += (_, _) => TogglePlayback();
         slowMotion.CheckedChanged += (_, _) => ConfigurePlaybackInterval();
         generation.Click += async (_, _) => await ToggleGenerationAsync();
