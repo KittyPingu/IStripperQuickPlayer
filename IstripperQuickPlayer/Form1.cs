@@ -2955,6 +2955,26 @@ namespace IStripperQuickPlayer
 
         protected override void WndProc(ref System.Windows.Forms.Message message)
         {
+            if (message.Msg == Program.RestoreInstanceMessage)
+            {
+                if (!apiOnlyMode)
+                {
+                    WindowState = FormWindowState.Normal;
+                    ShowInTaskbar = true;
+                    Show();
+                    notifyIcon1.Visible = false;
+                    ShowWindowAsync(Handle, 9);
+                    Activate();
+                    BringToFront();
+                    SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0,
+                        0x0001 | 0x0002 | 0x0010);
+                    SetWindowPos(Handle, new IntPtr(-2), 0, 0, 0, 0,
+                        0x0001 | 0x0002 | 0x0010);
+                    SetForegroundWindow(Handle);
+                }
+                message.Result = new IntPtr(1);
+                return;
+            }
             if (message.Msg == WheelResizeMessage)
             {
                 int steps = unchecked((int)message.WParam.ToInt64());
@@ -4063,6 +4083,14 @@ namespace IStripperQuickPlayer
                 $"{FormatPlaybackTime(elapsedMilliseconds)} / {FormatPlaybackTime(totalMilliseconds)}";
             lblPlaybackTime.SetDisplayText(text);
         }
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr window);
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindowAsync(IntPtr window, int command);
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter,
+            int x, int y, int width, int height, uint flags);
 
         private void QueueFastDecodeRetry()
         {

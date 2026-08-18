@@ -3,18 +3,35 @@ using IStripperQuickPlayer.DataModel;
 using IStripperQuickPlayer.Interop;
 using System.ComponentModel;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 
 namespace IStripperQuickPlayer
 {
     internal static class Program
     {
+        internal static readonly int RestoreInstanceMessage = (int)
+            RegisterWindowMessage("IStripperQuickPlayer.RestoreInstance.v1");
+        private delegate bool EnumWindowsCallback(IntPtr window, IntPtr parameter);
+
         /// <summary>
         ///  The main entry point for the application.
         /// </summary>
         [STAThread]
         static void Main(string[] args)
         {
+            bool diagnostic = args.Length > 0 &&
+                args[0].StartsWith("--verify-", StringComparison.Ordinal);
+            bool firstInstance = true;
+            using Mutex? instanceMutex = diagnostic ? null : new Mutex(true,
+                @"Local\IStripperQuickPlayer.SingleInstance.v1",
+                out firstInstance);
+            if (!firstInstance)
+            {
+                RestoreRunningInstance();
+                return;
+            }
+
             ApplicationConfiguration.Initialize();
 
             if (args.Length == 1 && args[0] == "--verify-custom-shows")
@@ -494,17 +511,6 @@ namespace IStripperQuickPlayer
                 return;
             }
 
-            using Mutex instanceMutex = new(true,
-                @"Local\IStripperQuickPlayer.SingleInstance.v1",
-                out bool firstInstance);
-            if (!firstInstance)
-            {
-                Console.Error.WriteLine(
-                    "Another iStripper QuickPlayer instance is already running.");
-                Environment.ExitCode = 3;
-                return;
-            }
-
             if (options.ApiOnly)
             {
                 Application.Run(new Form1(options));
@@ -586,6 +592,54 @@ namespace IStripperQuickPlayer
                 }
             }
         }
+
+        private static void RestoreRunningInstance()
+        {
+            AllowSetForegroundWindow(uint.MaxValue);
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                PostMessage(new IntPtr(0xffff),
+                    (uint)RestoreInstanceMessage, IntPtr.Zero, IntPtr.Zero);
+                bool restored = false;
+                EnumWindows((window, _) =>
+                {
+                    GetWindowThreadProcessId(window, out uint processId);
+                    if (processId == Environment.ProcessId) return true;
+                    SendMessageTimeout(window, (uint)RestoreInstanceMessage,
+                        IntPtr.Zero, IntPtr.Zero, 0x0002, 100,
+                        out IntPtr result);
+                    if (result != new IntPtr(1)) return true;
+                    ShowWindowAsync(window, 9);
+                    SetForegroundWindow(window);
+                    restored = true;
+                    return false;
+                }, IntPtr.Zero);
+                if (restored) return;
+                Thread.Sleep(100);
+            }
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint RegisterWindowMessage(string message);
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsCallback callback,
+            IntPtr parameter);
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr window,
+            out uint processId);
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessageTimeout(IntPtr window,
+            uint message, IntPtr wParam, IntPtr lParam, uint flags,
+            uint timeout, out IntPtr result);
+        [DllImport("user32.dll")]
+        private static extern bool AllowSetForegroundWindow(uint processId);
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindowAsync(IntPtr window, int command);
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr window);
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr window, uint message,
+            IntPtr wParam, IntPtr lParam);
 
         static bool VerifyQueueEligibility() =>
             CustomShowEditorForm.QueueAction("quality", true) == "Queue" &&
