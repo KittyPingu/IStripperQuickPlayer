@@ -174,11 +174,15 @@ and parentheses.
 | `rae AND pole` | Require both terms. |
 | `(rae AND pole) OR kitty` | Return either group of matches. |
 | `model:anna AND tag:duo` | Search particular fields. |
+| `ethnicity:latina` | Match a model's ethnicity. |
+| `hair:brunette` | Match a model's hair colour. |
 | `tag:blue AND !model:anna` | Exclude a term or field match. |
 
-Available fields are `model`, `card`, `title`, `description` and `tag`.
-Aliases such as `performer`, `name`, `show`, `outfit`, `desc` and `tags` also
-work. Use explicit `AND` between separate requirements.
+Available fields are `model`, `card`, `title`, `description`, `tag`, `ethnicity`
+and `hair`. Aliases such as `performer`, `name`, `show`, `outfit`, `desc`, `tags`,
+`hair-color` and `hair-colour` also work. Field matching is case-insensitive and
+partial, so `hair:brun` matches `Brunette`. Use explicit `AND` between separate
+requirements.
 
 ## Playback controls and hotkeys
 

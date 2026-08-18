@@ -622,7 +622,7 @@ namespace IStripperQuickPlayer
                 ["listClips"] =
                     "Select a clip to play it, or drag it into the manual queue.",
                 ["txtSearch"] =
-                    "Search cards by model, title, description, tags, or search fields.",
+                    "Search fields include model:, card:, title:, description:, tag:, ethnicity:, and hair:. Hair also accepts hair-color: and hair-colour:. Supports AND, OR, !, parentheses, and quoted phrases.",
                 ["cmdClearSearch"] = "Clear the card search.",
                 ["cmbSortBy"] = "Choose how cards are sorted.",
                 ["cmbSortDirection"] = "Choose ascending or descending card order.",
