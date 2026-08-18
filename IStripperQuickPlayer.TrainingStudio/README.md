@@ -21,9 +21,12 @@ binary foreground-prop model used by compatible automatic RVM initializers.
 8. In QuickPlayer Custom Show settings, open the RVM tab, enable prop augmentation,
    and select the installed model.
 
-The dataset keeps source videos in place. Accepted frames and masks are stored
-under `samples`, in-progress work under `drafts`, and training runs under `runs`.
-`dataset.json` is schema-versioned and replaced atomically.
+The dataset keeps source videos in place. `dataset.json` contains only indexed
+video metadata. Each candidate has its own atomic, schema-versioned record under
+`records/<shard>/<sampleId>.json`; there is no shared decision ledger. Ordinary
+mask edits update only that frame's files after its draft paths have first been
+registered. Accepted frames and masks are stored under `samples`, in-progress
+work under `drafts`, and training runs under `runs`.
 
 ## Verification
 

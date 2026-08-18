@@ -14,11 +14,13 @@ internal sealed class AnnotationCanvas : Control
     readonly Stack<int[]> undo = [];
     readonly Stack<int[]> redo = [];
     readonly List<PointF> polygon = [];
+    readonly List<(PointF Point, bool Positive)> samPromptPoints = [];
     float zoom = 1;
     PointF pan;
     Point lastMouse;
-    bool drawing, panning;
+    bool drawing, panning, spacePressed;
     RectangleF samBox;
+    RectangleF? displayedSamBox;
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal AnnotationTool Tool { get; set; } = AnnotationTool.Brush;
@@ -35,6 +37,7 @@ internal sealed class AnnotationCanvas : Control
     internal event Action<PointF, bool>? SamPoint;
     internal event Action<RectangleF>? SamBoxReady;
     internal event Action? MaskChanged;
+    internal event Action<int>? BrushSizeChanged;
 
     internal AnnotationCanvas()
     {
@@ -51,6 +54,7 @@ internal sealed class AnnotationCanvas : Control
     }
 
     internal int[] CopyObjectIds() => (int[])ids.Clone();
+    internal bool CurrentObjectHasPixels => ids.Contains(CurrentObjectId);
     internal void LoadObjectIds(int[] values)
     {
         if (values.Length != ids.Length) throw new ArgumentException("Mask dimensions do not match the frame.");
@@ -80,6 +84,15 @@ internal sealed class AnnotationCanvas : Control
         SaveUndo();
         for (int i = 0; i < ids.Length; i++) if (ids[i] == CurrentObjectId) ids[i] = 0;
         Changed();
+    }
+
+    internal void SetSamPrompts(IReadOnlyList<PointF> points, IReadOnlyList<int> labels,
+        RectangleF? box)
+    {
+        samPromptPoints.Clear();
+        for (int index = 0; index < Math.Min(points.Count, labels.Count); index++)
+            samPromptPoints.Add((points[index], labels[index] > 0));
+        displayedSamBox = box; Invalidate();
     }
 
     internal void ExportCurrentObjectMask(string path)
@@ -144,17 +157,33 @@ internal sealed class AnnotationCanvas : Control
             foreach (PointF point in points) e.Graphics.FillEllipse(Brushes.Yellow,
                 point.X - 3, point.Y - 3, 6, 6);
         }
-        if (drawing && Tool == AnnotationTool.SamBox)
+        RectangleF? box = drawing && Tool == AnnotationTool.SamBox ? samBox : displayedSamBox;
+        if (box is RectangleF visibleBox)
         {
-            RectangleF box = ToClient(samBox);
-            using Pen pen = new(Color.DeepSkyBlue, 2); e.Graphics.DrawRectangle(pen, box);
+            RectangleF clientBox = ToClient(visibleBox);
+            using Pen pen = new(Color.DeepSkyBlue, 2); e.Graphics.DrawRectangle(pen, clientBox);
+        }
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        foreach ((PointF point, bool positive) in samPromptPoints)
+        {
+            PointF client = ToClient(point);
+            RectangleF marker = new(client.X - 7, client.Y - 7, 14, 14);
+            using SolidBrush fill = new(positive ? Color.LimeGreen : Color.Red);
+            using Pen outline = new(Color.White, 2);
+            using Pen symbol = new(Color.Black, 2);
+            e.Graphics.FillEllipse(fill, marker); e.Graphics.DrawEllipse(outline, marker);
+            e.Graphics.DrawLine(symbol, client.X - 4, client.Y, client.X + 4, client.Y);
+            if (positive) e.Graphics.DrawLine(symbol, client.X, client.Y - 4, client.X, client.Y + 4);
         }
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e); Focus(); lastMouse = e.Location;
-        if (e.Button == MouseButtons.Middle) { panning = true; return; }
+        if (e.Button == MouseButtons.Middle || e.Button == MouseButtons.Left && spacePressed)
+        {
+            panning = true; Cursor = Cursors.Hand; return;
+        }
         PointF? image = ToImage(e.Location); if (image == null) return;
         if (Tool == AnnotationTool.SamPositive || Tool == AnnotationTool.SamNegative)
         {
@@ -196,20 +225,62 @@ internal sealed class AnnotationCanvas : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Middle) { panning = false; return; }
+        if (panning)
+        {
+            panning = false; Cursor = spacePressed ? Cursors.Hand : Cursors.Default; return;
+        }
         if (drawing && Tool == AnnotationTool.SamBox && samBox.Width >= 2 && samBox.Height >= 2)
+        {
+            displayedSamBox = samBox;
             SamBoxReady?.Invoke(samBox);
+        }
         drawing = false;
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
-        base.OnMouseWheel(e); if (source == null) return;
+        base.OnMouseWheel(e);
+        if ((ModifierKeys & Keys.Control) != 0)
+        {
+            BrushSize = AdjustBrushSize(BrushSize, e.Delta);
+            BrushSizeChanged?.Invoke(BrushSize); return;
+        }
+        if (source == null) return;
         PointF? before = ToImage(e.Location);
         zoom = Math.Clamp(zoom * (e.Delta > 0 ? 1.15f : 1 / 1.15f), .05f, 20);
         if (before is PointF point) pan = new(e.X - point.X * zoom, e.Y - point.Y * zoom);
         Invalidate();
     }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        (keyData & Keys.KeyCode) == Keys.Space || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode == Keys.Space)
+        {
+            spacePressed = true; Cursor = Cursors.Hand; e.Handled = true;
+        }
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        base.OnKeyUp(e);
+        if (e.KeyCode == Keys.Space)
+        {
+            spacePressed = false; if (!panning) Cursor = Cursors.Default; e.Handled = true;
+        }
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        spacePressed = panning = false; Cursor = Cursors.Default; base.OnLostFocus(e);
+    }
+
+    internal static int AdjustBrushSize(int current, int wheelDelta) => wheelDelta == 0
+        ? Math.Clamp(current, 2, 200)
+        : Math.Clamp(current + Math.Sign(wheelDelta) * 4, 2, 200);
 
     void PaintBrush(PointF point, bool erase)
     {
@@ -223,7 +294,8 @@ internal sealed class AnnotationCanvas : Control
                 int index = y * ImageWidth + x;
                 if (erase) ids[index] = 0; else ids[index] = CurrentObjectId;
             }
-        Changed();
+        UpdateOverlay(new Rectangle(left, top, right - left + 1, bottom - top + 1));
+        MaskChanged?.Invoke();
     }
 
     void CommitPolygon()
@@ -250,8 +322,10 @@ internal sealed class AnnotationCanvas : Control
     {
         undo.Push((int[])ids.Clone());
         redo.Clear();
-        if (undo.Count <= 20) return;
-        int[][] newest = undo.Take(20).Reverse().ToArray();
+        int bytesPerState = Math.Max(1, ids.Length * sizeof(int));
+        int limit = Math.Clamp((256 * 1024 * 1024) / bytesPerState, 2, 20);
+        if (undo.Count <= limit) return;
+        int[][] newest = undo.Take(limit).Reverse().ToArray();
         undo.Clear();
         foreach (int[] state in newest) undo.Push(state);
     }
@@ -277,6 +351,36 @@ internal sealed class AnnotationCanvas : Control
                 Marshal.Copy(pixels, y * overlay.Width, data.Scan0 + y * data.Stride, overlay.Width);
         }
         finally { overlay.UnlockBits(data); }
+    }
+
+    void UpdateOverlay(Rectangle region)
+    {
+        if (overlay == null || region.Width <= 0 || region.Height <= 0) return;
+        BitmapData data = overlay.LockBits(region, ImageLockMode.WriteOnly,
+            PixelFormat.Format32bppArgb);
+        int[] row = new int[region.Width];
+        try
+        {
+            for (int y = 0; y < region.Height; y++)
+            {
+                int sourceOffset = (region.Top + y) * ImageWidth + region.Left;
+                for (int x = 0; x < row.Length; x++)
+                {
+                    int id = ids[sourceOffset + x];
+                    if (id == 0) row[x] = 0;
+                    else
+                    {
+                        Color color = ObjectColors.TryGetValue(id, out Color value) ? value : Color.Lime;
+                        row[x] = Color.FromArgb(115, color).ToArgb();
+                    }
+                }
+                Marshal.Copy(row, 0, data.Scan0 + y * data.Stride, row.Length);
+            }
+        }
+        finally { overlay.UnlockBits(data); }
+        Rectangle client = Rectangle.Ceiling(new RectangleF(pan.X + region.X * zoom,
+            pan.Y + region.Y * zoom, region.Width * zoom, region.Height * zoom));
+        client.Inflate(2, 2); Invalidate(client);
     }
 
     PointF ToClient(PointF point) => new(pan.X + point.X * zoom, pan.Y + point.Y * zoom);

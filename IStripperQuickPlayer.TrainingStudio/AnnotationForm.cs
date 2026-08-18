@@ -14,9 +14,13 @@ internal sealed class AnnotationForm : Form
     readonly List<AnnotationObject> annotationObjects = [];
     readonly Action<int[], IReadOnlyList<AnnotationObject>, string>? saveDraft;
     readonly System.Windows.Forms.Timer draftTimer = new() { Interval = 750 };
+    readonly CancellationTokenSource formCancellation = new();
+    Task draftSaveTask = Task.CompletedTask;
     readonly string temporary;
     Sam2Client? sam2;
     int nextId = 1;
+    int draftGeneration;
+    bool accepting;
 
     internal int[] ObjectIds => canvas.CopyObjectIds();
     internal IReadOnlyList<AnnotationObject> AnnotationObjects => annotationObjects;
@@ -45,16 +49,19 @@ internal sealed class AnnotationForm : Form
 
         FlowLayoutPanel tools = new() { Dock = DockStyle.Top, Height = 42, AutoScroll = true };
         AddTool(tools, "Brush", AnnotationTool.Brush); AddTool(tools, "Erase", AnnotationTool.Eraser);
-        AddTool(tools, "Polygon", AnnotationTool.Polygon); AddTool(tools, "SAM +", AnnotationTool.SamPositive);
-        AddTool(tools, "SAM −", AnnotationTool.SamNegative); AddTool(tools, "SAM box", AnnotationTool.SamBox);
-        Button runSam = new() { Text = "Run SAM2", AutoSize = true };
+        AddTool(tools, "Polygon", AnnotationTool.Polygon); AddTool(tools, "SAM + point", AnnotationTool.SamPositive);
+        AddTool(tools, "SAM − point", AnnotationTool.SamNegative); AddTool(tools, "SAM box", AnnotationTool.SamBox);
+        Button runSam = new() { Text = "Apply SAM2 prompts", AutoSize = true };
+        Button clearSam = new() { Text = "Clear SAM prompts", AutoSize = true };
         Button undo = new() { Text = "Undo", AutoSize = true };
         Button redo = new() { Text = "Redo", AutoSize = true };
         Button fit = new() { Text = "Fit", AutoSize = true };
         Button save = new() { Text = "Accept annotation", AutoSize = true };
         Button cancel = new() { Text = "Cancel", AutoSize = true };
+        Label shortcuts = new() { Text = "Wheel zoom · Ctrl+wheel brush · Middle/Space+drag pan · Ctrl+Z/Y undo/redo",
+            AutoSize = true, Padding = new(8, 9, 0, 0) };
         tools.Controls.AddRange([new Label { Text = "Brush", AutoSize = true, Padding = new(0, 9, 0, 0) },
-            brush, runSam, undo, redo, fit, save, cancel, status]);
+            brush, runSam, clearSam, undo, redo, fit, save, cancel, shortcuts, status]);
 
         FlowLayoutPanel objectButtons = new() { Dock = DockStyle.Bottom, Height = 42 };
         Button add = new() { Text = "Add object", AutoSize = true };
@@ -65,37 +72,62 @@ internal sealed class AnnotationForm : Form
         Controls.Add(canvas); Controls.Add(side); Controls.Add(tools);
 
         brush.ValueChanged += (_, _) => canvas.BrushSize = brush.Value;
+        canvas.BrushSizeChanged += size =>
+        {
+            if (brush.Value != size) brush.Value = size;
+        };
         objects.SelectedIndexChanged += (_, _) => SelectObject();
         add.Click += (_, _) => AddObject();
         remove.Click += (_, _) => RemoveObject();
         undo.Click += (_, _) => canvas.Undo(); redo.Click += (_, _) => canvas.Redo();
         fit.Click += (_, _) => canvas.Fit();
         runSam.Click += async (_, _) => await RunSamAsync();
+        clearSam.Click += (_, _) => ClearSamPrompts();
         save.Click += (_, _) =>
         {
             if (!ObjectIds.Any(value => value > 0))
             {
                 MessageBox.Show(this, "Add at least one visible prop pixel, or use No foreground objects in the review window.",
-                    Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return;
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return;
             }
+            accepting = true; Interlocked.Increment(ref draftGeneration);
             DialogResult = DialogResult.OK; Close();
         };
         cancel.Click += (_, _) => Close();
         canvas.SamPoint += (point, positive) =>
         {
             int id = canvas.CurrentObjectId; samPoints[id].Add(point); samLabels[id].Add(positive ? 1 : 0);
+            ShowSamPrompts(id);
             status.Text = $"Object {id}: {samPoints[id].Count} SAM2 prompt(s)";
         };
-        canvas.SamBoxReady += box => { samBoxes[canvas.CurrentObjectId] = box; status.Text = "SAM2 box ready"; };
+        canvas.SamBoxReady += box =>
+        {
+            int id = canvas.CurrentObjectId; samBoxes[id] = box; ShowSamPrompts(id);
+            status.Text = "SAM2 box ready";
+        };
         canvas.MaskChanged += ScheduleDraftSave;
-        draftTimer.Tick += (_, _) => SaveDraft();
-        Shown += async (_, _) => await StartSamAsync(framePath);
+        draftTimer.Tick += (_, _) => QueueDraftSave();
+        Shown += async (_, _) =>
+        {
+            canvas.Fit();
+            await StartSamAsync(framePath);
+        };
     }
 
     void AddTool(FlowLayoutPanel panel, string text, AnnotationTool tool)
     {
         Button button = new() { Text = text, AutoSize = true };
-        button.Click += (_, _) => { canvas.Tool = tool; status.Text = tool.ToString(); };
+        button.Click += (_, _) =>
+        {
+            canvas.Tool = tool;
+            status.Text = tool switch
+            {
+                AnnotationTool.SamPositive => "Click points inside the selected prop, then apply SAM2 prompts.",
+                AnnotationTool.SamNegative => "Click background points to exclude, then apply SAM2 prompts.",
+                AnnotationTool.SamBox => "Drag a box around the selected prop, then apply SAM2 prompts.",
+                _ => tool.ToString()
+            };
+        };
         panel.Controls.Add(button);
     }
 
@@ -118,7 +150,20 @@ internal sealed class AnnotationForm : Form
 
     void SelectObject()
     {
-        if (objects.SelectedIndex >= 0) canvas.CurrentObjectId = annotationObjects[objects.SelectedIndex].Id;
+        if (objects.SelectedIndex >= 0)
+        {
+            canvas.CurrentObjectId = annotationObjects[objects.SelectedIndex].Id;
+            ShowSamPrompts(canvas.CurrentObjectId);
+        }
+    }
+
+    void ShowSamPrompts(int id) => canvas.SetSamPrompts(samPoints[id], samLabels[id], samBoxes[id]);
+
+    void ClearSamPrompts()
+    {
+        int id = canvas.CurrentObjectId;
+        samPoints[id].Clear(); samLabels[id].Clear(); samBoxes[id] = null;
+        ShowSamPrompts(id); status.Text = $"Object {id}: SAM2 prompts cleared";
     }
 
     void RefreshColors()
@@ -132,8 +177,10 @@ internal sealed class AnnotationForm : Form
         try
         {
             sam2 = new Sam2Client(framePath, temporary);
-            status.Text = await sam2.StartAsync(CancellationToken.None);
+            string ready = await sam2.StartAsync(formCancellation.Token);
+            status.Text = ready + ". Add +/− points or a box, then apply SAM2 prompts.";
         }
+        catch (OperationCanceledException) when (formCancellation.IsCancellationRequested) { }
         catch (Exception error) { status.Text = "Manual tools ready; SAM2 unavailable: " + error.Message; }
     }
 
@@ -141,23 +188,54 @@ internal sealed class AnnotationForm : Form
     {
         if (sam2 == null) { status.Text = "SAM2 is unavailable; use the manual tools."; return; }
         int id = canvas.CurrentObjectId;
+        if (samPoints[id].Count == 0 && samBoxes[id] == null && !canvas.CurrentObjectHasPixels)
+        {
+            status.Text = "Add a SAM + point, SAM − point, box, or manual seed mask first."; return;
+        }
         try
         {
             UseWaitCursor = true; status.Text = "Running SAM2…";
             string seed = Path.Combine(temporary, $"seed-{id}.png"); canvas.ExportCurrentObjectMask(seed);
-            await sam2.GenerateAsync(samPoints[id], samLabels[id], samBoxes[id], seed, CancellationToken.None);
+            await sam2.GenerateAsync(samPoints[id], samLabels[id], samBoxes[id], seed,
+                formCancellation.Token);
             canvas.ApplyObjectMask(sam2.MaskPath); Provenance = "sam2-assisted";
             status.Text = "SAM2 mask applied; refine it with brush, eraser, or polygon.";
         }
+        catch (OperationCanceledException) when (formCancellation.IsCancellationRequested) { }
         catch (Exception error) { status.Text = "SAM2 failed: " + error.Message; }
-        finally { UseWaitCursor = false; }
+        finally { if (!IsDisposed) UseWaitCursor = false; }
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        formCancellation.Cancel(); base.OnFormClosing(e);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == (Keys.Control | Keys.Z))
+        {
+            canvas.Undo(); return true;
+        }
+        if (keyData == (Keys.Control | Keys.Y) ||
+            keyData == (Keys.Control | Keys.Shift | Keys.Z))
+        {
+            canvas.Redo(); return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        draftTimer.Stop(); SaveDraft(); draftTimer.Dispose();
-        if (sam2 != null) sam2.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        try { Directory.Delete(temporary, true); } catch { }
+        draftTimer.Stop();
+        if (!accepting) QueueDraftSave();
+        draftTimer.Dispose(); formCancellation.Dispose();
+        Sam2Client? client = sam2; string cleanup = temporary;
+        _ = Task.Run(async () =>
+        {
+            if (client != null) await client.DisposeAsync();
+            try { Directory.Delete(cleanup, true); } catch { }
+        });
         base.OnFormClosed(e);
     }
 
@@ -167,11 +245,32 @@ internal sealed class AnnotationForm : Form
         draftTimer.Stop(); draftTimer.Start();
     }
 
-    void SaveDraft()
+    void QueueDraftSave()
     {
         draftTimer.Stop();
-        if (saveDraft == null) return;
-        try { saveDraft(ObjectIds, annotationObjects, Provenance); }
-        catch (Exception error) { status.Text = "Draft save failed: " + error.Message; }
+        if (saveDraft == null || accepting) return;
+        int[] ids = ObjectIds;
+        AnnotationObject[] objects = annotationObjects.Select(value => new AnnotationObject
+        {
+            Id = value.Id, Name = value.Name, ColorArgb = value.ColorArgb
+        }).ToArray();
+        string provenance = Provenance;
+        int generation = Interlocked.Increment(ref draftGeneration);
+        draftSaveTask = draftSaveTask.ContinueWith(_ =>
+        {
+            if (generation != Volatile.Read(ref draftGeneration) || accepting) return;
+            saveDraft(ids, objects, provenance);
+        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+        _ = draftSaveTask.ContinueWith(task =>
+        {
+            if (task.Exception == null || IsDisposed || Disposing) return;
+            try
+            {
+                BeginInvoke(() => status.Text = "Draft save failed: " +
+                    task.Exception.GetBaseException().Message);
+            }
+            catch (InvalidOperationException) { }
+        }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
     }
 }

@@ -38,6 +38,21 @@ def load_manifest(root):
     value = json.loads((root / "dataset.json").read_text(encoding="utf-8-sig"))
     if value.get("schemaVersion") != 1:
         raise RuntimeError("Unsupported training dataset schema")
+    records = sorted((root / "records").glob("*/*.json"))
+    if records:
+        samples = []
+        for path in records:
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
+            if record.get("schemaVersion") != 1 or record.get("datasetId") != value.get("datasetId"):
+                raise RuntimeError(f"Training sample record does not belong to this dataset: {path}")
+            samples.append(record["sample"])
+        value["samples"] = samples
+    elif (root / "samples.json").is_file():
+        samples_path = root / "samples.json"
+        ledger = json.loads(samples_path.read_text(encoding="utf-8-sig"))
+        if ledger.get("schemaVersion") != 1 or ledger.get("datasetId") != value.get("datasetId"):
+            raise RuntimeError("Training sample ledger does not belong to this dataset")
+        value["samples"] = ledger.get("samples", [])
     return value
 
 
@@ -313,6 +328,13 @@ def self_test():
     import torch
     with tempfile.TemporaryDirectory(prefix="iqp-prop-train-test-") as value:
         root = Path(value); model = torch.nn.Conv2d(3, 1, 1)
+        atomic_json(root / "dataset.json", {"schemaVersion": 1, "datasetId": "test-dataset"})
+        atomic_json(root / "records" / "ab" / "abcdef.json", {
+            "schemaVersion": 1, "datasetId": "test-dataset",
+            "sample": {"id": "abcdef", "decision": "negative", "split": "train",
+                       "framePath": "frame.png", "propMaskPath": "mask.png"}})
+        loaded_manifest = load_manifest(root)
+        assert len(accepted_samples(loaded_manifest, "train")) == 1
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         image = torch.randn(2, 3, 8, 8); target = torch.zeros(2, 1, 8, 8)
         loss = torch.nn.functional.binary_cross_entropy_with_logits(model(image), target)

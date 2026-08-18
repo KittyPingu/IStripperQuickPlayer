@@ -15,6 +15,9 @@ internal static class TrainingStudioVerification
             if (split != "train" || DatasetStore.FrameTimestamp(1_033, 30) != 1_033) return false;
             if (DatasetStore.SplitFor("ffffffff0000000000000000") is not ("train" or "validation" or "test"))
                 return false;
+            if (AnnotationCanvas.AdjustBrushSize(32, 120) != 36 ||
+                AnnotationCanvas.AdjustBrushSize(2, -120) != 2 ||
+                AnnotationCanvas.AdjustBrushSize(200, 120) != 200) return false;
             string sourcePath = Path.Combine(root, "source.mp4");
             File.WriteAllBytes(sourcePath, [1, 2, 3]);
             FileInfo sourceFile = new(sourcePath);
@@ -27,6 +30,8 @@ internal static class TrainingStudioVerification
                 LastWriteUtcTicks = sourceFile.LastWriteTimeUtc.Ticks, DurationMs = 100_000,
                 Width = 2, Height = 2, FramesPerSecond = 30, Split = DatasetStore.SplitFor(sourceId) };
             store.Dataset.Sources.Add(source); store.Save();
+            byte[] sourceManifestHash = System.Security.Cryptography.SHA256.HashData(
+                File.ReadAllBytes(Path.Combine(root, "dataset.json")));
             TrainingSample first = store.NextCandidate()!;
             if (first.TimestampMs < 30_000 || first.TimestampMs > 70_000 || first.Split != source.Split) return false;
             store.Reject(first);
@@ -37,33 +42,65 @@ internal static class TrainingStudioVerification
             AnnotationObject prop = new() { Id = 7, Name = "Prop", ColorArgb = Color.Lime.ToArgb() };
             int[] positiveIds = [0, 7, 7, 0];
             store.SaveDraftAnnotation(positive, positiveIds, [prop], "verification");
+            byte[] draftRecordHash = Hash(store.RecordPath(positive.Id));
+            int[] editedPositiveIds = [7, 7, 7, 0];
+            store.SaveDraftAnnotation(positive, editedPositiveIds, [prop], "verification");
+            if (!draftRecordHash.SequenceEqual(Hash(store.RecordPath(positive.Id)))) return false;
             var loaded = store.LoadDraftAnnotation(positive);
-            if (loaded.Ids == null || !loaded.Ids.SequenceEqual(positiveIds) ||
+            if (loaded.Ids == null || !loaded.Ids.SequenceEqual(editedPositiveIds) ||
                 loaded.Objects.Single().Id != 7) return false;
-            store.Accept(positive, positiveIds, [prop], "verification");
+            store.Accept(positive, editedPositiveIds, [prop], "verification");
             TrainingSample negative = new() { SourceId = sourceId, Split = source.Split,
                 TimestampMs = 69_500, Width = 2, Height = 2 };
             negative.FramePath = CreateDraftFrame(store, negative);
-            store.Dataset.Samples.Add(negative); store.Save();
+            store.Dataset.Samples.Add(negative); store.SaveSample(negative);
             store.Accept(negative, new int[4], [], "confirmed-negative");
             DatasetStatistics statistics = store.Statistics();
             if (statistics.Positive != 1 || statistics.Negative != 1 || statistics.Rejected != 1 ||
                 statistics.Objects != 1 || statistics.CoveredVideos != 1 || statistics.NegativeRatio != .5)
                 return false;
+            byte[] rejectedRecordHash = Hash(store.RecordPath(first.Id));
+            byte[] negativeRecordHash = Hash(store.RecordPath(negative.Id));
+            byte[] positiveRecordHash = Hash(store.RecordPath(positive.Id));
+            store.SetDerivation(positive, "ready", "person.png", "desired.png", null,
+                "verification-rvm", .4);
+            if (!rejectedRecordHash.SequenceEqual(Hash(store.RecordPath(first.Id))) ||
+                !negativeRecordHash.SequenceEqual(Hash(store.RecordPath(negative.Id))) ||
+                positiveRecordHash.SequenceEqual(Hash(store.RecordPath(positive.Id)))) return false;
             int[] ids = [0, 1, 256, 65535];
             string mask = Path.Combine(root, "mask.png"); PngMaskWriter.SaveGray16(mask, 2, 2, ids);
             if (!File.Exists(mask) || new FileInfo(mask).Length < 40) return false;
+            string previewSource = Path.Combine(root, "preview-source.png");
+            using (Bitmap bitmap = new(2, 2)) bitmap.Save(previewSource, ImageFormat.Png);
+            using (Bitmap preview = TrainingStudioForm.LoadUnlockedImage(previewSource))
+                File.Move(previewSource, Path.Combine(root, "preview-moved.png"));
             TrainingDataset roundTrip = System.Text.Json.JsonSerializer.Deserialize<TrainingDataset>(
                 File.ReadAllText(Path.Combine(root, "dataset.json")),
                 new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+            TrainingSampleRecord[] sampleRoundTrip = Directory.EnumerateFiles(Path.Combine(root, "records"),
+                "*.json", SearchOption.AllDirectories).Select(path =>
+                    System.Text.Json.JsonSerializer.Deserialize<TrainingSampleRecord>(File.ReadAllText(path),
+                        new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!).ToArray();
             if (roundTrip.SchemaVersion != 1 || roundTrip.DatasetId != store.Dataset.DatasetId ||
-                roundTrip.Samples.Any(value => value.Split != source.Split)) return false;
+                sampleRoundTrip.Length != 3 || sampleRoundTrip.Any(value => value.Sample.Split != source.Split) ||
+                !sourceManifestHash.SequenceEqual(System.Security.Cryptography.SHA256.HashData(
+                    File.ReadAllBytes(Path.Combine(root, "dataset.json")))) ||
+                File.Exists(Path.Combine(root, "samples.json")) ||
+                File.ReadAllText(Path.Combine(root, "dataset.json")).Contains("\"samples\"",
+                    StringComparison.OrdinalIgnoreCase)) return false;
             string recoveredRoot = Path.Combine(root, "recovery"); Directory.CreateDirectory(recoveredRoot);
             File.Copy(Path.Combine(root, "dataset.json"),
                 Path.Combine(recoveredRoot, "dataset.json.tmp-verification"));
+            string recordSource = store.RecordPath(positive.Id);
+            string recordRecoveryFolder = Path.Combine(recoveredRoot, "records", positive.Id[..2]);
+            Directory.CreateDirectory(recordRecoveryFolder);
+            File.Copy(recordSource, Path.Combine(recordRecoveryFolder,
+                positive.Id + ".json.tmp-verification"));
             DatasetStore recovered = new(recoveredRoot);
-            return recovered.Dataset.DatasetId == store.Dataset.DatasetId &&
-                !Directory.EnumerateFiles(recoveredRoot, "dataset.json.tmp-*").Any();
+            if (recovered.Dataset.DatasetId != store.Dataset.DatasetId ||
+                recovered.Dataset.Samples.Single().Id != positive.Id ||
+                Directory.EnumerateFiles(recoveredRoot, "dataset.json.tmp-*").Any()) return false;
+            return VerifyLegacyMigration(root);
         }
         catch (Exception error) { Console.Error.WriteLine(error); return false; }
         finally { try { Directory.Delete(root, true); } catch { } }
@@ -77,5 +114,43 @@ internal static class TrainingStudioVerification
         using Bitmap bitmap = new(2, 2); bitmap.SetPixel(0, 0, Color.White);
         bitmap.Save(path, ImageFormat.Png);
         return store.Relative(path);
+    }
+
+    static byte[] Hash(string path) => System.Security.Cryptography.SHA256.HashData(
+        File.ReadAllBytes(path));
+
+    static bool VerifyLegacyMigration(string parent)
+    {
+        string embeddedRoot = Path.Combine(parent, "embedded-migration");
+        Directory.CreateDirectory(embeddedRoot);
+        TrainingSample embedded = new() { Id = "abcdef0123456789abcdef0123456789",
+            SourceId = "source", Decision = "rejected" };
+        DatasetStore.WriteJsonAtomic(Path.Combine(embeddedRoot, "dataset.json"), new
+        {
+            schemaVersion = 1, datasetId = "embedded-test", sourceFolders = Array.Empty<string>(),
+            sources = Array.Empty<VideoSource>(), samples = new[] { embedded }
+        });
+        DatasetStore embeddedStore = new(embeddedRoot);
+        if (embeddedStore.Dataset.Samples.Single().Id != embedded.Id ||
+            !File.Exists(embeddedStore.RecordPath(embedded.Id)) ||
+            File.ReadAllText(Path.Combine(embeddedRoot, "dataset.json")).Contains("\"samples\"",
+                StringComparison.OrdinalIgnoreCase)) return false;
+
+        string ledgerRoot = Path.Combine(parent, "ledger-migration");
+        Directory.CreateDirectory(ledgerRoot);
+        TrainingSample ledgerSample = new() { Id = "0123456789abcdef0123456789abcdef",
+            SourceId = "source", Decision = "negative" };
+        DatasetStore.WriteJsonAtomic(Path.Combine(ledgerRoot, "dataset.json"), new
+        {
+            schemaVersion = 1, datasetId = "ledger-test", sourceFolders = Array.Empty<string>(),
+            sources = Array.Empty<VideoSource>()
+        });
+        DatasetStore.WriteJsonAtomic(Path.Combine(ledgerRoot, "samples.json"),
+            new TrainingSampleLedger { DatasetId = "ledger-test", Samples = [ledgerSample] });
+        DatasetStore ledgerStore = new(ledgerRoot);
+        return ledgerStore.Dataset.Samples.Single().Id == ledgerSample.Id &&
+            File.Exists(ledgerStore.RecordPath(ledgerSample.Id)) &&
+            !File.Exists(Path.Combine(ledgerRoot, "samples.json")) &&
+            Directory.EnumerateFiles(ledgerRoot, "samples.json.migrated*").Any();
     }
 }

@@ -19,18 +19,43 @@ internal sealed class DatasetStore
     internal string Root { get; }
     internal TrainingDataset Dataset { get; private set; }
     string ManifestPath => Path.Combine(Root, "dataset.json");
+    string LegacySamplesManifestPath => Path.Combine(Root, "samples.json");
+    string RecordsRoot => Path.Combine(Root, "records");
 
     internal DatasetStore(string root)
     {
         Root = Path.GetFullPath(root);
         Directory.CreateDirectory(Root);
         RecoverManifest(ManifestPath);
-        Dataset = File.Exists(ManifestPath)
+        RecoverManifest(LegacySamplesManifestPath);
+        RecoverRecordManifests();
+        bool manifestExists = File.Exists(ManifestPath);
+        List<TrainingSample> embeddedSamples = manifestExists ? ReadLegacySamples(ManifestPath) : [];
+        Dataset = manifestExists
             ? JsonSerializer.Deserialize<TrainingDataset>(File.ReadAllText(ManifestPath), JsonOptions)
                 ?? throw new InvalidDataException("dataset.json is invalid.")
             : new TrainingDataset();
         if (Dataset.SchemaVersion != 1) throw new InvalidDataException("Unsupported dataset schema.");
-        Save();
+        Dictionary<string, TrainingSample> samples = embeddedSamples.ToDictionary(value => value.Id);
+        if (File.Exists(LegacySamplesManifestPath))
+        {
+            TrainingSampleLedger ledger = JsonSerializer.Deserialize<TrainingSampleLedger>(
+                File.ReadAllText(LegacySamplesManifestPath), JsonOptions)
+                ?? throw new InvalidDataException("samples.json is invalid.");
+            if (ledger.SchemaVersion != 1 || ledger.DatasetId != Dataset.DatasetId)
+                throw new InvalidDataException("samples.json does not belong to this dataset.");
+            foreach (TrainingSample sample in ledger.Samples) samples[sample.Id] = sample;
+        }
+        HashSet<string> recordedIds = [];
+        foreach (TrainingSample sample in ReadSampleRecords())
+        {
+            samples[sample.Id] = sample; recordedIds.Add(sample.Id);
+        }
+        Dataset.Samples = samples.Values.OrderBy(value => value.PresentedUtc).ToList();
+        foreach (TrainingSample sample in Dataset.Samples)
+            if (!recordedIds.Contains(sample.Id)) SaveSampleLocked(sample);
+        if (!manifestExists || embeddedSamples.Count > 0) SaveSourcesLocked();
+        ArchiveLegacySampleLedger();
     }
 
     internal async Task<int> IndexFolderAsync(string folder, IProgress<string>? progress, CancellationToken token)
@@ -65,13 +90,13 @@ internal sealed class DatasetStore
                 source.Height = media.Height; source.FramesPerSecond = media.FramesPerSecond;
             }
             catch (Exception error) { source.ProbeError = error.Message; }
-            lock (gate) { Dataset.Sources.Add(source); added++; SaveLocked(); }
+            lock (gate) { Dataset.Sources.Add(source); added++; SaveSourcesLocked(); }
         }
         lock (gate)
         {
             Dataset.SourceFolders = Dataset.SourceFolders.Append(folder)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            SaveLocked();
+            SaveSourcesLocked();
         }
         return added;
     }
@@ -97,7 +122,7 @@ internal sealed class DatasetStore
                 {
                     SourceId = source.Id, TimestampMs = timestamp, Split = source.Split
                 };
-                Dataset.Samples.Add(sample); SaveLocked(); return sample;
+                Dataset.Samples.Add(sample); SaveSampleLocked(sample); return sample;
             }
             return null;
         }
@@ -115,7 +140,7 @@ internal sealed class DatasetStore
         lock (gate)
         {
             sample.FramePath = Relative(destination); sample.Width = image.Width; sample.Height = image.Height;
-            SaveLocked();
+            SaveSampleLocked(sample);
         }
     }
 
@@ -143,10 +168,10 @@ internal sealed class DatasetStore
                 SourceId = source.Id, TimestampMs = timestamp, Split = source.Split,
                 BurstId = burstId, BurstIndex = offset + 4
             };
-            lock (gate) { Dataset.Samples.Add(sample); SaveLocked(); }
+            lock (gate) { Dataset.Samples.Add(sample); SaveSampleLocked(sample); }
             await ExtractDraftFrameAsync(sample, token); result.Add(sample);
         }
-        lock (gate) SaveLocked();
+        lock (gate) SaveSampleLocked(anchor);
         return result.OrderBy(value => value.BurstIndex).ToArray();
     }
 
@@ -157,31 +182,52 @@ internal sealed class DatasetStore
         if (objectIds.Length != sample.Width * sample.Height || objectIds.Any(value => value is < 0 or > 65535))
             throw new InvalidDataException("The instance mask dimensions or object IDs are invalid.");
         bool positive = objectIds.Any(value => value > 0);
-        string folder = Path.Combine("samples", sample.SourceId, sample.Id);
+        string relativeFolder = Path.Combine("samples", sample.SourceId, sample.Id);
+        string folder = Resolve(relativeFolder);
+        string temporary = folder + ".accepting-" + Guid.NewGuid().ToString("N");
         string sourceFrame = Resolve(sample.FramePath);
-        string frame = Resolve(Path.Combine(folder, "frame.png"));
-        Directory.CreateDirectory(Path.GetDirectoryName(frame)!); File.Move(sourceFrame, frame, true);
-        string editable = Resolve(Path.Combine(folder, "instance-mask.i32.gz"));
-        WriteEditableMask(editable, objectIds);
-        string instance = Resolve(Path.Combine(folder, "instance-mask.png"));
-        string prop = Resolve(Path.Combine(folder, "prop-mask.png"));
-        PngMaskWriter.SaveGray16(instance, sample.Width, sample.Height, objectIds);
-        byte[] binary = objectIds.Select(value => value > 0 ? (byte)255 : (byte)0).ToArray();
-        PngMaskWriter.SaveGray8(prop, sample.Width, sample.Height, binary);
-        string annotation = Resolve(Path.Combine(folder, "annotation.json"));
-        WriteJsonAtomic(annotation, new SampleAnnotation
+        string frame = Path.Combine(temporary, "frame.png");
+        string editable = Path.Combine(temporary, "instance-mask.i32.gz");
+        string instance = Path.Combine(temporary, "instance-mask.png");
+        string prop = Path.Combine(temporary, "prop-mask.png");
+        string annotation = Path.Combine(temporary, "annotation.json");
+        try
         {
-            Objects = objects.Where(value => objectIds.Contains(value.Id)).ToList(),
-            Provenance = provenance
-        });
+            Directory.CreateDirectory(temporary); File.Copy(sourceFrame, frame, true);
+            WriteEditableMask(editable, objectIds);
+            PngMaskWriter.SaveGray16(instance, sample.Width, sample.Height, objectIds);
+            byte[] binary = objectIds.Select(value => value > 0 ? (byte)255 : (byte)0).ToArray();
+            PngMaskWriter.SaveGray8(prop, sample.Width, sample.Height, binary);
+            WriteJsonAtomic(annotation, new SampleAnnotation
+            {
+                Objects = objects.Where(value => objectIds.Contains(value.Id)).ToList(),
+                Provenance = provenance
+            });
+            Directory.CreateDirectory(Path.GetDirectoryName(folder)!);
+            if (Directory.Exists(folder))
+            {
+                if (Directory.EnumerateFileSystemEntries(folder).Any())
+                    throw new IOException("The accepted sample folder already exists and is not empty.");
+                Directory.Delete(folder);
+            }
+            Directory.Move(temporary, folder);
+        }
+        catch
+        {
+            try { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); } catch { }
+            throw;
+        }
         lock (gate)
         {
             sample.Decision = positive ? "positive" : "negative";
             sample.ObjectCount = objects.Count(value => objectIds.Contains(value.Id));
-            sample.FramePath = Relative(frame); sample.EditableMaskPath = Relative(editable);
-            sample.InstanceMaskPath = Relative(instance); sample.PropMaskPath = Relative(prop);
-            sample.AnnotationPath = Relative(annotation); sample.ReviewedUtc = DateTime.UtcNow;
-            sample.DerivationStatus = "pending"; SaveLocked();
+            sample.FramePath = Relative(Path.Combine(folder, "frame.png"));
+            sample.EditableMaskPath = Relative(Path.Combine(folder, "instance-mask.i32.gz"));
+            sample.InstanceMaskPath = Relative(Path.Combine(folder, "instance-mask.png"));
+            sample.PropMaskPath = Relative(Path.Combine(folder, "prop-mask.png"));
+            sample.AnnotationPath = Relative(Path.Combine(folder, "annotation.json"));
+            sample.ReviewedUtc = DateTime.UtcNow;
+            sample.DerivationStatus = "pending"; SaveSampleLocked(sample);
         }
         TryDeleteDraft(sample.Id);
     }
@@ -189,24 +235,44 @@ internal sealed class DatasetStore
     internal void SaveDraftAnnotation(TrainingSample sample, int[] objectIds,
         IReadOnlyList<AnnotationObject> objects, string provenance)
     {
+        lock (gate) if (sample.Decision != "draft") return;
         string folder = Path.Combine("drafts", sample.Id);
         string editable = Resolve(Path.Combine(folder, "instance-mask.i32.gz"));
         string instance = Resolve(Path.Combine(folder, "instance-mask.png"));
         string annotation = Resolve(Path.Combine(folder, "annotation.json"));
-        WriteEditableMask(editable, objectIds);
-        PngMaskWriter.SaveGray16(instance, sample.Width, sample.Height, objectIds);
-        WriteJsonAtomic(annotation, new SampleAnnotation
+        string suffix = ".saving-" + Guid.NewGuid().ToString("N");
+        string editableTemporary = editable + suffix, instanceTemporary = instance + suffix;
+        try
         {
-            Objects = objects.Where(value => objectIds.Contains(value.Id)).ToList(),
-            Provenance = provenance
-        });
+            WriteEditableMask(editableTemporary, objectIds);
+            PngMaskWriter.SaveGray16(instanceTemporary, sample.Width, sample.Height, objectIds);
+            File.Move(editableTemporary, editable, true); File.Move(instanceTemporary, instance, true);
+            WriteJsonAtomic(annotation, new SampleAnnotation
+            {
+                Objects = objects.Where(value => objectIds.Contains(value.Id)).ToList(),
+                Provenance = provenance
+            });
+        }
+        finally
+        {
+            try { File.Delete(editableTemporary); } catch { }
+            try { File.Delete(instanceTemporary); } catch { }
+        }
         lock (gate)
         {
-            sample.EditableMaskPath = Relative(editable);
-            sample.InstanceMaskPath = Relative(instance);
-            sample.AnnotationPath = Relative(annotation);
-            sample.ObjectCount = objects.Count(value => objectIds.Contains(value.Id));
-            SaveLocked();
+            if (sample.Decision != "draft")
+            {
+                TryDeleteDraft(sample.Id); return;
+            }
+            string editablePath = Relative(editable), instancePath = Relative(instance);
+            string annotationPath = Relative(annotation);
+            int objectCount = objects.Count(value => objectIds.Contains(value.Id));
+            bool ledgerChanged = sample.EditableMaskPath != editablePath ||
+                sample.InstanceMaskPath != instancePath || sample.AnnotationPath != annotationPath ||
+                sample.ObjectCount != objectCount;
+            sample.EditableMaskPath = editablePath; sample.InstanceMaskPath = instancePath;
+            sample.AnnotationPath = annotationPath; sample.ObjectCount = objectCount;
+            if (ledgerChanged) SaveSampleLocked(sample);
         }
     }
 
@@ -231,7 +297,7 @@ internal sealed class DatasetStore
         lock (gate)
         {
             sample.Decision = "rejected"; sample.ReviewedUtc = DateTime.UtcNow;
-            sample.FramePath = null; SaveLocked();
+            sample.FramePath = null; SaveSampleLocked(sample);
         }
         TryDeleteDraft(sample.Id);
     }
@@ -244,7 +310,7 @@ internal sealed class DatasetStore
             sample.DerivationStatus = status; sample.RvmPersonMaskPath = personMask;
             sample.DesiredForegroundPath = desiredMask; sample.DerivationError = error;
             sample.RvmRevision = rvmRevision; sample.RvmThreshold = rvmThreshold;
-            SaveLocked();
+            SaveSampleLocked(sample);
         }
     }
 
@@ -269,11 +335,34 @@ internal sealed class DatasetStore
     internal VideoSource Source(string id) => Dataset.Sources.Single(value => value.Id == id);
     internal string Resolve(string relative) => Path.GetFullPath(Path.Combine(Root, relative));
     internal string Relative(string path) => Path.GetRelativePath(Root, path).Replace('\\', '/');
-    internal void Save() { lock (gate) SaveLocked(); }
+    internal void Save()
+    {
+        lock (gate)
+        {
+            SaveSourcesLocked();
+            foreach (TrainingSample sample in Dataset.Samples) SaveSampleLocked(sample);
+        }
+    }
 
-    void SaveLocked()
+    internal void SaveSample(TrainingSample sample) { lock (gate) SaveSampleLocked(sample); }
+    internal string RecordPath(string sampleId) => SampleRecordPath(sampleId);
+
+    void SaveSourcesLocked()
     {
         Dataset.UpdatedUtc = DateTime.UtcNow; WriteJsonAtomic(ManifestPath, Dataset);
+    }
+
+    void SaveSampleLocked(TrainingSample sample) => WriteJsonAtomic(SampleRecordPath(sample.Id),
+        new TrainingSampleRecord
+    {
+        DatasetId = Dataset.DatasetId, UpdatedUtc = DateTime.UtcNow, Sample = sample
+    });
+
+    string SampleRecordPath(string sampleId)
+    {
+        if (sampleId.Length < 2 || sampleId.Any(value => !char.IsAsciiLetterOrDigit(value)))
+            throw new InvalidDataException("A sample has an unsafe ID.");
+        return Path.Combine(RecordsRoot, sampleId[..2], sampleId + ".json");
     }
 
     internal static string SourceId(FileInfo file)
@@ -367,12 +456,72 @@ internal sealed class DatasetStore
         {
             try
             {
-                TrainingDataset? dataset = JsonSerializer.Deserialize<TrainingDataset>(
-                    File.ReadAllText(candidate), JsonOptions);
-                if (dataset?.SchemaVersion != 1) continue;
+                using JsonDocument document = JsonDocument.Parse(File.ReadAllText(candidate));
+                if (!document.RootElement.TryGetProperty("schemaVersion", out JsonElement schema) ||
+                    schema.GetInt32() != 1) continue;
                 File.Move(candidate, path); return;
             }
             catch { }
         }
+    }
+
+    static List<TrainingSample> ReadLegacySamples(string path)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            return document.RootElement.TryGetProperty("samples", out JsonElement samples)
+                ? JsonSerializer.Deserialize<List<TrainingSample>>(samples.GetRawText(), JsonOptions) ?? []
+                : [];
+        }
+        catch { return []; }
+    }
+
+    IReadOnlyList<TrainingSample> ReadSampleRecords()
+    {
+        if (!Directory.Exists(RecordsRoot)) return [];
+        List<TrainingSample> result = [];
+        foreach (string path in Directory.EnumerateFiles(RecordsRoot, "*.json",
+                     SearchOption.AllDirectories))
+        {
+            TrainingSampleRecord record = JsonSerializer.Deserialize<TrainingSampleRecord>(
+                File.ReadAllText(path), JsonOptions)
+                ?? throw new InvalidDataException($"Invalid sample record: {path}");
+            if (record.SchemaVersion != 1 || record.DatasetId != Dataset.DatasetId ||
+                !Path.GetFileNameWithoutExtension(path).Equals(record.Sample.Id,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Sample record does not belong to this dataset: {path}");
+            result.Add(record.Sample);
+        }
+        return result;
+    }
+
+    void RecoverRecordManifests()
+    {
+        if (!Directory.Exists(RecordsRoot)) return;
+        foreach (string candidate in Directory.EnumerateFiles(RecordsRoot, "*.json.tmp-*",
+                     SearchOption.AllDirectories).OrderByDescending(File.GetLastWriteTimeUtc))
+        {
+            int marker = candidate.LastIndexOf(".tmp-", StringComparison.Ordinal);
+            if (marker < 0) continue;
+            string destination = candidate[..marker];
+            if (File.Exists(destination)) continue;
+            try
+            {
+                TrainingSampleRecord? record = JsonSerializer.Deserialize<TrainingSampleRecord>(
+                    File.ReadAllText(candidate), JsonOptions);
+                if (record?.SchemaVersion != 1) continue;
+                File.Move(candidate, destination);
+            }
+            catch { }
+        }
+    }
+
+    void ArchiveLegacySampleLedger()
+    {
+        if (!File.Exists(LegacySamplesManifestPath)) return;
+        string destination = LegacySamplesManifestPath + ".migrated";
+        if (File.Exists(destination)) destination += "-" + Guid.NewGuid().ToString("N");
+        File.Move(LegacySamplesManifestPath, destination);
     }
 }

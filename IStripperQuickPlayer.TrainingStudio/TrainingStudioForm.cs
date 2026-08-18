@@ -119,7 +119,7 @@ internal sealed class TrainingStudioForm : Form
     void ShowSample(TrainingSample sample)
     {
         current = sample; preview.Image?.Dispose();
-        preview.Image = Image.FromFile(store!.Resolve(sample.FramePath!));
+        preview.Image = LoadUnlockedImage(store!.Resolve(sample.FramePath!));
         VideoSource source = store.Source(sample.SourceId);
         candidateInfo.Text = $"{Path.GetFileName(source.Path)}  ·  {TimeSpan.FromMilliseconds(sample.TimestampMs):hh\\:mm\\:ss\\.fff}  ·  {source.Split}" +
             (sample.BurstId == null ? "" : $"  ·  burst frame {sample.BurstIndex! + 1}/9");
@@ -139,7 +139,8 @@ internal sealed class TrainingStudioForm : Form
         TrainingSample accepted = current;
         int[] acceptedIds = editor.ObjectIds;
         AnnotationObject[] acceptedObjects = [.. editor.AnnotationObjects];
-        store.Accept(accepted, acceptedIds, acceptedObjects, editor.Provenance);
+        try { store.Accept(accepted, acceptedIds, acceptedObjects, editor.Provenance); }
+        catch (Exception error) { status.Text = "Could not accept this frame: " + error.Message; return; }
         ClearCurrent(); UpdateStats(); _ = GenerateDerivedArtifactsAsync(accepted);
         if (accepted.BurstId != null)
             await PropagateBurstDraftsAsync(accepted, acceptedIds, acceptedObjects);
@@ -149,11 +150,16 @@ internal sealed class TrainingStudioForm : Form
     async Task AcceptNegativeAsync()
     {
         if (store == null || current == null) return;
-        if (MessageBox.Show(this, "Confirm that this frame contains no relevant foreground prop pixels.",
-            Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
-        TrainingSample accepted = current; store.Accept(accepted,
-            new int[accepted.Width * accepted.Height], [], "confirmed-negative");
+        TrainingSample accepted = current;
+        try { store.Accept(accepted, new int[accepted.Width * accepted.Height], [], "confirmed-negative"); }
+        catch (Exception error) { status.Text = "Could not accept this frame: " + error.Message; return; }
         ClearCurrent(); UpdateStats(); _ = GenerateDerivedArtifactsAsync(accepted); await NextAsync();
+    }
+
+    internal static Bitmap LoadUnlockedImage(string path)
+    {
+        using Image opened = Image.FromFile(path);
+        return new Bitmap(opened);
     }
 
     async Task RejectAsync()

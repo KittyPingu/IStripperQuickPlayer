@@ -10,7 +10,25 @@ internal sealed class TrainingDataset
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public string[] SourceFolders { get; set; } = [];
     public List<VideoSource> Sources { get; set; } = [];
+    [JsonIgnore]
     public List<TrainingSample> Samples { get; set; } = [];
+}
+
+internal sealed class TrainingSampleLedger
+{
+    public int SchemaVersion { get; set; } = 1;
+    public string DatasetId { get; set; } = "";
+    public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
+    public List<TrainingSample> Samples { get; set; } = [];
+}
+
+internal sealed class TrainingSampleRecord
+{
+    public int SchemaVersion { get; set; } = 1;
+    public string DatasetId { get; set; } = "";
+    public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
+    public TrainingSample Sample { get; set; } = new();
 }
 
 internal sealed class VideoSource
