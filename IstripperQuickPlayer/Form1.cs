@@ -618,7 +618,8 @@ namespace IStripperQuickPlayer
                 (24M, 40M));
             TextSearchDocument searchCheck = new(
                 "Anna Delos c1001 Pool Side duo red table",
-                "Anna Delos", "c1001", "Pool Side", "", "duo red table");
+                "Anna Delos", "c1001", "Pool Side", "", "duo red table",
+                "Latina", "Brunette");
             System.Diagnostics.Debug.Assert(
                 TextQuery.Parse("anna AND tag:duo AND !blue")
                     .Matches(searchCheck));
@@ -631,6 +632,11 @@ namespace IStripperQuickPlayer
                 TooltipManager.NormalizeDelay(6_000) == 5_000);
             System.Diagnostics.Debug.Assert(
                 !TextQuery.Parse("anna AND tag:blue").Matches(searchCheck));
+            System.Diagnostics.Debug.Assert(
+                TextQuery.Parse("ethnicity:latin AND hair:brun").Matches(searchCheck) &&
+                TextQuery.Parse("hair-color:brunette").Matches(searchCheck) &&
+                TextQuery.Parse("hair-colour:brunette").Matches(searchCheck) &&
+                !TextQuery.Parse("ethnicity:asian").Matches(searchCheck));
             System.Diagnostics.Debug.Assert(SnapHalfStar(3.24M) == 3M &&
                 SnapHalfStar(3.25M) == 3.5M);
             System.Diagnostics.Debug.Assert(AddModelFilter(
@@ -651,9 +657,9 @@ namespace IStripperQuickPlayer
                 PlayerSizePercent(playerSizeCheck, "poleLarge") == 0 &&
                 PlayerSizePercent(playerSizeCheck, "standingSmall") == 0);
             TextSearchDocument raeSearchCheck = new(
-                "Asia Rae pole", "Asia Rae", "", "", "", "pole");
+                "Asia Rae pole", "Asia Rae", "", "", "", "pole", "", "");
             TextSearchDocument kittySearchCheck = new(
-                "Ashby Kitty", "Ashby Kitty", "", "", "", "");
+                "Ashby Kitty", "Ashby Kitty", "", "", "", "", "", "");
             TextQuery unionSearchCheck =
                 TextQuery.Parse("(rae AND pole) OR kitty");
             System.Diagnostics.Debug.Assert(unionSearchCheck.Matches(
@@ -1853,7 +1859,8 @@ namespace IStripperQuickPlayer
                 userTags);
             return new TextSearchDocument(all, card.modelName ?? string.Empty,
                 card.name, card.outfit, card.description,
-                string.Join(' ', tags, userTags));
+                string.Join(' ', tags, userTags), card.ethnicity ?? string.Empty,
+                card.hair ?? string.Empty);
         }
 
         private void SetModelNewImageList()

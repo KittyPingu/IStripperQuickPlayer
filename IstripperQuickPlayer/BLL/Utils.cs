@@ -192,7 +192,9 @@ namespace IStripperQuickPlayer.BLL
         string Card,
         string Title,
         string Description,
-        string Tags)
+        string Tags,
+        string Ethnicity,
+        string Hair)
     {
         internal bool Contains(string? field, string value)
         {
@@ -203,6 +205,8 @@ namespace IStripperQuickPlayer.BLL
                 "title" or "show" or "outfit" => Title,
                 "description" or "desc" => Description,
                 "tag" or "tags" => Tags,
+                "ethnicity" => Ethnicity,
+                "hair" or "hair-color" or "hair-colour" => Hair,
                 _ => All
             };
             return text.Contains(value, StringComparison.OrdinalIgnoreCase);
@@ -271,7 +275,8 @@ namespace IStripperQuickPlayer.BLL
                 string candidate = expression[..separator].ToLowerInvariant();
                 if (candidate is "model" or "performer" or "card" or "name" or
                     "id" or "title" or "show" or "outfit" or "description" or
-                    "desc" or "tag" or "tags")
+                    "desc" or "tag" or "tags" or "ethnicity" or "hair" or
+                    "hair-color" or "hair-colour")
                 {
                     field = candidate;
                     value = expression[(separator + 1)..];
