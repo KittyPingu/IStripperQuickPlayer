@@ -267,7 +267,7 @@ def corrected_rvm_refresh_mask(torch, matanyone_alpha, rvm_foreground,
 
 def automatic_rvm_mask(source, runtime, start, frame_rate, fps, total,
                        width, height, sample_count, destination, profiler,
-                       threshold=.40):
+                       threshold=.40, prop_package=None):
     import numpy as np
     from PIL import Image
     frame_bytes = width * height * 3
@@ -318,6 +318,26 @@ def automatic_rvm_mask(source, runtime, start, frame_rate, fps, total,
             del tensor, alpha, alphas
             if not cleaned.any():
                 continue
+            if prop_package is not None:
+                from prop_segmenter import (augment_rvm_mask, load_package,
+                                            predict_mask)
+                prop_torch, prop_model, prop_device, prop_manifest = load_package(
+                    prop_package, device)
+                predicted, _ = predict_mask(prop_torch, prop_model, prop_device,
+                    frames[selected], prop_manifest.get("confidenceThreshold", .5),
+                    prop_manifest.get("inputSize", 512))
+                combined, components, radius = augment_rvm_mask(predicted,
+                    cleaned >= 128, prop_manifest.get("proximityRadiusAt512", 24))
+                cleaned = combined.astype(np.uint8) * 255
+                log_record("prop_initializer", modelId=prop_manifest["modelId"],
+                           checkpointSha256=prop_manifest["checkpointSha256"],
+                           components=components, proximityRadius=radius)
+                emit("initializing", 3.8,
+                     f"Retained {sum(value['retained'] for value in components)}/"
+                     f"{len(components)} nearby prop components...")
+                del prop_model
+                if prop_device.type == "cuda":
+                    prop_torch.cuda.empty_cache()
             selected_frame = min(total - 1, offset_frame + selected)
             Image.fromarray(cleaned, "L").save(destination)
             preview_output = destination.parent
@@ -647,7 +667,7 @@ def _process_once(args, compile_enabled):
                 width, height, initializer_size)
             selected_index = automatic_rvm_mask(source, runtime, start, frame_rate,
                 fps, total, initializer_width, initializer_height, min(8, total),
-                mask_path, profiler, args.rvm_alpha_threshold)
+                mask_path, profiler, args.rvm_alpha_threshold, args.prop_model)
         correction_start_ms = round((start + selected_index / fps) * 1000)
         correction_anchors = {}
         checkpoint_folder = work / "interactive-checkpoints"
@@ -1495,6 +1515,7 @@ def main():
     parser.add_argument("--mask", type=Path)
     parser.add_argument("--auto-rvm-init", action="store_true")
     parser.add_argument("--rvm-alpha-threshold", type=float, default=.40)
+    parser.add_argument("--prop-model", type=Path)
     parser.add_argument("--rvm-mask-refresh", action="store_true")
     parser.add_argument("--rvm-refresh-strength", type=float, default=1)
     parser.add_argument("--max-mem-frames", type=int, default=5)

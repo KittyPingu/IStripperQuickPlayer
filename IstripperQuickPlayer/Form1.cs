@@ -147,6 +147,7 @@ namespace IStripperQuickPlayer
         private volatile bool playbackBridgeLoaded;
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
+        private int playbackFastDecodeRetryPending;
         private volatile bool playbackSeekingSupported = true;
         private volatile bool playbackSeekReady;
         private volatile int playbackDecoderKind;
@@ -4056,6 +4057,45 @@ namespace IStripperQuickPlayer
             lblPlaybackTime.SetDisplayText(text);
         }
 
+        private void QueueFastDecodeRetry()
+        {
+            if (!playbackBridgeLoaded || playbackFastDecodeEnabled ||
+                Interlocked.Exchange(ref playbackFastDecodeRetryPending, 1) != 0)
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    int decoderThreads = Math.Clamp(
+                        (Environment.ProcessorCount + 1) / 2, 1, 8);
+                    for (int attempt = 0; attempt < 10 &&
+                        !playbackFastDecodeEnabled; attempt++)
+                    {
+                        await Task.Delay(250).ConfigureAwait(false);
+                        if (formIsClosing || playbackBridgeClient == null)
+                            return;
+                        playbackFastDecodeEnabled = playbackBridgeClient.Call(
+                            "IStripperEnableFastDecode",
+                            unchecked((ulong)decoderThreads)) >= 0;
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Debug.WriteLine(
+                        "FFmpeg/queue acceleration retry failed: " +
+                        exception.Message);
+                }
+                finally
+                {
+                    Interlocked.Exchange(
+                        ref playbackFastDecodeRetryPending, 0);
+                }
+            });
+        }
+
         private static void SetTimerInterval(System.Windows.Forms.Timer timer,
             int interval)
         {
@@ -4723,6 +4763,8 @@ namespace IStripperQuickPlayer
                     .Replace("\0", string.Empty);
             if (keyname == "CurrentAnim" && !apiOnlyMode)
                 QueueConfiguredPlayerSize(str);
+            if (keyname == "CurrentAnim" && !string.IsNullOrEmpty(str))
+                QueueFastDecodeRetry();
             if (data.Length < 1)
             {
                 if (apiOnlyMode && keyname == "CurrentAnim")
@@ -4733,6 +4775,11 @@ namespace IStripperQuickPlayer
                     playbackSeekReady = false;
                     playbackLastKnownElapsedMilliseconds = 0;
                     playbackTimelineDurationMilliseconds = 0;
+                }
+                else if (keyname == "CurrentAnim")
+                {
+                    BeginInvoke((Action)(() =>
+                        ShowNowPlaying("", doWallpaper: false)));
                 }
                 return false;
             }
@@ -4882,7 +4929,14 @@ namespace IStripperQuickPlayer
                     }
                 }
                 if (!apiOnlyMode)
+                {
                     QueueConfiguredPlayerSize(newcardstring);
+                    string acceptedAnimationPath = newcardstring;
+                    BeginInvoke((Action)(() => ShowNowPlaying(
+                        acceptedAnimationPath,
+                        doWallpaper: !string.IsNullOrEmpty(
+                            acceptedAnimationPath))));
+                }
                 return skipOriginal;
         }
 
@@ -5190,7 +5244,6 @@ namespace IStripperQuickPlayer
                     listModelsNew.SelectWhere(x => x.Text == nowPlayingTag);
                     cardRenderer.nowPlayingTag = nowPlayingTag;
                     listModelsNew.EnsureVisible((int)index);
-                    listModelsNew.Refresh();
                 }
                 else
                 {
@@ -5352,37 +5405,50 @@ namespace IStripperQuickPlayer
 
         private void QueueNowPlayingUiUpdate()
         {
-            if (apiOnlyMode || IsDisposed || formIsClosing ||
-                Interlocked.Exchange(ref nowPlayingUiUpdatePending, 1) != 0)
+            if (apiOnlyMode || IsDisposed || formIsClosing)
+                return;
+
+            if (!InvokeRequired)
+            {
+                UpdateNowPlayingUi();
+                return;
+            }
+
+            if (Interlocked.Exchange(ref nowPlayingUiUpdatePending, 1) != 0)
                 return;
             BeginInvoke((Action)(() =>
             {
                 Interlocked.Exchange(ref nowPlayingUiUpdatePending, 0);
-                if (IsDisposed || formIsClosing) return;
-                string previousTag = displayedNowPlayingCardTag;
-                string currentTag = nowPlayingTagShort;
-                displayedNowPlayingCardTag = currentTag;
-                RefreshPlayingClipHighlight();
-                if (lblNowPlaying != null)
-                    lblNowPlaying.Text = "Now Playing: " + nowPlaying;
-                if (listClips.Items.Count == 0 &&
-                    !string.IsNullOrEmpty(nowPlayingPath))
-                    NowPlayingClick(true);
-                if (!string.Equals(previousTag, currentTag,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    ImageListViewItem[] changed = listModelsNew.Items
-                        .Where(item => string.Equals(item.Tag?.ToString(),
-                                previousTag,
-                                StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(item.Tag?.ToString(), currentTag,
-                                StringComparison.OrdinalIgnoreCase))
-                        .ToArray();
-                    if (changed.Length > 0)
-                        listModelsNew.RefreshItems(changed);
-                }
-                TaskbarThumbnail();
+                UpdateNowPlayingUi();
             }));
+        }
+
+        private void UpdateNowPlayingUi()
+        {
+            if (IsDisposed || formIsClosing) return;
+            string previousTag = displayedNowPlayingCardTag;
+            string currentTag = nowPlayingTagShort;
+            displayedNowPlayingCardTag = currentTag;
+            if (lblNowPlaying != null)
+                lblNowPlaying.Text = "Now Playing: " + nowPlaying;
+            if (!string.Equals(previousTag, currentTag,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                ImageListViewItem[] changed = listModelsNew.Items
+                    .Where(item => string.Equals(item.Tag?.ToString(),
+                            previousTag,
+                            StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(item.Tag?.ToString(), currentTag,
+                            StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (changed.Length > 0)
+                    listModelsNew.RefreshItems(changed);
+            }
+            RefreshPlayingClipHighlight();
+            if (listClips.Items.Count == 0 &&
+                !string.IsNullOrEmpty(nowPlayingPath))
+                NowPlayingClick(true);
+            TaskbarThumbnail();
         }
 
         private int IStripperPlayerVolume(int mode)
@@ -6244,6 +6310,9 @@ namespace IStripperQuickPlayer
             CardPhotos? photos = null;
             if (canChange && monitorItems.Any(item => item.Checked))
                 photos = await LoadPhotosForCard(nowPlayingTagShort);
+            string? wallpaperSource = photos == null
+                ? null
+                : await Task.Run(photos.getRandomWidescreenURL);
 
             foreach (ToolStripMenuItem item in monitorItems)
             {
@@ -6252,12 +6321,13 @@ namespace IStripperQuickPlayer
                 {
                     if (canChange)
                         await Wallpaper.ChangeWallpaper(monitorNumber,
-                            photos?.getRandomWidescreenURL(), modelname,
+                            wallpaperSource, modelname,
                             model.outfit);
                 }
                 else
                 {
-                    Wallpaper.RestoreWallpaperByID(monitorNumber);
+                    await Task.Run(() =>
+                        Wallpaper.RestoreWallpaperByID(monitorNumber));
                 }
             }
         }

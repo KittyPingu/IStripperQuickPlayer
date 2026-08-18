@@ -66,7 +66,19 @@ def save_result(image, combined, points, labels, mask_path, preview_path):
                      outline="white", width=2)
     painted.save(preview_path, quality=92)
 
+def self_test():
+    import numpy as np
+    candidates = [{"area": 4, "predicted_iou": .9, "stability_score": .95,
+                   "segmentation": np.array([[1, 1, 0], [1, 1, 0], [0, 0, 0]], dtype=bool)}]
+    selected, count = select_automatic_foreground(candidates, (3, 3),
+        np.asarray([[0, 0]], dtype=np.float32), np.asarray([1], dtype=np.int32))
+    assert count == 1 and int(selected.sum()) == 4
+    send(status="ok", message="sam-mask self-test passed")
+
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
@@ -103,6 +115,8 @@ def main():
          checkpoint=model_info["label"], model=args.model)
     for line in sys.stdin:
         request = json.loads(line)
+        if request.get("command") == "quit":
+            break
         if request.get("command") == "load":
             image = load_image(Path(request.get("image", args.image)))
             send(status="loaded", width=int(image.shape[1]),
@@ -110,6 +124,8 @@ def main():
             continue
         points = np.asarray(request.get("points", []), dtype=np.float32)
         labels = np.asarray(request.get("labels", []), dtype=np.int32)
+        box_value = request.get("box")
+        box = np.asarray(box_value, dtype=np.float32) if box_value else None
         if request.get("command") == "auto":
             if automatic_cache is None:
                 automatic_cache = automatic_candidates(
@@ -132,8 +148,8 @@ def main():
             seed_mask = np.where(seed >= 128, 8.0, -8.0).astype(np.float32)[None]
         positives = points[labels == 1]
         negatives = points[labels == 0]
-        if not len(positives) and seed_mask is None:
-            send(status="error", message="Left-click at least one person.")
+        if not len(positives) and seed_mask is None and box is None:
+            send(status="error", message="Add a positive point or box first.")
             continue
         if seed_mask is not None:
             prompt_points = points if len(points) else None
@@ -141,17 +157,34 @@ def main():
             with torch.inference_mode(), torch.autocast(device_type=device,
                     dtype=torch.bfloat16, enabled=bf16):
                 masks, scores, logits = predictor.predict(point_coords=prompt_points,
-                    point_labels=prompt_labels, mask_input=seed_mask,
+                    point_labels=prompt_labels, box=box, mask_input=seed_mask,
                     multimask_output=True)
             best = int(np.argmax(scores))
             with torch.inference_mode(), torch.autocast(device_type=device,
                     dtype=torch.bfloat16, enabled=bf16):
                 refined, _, _ = predictor.predict(point_coords=prompt_points,
-                    point_labels=prompt_labels, mask_input=logits[best][None],
+                    point_labels=prompt_labels, box=box, mask_input=logits[best][None],
                     multimask_output=False)
             combined = refined[0] > 0
             save_result(image, combined, points, labels, args.mask, args.preview)
             send(status="mask", pixels=int(combined.sum()), seeded=True)
+            continue
+        if box is not None:
+            prompt_points = points if len(points) else None
+            prompt_labels = labels if len(points) else None
+            with torch.inference_mode(), torch.autocast(device_type=device,
+                    dtype=torch.bfloat16, enabled=bf16):
+                masks, scores, logits = predictor.predict(point_coords=prompt_points,
+                    point_labels=prompt_labels, box=box, multimask_output=True)
+            best = int(np.argmax(scores))
+            with torch.inference_mode(), torch.autocast(device_type=device,
+                    dtype=torch.bfloat16, enabled=bf16):
+                refined, _, _ = predictor.predict(point_coords=prompt_points,
+                    point_labels=prompt_labels, box=box,
+                    mask_input=logits[best][None], multimask_output=False)
+            combined = refined[0] > 0
+            save_result(image, combined, points, labels, args.mask, args.preview)
+            send(status="mask", pixels=int(combined.sum()), boxed=True)
             continue
         combined = np.zeros(image.shape[:2], dtype=bool)
         for positive in positives:

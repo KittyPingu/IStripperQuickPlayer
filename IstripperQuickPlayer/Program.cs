@@ -592,6 +592,7 @@ namespace IStripperQuickPlayer
             CustomShowEditorForm.QueueAction("fast", true) == "Queue" &&
             CustomShowEditorForm.QueueAction("rvm-matanyone2", true) == "Queue" &&
             CustomShowEditorForm.QueueAction("rvm-vitmatte-s", true) == "Queue" &&
+            CustomShowEditorForm.QueueAction("rvm-vitmatte-b", true) == "Queue" &&
             CustomShowEditorForm.QueueAction("matanyone2", true) == "Mask and Queue" &&
             CustomShowEditorForm.QueueAction("sam2matting", false) == "Queue" &&
             CustomShowEditorForm.QueueAction("quality", false) == null &&

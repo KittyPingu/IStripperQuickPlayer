@@ -300,6 +300,15 @@ internal static class CustomShowProcessor
         File.Exists(Path.Combine(RuntimeRoot(configuration), "checkpoints",
             "rvm_resnet50.pth")) && File.Exists(RvmViTMatteWorkerPath);
 
+    internal static bool IsRvmViTMatteBaseInstalled(
+        CustomShowConfiguration configuration) =>
+        OptionalToolInstalled(configuration, "VITMATTE_B_REVISION", "vitmatte-b") &&
+        File.Exists(Path.Combine(RuntimeRoot(configuration), "vitmatte-b",
+            "pytorch_model.bin")) && File.Exists(ViTMatteWorkerPath) &&
+        OptionalToolInstalled(configuration, "RVM_COMMIT", "rvm") &&
+        File.Exists(Path.Combine(RuntimeRoot(configuration), "checkpoints",
+            "rvm_resnet50.pth")) && File.Exists(RvmViTMatteWorkerPath);
+
     internal static bool IsViTMatteBaseInstalled(CustomShowConfiguration configuration) =>
         OptionalToolInstalled(configuration, "VITMATTE_B_REVISION", "vitmatte-b") &&
         OptionalToolInstalled(configuration, "SAM2_COMMIT", "sam2") &&
@@ -599,7 +608,8 @@ internal static class CustomShowProcessor
         int matAnyoneMaxMemoryFrames = 14,
         bool matAnyoneUseLongTermMemory = true,
         int vitMatteInferenceDetailPx = 1024,
-        bool matAnyoneInteractiveCorrections = false)
+        bool matAnyoneInteractiveCorrections = false,
+        string? propSegmenterModelPath = null)
     {
         using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(
             cancellationToken);
@@ -610,7 +620,7 @@ internal static class CustomShowProcessor
         string worker = preset switch
         {
             "matanyone2" or "rvm-matanyone2" => MatAnyoneWorkerPath,
-            "rvm-vitmatte-s" => RvmViTMatteWorkerPath,
+            "rvm-vitmatte-s" or "rvm-vitmatte-b" => RvmViTMatteWorkerPath,
             "vitmatte-s" or "vitmatte-b" => ViTMatteWorkerPath,
             _ => WorkerPath
         };
@@ -641,6 +651,11 @@ internal static class CustomShowProcessor
             if (preset == "rvm-matanyone2" && !File.Exists(initialMask))
             {
                 start.ArgumentList.Add("--auto-rvm-init");
+                if (propSegmenterModelPath != null)
+                {
+                    start.ArgumentList.Add("--prop-model");
+                    start.ArgumentList.Add(propSegmenterModelPath);
+                }
             }
             else
             {
@@ -707,7 +722,7 @@ internal static class CustomShowProcessor
                     configuration.VitMatteSmallCompileCutoffFrames).ToString());
             }
         }
-        else if (preset == "rvm-vitmatte-s")
+        else if (preset is "rvm-vitmatte-s" or "rvm-vitmatte-b")
         {
             if (endMs == null)
                 throw new InvalidDataException(
@@ -722,13 +737,17 @@ internal static class CustomShowProcessor
                 Math.Clamp(sequenceChunk, 1, 12)).ToString());
             start.ArgumentList.Add("--max-size");
             start.ArgumentList.Add(vitMatteInferenceDetailPx.ToString());
+            start.ArgumentList.Add("--model");
+            start.ArgumentList.Add(preset[^1..]);
             start.ArgumentList.Add("--rvm-alpha-threshold");
             start.ArgumentList.Add((Math.Clamp(rvmInitializerAlphaThresholdPercent,
                 10, 90) / 100d).ToString("0.00",
                 System.Globalization.CultureInfo.InvariantCulture));
             start.ArgumentList.Add("--compile-cutoff-frames");
             start.ArgumentList.Add(Math.Max(1,
-                configuration.VitMatteSmallCompileCutoffFrames).ToString());
+                (preset.EndsWith("-b", StringComparison.Ordinal)
+                    ? configuration.VitMatteBaseCompileCutoffFrames
+                    : configuration.VitMatteSmallCompileCutoffFrames)).ToString());
         }
         else
         {
@@ -804,7 +823,7 @@ internal static class CustomShowProcessor
                             StringComparison.OrdinalIgnoreCase))
                         workerError = WorkerErrorMessage(line) ?? workerError;
                     bool showingRvmMask =
-                        (preset == "rvm-vitmatte-s" &&
+                        (preset is ("rvm-vitmatte-s" or "rvm-vitmatte-b") &&
                             progressStage == "rvm-masks") ||
                         (preset == "rvm-matanyone2" &&
                             progressStage == "initializing");
@@ -819,9 +838,9 @@ internal static class CustomShowProcessor
                             ? Path.Combine(stagingFolder, "preview-source.jpg") : null,
                         File.Exists(Path.Combine(stagingFolder, "preview-composite.jpg"))
                             ? Path.Combine(stagingFolder, "preview-composite.jpg") : null,
-                        preset is "rvm-vitmatte-s" or "rvm-matanyone2"
+                        preset is "rvm-vitmatte-s" or "rvm-vitmatte-b" or "rvm-matanyone2"
                             ? "Original input" : null,
-                        preset is "rvm-vitmatte-s" or "rvm-matanyone2"
+                        preset is "rvm-vitmatte-s" or "rvm-vitmatte-b" or "rvm-matanyone2"
                             ? showingRvmMask ? "RVM mask" : "Composited result"
                             : null,
                         interactiveControl,
@@ -898,7 +917,8 @@ internal static class CustomShowProcessor
     internal static async Task GenerateRvmInitialMasksAsync(
         CustomShowConfiguration configuration, string source,
         IReadOnlyList<RvmInitialMaskTarget> targets, int thresholdPercent,
-        IProgress<CustomShowProgress>? progress, CancellationToken token)
+        IProgress<CustomShowProgress>? progress, CancellationToken token,
+        string? propSegmenterModelPath = null)
     {
         if (targets.Count == 0)
             throw new InvalidDataException(
@@ -939,6 +959,11 @@ internal static class CustomShowProcessor
             RvmInitialMaskWorkerPath, "--runtime", RuntimeRoot(configuration),
             "--request", requestPath
         }) start.ArgumentList.Add(argument);
+        if (propSegmenterModelPath != null)
+        {
+            start.ArgumentList.Add("--prop-model");
+            start.ArgumentList.Add(propSegmenterModelPath);
+        }
         start.Environment["IQP_FFMPEG"] = Path.Combine(
             AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(

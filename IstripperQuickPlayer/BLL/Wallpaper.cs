@@ -50,17 +50,18 @@ namespace IStripperQuickPlayer.BLL
         public static async Task ChangeWallpaper(uint monitorNumber, string? url, string modelname, string outfit)
         {
             if (suspended) return;
-            if (Properties.Settings.Default.HideDesktopIcons)
-                hideIcons();
-            else
-                showIcons();
-            if (url == null)return;       
+            bool hideDesktopIcons =
+                Properties.Settings.Default.HideDesktopIcons;
+            await Task.Run(() =>
+            {
+                if (hideDesktopIcons)
+                    hideIcons();
+                else
+                    showIcons();
+            }).ConfigureAwait(false);
+            if (url == null) return;
             _modelname = modelname;
             _outfit = outfit;
-            Form1? form = Utils.GetMainForm();
-            if (form == null) return;
-            var str = form.lblNowPlaying.Text.Replace("Now Playing: ", "").Split("(")[0].Trim();
-            if (string.IsNullOrEmpty(str)) return;
             using Bitmap? downloaded =
                 await GetImageBitmapFromUrl(url).ConfigureAwait(false);
             if (downloaded == null) return;

@@ -240,6 +240,8 @@ internal sealed class CustomShowEditorForm : Form
             preset.Items.Add("RVM-MatAnyone (automatic RVM initialization)");
         if (metadataOnly || CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration))
             preset.Items.Add("RVM-ViTMatte S (automatic full RVM masks)");
+        if (metadataOnly || CustomShowProcessor.IsRvmViTMatteBaseInstalled(configuration))
+            preset.Items.Add("RVM-ViTMatte B (automatic full RVM masks, higher quality)");
         if (metadataOnly || CustomShowProcessor.IsMatAnyone2Installed(configuration))
             preset.Items.Add("MatAnyone 2 (interactive initial mask)");
         if (metadataOnly || CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
@@ -510,10 +512,10 @@ internal sealed class CustomShowEditorForm : Form
                 .OrderBy(value => Math.Abs(value - preferred)).First();
         }
         else if (CanProcess &&
-            selected is ("vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s") &&
+            selected is ("vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b") &&
             (!reprocess || applyRecommendedBatch) && SelectedBatchSize() != 0)
         {
-            int recommended = selected == "vitmatte-b" ?
+            int recommended = selected.EndsWith("-b", StringComparison.Ordinal) ?
                 configuration.VitMatteBasePreferredBatchSize :
                 configuration.VitMatteSmallPreferredBatchSize;
             int closest = sequenceChunk.Items.OfType<int>()
@@ -529,9 +531,9 @@ internal sealed class CustomShowEditorForm : Form
         mattingDetail.Enabled = (rvm || selected is "matanyone2" or
             "rvm-matanyone2") && CanProcess;
         vitMatteInferenceDetail.Enabled = selected is
-            ("vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s") && CanProcess;
+            ("vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b") && CanProcess;
         sequenceChunk.Enabled = (rvm || UsesSam2(selected) ||
-            selected == "rvm-vitmatte-s") && CanProcess;
+            selected is "rvm-vitmatte-s" or "rvm-vitmatte-b") && CanProcess;
         maskEngine.Enabled = UsesSam2(selected) && CanProcess;
         sam2Model.Enabled = (selected == "matanyone2" ||
             (UsesSam2(selected) && SelectedMaskEngine() != "rvm")) &&
@@ -539,7 +541,7 @@ internal sealed class CustomShowEditorForm : Form
         bool rvmSam2 = UsesSam2(selected) &&
             SelectedMaskEngine() == "rvm-sam2";
         rvmInitializerThreshold.Enabled =
-            (selected is ("rvm-matanyone2" or "rvm-vitmatte-s") || rvmSam2 ||
+            (selected is ("rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b") || rvmSam2 ||
                 rvmSam2Matting) &&
             CanProcess;
         rvmInitializerThresholdValue.Enabled = rvmInitializerThreshold.Enabled;
@@ -561,9 +563,9 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, mattingDetailRow,
                 rvm || selected is "matanyone2" or "rvm-matanyone2");
             SetRowVisible(processingTable, vitMatteInferenceDetailRow,
-                selected is "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s");
+                selected is "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b");
             SetRowVisible(processingTable, rvmThresholdRow,
-                selected is "rvm-matanyone2" or "rvm-vitmatte-s" || rvmSam2 ||
+                selected is "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" || rvmSam2 ||
                 rvmSam2Matting);
             SetRowVisible(processingTable, rvmMaskRefreshRow,
                 selected == "rvm-matanyone2");
@@ -571,7 +573,7 @@ internal sealed class CustomShowEditorForm : Form
                 selected == "rvm-matanyone2");
             SetRowVisible(processingTable, matAnyoneMemoryRow, matAnyone);
             SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
-                selected == "rvm-vitmatte-s");
+                selected is "rvm-vitmatte-s" or "rvm-vitmatte-b");
             SetRowVisible(processingTable, processingDetailsRow,
                 processingDetails.Text !=
                     "Recorded in show.json after processing completes.");
@@ -689,6 +691,8 @@ internal sealed class CustomShowEditorForm : Form
             return "rvm-matanyone2";
         if (selected.StartsWith("RVM-ViTMatte S", StringComparison.Ordinal))
             return "rvm-vitmatte-s";
+        if (selected.StartsWith("RVM-ViTMatte B", StringComparison.Ordinal))
+            return "rvm-vitmatte-b";
         if (selected.StartsWith("MatAnyone", StringComparison.Ordinal)) return "matanyone2";
         if (selected.StartsWith("ViTMatte S", StringComparison.Ordinal)) return "vitmatte-s";
         if (selected.StartsWith("ViTMatte B", StringComparison.Ordinal)) return "vitmatte-b";
@@ -703,7 +707,7 @@ internal sealed class CustomShowEditorForm : Form
     internal static string? QueueAction(string algorithm, bool autoAccept) =>
         algorithm == "sam2matting" ? "Queue" : !autoAccept ? null : algorithm switch
         {
-            "quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" => "Queue",
+            "quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" => "Queue",
             "matanyone2" => "Mask and Queue",
             _ => null
         };
@@ -921,6 +925,7 @@ internal sealed class CustomShowEditorForm : Form
             "fast" => "RVM Fast", "matanyone2" => "MatAnyone",
             "rvm-matanyone2" => "RVM-MatAnyone",
             "rvm-vitmatte-s" => "RVM-ViTMatte S",
+            "rvm-vitmatte-b" => "RVM-ViTMatte B",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B", "sam2matting" => "SAM2Matting",
             _ => "RVM Quality"
@@ -987,6 +992,7 @@ internal sealed class CustomShowEditorForm : Form
             "fast" => "RVM Fast",
             "rvm-matanyone2" => "RVM-MatAnyone",
             "rvm-vitmatte-s" => "RVM-ViTMatte S",
+            "rvm-vitmatte-b" => "RVM-ViTMatte B",
             "matanyone2" => "MatAnyone",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
@@ -1100,6 +1106,7 @@ internal sealed class CustomShowEditorForm : Form
             "matanyone2" => "MatAnyone 2",
             "rvm-matanyone2" => "RVM-MatAnyone (automatic)",
             "rvm-vitmatte-s" => "RVM-ViTMatte S (automatic)",
+            "rvm-vitmatte-b" => "RVM-ViTMatte B (automatic)",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
             "sam2matting" => $"SAM2Matting ({Sam2MattingSupport.DisplayName(value.Tracker)})",
@@ -1108,7 +1115,7 @@ internal sealed class CustomShowEditorForm : Form
         string detail = value.MattingDetailPx == 0 ? "full resolution" :
             $"{value.MattingDetailPx} px";
         string detailText = value.Algorithm is
-            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b"
             ? $"; ViTMatte inference detail " +
                 ((value.VitMatteInferenceDetailPx ?? 0) == 0 ? "full resolution" :
                     $"{value.VitMatteInferenceDetailPx ?? 1024} px")
@@ -1374,11 +1381,11 @@ internal sealed class CustomShowEditorForm : Form
                         Algorithm = selectedPreset,
                         MattingDetailPx = detail,
                         VitMatteInferenceDetailPx = selectedPreset is
-                            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+                            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b"
                             ? vitMatteDetail : null,
                         BatchSize = SelectedBatchSize(),
                         RvmInitializerAlphaThresholdPercent = selectedPreset is
-                            "rvm-matanyone2" or "rvm-vitmatte-s" ||
+                            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
                             selectedMaskEngine == "rvm-sam2"
                             ? rvmInitializerThreshold.Value : null,
                         RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
@@ -1622,7 +1629,7 @@ internal sealed class CustomShowEditorForm : Form
                                  vitMatteInferenceDetailPx: vitMatteDetail,
                                  matAnyoneInteractiveCorrections:
                                     selectedPreset == "matanyone2");
-                            if (selectedPreset == "rvm-vitmatte-s" &&
+                            if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
                                 !sam2Masks.ContainsKey(clip.Id))
                             {
                                 string generatedMasks = Path.Combine(output,
@@ -1687,7 +1694,7 @@ internal sealed class CustomShowEditorForm : Form
                                 MessageBoxButtons.OK, MessageBoxIcon.Information);
                         return;
                     }
-                    if (Appending && selectedPreset == "rvm-vitmatte-s")
+                    if (Appending && selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b")
                     {
                         string saveText = save.Text;
                         save.Text = "Compressing retained masks…";
@@ -1711,7 +1718,7 @@ internal sealed class CustomShowEditorForm : Form
                         }
                         finally { save.Text = saveText; }
                     }
-                    if (selectedPreset == "rvm-vitmatte-s")
+                    if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b")
                         foreach (string generated in GeneratedRvmMaskFolders(
                             staging, sam2Masks))
                             try { Directory.Delete(generated, true); } catch { }
@@ -1773,11 +1780,11 @@ internal sealed class CustomShowEditorForm : Form
                         Algorithm = selectedPreset,
                         MattingDetailPx = detail,
                         VitMatteInferenceDetailPx = selectedPreset is
-                            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+                            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b"
                             ? vitMatteDetail : null,
                         BatchSize = processingBatchSize,
                         RvmInitializerAlphaThresholdPercent = selectedPreset is
-                            "rvm-matanyone2" or "rvm-vitmatte-s" ||
+                            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
                             selectedMaskEngine == "rvm-sam2"
                             ? rvmInitializerThreshold.Value : null,
                         RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
@@ -2044,7 +2051,7 @@ internal sealed class CustomShowEditorForm : Form
             string[] concepts = algorithm == Sam2MattingSupport.Algorithm &&
                 tracker == "sam3"
                 ? Sam2MattingSupport.ParseConcepts(foregroundConcepts.Text) : [];
-            manifest.Processing = new()
+            CustomShowProcessing processingOptions = new()
             {
                 Algorithm = algorithm,
                 ProcessingOptionVersion = algorithm == Sam2MattingSupport.Algorithm
@@ -2072,11 +2079,11 @@ internal sealed class CustomShowEditorForm : Form
                 Scenes = processingScenes,
                 MattingDetailPx = SelectedMattingResolution(),
                 VitMatteInferenceDetailPx = algorithm is
-                    "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s"
+                    "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b"
                     ? SelectedVitMatteInferenceResolution() : null,
                 BatchSize = SelectedBatchSize(),
                 RvmInitializerAlphaThresholdPercent = algorithm is
-                    "rvm-matanyone2" or "rvm-vitmatte-s" ||
+                    "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
                     algorithm == Sam2MattingSupport.Algorithm &&
                     promptMode == "rvm-initial-mask"
                     ? rvmInitializerThreshold.Value : null,
@@ -2103,6 +2110,13 @@ internal sealed class CustomShowEditorForm : Form
                     promptMode == "rvm-initial-mask"
                         ? "rvm-sam2" : SelectedMaskEngine())
             };
+            ApplyPropSegmenter(processingOptions,
+                algorithm == "rvm-matanyone2" ||
+                algorithm == Sam2MattingSupport.Algorithm &&
+                    promptMode == "rvm-initial-mask" ||
+                algorithm is ("vitmatte-s" or "vitmatte-b") &&
+                    SelectedMaskEngine() == "rvm-sam2");
+            manifest.Processing = processingOptions;
             FileInfo sourceInfo = new(source.Text);
             CustomShowQueueJob job = existing ?? new();
             bool masksStillMatch = existing != null &&
@@ -2476,32 +2490,47 @@ internal sealed class CustomShowEditorForm : Form
 
     CustomShowProcessing CreateSam2MattingProcessing(string tracker,
         string promptMode, string[] concepts,
-        CustomShowProcessingScene[] scenes) => new()
+        CustomShowProcessingScene[] scenes)
     {
-        Algorithm = Sam2MattingSupport.Algorithm,
-        ProcessingOptionVersion = Sam2MattingSupport.OptionVersion,
-        Tracker = tracker,
-        PromptMode = promptMode,
-        ForegroundConcepts = [.. concepts],
-        EnvironmentSpecVersion = Sam2MattingSupport.EnvironmentVersion,
-        SourceRevision = Sam2MattingSupport.SourceRevision,
-        CheckpointRevision = Sam2MattingSupport.CheckpointRevision,
-        CheckpointSha256 = Sam2MattingSupport.CheckpointSha256(tracker),
-        AttentionPolicy = "pytorch-sdpa",
-        PrecisionPolicy = "bf16-autocast",
-        EncoderPolicy = "quickplayer-h264-aac",
-        AlphaEncodingPolicy = Sam2MattingSupport.AlphaEncodingPolicy,
-        ScenePlanVersion = Sam2MattingSupport.ScenePlanVersion,
-        Scenes = CloneQueueValue(scenes),
-        MattingDetailPx = 512,
-        BatchSize = 0,
-        RvmInitializerAlphaThresholdPercent = promptMode == "rvm-initial-mask"
-            ? rvmInitializerThreshold.Value : null,
-        AutoAcceptedAlphaThreshold = null,
-        ExecutionPolicy = "eager",
-        ToolRevisions = ReadProcessingRevisions(Sam2MattingSupport.Algorithm,
-            promptMode == "rvm-initial-mask" ? "rvm-sam2" : "sam2")
-    };
+        CustomShowProcessing value = new()
+        {
+            Algorithm = Sam2MattingSupport.Algorithm,
+            ProcessingOptionVersion = Sam2MattingSupport.OptionVersion,
+            Tracker = tracker,
+            PromptMode = promptMode,
+            ForegroundConcepts = [.. concepts],
+            EnvironmentSpecVersion = Sam2MattingSupport.EnvironmentVersion,
+            SourceRevision = Sam2MattingSupport.SourceRevision,
+            CheckpointRevision = Sam2MattingSupport.CheckpointRevision,
+            CheckpointSha256 = Sam2MattingSupport.CheckpointSha256(tracker),
+            AttentionPolicy = "pytorch-sdpa",
+            PrecisionPolicy = "bf16-autocast",
+            EncoderPolicy = "quickplayer-h264-aac",
+            AlphaEncodingPolicy = Sam2MattingSupport.AlphaEncodingPolicy,
+            ScenePlanVersion = Sam2MattingSupport.ScenePlanVersion,
+            Scenes = CloneQueueValue(scenes),
+            MattingDetailPx = 512,
+            BatchSize = 0,
+            RvmInitializerAlphaThresholdPercent = promptMode == "rvm-initial-mask"
+                ? rvmInitializerThreshold.Value : null,
+            AutoAcceptedAlphaThreshold = null,
+            ExecutionPolicy = "eager",
+            ToolRevisions = ReadProcessingRevisions(Sam2MattingSupport.Algorithm,
+                promptMode == "rvm-initial-mask" ? "rvm-sam2" : "sam2")
+        };
+        ApplyPropSegmenter(value, promptMode == "rvm-initial-mask");
+        return value;
+    }
+
+    void ApplyPropSegmenter(CustomShowProcessing processing, bool compatible)
+    {
+        PropSegmenterPackage? package = PropSegmenterPackage.Active(configuration, compatible);
+        if (package == null) return;
+        processing.PropSegmenterModelId = package.ModelId;
+        processing.PropSegmenterCheckpointSha256 = package.CheckpointSha256;
+        processing.PropSegmenterConfidenceThreshold = package.ConfidenceThreshold;
+        processing.PropSegmenterProximityRadiusAt512 = package.ProximityRadiusAt512;
+    }
 
     void SaveNewQueuedPerformer(CustomPerformerProfile profile)
     {
@@ -2573,13 +2602,13 @@ internal sealed class CustomShowEditorForm : Form
             }
         }
         if (algorithm is not ("vitmatte-s" or "vitmatte-b" or
-                "rvm-vitmatte-s") ||
+                "rvm-vitmatte-s" or "rvm-vitmatte-b") ||
             sequenceChunk.SelectedItem is not int requested) return true;
         CustomShowProcessor.NvidiaMemory? memory =
             CustomShowProcessor.NvidiaMemoryInfo();
         if (memory == null) return true;
         using FfmpegCpuDecoder vitMatteDecoder = new(source.Text, fastDecode: true);
-        bool baseModel = algorithm == "vitmatte-b";
+        bool baseModel = algorithm is "vitmatte-b" or "rvm-vitmatte-b";
         int detail = SelectedVitMatteInferenceResolution();
         double scale = detail <= 0 ? 1 : Math.Min(1d,
             detail / (double)Math.Max(vitMatteDecoder.Width, vitMatteDecoder.Height));
@@ -2887,6 +2916,7 @@ internal sealed class CustomShowEditorForm : Form
             "matanyone2" => ["MATANYONE2_COMMIT", "SAM2_COMMIT"],
             "rvm-matanyone2" => ["MATANYONE2_COMMIT", "RVM_COMMIT"],
             "rvm-vitmatte-s" => ["VITMATTE_S_REVISION", "RVM_COMMIT"],
+            "rvm-vitmatte-b" => ["VITMATTE_B_REVISION", "RVM_COMMIT"],
             "sam2matting" when maskEngine == "rvm-sam2" => ["RVM_COMMIT"],
             "vitmatte-s" => ["VITMATTE_S_REVISION", "SAM2_COMMIT"],
             "vitmatte-b" => ["VITMATTE_B_REVISION", "SAM2_COMMIT"],
@@ -3850,6 +3880,8 @@ internal sealed class CustomShowSettingsForm : Form
     readonly ComboBox rvmFastChunk = RvmChunkInput();
     readonly NumericUpDown rvmQualityCutoff = CompileCutoffInput();
     readonly NumericUpDown rvmFastCutoff = CompileCutoffInput();
+    readonly CheckBox propSegmenterEnabled = new() { Text = "Use a trained prop segmenter for compatible automatic RVM initializers", AutoSize = true };
+    readonly ComboBox propSegmenterModel = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420 };
     readonly ComboBox nvencPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 90 };
     readonly ComboBox cpuPriority = PriorityInput();
@@ -3922,7 +3954,9 @@ internal sealed class CustomShowSettingsForm : Form
             LastMatAnyoneMaxMemoryFrames = current.LastMatAnyoneMaxMemoryFrames,
             LastMatAnyoneUseLongTermMemory =
                 current.LastMatAnyoneUseLongTermMemory,
-            LastAutoAcceptAlphaThreshold = current.LastAutoAcceptAlphaThreshold
+            LastAutoAcceptAlphaThreshold = current.LastAutoAcceptAlphaThreshold,
+            PropSegmenterEnabled = current.PropSegmenterEnabled,
+            ActivePropSegmenterModelId = current.ActivePropSegmenterModelId
         };
         Text = "Custom Show Settings"; ClientSize = new Size(900, 700);
         MinimumSize = new Size(780, 620);
@@ -3993,6 +4027,11 @@ internal sealed class CustomShowSettingsForm : Form
         AddChoice(rvmTable, "Fast preferred chunk", rvmFastChunk);
         AddChoice(rvmTable, "Quality compile minimum", rvmQualityCutoff);
         AddChoice(rvmTable, "Fast compile minimum", rvmFastCutoff);
+        AddExplanation(rvmTable, "Prop augmentation",
+            "Training Studio models can add nearby prop pixels to automatic RVM initial masks. " +
+            "This is opt-in and does not change RVM-only output or manual masks.");
+        AddWideControl(rvmTable, propSegmenterEnabled);
+        AddChoice(rvmTable, "Active prop model", propSegmenterModel);
         Button benchmarkRvm = new() { Text = "Benchmark RVM only...", AutoSize = true };
         Label rvmHelp = new() { AutoSize = true,
             Text = "Manual; tests Quality/Fast chunks, bounded pipeline, previews, and optional compilation." };
@@ -4071,6 +4110,15 @@ internal sealed class CustomShowSettingsForm : Form
         rvmFastChunk.SelectedItem = ClosestRvmChunk(Configuration.RvmFastPreferredChunk);
         rvmQualityCutoff.Value = ClampCompileCutoff(Configuration.RvmQualityCompileCutoffFrames);
         rvmFastCutoff.Value = ClampCompileCutoff(Configuration.RvmFastCompileCutoffFrames);
+        PropSegmenterPackage[] propPackages = [.. PropSegmenterPackage.Installed()];
+        propSegmenterModel.Items.AddRange(propPackages.Select(value => value.ModelId).ToArray());
+        if (Configuration.ActivePropSegmenterModelId is string active &&
+            propSegmenterModel.Items.Contains(active)) propSegmenterModel.SelectedItem = active;
+        else if (propSegmenterModel.Items.Count > 0) propSegmenterModel.SelectedIndex = 0;
+        propSegmenterEnabled.Checked = Configuration.PropSegmenterEnabled;
+        propSegmenterModel.Enabled = propSegmenterModel.Items.Count > 0 && propSegmenterEnabled.Checked;
+        propSegmenterEnabled.CheckedChanged += (_, _) =>
+            propSegmenterModel.Enabled = propSegmenterModel.Items.Count > 0 && propSegmenterEnabled.Checked;
         nvencPreset.SelectedItem = CustomShowProcessor.ValidNvencPreset(
             Configuration.RvmNvencPreset);
         cpuPriority.SelectedIndex = PriorityIndex(Configuration.ProcessingCpuPriority);
@@ -4368,6 +4416,12 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.RvmFastPreferredChunk = RvmChunkValue(rvmFastChunk);
             Configuration.RvmQualityCompileCutoffFrames = (int)rvmQualityCutoff.Value;
             Configuration.RvmFastCompileCutoffFrames = (int)rvmFastCutoff.Value;
+            if (propSegmenterEnabled.Checked && propSegmenterModel.SelectedItem == null)
+                throw new InvalidDataException(
+                    "Install a Training Studio model before enabling prop augmentation.");
+            Configuration.PropSegmenterEnabled = propSegmenterEnabled.Checked;
+            Configuration.ActivePropSegmenterModelId =
+                propSegmenterModel.SelectedItem?.ToString();
             Configuration.RvmNvencPreset = nvencPreset.SelectedItem?.ToString() ?? "p5";
             Configuration.ProcessingCpuPriority = PriorityValue(cpuPriority.SelectedIndex);
             Configuration.ProcessingGpuPriority = PriorityValue(gpuPriority.SelectedIndex);

@@ -122,6 +122,9 @@ ipch/
 # Visual Studio Trace Files
 *.e2e
 
+# Windows Performance Recorder traces
+*.etl
+
 # TFS 2012 Local Workspace
 $tf/
 

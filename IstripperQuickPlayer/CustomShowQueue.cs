@@ -139,6 +139,16 @@ internal sealed class CustomShowQueueStore
             job.Error = workerError;
             changed = true;
         }
+        foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
+            value.Status == CustomShowQueueStatus.Failed &&
+            value.ReadyToPublish &&
+            !string.Equals(value.Message, "Processed; publication failed",
+                StringComparison.Ordinal)))
+        {
+            job.ReadyToPublish = false;
+            job.Message = "Failed";
+            changed = true;
+        }
         if (changed) Save(document);
         return document;
     }
@@ -523,8 +533,7 @@ internal sealed class CustomShowQueueManager : IDisposable
     {
         string work = storage.Work(job.Id);
         CustomShowJobRunner.PreserveLog(work, storage.Assets(job.Id));
-        bool completedOutput = job.ReadyToPublish ||
-            File.Exists(Path.Combine(work, "show.json"));
+        bool completedOutput = job.ReadyToPublish;
         lock (gate)
         {
             job.Status = status;
@@ -629,7 +638,8 @@ internal sealed class CustomShowQueueManager : IDisposable
             await CustomShowProcessor.GenerateRvmInitialMasksAsync(configuration,
                 job.SourcePath, targets,
                 options.RvmInitializerAlphaThresholdPercent ?? 40,
-                initializerProgress, token);
+                initializerProgress, token,
+                CustomShowJobRunner.PropSegmenterPath(options));
 
             string destinationFolder = Path.Combine(assets, "scene-masks");
             Directory.CreateDirectory(destinationFolder);
@@ -1024,13 +1034,14 @@ internal static class CustomShowJobRunner
     {
         if (job.Manifest.Processing?.Algorithm is not
             ("quality" or "fast" or "rvm-matanyone2" or
-             "rvm-vitmatte-s" or "matanyone2" or "sam2matting"))
+             "rvm-vitmatte-s" or "rvm-vitmatte-b" or "matanyone2" or "sam2matting"))
             throw new CustomShowQueueAttentionException(
                 "This processing algorithm cannot run unattended.");
         bool installed = job.Manifest.Processing.Algorithm switch
         {
             "rvm-matanyone2" => CustomShowProcessor.IsRvmMatAnyone2Installed(configuration),
             "rvm-vitmatte-s" => CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration),
+            "rvm-vitmatte-b" => CustomShowProcessor.IsRvmViTMatteBaseInstalled(configuration),
             "matanyone2" => CustomShowProcessor.IsMatAnyone2Installed(configuration),
             "sam2matting" => Sam2MattingSupport.IsInstalled(configuration,
                 job.Manifest.Processing.Tracker),
@@ -1164,6 +1175,7 @@ internal static class CustomShowJobRunner
         bool generatePreviews)
     {
         CustomShowProcessing options = job.Manifest.Processing!;
+        string? propSegmenterPath = PropSegmenterPath(options);
         CustomShowClip[] included = clips.Where(value => value.Included).ToArray();
         long total = included.Sum(value => Math.Max(1, value.EndMs - value.StartMs));
         if (options.Algorithm == "sam2matting")
@@ -1226,8 +1238,9 @@ internal static class CustomShowJobRunner
                 matAnyoneMaxMemoryFrames: options.MatAnyoneMaxMemoryFrames,
                 matAnyoneUseLongTermMemory: options.MatAnyoneUseLongTermMemory,
                 vitMatteInferenceDetailPx:
-                    options.VitMatteInferenceDetailPx ?? 1024);
-            if (options.Algorithm == "rvm-vitmatte-s")
+                    options.VitMatteInferenceDetailPx ?? 1024,
+                propSegmenterModelPath: propSegmenterPath);
+            if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
             {
                 string masks = Path.Combine(output, ".rvm-masks");
                 if (Directory.Exists(masks)) generatedMasks[clip.Id] = masks;
@@ -1236,7 +1249,7 @@ internal static class CustomShowJobRunner
             completed += clipDuration;
             firstResult ??= media;
         }
-        if (options.Algorithm == "rvm-vitmatte-s")
+        if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
             foreach ((string clipId, string masks) in generatedMasks)
             {
                 string folder = Path.Combine(staging, "masks", clipId);
@@ -1246,6 +1259,20 @@ internal static class CustomShowJobRunner
                 Directory.Delete(masks, true);
             }
         return firstResult!;
+    }
+
+    internal static string? PropSegmenterPath(CustomShowProcessing options)
+    {
+        if (options.PropSegmenterModelId is not string id) return null;
+        if (!PropSegmenterPackage.TryLoad(id, true, out PropSegmenterPackage? package) ||
+            !string.Equals(package!.CheckpointSha256,
+                options.PropSegmenterCheckpointSha256,
+                StringComparison.OrdinalIgnoreCase) ||
+            package.ConfidenceThreshold != options.PropSegmenterConfidenceThreshold ||
+            package.ProximityRadiusAt512 != options.PropSegmenterProximityRadiusAt512)
+            throw new CustomShowQueueAttentionException(
+                $"The queued prop-segmenter model '{id}' is missing, changed, or incompatible. Reinstall that exact model or edit the job.");
+        return package.Folder;
     }
 
     static void LoadRetainedMasks(string staging, CustomShowClip[] clips,
@@ -1462,7 +1489,21 @@ internal static class CustomShowJobRunner
                 Status = CustomShowQueueStatus.Completed,
                 PublishedShowId = "published"
             };
-            document.Jobs.AddRange([pending, running, completed]);
+            CustomShowQueueJob validationFailed = new()
+            {
+                Status = CustomShowQueueStatus.Failed,
+                ReadyToPublish = true,
+                Message = "Processed; ready to retry publication",
+                Error = "Foreground/alpha validation failed"
+            };
+            CustomShowQueueJob publicationFailed = new()
+            {
+                Status = CustomShowQueueStatus.Failed,
+                ReadyToPublish = true,
+                Message = "Processed; publication failed"
+            };
+            document.Jobs.AddRange([pending, running, completed,
+                validationFailed, publicationFailed]);
             Directory.CreateDirectory(storage.Work(running.Id));
             File.WriteAllText(Path.Combine(storage.Work(running.Id), "partial"), "x");
             string published = Path.Combine(shows.ShowsFolder, "published");
@@ -1470,10 +1511,13 @@ internal static class CustomShowJobRunner
             File.WriteAllText(Path.Combine(published, "sentinel"), "x");
             storage.Save(document);
             CustomShowQueueDocument loaded = storage.Load();
-            if (loaded.Jobs.Count != 3 || loaded.Jobs[0].Id != pending.Id ||
+            if (loaded.Jobs.Count != 5 || loaded.Jobs[0].Id != pending.Id ||
                 loaded.Jobs[0].StartedUtc != null || loaded.Jobs[0].CompletedUtc != null ||
                 loaded.Jobs[1].Status != CustomShowQueueStatus.Pending ||
-                loaded.Jobs[1].Percent != 0 || Directory.Exists(storage.Work(running.Id)))
+                loaded.Jobs[1].Percent != 0 || Directory.Exists(storage.Work(running.Id)) ||
+                loaded.Jobs[3].ReadyToPublish ||
+                loaded.Jobs[3].Message != "Failed" ||
+                !loaded.Jobs[4].ReadyToPublish)
                 return false;
             CustomShowQueueManager manager = new(shows,
                 new CustomShowConfiguration { LibraryRoot = root }, () => { });

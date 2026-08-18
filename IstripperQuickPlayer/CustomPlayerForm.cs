@@ -280,7 +280,8 @@ internal sealed class CustomPlayerForm : Form
                     BeginInvoke(() => PreloadRequested?.Invoke(
                         this, EventArgs.Empty));
                 }
-                bool captureHitMap = !(locked && clickThroughLocked);
+                bool captureHitMap = !(locked && clickThroughLocked) ||
+                    allowWheelWhileLocked;
                 if (renderer.TryRenderDue(captureHitMap, out AlphaHitMap? alpha))
                 {
                     if (alpha != null)
@@ -527,6 +528,9 @@ internal sealed class CustomPlayerForm : Form
                 bool control = (GetKeyState(VkControl) & 0x8000) != 0;
                 if (player.HandleWheel(delta, control))
                     return new IntPtr(1);
+                if (player.ForwardMouseToUnderlyingWindow(
+                        mouse.Point, mouseMessage, mouse.MouseData, control))
+                    return new IntPtr(1);
             }
             else if (passThrough && player.ForwardMouseToUnderlyingWindow(
                          mouse.Point, mouseMessage, mouse.MouseData,
@@ -710,6 +714,10 @@ internal sealed class CustomPlayerForm : Form
                     (value & 0xffff & 0x0008) != 0))
                 return;
             if (HandleWheel(delta, (value & 0xffff & 0x0008) != 0))
+                return;
+            if (ForwardMouseToUnderlyingWindow(screenPoint, WmMouseWheel,
+                    unchecked((uint)value),
+                    (value & 0xffff & 0x0008) != 0))
                 return;
         }
         if (message.Msg == WmEnterSizeMove)

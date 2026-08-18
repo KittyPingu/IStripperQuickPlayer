@@ -66,6 +66,8 @@ internal sealed class CustomShowConfiguration
     public int LastMatAnyoneMaxMemoryFrames { get; set; } = 14;
     public bool LastMatAnyoneUseLongTermMemory { get; set; } = true;
     public bool LastAutoAcceptAlphaThreshold { get; set; }
+    public bool PropSegmenterEnabled { get; set; }
+    public string? ActivePropSegmenterModelId { get; set; }
 
     internal int Sam2CompileCutoffFrames(string model) => model switch
     {
@@ -119,7 +121,7 @@ internal sealed class CustomShowConfiguration
             configuration.OmniShotCutClipDetectionSensitivity = Math.Clamp(
                 configuration.OmniShotCutClipDetectionSensitivity, 1, 100);
             if (configuration.LastProcessingAlgorithm is not
-                ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or
+                ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" or
                  "matanyone2" or "vitmatte-s" or "vitmatte-b" or
                  "sam2matting"))
                 configuration.LastProcessingAlgorithm = "quality";
@@ -143,6 +145,9 @@ internal sealed class CustomShowConfiguration
                 configuration.LastRvmInitializerAlphaThresholdPercent, 10, 90);
             configuration.LastRvmMatAnyoneRefreshStrengthPercent = Math.Clamp(
                 configuration.LastRvmMatAnyoneRefreshStrengthPercent, 25, 100);
+            if (configuration.ActivePropSegmenterModelId is string propModel &&
+                !PropSegmenterPackage.ValidModelId(propModel))
+                configuration.ActivePropSegmenterModelId = null;
             if (configuration.MatAnyoneMemoryDefaultsVersion < 1)
             {
                 configuration.MatAnyoneMemoryDefaultsVersion = 1;
@@ -294,6 +299,10 @@ internal sealed class CustomShowProcessing
     public int? VitMatteInferenceDetailPx { get; set; }
     public int BatchSize { get; set; }
     public int? RvmInitializerAlphaThresholdPercent { get; set; }
+    public string? PropSegmenterModelId { get; set; }
+    public string? PropSegmenterCheckpointSha256 { get; set; }
+    public double? PropSegmenterConfidenceThreshold { get; set; }
+    public int? PropSegmenterProximityRadiusAt512 { get; set; }
     public bool RvmMatAnyoneMaskRefresh { get; set; }
     public int RvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
     public int MatAnyoneMaxMemoryFrames { get; set; } = 5;
@@ -313,6 +322,83 @@ internal sealed class CustomShowProcessing
     public string QuickPlayerVersion { get; set; } = "";
     public Dictionary<string, string> ToolRevisions { get; set; } = [];
     public CustomClipProcessing[] Clips { get; set; } = [];
+}
+
+internal sealed record PropSegmenterPackage(string ModelId, string Folder,
+    string CheckpointSha256, double ConfidenceThreshold, int ProximityRadiusAt512)
+{
+    internal static string ModelsRoot => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "IStripperQuickPlayer", "rvm-runtime", "prop-segmenter", "models");
+
+    internal static bool ValidModelId(string value) => value.Length is > 0 and <= 120 &&
+        value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
+    internal static IReadOnlyList<PropSegmenterPackage> Installed()
+    {
+        if (!Directory.Exists(ModelsRoot)) return [];
+        List<PropSegmenterPackage> result = [];
+        foreach (string folder in Directory.EnumerateDirectories(ModelsRoot))
+            if (TryLoad(Path.GetFileName(folder), false, out PropSegmenterPackage? package))
+                result.Add(package);
+        return result.OrderByDescending(value => value.ModelId).ToArray();
+    }
+
+    internal static PropSegmenterPackage? Active(CustomShowConfiguration configuration,
+        bool compatible)
+    {
+        if (!configuration.PropSegmenterEnabled || !compatible) return null;
+        if (configuration.ActivePropSegmenterModelId is not string id ||
+            !TryLoad(id, true, out PropSegmenterPackage? package))
+            throw new InvalidOperationException(
+                "The enabled prop-segmenter package is missing or invalid. Select an installed model in Custom Show Settings.");
+        return package;
+    }
+
+    internal static bool TryLoad(string id, bool verifyCheckpoint,
+        out PropSegmenterPackage? package)
+    {
+        package = null;
+        try
+        {
+            if (!ValidModelId(id)) return false;
+            string folder = Path.Combine(ModelsRoot, id);
+            string manifestPath = Path.Combine(folder, "manifest.json");
+            string checkpoint = Path.Combine(folder, "model.pth");
+            if (!File.Exists(manifestPath) || !File.Exists(checkpoint)) return false;
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            JsonElement root = document.RootElement;
+            if (root.GetProperty("schemaVersion").GetInt32() != 1 ||
+                root.GetProperty("modelId").GetString() != id ||
+                root.GetProperty("architecture").GetString() !=
+                    "deeplabv3-resnet50-binary-v1") return false;
+            string hash = root.GetProperty("checkpointSha256").GetString()!;
+            if (hash.Length != 64 || hash.Any(value => !Uri.IsHexDigit(value))) return false;
+            if (verifyCheckpoint)
+            {
+                string actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    File.ReadAllBytes(checkpoint)));
+                if (!actual.Equals(hash, StringComparison.OrdinalIgnoreCase)) return false;
+                string packageRoot = Path.GetFullPath(folder) + Path.DirectorySeparatorChar;
+                foreach (JsonProperty item in root.GetProperty("files").EnumerateObject())
+                {
+                    string file = Path.GetFullPath(Path.Combine(folder,
+                        item.Name.Replace('/', Path.DirectorySeparatorChar)));
+                    if (!file.StartsWith(packageRoot, StringComparison.OrdinalIgnoreCase) ||
+                        !File.Exists(file)) return false;
+                    string fileHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                        File.ReadAllBytes(file)));
+                    if (!fileHash.Equals(item.Value.GetString(), StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+            }
+            double threshold = root.GetProperty("confidenceThreshold").GetDouble();
+            int radius = root.GetProperty("proximityRadiusAt512").GetInt32();
+            if (threshold is < .1 or > .9 || radius is < 1 or > 128) return false;
+            package = new(id, folder, hash.ToLowerInvariant(), threshold, radius); return true;
+        }
+        catch { return false; }
+    }
 }
 
 internal sealed class CustomShowProcessingScene
@@ -408,7 +494,7 @@ internal sealed class CustomShowStore
     static readonly HashSet<string> ClipTypeValues = [.. ClipTypeOptions];
     static readonly HashSet<string> ProcessingAlgorithms =
         ["quality", "fast", "matanyone2", "rvm-matanyone2",
-         "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "sam2matting",
+         "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "rvm-vitmatte-b", "sam2matting",
          // Retained only so already-published shows remain playable.
          "videomama"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
@@ -983,7 +1069,7 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Unknown matting-detail resolution.");
         if (processing.VitMatteInferenceDetailPx is int vitMatteDetail &&
             (processing.Algorithm is not ("vitmatte-s" or "vitmatte-b" or
-                "rvm-vitmatte-s") || vitMatteDetail is not (0 or 512 or 768 or 1024)))
+                "rvm-vitmatte-s" or "rvm-vitmatte-b") || vitMatteDetail is not (0 or 512 or 768 or 1024)))
             throw new InvalidDataException("Unknown ViTMatte inference-detail resolution.");
         if (!BatchSizeValues.Contains(processing.BatchSize))
             throw new InvalidDataException("Unknown processing batch size.");
@@ -992,10 +1078,23 @@ internal sealed class CustomShowStore
         if (sam2Matting && sam2MattingRvmInitializer !=
                 (processing.RvmInitializerAlphaThresholdPercent is int) ||
             processing.RvmInitializerAlphaThresholdPercent is int initializerThreshold &&
-            (processing.Algorithm is not ("rvm-matanyone2" or "rvm-vitmatte-s") &&
+            (processing.Algorithm is not ("rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b") &&
                 processing.MaskEngine != "rvm-sam2" && !sam2MattingRvmInitializer ||
                 initializerThreshold is < 10 or > 90))
             throw new InvalidDataException("Invalid RVM initializer alpha threshold.");
+        bool propCompatible = processing.Algorithm == "rvm-matanyone2" ||
+            sam2MattingRvmInitializer || processing.MaskEngine == "rvm-sam2";
+        bool hasProp = processing.PropSegmenterModelId != null;
+        if (hasProp != (processing.PropSegmenterCheckpointSha256 != null) ||
+            hasProp != (processing.PropSegmenterConfidenceThreshold != null) ||
+            hasProp != (processing.PropSegmenterProximityRadiusAt512 != null) ||
+            hasProp && (!propCompatible ||
+                !PropSegmenterPackage.ValidModelId(processing.PropSegmenterModelId!) ||
+                processing.PropSegmenterCheckpointSha256!.Length != 64 ||
+                processing.PropSegmenterCheckpointSha256.Any(value => !Uri.IsHexDigit(value)) ||
+                processing.PropSegmenterConfidenceThreshold is < .1 or > .9 ||
+                processing.PropSegmenterProximityRadiusAt512 is < 1 or > 128))
+            throw new InvalidDataException("Invalid prop-segmenter processing contract.");
         if (processing.RvmMatAnyoneMaskRefresh &&
             processing.Algorithm != "rvm-matanyone2")
             throw new InvalidDataException(

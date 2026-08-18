@@ -97,9 +97,15 @@ namespace IStripperQuickPlayer.DataModel
             if (getNumberOfPhotos() == 0) return null;
             if (localPhotos.Length > 0)
             {
-                string[] widescreen = localPhotos.Where(IsLandscape).ToArray();
-                string[] candidates = widescreen.Length > 0 ? widescreen : localPhotos;
-                return candidates[Random.Shared.Next(candidates.Length)];
+                int start = Random.Shared.Next(localPhotos.Length);
+                for (int offset = 0; offset < localPhotos.Length; offset++)
+                {
+                    string candidate = localPhotos[
+                        (start + offset) % localPhotos.Length];
+                    if (IsLandscape(candidate))
+                        return candidate;
+                }
+                return localPhotos[start];
             }
             if (data == null) return null;
             Random rnd = new Random();
@@ -148,8 +154,12 @@ namespace IStripperQuickPlayer.DataModel
 
         private static bool IsLandscape(string path)
         {
-            using Image? image = LoadLocalImage(path);
-            return image != null && image.Width > image.Height;
+            try
+            {
+                using Image image = Image.FromFile(path);
+                return image.Width > image.Height;
+            }
+            catch { return false; }
         }
 
         async Task<Bitmap> GetImageBitmapFromUrl( string url)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run RVM over every frame, then refine its masks with ViTMatte-S."""
+"""Run RVM over every frame, then refine its masks with ViTMatte-S or B."""
 import argparse
 import json
 import shutil
@@ -63,19 +63,24 @@ def process(args):
         vitmatte = Path(__file__).with_name("vitmatte_worker.py")
         command = [sys.executable, str(vitmatte), "--source", str(args.source),
             "--output", str(args.output), "--runtime", str(args.runtime),
-            "--mask-folder", str(masks), "--model", "s",
+            "--mask-folder", str(masks), "--model", args.model,
             "--start-ms", str(args.start_ms), "--end-ms", str(args.end_ms),
             "--batch-size", str(args.batch_size), "--max-size", str(args.max_size),
             "--encoder-preset",
             args.encoder_preset, "--compile-cutoff-frames",
             str(args.compile_cutoff_frames)]
-        emit("vitmatte", 30, "Refining the RVM masks with ViTMatte-S...")
+        emit("vitmatte", 30,
+             f"Refining the RVM masks with ViTMatte-{args.model.upper()}...")
         run(command, 30, 70, "vitmatte")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        assert {model.upper() for model in ("s", "b")} == {"S", "B"}
+        print("RVM-ViTMatte S/B worker self-test passed")
+        return
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -83,6 +88,7 @@ def main():
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int, required=True)
     parser.add_argument("--mask-folder", type=Path)
+    parser.add_argument("--model", choices=("s", "b"), default="s")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--max-size", type=int, choices=(0, 512, 768, 1024),
                         default=1024)
