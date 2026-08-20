@@ -131,7 +131,9 @@ internal sealed class CustomClipEditorForm : Form
         playEndMs = durationMs;
         clips = existing.Count == 0
             ? [new CustomShowClip { StartMs = 0, EndMs = durationMs,
-                Hotness = defaultHotness, ClipTypes = [.. defaultTypes] }]
+                Hotness = defaultHotness, ClipTypes = [.. defaultTypes],
+                AlphaThreshold = configuration?.DefaultAlphaThreshold ??
+                    CustomShowClip.DefaultAlphaThreshold }]
             : existing.Select(Clone).ToList();
         usesPerClipMedia = !allowBoundaryEditing && existing.Any(clip => clip.Media != null);
         clipDetection = CloneDetection(existingDetection);

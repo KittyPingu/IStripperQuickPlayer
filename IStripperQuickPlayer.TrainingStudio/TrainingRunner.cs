@@ -5,7 +5,7 @@ namespace IStripperQuickPlayer.TrainingStudio;
 
 internal sealed class TrainingRunner
 {
-    const int TrainingRevision = 2;
+    const int TrainingRevision = 3;
     Process? process;
     internal event Action<string>? Message;
     internal string? PackagePath { get; private set; }
@@ -76,9 +76,15 @@ internal sealed class TrainingRunner
                         ? $"{ratioValue.GetDouble():P0} negatives · " : "";
                     string recall = root.TryGetProperty("validationRecall", out JsonElement recallValue)
                         ? $" · recall {recallValue.GetDouble():0.000}" : "";
+                    string precision = root.TryGetProperty("validationPrecision", out JsonElement precisionValue)
+                        ? $" · precision {precisionValue.GetDouble():0.000}" : "";
+                    string union = root.TryGetProperty("validationRvmUnionDice", out JsonElement unionValue) &&
+                        unionValue.ValueKind == JsonValueKind.Number
+                        ? $" · RVM union {unionValue.GetDouble():0.000}" : "";
                     string threshold = root.TryGetProperty("validationThreshold", out JsonElement thresholdValue)
                         ? $" · threshold {thresholdValue.GetDouble():0.00}" : "";
-                    Message?.Invoke($"{ratio}epoch {epoch.GetInt32()}: validation Dice {dice}{recall}{threshold} {message}".Trim());
+                    Message?.Invoke($"{ratio}epoch {epoch.GetInt32()}: validation Dice {dice}" +
+                        $"{precision}{recall}{union}{threshold} {message}".TrimEnd());
                 }
                 else Message?.Invoke(($"{stage}: {message}").Trim(' ', ':'));
             }

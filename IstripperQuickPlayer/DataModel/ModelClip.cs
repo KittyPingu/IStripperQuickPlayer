@@ -19,7 +19,7 @@ namespace IStripperQuickPlayer
         internal int? clipNumber;
         internal string? customForegroundPath;
         internal string? customAlphaPath;
-        internal int customAlphaThreshold;
+        internal int customAlphaThreshold = CustomShowClip.DefaultAlphaThreshold;
         internal float customEdgeChokePixels = 1;
         internal long customStartMs;
         internal long customEndMs;

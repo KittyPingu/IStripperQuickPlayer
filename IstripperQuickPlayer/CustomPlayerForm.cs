@@ -118,7 +118,8 @@ internal sealed class CustomPlayerForm : Form
 
     internal CustomPlayerForm(string foregroundPath, string alphaPath,
         int playerSizePercent = 40, int volumePercent = 100,
-        int alphaThreshold = 0, int fullOpacityThreshold = 200,
+        int alphaThreshold = CustomShowClip.DefaultAlphaThreshold,
+        int fullOpacityThreshold = 200,
         bool suppressErrorDialog = false, long startMs = 0, long endMs = 0,
         Rectangle? initialBounds = null,
         Task<PreparedPlayback?>? preparedPlayback = null,

@@ -27,6 +27,8 @@ internal sealed class CustomShowConfiguration
         FindSam2MattingPythonExecutable();
     public int SmallPlayerVolume { get; set; } = 100;
     public int LargePlayerVolume { get; set; } = 100;
+    public int DefaultAlphaThreshold { get; set; } =
+        CustomShowClip.DefaultAlphaThreshold;
     public int FullOpacityThreshold { get; set; } = 200;
     public int Sam2FrameCacheSizeGb { get; set; } = 10;
     public int TransNetPreferredBatchSize { get; set; } = 8;
@@ -95,6 +97,8 @@ internal sealed class CustomShowConfiguration
             if (string.IsNullOrWhiteSpace(configuration.Sam2MattingPythonExecutable))
                 configuration.Sam2MattingPythonExecutable =
                     FindSam2MattingPythonExecutable();
+            configuration.DefaultAlphaThreshold = Math.Clamp(
+                configuration.DefaultAlphaThreshold, 0, 255);
             int[] rvmChunks = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
             if (!rvmChunks.Contains(configuration.RvmQualityPreferredChunk))
                 configuration.RvmQualityPreferredChunk = 12;
@@ -424,13 +428,14 @@ internal sealed class CustomClipProcessing
 
 internal sealed class CustomShowClip
 {
+    public const int DefaultAlphaThreshold = 120;
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public long StartMs { get; set; }
     public long EndMs { get; set; }
     public bool Included { get; set; } = true;
     public string Hotness { get; set; } = "NoNudity";
     public string[] ClipTypes { get; set; } = ["Standing"];
-    public int AlphaThreshold { get; set; } = 25;
+    public int AlphaThreshold { get; set; } = DefaultAlphaThreshold;
     public float EdgeChokePixels { get; set; } = 1;
     public string[] DetectionLabels { get; set; } = [];
     public CustomShowSource? Source { get; set; }

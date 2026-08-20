@@ -932,8 +932,10 @@ internal static class CustomShowJobRunner
                     Clips = retainedClips.Values.ToArray()
                 });
         }
+        int alphaThreshold = job.Manifest.Processing?.AutoAcceptedAlphaThreshold
+            ?? configuration.DefaultAlphaThreshold;
         foreach (CustomShowClip clip in clipsToProcess)
-            clip.AlphaThreshold = 25;
+            clip.AlphaThreshold = alphaThreshold;
         long duration = clips.Max(value => value.EndMs);
         if (job.Operation == CustomShowQueueOperation.Append)
         {
@@ -952,7 +954,7 @@ internal static class CustomShowJobRunner
             show.Media.DurationMs = duration;
         }
         show.Processing = Processing(job, result, show.Clips, clipsToProcess,
-            previousProcessing, offset);
+            previousProcessing, offset, configuration.DefaultAlphaThreshold);
         await SaveCover(job, show, staging, queue, token);
         CustomShowStore.WriteJsonAtomic(Path.Combine(staging, "show.json"), show);
         job.ReadyToPublish = true;
@@ -1322,13 +1324,15 @@ internal static class CustomShowJobRunner
     static CustomShowProcessing Processing(CustomShowQueueJob job,
         CustomShowProcessResult result, CustomShowClip[] clips,
         CustomShowClip[] processedClips, CustomShowProcessing? previous,
-        long appendedOffset)
+        long appendedOffset, int defaultAlphaThreshold)
     {
         if (job.Operation == CustomShowQueueOperation.Reprocess && previous != null &&
             processedClips.Length < clips.Count(clip => clip.Included))
             return Clone(previous);
         CustomShowProcessing value = Clone(job.Manifest.Processing!);
-        value.AutoAcceptedAlphaThreshold = 25;
+        value.AutoAcceptedAlphaThreshold =
+            job.Manifest.Processing?.AutoAcceptedAlphaThreshold ??
+                defaultAlphaThreshold;
         value.ProcessedUtc = DateTime.UtcNow;
         value.QuickPlayerVersion = Application.ProductVersion;
         value.ResolvedExecutionMode = result.ExecutionMode;

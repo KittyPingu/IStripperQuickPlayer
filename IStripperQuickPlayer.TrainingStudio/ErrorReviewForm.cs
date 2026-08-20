@@ -32,7 +32,8 @@ internal sealed class ErrorReviewForm : Form
         Label explanation = new()
         {
             Dock = DockStyle.Top, Height = 48, Padding = new Padding(8),
-            Text = "Red shows false-positive pixels; blue shows false-negative pixels. " +
+            Text = "These are diverse errors from the validation split. Red shows false-positive " +
+                "pixels; blue shows false-negative pixels. " +
                 "Reopen an error to correct its label, or create a nearby burst for extra examples."
         };
         Panel left = new() { Dock = DockStyle.Fill, Padding = new Padding(8) };
@@ -132,8 +133,10 @@ internal sealed class ErrorReviewForm : Form
                 bool hidden = hiddenItems.Contains(HiddenKey(kind, sampleId)) ||
                     value.TryGetProperty("hidden", out JsonElement hiddenValue) &&
                     hiddenValue.ValueKind == JsonValueKind.True;
-                result.Add(new ErrorReviewItem(kind, sampleId,
-                    value.GetProperty("errorPixelsAt512").GetInt32(), image, hidden));
+                int errorPixels = value.TryGetProperty("errorPixelsAtInput", out JsonElement inputPixels)
+                    ? inputPixels.GetInt32()
+                    : value.GetProperty("errorPixelsAt512").GetInt32();
+                result.Add(new ErrorReviewItem(kind, sampleId, errorPixels, image, hidden));
             }
         }
         return result;

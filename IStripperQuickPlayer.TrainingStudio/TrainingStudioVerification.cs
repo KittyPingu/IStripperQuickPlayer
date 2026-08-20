@@ -160,7 +160,7 @@ internal static class TrainingStudioVerification
             DatasetStore.WriteJsonAtomic(Path.Combine(review, "review.json"), new Dictionary<string, object>
             {
                 ["false-positive"] = new[] { new { sampleId = positive.Id,
-                    errorPixelsAt512 = 42, image = "fp.png" } },
+                    errorPixelsAtInput = 84, errorPixelsAt512 = 42, image = "fp.png" } },
                 ["false-negative"] = Array.Empty<object>()
             });
             string package = Directory.GetParent(review)!.FullName;
@@ -168,7 +168,7 @@ internal static class TrainingStudioVerification
             File.WriteAllBytes(Path.Combine(package, "model.pth"), [1]);
             IReadOnlyList<ErrorReviewItem> reviewItems = ErrorReviewForm.LoadItems(review);
             if (reviewItems.Count != 1 || reviewItems[0].SampleId != positive.Id ||
-                reviewItems[0].Kind != "false-positive" || reviewItems[0].ErrorPixels != 42 ||
+                reviewItems[0].Kind != "false-positive" || reviewItems[0].ErrorPixels != 84 ||
                 ErrorReviewForm.FindLatest(root) != review ||
                 TrainingRunner.FindLatestPackage(root) != package) return false;
             ErrorReviewForm.MarkHidden(review, "false-positive", positive.Id);

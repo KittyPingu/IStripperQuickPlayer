@@ -110,7 +110,11 @@ internal sealed class CustomShowEditorForm : Form
         AutoSize = true
     };
     readonly CheckBox autoAccept = new()
-        { Text = "Automatically accept result with alpha threshold 25", AutoSize = true };
+    {
+        Text = "Automatically accept result with alpha threshold " +
+            CustomShowClip.DefaultAlphaThreshold,
+        AutoSize = true
+    };
     readonly TextBox processingDetails = new() { ReadOnly = true, Multiline = true,
         Height = 88, ScrollBars = ScrollBars.Vertical, TabStop = false,
         Text = "Recorded in show.json after processing completes." };
@@ -168,6 +172,9 @@ internal sealed class CustomShowEditorForm : Form
         this.queueDraft = queueDraft;
         this.queueDraftAssetOwnerId = queueDraftAssetOwnerId;
         this.restoredSetup = restoredSetup;
+        autoAccept.Text =
+            "Automatically accept result with alpha threshold " +
+            configuration.DefaultAlphaThreshold;
         bool metadataOnly = showId != null && !this.reprocess &&
             queueJobId == null;
         Text = showId == null ? "Create Custom Show" : this.reprocess
@@ -1010,7 +1017,7 @@ internal sealed class CustomShowEditorForm : Form
             processing.MatAnyoneMaxMemoryFrames,
             (int)matAnyoneMaxMemoryFrames.Minimum,
             (int)matAnyoneMaxMemoryFrames.Maximum);
-        autoAccept.Checked = processing.AutoAcceptedAlphaThreshold == 25;
+        autoAccept.Checked = processing.AutoAcceptedAlphaThreshold.HasValue;
     }
 
     static void SelectStartingWith(ComboBox combo, string prefix)
@@ -1325,7 +1332,8 @@ internal sealed class CustomShowEditorForm : Form
                     StartMs = 0,
                     EndMs = checked((long)Math.Round(decoder.Duration * 1000)),
                     Hotness = show.Hotness,
-                    ClipTypes = [.. show.ClipTypes]
+                    ClipTypes = [.. show.ClipTypes],
+                    AlphaThreshold = configuration.DefaultAlphaThreshold
                 }];
             }
             string[] reprocessClipIds = SelectedReprocessClipIds();
@@ -1451,7 +1459,8 @@ internal sealed class CustomShowEditorForm : Form
                         MatAnyoneUseLongTermMemory = selectedPreset is
                             "matanyone2" or "rvm-matanyone2" &&
                             matAnyoneUseLongTermMemory.Checked,
-                        AutoAcceptedAlphaThreshold = autoAccept.Checked ? 25 : null,
+                        AutoAcceptedAlphaThreshold = autoAccept.Checked
+                            ? configuration.DefaultAlphaThreshold : null,
                         Sam2Model = UsesSam2(selectedPreset) ? selectedSam2Model : null,
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null
                     };
@@ -1814,7 +1823,8 @@ internal sealed class CustomShowEditorForm : Form
                         (!reprocess || reprocessClipSet.Contains(clip.Id))).ToArray();
                     if (autoAccept.Checked)
                         foreach (CustomShowClip clip in processedClips)
-                            clip.AlphaThreshold = 25;
+                            clip.AlphaThreshold =
+                                configuration.DefaultAlphaThreshold;
                     if (Appending)
                     {
                         show.Media.DurationMs = checked(existingDuration + media.DurationMs);
@@ -1876,7 +1886,8 @@ internal sealed class CustomShowEditorForm : Form
                         MatAnyoneUseLongTermMemory = selectedPreset is
                             "matanyone2" or "rvm-matanyone2" &&
                             matAnyoneUseLongTermMemory.Checked,
-                        AutoAcceptedAlphaThreshold = autoAccept.Checked ? 25 : null,
+                        AutoAcceptedAlphaThreshold = autoAccept.Checked
+                            ? configuration.DefaultAlphaThreshold : null,
                         Sam2Model = usesSam2 ? selectedSam2Model : null,
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null,
                         ExecutionPolicy = "auto",
@@ -2005,7 +2016,8 @@ internal sealed class CustomShowEditorForm : Form
                 SelectedSam2MattingPromptMode();
             if (algorithm != Sam2MattingSupport.Algorithm && !autoAccept.Checked)
                 throw new InvalidDataException(
-                    "Queued processing requires automatic acceptance at alpha threshold 25.");
+                    "Queued processing requires automatic acceptance at alpha threshold " +
+                    configuration.DefaultAlphaThreshold + ".");
             if (selectedProfile == null)
                 throw new InvalidDataException("Select or create a model profile.");
             CustomShowStore.ValidateProfile(selectedProfile);
@@ -2034,7 +2046,8 @@ internal sealed class CustomShowEditorForm : Form
                     EndMs = checked((long)Math.Round(decoder.Duration * 1000)),
                     Hotness = hotness.SelectedItem?.ToString() ?? "NoNudity",
                     ClipTypes = clipTypes.CheckedItems.Cast<object>()
-                        .Select(value => value.ToString()!).ToArray()
+                        .Select(value => value.ToString()!).ToArray(),
+                    AlphaThreshold = configuration.DefaultAlphaThreshold
                 }];
             }
             CustomShowQueueJob? existing = queueJobId == null
@@ -2189,7 +2202,8 @@ internal sealed class CustomShowEditorForm : Form
                     "matanyone2" or "rvm-matanyone2" &&
                     matAnyoneUseLongTermMemory.Checked,
                 AutoAcceptedAlphaThreshold = algorithm ==
-                    Sam2MattingSupport.Algorithm ? null : 25,
+                    Sam2MattingSupport.Algorithm ? null :
+                        configuration.DefaultAlphaThreshold,
                 Sam2Model = algorithm == "matanyone2" ? SelectedSam2Model() : null,
                 ExecutionPolicy = algorithm == Sam2MattingSupport.Algorithm
                     ? "eager" : "auto",
@@ -2464,7 +2478,8 @@ internal sealed class CustomShowEditorForm : Form
                         EndMs = checked((long)Math.Round(decoder.Duration * 1000)),
                         Hotness = hotness.SelectedItem?.ToString() ?? "NoNudity",
                         ClipTypes = clipTypes.CheckedItems.Cast<object>()
-                            .Select(value => value.ToString()!).ToArray()
+                            .Select(value => value.ToString()!).ToArray(),
+                        AlphaThreshold = configuration.DefaultAlphaThreshold
                     };
                     Progress<int> detectionProgress = new(value => progress.Report(
                         new CustomShowProgress("scene-analysis",
@@ -3812,7 +3827,8 @@ internal sealed class CustomShowDecisionForm : Form
         form.clip.SelectedIndex = 1;
         form.thresholdText.Text = "40";
         return ReferenceEquals(selected, second) && second.AlphaThreshold == 40 &&
-            new CustomShowClip().AlphaThreshold == 25 &&
+            new CustomShowClip().AlphaThreshold ==
+                CustomShowClip.DefaultAlphaThreshold &&
             new CustomShowClip().EdgeChokePixels == 1;
     }
 }
@@ -3962,6 +3978,10 @@ internal sealed class CustomShowSettingsForm : Form
     {
         Minimum = 0, Maximum = 100, DecimalPlaces = 0, Width = 90
     };
+    readonly NumericUpDown defaultAlphaThreshold = new()
+    {
+        Minimum = 0, Maximum = 255, DecimalPlaces = 0, Width = 90
+    };
     readonly Label sam2CacheUsage = new() { AutoSize = true };
     readonly NumericUpDown transNetBatch = new()
     {
@@ -4008,6 +4028,7 @@ internal sealed class CustomShowSettingsForm : Form
             PythonExecutable = current.PythonExecutable,
             SmallPlayerVolume = current.SmallPlayerVolume,
             LargePlayerVolume = current.LargePlayerVolume,
+            DefaultAlphaThreshold = current.DefaultAlphaThreshold,
             FullOpacityThreshold = current.FullOpacityThreshold,
             Sam2FrameCacheSizeGb = current.Sam2FrameCacheSizeGb,
             TransNetPreferredBatchSize = current.TransNetPreferredBatchSize,
@@ -4071,6 +4092,10 @@ internal sealed class CustomShowSettingsForm : Form
             "These settings are shared by all custom-show processing tools.");
         AddPath(general, "Library folder", root, true);
         AddPath(general, "Python executable", python, false);
+        AddChoice(general, "Default alpha threshold", defaultAlphaThreshold);
+        AddExplanation(general, "Default playback transparency",
+            "Applied to newly created and automatically processed clips. " +
+            "Existing clips keep their saved per-clip threshold.");
         AddExplanation(general, "Processing priority",
             "Controls custom-show processing workers only. Normal preserves current behaviour. " +
             "Lower priorities favour playback and desktop responsiveness when resources are busy.");
@@ -4199,6 +4224,8 @@ internal sealed class CustomShowSettingsForm : Form
         buttons.Controls.AddRange([validate, refresh, ok, cancel, validation]);
         layout.Controls.Add(buttons, 0, 1);
         root.Text = Configuration.LibraryRoot; python.Text = Configuration.PythonExecutable;
+        defaultAlphaThreshold.Value = Math.Clamp(
+            Configuration.DefaultAlphaThreshold, 0, 255);
         sam2CacheSize.Value = Math.Clamp(Configuration.Sam2FrameCacheSizeGb, 0, 100);
         transNetBatch.Value = Math.Clamp(Configuration.TransNetPreferredBatchSize, 1, 64);
         transNetCutoff.Value = ClampCutoff(Configuration.TransNetCompileCutoffFrames);
@@ -4505,6 +4532,8 @@ internal sealed class CustomShowSettingsForm : Form
                 throw new FileNotFoundException("Select the Python executable created by setup.", python.Text);
             Configuration.LibraryRoot = Path.GetFullPath(root.Text);
             Configuration.PythonExecutable = Path.GetFullPath(python.Text);
+            Configuration.DefaultAlphaThreshold =
+                (int)defaultAlphaThreshold.Value;
             Configuration.Sam2FrameCacheSizeGb = (int)sam2CacheSize.Value;
             Configuration.TransNetPreferredBatchSize = (int)transNetBatch.Value;
             Configuration.TransNetCompileCutoffFrames = (int)transNetCutoff.Value;
