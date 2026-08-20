@@ -8,6 +8,7 @@ internal sealed class CustomClipTrimForm : Form
     readonly long frameMs;
     readonly int alphaThreshold;
     readonly int fullOpacityThreshold;
+    readonly float edgeChokePixels;
     readonly Controls.PlaybackSeekBar timeline = new()
     {
         Minimum = 0,
@@ -36,13 +37,14 @@ internal sealed class CustomClipTrimForm : Form
 
     internal CustomClipTrimForm(string title, string foregroundPath,
         string alphaPath, CustomClipMedia media, int alphaThreshold,
-        int fullOpacityThreshold)
+        int fullOpacityThreshold, float edgeChokePixels)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
         durationMs = media.DurationMs;
         this.alphaThreshold = alphaThreshold;
         this.fullOpacityThreshold = fullOpacityThreshold;
+        this.edgeChokePixels = edgeChokePixels;
         frameMs = CustomShowStore.TryFrameRate(media.FrameRate, out double fps)
             ? Math.Max(1, (long)Math.Ceiling(1000d / fps)) : 1;
         StartMs = media.PlaybackStartMs;
@@ -179,7 +181,8 @@ internal sealed class CustomClipTrimForm : Form
             playerSizePercent: 45, volumePercent: 0,
             alphaThreshold: alphaThreshold,
             fullOpacityThreshold: fullOpacityThreshold,
-            suppressErrorDialog: true, startMs: 0, endMs: durationMs);
+            suppressErrorDialog: true, startMs: 0, endMs: durationMs,
+            edgeChokePixels: edgeChokePixels);
         player.HoldFinalFrameOnCompletion = true;
         player.SetPaused(paused);
         player.SeekTo(positionMs / 1000d);

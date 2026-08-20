@@ -3480,6 +3480,9 @@ namespace IStripperQuickPlayer
             customAlphaThresholdLabel.Visible = customPlayer != null;
             customAlphaThresholdInput.Visible = customPlayer != null;
             customAlphaThresholdInput.Enabled = customPlayer != null;
+            customEdgeChokeLabel.Visible = customPlayer != null;
+            customEdgeChokeInput.Visible = customPlayer != null;
+            customEdgeChokeInput.Enabled = customPlayer != null;
             UpdatePlaybackControlsEnabled();
         }
 
@@ -6665,7 +6668,9 @@ namespace IStripperQuickPlayer
             cmdPlayPause.Padding = new Padding(8, 2, 8, 3);
             AddFlowControls(playbackRow,
                 cmdRewind, cmdPlayPause, cmdFastForward,
-                lblPlaybackSpeed, cmbPlaybackSpeed);
+                lblPlaybackSpeed, cmbPlaybackSpeed,
+                customAlphaThresholdLabel, customAlphaThresholdInput,
+                customEdgeChokeLabel, customEdgeChokeInput);
 
             TableLayoutPanel timelineRow = new()
             {

@@ -22,8 +22,20 @@ public partial class Form1
     readonly TrackBar customPlayerFullOpacitySlider = new();
     readonly Label customAlphaThresholdLabel = new()
         { Text = "Alpha threshold", AutoSize = true };
-    readonly NumericUpDown customAlphaThresholdInput = new()
-        { Minimum = 0, Maximum = 255, Width = 70 };
+    readonly Controls.PlaybackSeekBar customAlphaThresholdInput = new()
+    {
+        Minimum = 0, Maximum = 255, SmallChange = 1, LargeChange = 10,
+        Width = 150, Height = 32, ShowTimeToolTip = true,
+        AccessibleName = "Custom player alpha threshold"
+    };
+    readonly Label customEdgeChokeLabel = new()
+        { Text = "Edge cleanup", AutoSize = true };
+    readonly Controls.PlaybackSeekBar customEdgeChokeInput = new()
+    {
+        Minimum = 0, Maximum = 16, SmallChange = 1, LargeChange = 4,
+        Value = 4, Width = 150, Height = 32, ShowTimeToolTip = true,
+        AccessibleName = "Custom player edge cleanup"
+    };
     readonly ToolStripMenuItem editCustomShowMenu = new("Edit Custom Show Metadata...");
     readonly ToolStripMenuItem reprocessCustomShowMenu = new("Reprocess Custom Show...");
     readonly ToolStripMenuItem deleteCustomShowMenu = new("Delete Custom Show");
@@ -45,6 +57,17 @@ public partial class Form1
         Width = 46, MaxLength = 3,
         TextAlign = HorizontalAlignment.Right
     };
+    readonly Controls.PlaybackSeekBar customClipEdgeChokeInput = new()
+    {
+        Minimum = 0, Maximum = 16, SmallChange = 1, LargeChange = 4,
+        Value = 4, Dock = DockStyle.Fill, Height = 32,
+        AccessibleName = "Custom clip edge cleanup"
+    };
+    readonly TextBox customClipEdgeChokeText = new()
+    {
+        Width = 46, MaxLength = 4,
+        TextAlign = HorizontalAlignment.Right
+    };
     readonly System.Windows.Forms.Timer customClipAlphaSaveTimer = new()
         { Interval = 250 };
     ToolStripControlHost? customClipAlphaHost;
@@ -57,7 +80,9 @@ public partial class Form1
     ModelCard? customPlayerCard;
     ModelClip? customPlayerClip;
     bool loadingCustomAlphaThreshold;
+    bool loadingCustomEdgeChoke;
     bool loadingCustomClipAlphaThreshold;
+    bool loadingCustomClipEdgeChoke;
     bool customClipAlphaDirty;
     bool selectingClipForContextMenu;
     string customPlayerAnimationPath = "";
@@ -75,13 +100,16 @@ public partial class Form1
 
     void SetupCustomShows()
     {
-        customAlphaThresholdLabel.Location = new Point(500, 62);
-        customAlphaThresholdInput.Location = new Point(650, 58);
         customAlphaThresholdLabel.Visible = customAlphaThresholdInput.Visible = false;
-        customAlphaThresholdInput.ValueChanged += (_, _) =>
-            SetCurrentCustomAlphaThreshold((int)customAlphaThresholdInput.Value);
-        panelClip.Controls.Add(customAlphaThresholdLabel);
-        panelClip.Controls.Add(customAlphaThresholdInput);
+        customAlphaThresholdInput.ToolTipFormatter = value => value.ToString();
+        customAlphaThresholdInput.Scroll += (_, _) =>
+            SetCurrentCustomAlphaThreshold(customAlphaThresholdInput.Value);
+        customEdgeChokeLabel.Visible = customEdgeChokeInput.Visible = false;
+        customEdgeChokeInput.ToolTipFormatter = value =>
+            $"{EdgeCleanupText(EdgeCleanupPixels(value))} px";
+        customEdgeChokeInput.Scroll += (_, _) =>
+            SetCurrentCustomEdgeChoke(
+                EdgeCleanupPixels(customEdgeChokeInput.Value));
         SetupCustomPlayerVolumeMenu();
         SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
@@ -129,8 +157,8 @@ public partial class Form1
 
         TableLayoutPanel alphaPanel = new()
         {
-            AutoSize = false, Size = new System.Drawing.Size(310, 62),
-            ColumnCount = 2, RowCount = 2, Padding = new Padding(6, 3, 6, 3)
+            AutoSize = false, Size = new System.Drawing.Size(310, 102),
+            ColumnCount = 2, RowCount = 4, Padding = new Padding(6, 3, 6, 3)
         };
         alphaPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         alphaPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
@@ -143,6 +171,15 @@ public partial class Form1
         alphaPanel.SetColumnSpan(alphaLabel, 2);
         alphaPanel.Controls.Add(customClipAlphaSlider, 0, 1);
         alphaPanel.Controls.Add(customClipAlphaText, 1, 1);
+        Label edgeChokeLabel = new()
+        {
+            Text = "Edge cleanup (0–4 px)", AutoSize = true,
+            Margin = new Padding(3, 5, 3, 0)
+        };
+        alphaPanel.Controls.Add(edgeChokeLabel, 0, 2);
+        alphaPanel.SetColumnSpan(edgeChokeLabel, 2);
+        alphaPanel.Controls.Add(customClipEdgeChokeInput, 0, 3);
+        alphaPanel.Controls.Add(customClipEdgeChokeText, 1, 3);
         customClipAlphaHost = new ToolStripControlHost(alphaPanel)
         {
             AutoSize = false, Size = alphaPanel.Size, Margin = Padding.Empty
@@ -156,6 +193,17 @@ public partial class Form1
         };
         customClipAlphaText.Leave += (_, _) =>
             customClipAlphaText.Text = customClipAlphaSlider.Value.ToString();
+        customClipEdgeChokeInput.Scroll += (_, _) =>
+            ChangeContextClipEdgeChoke(
+                EdgeCleanupPixels(customClipEdgeChokeInput.Value));
+        customClipEdgeChokeText.TextChanged += (_, _) =>
+        {
+            if (float.TryParse(customClipEdgeChokeText.Text, out float pixels))
+                ChangeContextClipEdgeChoke(pixels);
+        };
+        customClipEdgeChokeText.Leave += (_, _) =>
+            customClipEdgeChokeText.Text = EdgeCleanupText(
+                EdgeCleanupPixels(customClipEdgeChokeInput.Value));
         customClipAlphaSaveTimer.Tick += (_, _) =>
         {
             customClipAlphaSaveTimer.Stop();
@@ -210,6 +258,12 @@ public partial class Form1
             customClipAlphaText.Text = custom
                 ? customClipAlphaSlider.Value.ToString() : "";
             loadingCustomClipAlphaThreshold = false;
+            loadingCustomClipEdgeChoke = true;
+            customClipEdgeChokeInput.Value = custom
+                ? EdgeCleanupStep(clip.customEdgeChokePixels) : 4;
+            customClipEdgeChokeText.Text = custom
+                ? EdgeCleanupText(clip.customEdgeChokePixels) : "";
+            loadingCustomClipEdgeChoke = false;
             customClipAlphaDirty = false;
             RefreshContextClipClassificationChecks(custom ? clip : null);
             customClipAlphaHost.Visible = custom;
@@ -380,6 +434,43 @@ public partial class Form1
         }
     }
 
+    void SetCurrentCustomEdgeChoke(float pixels)
+    {
+        if (loadingCustomEdgeChoke || customPlayer == null ||
+            customPlayerCard == null || customPlayerClip == null) return;
+        pixels = Math.Clamp(MathF.Round(pixels * 4) / 4, 0, 4);
+        loadingCustomEdgeChoke = true;
+        customEdgeChokeInput.Value = EdgeCleanupStep(pixels);
+        loadingCustomEdgeChoke = false;
+        customPlayer.SetEdgeChoke(pixels);
+        customPlayerClip.customEdgeChokePixels = pixels;
+        try
+        {
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            CustomShowManifest show = store.LoadManifest(
+                customPlayerCard.customShowId!);
+            int index = customPlayerCard.clips!.IndexOf(customPlayerClip);
+            CustomShowClip[] included = show.Clips.Where(item => item.Included)
+                .ToArray();
+            if (index < 0 || index >= included.Length) return;
+            included[index].EdgeChokePixels = pixels;
+            store.SaveManifest(show);
+        }
+        catch (Exception error)
+        {
+            SetPlaybackStatus("Could not save edge cleanup: " + error.Message);
+        }
+    }
+
+    static int EdgeCleanupStep(float pixels) =>
+        Math.Clamp((int)MathF.Round(pixels * 4), 0, 16);
+
+    static float EdgeCleanupPixels(int step) =>
+        Math.Clamp(step, 0, 16) / 4f;
+
+    static string EdgeCleanupText(float pixels) =>
+        Math.Clamp(pixels, 0, 4).ToString("0.##");
+
     void ChangeContextClipAlphaThreshold(int value)
     {
         if (loadingCustomClipAlphaThreshold || customClipAlphaCard == null ||
@@ -425,6 +516,8 @@ public partial class Form1
                     "The selected clip no longer matches the saved show.");
             included[index].AlphaThreshold =
                 customClipAlphaClip.customAlphaThreshold;
+            included[index].EdgeChokePixels =
+                customClipAlphaClip.customEdgeChokePixels;
             store.SaveManifest(show);
         }
         catch (Exception error)
@@ -432,6 +525,31 @@ public partial class Form1
             SetPlaybackStatus("Could not save alpha threshold: " +
                 error.Message);
         }
+    }
+
+    void ChangeContextClipEdgeChoke(float pixels)
+    {
+        if (loadingCustomClipEdgeChoke || customClipAlphaCard == null ||
+            customClipAlphaClip == null) return;
+        pixels = Math.Clamp(MathF.Round(pixels * 4) / 4, 0, 4);
+        loadingCustomClipEdgeChoke = true;
+        customClipEdgeChokeInput.Value = EdgeCleanupStep(pixels);
+        customClipEdgeChokeText.Text = EdgeCleanupText(pixels);
+        loadingCustomClipEdgeChoke = false;
+        customClipAlphaClip.customEdgeChokePixels = pixels;
+        customClipAlphaDirty = true;
+        customClipAlphaSaveTimer.Stop();
+        customClipAlphaSaveTimer.Start();
+
+        if (!string.Equals(customPlayerAnimationPath,
+                GetAnimationPath(customClipAlphaClip),
+                StringComparison.OrdinalIgnoreCase)) return;
+        customPlayer?.SetEdgeChoke(pixels);
+        if (customPlayerClip != null)
+            customPlayerClip.customEdgeChokePixels = pixels;
+        loadingCustomEdgeChoke = true;
+        customEdgeChokeInput.Value = EdgeCleanupStep(pixels);
+        loadingCustomEdgeChoke = false;
     }
 
     void RefreshContextClipClassificationChecks(ModelClip? clip)
@@ -534,6 +652,10 @@ public partial class Form1
         loadingCustomAlphaThreshold = true;
         customAlphaThresholdInput.Value = clip.customAlphaThreshold;
         loadingCustomAlphaThreshold = false;
+        loadingCustomEdgeChoke = true;
+        customEdgeChokeInput.Value = EdgeCleanupStep(
+            clip.customEdgeChokePixels);
+        loadingCustomEdgeChoke = false;
     }
 
     void AppendCustomCards(StringBuilder? diagnostics = null)
@@ -1111,7 +1233,8 @@ public partial class Form1
                 CustomShowStore.ResolveRelative(folder, media.Foreground),
                 CustomShowStore.ResolveRelative(folder, media.Alpha), media,
                 included[index].AlphaThreshold,
-                customShowConfiguration.FullOpacityThreshold);
+                customShowConfiguration.FullOpacityThreshold,
+                included[index].EdgeChokePixels);
             DialogResult result;
             try { result = trim.ShowDialog(this); }
             finally { await trim.ClosePreviewAsync(); }
@@ -1289,9 +1412,14 @@ public partial class Form1
         customPlayerCard = card;
         customPlayerClip = clip;
         customPlayer?.SetAlphaThreshold(clip.customAlphaThreshold);
+        customPlayer?.SetEdgeChoke(clip.customEdgeChokePixels);
         loadingCustomAlphaThreshold = true;
         customAlphaThresholdInput.Value = clip.customAlphaThreshold;
         loadingCustomAlphaThreshold = false;
+        loadingCustomEdgeChoke = true;
+        customEdgeChokeInput.Value = EdgeCleanupStep(
+            clip.customEdgeChokePixels);
+        loadingCustomEdgeChoke = false;
     }
 
     bool RequestAnimationPlayback(string animationPath)
@@ -1361,7 +1489,8 @@ public partial class Form1
             customShowConfiguration.FullOpacityThreshold,
             startMs: clip.customStartMs,
             endMs: clip.customEndMs, initialBounds: initialBounds,
-            preparedPlayback: preparedPlayback);
+            preparedPlayback: preparedPlayback,
+            edgeChokePixels: clip.customEdgeChokePixels);
         player.HoldFinalFrameOnCompletion = true;
         player.SetLocked(playerlocked);
         player.SetClickThroughLocked(Properties.Settings.Default.ClickThroughLockedPlayer);
@@ -1492,6 +1621,7 @@ public partial class Form1
             next.customForegroundPath, next.customAlphaPath,
             next.customAlphaThreshold,
             customShowConfiguration.FullOpacityThreshold,
+            next.customEdgeChokePixels,
             next.customStartMs, customPreloadCancellation.Token);
     }
 

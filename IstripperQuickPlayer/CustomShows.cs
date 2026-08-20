@@ -431,6 +431,7 @@ internal sealed class CustomShowClip
     public string Hotness { get; set; } = "NoNudity";
     public string[] ClipTypes { get; set; } = ["Standing"];
     public int AlphaThreshold { get; set; } = 25;
+    public float EdgeChokePixels { get; set; } = 1;
     public string[] DetectionLabels { get; set; } = [];
     public CustomShowSource? Source { get; set; }
     public long? SourceStartMs { get; set; }
@@ -1227,6 +1228,10 @@ internal sealed class CustomShowStore
             if (!HotnessValues.Contains(clip.Hotness)) throw new InvalidDataException("Unknown clip hotness value.");
             if (clip.AlphaThreshold is < 0 or > 255)
                 throw new InvalidDataException("Clip alpha threshold must be 0–255.");
+            if (!float.IsFinite(clip.EdgeChokePixels) ||
+                clip.EdgeChokePixels is < 0 or > 4)
+                throw new InvalidDataException(
+                    "Clip edge cleanup must be 0–4 pixels.");
             if (clip.DetectionLabels == null ||
                 clip.DetectionLabels.Any(label =>
                     !IsValidDetectionLabel(label)) ||
@@ -1398,7 +1403,8 @@ internal sealed class CustomShowStore
                     ? card.name : $"{card.name}:{clip.Id}";
                 return CreateClip(clipName, clipForeground, clipAlpha,
                     size, index + 1, clip.Hotness, clip.ClipTypes,
-                    clip.AlphaThreshold, media.PlaybackStartMs,
+                    clip.AlphaThreshold, clip.EdgeChokePixels,
+                    media.PlaybackStartMs,
                     PlaybackEnd(media));
             }).ToList();
         return card;
@@ -1439,12 +1445,14 @@ internal sealed class CustomShowStore
 
     static ModelClip CreateClip(string name, string foreground, string alpha,
         long size, int number, string hotness, string[] types,
-        int alphaThreshold, long startMs, long endMs) => new()
+        int alphaThreshold, float edgeChokePixels, long startMs,
+        long endMs) => new()
     {
         clipName = name,
         customForegroundPath = foreground,
         customAlphaPath = alpha,
         customAlphaThreshold = alphaThreshold,
+        customEdgeChokePixels = edgeChokePixels,
         customStartMs = startMs,
         customEndMs = endMs,
         size = size,
@@ -1561,7 +1569,7 @@ internal sealed class CustomShowStore
                 Clips =
                 [
                     new() { StartMs = 0, EndMs = 400, Hotness = "NoNudity",
-                        AlphaThreshold = 24,
+                        AlphaThreshold = 24, EdgeChokePixels = 1.25f,
                         ClipTypes = ["Standing"], DetectionLabels = ["General"] },
                     new() { StartMs = 400, EndMs = 600, Included = false,
                         Hotness = "NoNudity", ClipTypes = ["Standing"],
@@ -1670,6 +1678,7 @@ internal sealed class CustomShowStore
                 !roundTrip.ClipDetection.ManuallyEdited ||
                 roundTrip.Clips[0].Media?.PlaybackStartMs != 100 ||
                 roundTrip.Clips[0].Media?.PlaybackEndMs != 300 ||
+                roundTrip.Clips[0].EdgeChokePixels != 1.25f ||
                 !roundTrip.Clips[1].DetectionLabels.SequenceEqual(["Fade"]) ||
                 !roundTrip.Clips[2].DetectionLabels.Contains("Hard Cut"))
             {
@@ -1685,7 +1694,8 @@ internal sealed class CustomShowStore
             using (CustomPlayerForm player = new(
                 ResolveRelative(folder, show.Clips[0].Media!.Foreground),
                 ResolveRelative(folder, show.Clips[0].Media!.Alpha), 10, 0,
-                suppressErrorDialog: true, startMs: 0, endMs: 400))
+                suppressErrorDialog: true, startMs: 0, endMs: 400,
+                edgeChokePixels: show.Clips[0].EdgeChokePixels))
             using (System.Windows.Forms.Timer exercise = new() { Interval = 120 })
             using (System.Windows.Forms.Timer timeout = new() { Interval = 5_000 })
             {
@@ -1741,6 +1751,7 @@ internal sealed class CustomShowStore
                 loadedClips[0].customStartMs != 100 ||
                 loadedClips[0].customEndMs != 300 ||
                 loadedClips[0].customAlphaThreshold != 24 ||
+                loadedClips[0].customEdgeChokePixels != 1.25f ||
                 loadedClips[1].customStartMs != 0 ||
                 loadedClips[1].hotnessCode != HotnessCode.topless)
             {

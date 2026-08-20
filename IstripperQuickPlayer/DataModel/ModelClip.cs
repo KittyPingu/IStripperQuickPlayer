@@ -20,6 +20,7 @@ namespace IStripperQuickPlayer
         internal string? customForegroundPath;
         internal string? customAlphaPath;
         internal int customAlphaThreshold;
+        internal float customEdgeChokePixels = 1;
         internal long customStartMs;
         internal long customEndMs;
     }

@@ -101,6 +101,8 @@ namespace IStripperQuickPlayer
             new("Choose manual items randomly") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackSettingsToolStripMenuItem =
             new("Playback & queue");
+        private readonly ToolStripMenuItem playerSettingsToolStripMenuItem =
+            new("Player");
         private readonly ToolStripMenuItem librarySettingsToolStripMenuItem =
             new("Library & search");
         private readonly ToolStripMenuItem appearanceSettingsToolStripMenuItem =
@@ -792,6 +794,8 @@ namespace IStripperQuickPlayer
                 "Set separate small and large player sizes for standing, table, pole, swing and cage clips.";
             playbackSettingsToolStripMenuItem.ToolTipText =
                 "Configure what plays next and QuickPlayer's playback controls.";
+            playerSettingsToolStripMenuItem.ToolTipText =
+                "Configure iStripper and custom-player playback.";
             enablePlayQueueToolStripMenuItem.ToolTipText =
                 "Show and use the manual and automatic play-next queues.";
             autoQueueLengthToolStripMenuItem.ToolTipText =
@@ -863,14 +867,16 @@ namespace IStripperQuickPlayer
                 randomPlayOrderToolStripMenuItem,
                 avoidRecentRepeatsToolStripMenuItem,
                 new ToolStripSeparator(),
+                playbackHistoryToolStripMenuItem
+            ]);
+            playerSettingsToolStripMenuItem.DropDownItems.AddRange(
+            [
                 iStripperPlayerVolumeMenu,
                 customPlayerVolumeMenu,
                 customPlayerFullOpacityMenu,
                 enablePlaybackControlToolStripMenuItem,
                 alphaCheckpointCacheToolStripMenuItem,
-                alphaCheckpointCacheSizeToolStripMenuItem,
-                new ToolStripSeparator(),
-                playbackHistoryToolStripMenuItem
+                alphaCheckpointCacheSizeToolStripMenuItem
             ]);
             librarySettingsToolStripMenuItem.DropDownItems.AddRange(
             [
@@ -904,6 +910,7 @@ namespace IStripperQuickPlayer
                 allowWheelWhileLockedToolStripMenuItem,
                 new ToolStripSeparator(),
                 playbackSettingsToolStripMenuItem,
+                playerSettingsToolStripMenuItem,
                 librarySettingsToolStripMenuItem,
                 appearanceSettingsToolStripMenuItem
             ]);

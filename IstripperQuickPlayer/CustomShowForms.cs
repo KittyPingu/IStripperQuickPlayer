@@ -3160,6 +3160,7 @@ internal sealed class CustomShowEditorForm : Form
             Hotness = clip.Hotness,
             ClipTypes = [.. clip.ClipTypes],
             AlphaThreshold = clip.AlphaThreshold,
+            EdgeChokePixels = clip.EdgeChokePixels,
             DetectionLabels = [.. clip.DetectionLabels],
             Source = new CustomShowSource { Mode = source.Mode, Path = source.Path },
             SourceStartMs = clip.StartMs,
@@ -3811,7 +3812,8 @@ internal sealed class CustomShowDecisionForm : Form
         form.clip.SelectedIndex = 1;
         form.thresholdText.Text = "40";
         return ReferenceEquals(selected, second) && second.AlphaThreshold == 40 &&
-            new CustomShowClip().AlphaThreshold == 25;
+            new CustomShowClip().AlphaThreshold == 25 &&
+            new CustomShowClip().EdgeChokePixels == 1;
     }
 }
 

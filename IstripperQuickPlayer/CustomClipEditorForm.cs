@@ -49,6 +49,17 @@ internal sealed class CustomClipEditorForm : Form
         Width = 48, MaxLength = 3,
         TextAlign = HorizontalAlignment.Right
     };
+    readonly Controls.PlaybackSeekBar edgeChoke = new()
+    {
+        Minimum = 0, Maximum = 16, SmallChange = 1, LargeChange = 4,
+        Value = 4, Dock = DockStyle.Fill, Height = 32,
+        AccessibleName = "Selected clip edge cleanup"
+    };
+    readonly TextBox edgeChokeText = new()
+    {
+        Width = 48, MaxLength = 4,
+        TextAlign = HorizontalAlignment.Right
+    };
     readonly CheckBox include = new() { Text = "Include this segment as a playable clip",
         AutoSize = true, Checked = true, ThreeState = true, AutoCheck = false };
     readonly Label position = new() { AutoSize = true, Padding = new Padding(6, 8, 6, 0) };
@@ -171,7 +182,7 @@ internal sealed class CustomClipEditorForm : Form
         gridPanel.Controls.Add(grid, 0, 1);
         details.Controls.Add(gridPanel, 0, 0);
         TableLayoutPanel metadata = new() { Dock = DockStyle.Fill,
-            ColumnCount = 1, RowCount = 7, Padding = new Padding(8) };
+            ColumnCount = 1, RowCount = 9, Padding = new Padding(8) };
         metadata.Controls.Add(include);
         metadata.Controls.Add(new Label { Text = "Selected clip hotness", AutoSize = true });
         metadata.Controls.Add(hotness);
@@ -192,6 +203,21 @@ internal sealed class CustomClipEditorForm : Form
         alphaThresholdLabel.Visible = alphaThresholdRow.Visible = usesPerClipMedia;
         metadata.Controls.Add(alphaThresholdLabel);
         metadata.Controls.Add(alphaThresholdRow);
+        Label edgeChokeLabel = new()
+        {
+            Text = "Selected clip edge cleanup (0–4 px)", AutoSize = true
+        };
+        TableLayoutPanel edgeChokeRow = new()
+        {
+            Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2
+        };
+        edgeChokeRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        edgeChokeRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
+        edgeChokeRow.Controls.Add(edgeChoke, 0, 0);
+        edgeChokeRow.Controls.Add(edgeChokeText, 1, 0);
+        edgeChokeLabel.Visible = edgeChokeRow.Visible = usesPerClipMedia;
+        metadata.Controls.Add(edgeChokeLabel);
+        metadata.Controls.Add(edgeChokeRow);
         details.Controls.Add(metadata, 1, 0);
         root.Controls.Add(details, 0, 3);
 
@@ -244,7 +270,9 @@ internal sealed class CustomClipEditorForm : Form
         grid.Columns.Add("heat", "Hotness");
         grid.Columns.Add("types", "Clip types");
         grid.Columns.Add("alpha", "Min alpha");
+        grid.Columns.Add("choke", "Edge cleanup");
         grid.Columns["alpha"]!.Visible = usesPerClipMedia;
+        grid.Columns["choke"]!.Visible = usesPerClipMedia;
         hotness.Items.AddRange(HotnessValues);
         clipTypes.Items.AddRange(ClipTypeValues);
         timeline.DurationMs = durationMs;
@@ -301,6 +329,14 @@ internal sealed class CustomClipEditorForm : Form
         };
         alphaThresholdText.Leave += (_, _) =>
             LoadSelectedAlphaThreshold();
+        edgeChoke.Scroll += (_, _) =>
+            ApplyEdgeChoke(EdgeCleanupPixels(edgeChoke.Value));
+        edgeChokeText.TextChanged += (_, _) =>
+        {
+            if (float.TryParse(edgeChokeText.Text, out float pixels))
+                ApplyEdgeChoke(pixels);
+        };
+        edgeChokeText.Leave += (_, _) => LoadSelectedEdgeChoke();
         addDivider.Click += (_, _) => AddDivider();
         removeDivider.Click += (_, _) => RemoveDivider();
         importSetup.Click += (_, _) => ImportClipSetup();
@@ -442,6 +478,10 @@ internal sealed class CustomClipEditorForm : Form
                 string.Join(", ", clip.ClipTypes),
                 clip.Included && clip.Media != null
                     ? clip.AlphaThreshold.ToString(CultureInfo.InvariantCulture)
+                    : "",
+                clip.Included && clip.Media != null
+                    ? clip.EdgeChokePixels.ToString("0.##",
+                        CultureInfo.InvariantCulture)
                     : "");
             grid.Rows[rowIndex].Tag = i;
         }
@@ -481,6 +521,7 @@ internal sealed class CustomClipEditorForm : Form
             clipTypes.SetItemChecked(i, selected.All(clip =>
                 clip.ClipTypes.Contains(clipTypes.Items[i]!.ToString())));
         LoadSelectedAlphaThreshold(selected);
+        LoadSelectedEdgeChoke(selected);
         loadingMetadata = false;
         hotness.Enabled = clipTypes.Enabled = true;
     }
@@ -522,6 +563,53 @@ internal sealed class CustomClipEditorForm : Form
         }
         loadingMetadata = false;
     }
+
+    void LoadSelectedEdgeChoke(CustomShowClip[]? selected = null)
+    {
+        selected ??= SelectedIndexes.Select(index => clips[index]).ToArray();
+        bool enabled = usesPerClipMedia && selected.Length > 0 &&
+            selected.All(clip => clip.Included && clip.Media != null);
+        edgeChoke.Enabled = edgeChokeText.Enabled = enabled;
+        if (!enabled)
+        {
+            edgeChokeText.Text = "";
+            return;
+        }
+        float[] values = selected.Select(clip => clip.EdgeChokePixels)
+            .Distinct().ToArray();
+        edgeChoke.Value = EdgeCleanupStep(values[0]);
+        edgeChokeText.Text = values.Length == 1
+            ? EdgeCleanupText(values[0]) : "";
+    }
+
+    void ApplyEdgeChoke(float pixels)
+    {
+        if (loadingMetadata || !usesPerClipMedia) return;
+        int[] indexes = SelectedIndexes;
+        if (indexes.Length == 0 || indexes.Any(index =>
+                !clips[index].Included || clips[index].Media == null))
+            return;
+        pixels = Math.Clamp(MathF.Round(pixels * 4) / 4, 0, 4);
+        loadingMetadata = true;
+        edgeChoke.Value = EdgeCleanupStep(pixels);
+        edgeChokeText.Text = EdgeCleanupText(pixels);
+        foreach (int index in indexes)
+        {
+            clips[index].EdgeChokePixels = pixels;
+            UpdateGridMetadata(index);
+        }
+        loadingMetadata = false;
+    }
+
+    static int EdgeCleanupStep(float pixels) =>
+        Math.Clamp((int)MathF.Round(pixels * 4), 0, 16);
+
+    static float EdgeCleanupPixels(int step) =>
+        Math.Clamp(step, 0, 16) / 4f;
+
+    static string EdgeCleanupText(float pixels) =>
+        Math.Clamp(pixels, 0, 4).ToString("0.##",
+            CultureInfo.CurrentCulture);
 
     void SaveSelectedMetadata()
     {
@@ -577,6 +665,11 @@ internal sealed class CustomClipEditorForm : Form
         row.Cells[8].Value = clips[index].Included &&
             clips[index].Media != null
                 ? clips[index].AlphaThreshold.ToString(CultureInfo.InvariantCulture)
+                : "";
+        row.Cells[9].Value = clips[index].Included &&
+            clips[index].Media != null
+                ? clips[index].EdgeChokePixels.ToString("0.##",
+                    CultureInfo.InvariantCulture)
                 : "";
     }
 
@@ -790,6 +883,7 @@ internal sealed class CustomClipEditorForm : Form
             clip.Hotness = metadata.Hotness;
             clip.ClipTypes = [.. metadata.ClipTypes];
             clip.AlphaThreshold = metadata.AlphaThreshold;
+            clip.EdgeChokePixels = metadata.EdgeChokePixels;
         }
         clips.Clear();
         clips.AddRange(rebuilt);
@@ -1109,6 +1203,7 @@ internal sealed class CustomClipEditorForm : Form
         Id = clip.Id, StartMs = clip.StartMs, EndMs = clip.EndMs,
         Included = clip.Included, Hotness = clip.Hotness,
         AlphaThreshold = clip.AlphaThreshold,
+        EdgeChokePixels = clip.EdgeChokePixels,
         ClipTypes = [.. clip.ClipTypes],
         DetectionLabels = [.. clip.DetectionLabels],
         Source = clip.Source == null ? null : new()

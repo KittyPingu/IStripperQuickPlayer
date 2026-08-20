@@ -60,11 +60,13 @@ internal sealed class CustomPlayerForm : Form
     bool? mouseTransparent;
     bool movingWindow;
     int pointerRefreshPending;
+    int visualRefreshPending;
     bool windowConfigured;
     bool preloadRequested;
     int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
         settleStart, settleTarget;
     volatile int alphaThreshold, fullOpacityThreshold;
+    volatile float edgeChokePixels;
     Task playbackTask = Task.CompletedTask;
     long requestedSeekBits = BitConverter.DoubleToInt64Bits(double.NaN);
     long requestedRateBits = BitConverter.DoubleToInt64Bits(1d);
@@ -119,7 +121,8 @@ internal sealed class CustomPlayerForm : Form
         int alphaThreshold = 0, int fullOpacityThreshold = 200,
         bool suppressErrorDialog = false, long startMs = 0, long endMs = 0,
         Rectangle? initialBounds = null,
-        Task<PreparedPlayback?>? preparedPlayback = null)
+        Task<PreparedPlayback?>? preparedPlayback = null,
+        float edgeChokePixels = 1)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
@@ -132,6 +135,7 @@ internal sealed class CustomPlayerForm : Form
         this.volumePercent = Math.Clamp(volumePercent, 0, 100);
         this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
         this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
+        this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
         Text = "QuickPlayer Custom Show";
         AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
@@ -215,9 +219,12 @@ internal sealed class CustomPlayerForm : Form
             bool rendererWasPrepared = renderer != null;
             renderer ??= await Task.Run(() => new PairedRenderer(
                 foregroundPath, alphaPath, alphaThreshold,
-                fullOpacityThreshold), cancellation.Token);
+                fullOpacityThreshold, edgeChokePixels), cancellation.Token);
             prepared?.Dispose();
             renderer.SetVolume(volumePercent);
+            renderer.SetAlphaThreshold(alphaThreshold);
+            renderer.SetFullOpacityThreshold(fullOpacityThreshold);
+            renderer.SetEdgeChoke(edgeChokePixels);
             if (rangeStartSeconds >= RangeEndSeconds)
                 throw new InvalidDataException("The custom clip time range is invalid.");
             if (!rendererWasPrepared)
@@ -261,9 +268,15 @@ internal sealed class CustomPlayerForm : Form
                                 this, EventArgs.Empty));
                         }
                     }
+                    else if (Interlocked.Exchange(
+                            ref visualRefreshPending, 0) != 0)
+                    {
+                        renderer.RefreshCurrentFrame();
+                    }
                     else await Task.Delay(15, cancellation.Token);
                     continue;
                 }
+                Interlocked.Exchange(ref visualRefreshPending, 0);
                 renderer.Play();
                 if (!preloadRequested &&
                     RangeEndSeconds - renderer.CurrentTime <= 5)
@@ -380,6 +393,7 @@ internal sealed class CustomPlayerForm : Form
     {
         alphaThreshold = Math.Clamp(value, 0, 255);
         renderer?.SetAlphaThreshold(alphaThreshold);
+        RequestVisualRefresh();
         UpdateMouseTransparency();
         QueuePointerTransparencyRefresh();
     }
@@ -387,7 +401,19 @@ internal sealed class CustomPlayerForm : Form
     {
         fullOpacityThreshold = Math.Clamp(value, 1, 255);
         renderer?.SetFullOpacityThreshold(fullOpacityThreshold);
+        RequestVisualRefresh();
     }
+    internal void SetEdgeChoke(float pixels)
+    {
+        edgeChokePixels = Math.Clamp(pixels, 0, 4);
+        renderer?.SetEdgeChoke(edgeChokePixels);
+        RequestVisualRefresh();
+        UpdateMouseTransparency();
+        QueuePointerTransparencyRefresh();
+    }
+
+    void RequestVisualRefresh() =>
+        Interlocked.Exchange(ref visualRefreshPending, 1);
     internal void SetSizePercent(int percent, int minimumPercent = 10,
         bool notifyChange = true)
     {
@@ -424,10 +450,11 @@ internal sealed class CustomPlayerForm : Form
 
     internal static Task<PreparedPlayback?> PrepareAsync(string foregroundPath,
         string alphaPath, int alphaThreshold, int fullOpacityThreshold,
-        long startMs, CancellationToken cancellationToken) => Task.Run(() =>
+        float edgeChokePixels, long startMs,
+        CancellationToken cancellationToken) => Task.Run(() =>
         {
             PairedRenderer renderer = new(foregroundPath, alphaPath,
-                alphaThreshold, fullOpacityThreshold);
+                alphaThreshold, fullOpacityThreshold, edgeChokePixels);
             try
             {
                 renderer.Seek(Math.Max(0, startMs / 1000d));
@@ -449,7 +476,25 @@ internal sealed class CustomPlayerForm : Form
             point.X >= ClientSize.Width || point.Y >= ClientSize.Height) return false;
         int x = Math.Min(alpha.Width - 1, point.X * alpha.Width / ClientSize.Width);
         int y = Math.Min(alpha.Height - 1, point.Y * alpha.Height / ClientSize.Height);
-        return IsVisibleAlpha(alpha.Pixels[y * alpha.Width + x], alphaThreshold);
+        return IsVisibleAlpha(ChokedHitTestAlpha(alpha, x, y), alphaThreshold);
+    }
+
+    byte ChokedHitTestAlpha(AlphaHitMap alpha, int x, int y)
+    {
+        if (renderer == null || edgeChokePixels <= 0)
+            return alpha.Pixels[y * alpha.Width + x];
+        int radius = Math.Max(1, (int)Math.Ceiling(
+            edgeChokePixels * alpha.Width / renderer.Width));
+        byte value = 255;
+        for (int offsetY = -radius; offsetY <= radius; offsetY += radius)
+            for (int offsetX = -radius; offsetX <= radius; offsetX += radius)
+            {
+                int sampleX = Math.Clamp(x + offsetX, 0, alpha.Width - 1);
+                int sampleY = Math.Clamp(y + offsetY, 0, alpha.Height - 1);
+                value = Math.Min(value,
+                    alpha.Pixels[sampleY * alpha.Width + sampleX]);
+            }
+        return value;
     }
 
     void UpdateMouseTransparency()
@@ -735,6 +780,7 @@ internal sealed class CustomPlayerForm : Form
         ApplyOpacityThresholds(200, 20, 200) == 255 &&
         ApplyOpacityThresholds(99, 100, 50) == 0 &&
         ApplyOpacityThresholds(100, 100, 50) == 255 &&
+        PairedRenderer.VerifyShader() &&
         PairedRenderer.Alpha16ToByte(0) == 0 &&
         PairedRenderer.Alpha16ToByte(32768) == 128 &&
         PairedRenderer.Alpha16ToByte(65535) == 255 &&
@@ -804,10 +850,12 @@ internal sealed class CustomPlayerForm : Form
         const string Shader = """
             struct O { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
             O VSMain(uint id:SV_VertexID) { O o; float2 uv=float2((id<<1)&2,id&2); o.uv=uv; o.p=float4(uv.x*2-1,1-uv.y*2,0,1); return o; }
-            Texture2D<float> Y:register(t0); Texture2D<float> U:register(t1); Texture2D<float> V:register(t2); Texture2D<float> A:register(t3); Texture2D<float2> T:register(t4);
+            Texture2D<float> Y:register(t0); Texture2D<float> U:register(t1); Texture2D<float> V:register(t2); Texture2D<float> A:register(t3); Texture2D<float4> T:register(t4);
             SamplerState S:register(s0);
             float4 PSMain(O i):SV_TARGET { float y=1.16438356*(Y.Sample(S,i.uv)-16.0/255.0); float u=U.Sample(S,i.uv)-.5; float v=V.Sample(S,i.uv)-.5;
-              float3 c=float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u); float a=A.Sample(S,i.uv); float2 t=T.Load(int3(0,0,0)); a=a<t.r?0:a>=t.g?1:a; return float4(saturate(c)*a,a); }
+              float3 c=float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;
+              if(r>0){uint aw,ah;A.GetDimensions(aw,ah);float2 d=r/float2(aw,ah);a=min(a,A.Sample(S,i.uv+float2(d.x,0)));a=min(a,A.Sample(S,i.uv-float2(d.x,0)));a=min(a,A.Sample(S,i.uv+float2(0,d.y)));a=min(a,A.Sample(S,i.uv-float2(0,d.y)));a=min(a,A.Sample(S,i.uv+d));a=min(a,A.Sample(S,i.uv-d));a=min(a,A.Sample(S,i.uv+float2(d.x,-d.y)));a=min(a,A.Sample(S,i.uv+float2(-d.x,d.y)));}
+              a=a<t.r?0:a>=t.g?1:a; return float4(saturate(c)*a,a); }
             """;
         readonly FfmpegCpuDecoder rgb, alpha;
         readonly InternalAudioPlayer? audio;
@@ -821,9 +869,11 @@ internal sealed class CustomPlayerForm : Form
         ID3D11SamplerState? sampler; ID3D11VertexShader? vs; ID3D11PixelShader? ps;
         IDCompositionDevice? composition; IDCompositionTarget? compositionTarget;
         IDCompositionVisual? visual;
-        bool pending, playing, disposed; long rgbTick, alphaTick;
+        bool pending, playing, disposed, frameUploaded; long rgbTick, alphaTick;
         int alphaThreshold, fullOpacityThreshold;
-        int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1;
+        float edgeChokePixels;
+        int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1,
+            uploadedEdgeChokeQuarters = -1;
         double clockSeconds, rate = 1;
         readonly byte[] alphaRow;
         readonly bool alpha16;
@@ -834,10 +884,12 @@ internal sealed class CustomPlayerForm : Form
         internal double PlaybackRate { get { lock (sync) return rate; } set { lock (sync) { UpdateClock(); rate = value; audio?.SetRate(value, clockSeconds, playing); } } }
 
         internal PairedRenderer(string foreground, string alphaPath,
-            int alphaThreshold, int fullOpacityThreshold)
+            int alphaThreshold, int fullOpacityThreshold,
+            float edgeChokePixels)
         {
             this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
             this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
+            this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
             rgb = new FfmpegCpuDecoder(foreground);
             try { alpha = new FfmpegCpuDecoder(alphaPath); }
             catch { rgb.Dispose(); throw; }
@@ -867,7 +919,7 @@ internal sealed class CustomPlayerForm : Form
             yTex = Texture(Width, Height); uTex = Texture((Width+1)/2, (Height+1)/2);
             vTex = Texture((Width+1)/2, (Height+1)/2); aTex = Texture(Width, Height,
                 alpha16 ? DxgiFormat.R16_UNorm : DxgiFormat.R8_UNorm);
-            thresholdTex = Texture(1, 1, DxgiFormat.R8G8_UNorm);
+            thresholdTex = Texture(1, 1, DxgiFormat.R8G8B8A8_UNorm);
             yView=device.CreateShaderResourceView(yTex); uView=device.CreateShaderResourceView(uTex);
             vView=device.CreateShaderResourceView(vTex); aView=device.CreateShaderResourceView(aTex);
             thresholdView=device.CreateShaderResourceView(thresholdTex);
@@ -890,6 +942,17 @@ internal sealed class CustomPlayerForm : Form
             Volatile.Write(ref alphaThreshold, Math.Clamp(value, 0, 255));
         internal void SetFullOpacityThreshold(int value) =>
             Volatile.Write(ref fullOpacityThreshold, Math.Clamp(value, 1, 255));
+        internal void SetEdgeChoke(float pixels) =>
+            Volatile.Write(ref edgeChokePixels, Math.Clamp(pixels, 0, 4));
+        internal bool RefreshCurrentFrame()
+        {
+            lock (sync)
+            {
+                if (!frameUploaded) return false;
+                DrawCurrentFrameLocked();
+                return true;
+            }
+        }
         internal unsafe bool TryRenderDue(bool captureHitMap,
             out AlphaHitMap? alphaBytes)
         {
@@ -903,13 +966,18 @@ internal sealed class CustomPlayerForm : Form
                 if(Math.Abs(rgbTick-alphaTick)>Math.Max(10_000,frame/2)) throw new InvalidDataException("Foreground and alpha timestamps do not match.");
                 rgb.ValidateGpuFrame(); (IntPtr yd,uint yp)=rgb.Plane(0); (IntPtr ud,uint up)=rgb.Plane(1); (IntPtr vd,uint vp)=rgb.Plane(2); (IntPtr ad,uint ap)=alpha.GrayPlane();
                 context!.UpdateSubresource(yTex!,0,null,yd,yp,0); context.UpdateSubresource(uTex!,0,null,ud,up,0); context.UpdateSubresource(vTex!,0,null,vd,vp,0); context.UpdateSubresource(aTex!,0,null,ad,ap,0);
-                int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold); if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold){ushort value=(ushort)(lower|(upper<<8));context.UpdateSubresource(thresholdTex!,0,null,new IntPtr(&value),2,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;}
-                context.OMSetRenderTargets(target!); context.RSSetViewport(new GpuViewport(0,0,back!.Description.Width,back.Description.Height)); context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-                context.VSSetShader(vs); context.PSSetShader(ps); context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView); context.PSSetShaderResource(3,aView); context.PSSetShaderResource(4,thresholdView); context.PSSetSampler(0,sampler); context.Draw(3,0);
-                context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3); context.PSUnsetShaderResource(4); swap!.Present(1,PresentFlags.None);
+                frameUploaded=true;
+                DrawCurrentFrameLocked();
                 if(captureHitMap) alphaBytes=CreateHitMap(ad,ap);
                 pending=false; return true;
             }
+        }
+        unsafe void DrawCurrentFrameLocked()
+        {
+            int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4); if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters){uint value=(uint)(lower|(upper<<8)|(chokeQuarters<<16));context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(&value),4,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;}
+            context!.OMSetRenderTargets(target!); context.RSSetViewport(new GpuViewport(0,0,back!.Description.Width,back.Description.Height)); context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+            context.VSSetShader(vs); context.PSSetShader(ps); context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView); context.PSSetShaderResource(3,aView); context.PSSetShaderResource(4,thresholdView); context.PSSetSampler(0,sampler); context.Draw(3,0);
+            context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3); context.PSUnsetShaderResource(4); swap!.Present(1,PresentFlags.None);
         }
         AlphaHitMap CreateHitMap(IntPtr alphaPlane, uint pitch)
         {
@@ -935,6 +1003,20 @@ internal sealed class CustomPlayerForm : Form
         }
         internal static byte Alpha16ToByte(ushort value) =>
             (byte)((value + 128u) / 257u);
+        internal static bool VerifyShader()
+        {
+            try
+            {
+                return !Compiler.Compile(Shader, "VSMain", "CustomPlayer.hlsl",
+                    "vs_5_0", ShaderFlags.OptimizationLevel3).IsEmpty &&
+                    !Compiler.Compile(Shader, "PSMain", "CustomPlayer.hlsl",
+                        "ps_5_0", ShaderFlags.OptimizationLevel3).IsEmpty;
+            }
+            catch
+            {
+                return false;
+            }
+        }
         bool DecodePair()
         {
             bool rgbDecoded = false, alphaDecoded = false;
