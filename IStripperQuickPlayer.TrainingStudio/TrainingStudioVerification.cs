@@ -122,6 +122,38 @@ internal static class TrainingStudioVerification
             using (Bitmap bitmap = new(2, 2)) bitmap.Save(previewSource, ImageFormat.Png);
             using (Bitmap preview = TrainingStudioForm.LoadUnlockedImage(previewSource))
                 File.Move(previewSource, Path.Combine(root, "preview-moved.png"));
+            string historyRoot = Path.Combine(root, "history");
+            DatasetStore historyStore = new(historyRoot);
+            VideoSource historySource = new() { Id = "history-source", Path = sourcePath,
+                DurationMs = 100_000, Width = 2, Height = 2, FramesPerSecond = 30, Split = "train" };
+            historyStore.Dataset.Sources.Add(historySource);
+            TrainingSample olderHistory = new() { SourceId = historySource.Id, Split = "train",
+                TimestampMs = 40_000, Width = 2, Height = 2 };
+            olderHistory.FramePath = CreateDraftFrame(historyStore, olderHistory);
+            historyStore.Dataset.Samples.Add(olderHistory); historyStore.SaveSample(olderHistory);
+            historyStore.Accept(olderHistory, [0, 7, 7, 0], [prop], "verification");
+            olderHistory.ReviewedUtc = DateTime.UtcNow.AddMinutes(-2); historyStore.SaveSample(olderHistory);
+            TrainingSample newerHistory = new() { SourceId = historySource.Id, Split = "train",
+                TimestampMs = 50_000, Width = 2, Height = 2 };
+            newerHistory.FramePath = CreateDraftFrame(historyStore, newerHistory);
+            historyStore.Dataset.Samples.Add(newerHistory); historyStore.SaveSample(newerHistory);
+            historyStore.Accept(newerHistory, new int[4], [], "confirmed-negative");
+            if (!historyStore.AcceptedHistory().Select(value => value.Id)
+                    .SequenceEqual([newerHistory.Id, olderHistory.Id])) return false;
+            using (Bitmap overlay = DatasetHistoryForm.CreateMaskOverlay(
+                       historyStore.Resolve(olderHistory.FramePath!),
+                       historyStore.Resolve(olderHistory.PropMaskPath!)))
+            {
+                Color foregroundOverlay = overlay.GetPixel(1, 0);
+                if (overlay.Width != 2 || overlay.Height != 2 || foregroundOverlay.R < 140 ||
+                    foregroundOverlay.B < 140 || foregroundOverlay.G > 30) return false;
+            }
+            string deletedFolder = Path.GetDirectoryName(historyStore.Resolve(newerHistory.FramePath!))!;
+            historyStore.DeleteAcceptedSample(newerHistory);
+            if (newerHistory.Decision != "rejected" || newerHistory.FramePath != null ||
+                newerHistory.PropMaskPath != null || Directory.Exists(deletedFolder) ||
+                historyStore.AcceptedHistory().Single().Id != olderHistory.Id ||
+                !File.Exists(historyStore.RecordPath(newerHistory.Id))) return false;
             string review = Path.Combine(root, "runs", "verification", "package", "review");
             Directory.CreateDirectory(review);
             using (Bitmap bitmap = new(2, 2)) bitmap.Save(Path.Combine(review, "fp.png"), ImageFormat.Png);

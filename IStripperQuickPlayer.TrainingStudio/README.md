@@ -29,6 +29,10 @@ videos to the selected folder; unchanged videos are skipped and new videos are
 added to the persisted index.
 Changing the active folder immediately loads a candidate from it. Drafts belonging
 to other folders remain preserved and reappear when their folder is active again.
+**Dataset history** lists accepted samples newest-first and previews each saved
+frame with its binary prop mask overlaid. Incorrect samples can be deleted from
+training data there; their source/timestamp ledger entry is retained as rejected
+so they are not sampled again.
 The shared `prop_segmenter.py` helper is deployed beside the RVM worker under
 `custom-shows`, where both RVM preview and model training can import it.
 

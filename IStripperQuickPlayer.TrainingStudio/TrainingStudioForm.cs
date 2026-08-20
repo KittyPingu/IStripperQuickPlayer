@@ -10,6 +10,7 @@ internal sealed class TrainingStudioForm : Form
     readonly TextBox datasetPath = new() { Width = 430 };
     readonly ComboBox activeSource = new() { Width = 300, DropDownStyle = ComboBoxStyle.DropDownList };
     readonly Button rescanSource = new() { Text = "Rescan", AutoSize = true, Enabled = false };
+    readonly Button history = new() { Text = "Dataset history", AutoSize = true, Enabled = false };
     readonly PictureBox preview = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom,
         BackColor = Color.FromArgb(30, 30, 30) };
     readonly Label candidateInfo = new() { Dock = DockStyle.Top, Height = 44, AutoEllipsis = true };
@@ -49,6 +50,7 @@ internal sealed class TrainingStudioForm : Form
     readonly Queue<string> previewOrder = new();
     int previewGeneration;
     readonly object prefetchCancellationGate = new();
+    CancellationTokenSource? nextFramePrefetchCancellation;
     CancellationTokenSource? queueFillCancellation;
     Task nextFramePrefetch = Task.CompletedTask;
     volatile bool queueIsDecoding;
@@ -66,7 +68,7 @@ internal sealed class TrainingStudioForm : Form
         Button indexFolder = new() { Text = "Index video folder", AutoSize = true };
         FlowLayoutPanel top = new() { Dock = DockStyle.Top, Height = 44, Padding = new(6) };
         top.Controls.AddRange([new Label { Text = "Dataset", AutoSize = true, Padding = new(0, 8, 0, 0) },
-            datasetPath, openDataset, indexFolder, queueStatus]);
+            datasetPath, openDataset, indexFolder, history, queueStatus]);
         FlowLayoutPanel reviewActions = new() { Dock = DockStyle.Top, Height = 44, Padding = new(6) };
         reviewActions.Controls.AddRange([
             rescanSource,
@@ -116,14 +118,15 @@ internal sealed class TrainingStudioForm : Form
 
         openDataset.Click += (_, _) => ChooseDataset();
         indexFolder.Click += async (_, _) => await IndexFolderAsync();
+        history.Click += (_, _) => OpenDatasetHistory();
         rescanSource.Click += async (_, _) => await RescanActiveFolderAsync();
         activeSource.SelectedIndexChanged += async (_, _) =>
         {
             if (refreshingSourceFolders || store == null || activeSource.SelectedItem is not string folder ||
                 string.Equals(store.Dataset.ActiveSourceFolder, folder, StringComparison.OrdinalIgnoreCase)) return;
-            store.SetActiveSourceFolder(folder);
             activeBurstId = null; ClearPrefetchQueue(); ClearCurrent();
-            status.Text = $"Active video source: {folder}";
+            status.Text = $"Switching active video source to {folder}";
+            store.SetActiveSourceFolder(folder);
             await NextAsync();
         };
         next.Click += async (_, _) => await NextAsync();
@@ -162,7 +165,9 @@ internal sealed class TrainingStudioForm : Form
     {
         try
         {
+            ClearPrefetchQueue(); ClearCurrent();
             store = new DatasetStore(path); RefreshSourceFolders(); UpdateStats(); UpdateUndoDecision();
+            history.Enabled = true;
             openReview.Enabled = ErrorReviewForm.FindLatest(store.Root) != null;
             installPackagePath = TrainingRunner.FindLatestPackage(store.Root);
             install.Enabled = installPackagePath != null;
@@ -171,19 +176,38 @@ internal sealed class TrainingStudioForm : Form
         catch (Exception error) { MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
 
+    void OpenDatasetHistory()
+    {
+        if (store == null) return;
+        using DatasetHistoryForm form = new(store, DeleteHistorySampleAsync);
+        form.ShowDialog(this);
+        UpdateStats(); UpdateUndoDecision();
+    }
+
+    async Task DeleteHistorySampleAsync(TrainingSample sample)
+    {
+        await derivationGate.WaitAsync();
+        try { await Task.Run(() => store!.DeleteAcceptedSample(sample)); }
+        finally { derivationGate.Release(); }
+    }
+
     async Task IndexFolderAsync()
     {
         if (store == null) return;
         using FolderBrowserDialog dialog = new() { Description = "Choose a folder to scan recursively for videos",
             UseDescriptionForTitle = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        bool sourceChanged = false;
         await BusyAsync(async token =>
         {
             int added = await store.IndexFolderAsync(dialog.SelectedPath,
                 new Progress<string>(value => status.Text = value), token);
+            activeBurstId = null; ClearPrefetchQueue(); ClearCurrent();
             status.Text = $"Indexed {added:N0} new video(s). Active source: {dialog.SelectedPath}";
             RefreshSourceFolders(); UpdateStats();
+            sourceChanged = true;
         });
+        if (sourceChanged) await NextAsync();
     }
 
     async Task RescanActiveFolderAsync()
@@ -204,8 +228,7 @@ internal sealed class TrainingStudioForm : Form
                 if (current != null)
                 {
                     TrainingSample displayed = current;
-                    nextFramePrefetch = Task.Run(() => PrefetchNextFrameAsync(displayed,
-                        SelectedMinimumResolution(), prefetchCancellation.Token));
+                    StartNextFramePrefetch(displayed);
                 }
             });
         }
@@ -280,9 +303,27 @@ internal sealed class TrainingStudioForm : Form
         positive.Enabled = negative.Enabled = reject.Enabled = true;
         burst.Enabled = sample.BurstId == null;
         status.Text = "Accept and label, mark as a negative example, or reject.";
+        StartNextFramePrefetch(sample);
+    }
+
+    void StartNextFramePrefetch(TrainingSample sample)
+    {
         int minimumResolution = SelectedMinimumResolution();
+        CancellationTokenSource cancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(prefetchCancellation.Token);
+        lock (prefetchCancellationGate)
+        {
+            nextFramePrefetchCancellation?.Cancel();
+            nextFramePrefetchCancellation = cancellation;
+        }
         nextFramePrefetch = Task.Run(() => PrefetchNextFrameAsync(sample,
-            minimumResolution, prefetchCancellation.Token));
+            minimumResolution, cancellation.Token)).ContinueWith(_ =>
+            {
+                lock (prefetchCancellationGate)
+                    if (ReferenceEquals(nextFramePrefetchCancellation, cancellation))
+                        nextFramePrefetchCancellation = null;
+                cancellation.Dispose();
+            }, TaskScheduler.Default);
     }
 
     bool IsBurstAnchor(TrainingSample sample)
@@ -328,7 +369,7 @@ internal sealed class TrainingStudioForm : Form
             HashSet<string> reserved = CachedPreviewIds(); reserved.Add(editing.Id);
             if (CachedPreviewCount() == 0)
             {
-                SetQueueDecoding(true);
+                SetQueueDecoding(generation, true);
                 try
                 {
                     TrainingSample? nextSample = store.NextCandidate(editing.BurstId,
@@ -343,7 +384,7 @@ internal sealed class TrainingStudioForm : Form
                         reserved.Add(nextSample.Id); CachePreview(nextSample, generation);
                     }
                 }
-                finally { SetQueueDecoding(false); }
+                finally { SetQueueDecoding(generation, false); }
             }
             CancellationTokenSource fill;
             lock (prefetchCancellationGate)
@@ -364,9 +405,14 @@ internal sealed class TrainingStudioForm : Form
         catch { /* Prefetch is opportunistic; ordinary Next handles and reports failures. */ }
     }
 
-    void StopBackgroundQueueFill()
+    void StopPrefetchWork()
     {
-        lock (prefetchCancellationGate) queueFillCancellation?.Cancel();
+        lock (prefetchCancellationGate)
+        {
+            nextFramePrefetchCancellation?.Cancel();
+            queueFillCancellation?.Cancel();
+        }
+        nextFramePrefetch = Task.CompletedTask;
     }
 
     async Task FillPrefetchQueueAsync(string? preferredBurstId, int minimumResolution,
@@ -377,7 +423,7 @@ internal sealed class TrainingStudioForm : Form
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         try
         {
-            SetQueueDecoding(true);
+            SetQueueDecoding(generation, true);
             while (CachedPreviewCount() < 10)
             {
                 token.ThrowIfCancellationRequested();
@@ -393,7 +439,7 @@ internal sealed class TrainingStudioForm : Form
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch { /* The foreground workflow can decode missing frames normally. */ }
-        finally { SetQueueDecoding(false); prefetchFillGate.Release(); }
+        finally { SetQueueDecoding(generation, false); prefetchFillGate.Release(); }
     }
 
     int CachedPreviewCount()
@@ -413,10 +459,11 @@ internal sealed class TrainingStudioForm : Form
 
     void ClearPrefetchQueue()
     {
-        StopBackgroundQueueFill();
+        StopPrefetchWork();
         lock (previewCacheGate)
         {
             previewGeneration++;
+            queueIsDecoding = false;
             foreach (Bitmap bitmap in previewCache.Values) bitmap.Dispose();
             previewCache.Clear();
             previewSamples.Clear(); previewOrder.Clear();
@@ -470,9 +517,14 @@ internal sealed class TrainingStudioForm : Form
         }
     }
 
-    void SetQueueDecoding(bool value)
+    void SetQueueDecoding(int generation, bool value)
     {
-        queueIsDecoding = value; RefreshQueueStatus();
+        lock (previewCacheGate)
+        {
+            if (generation != previewGeneration) return;
+            queueIsDecoding = value;
+        }
+        RefreshQueueStatus();
     }
 
     void RefreshQueueStatus()
@@ -856,7 +908,7 @@ internal sealed class TrainingStudioForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        operationCancellation?.Cancel(); trainingCancellation?.Cancel(); StopBackgroundQueueFill();
+        operationCancellation?.Cancel(); trainingCancellation?.Cancel(); StopPrefetchWork();
         prefetchCancellation.Cancel(); runner?.Cancel();
         preview.Image?.Dispose(); base.OnFormClosing(e);
     }

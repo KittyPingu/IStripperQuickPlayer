@@ -415,6 +415,65 @@ internal sealed class DatasetStore
             value.ReviewedUtc != null)
         .OrderByDescending(value => value.ReviewedUtc).FirstOrDefault();
 
+    internal IReadOnlyList<TrainingSample> AcceptedHistory()
+    {
+        lock (gate)
+            return Dataset.Samples.Where(value => value.Accepted)
+                .OrderByDescending(value => value.ReviewedUtc ?? value.PresentedUtc)
+                .ThenByDescending(value => value.PresentedUtc).ToArray();
+    }
+
+    internal void DeleteAcceptedSample(TrainingSample sample)
+    {
+        if (!sample.Accepted || sample.FramePath == null)
+            throw new InvalidOperationException("Only an accepted sample can be deleted from training data.");
+        string acceptedFolder = Path.GetDirectoryName(Resolve(sample.FramePath))!;
+        string expectedFolder = Path.GetFullPath(Path.Combine(Root, "samples", sample.SourceId, sample.Id));
+        if (!string.Equals(acceptedFolder, expectedFolder, StringComparison.OrdinalIgnoreCase) ||
+            !Directory.Exists(acceptedFolder))
+            throw new InvalidDataException("The accepted sample folder is missing or unsafe.");
+        string stagedFolder = acceptedFolder + ".deleting-" + Guid.NewGuid().ToString("N");
+        Directory.Move(acceptedFolder, stagedFolder);
+
+        string decision = sample.Decision;
+        int objectCount = sample.ObjectCount;
+        string? framePath = sample.FramePath, annotationPath = sample.AnnotationPath;
+        string? editableMaskPath = sample.EditableMaskPath, instanceMaskPath = sample.InstanceMaskPath;
+        string? propMaskPath = sample.PropMaskPath, personMaskPath = sample.RvmPersonMaskPath;
+        string? desiredPath = sample.DesiredForegroundPath, derivationStatus = sample.DerivationStatus;
+        string? derivationError = sample.DerivationError, rvmRevision = sample.RvmRevision;
+        double? rvmThreshold = sample.RvmThreshold;
+        DateTime? reviewedUtc = sample.ReviewedUtc;
+        try
+        {
+            lock (gate)
+            {
+                sample.Decision = "rejected"; sample.ObjectCount = 0;
+                sample.FramePath = null; sample.AnnotationPath = null; sample.EditableMaskPath = null;
+                sample.InstanceMaskPath = null; sample.PropMaskPath = null; sample.RvmPersonMaskPath = null;
+                sample.DesiredForegroundPath = null; sample.DerivationStatus = null;
+                sample.DerivationError = null; sample.RvmRevision = null; sample.RvmThreshold = null;
+                sample.ReviewedUtc = DateTime.UtcNow; SaveSampleLocked(sample);
+            }
+        }
+        catch
+        {
+            lock (gate)
+            {
+                sample.Decision = decision; sample.ObjectCount = objectCount;
+                sample.FramePath = framePath; sample.AnnotationPath = annotationPath;
+                sample.EditableMaskPath = editableMaskPath; sample.InstanceMaskPath = instanceMaskPath;
+                sample.PropMaskPath = propMaskPath; sample.RvmPersonMaskPath = personMaskPath;
+                sample.DesiredForegroundPath = desiredPath; sample.DerivationStatus = derivationStatus;
+                sample.DerivationError = derivationError; sample.RvmRevision = rvmRevision;
+                sample.RvmThreshold = rvmThreshold; sample.ReviewedUtc = reviewedUtc;
+            }
+            Directory.Move(stagedFolder, acceptedFolder);
+            throw;
+        }
+        try { Directory.Delete(stagedFolder, true); } catch { }
+    }
+
     internal void UndoDecision(TrainingSample sample)
     {
         if (sample.Decision is not ("positive" or "negative"))
