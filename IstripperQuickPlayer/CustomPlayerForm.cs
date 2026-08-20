@@ -54,6 +54,7 @@ internal sealed class CustomPlayerForm : Form
         allowWheelWhileLocked;
     bool? mouseTransparent;
     bool movingWindow;
+    int pointerRefreshPending;
     bool windowConfigured;
     bool preloadRequested;
     int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
@@ -99,6 +100,8 @@ internal sealed class CustomPlayerForm : Form
         IntPtr message, IntPtr data);
     [DllImport("user32.dll")]
     static extern short GetKeyState(int key);
+    [DllImport("user32.dll")]
+    static extern bool GetCursorPos(out Point point);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr GetModuleHandle(string? moduleName);
 
@@ -238,7 +241,10 @@ internal sealed class CustomPlayerForm : Form
                     {
                         refreshPausedFrame = false;
                         if (pausedAlpha != null)
+                        {
                             Volatile.Write(ref hitTestAlpha, pausedAlpha);
+                            QueuePointerTransparencyRefresh();
+                        }
                         if (!firstFramePresented)
                         {
                             firstFramePresented = true;
@@ -262,7 +268,10 @@ internal sealed class CustomPlayerForm : Form
                 if (renderer.TryRenderDue(captureHitMap, out AlphaHitMap? alpha))
                 {
                     if (alpha != null)
+                    {
                         Volatile.Write(ref hitTestAlpha, alpha);
+                        QueuePointerTransparencyRefresh();
+                    }
                     if (!firstFramePresented)
                     {
                         firstFramePresented = true;
@@ -331,12 +340,14 @@ internal sealed class CustomPlayerForm : Form
     {
         locked = value;
         UpdateMouseTransparency();
+        QueuePointerTransparencyRefresh();
         UpdateGlobalWheelHook();
     }
     internal void SetClickThroughLocked(bool value)
     {
         clickThroughLocked = value;
         UpdateMouseTransparency();
+        QueuePointerTransparencyRefresh();
         UpdateGlobalWheelHook();
     }
     internal void SetWheelResize(bool value)
@@ -361,6 +372,7 @@ internal sealed class CustomPlayerForm : Form
         alphaThreshold = Math.Clamp(value, 0, 255);
         renderer?.SetAlphaThreshold(alphaThreshold);
         UpdateMouseTransparency();
+        QueuePointerTransparencyRefresh();
     }
     internal void SetFullOpacityThreshold(int value)
     {
@@ -454,9 +466,33 @@ internal sealed class CustomPlayerForm : Form
 
     void SetPointerClickThrough(bool value)
     {
-        if (pointerClickThrough == value) return;
         pointerClickThrough = value;
+        // Revalidate the actual HWND style even when the sampled alpha state is
+        // unchanged. Windows can recreate or alter styles independently of the
+        // last state cached here.
         UpdateMouseTransparency();
+    }
+
+    void QueuePointerTransparencyRefresh()
+    {
+        if (!IsHandleCreated || IsDisposed ||
+            Interlocked.Exchange(ref pointerRefreshPending, 1) != 0) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                Interlocked.Exchange(ref pointerRefreshPending, 0);
+                if (!GetCursorPos(out Point screen)) return;
+                bool inside = RectangleToScreen(ClientRectangle).Contains(screen);
+                bool transparent = inside && !movingWindow &&
+                    !IsAlphaVisible(PointToClient(screen));
+                SetPointerClickThrough(transparent);
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref pointerRefreshPending, 0);
+        }
     }
 
     void UpdateGlobalWheelHook()
@@ -504,7 +540,8 @@ internal sealed class CustomPlayerForm : Form
                 player.IsAlphaVisible(player.PointToClient(mouse.Point));
             bool passThrough = inside &&
                 (player.locked && player.clickThroughLocked || !alphaVisible);
-            player.SetPointerClickThrough(passThrough);
+            if (mouseMessage != WmMouseWheel)
+                player.SetPointerClickThrough(passThrough);
             if (mouseMessage == WmMouseMove)
                 return CallNextHookEx(globalWheelHook, code, message, data);
             if (mouseMessage == WmMouseWheel &&
@@ -513,12 +550,13 @@ internal sealed class CustomPlayerForm : Form
             {
                 int delta = (short)((mouse.MouseData >> 16) & 0xffff);
                 bool control = (GetKeyState(VkControl) & 0x8000) != 0;
-                if (player.HandleWheel(delta, control))
+                if (ShouldHandleHookWheel(player.locked,
+                    player.allowWheelWhileLocked, player.wheelResize, control))
+                {
+                    try { player.BeginInvoke(() => player.HandleWheel(delta, control)); }
+                    catch (InvalidOperationException) { }
                     return new IntPtr(1);
-                player.SetPointerClickThrough(true);
-                player.BeginInvoke(() => player.SetPointerClickThrough(
-                    player.locked && player.clickThroughLocked ||
-                    !player.IsAlphaVisible(player.PointToClient(mouse.Point))));
+                }
             }
         }
         return CallNextHookEx(globalWheelHook, code, message, data);
@@ -543,6 +581,10 @@ internal sealed class CustomPlayerForm : Form
 
     static bool ShouldCaptureWheel(bool insidePlayer, bool alphaVisible) =>
         insidePlayer && alphaVisible;
+
+    static bool ShouldHandleHookWheel(bool locked, bool allowWhileLocked,
+        bool resizeEnabled, bool control) =>
+        (!locked || allowWhileLocked) && (resizeEnabled || control);
 
     static bool IsForwardableMouseMessage(uint message) => message is
         WmMouseMove or WmLeftButtonDown or WmLeftButtonUp or WmRightButtonDown or
@@ -669,6 +711,10 @@ internal sealed class CustomPlayerForm : Form
         !ShouldCaptureWheel(true, false) &&
         ShouldCaptureWheel(true, true) &&
         !ShouldCaptureWheel(false, true) &&
+        ShouldHandleHookWheel(true, true, true, false) &&
+        ShouldHandleHookWheel(true, true, false, true) &&
+        !ShouldHandleHookWheel(true, false, true, false) &&
+        !ShouldHandleHookWheel(false, true, false, false) &&
         ApplyOpacityThresholds(10, 20, 200) == 0 &&
         ApplyOpacityThresholds(100, 20, 200) == 100 &&
         ApplyOpacityThresholds(200, 20, 200) == 255 &&

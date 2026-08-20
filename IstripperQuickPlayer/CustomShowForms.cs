@@ -85,6 +85,16 @@ internal sealed class CustomShowEditorForm : Form
         Text = "Inject persistent new RVM foreground into MatAnyone memory",
         AutoSize = true
     };
+    readonly CheckBox propSegmenterEveryFrame = new()
+    {
+        Text = "Run the trained prop model on every frame",
+        AutoSize = true
+    };
+    readonly CheckBox debugPropContribution = new()
+    {
+        Text = "Generate prop-contribution.mp4 for each processed clip",
+        AutoSize = true
+    };
     readonly TrackBar rvmMatAnyoneRefreshStrength = new()
         { Minimum = 25, Maximum = 100, Value = 100, TickFrequency = 5,
           SmallChange = 1, LargeChange = 5, Width = 260, Height = 32 };
@@ -119,6 +129,7 @@ internal sealed class CustomShowEditorForm : Form
     int sam2MattingTrackerRow, foregroundConceptsRow, sceneMaskSummaryRow,
         maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
         rvmThresholdRow, rvmMaskRefreshRow, rvmMaskRefreshStrengthRow,
+        rvmPropEveryFrameRow, debugPropContributionRow,
         matAnyoneMemoryRow,
         batchSizeRow, autoAcceptRow, processingDetailsRow;
     int reprocessingRow = -1;
@@ -304,6 +315,10 @@ internal sealed class CustomShowEditorForm : Form
             rvmInitializerThresholdValue));
         rvmMaskRefreshRow = AddRow(processingTable, "RVM mask refresh",
             rvmMatAnyoneMaskRefresh);
+        rvmPropEveryFrameRow = AddRow(processingTable,
+            "Prop model injection", propSegmenterEveryFrame);
+        debugPropContributionRow = AddRow(processingTable,
+            "Debug contribution", debugPropContribution);
         rvmMaskRefreshStrengthRow = AddRow(processingTable,
             "RVM refresh strength", Flow(rvmMatAnyoneRefreshStrength,
                 rvmMatAnyoneRefreshStrengthValue));
@@ -350,6 +365,8 @@ internal sealed class CustomShowEditorForm : Form
             rvmMatAnyoneRefreshStrengthValue.Text =
                 $"{rvmMatAnyoneRefreshStrength.Value}%";
         rvmMatAnyoneMaskRefresh.CheckedChanged += (_, _) =>
+            UpdateProcessingOptions();
+        propSegmenterEveryFrame.CheckedChanged += (_, _) =>
             UpdateProcessingOptions();
         matAnyoneUseLongTermMemory.CheckedChanged += (_, _) =>
         {
@@ -546,6 +563,19 @@ internal sealed class CustomShowEditorForm : Form
             CanProcess;
         rvmInitializerThresholdValue.Enabled = rvmInitializerThreshold.Enabled;
         rvmMatAnyoneMaskRefresh.Enabled = selected == "rvm-matanyone2" && CanProcess;
+        bool rvmVitMatte = selected is "rvm-vitmatte-s" or "rvm-vitmatte-b";
+        propSegmenterEveryFrame.Enabled =
+            (rvmVitMatte || rvmMatAnyoneMaskRefresh.Enabled &&
+                rvmMatAnyoneMaskRefresh.Checked) &&
+            configuration.PropSegmenterEnabled &&
+            configuration.ActivePropSegmenterModelId != null;
+        if (!configuration.PropSegmenterEnabled ||
+            configuration.ActivePropSegmenterModelId == null)
+            propSegmenterEveryFrame.Checked = false;
+        debugPropContribution.Enabled = propSegmenterEveryFrame.Enabled &&
+            propSegmenterEveryFrame.Checked;
+        if (!debugPropContribution.Enabled)
+            debugPropContribution.Checked = false;
         rvmMatAnyoneRefreshStrength.Enabled =
             rvmMatAnyoneRefreshStrengthValue.Enabled =
                 rvmMatAnyoneMaskRefresh.Enabled && rvmMatAnyoneMaskRefresh.Checked;
@@ -569,6 +599,10 @@ internal sealed class CustomShowEditorForm : Form
                 rvmSam2Matting);
             SetRowVisible(processingTable, rvmMaskRefreshRow,
                 selected == "rvm-matanyone2");
+            SetRowVisible(processingTable, rvmPropEveryFrameRow,
+                selected == "rvm-matanyone2" || rvmVitMatte);
+            SetRowVisible(processingTable, debugPropContributionRow,
+                selected == "rvm-matanyone2" || rvmVitMatte);
             SetRowVisible(processingTable, rvmMaskRefreshStrengthRow,
                 selected == "rvm-matanyone2");
             SetRowVisible(processingTable, matAnyoneMemoryRow, matAnyone);
@@ -963,6 +997,9 @@ internal sealed class CustomShowEditorForm : Form
             processing.RvmInitializerAlphaThresholdPercent ?? 40,
             rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
         rvmMatAnyoneMaskRefresh.Checked = processing.RvmMatAnyoneMaskRefresh;
+        propSegmenterEveryFrame.Checked =
+            processing.PropSegmenterEveryFrame;
+        debugPropContribution.Checked = processing.DebugPropContribution;
         rvmMatAnyoneRefreshStrength.Value = Math.Clamp(
             processing.RvmMatAnyoneRefreshStrengthPercent,
             rvmMatAnyoneRefreshStrength.Minimum,
@@ -1026,6 +1063,9 @@ internal sealed class CustomShowEditorForm : Form
             configuration.LastRvmInitializerAlphaThresholdPercent,
             rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
         rvmMatAnyoneMaskRefresh.Checked = configuration.LastRvmMatAnyoneMaskRefresh;
+        propSegmenterEveryFrame.Checked =
+            configuration.LastPropSegmenterEveryFrame;
+        debugPropContribution.Checked = configuration.LastDebugPropContribution;
         rvmMatAnyoneRefreshStrength.Value = Math.Clamp(
             configuration.LastRvmMatAnyoneRefreshStrengthPercent,
             rvmMatAnyoneRefreshStrength.Minimum,
@@ -1054,6 +1094,9 @@ internal sealed class CustomShowEditorForm : Form
         configuration.LastRvmInitializerAlphaThresholdPercent =
             rvmInitializerThreshold.Value;
         configuration.LastRvmMatAnyoneMaskRefresh = rvmMatAnyoneMaskRefresh.Checked;
+        configuration.LastPropSegmenterEveryFrame =
+            propSegmenterEveryFrame.Checked;
+        configuration.LastDebugPropContribution = debugPropContribution.Checked;
         configuration.LastRvmMatAnyoneRefreshStrengthPercent =
             rvmMatAnyoneRefreshStrength.Value;
         configuration.LastMatAnyoneMaxMemoryFrames =
@@ -1137,13 +1180,16 @@ internal sealed class CustomShowEditorForm : Form
         string refresh = value.RvmMatAnyoneMaskRefresh
             ? $"; RVM mask refresh {value.RvmMatAnyoneRefreshStrengthPercent}%"
             : "";
+        string prop = value.PropSegmenterEveryFrame ? "; prop every frame" : "";
+        string propDebug = value.DebugPropContribution
+            ? "; prop contribution video" : "";
         string memory = value.Algorithm is "matanyone2" or "rvm-matanyone2"
             ? $"; memory {value.MatAnyoneMaxMemoryFrames} frames" +
                 (value.MatAnyoneUseLongTermMemory ? " + long-term" : "")
             : "";
         string accepted = value.AutoAcceptedAlphaThreshold is int alpha ?
             $"; automatically accepted at alpha {alpha}" : "";
-        return $"{algorithm}{detailText}; batch {requestedBatch}{effective}{sam2}{mask}{initializer}{refresh}{memory}{accepted}{execution}{encoder}\r\n" +
+        return $"{algorithm}{detailText}; batch {requestedBatch}{effective}{sam2}{mask}{initializer}{refresh}{prop}{propDebug}{memory}{accepted}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -1390,6 +1436,13 @@ internal sealed class CustomShowEditorForm : Form
                             ? rvmInitializerThreshold.Value : null,
                         RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
                             rvmMatAnyoneMaskRefresh.Checked,
+                        PropSegmenterEveryFrame = selectedPreset is
+                            "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
+                                propSegmenterEveryFrame.Checked ||
+                            selectedPreset == "rvm-matanyone2" &&
+                                rvmMatAnyoneMaskRefresh.Checked &&
+                                propSegmenterEveryFrame.Checked,
+                        DebugPropContribution = debugPropContribution.Checked,
                         RvmMatAnyoneRefreshStrengthPercent = selectedPreset ==
                             "rvm-matanyone2" ? rvmMatAnyoneRefreshStrength.Value : 100,
                         MatAnyoneMaxMemoryFrames = selectedPreset is
@@ -1402,6 +1455,11 @@ internal sealed class CustomShowEditorForm : Form
                         Sam2Model = UsesSam2(selectedPreset) ? selectedSam2Model : null,
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null
                     };
+                    ApplyPropSegmenter(draftSetup.Processing,
+                        selectedPreset is "rvm-matanyone2" or
+                            "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
+                        UsesSam2(selectedPreset) &&
+                            selectedMaskEngine == "rvm-sam2");
                     maskDraft.SaveSetup(draftSetup);
                     for (int index = 0; index < clipsToMask.Length; index++)
                     {
@@ -1620,6 +1678,15 @@ internal sealed class CustomShowEditorForm : Form
                                  rvmMatAnyoneMaskRefresh:
                                     selectedPreset == "rvm-matanyone2" &&
                                     rvmMatAnyoneMaskRefresh.Checked,
+                                 propSegmenterEveryFrame:
+                                    selectedPreset is
+                                        "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
+                                            propSegmenterEveryFrame.Checked ||
+                                    selectedPreset == "rvm-matanyone2" &&
+                                        rvmMatAnyoneMaskRefresh.Checked &&
+                                        propSegmenterEveryFrame.Checked,
+                                 debugPropContribution:
+                                    debugPropContribution.Checked,
                                  rvmMatAnyoneRefreshStrengthPercent:
                                     rvmMatAnyoneRefreshStrength.Value,
                                  matAnyoneMaxMemoryFrames:
@@ -1628,7 +1695,12 @@ internal sealed class CustomShowEditorForm : Form
                                     matAnyoneUseLongTermMemory.Checked,
                                  vitMatteInferenceDetailPx: vitMatteDetail,
                                  matAnyoneInteractiveCorrections:
-                                    selectedPreset == "matanyone2");
+                                    selectedPreset == "matanyone2",
+                                 propSegmenterModelPath:
+                                    PropSegmenterPackage.Active(configuration,
+                                        selectedPreset is "rvm-matanyone2" or
+                                            "rvm-vitmatte-s" or
+                                            "rvm-vitmatte-b")?.Folder);
                             if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
                                 !sam2Masks.ContainsKey(clip.Id))
                             {
@@ -1789,6 +1861,13 @@ internal sealed class CustomShowEditorForm : Form
                             ? rvmInitializerThreshold.Value : null,
                         RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
                             rvmMatAnyoneMaskRefresh.Checked,
+                        PropSegmenterEveryFrame = selectedPreset is
+                            "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
+                                propSegmenterEveryFrame.Checked ||
+                            selectedPreset == "rvm-matanyone2" &&
+                                rvmMatAnyoneMaskRefresh.Checked &&
+                                propSegmenterEveryFrame.Checked,
+                        DebugPropContribution = debugPropContribution.Checked,
                         RvmMatAnyoneRefreshStrengthPercent = selectedPreset ==
                             "rvm-matanyone2" ? rvmMatAnyoneRefreshStrength.Value : 100,
                         MatAnyoneMaxMemoryFrames = selectedPreset is
@@ -1827,6 +1906,11 @@ internal sealed class CustomShowEditorForm : Form
                                     selectedMaskEngine is "sam2" or "rvm-sam2"
                             })).ToArray()
                     };
+                    ApplyPropSegmenter(show.Processing,
+                        selectedPreset is "rvm-matanyone2" or
+                            "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
+                        UsesSam2(selectedPreset) &&
+                            selectedMaskEngine == "rvm-sam2");
                     if (reprocess && previousProcessing != null &&
                         processedClips.Length < showClips.Count(clip => clip.Included))
                         show.Processing = previousProcessing;
@@ -2089,6 +2173,13 @@ internal sealed class CustomShowEditorForm : Form
                     ? rvmInitializerThreshold.Value : null,
                 RvmMatAnyoneMaskRefresh = algorithm == "rvm-matanyone2" &&
                     rvmMatAnyoneMaskRefresh.Checked,
+                PropSegmenterEveryFrame = algorithm is
+                    "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
+                        propSegmenterEveryFrame.Checked ||
+                    algorithm == "rvm-matanyone2" &&
+                        rvmMatAnyoneMaskRefresh.Checked &&
+                        propSegmenterEveryFrame.Checked,
+                DebugPropContribution = debugPropContribution.Checked,
                 RvmMatAnyoneRefreshStrengthPercent = algorithm == "rvm-matanyone2"
                     ? rvmMatAnyoneRefreshStrength.Value : 100,
                 MatAnyoneMaxMemoryFrames = algorithm is
@@ -2111,7 +2202,8 @@ internal sealed class CustomShowEditorForm : Form
                         ? "rvm-sam2" : SelectedMaskEngine())
             };
             ApplyPropSegmenter(processingOptions,
-                algorithm == "rvm-matanyone2" ||
+                algorithm is "rvm-matanyone2" or
+                    "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
                 algorithm == Sam2MattingSupport.Algorithm &&
                     promptMode == "rvm-initial-mask" ||
                 algorithm is ("vitmatte-s" or "vitmatte-b") &&
@@ -3880,7 +3972,7 @@ internal sealed class CustomShowSettingsForm : Form
     readonly ComboBox rvmFastChunk = RvmChunkInput();
     readonly NumericUpDown rvmQualityCutoff = CompileCutoffInput();
     readonly NumericUpDown rvmFastCutoff = CompileCutoffInput();
-    readonly CheckBox propSegmenterEnabled = new() { Text = "Use a trained prop segmenter for compatible automatic RVM initializers", AutoSize = true };
+    readonly CheckBox propSegmenterEnabled = new() { Text = "Use a trained prop segmenter for compatible automatic RVM masks", AutoSize = true };
     readonly ComboBox propSegmenterModel = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420 };
     readonly ComboBox nvencPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 90 };
@@ -3948,6 +4040,9 @@ internal sealed class CustomShowSettingsForm : Form
             LastRvmInitializerAlphaThresholdPercent =
                 current.LastRvmInitializerAlphaThresholdPercent,
             LastRvmMatAnyoneMaskRefresh = current.LastRvmMatAnyoneMaskRefresh,
+            LastPropSegmenterEveryFrame =
+                current.LastPropSegmenterEveryFrame,
+            LastDebugPropContribution = current.LastDebugPropContribution,
             LastRvmMatAnyoneRefreshStrengthPercent =
                 current.LastRvmMatAnyoneRefreshStrengthPercent,
             MatAnyoneMemoryDefaultsVersion = current.MatAnyoneMemoryDefaultsVersion,
@@ -4028,7 +4123,7 @@ internal sealed class CustomShowSettingsForm : Form
         AddChoice(rvmTable, "Quality compile minimum", rvmQualityCutoff);
         AddChoice(rvmTable, "Fast compile minimum", rvmFastCutoff);
         AddExplanation(rvmTable, "Prop augmentation",
-            "Training Studio models can add nearby prop pixels to automatic RVM initial masks. " +
+            "Training Studio models can add nearby prop pixels to compatible automatic RVM masks. " +
             "This is opt-in and does not change RVM-only output or manual masks.");
         AddWideControl(rvmTable, propSegmenterEnabled);
         AddChoice(rvmTable, "Active prop model", propSegmenterModel);

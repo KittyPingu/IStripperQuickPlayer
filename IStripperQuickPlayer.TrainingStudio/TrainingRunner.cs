@@ -5,6 +5,7 @@ namespace IStripperQuickPlayer.TrainingStudio;
 
 internal sealed class TrainingRunner
 {
+    const int TrainingRevision = 2;
     Process? process;
     internal event Action<string>? Message;
     internal string? PackagePath { get; private set; }
@@ -28,7 +29,7 @@ internal sealed class TrainingRunner
         Directory.CreateDirectory(output);
         File.WriteAllText(Path.Combine(output, "training-config.json"), JsonSerializer.Serialize(new
         {
-            minimumResolution, inputSize, negativeSelection
+            trainingRevision = TrainingRevision, minimumResolution, inputSize, negativeSelection
         }, new JsonSerializerOptions { WriteIndented = true }));
         string eventsPath = Path.Combine(output, "events.ndjson");
         string errorsPath = Path.Combine(output, "training.stderr.log");
@@ -73,7 +74,11 @@ internal sealed class TrainingRunner
                         ? value.GetDouble().ToString("0.000") : "—";
                     string ratio = root.TryGetProperty("negativeRatio", out JsonElement ratioValue)
                         ? $"{ratioValue.GetDouble():P0} negatives · " : "";
-                    Message?.Invoke($"{ratio}epoch {epoch.GetInt32()}: validation Dice {dice} {message}".Trim());
+                    string recall = root.TryGetProperty("validationRecall", out JsonElement recallValue)
+                        ? $" · recall {recallValue.GetDouble():0.000}" : "";
+                    string threshold = root.TryGetProperty("validationThreshold", out JsonElement thresholdValue)
+                        ? $" · threshold {thresholdValue.GetDouble():0.00}" : "";
+                    Message?.Invoke($"{ratio}epoch {epoch.GetInt32()}: validation Dice {dice}{recall}{threshold} {message}".Trim());
                 }
                 else Message?.Invoke(($"{stage}: {message}").Trim(' ', ':'));
             }
@@ -97,10 +102,13 @@ internal sealed class TrainingRunner
         {
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
             JsonElement root = document.RootElement;
+            int revision = root.TryGetProperty("trainingRevision", out JsonElement revisionValue)
+                ? revisionValue.GetInt32() : 1;
             int savedSize = root.TryGetProperty("inputSize", out JsonElement size) ? size.GetInt32() : 512;
             string savedNegatives = root.TryGetProperty("negativeSelection", out JsonElement negatives)
                 ? negatives.GetString() ?? "compare" : "compare";
-            return root.GetProperty("minimumResolution").GetInt32() == minimumResolution &&
+            return revision == TrainingRevision &&
+                root.GetProperty("minimumResolution").GetInt32() == minimumResolution &&
                 savedSize == inputSize && savedNegatives == negativeSelection;
         }
         catch { return false; }

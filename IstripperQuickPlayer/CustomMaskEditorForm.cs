@@ -119,6 +119,7 @@ internal sealed class CustomMaskEditorForm : Form
     readonly DxgiMaskPreviewControl image = new() { Dock = DockStyle.Fill,
         BackColor = Color.Black,
         Enabled = false, TabStop = true, Cursor = Cursors.Cross,
+        ViewNavigationEnabled = true,
         AccessibleName = "Initial foreground mask image" };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill,
         Height = 60, AllowDividerDragging = false,
@@ -954,14 +955,12 @@ internal sealed class CustomMaskEditorForm : Form
     void Image_MouseWheel(object? sender, MouseEventArgs e)
     {
         if (e.Delta == 0) return;
-        if (paintMode.Checked)
+        if ((ModifierKeys & Keys.Control) != 0 && paintMode.Checked)
         {
             ResizeBrush(e.Delta);
             return;
         }
-        if (playback.Enabled || !allowFrameSelection || updatingMask) return;
-        int frames = Math.Max(1, Math.Abs(e.Delta) / 120);
-        StepFrame(Math.Sign(e.Delta) * frames);
+        image.ZoomAt(e.Location, e.Delta);
     }
 
     void Image_MouseUp(object? sender, MouseEventArgs e)
@@ -1306,7 +1305,9 @@ internal sealed class CustomMaskEditorForm : Form
         bool added = painted.GetPixel(10, 10).R == 255;
         DrawBrush(painted, new PointF(10, 10), new PointF(10, 10), 6, false);
         return IsMostlyBlack(black) && !IsMostlyBlack(white) && added &&
-            painted.GetPixel(10, 10).R == 0;
+            painted.GetPixel(10, 10).R == 0 &&
+            DxgiMaskPreviewControl.AdjustZoom(1, 120) > 1 &&
+            DxgiMaskPreviewControl.AdjustZoom(1, -120) < 1;
     }
 
     static string ResponseError(JsonElement response) =>

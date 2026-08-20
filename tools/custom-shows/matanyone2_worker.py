@@ -33,6 +33,8 @@ PREVIEW_MAXIMUM = (960, 540)
 RVM_REFRESH_MISSING_RATIO = .01
 RVM_REFRESH_PERSISTENCE = 3
 RVM_REFRESH_COOLDOWN = 15
+PROP_REFRESH_PERSISTENCE = 3
+PROP_REFRESH_COOLDOWN = 15
 LONG_TERM_MAX_TOKENS = 4000
 LONG_TERM_BUFFER_TOKENS = 500
 INTERACTIVE_CHECKPOINT_INTERVAL = 250
@@ -231,10 +233,16 @@ def rvm_initializer_offsets(total, fps, maximum_seconds=30):
     return offsets
 
 
-def rvm_refresh_candidate(missing_pixels, rvm_pixels, total_pixels):
-    minimum_pixels = max(16, round(total_pixels * 100 / (512 * 512)))
+def rvm_refresh_candidate(missing_pixels, rvm_pixels, total_pixels,
+                          minimum_at_512=100):
+    minimum_pixels = max(16, round(
+        total_pixels * minimum_at_512 / (512 * 512)))
     return (missing_pixels > minimum_pixels and rvm_pixels > 0 and
             missing_pixels / rvm_pixels > RVM_REFRESH_MISSING_RATIO)
+
+
+def refresh_due(streak, frame, last_refresh, persistence, cooldown):
+    return streak >= persistence and frame - last_refresh >= cooldown
 
 
 def valid_memory_configuration(max_mem_frames, use_long_term):
@@ -255,14 +263,56 @@ def resolved_frame_count(expected, decoded):
 
 
 def corrected_rvm_refresh_mask(torch, matanyone_alpha, rvm_foreground,
-                               refresh_strength=1):
+                               refresh_strength=1, prop_foreground=None):
     if matanyone_alpha.ndim != 2 or rvm_foreground.ndim != 2:
         raise RuntimeError("RVM refresh requires two-dimensional alpha masks")
     inverse = (~rvm_foreground).float()[None, None]
     rvm_core = (1 - torch.nn.functional.max_pool2d(
         inverse, kernel_size=5, stride=1, padding=2))[0, 0]
-    return torch.maximum(matanyone_alpha,
-                         rvm_core * refresh_strength).mul(255)
+    corrected = torch.maximum(matanyone_alpha,
+                              rvm_core * refresh_strength)
+    if prop_foreground is not None:
+        corrected = torch.maximum(
+            corrected, prop_foreground.float() * refresh_strength)
+    return corrected.mul(255)
+
+
+def augment_refresh_foreground(prop_mask, rvm_foreground, proximity_radius):
+    import numpy as np
+    from prop_segmenter import augment_rvm_mask
+    rvm = np.asarray(rvm_foreground, dtype=bool)
+    combined, components, radius = augment_rvm_mask(
+        prop_mask, rvm, proximity_radius)
+    added_pixels = int((combined & ~rvm).sum())
+    return combined, components, radius, added_pixels
+
+
+def prop_contribution_frame(frame, detected, added, injected=False):
+    """Tint retained model support cyan and pixels injected this frame green."""
+    import numpy as np
+    result = np.asarray(frame, dtype=np.uint8).copy()
+    detected = np.asarray(detected, dtype=bool)
+    added = np.asarray(added, dtype=bool)
+    cyan = detected & ~added
+    result[cyan] = (result[cyan].astype(np.uint16) * 2 // 5 +
+                    np.array((0, 153, 153), dtype=np.uint16)).astype(np.uint8)
+    result[added] = (result[added].astype(np.uint16) // 4 +
+                     np.array((0, 191, 0), dtype=np.uint16)).astype(np.uint8)
+    if injected:
+        thickness = max(2, min(result.shape[:2]) // 128)
+        result[:thickness, :] = (0, 255, 0)
+        result[-thickness:, :] = (0, 255, 0)
+        result[:, :thickness] = (0, 255, 0)
+        result[:, -thickness:] = (0, 255, 0)
+    return result
+
+
+def prop_contribution_encoder(ffmpeg, destination, frame_rate, width, height):
+    return subprocess.Popen([ffmpeg, "-y", "-v", "warning", "-f", "rawvideo",
+        "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", frame_rate,
+        "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "veryfast",
+        "-crf", "18", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-pix_fmt", "yuv420p", str(destination)], stdin=subprocess.PIPE)
 
 
 def automatic_rvm_mask(source, runtime, start, frame_rate, fps, total,
@@ -471,6 +521,9 @@ class FrameSlot:
         self.download_done = None
         self.gpu_timings = []
         self.direct_alpha = None
+        self.prop_detected = None
+        self.prop_added = None
+        self.prop_injected = False
 
     def reset(self):
         self.index = -1
@@ -480,6 +533,9 @@ class FrameSlot:
         self.download_done = None
         self.gpu_timings.clear()
         self.direct_alpha = None
+        self.prop_detected = None
+        self.prop_added = None
+        self.prop_injected = False
 
 
 class BoundedPipeline:
@@ -789,8 +845,11 @@ def _process_once(args, compile_enabled):
         transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
         rvm_refresh_model = None
         rvm_refresh_state = [None] * 4
+        prop_refresh = None
         rvm_missing_streak = 0
+        prop_missing_streak = 0
         last_rvm_refresh = -RVM_REFRESH_COOLDOWN
+        last_prop_refresh = -PROP_REFRESH_COOLDOWN
 
         def upload(slot):
             if device.type == "cuda":
@@ -844,8 +903,43 @@ def _process_once(args, compile_enabled):
                     *rvm_refresh_state, downsample_ratio=1)
             return rvm_alpha[0, 0, 0].float().clamp(0, 1)
 
+        def predict_prop_refresh(frame_tensor, rvm_foreground):
+            if prop_refresh is None:
+                return None, {}
+            prop_torch, prop_model, prop_device, prop_manifest, \
+                predict_prop_mask = prop_refresh
+            prop_started = time.perf_counter()
+            predicted_gpu = predict_prop_mask(
+                prop_torch, prop_model, prop_device, frame_tensor,
+                prop_manifest.get("confidenceThreshold", .5),
+                prop_manifest.get("inputSize", 512))
+            predicted, rvm_cpu = torch.stack(
+                (predicted_gpu, rvm_foreground)).to(torch.uint8).cpu().numpy()
+            predicted = predicted != 0
+            rvm_cpu = rvm_cpu != 0
+            profiler.add("prop_inference_download",
+                         time.perf_counter() - prop_started)
+            post_started = time.perf_counter()
+            combined, components, radius, added_pixels = \
+                augment_refresh_foreground(
+                    predicted, rvm_cpu,
+                    prop_manifest.get("proximityRadiusAt512", 24))
+            retained = torch.from_numpy(combined & ~rvm_cpu).to(device)
+            profiler.add("prop_component_filter_upload",
+                         time.perf_counter() - post_started)
+            profiler.add("prop_refresh", time.perf_counter() - prop_started)
+            return retained, {
+                "propModelId": prop_manifest["modelId"],
+                "propComponents": len(components),
+                "propRetainedComponents": sum(
+                    value["retained"] for value in components),
+                "propAddedPixels": added_pixels,
+                "propProximityRadius": radius,
+            }
+
         def step(slot, processor, first_frame=False, allow_rvm_refresh=False):
-            nonlocal rvm_missing_streak, last_rvm_refresh
+            nonlocal rvm_missing_streak, prop_missing_streak
+            nonlocal last_rvm_refresh, last_prop_refresh
             frame_tensor = upload(slot)
             try:
                 if device.type == "cuda":
@@ -865,30 +959,81 @@ def _process_once(args, compile_enabled):
                         ma_alpha = processor.output_prob_to_mask(
                             output_prob).float().clamp(0, 1)
                         rvm_foreground = rvm_alpha > args.rvm_alpha_threshold
-                        missing_pixels = int((rvm_foreground &
+                        rvm_missing_pixels = int((rvm_foreground &
                             (ma_alpha <= .20)).sum().item())
                         rvm_pixels = int(rvm_foreground.sum().item())
-                        if rvm_refresh_candidate(missing_pixels, rvm_pixels,
+                        if rvm_refresh_candidate(rvm_missing_pixels, rvm_pixels,
                                                  rvm_foreground.numel()):
                             rvm_missing_streak += 1
                         else:
                             rvm_missing_streak = 0
-                        if (rvm_missing_streak >= RVM_REFRESH_PERSISTENCE and
-                                slot.index - last_rvm_refresh >=
-                                RVM_REFRESH_COOLDOWN):
+                        prop_foreground, prop_values = (None, {})
+                        prop_missing_pixels = prop_pixels = 0
+                        if args.prop_every_frame:
+                            prop_foreground, prop_values = predict_prop_refresh(
+                                frame_tensor, rvm_foreground)
+                            if prop_foreground is not None:
+                                prop_missing_pixels = int((prop_foreground &
+                                    (ma_alpha <= .20)).sum().item())
+                                prop_pixels = int(prop_foreground.sum().item())
+                                if rvm_refresh_candidate(
+                                        prop_missing_pixels, prop_pixels,
+                                        prop_foreground.numel(), 16):
+                                    prop_missing_streak += 1
+                                else:
+                                    prop_missing_streak = 0
+                        rvm_trigger = refresh_due(
+                            rvm_missing_streak, slot.index, last_rvm_refresh,
+                            RVM_REFRESH_PERSISTENCE, RVM_REFRESH_COOLDOWN)
+                        prop_trigger = args.prop_every_frame and refresh_due(
+                            prop_missing_streak, slot.index, last_prop_refresh,
+                            PROP_REFRESH_PERSISTENCE, PROP_REFRESH_COOLDOWN)
+                        if (args.debug_prop_contribution and
+                                prop_foreground is not None):
+                            slot.prop_detected = prop_foreground.to(
+                                torch.uint8).cpu().numpy() != 0
+                            if prop_trigger:
+                                slot.prop_added = (prop_foreground &
+                                    (ma_alpha <= .20)).to(
+                                        torch.uint8).cpu().numpy() != 0
+                            else:
+                                slot.prop_added = np.zeros(
+                                    slot.prop_detected.shape, dtype=bool)
+                            slot.prop_injected = prop_trigger
+                        if rvm_trigger or prop_trigger:
+                            if (rvm_trigger and prop_refresh is not None and
+                                    not args.prop_every_frame):
+                                prop_foreground, prop_values = \
+                                    predict_prop_refresh(frame_tensor, rvm_foreground)
+                                prop_pixels = 0 if prop_foreground is None else \
+                                    int(prop_foreground.sum().item())
+                            injected_prop = prop_foreground if (
+                                prop_trigger or rvm_trigger and
+                                not args.prop_every_frame) else None
+                            injected_rvm = rvm_foreground if rvm_trigger else \
+                                torch.zeros_like(rvm_foreground)
                             corrected = corrected_rvm_refresh_mask(
-                                torch, ma_alpha, rvm_foreground,
-                                args.rvm_refresh_strength)
+                                torch, ma_alpha, injected_rvm,
+                                args.rvm_refresh_strength, injected_prop)
                             output_prob = processor.step(frame_tensor,
                                 corrected, objects=[1])
                             log_record("rvm_mask_refresh",
                                 frame=slot.index,
-                                missingPixels=missing_pixels,
+                                rvmTriggered=rvm_trigger,
+                                propTriggered=prop_trigger,
+                                missingPixels=rvm_missing_pixels,
                                 rvmPixels=rvm_pixels,
                                 missingRatio=round(
-                                    missing_pixels / max(rvm_pixels, 1), 6))
-                            last_rvm_refresh = slot.index
-                            rvm_missing_streak = 0
+                                    rvm_missing_pixels / max(rvm_pixels, 1), 6),
+                                propMissingPixels=prop_missing_pixels,
+                                propPixels=prop_pixels,
+                                **prop_values)
+                            if rvm_trigger:
+                                last_rvm_refresh = slot.index
+                                rvm_missing_streak = 0
+                            if injected_prop is not None and prop_pixels:
+                                last_prop_refresh = slot.index
+                                prop_missing_streak = 0
                 if device.type == "cuda":
                     end_event.record()
                     slot.gpu_timings.append((
@@ -1156,8 +1301,19 @@ def _process_once(args, compile_enabled):
                 runtime, "quality")
             if rvm_torch is not torch or rvm_device != device:
                 raise RuntimeError("RVM and MatAnyone must use the same processing device")
+            if args.prop_model is not None:
+                emit("startup", progress_base,
+                     "Loading trained prop model for RVM refreshes...")
+                from prop_segmenter import load_package, predict_mask_tensor
+                prop_torch, prop_model, prop_device, prop_manifest = load_package(
+                    args.prop_model, device)
+                if prop_torch is not torch or prop_device != device:
+                    raise RuntimeError(
+                        "Prop segmenter and MatAnyone must use the same processing device")
+                prop_refresh = (prop_torch, prop_model, prop_device,
+                                prop_manifest, predict_mask_tensor)
 
-        decode = encode = None
+        decode = encode = debug_encode = None
         count = 0
         try:
             video_codec, alpha_codec, encoder_name = output_codecs(
@@ -1170,6 +1326,10 @@ def _process_once(args, compile_enabled):
                 encode = alpha_encoder(ffmpeg, output, frame_rate, width, height,
                     total, process_width, process_height, alpha_codec,
                     scale="bilinear")
+            if args.debug_prop_contribution:
+                debug_encode = prop_contribution_encoder(ffmpeg,
+                    output / "prop-contribution.mp4", frame_rate,
+                    process_width, process_height)
             frame_bytes = process_width * process_height * 3
 
             def read_frame(pipe):
@@ -1222,7 +1382,8 @@ def _process_once(args, compile_enabled):
             forward = new_processor()
 
             def replay_forward_to(current_index, correction_index):
-                nonlocal rvm_refresh_state, rvm_missing_streak, last_rvm_refresh
+                nonlocal rvm_refresh_state, rvm_missing_streak
+                nonlocal prop_missing_streak, last_rvm_refresh, last_prop_refresh
                 checkpoint_index = max((index for index in checkpoint_files
                                         if index < current_index), default=None)
                 replay_start = selected_index if checkpoint_index is None else \
@@ -1238,7 +1399,9 @@ def _process_once(args, compile_enabled):
                     restore_processor_checkpoint(checkpoint_index)
                 rvm_refresh_state = [None] * 4
                 rvm_missing_streak = 0
+                prop_missing_streak = 0
                 last_rvm_refresh = -RVM_REFRESH_COOLDOWN
+                last_prop_refresh = -PROP_REFRESH_COOLDOWN
                 replay_slot = FrameSlot(torch, process_height, process_width, device)
                 replay_total = current_index - replay_start + 1
                 replay_started = time.perf_counter()
@@ -1354,6 +1517,15 @@ def _process_once(args, compile_enabled):
                             raise RuntimeError("FFmpeg output encoder closed unexpectedly")
                         output_bytes = output_bytes[written:]
                 profiler.add("encoder_write", time.perf_counter() - started)
+                if debug_encode is not None:
+                    detected = slot.prop_detected if slot.prop_detected is not None \
+                        else np.zeros(internal_alpha.shape, dtype=bool)
+                    added = slot.prop_added if slot.prop_added is not None \
+                        else np.zeros(internal_alpha.shape, dtype=bool)
+                    debug_frame = prop_contribution_frame(
+                        slot.input_cpu.numpy(), detected, added,
+                        slot.prop_injected)
+                    debug_encode.stdin.write(memoryview(debug_frame).cast("B"))
                 count += 1
                 work_done(f"Processed {count}/{total} frames")
 
@@ -1363,11 +1535,15 @@ def _process_once(args, compile_enabled):
             finalize_started = time.perf_counter()
             if encode is not None:
                 encode.stdin.close()
+            if debug_encode is not None:
+                debug_encode.stdin.close()
             decode.stdout.close()
             if decode.wait() != 0:
                 raise RuntimeError("source normalization/foreground encoding failed")
             if encode is not None and encode.wait() != 0:
                 raise RuntimeError("FFmpeg alpha encoding failed")
+            if debug_encode is not None and debug_encode.wait() != 0:
+                raise RuntimeError("FFmpeg prop contribution encoding failed")
             if interactive is not None:
                 encode = alpha_encoder(ffmpeg, output, frame_rate, width, height,
                     total, process_width, process_height, alpha_codec,
@@ -1392,6 +1568,9 @@ def _process_once(args, compile_enabled):
                 except Exception: pass
             if encode is not None:
                 try: encode.kill()
+                except Exception: pass
+            if debug_encode is not None:
+                try: debug_encode.kill()
                 except Exception: pass
             raise
         finally:
@@ -1429,7 +1608,9 @@ def _process_once(args, compile_enabled):
     initial_mask_frame_ms = round((start + selected_index / fps) * 1000)
     (output / "result.json").write_text(json.dumps({"width": width, "height": height,
         "frameRate": frame_rate, "durationMs": round(count * 1000 / fps),
-        "initialMaskFrameMs": initial_mask_frame_ms}, indent=2))
+        "initialMaskFrameMs": initial_mask_frame_ms,
+        "propContribution": "prop-contribution.mp4"
+            if args.debug_prop_contribution else None}, indent=2))
     compile_stats = {}
     if compile_enabled:
         try:
@@ -1454,6 +1635,9 @@ def _process_once(args, compile_enabled):
         "alphaResize": "ffmpeg-bilinear",
         "selectedFrame": selected_index,
         "rvmMaskRefresh": args.rvm_mask_refresh,
+        "propMaskRefresh": args.rvm_mask_refresh and args.prop_model is not None,
+        "propEveryFrame": args.prop_every_frame,
+        "debugPropContribution": args.debug_prop_contribution,
         "rvmRefreshStrength": args.rvm_refresh_strength,
         "maxMemFrames": args.max_mem_frames,
         "useLongTerm": args.use_long_term,
@@ -1487,10 +1671,13 @@ def process(args):
                maxMemFrames=args.max_mem_frames,
                useLongTerm=args.use_long_term,
                rvmRefreshStrength=args.rvm_refresh_strength,
+               propEveryFrame=args.prop_every_frame,
+               debugPropContribution=args.debug_prop_contribution,
                longTermMaxTokens=LONG_TERM_MAX_TOKENS if args.use_long_term else 0,
                longTermBufferTokens=LONG_TERM_BUFFER_TOKENS if args.use_long_term else 0)
     def clear_partial_outputs():
-        for name in ("foreground.mp4", "alpha.mkv", "result.json"):
+        for name in ("foreground.mp4", "alpha.mkv", "result.json",
+                     "prop-contribution.mp4"):
             try: (args.output.resolve() / name).unlink(missing_ok=True)
             except OSError: pass
 
@@ -1517,6 +1704,8 @@ def main():
     parser.add_argument("--rvm-alpha-threshold", type=float, default=.40)
     parser.add_argument("--prop-model", type=Path)
     parser.add_argument("--rvm-mask-refresh", action="store_true")
+    parser.add_argument("--prop-every-frame", action="store_true")
+    parser.add_argument("--debug-prop-contribution", action="store_true")
     parser.add_argument("--rvm-refresh-strength", type=float, default=1)
     parser.add_argument("--max-mem-frames", type=int, default=5)
     parser.add_argument("--use-long-term", action="store_true")
@@ -1603,6 +1792,9 @@ def main():
         assert rvm_refresh_candidate(101, 1000, 512 * 512)
         assert not rvm_refresh_candidate(100, 1000, 512 * 512)
         assert not rvm_refresh_candidate(101, 20_000, 512 * 512)
+        assert refresh_due(3, 20, 5, 3, 15)
+        assert not refresh_due(3, 19, 5, 3, 15)
+        assert not refresh_due(2, 20, -15, 3, 15)
         assert valid_memory_configuration(2, False)
         assert valid_memory_configuration(5, False)
         assert valid_memory_configuration(6, True)
@@ -1628,6 +1820,26 @@ def main():
         gentle_refresh = corrected_rvm_refresh_mask(
             torch, refresh_alpha, refresh_foreground, .75)
         assert gentle_refresh[6, 6] == 191.25
+        prop = np.zeros((64, 64), dtype=bool)
+        person = np.zeros_like(prop)
+        person[20:44, 20:44] = True
+        prop[29:35, 44:50] = True
+        prop[2:6, 2:6] = True
+        augmented, components, radius, added = augment_refresh_foreground(
+            prop, person, 24)
+        assert augmented[30, 47] and not augmented[3, 3]
+        assert sum(value["retained"] for value in components) == 1
+        assert radius == 3 and added == 36
+        debug_source = np.zeros((8, 8, 3), dtype=np.uint8)
+        debug_detected = np.zeros((8, 8), dtype=bool)
+        debug_added = np.zeros((8, 8), dtype=bool)
+        debug_detected[3, 3] = True
+        debug_added[4, 4] = True
+        debug_frame = prop_contribution_frame(
+            debug_source, debug_detected, debug_added, True)
+        assert tuple(debug_frame[3, 3]) == (0, 153, 153)
+        assert tuple(debug_frame[4, 4]) == (0, 191, 0)
+        assert tuple(debug_frame[0, 0]) == (0, 255, 0)
         print("MatAnyone 2 worker self-test passed")
     elif not all((args.source, args.output, args.runtime)) or \
             not args.auto_rvm_init and args.mask is None:
@@ -1637,6 +1849,11 @@ def main():
             parser.error("--rvm-alpha-threshold must be between 0.10 and 0.90")
         if not .25 <= args.rvm_refresh_strength <= 1:
             parser.error("--rvm-refresh-strength must be between 0.25 and 1.00")
+        if args.prop_every_frame and (
+                not args.rvm_mask_refresh or args.prop_model is None):
+            parser.error("--prop-every-frame requires --rvm-mask-refresh and --prop-model")
+        if args.debug_prop_contribution and not args.prop_every_frame:
+            parser.error("--debug-prop-contribution requires --prop-every-frame")
         if not valid_memory_configuration(args.max_mem_frames,
                                           args.use_long_term):
             parser.error("--max-mem-frames must be 2-30, or 6-14 with --use-long-term")

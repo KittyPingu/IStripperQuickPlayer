@@ -42,6 +42,22 @@ def finish_decode(process):
     return process.wait()
 
 
+def apply_prop_on_frame(frame_index, every_frame):
+    return every_frame or frame_index == 0
+
+
+def contribution_frame(frame, detected, added):
+    import numpy as np
+    result = np.asarray(frame, dtype=np.uint8).copy()
+    cyan = np.asarray(detected, dtype=bool) & ~np.asarray(added, dtype=bool)
+    green = np.asarray(added, dtype=bool)
+    result[cyan] = (result[cyan].astype(np.uint16) * 2 // 5 +
+                    np.array((0, 153, 153), dtype=np.uint16)).astype(np.uint8)
+    result[green] = (result[green].astype(np.uint16) // 4 +
+                     np.array((0, 191, 0), dtype=np.uint16)).astype(np.uint8)
+    return result
+
+
 def self_test():
     process = subprocess.Popen(
         [sys.executable, "-c",
@@ -51,6 +67,9 @@ def self_test():
         raise RuntimeError("decode drain self-test could not read its prefix")
     if finish_decode(process) != 0:
         raise RuntimeError("decode drain self-test failed")
+    if not apply_prop_on_frame(0, False) or apply_prop_on_frame(1, False) or \
+            not apply_prop_on_frame(12, True):
+        raise RuntimeError("prop-frame selection self-test failed")
     send(status="ok", message="rvm-mask self-test passed")
 
 
@@ -70,7 +89,14 @@ def main():
     parser.add_argument("--profile-log", type=Path)
     parser.add_argument("--preview-output", type=Path)
     parser.add_argument("--chunk-size", type=int, default=12)
+    parser.add_argument("--prop-model", type=Path)
+    parser.add_argument("--prop-every-frame", action="store_true")
+    parser.add_argument("--debug-prop-contribution", type=Path)
     args = parser.parse_args()
+    if args.prop_every_frame and not args.prop_model:
+        parser.error("--prop-every-frame requires --prop-model")
+    if args.debug_prop_contribution and not args.prop_every_frame:
+        parser.error("--debug-prop-contribution requires --prop-every-frame")
 
     import numpy as np
     import torch
@@ -111,6 +137,21 @@ def main():
 
     send(status="progress", percent=10, message="Loading RVM ResNet50...")
     torch, model, device = load_model(runtime, "quality")
+    prop = None
+    prop_model_id = None
+    if args.prop_model:
+        send(status="progress", percent=10,
+             message="Loading trained prop model...")
+        from prop_segmenter import (augment_rvm_mask, load_package,
+                                    predict_mask)
+        prop_torch, prop_model, prop_device, prop_manifest = load_package(
+            args.prop_model, device)
+        if prop_torch is not torch or prop_device != device:
+            raise RuntimeError(
+                "Prop segmenter and RVM must use the same processing device")
+        prop = (prop_torch, prop_model, prop_device, prop_manifest,
+                predict_mask, augment_rvm_mask)
+        prop_model_id = prop_manifest["modelId"]
     bf16 = device.type == "cuda" and torch.cuda.get_device_capability()[0] >= 8
     rec = [None] * 4
     count = expected if args.masks_only else len(files)
@@ -120,17 +161,33 @@ def main():
     writer_done = object()
 
     def write_masks():
+        debug_encode = None
         try:
+            if args.debug_prop_contribution:
+                args.debug_prop_contribution.parent.mkdir(parents=True, exist_ok=True)
+                debug_encode = subprocess.Popen([executable("ffmpeg"), "-y", "-v",
+                    "warning", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s",
+                    f"{review_width}x{review_height}", "-r", rate, "-i", "pipe:0",
+                    "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                    "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-pix_fmt", "yuv420p",
+                    str(args.debug_prop_contribution)], stdin=subprocess.PIPE)
             written = 0
+            retained_components = added_pixels = 0
             while True:
                 item = pending.get()
                 if item is writer_done:
-                    return
-                first_index, frames, masks = item
+                    break
+                first_index, frames, masks, prop_stats, prop_debug = item
+                retained_components += sum(value[0] for value in prop_stats)
+                added_pixels += sum(value[1] for value in prop_stats)
                 for offset, (pixels, mask) in enumerate(zip(frames, masks)):
                     index = first_index + offset
                     Image.fromarray(mask, "L").save(
                         args.masks / f"{index + 1:08d}.png", compress_level=1)
+                    if debug_encode is not None:
+                        detected, added = prop_debug[offset]
+                        debug_encode.stdin.write(memoryview(contribution_frame(
+                            pixels, detected, added)).cast("B"))
                     written = index + 1
                     if written == 1 or written == count or written % 10 == 0:
                         if args.preview_output:
@@ -143,9 +200,20 @@ def main():
                                     temporary, "JPEG", quality=88)
                                 replace_preview(temporary, args.preview_output / name)
                         send(status="progress", percent=10 + 88 * written / count,
-                             message=f"RVM segmented {written}/{count} frames",
+                             message=(f"RVM segmented {written}/{count} frames" +
+                                (f"; trained model retained {retained_components} "
+                                 f"components ({added_pixels:,} pixels)"
+                                 if prop_model_id is not None else "")),
                              frame=written - 1)
+            if debug_encode is not None:
+                debug_encode.stdin.close()
+                if debug_encode.wait() != 0:
+                    raise RuntimeError(
+                        "FFmpeg prop contribution encoding failed")
         except BaseException as error:
+            if debug_encode is not None:
+                try: debug_encode.kill()
+                except Exception: pass
             writer_errors.put(error)
 
     writer = threading.Thread(target=write_masks, name="rvm-mask-writer",
@@ -184,7 +252,45 @@ def main():
                     downsample_ratio=min(1.0, 512 / max(review_width, review_height)))
                 masks = (alpha[0, :, 0].float().cpu().numpy() >=
                          args.alpha_threshold).astype(np.uint8) * 255
-                put_bounded(pending, (index, frames, masks), writer_errors)
+                prop_stats = []
+                prop_debug = []
+                if prop is not None:
+                    prop_torch, prop_model, prop_device, prop_manifest, \
+                        predict_prop_mask, augment_rvm_mask = prop
+                    for offset, pixels in enumerate(frames):
+                        if not apply_prop_on_frame(
+                                index + offset, args.prop_every_frame):
+                            prop_stats.append((0, 0))
+                            prop_debug.append((np.zeros_like(masks[offset], dtype=bool),
+                                               np.zeros_like(masks[offset], dtype=bool)))
+                            continue
+                        predicted, _ = predict_prop_mask(
+                            prop_torch, prop_model, prop_device, pixels,
+                            prop_manifest.get("confidenceThreshold", .5),
+                            prop_manifest.get("inputSize", 512))
+                        person = masks[offset] >= 128
+                        combined, components, _ = augment_rvm_mask(
+                            predicted, person,
+                            prop_manifest.get("proximityRadiusAt512", 24))
+                        added = int((combined & ~person).sum())
+                        added_mask = combined & ~person
+                        prop_debug.append((predicted & person | added_mask,
+                                           added_mask))
+                        retained = sum(value["retained"] for value in components)
+                        masks[offset] = combined.astype(np.uint8) * 255
+                        prop_stats.append((retained, added))
+                else:
+                    prop_stats = [(0, 0)] * len(frames)
+                    prop_debug = [(np.zeros_like(mask, dtype=bool),
+                                   np.zeros_like(mask, dtype=bool))
+                                  for mask in masks]
+                put_bounded(pending, (index, frames, masks, prop_stats, prop_debug),
+                            writer_errors)
+                if prop is not None and not args.prop_every_frame:
+                    del prop_model
+                    prop = None
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
                 index += len(frames)
                 if not writer_errors.empty():
                     raise writer_errors.get()
@@ -206,6 +312,8 @@ def main():
          height=review_height, device=device.type, precision="BF16" if bf16 else "FP32",
          optimized=True, execution="chunked-bounded", chunkSize=chunk_size,
          checkpoint="RVM ResNet50",
+         propModel=prop_model_id,
+         propEveryFrame=args.prop_every_frame,
          model="rvm", resumed=False, framesFolder=str(args.frames),
          supportsCorrections=False)
     if args.masks_only:

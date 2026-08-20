@@ -61,6 +61,8 @@ internal sealed class CustomShowConfiguration
     public int LastProcessingBatchSize { get; set; }
     public int LastRvmInitializerAlphaThresholdPercent { get; set; } = 40;
     public bool LastRvmMatAnyoneMaskRefresh { get; set; }
+    public bool LastPropSegmenterEveryFrame { get; set; }
+    public bool LastDebugPropContribution { get; set; }
     public int LastRvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
     public int MatAnyoneMemoryDefaultsVersion { get; set; } = 1;
     public int LastMatAnyoneMaxMemoryFrames { get; set; } = 14;
@@ -304,6 +306,8 @@ internal sealed class CustomShowProcessing
     public double? PropSegmenterConfidenceThreshold { get; set; }
     public int? PropSegmenterProximityRadiusAt512 { get; set; }
     public bool RvmMatAnyoneMaskRefresh { get; set; }
+    public bool PropSegmenterEveryFrame { get; set; }
+    public bool DebugPropContribution { get; set; }
     public int RvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
     public int MatAnyoneMaxMemoryFrames { get; set; } = 5;
     public bool MatAnyoneUseLongTermMemory { get; set; }
@@ -1082,8 +1086,9 @@ internal sealed class CustomShowStore
                 processing.MaskEngine != "rvm-sam2" && !sam2MattingRvmInitializer ||
                 initializerThreshold is < 10 or > 90))
             throw new InvalidDataException("Invalid RVM initializer alpha threshold.");
-        bool propCompatible = processing.Algorithm == "rvm-matanyone2" ||
-            sam2MattingRvmInitializer || processing.MaskEngine == "rvm-sam2";
+        bool propCompatible = PropSegmenterCompatible(
+            processing.Algorithm, sam2MattingRvmInitializer,
+            processing.MaskEngine);
         bool hasProp = processing.PropSegmenterModelId != null;
         if (hasProp != (processing.PropSegmenterCheckpointSha256 != null) ||
             hasProp != (processing.PropSegmenterConfidenceThreshold != null) ||
@@ -1099,6 +1104,18 @@ internal sealed class CustomShowStore
             processing.Algorithm != "rvm-matanyone2")
             throw new InvalidDataException(
                 "RVM mask refresh is only valid for RVM-MatAnyone processing.");
+        bool propEveryFrameCompatible = processing.Algorithm is
+            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b";
+        if (processing.PropSegmenterEveryFrame &&
+            (!hasProp || !propEveryFrameCompatible ||
+                processing.Algorithm == "rvm-matanyone2" &&
+                    !processing.RvmMatAnyoneMaskRefresh))
+            throw new InvalidDataException(
+                "Per-frame prop segmentation requires a compatible RVM pipeline and an enabled trained prop model.");
+        if (processing.DebugPropContribution &&
+            !processing.PropSegmenterEveryFrame)
+            throw new InvalidDataException(
+                "Prop contribution diagnostics require per-frame prop segmentation.");
         if (processing.RvmMatAnyoneRefreshStrengthPercent is < 25 or > 100 ||
             processing.Algorithm != "rvm-matanyone2" &&
                 processing.RvmMatAnyoneRefreshStrengthPercent != 100)
@@ -1468,6 +1485,11 @@ internal sealed class CustomShowStore
             throw new InvalidDataException($"Model {name} must be {min}–{max} cm.");
     }
 
+    static bool PropSegmenterCompatible(string algorithm,
+        bool sam2MattingRvmInitializer, string? maskEngine) =>
+        algorithm is "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
+        sam2MattingRvmInitializer || maskEngine == "rvm-sam2";
+
     internal static bool VerifyCoreLogic()
     {
         return AgeAt(new DateOnly(2000, 8, 8), new DateOnly(2026, 8, 7)) == 25 &&
@@ -1479,6 +1501,10 @@ internal sealed class CustomShowStore
             Sam2MattingSupport.VerifyConceptParser() &&
             Sam2MattingSupport.VerifyPromptModes() &&
             Sam2MattingScenePlanner.VerifySceneValidation() &&
+            PropSegmenterCompatible("rvm-matanyone2", false, null) &&
+            PropSegmenterCompatible("rvm-vitmatte-s", false, null) &&
+            PropSegmenterCompatible("rvm-vitmatte-b", false, null) &&
+            !PropSegmenterCompatible("quality", false, null) &&
             RejectsTraversal();
     }
 
@@ -1582,7 +1608,13 @@ internal sealed class CustomShowStore
             {
                 Algorithm = "rvm-matanyone2", MattingDetailPx = 512,
                 BatchSize = 3, RvmInitializerAlphaThresholdPercent = 40,
+                PropSegmenterModelId = "verification-model",
+                PropSegmenterCheckpointSha256 = new string('a', 64),
+                PropSegmenterConfidenceThreshold = .5,
+                PropSegmenterProximityRadiusAt512 = 24,
                 RvmMatAnyoneMaskRefresh = true,
+                PropSegmenterEveryFrame = true,
+                DebugPropContribution = true,
                 RvmMatAnyoneRefreshStrengthPercent = 75,
                 MatAnyoneMaxMemoryFrames = 10,
                 MatAnyoneUseLongTermMemory = true,
@@ -1617,6 +1649,8 @@ internal sealed class CustomShowStore
                 roundTrip.Processing.MattingDetailPx != 512 ||
                 roundTrip.Processing.RvmInitializerAlphaThresholdPercent != 40 ||
                 !roundTrip.Processing.RvmMatAnyoneMaskRefresh ||
+                !roundTrip.Processing.PropSegmenterEveryFrame ||
+                !roundTrip.Processing.DebugPropContribution ||
                 roundTrip.Processing.RvmMatAnyoneRefreshStrengthPercent != 75 ||
                 roundTrip.Processing.MatAnyoneMaxMemoryFrames != 10 ||
                 !roundTrip.Processing.MatAnyoneUseLongTermMemory ||

@@ -755,6 +755,7 @@ internal sealed class TrainingStudioForm : Form
             try
             {
                 if (sample.Decision is "positive" or "negative") store.UndoDecision(sample);
+                store.MarkFeedbackPriority(sample);
             }
             finally { derivationGate.Release(); }
             if (choice.CreateBurst) await store.CreateBurstAsync(sample, token, forceNew: true);

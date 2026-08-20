@@ -604,6 +604,8 @@ internal static class CustomShowProcessor
         long? maskFrameMs = null,
         int rvmInitializerAlphaThresholdPercent = 40,
         bool rvmMatAnyoneMaskRefresh = false,
+        bool propSegmenterEveryFrame = false,
+        bool debugPropContribution = false,
         int rvmMatAnyoneRefreshStrengthPercent = 100,
         int matAnyoneMaxMemoryFrames = 14,
         bool matAnyoneUseLongTermMemory = true,
@@ -626,6 +628,16 @@ internal static class CustomShowProcessor
         };
         if (!File.Exists(worker))
             throw new FileNotFoundException("The processing worker is missing.", worker);
+        bool propEveryFrameCompatible = preset is
+            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b";
+        if (propSegmenterEveryFrame &&
+            (!propEveryFrameCompatible || propSegmenterModelPath == null ||
+                preset == "rvm-matanyone2" && !rvmMatAnyoneMaskRefresh))
+            throw new InvalidOperationException(
+                "Per-frame prop segmentation requires a compatible RVM pipeline and an enabled trained prop model.");
+        if (debugPropContribution && !propSegmenterEveryFrame)
+            throw new InvalidOperationException(
+                "Prop contribution diagnostics require per-frame prop segmentation.");
         if (preset == "matanyone2" && !File.Exists(initialMask))
             throw new FileNotFoundException("Create the initial foreground mask first.", initialMask);
         if (preset is "vitmatte-s" or "vitmatte-b" &&
@@ -648,14 +660,11 @@ internal static class CustomShowProcessor
         }) start.ArgumentList.Add(argument);
         if (preset is "matanyone2" or "rvm-matanyone2")
         {
-            if (preset == "rvm-matanyone2" && !File.Exists(initialMask))
+            bool automaticRvmInitializer = preset == "rvm-matanyone2" &&
+                !File.Exists(initialMask);
+            if (automaticRvmInitializer)
             {
                 start.ArgumentList.Add("--auto-rvm-init");
-                if (propSegmenterModelPath != null)
-                {
-                    start.ArgumentList.Add("--prop-model");
-                    start.ArgumentList.Add(propSegmenterModelPath);
-                }
             }
             else
             {
@@ -682,10 +691,20 @@ internal static class CustomShowProcessor
             if (preset == "rvm-matanyone2" && rvmMatAnyoneMaskRefresh)
             {
                 start.ArgumentList.Add("--rvm-mask-refresh");
+                if (propSegmenterEveryFrame)
+                    start.ArgumentList.Add("--prop-every-frame");
+                if (debugPropContribution)
+                    start.ArgumentList.Add("--debug-prop-contribution");
                 start.ArgumentList.Add("--rvm-refresh-strength");
                 start.ArgumentList.Add((Math.Clamp(
                     rvmMatAnyoneRefreshStrengthPercent, 25, 100) / 100d)
                     .ToString(CultureInfo.InvariantCulture));
+            }
+            if (preset == "rvm-matanyone2" && propSegmenterModelPath != null &&
+                (automaticRvmInitializer || rvmMatAnyoneMaskRefresh))
+            {
+                start.ArgumentList.Add("--prop-model");
+                start.ArgumentList.Add(propSegmenterModelPath);
             }
             start.ArgumentList.Add("--max-mem-frames");
             start.ArgumentList.Add(Math.Clamp(matAnyoneMaxMemoryFrames,
@@ -743,6 +762,15 @@ internal static class CustomShowProcessor
             start.ArgumentList.Add((Math.Clamp(rvmInitializerAlphaThresholdPercent,
                 10, 90) / 100d).ToString("0.00",
                 System.Globalization.CultureInfo.InvariantCulture));
+            if (propSegmenterModelPath != null)
+            {
+                start.ArgumentList.Add("--prop-model");
+                start.ArgumentList.Add(propSegmenterModelPath);
+                if (propSegmenterEveryFrame)
+                    start.ArgumentList.Add("--prop-every-frame");
+                if (debugPropContribution)
+                    start.ArgumentList.Add("--debug-prop-contribution");
+            }
             start.ArgumentList.Add("--compile-cutoff-frames");
             start.ArgumentList.Add(Math.Max(1,
                 (preset.EndsWith("-b", StringComparison.Ordinal)

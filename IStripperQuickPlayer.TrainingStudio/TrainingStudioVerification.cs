@@ -21,8 +21,8 @@ internal static class TrainingStudioVerification
             if (AnnotationCanvas.AdjustBrushSize(32, 120) != 36 ||
                 AnnotationCanvas.AdjustBrushSize(2, -120) != 2 ||
                 AnnotationCanvas.AdjustBrushSize(200, 120) != 200 ||
-                !DatasetStore.BurstFrameOffsets().SequenceEqual(
-                    [-20, -10, 0, 10, 20])) return false;
+                !DatasetStore.BurstOffsetsMs().SequenceEqual(
+                    [-3_000L, -1_000L, 0L, 1_000L, 3_000L])) return false;
             using (AnnotationCanvas historyCanvas = new())
             {
                 int promptCount = 1;
@@ -50,6 +50,19 @@ internal static class TrainingStudioVerification
             if (store.NextCandidate(null, 2160) != null) return false;
             TrainingSample positive = store.NextCandidate()!;
             if (Math.Abs(positive.TimestampMs - first.TimestampMs) <= 10_000) return false;
+            string adaptiveRoot = Path.Combine(root, "adaptive-spacing");
+            DatasetStore adaptiveStore = new(adaptiveRoot);
+            VideoSource adaptiveSource = new() { Id = "adaptive-source", Path = sourcePath,
+                DurationMs = 100_000, Width = 2, Height = 2, FramesPerSecond = 30, Split = "train" };
+            adaptiveStore.Dataset.Sources.Add(adaptiveSource);
+            foreach (long timestamp in new long[] { 30_000, 45_000, 60_000, 70_000 })
+                adaptiveStore.Dataset.Samples.Add(new TrainingSample { SourceId = adaptiveSource.Id,
+                    TimestampMs = timestamp, Decision = "rejected", Split = adaptiveSource.Split });
+            TrainingSample adaptive = adaptiveStore.NextCandidate()!;
+            long adaptiveDistance = adaptiveStore.Dataset.Samples.Where(value => value.Id != adaptive.Id)
+                .Min(value => Math.Abs(value.TimestampMs - adaptive.TimestampMs));
+            if (adaptiveDistance <= 5_000 || adaptiveDistance > 10_000 ||
+                !DatasetStore.CandidateSpacingMs.SequenceEqual([10_000, 5_000, 2_000])) return false;
             positive.Width = positive.Height = 2;
             positive.FramePath = CreateDraftFrame(store, positive);
             AnnotationObject prop = new() { Id = 7, Name = "Prop", ColorArgb = Color.Lime.ToArgb() };
@@ -83,6 +96,7 @@ internal static class TrainingStudioVerification
             byte[] positiveRecordHash = Hash(store.RecordPath(positive.Id));
             store.SetDerivation(positive, "ready", "person.png", "desired.png", null,
                 "verification-rvm", .4);
+            store.MarkFeedbackPriority(positive);
             if (!rejectedRecordHash.SequenceEqual(Hash(store.RecordPath(first.Id))) ||
                 !negativeRecordHash.SequenceEqual(Hash(store.RecordPath(negative.Id))) ||
                 positiveRecordHash.SequenceEqual(Hash(store.RecordPath(positive.Id)))) return false;
@@ -121,6 +135,7 @@ internal static class TrainingStudioVerification
                         new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!).ToArray();
             if (roundTrip.SchemaVersion != 1 || roundTrip.DatasetId != store.Dataset.DatasetId ||
                 sampleRoundTrip.Length != 3 || sampleRoundTrip.Any(value => value.Sample.Split != source.Split) ||
+                !sampleRoundTrip.Single(value => value.Sample.Id == positive.Id).Sample.FeedbackPriority ||
                 !sourceManifestHash.SequenceEqual(System.Security.Cryptography.SHA256.HashData(
                     File.ReadAllBytes(Path.Combine(root, "dataset.json")))) ||
                 File.Exists(Path.Combine(root, "samples.json")) ||

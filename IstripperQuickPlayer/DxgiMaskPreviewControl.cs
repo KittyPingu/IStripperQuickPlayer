@@ -29,9 +29,9 @@ internal sealed class DxgiMaskPreviewControl : Control
           o.uv=p; o.position=float4(p*float2(2,-2)+float2(-1,1),0,1); return o; }
         float4 PSMain(Out i):SV_TARGET {
           float4 sizes=Data.Load(int3(0,0,0)), edit=Data.Load(int3(1,0,0));
-          float4 selection=Data.Load(int3(2,0,0));
-          float scale=min(sizes.z/sizes.x,sizes.w/sizes.y);
-          float2 offset=(sizes.zw-sizes.xy*scale)*.5;
+          float4 selection=Data.Load(int3(2,0,0)), view=Data.Load(int3(3,0,0));
+          float scale=min(sizes.z/sizes.x,sizes.w/sizes.y)*view.x;
+          float2 offset=(sizes.zw-sizes.xy*scale)*.5+view.yz;
           float2 pixel=(i.uv*sizes.zw-offset)/scale;
           if(any(pixel<0)||any(pixel>=sizes.xy)) return float4(0,0,0,1);
           float2 uv=pixel/sizes.xy; float4 color=Source.Sample(Sampler,uv);
@@ -73,6 +73,11 @@ internal sealed class DxgiMaskPreviewControl : Control
     PointF? brush;
     Rectangle? selection;
     int brushDiameter;
+    float viewZoom = 1;
+    PointF viewPan;
+    bool panning;
+    Point panMouse;
+    Cursor? cursorBeforePan;
     PointF[] pendingPoints = [];
     int[] pendingLabels = [];
     bool overlayDirty, markersDirty;
@@ -81,6 +86,9 @@ internal sealed class DxgiMaskPreviewControl : Control
 
     internal bool HasImage { get { lock (sync) return !imageSize.IsEmpty || pending != null; } }
     internal Exception? RendererFailure => failure;
+    [System.ComponentModel.DesignerSerializationVisibility(
+        System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool ViewNavigationEnabled { get; set; }
 
     internal DxgiMaskPreviewControl()
     {
@@ -213,6 +221,11 @@ internal sealed class DxgiMaskPreviewControl : Control
     {
         lock (sync)
         {
+            Size incoming = update.Source?.Size ?? update.SourceSize;
+            if (!incoming.IsEmpty && !imageSize.IsEmpty && incoming != imageSize)
+            {
+                viewZoom = 1; viewPan = PointF.Empty;
+            }
             // A paint update may overtake the initial source+mask upload. Carry
             // the source forward so coalescing can never produce a mask-only
             // first frame.
@@ -245,15 +258,81 @@ internal sealed class DxgiMaskPreviewControl : Control
 
     internal PointF? ImagePoint(Point location)
     {
-        Size size; lock (sync) size = imageSize;
+        Size size; float zoom; PointF pan;
+        lock (sync) { size = imageSize; zoom = viewZoom; pan = viewPan; }
         if (size.IsEmpty || ClientSize.Width <= 0 || ClientSize.Height <= 0) return null;
         float scale = Math.Min(ClientSize.Width / (float)size.Width,
-            ClientSize.Height / (float)size.Height);
+            ClientSize.Height / (float)size.Height) * zoom;
         float left = (ClientSize.Width - size.Width * scale) / 2,
             top = (ClientSize.Height - size.Height * scale) / 2;
+        left += pan.X; top += pan.Y;
         float x = (location.X - left) / scale, y = (location.Y - top) / scale;
         return x < 0 || y < 0 || x >= size.Width || y >= size.Height
             ? null : new PointF(x, y);
+    }
+
+    internal void ZoomAt(Point location, int wheelDelta)
+    {
+        if (wheelDelta == 0) return;
+        Size size; float oldZoom; PointF oldPan;
+        lock (sync) { size = imageSize; oldZoom = viewZoom; oldPan = viewPan; }
+        if (size.IsEmpty || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+        float fit = Math.Min(ClientSize.Width / (float)size.Width,
+            ClientSize.Height / (float)size.Height);
+        float oldScale = fit * oldZoom;
+        float oldLeft = (ClientSize.Width - size.Width * oldScale) / 2 + oldPan.X;
+        float oldTop = (ClientSize.Height - size.Height * oldScale) / 2 + oldPan.Y;
+        PointF imagePoint = new((location.X - oldLeft) / oldScale,
+            (location.Y - oldTop) / oldScale);
+        float zoom = AdjustZoom(oldZoom, wheelDelta), scale = fit * zoom;
+        PointF pan = new(location.X - imagePoint.X * scale -
+                (ClientSize.Width - size.Width * scale) / 2,
+            location.Y - imagePoint.Y * scale -
+                (ClientSize.Height - size.Height * scale) / 2);
+        lock (sync)
+        {
+            viewZoom = zoom; viewPan = pan; overlayDirty = true;
+        }
+        changed.Set();
+    }
+
+    internal static float AdjustZoom(float current, int wheelDelta) =>
+        wheelDelta == 0 ? Math.Clamp(current, .1f, 20) :
+        Math.Clamp(current * (wheelDelta > 0 ? 1.15f : 1 / 1.15f), .1f, 20);
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (ViewNavigationEnabled && e.Button == MouseButtons.Middle)
+        {
+            Focus(); panning = true; panMouse = e.Location; Capture = true;
+            cursorBeforePan = Cursor; Cursor = Cursors.Hand; return;
+        }
+        base.OnMouseDown(e);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        if (panning)
+        {
+            lock (sync)
+            {
+                viewPan = new(viewPan.X + e.X - panMouse.X,
+                    viewPan.Y + e.Y - panMouse.Y);
+                overlayDirty = true;
+            }
+            panMouse = e.Location; changed.Set(); return;
+        }
+        base.OnMouseMove(e);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        if (panning && e.Button == MouseButtons.Middle)
+        {
+            panning = false; Capture = false;
+            Cursor = cursorBeforePan ?? Cursors.Default; cursorBeforePan = null; return;
+        }
+        base.OnMouseUp(e);
     }
 
     unsafe void RenderLoop(object? value)
@@ -297,7 +376,7 @@ internal sealed class DxgiMaskPreviewControl : Control
                 Shader, "VSMain", "MaskPreview.hlsl", "vs_5_0", ShaderFlags.OptimizationLevel3).Span);
             using ID3D11PixelShader ps = device.CreatePixelShader(Compiler.Compile(
                 Shader, "PSMain", "MaskPreview.hlsl", "ps_5_0", ShaderFlags.OptimizationLevel3).Span);
-            using ID3D11Texture2D data = FloatTexture(device, 3);
+            using ID3D11Texture2D data = FloatTexture(device, 4);
             using ID3D11ShaderResourceView dataView = device.CreateShaderResourceView(data);
             using ID3D11Texture2D pointData = FloatTexture(device, 64);
             using ID3D11ShaderResourceView pointView = device.CreateShaderResourceView(pointData);
@@ -315,12 +394,14 @@ internal sealed class DxgiMaskPreviewControl : Control
                     FrameUpdate? update; Size requested; PointF? currentBrush;
                     Rectangle? currentSelection;
                     int currentBrushDiameter; bool redrawOverlay, redrawMarkers;
+                    float currentZoom; PointF currentPan;
                     PointF[] latestPoints; int[] latestLabels;
                     lock (sync)
                     {
                         update = pending; pending = null; requested = pendingSize;
                         currentBrush = brush; currentBrushDiameter = brushDiameter;
                         currentSelection = selection;
+                        currentZoom = viewZoom; currentPan = viewPan;
                         redrawOverlay = overlayDirty; overlayDirty = false;
                         redrawMarkers = markersDirty; markersDirty = false;
                         latestPoints = pendingPoints; latestLabels = pendingLabels;
@@ -383,7 +464,7 @@ internal sealed class DxgiMaskPreviewControl : Control
                     Draw(context, swap, swapSize, currentImageSize, sourceView, maskView,
                         data, dataView, pointData, pointView, sampler, vs, ps,
                         currentPoints, currentLabels, currentBrush, currentBrushDiameter,
-                        currentSelection);
+                        currentSelection, currentZoom, currentPan);
                 }
             }
             finally
@@ -401,15 +482,17 @@ internal sealed class DxgiMaskPreviewControl : Control
         ID3D11ShaderResourceView dataView, ID3D11Texture2D pointData,
         ID3D11ShaderResourceView pointView, ID3D11SamplerState sampler,
         ID3D11VertexShader vs, ID3D11PixelShader ps, PointF[] points, int[] labels,
-        PointF? brush, int brushDiameter, Rectangle? selection)
+        PointF? brush, int brushDiameter, Rectangle? selection,
+        float zoom, PointF pan)
     {
         using ID3D11Texture2D back = swap.GetBuffer<ID3D11Texture2D>(0);
         using ID3D11RenderTargetView target = context.Device.CreateRenderTargetView(back);
         float[] values = [sourceSize.Width, sourceSize.Height, swapSize.Width,
             swapSize.Height, points.Length, brush?.X ?? -1, brush?.Y ?? -1,
             brushDiameter / 2f, selection?.Left ?? -1, selection?.Top ?? -1,
-            selection?.Right ?? -1, selection?.Bottom ?? -1];
-        fixed (float* p = values) context.UpdateSubresource(data, 0, null, (IntPtr)p, 48, 0);
+            selection?.Right ?? -1, selection?.Bottom ?? -1,
+            zoom, pan.X, pan.Y, 0];
+        fixed (float* p = values) context.UpdateSubresource(data, 0, null, (IntPtr)p, 64, 0);
         float[] pv = new float[256];
         for (int i = 0; i < points.Length; i++)
         {

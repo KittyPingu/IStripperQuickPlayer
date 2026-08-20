@@ -1233,6 +1233,9 @@ internal static class CustomShowJobRunner
                 rvmInitializerAlphaThresholdPercent:
                     options.RvmInitializerAlphaThresholdPercent ?? 40,
                 rvmMatAnyoneMaskRefresh: options.RvmMatAnyoneMaskRefresh,
+                propSegmenterEveryFrame:
+                    options.PropSegmenterEveryFrame,
+                debugPropContribution: options.DebugPropContribution,
                 rvmMatAnyoneRefreshStrengthPercent:
                     options.RvmMatAnyoneRefreshStrengthPercent,
                 matAnyoneMaxMemoryFrames: options.MatAnyoneMaxMemoryFrames,

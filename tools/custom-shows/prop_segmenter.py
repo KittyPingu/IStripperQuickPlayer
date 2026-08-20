@@ -90,6 +90,39 @@ def predict_mask(torch, model, device, image, threshold=.5, size=INPUT_SIZE):
     return probability >= float(threshold), probability
 
 
+def predict_mask_tensor(torch, model, device, image, threshold=.5,
+                        size=INPUT_SIZE):
+    """Predict directly from a CHW GPU frame and keep the mask on the GPU."""
+    if image.ndim != 3 or image.shape[0] != 3:
+        raise RuntimeError("Prop-segmenter tensor input must be CHW RGB")
+    image = image.to(device=device, dtype=torch.float32)
+    height, width = image.shape[-2:]
+    scale = min(size / width, size / height)
+    resized_width = max(1, round(width * scale))
+    resized_height = max(1, round(height * scale))
+    left = (size - resized_width) // 2
+    top = (size - resized_height) // 2
+    resized = torch.nn.functional.interpolate(image.unsqueeze(0),
+        size=(resized_height, resized_width), mode="bilinear",
+        align_corners=False)
+    mean = torch.tensor(MEAN, device=device, dtype=torch.float32)[None, :, None, None]
+    std = torch.tensor(STD, device=device, dtype=torch.float32)[None, :, None, None]
+    fill = torch.tensor(tuple(round(value * 255) / 255 for value in MEAN),
+                        device=device, dtype=torch.float32)[None, :, None, None]
+    canvas = ((fill - mean) / std).expand(1, 3, size, size).clone()
+    canvas[:, :, top:top + resized_height, left:left + resized_width] = \
+        (resized - mean) / std
+    bf16 = device.type == "cuda" and \
+        torch.cuda.get_device_capability(device)[0] >= 8
+    with torch.inference_mode(), torch.autocast(device_type=device.type,
+            dtype=torch.bfloat16, enabled=bf16):
+        logits = model(canvas)["out"][:, :, top:top + resized_height,
+                                      left:left + resized_width]
+    probability = torch.nn.functional.interpolate(logits.float().sigmoid(),
+        size=(height, width), mode="bilinear", align_corners=False)[0, 0]
+    return probability >= float(threshold)
+
+
 def _dilate(mask, radius):
     import numpy as np
     from PIL import Image, ImageFilter
@@ -106,13 +139,8 @@ def _dilate(mask, radius):
     return np.asarray(value, dtype=np.uint8) >= 128
 
 
-def filter_components(prop_mask, person_mask, base_radius=24):
+def _filter_components_python(prop, person, radius):
     import numpy as np
-    prop = np.asarray(prop_mask, dtype=bool)
-    person = np.asarray(person_mask, dtype=bool)
-    if prop.shape != person.shape or prop.ndim != 2:
-        raise RuntimeError("Prop and person masks must have identical 2D dimensions")
-    radius = max(1, round(base_radius * min(prop.shape) / 512))
     near = _dilate(person, radius)
     visited = np.zeros(prop.shape, dtype=bool)
     retained = np.zeros(prop.shape, dtype=bool)
@@ -136,6 +164,32 @@ def filter_components(prop_mask, person_mask, base_radius=24):
     return retained, components, radius
 
 
+def filter_components(prop_mask, person_mask, base_radius=24):
+    import numpy as np
+    prop = np.asarray(prop_mask, dtype=bool)
+    person = np.asarray(person_mask, dtype=bool)
+    if prop.shape != person.shape or prop.ndim != 2:
+        raise RuntimeError("Prop and person masks must have identical 2D dimensions")
+    radius = max(1, round(base_radius * min(prop.shape) / 512))
+    try:
+        import cv2
+        count, labels = cv2.connectedComponents(prop.astype(np.uint8),
+                                                 connectivity=8)
+        kernel = np.ones((radius * 2 + 1, radius * 2 + 1), dtype=np.uint8)
+        near = cv2.dilate(person.astype(np.uint8), kernel) != 0
+        retained_labels = np.unique(labels[near & prop])
+        keep = np.zeros(count, dtype=bool)
+        keep[retained_labels[retained_labels > 0]] = True
+        retained = keep[labels]
+        sizes = np.bincount(labels.ravel(), minlength=count)
+        components = [{"pixels": int(sizes[index]),
+                       "retained": bool(keep[index])}
+                      for index in range(1, count)]
+        return retained, components, radius
+    except ImportError:
+        return _filter_components_python(prop, person, radius)
+
+
 def augment_rvm_mask(prop_mask, person_mask, base_radius=24):
     import numpy as np
     retained, components, radius = filter_components(prop_mask, person_mask, base_radius)
@@ -149,6 +203,10 @@ def self_test():
     union, components, radius = augment_rvm_mask(prop, person)
     assert union[30, 47] and not union[3, 3]
     assert sum(value["retained"] for value in components) == 1 and radius == 3
+    native = filter_components(prop, person, 24)
+    fallback = _filter_components_python(prop, person, 3)
+    assert np.array_equal(native[0], fallback[0])
+    assert native[1] == fallback[1] and native[2] == fallback[2]
     print(json.dumps({"status": "ok", "message": "prop-segmenter self-test passed"}))
 
 

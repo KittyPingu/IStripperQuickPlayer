@@ -10,6 +10,10 @@ from pathlib import Path
 from rvm_worker import emit
 
 
+def use_retained_masks(mask_folder, prop_model):
+    return bool(mask_folder and not prop_model)
+
+
 def relay(process, start, span, phase):
     for line in process.stdout:
         line = line.strip()
@@ -43,11 +47,12 @@ def process(args):
     work = args.output.resolve() / ".rvm-vitmatte"
     frames = work / "frames"
     generated_masks = args.output.resolve() / ".rvm-masks"
-    masks = args.mask_folder.resolve() if args.mask_folder else generated_masks
+    retain = use_retained_masks(args.mask_folder, args.prop_model)
+    masks = args.mask_folder.resolve() if retain else generated_masks
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     try:
-        if not args.mask_folder:
+        if not retain:
             rvm = Path(__file__).with_name("rvm_mask_worker.py")
             rvm_command = [sys.executable, str(rvm), "--source", str(args.source),
                 "--runtime", str(args.runtime), "--frames", str(frames),
@@ -55,6 +60,13 @@ def process(args):
                 "--end-ms", str(args.end_ms), "--masks-only",
                 "--alpha-threshold", str(args.rvm_alpha_threshold),
                 "--preview-output", str(args.output)]
+            if args.prop_model:
+                rvm_command.extend(["--prop-model", str(args.prop_model)])
+                if args.prop_every_frame:
+                    rvm_command.append("--prop-every-frame")
+                if args.debug_prop_contribution:
+                    rvm_command.extend(["--debug-prop-contribution",
+                        str(args.output.resolve() / "prop-contribution.mp4")])
             emit("rvm-masks", 0, "Generating a complete RVM mask sequence...")
             run(rvm_command, 0, 30, "rvm-masks")
         elif not masks.is_dir() or not any(masks.glob("*.png")):
@@ -79,6 +91,8 @@ def process(args):
 def main():
     if sys.argv[1:] == ["--self-test"]:
         assert {model.upper() for model in ("s", "b")} == {"S", "B"}
+        assert use_retained_masks(Path("masks"), None)
+        assert not use_retained_masks(Path("masks"), Path("prop"))
         print("RVM-ViTMatte S/B worker self-test passed")
         return
     parser = argparse.ArgumentParser()
@@ -93,10 +107,17 @@ def main():
     parser.add_argument("--max-size", type=int, choices=(0, 512, 768, 1024),
                         default=1024)
     parser.add_argument("--rvm-alpha-threshold", type=float, default=.5)
+    parser.add_argument("--prop-model", type=Path)
+    parser.add_argument("--prop-every-frame", action="store_true")
+    parser.add_argument("--debug-prop-contribution", action="store_true")
     parser.add_argument("--encoder-preset",
                         choices=tuple(f"p{i}" for i in range(1, 8)), default="p5")
     parser.add_argument("--compile-cutoff-frames", type=int, default=16000)
     args = parser.parse_args()
+    if args.prop_every_frame and not args.prop_model:
+        parser.error("--prop-every-frame requires --prop-model")
+    if args.debug_prop_contribution and not args.prop_every_frame:
+        parser.error("--debug-prop-contribution requires --prop-every-frame")
     process(args)
 
 

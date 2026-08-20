@@ -44,8 +44,8 @@ binary foreground-prop model used by compatible automatic RVM initializers.
    Single clicks add SAM2 prompts and a double-click applies them; SAM boxes and
    polygons remain available. Mouse
    wheel zooms and the middle mouse button pans. Drafts save automatically.
-5. Optionally create a five-frame burst at offsets -20, -10, 0, +10 and +20
-   source frames. Accepting its centre anchor can seed SAM2
+5. Optionally create a five-frame burst at offsets -3, -1, 0, +1 and +3
+   seconds. Accepting its centre anchor can seed SAM2
    drafts for its neighbours; review then advances through the remaining burst
    automatically, but every frame still requires an explicit decision.
 6. Train after the dashboard has a useful mixture of sources and negatives.
@@ -56,9 +56,14 @@ binary foreground-prop model used by compatible automatic RVM initializers.
    sizes retain more fine detail but reduce automatic batch size and take longer.
    **Negatives** can run one fixed 20%, 25%, 30%, or 35% subset, compare all four,
    or use every eligible negative sample.
-   Each run keeps every positive and trains four independent candidates using
-   reproducible 20%, 25%, 30%, and 35% negative subsets. The candidate with the
-   best validation Dice is selected; only that winner is evaluated on the
+   Each run keeps every positive and can train four independent candidates using
+   reproducible 20%, 25%, 30%, and 35% negative subsets. Positive crops usually
+   remain centred on labelled foreground, while error-review and burst samples
+   receive extra sampling weight. Training combines focal, Dice, and
+   false-negative-weighted Tversky losses, uses cosine learning-rate decay, and
+   evaluates exponential-moving-average weights. Checkpoints and negative-ratio
+   winners are selected using threshold-calibrated global Dice, per-image Dice,
+   positive recall, and small-object recall. Only the winner is evaluated on the
    untouched test split. Candidate metrics and the selected ratio are saved in
    `package/metrics.json`.
    Every run persists structured progress in `events.ndjson` and diagnostics in

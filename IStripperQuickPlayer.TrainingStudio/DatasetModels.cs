@@ -55,6 +55,7 @@ internal sealed class TrainingSample
     public string Split { get; set; } = "train";
     public string? BurstId { get; set; }
     public int? BurstIndex { get; set; }
+    public bool FeedbackPriority { get; set; }
     public int Width { get; set; }
     public int Height { get; set; }
     public int ObjectCount { get; set; }

@@ -11,6 +11,7 @@ internal sealed class DatasetStore
 {
     static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     { ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".wmv", ".ts", ".mts", ".m2ts" };
+    internal static readonly long[] CandidateSpacingMs = [10_000, 5_000, 2_000];
     static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     { WriteIndented = true };
     readonly object gate = new();
@@ -128,22 +129,53 @@ internal sealed class DatasetStore
                 (minimumResolution <= 0 || Math.Min(value.Width, value.Height) >= minimumResolution) &&
                 (Dataset.ActiveSourceFolder == null ||
                     IsSourceInFolder(value.Path, Dataset.ActiveSourceFolder))).ToList();
-            for (int attempt = 0; attempt < 2000 && eligible.Count > 0; attempt++)
+            foreach (long spacingMs in CandidateSpacingMs)
             {
-                VideoSource source = eligible[random.Next(eligible.Count)];
-                long timestamp = random.NextInt64(30_000, source.DurationMs - 30_000 + 1);
-                timestamp = FrameTimestamp(timestamp, source.FramesPerSecond);
-                bool near = Dataset.Samples.Any(value => value.SourceId == source.Id &&
-                    Math.Abs(value.TimestampMs - timestamp) <= 10_000);
-                if (near) continue;
-                TrainingSample sample = new()
+                foreach (VideoSource source in eligible.OrderBy(_ => random.Next()))
                 {
-                    SourceId = source.Id, TimestampMs = timestamp, Split = source.Split
-                };
-                Dataset.Samples.Add(sample); SaveSampleLocked(sample); return sample;
+                    if (!TryCandidateTimestamp(source, spacingMs, out long timestamp)) continue;
+                    TrainingSample sample = new()
+                    {
+                        SourceId = source.Id, TimestampMs = timestamp, Split = source.Split
+                    };
+                    Dataset.Samples.Add(sample); SaveSampleLocked(sample); return sample;
+                }
             }
             return null;
         }
+    }
+
+    bool TryCandidateTimestamp(VideoSource source, long spacingMs, out long timestamp)
+    {
+        long start = 30_000, end = source.DurationMs - 30_000;
+        List<(long Start, long End)> available = [];
+        long cursor = start;
+        foreach (long existing in Dataset.Samples.Where(value => value.SourceId == source.Id)
+                     .Select(value => value.TimestampMs).Order())
+        {
+            long before = existing - spacingMs - 1;
+            if (cursor <= before && cursor <= end) available.Add((cursor, Math.Min(before, end)));
+            cursor = Math.Max(cursor, existing + spacingMs + 1);
+            if (cursor > end) break;
+        }
+        if (cursor <= end) available.Add((cursor, end));
+
+        while (available.Count > 0)
+        {
+            int index = random.Next(available.Count);
+            (long windowStart, long windowEnd) = available[index];
+            available.RemoveAt(index);
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                long candidate = FrameTimestamp(random.NextInt64(windowStart, windowEnd + 1),
+                    source.FramesPerSecond);
+                if (candidate < start || candidate > end || Dataset.Samples.Any(value =>
+                        value.SourceId == source.Id &&
+                        Math.Abs(value.TimestampMs - candidate) <= spacingMs)) continue;
+                timestamp = candidate; return true;
+            }
+        }
+        timestamp = 0; return false;
     }
 
     internal static bool IsSourceInFolder(string source, string folder)
@@ -211,20 +243,19 @@ internal sealed class DatasetStore
         VideoSource source = Source(anchor.SourceId);
         string burstId = forceNew ? Guid.NewGuid().ToString("N") :
             anchor.BurstId ?? Guid.NewGuid().ToString("N");
-        int[] offsets = BurstFrameOffsets();
+        long[] offsets = BurstOffsetsMs();
         anchor.BurstId = burstId; anchor.BurstIndex = 2;
-        double frameMs = 1000 / Math.Max(1, source.FramesPerSecond);
         List<TrainingSample> result = [anchor];
         for (int index = 0; index < offsets.Length; index++)
         {
-            int offset = offsets[index];
+            long offset = offsets[index];
             if (offset == 0) continue;
-            long timestamp = Math.Clamp((long)Math.Round(anchor.TimestampMs + offset * frameMs),
-                30_000, source.DurationMs - 30_000);
+            long timestamp = FrameTimestamp(Math.Clamp(anchor.TimestampMs + offset,
+                30_000, source.DurationMs - 30_000), source.FramesPerSecond);
             TrainingSample sample = new()
             {
                 SourceId = source.Id, TimestampMs = timestamp, Split = source.Split,
-                BurstId = burstId, BurstIndex = index
+                BurstId = burstId, BurstIndex = index, FeedbackPriority = anchor.FeedbackPriority
             };
             lock (gate) { Dataset.Samples.Add(sample); SaveSampleLocked(sample); }
             await ExtractDraftFrameAsync(sample, token); result.Add(sample);
@@ -233,7 +264,15 @@ internal sealed class DatasetStore
         return result.OrderBy(value => value.BurstIndex).ToArray();
     }
 
-    internal static int[] BurstFrameOffsets() => [-20, -10, 0, 10, 20];
+    internal static long[] BurstOffsetsMs() => [-3_000, -1_000, 0, 1_000, 3_000];
+
+    internal void MarkFeedbackPriority(TrainingSample sample)
+    {
+        lock (gate)
+        {
+            sample.FeedbackPriority = true; SaveSampleLocked(sample);
+        }
+    }
 
     internal void Accept(TrainingSample sample, int[] objectIds,
         IReadOnlyList<AnnotationObject> objects, string provenance)

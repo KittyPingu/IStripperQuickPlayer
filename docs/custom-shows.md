@@ -475,8 +475,23 @@ resolution-scaled absolute minimum, must remain missing for three frames. After 
 15-frame cooldown, QuickPlayer forms a conservative core with a 5×5 erosion,
 combines it with the current MatAnyone alpha, and injects the result as an ordinary
 MatAnyone memory update. **RVM refresh strength** scales the core from 25% to
-100%. This can add later people or held objects, but retains both models in VRAM
-and adds RVM inference to every forward frame.
+100%. If an installed trained prop segmenter is enabled for the job, QuickPlayer
+runs it when an RVM refresh triggers, retains its components near the current RVM
+foreground, and includes those pixels in the same memory update. Enable **Run the
+trained prop model on every frame** to evaluate it continuously instead. Its
+missing-foreground persistence and 15-frame cooldown are independent of RVM's,
+so either model can trigger a memory update without delaying the other. The
+refresh log records which model triggered, component counts, and added-pixel
+counts. This can add later people or held objects, but retains MatAnyone, RVM, and
+the trained model in VRAM. RVM inference runs on every forward frame; prop
+inference does so only when the additional option is selected.
+
+When per-frame prop inference is enabled, the optional **Debug contribution**
+setting writes `prop-contribution.mp4` beside each processed clip. Cyan marks
+retained prop-model detections that did not cause an injection on that frame;
+green marks pixels supplied to the active RVM/MatAnyone mask, and RVM-MatAnyone
+draws a green border on model-injection frames. This diagnostic is disabled by
+default and is not used by playback.
 
 For MatAnyone 2 and RVM-MatAnyone, **Max memory frames** accepts 2–30 without
 long-term memory or 6–14 with it. Compressed long-term memory is enabled by
@@ -673,14 +688,21 @@ reused, and preview/progress work is throttled. Corrected review masks remain re
 until successful publication or explicit discard; the generated RGB/alpha clips
 are retained in the published show.
 
-**RVM-ViTMatte S** is the fully automatic alternative. It first runs RVM
+**RVM-ViTMatte S/B** is the fully automatic alternative. It first runs RVM
 ResNet50 over every frame in each included clip to create a complete binary mask
-sequence, then uses that sequence as ViTMatte S trimap input. It does not open the
+sequence, then uses that sequence as ViTMatte trimap input. It does not open the
 SAM2 correction editor. The **RVM initializer alpha** control sets the RVM
-foreground cutoff. After successful processing, QuickPlayer compresses every
+foreground cutoff. With an enabled trained prop model, the first RVM mask is
+augmented with nearby predicted prop components. **Run the trained prop model on
+every frame** keeps that model warm and applies the same proximity-filtered union
+to every RVM mask before ViTMatte. Because ViTMatte refines each frame
+independently, this path has no persistence counter, cooldown, or memory refresh.
+Its progress reports retained components and added pixels. After successful
+processing, QuickPlayer compresses every
 generated sequence as `masks/<clip-id>/tracked-masks.iqpmask` inside the published
 show and deletes only the temporary PNG copies. Reprocessing with **Keep existing
-masks** extracts and reuses those archives, avoiding another RVM pass.
+masks** extracts and reuses those archives when prop augmentation is not active;
+an active prop model regenerates the masks so the requested injection is applied.
 
 ViTMatte permanently reduces its batch size after the first CUDA out-of-memory
 failure instead of retrying the same oversized batch throughout the clip. The

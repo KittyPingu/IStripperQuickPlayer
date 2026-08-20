@@ -125,7 +125,17 @@ class PropDataset:
             left, top = (canvas.width - image.width) // 2, (canvas.height - image.height) // 2
             canvas.paste(image, (left, top)); canvas_mask.paste(mask, (left, top))
             max_x, max_y = canvas.width - self.input_size, canvas.height - self.input_size
-            x, y = random.randint(0, max_x), random.randint(0, max_y)
+            foreground = canvas_mask.getbbox()
+            if foreground and random.random() < .75:
+                centre_x = (foreground[0] + foreground[2]) // 2
+                centre_y = (foreground[1] + foreground[3]) // 2
+                jitter = round(self.input_size * .2)
+                x = max(0, min(max_x, centre_x - self.input_size // 2 +
+                              random.randint(-jitter, jitter)))
+                y = max(0, min(max_y, centre_y - self.input_size // 2 +
+                              random.randint(-jitter, jitter)))
+            else:
+                x, y = random.randint(0, max_x), random.randint(0, max_y)
             image = canvas.crop((x, y, x + self.input_size, y + self.input_size))
             mask = canvas_mask.crop((x, y, x + self.input_size, y + self.input_size))
             pixels = np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255
@@ -148,13 +158,31 @@ def dice_loss(logits, target):
     return (1 - numerator / denominator).mean()
 
 
+def tversky_loss(logits, target, alpha=.3, beta=.7):
+    probability = logits.sigmoid()
+    true_positive = (probability * target).sum(dim=(1, 2, 3))
+    false_positive = (probability * (1 - target)).sum(dim=(1, 2, 3))
+    false_negative = ((1 - probability) * target).sum(dim=(1, 2, 3))
+    return (1 - (true_positive + 1) /
+            (true_positive + alpha * false_positive + beta * false_negative + 1)).mean()
+
+
+def focal_bce(torch, logits, target, pos_weight, gamma=2.):
+    loss = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits, target, pos_weight=pos_weight, reduction="none")
+    probability = logits.sigmoid()
+    correct_probability = probability * target + (1 - probability) * (1 - target)
+    return ((1 - correct_probability).pow(gamma) * loss).mean()
+
+
 def segmentation_loss(torch, output, target, pos_weight):
-    bce = torch.nn.functional.binary_cross_entropy_with_logits(
-        output["out"], target, pos_weight=pos_weight)
-    total = bce + dice_loss(output["out"], target)
+    total = (focal_bce(torch, output["out"], target, pos_weight) +
+             dice_loss(output["out"], target) +
+             .5 * tversky_loss(output["out"], target))
     if "aux" in output:
-        aux = torch.nn.functional.binary_cross_entropy_with_logits(
-            output["aux"], target, pos_weight=pos_weight) + dice_loss(output["aux"], target)
+        aux = (focal_bce(torch, output["aux"], target, pos_weight) +
+               dice_loss(output["aux"], target) +
+               .5 * tversky_loss(output["aux"], target))
         total += .4 * aux
     return total
 
@@ -173,8 +201,30 @@ def scores(values):
             "recall": tp / max(1, tp + fn)}
 
 
+def selection_score(value):
+    return (.4 * value["dice"] + .15 * value["macroDice"] +
+            .15 * value["positiveRecall"] + .1 * value["smallObjectRecall"] +
+            .2 * value["boundaryF1"])
+
+
+def boundary_f1(torch, prediction, truth):
+    import torch.nn.functional as functional
+    prediction = prediction.float()[None, None]
+    truth = truth.float()[None, None]
+    prediction_boundary = prediction.bool() & ~(-functional.max_pool2d(-prediction, 3, 1, 1)).bool()
+    truth_boundary = truth.bool() & ~(-functional.max_pool2d(-truth, 3, 1, 1)).bool()
+    if not truth_boundary.any(): return 1. if not prediction_boundary.any() else 0.
+    prediction_near = functional.max_pool2d(prediction_boundary.float(), 5, 1, 2).bool()
+    truth_near = functional.max_pool2d(truth_boundary.float(), 5, 1, 2).bool()
+    precision = float((prediction_boundary & truth_near).sum()) / max(1, int(prediction_boundary.sum()))
+    recall = float((truth_boundary & prediction_near).sum()) / max(1, int(truth_boundary.sum()))
+    return 2 * precision * recall / max(1e-8, precision + recall)
+
+
 def evaluate(torch, model, loader, device, thresholds=(.5,)):
     totals = {threshold: [0, 0, 0, 0] for threshold in thresholds}
+    per_image = {threshold: {"dice": [], "recall": [], "smallRecall": [], "boundary": []}
+                 for threshold in thresholds}
     model.eval()
     bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
     with torch.inference_mode():
@@ -185,7 +235,33 @@ def evaluate(torch, model, loader, device, thresholds=(.5,)):
             for threshold in thresholds:
                 current = confusion(probability, target, threshold)
                 totals[threshold] = [a + b for a, b in zip(totals[threshold], current)]
-    return {threshold: scores(value) for threshold, value in totals.items()}
+                for index in range(target.shape[0]):
+                    truth = target[index] >= .5
+                    truth_pixels = int(truth.sum())
+                    if truth_pixels == 0: continue
+                    predicted = probability[index] >= threshold
+                    tp = int((predicted & truth).sum())
+                    fp = int((predicted & ~truth).sum())
+                    fn = truth_pixels - tp
+                    per_image[threshold]["dice"].append(2 * tp / max(1, 2 * tp + fp + fn))
+                    recall = tp / truth_pixels
+                    per_image[threshold]["recall"].append(recall)
+                    per_image[threshold]["boundary"].append(
+                        boundary_f1(torch, predicted[0] if predicted.ndim == 3 else predicted,
+                                    truth[0] if truth.ndim == 3 else truth))
+                    if truth_pixels <= truth.numel() * .02:
+                        per_image[threshold]["smallRecall"].append(recall)
+    result = {}
+    for threshold, value in totals.items():
+        result[threshold] = scores(value)
+        current = per_image[threshold]
+        result[threshold]["macroDice"] = sum(current["dice"]) / max(1, len(current["dice"]))
+        result[threshold]["positiveRecall"] = sum(current["recall"]) / max(1, len(current["recall"]))
+        result[threshold]["smallObjectRecall"] = (sum(current["smallRecall"]) /
+            max(1, len(current["smallRecall"]))) if current["smallRecall"] else result[threshold]["positiveRecall"]
+        result[threshold]["boundaryF1"] = sum(current["boundary"]) / max(1, len(current["boundary"]))
+        result[threshold]["selectionScore"] = selection_score(result[threshold])
+    return result
 
 
 def save_error_review(torch, model, loader, device, threshold, destination, limit=50):
@@ -253,38 +329,51 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
                     selection_name):
     candidate = output / "candidates" / f"negative-{selection_name}"
     candidate.mkdir(parents=True, exist_ok=True)
+    hard_weights = [3. if sample.get("feedbackPriority") or sample.get("burstId") else 1.
+                    for sample in train_samples]
+    sampler_generator = torch.Generator().manual_seed(args.seed)
+    sampler = torch.utils.data.WeightedRandomSampler(
+        hard_weights, len(train_samples), replacement=True, generator=sampler_generator)
     loaders = {
         "train": DataLoader(PropDataset(root, train_samples, True, args.input_size), batch_size=batch,
-                            shuffle=True, num_workers=min(4, os.cpu_count() or 1),
+                            sampler=sampler, num_workers=min(4, os.cpu_count() or 1),
                             pin_memory=device.type == "cuda"),
         "validation": DataLoader(PropDataset(root, validation_samples, False, args.input_size), batch_size=batch,
                                  shuffle=False, num_workers=1)}
     random.seed(args.seed); torch.manual_seed(args.seed)
     model = build_model(torch, pretrained=True).to(device)
     pos_weight = torch.tensor([positive_weight(root, train_samples)], device=device)
-    best_dice, stale, start_epoch = -1., 0, 0
+    best_score, stale, start_epoch = -1., 0, 0
     last_path, best_path = candidate / "last.pth", candidate / "best.pth"
     optimizer = torch.optim.AdamW([
         {"params": model.backbone.parameters(), "lr": 1e-5},
         {"params": model.classifier.parameters(), "lr": 1e-4},
         {"params": model.aux_classifier.parameters(), "lr": 1e-4}], weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
+    resume_state = None
     if args.resume and last_path.is_file():
         state = torch.load(last_path, map_location=device, weights_only=False)
+        resume_state = state
         model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
         scaler.load_state_dict(state["scaler"]); start_epoch = state["epoch"] + 1
-        best_dice, stale = state["bestDice"], state["stale"]
+        best_score = state.get("bestScore", state.get("bestDice", -1.)); stale = state["stale"]
         emit("resume", f"Resumed {negative_ratio:.0%} negatives at epoch {start_epoch + 1}",
              negativeRatio=negative_ratio)
+    ema = torch.optim.swa_utils.AveragedModel(model,
+        multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(.99))
+    if resume_state and "ema" in resume_state: ema.load_state_dict(resume_state["ema"])
     total_epochs = args.warmup_epochs + args.epochs
+    checkpoint_thresholds = tuple(round(value / 100, 2) for value in range(15, 86, 10))
     for epoch in range(start_epoch, total_epochs):
         frozen = epoch < args.warmup_epochs
         for parameter in model.backbone.parameters(): parameter.requires_grad = not frozen
         if frozen:
             for group in optimizer.param_groups: group["lr"] = 0 if group is optimizer.param_groups[0] else 1e-3
         else:
-            optimizer.param_groups[0]["lr"] = 1e-5
-            optimizer.param_groups[1]["lr"] = optimizer.param_groups[2]["lr"] = 1e-4
+            progress = (epoch - args.warmup_epochs) / max(1, args.epochs - 1)
+            multiplier = .05 + .95 * .5 * (1 + math.cos(math.pi * progress))
+            optimizer.param_groups[0]["lr"] = 1e-5 * multiplier
+            optimizer.param_groups[1]["lr"] = optimizer.param_groups[2]["lr"] = 1e-4 * multiplier
         model.train(); freeze_batch_norm(torch, model)
         optimizer.zero_grad(set_to_none=True); running = 0.
         for step, (images, target, _) in enumerate(loaders["train"]):
@@ -294,19 +383,28 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
             scaler.scale(loss).backward(); running += float(loss.item()) * accumulation
             if (step + 1) % accumulation == 0 or step + 1 == len(loaders["train"]):
                 scaler.step(optimizer); scaler.update(); optimizer.zero_grad(set_to_none=True)
-        validation = evaluate(torch, model, loaders["validation"], device)[.5]
-        improved = validation["dice"] > best_dice
+                ema.update_parameters(model)
+        validation_all = evaluate(torch, ema.module, loaders["validation"], device, checkpoint_thresholds)
+        validation_threshold = max(checkpoint_thresholds,
+            key=lambda value: validation_all[value]["selectionScore"])
+        validation = validation_all[validation_threshold]
+        improved = validation["selectionScore"] > best_score
         if improved:
-            best_dice, stale = validation["dice"], 0
-            torch.save(model.state_dict(), best_path)
+            best_score, stale = validation["selectionScore"], 0
+            torch.save(ema.module.state_dict(), best_path)
         else:
             stale += 1
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                    "scaler": scaler.state_dict(), "epoch": epoch, "bestDice": best_dice,
+                    "ema": ema.state_dict(), "scaler": scaler.state_dict(), "epoch": epoch,
+                    "bestScore": best_score, "bestDice": validation["dice"],
                     "stale": stale}, last_path)
         emit("epoch", "backbone frozen" if frozen else "full fine-tune",
              epoch=epoch + 1, trainingLoss=running / max(1, len(loaders["train"])),
-             validationDice=validation["dice"], best=improved,
+             validationDice=validation["dice"], validationRecall=validation["recall"],
+             validationMacroDice=validation["macroDice"],
+             validationSmallObjectRecall=validation["smallObjectRecall"],
+             validationSelectionScore=validation["selectionScore"],
+             validationThreshold=validation_threshold, best=improved,
              negativeRatio=negative_ratio)
         if not frozen and stale >= args.patience:
             emit("early-stopping", f"No validation improvement for {stale} epochs")
@@ -316,11 +414,12 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
     model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
     thresholds = tuple(round(value / 100, 2) for value in range(10, 91, 5))
     validation_all = evaluate(torch, model, loaders["validation"], device, thresholds)
-    threshold = max(thresholds, key=lambda value: validation_all[value]["dice"])
+    threshold = max(thresholds, key=lambda value: validation_all[value]["selectionScore"])
     result = {"targetNegativeRatio": negative_ratio,
               "negativeSelection": selection_name,
               "actualNegativeRatio": sum(sample.get("decision") == "negative" for sample in train_samples) /
                                      max(1, len(train_samples)),
+              "hardExampleCount": sum(weight > 1 for weight in hard_weights),
               "trainCount": len(train_samples), "threshold": threshold,
               "validation": validation_all[threshold]}
     emit("candidate-complete", f"{negative_ratio:.0%} negatives: validation Dice "
@@ -380,7 +479,7 @@ def train(args):
         result["checkpoint"] = str(checkpoint_path)
         candidates.append(result)
         if device.type == "cuda": torch.cuda.empty_cache()
-    winner = max(candidates, key=lambda value: value["validation"]["dice"])
+    winner = max(candidates, key=lambda value: value["validation"]["selectionScore"])
     best_path = Path(winner.pop("checkpoint"))
     for candidate in candidates: candidate.pop("checkpoint", None)
     threshold = winner["threshold"]
@@ -515,6 +614,13 @@ def self_test():
         images = torch.zeros(2, 3, 8, 8); images[:, 0] = -1
         images[0, 0, :4, :4] = 1
         targets = torch.zeros(2, 1, 8, 8); targets[0, 0, 4:, 4:] = 1
+        review_metrics = evaluate(torch, ReviewModel(),
+            [(images, targets, ("sample-a", "sample-b"))], torch.device("cpu"), (.5,))[.5]
+        assert all(name in review_metrics for name in
+                   ("macroDice", "positiveRecall", "smallObjectRecall", "boundaryF1", "selectionScore"))
+        combined_loss = segmentation_loss(torch, {"out": images[:, :1] * 4}, targets,
+                                          torch.tensor([2.]))
+        assert torch.isfinite(combined_loss)
         review = save_error_review(torch, ReviewModel(),
             [(images, targets, ("sample-a", "sample-b"))], torch.device("cpu"), .5,
             root / "review", limit=2)

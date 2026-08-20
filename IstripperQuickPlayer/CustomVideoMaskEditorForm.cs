@@ -15,6 +15,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     readonly DxgiMaskPreviewControl image = new() { Dock = DockStyle.Fill,
         BackColor = Color.Black,
         Enabled = false, TabStop = true, Cursor = Cursors.Cross,
+        ViewNavigationEnabled = true,
         AccessibleName = "SAM2 tracked foreground mask" };
     readonly ClipTimelineControl timeline = new() { Dock = DockStyle.Fill,
         Height = 60, AllowDividerDragging = false };
@@ -800,14 +801,12 @@ internal sealed class CustomVideoMaskEditorForm : Form
     void Image_MouseWheel(object? sender, MouseEventArgs e)
     {
         if (e.Delta == 0) return;
-        if (paintMode.Checked)
+        if ((ModifierKeys & Keys.Control) != 0 && paintMode.Checked)
         {
             ResizeBrush(e.Delta);
             return;
         }
-        if (playback.Enabled || updating || !timeline.Enabled) return;
-        int frames = Math.Max(1, Math.Abs(e.Delta) / 120);
-        SetFrame(CurrentFrame + Math.Sign(e.Delta) * frames);
+        image.ZoomAt(e.Location, e.Delta);
     }
 
     async void Image_MouseUp(object? sender, MouseEventArgs e)
