@@ -74,13 +74,40 @@ choose manual entries randomly. **Smart automatic queue** can:
 
 Enabled favour rules contribute to a combined score. **Favour favourites and
 higher ratings** adds a newly randomized contribution whenever the automatic
-queue is rebuilt. Its upper bound is the personal rating divided by 20 on
-iStripper's internal 0-10 half-star scale, plus 0.5 for a favourite. Unrated
-cards use a neutral 2.5-star rating (5 internally). For example, an unrated
-non-favourite contributes from 0 to 0.25, a 4-star non-favourite from 0 to
-0.40, and a favourite adds 0.50 to that upper bound. This lets lower-rated
+queue is rebuilt. Its rating-based upper bound ranges from 0 to 1, plus 0.5
+for a favourite. Unrated cards use a neutral 2.5-star rating (5 on iStripper's
+internal 0-10 half-star scale). A menu slider applies a
+normalized rating influence exponent from 0.25 to 4.00 before calculating the
+upper bound. The normalization keeps 0, 2.5 and 5 stars fixed at the bottom,
+middle and top of the rating range. At 1.00 the curve is linear; higher values
+push below-average ratings down and above-average ratings up, while lower
+values flatten their differences. For example at 1.00, an unrated
+non-favourite contributes from 0 to 0.50, a 4-star non-favourite from 0 to
+0.80, and a favourite adds 0.50 to that upper bound. This lets lower-rated
 cards sometimes precede higher-rated cards while favouring the latter over
 many queue rebuilds.
+
+The total Smart Queue score is the sum of the enabled scoring rules:
+
+| Smart Queue rule | Score contribution | How it is calculated |
+| --- | ---: | --- |
+| Personal rating | Random 0 to 1.00 | The normalized rating sets the random upper bound; the exponent changes the curve around 2.5 stars. |
+| Favourite | Adds 0.50 to the rating/favourite random upper bound | Separate from the rating curve; a 5-star favourite therefore contributes a random 0 to 1.50. |
+| Newer purchase | 0 to 1.00 | Newest candidate gets 1, oldest gets 0, and candidates between them are ranked linearly. |
+| Least recently played | 0 to 1.00 | Never/least-recently played candidate gets 1, most recent gets 0, and candidates between them are ranked linearly. |
+| **Maximum combined score** | **3.50** | A 5-star favourite receiving its random maximum, which is also newest and least recently played. |
+
+For example, at exponent 1.00 a 4-star favourite has a randomized
+rating/favourite contribution from 0 to 1.30. If it receives 0.90 on that
+rebuild, has a newer-purchase rank score of 0.75, and a least-recent score of
+1.00, its total is `0.90 + 0.75 + 1.00 = 2.65`. The highest total normally
+goes first. **Chance of random choice** can instead ignore the totals for an
+individual selection step.
+
+The remaining Smart Queue controls do not add to the score: **Favourites
+only** and **Cooldown** affect eligibility, **Prefer never-played clips**
+chooses a clip after its card is selected, and **Avoid adjacent cards from
+same model** rearranges the resulting queue.
 
 When strict favourites or cooldown rules leave too few cards to fill the
 requested automatic queue, QuickPlayer progressively admits model-cooldown

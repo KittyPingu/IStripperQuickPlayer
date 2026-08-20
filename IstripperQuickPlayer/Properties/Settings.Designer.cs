@@ -949,6 +949,18 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("100")]
+        public int SmartQueueRatingExponentPercent {
+            get {
+                return ((int)(this["SmartQueueRatingExponentPercent"]));
+            }
+            set {
+                this["SmartQueueRatingExponentPercent"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("-1")]
         public int IStripperSmallPlayerVolume {
             get {

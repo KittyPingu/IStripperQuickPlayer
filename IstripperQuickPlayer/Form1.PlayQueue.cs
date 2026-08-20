@@ -64,6 +64,20 @@ namespace IStripperQuickPlayer
             {
                 CheckOnClick = true
             };
+        private readonly ToolStripLabel smartQueueRatingExponentLabel = new();
+        private readonly Controls.PlaybackSeekBar
+            smartQueueRatingExponentTrackBar = new()
+        {
+            AccessibleName = "Rating influence exponent",
+            AccessibleDescription =
+                "Adjust how strongly higher personal ratings are favoured.",
+            Minimum = 25,
+            Maximum = 400,
+            SmallChange = 5,
+            LargeChange = 25,
+            Size = new System.Drawing.Size(230, 42)
+        };
+        private ToolStripControlHost? smartQueueRatingExponentHost;
         private readonly ToolStripLabel smartQueueIgnoreScoresLabel = new();
         private readonly Controls.PlaybackSeekBar
             smartQueueIgnoreScoresTrackBar = new()
@@ -216,6 +230,21 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.SmartQueueIgnoreScoresPercent,
                 smartQueueIgnoreScoresTrackBar.Minimum,
                 smartQueueIgnoreScoresTrackBar.Maximum);
+            smartQueueRatingExponentTrackBar.Value = Math.Clamp(
+                Properties.Settings.Default.SmartQueueRatingExponentPercent,
+                smartQueueRatingExponentTrackBar.Minimum,
+                smartQueueRatingExponentTrackBar.Maximum);
+            UpdateSmartQueueRatingExponentLabel();
+            smartQueueRatingExponentTrackBar.Scroll += (_, _) =>
+            {
+                Properties.Settings.Default.SmartQueueRatingExponentPercent =
+                    smartQueueRatingExponentTrackBar.Value;
+                UpdateSmartQueueRatingExponentLabel();
+            };
+            smartQueueRatingExponentTrackBar.MouseUp += (_, _) =>
+                CommitSmartQueueSettings();
+            smartQueueRatingExponentTrackBar.KeyUp += (_, _) =>
+                CommitSmartQueueSettings();
             UpdateSmartQueueIgnoreScoresLabel();
             smartQueueIgnoreScoresTrackBar.Scroll += (_, _) =>
             {
@@ -284,6 +313,12 @@ namespace IStripperQuickPlayer
                     AutoSize = false,
                     Size = new System.Drawing.Size(240, 46)
                 };
+            smartQueueRatingExponentHost =
+                new ToolStripControlHost(smartQueueRatingExponentTrackBar)
+                {
+                    AutoSize = false,
+                    Size = new System.Drawing.Size(240, 46)
+                };
             smartQueueToolStripMenuItem.DropDownOpening += (_, _) =>
                 ApplySmartQueueSliderTheme();
             smartQueueToolStripMenuItem.DropDownOpened += (_, _) =>
@@ -304,6 +339,8 @@ namespace IStripperQuickPlayer
                     ToolTipText =
                         "Rating and favourite preferences add a randomized score before the highest total normally wins."
                 },
+                smartQueueRatingExponentLabel,
+                smartQueueRatingExponentHost,
                 smartQueueIgnoreScoresLabel,
                 smartQueueIgnoreScoresHost,
                 new ToolStripSeparator(),
@@ -2258,14 +2295,29 @@ namespace IStripperQuickPlayer
                 "using the favour scores.";
         }
 
+        private void UpdateSmartQueueRatingExponentLabel()
+        {
+            double exponent = smartQueueRatingExponentTrackBar.Value / 100d;
+            smartQueueRatingExponentLabel.Text =
+                $"Rating influence exponent: {exponent:0.00}×";
+            smartQueueRatingExponentLabel.ToolTipText =
+                "1.00 is linear; higher values push below-average ratings " +
+                "down and above-average ratings up. The 2.5-star baseline " +
+                "and favourite bonus stay fixed. Minimum: 0.25.";
+        }
+
         private void ApplySmartQueueSliderTheme()
         {
             Color background =
                 smartQueueToolStripMenuItem.DropDown.BackColor;
             if (smartQueueIgnoreScoresHost != null)
                 smartQueueIgnoreScoresHost.BackColor = background;
+            if (smartQueueRatingExponentHost != null)
+                smartQueueRatingExponentHost.BackColor = background;
             smartQueueIgnoreScoresTrackBar.BackColor = background;
             smartQueueIgnoreScoresTrackBar.Invalidate();
+            smartQueueRatingExponentTrackBar.BackColor = background;
+            smartQueueRatingExponentTrackBar.Invalidate();
         }
 
         private void CommitSmartQueueSettings()
@@ -2323,7 +2375,9 @@ namespace IStripperQuickPlayer
                 {
                     scores[entry.CardTag] += RatingFavouritePreference(
                         myData.GetCardFavourite(entry.CardTag),
-                        myData.GetCardRating(entry.CardTag));
+                        myData.GetCardRating(entry.CardTag),
+                        Properties.Settings.Default
+                            .SmartQueueRatingExponentPercent / 100d);
                 }
             }
 
@@ -2387,13 +2441,18 @@ namespace IStripperQuickPlayer
         }
 
         private static double RatingFavouritePreference(bool favourite,
-            decimal rating)
+            decimal rating, double exponent)
         {
             // iStripper stores personal ratings on a 0-10 half-star scale.
             // Zero means unrated, for which 5 represents a neutral 2.5 stars.
             decimal effectiveRating = rating <= 0
                 ? 5 : Math.Clamp(rating, 0, 10);
-            double maximum = (double)effectiveRating / 20 +
+            double ratingFraction = (double)effectiveRating / 10;
+            double clampedExponent = Math.Clamp(exponent, 0.25, 4);
+            double positive = Math.Pow(ratingFraction, clampedExponent);
+            double negative = Math.Pow(1 - ratingFraction, clampedExponent);
+            double normalizedRating = positive / (positive + negative);
+            double maximum = normalizedRating +
                 (favourite ? 0.5 : 0);
             return Random.Shared.NextDouble() * maximum;
         }

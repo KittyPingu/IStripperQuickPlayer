@@ -218,6 +218,9 @@
     <Setting Name="SmartQueueIgnoreScoresPercent" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">0</Value>
     </Setting>
+    <Setting Name="SmartQueueRatingExponentPercent" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">100</Value>
+    </Setting>
     <Setting Name="PlayQueueHeight" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">330</Value>
     </Setting>
