@@ -72,11 +72,21 @@ choose manual entries randomly. **Smart automatic queue** can:
 - prefer clips that have never been played; and
 - avoid placing consecutive cards from the same model.
 
-Enabled favour rules contribute to a combined score. When strict favourites
-or cooldown rules leave too few cards to fill the requested automatic queue,
-QuickPlayer progressively admits model-cooldown matches, non-favourites and
-finally card-cooldown matches. It still respects the current card and clip
-filters and stops when the available unique cards are exhausted.
+Enabled favour rules contribute to a combined score. **Favour favourites and
+higher ratings** adds a newly randomized contribution whenever the automatic
+queue is rebuilt. Its upper bound is the personal rating divided by 20 on
+iStripper's internal 0-10 half-star scale, plus 0.5 for a favourite. Unrated
+cards use a neutral 2.5-star rating (5 internally). For example, an unrated
+non-favourite contributes from 0 to 0.25, a 4-star non-favourite from 0 to
+0.40, and a favourite adds 0.50 to that upper bound. This lets lower-rated
+cards sometimes precede higher-rated cards while favouring the latter over
+many queue rebuilds.
+
+When strict favourites or cooldown rules leave too few cards to fill the
+requested automatic queue, QuickPlayer progressively admits model-cooldown
+matches, non-favourites and finally card-cooldown matches. It still respects
+the current card and clip filters and stops when the available unique cards
+are exhausted.
 
 ### Show iStripper card overlays
 

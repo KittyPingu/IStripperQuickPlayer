@@ -298,11 +298,11 @@ namespace IStripperQuickPlayer
                 smartQueueWeightedToolStripMenuItem,
                 smartQueueNewestToolStripMenuItem,
                 new ToolStripMenuItem(
-                    "Favour rules normally pick the highest score")
+                    "Favour rules combine into a score; rating score is randomized")
                 {
                     Enabled = false,
                     ToolTipText =
-                        "Enabled favour rules combine into a score; the highest score normally wins."
+                        "Rating and favourite preferences add a randomized score before the highest total normally wins."
                 },
                 smartQueueIgnoreScoresLabel,
                 smartQueueIgnoreScoresHost,
@@ -789,7 +789,7 @@ namespace IStripperQuickPlayer
             smartQueueLeastRecentToolStripMenuItem.ToolTipText =
                 "Give higher scores to cards that have gone longest without playing.";
             smartQueueWeightedToolStripMenuItem.ToolTipText =
-                "Give higher scores to favourites and cards with higher personal ratings.";
+                "Add a randomized score capped by personal rating, with a fixed bonus for favourites; unrated cards use 2.5 stars.";
             smartQueueNewestToolStripMenuItem.ToolTipText =
                 "Give higher scores to the most recently purchased cards.";
             smartQueueUnplayedClipsToolStripMenuItem.ToolTipText =
@@ -2387,8 +2387,16 @@ namespace IStripperQuickPlayer
         }
 
         private static double RatingFavouritePreference(bool favourite,
-            decimal rating) => (favourite ? 0.5 : 0) +
-                (double)Math.Clamp(rating, 0, 10) / 20;
+            decimal rating)
+        {
+            // iStripper stores personal ratings on a 0-10 half-star scale.
+            // Zero means unrated, for which 5 represents a neutral 2.5 stars.
+            decimal effectiveRating = rating <= 0
+                ? 5 : Math.Clamp(rating, 0, 10);
+            double maximum = (double)effectiveRating / 20 +
+                (favourite ? 0.5 : 0);
+            return Random.Shared.NextDouble() * maximum;
+        }
 
         private static List<PlayQueueEntry> OrderBySmartQueueScores(
             IEnumerable<PlayQueueEntry> candidates,
