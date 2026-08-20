@@ -14,6 +14,21 @@ internal static class TrainingStudioVerification
                 DatasetStore.IsSourceInFolder(Path.Combine(Path.GetDirectoryName(root)!, "outside.mp4"), root))
                 return false;
             DatasetStore store = new(root);
+            string rescanRoot = Path.Combine(root, "rescan-index");
+            string nestedVideos = Path.Combine(rescanRoot, "nested");
+            Directory.CreateDirectory(nestedVideos);
+            File.WriteAllBytes(Path.Combine(rescanRoot, "first.mp4"), [1]);
+            DatasetStore rescanStore = new(Path.Combine(root, "rescan-dataset"));
+            if (rescanStore.IndexFolderAsync(rescanRoot, null, CancellationToken.None)
+                    .GetAwaiter().GetResult() != 1 ||
+                rescanStore.IndexFolderAsync(rescanRoot, null, CancellationToken.None)
+                    .GetAwaiter().GetResult() != 0) return false;
+            File.WriteAllBytes(Path.Combine(nestedVideos, "second.mkv"), [2]);
+            if (rescanStore.IndexFolderAsync(rescanRoot, null, CancellationToken.None)
+                    .GetAwaiter().GetResult() != 1 ||
+                rescanStore.Dataset.Sources.Count != 2 ||
+                !string.Equals(rescanStore.Dataset.ActiveSourceFolder, Path.GetFullPath(rescanRoot),
+                    StringComparison.OrdinalIgnoreCase)) return false;
             string split = DatasetStore.SplitFor("000000000000000000000000");
             if (split != "train" || DatasetStore.FrameTimestamp(1_033, 30) != 1_033) return false;
             if (DatasetStore.SplitFor("ffffffff0000000000000000") is not ("train" or "validation" or "test"))

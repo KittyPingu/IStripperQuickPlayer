@@ -9,6 +9,7 @@ internal sealed class TrainingStudioForm : Form
 {
     readonly TextBox datasetPath = new() { Width = 430 };
     readonly ComboBox activeSource = new() { Width = 300, DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly Button rescanSource = new() { Text = "Rescan", AutoSize = true, Enabled = false };
     readonly PictureBox preview = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom,
         BackColor = Color.FromArgb(30, 30, 30) };
     readonly Label candidateInfo = new() { Dock = DockStyle.Top, Height = 44, AutoEllipsis = true };
@@ -68,6 +69,7 @@ internal sealed class TrainingStudioForm : Form
             datasetPath, openDataset, indexFolder, queueStatus]);
         FlowLayoutPanel reviewActions = new() { Dock = DockStyle.Top, Height = 44, Padding = new(6) };
         reviewActions.Controls.AddRange([
+            rescanSource,
             new Label { Text = "Active videos", AutoSize = true, Padding = new(8, 8, 0, 0) },
             activeSource, next, positive, negative, reject, burst, undoDecision]);
 
@@ -114,6 +116,7 @@ internal sealed class TrainingStudioForm : Form
 
         openDataset.Click += (_, _) => ChooseDataset();
         indexFolder.Click += async (_, _) => await IndexFolderAsync();
+        rescanSource.Click += async (_, _) => await RescanActiveFolderAsync();
         activeSource.SelectedIndexChanged += async (_, _) =>
         {
             if (refreshingSourceFolders || store == null || activeSource.SelectedItem is not string folder ||
@@ -183,6 +186,32 @@ internal sealed class TrainingStudioForm : Form
         });
     }
 
+    async Task RescanActiveFolderAsync()
+    {
+        if (store == null || activeSource.SelectedItem is not string folder) return;
+        rescanSource.Enabled = false;
+        try
+        {
+            await BusyAsync(async token =>
+            {
+                int added = await store.IndexFolderAsync(folder,
+                    new Progress<string>(value => status.Text = value), token);
+                ClearPrefetchQueue();
+                RefreshSourceFolders(); UpdateStats();
+                status.Text = added == 0
+                    ? $"Rescan complete. No new videos found in {folder}"
+                    : $"Rescan complete. Found {added:N0} new video(s) in {folder}";
+                if (current != null)
+                {
+                    TrainingSample displayed = current;
+                    nextFramePrefetch = Task.Run(() => PrefetchNextFrameAsync(displayed,
+                        SelectedMinimumResolution(), prefetchCancellation.Token));
+                }
+            });
+        }
+        finally { rescanSource.Enabled = activeSource.SelectedIndex >= 0; }
+    }
+
     void RefreshSourceFolders()
     {
         if (store == null) return;
@@ -196,7 +225,11 @@ internal sealed class TrainingStudioForm : Form
                 .FindIndex(value => string.Equals(value, active, StringComparison.OrdinalIgnoreCase));
             activeSource.SelectedIndex = index >= 0 ? index : activeSource.Items.Count > 0 ? 0 : -1;
         }
-        finally { activeSource.EndUpdate(); refreshingSourceFolders = false; }
+        finally
+        {
+            activeSource.EndUpdate(); refreshingSourceFolders = false;
+            rescanSource.Enabled = activeSource.SelectedIndex >= 0;
+        }
     }
 
     async Task NextAsync()

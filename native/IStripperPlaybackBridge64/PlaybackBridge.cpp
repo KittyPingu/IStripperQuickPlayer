@@ -2860,6 +2860,18 @@ namespace
         return original;
     }
 
+    bool IsLockedPlayerInteractionMessage(UINT message)
+    {
+        return message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
+            message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDOWN ||
+            message == WM_RBUTTONUP || message == WM_RBUTTONDBLCLK ||
+            message == WM_MBUTTONDOWN || message == WM_MBUTTONUP ||
+            message == WM_MBUTTONDBLCLK || message == WM_XBUTTONDOWN ||
+            message == WM_XBUTTONUP || message == WM_XBUTTONDBLCLK ||
+            message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL ||
+            message == WM_CONTEXTMENU;
+    }
+
     LRESULT CALLBACK MovieWindowProc(HWND window, UINT message,
         WPARAM wParam, LPARAM lParam)
     {
@@ -2874,6 +2886,15 @@ namespace
             return InterlockedCompareExchange(
                 &g_playerClickThrough, 0, 0) != 0
                 ? HTTRANSPARENT : HTCLIENT;
+        }
+        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+            IsLockedPlayerInteractionMessage(message))
+        {
+            // Opaque pixels still hit this HWND so the locked player remains
+            // stationary, but must not receive iStripper's click actions.
+            // Transparent layered pixels are excluded by Windows before this
+            // procedure is called, so underlying applications remain usable.
+            return 0;
         }
 
         WNDPROC original = OriginalMovieWindowProc(window);

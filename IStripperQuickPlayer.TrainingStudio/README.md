@@ -24,7 +24,9 @@ Indexing a video folder preserves all existing dataset work and makes that folde
 the persisted active source for subsequent random candidates. Previously indexed
 sources remain recorded but are not sampled until their folder is selected again.
 Previously scanned folders appear in the Active videos dropdown and can be reused
-without another recursive scan.
+without another recursive scan. Use **Rescan** beside that dropdown after adding
+videos to the selected folder; unchanged videos are skipped and new videos are
+added to the persisted index.
 Changing the active folder immediately loads a candidate from it. Drafts belonging
 to other folders remain preserved and reappear when their folder is active again.
 The shared `prop_segmenter.py` helper is deployed beside the RVM worker under
