@@ -8,6 +8,15 @@ namespace IStripperQuickPlayer.Interop;
 
 public sealed class PlaybackBridgeClient : IDisposable
 {
+    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+    public readonly record struct PlayerHitTestDebugSnapshot(
+        Rectangle Bounds, Point Cursor, int AlphaWidth, int AlphaHeight,
+        int AlphaX, int AlphaY, bool Visible, int PreviewWidth,
+        int PreviewHeight, byte[] Alpha);
+    private const uint PlayerHitTestDebugMagic = 0x44485051;
+    private const int PlayerHitTestDebugHeaderLength = 64;
+    private const int PlayerHitTestDebugCapacity = 512 * 512;
+    // END TEMPORARY HIT-TEST DIAGNOSTICS
     public readonly record struct BufferCallTimings(
         double WriteMilliseconds,
         double CommandMilliseconds,
@@ -131,6 +140,43 @@ public sealed class PlaybackBridgeClient : IDisposable
             throw new ArgumentOutOfRangeException(nameof(value));
         return CallBuffer(apiName, data, readBackLength: 0);
     }
+
+    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+    public PlayerHitTestDebugSnapshot? GetPlayerHitTestDebugSnapshot()
+    {
+        byte[] packet = new byte[
+            PlayerHitTestDebugHeaderLength + PlayerHitTestDebugCapacity];
+        BitConverter.GetBytes(PlayerHitTestDebugMagic).CopyTo(packet, 0);
+        BitConverter.GetBytes(PlayerHitTestDebugCapacity).CopyTo(packet, 4);
+        int result = CallBuffer("IStripperGetPlayerHitTestDebugSnapshot",
+            packet, packet.Length);
+        if (result < 0 || BitConverter.ToUInt32(packet, 0) !=
+            PlayerHitTestDebugMagic) return null;
+        int byteCount = checked((int)BitConverter.ToUInt32(packet, 8));
+        int previewWidth = BitConverter.ToInt32(packet, 56);
+        int previewHeight = BitConverter.ToInt32(packet, 60);
+        if (byteCount < 0 || byteCount > PlayerHitTestDebugCapacity ||
+            previewWidth <= 0 || previewHeight <= 0 ||
+            byteCount != checked(previewWidth * previewHeight)) return null;
+        byte[] alpha = new byte[byteCount];
+        Buffer.BlockCopy(packet, PlayerHitTestDebugHeaderLength,
+            alpha, 0, byteCount);
+        int left = BitConverter.ToInt32(packet, 12);
+        int top = BitConverter.ToInt32(packet, 16);
+        int right = BitConverter.ToInt32(packet, 20);
+        int bottom = BitConverter.ToInt32(packet, 24);
+        return new PlayerHitTestDebugSnapshot(
+            Rectangle.FromLTRB(left, top, right, bottom),
+            new Point(BitConverter.ToInt32(packet, 28),
+                BitConverter.ToInt32(packet, 32)),
+            BitConverter.ToInt32(packet, 36),
+            BitConverter.ToInt32(packet, 40),
+            BitConverter.ToInt32(packet, 44),
+            BitConverter.ToInt32(packet, 48),
+            BitConverter.ToInt32(packet, 52) != 0,
+            previewWidth, previewHeight, alpha);
+    }
+    // END TEMPORARY HIT-TEST DIAGNOSTICS
 
     public int SetFullscreenShaderData(float[] values, out uint sequence)
     {

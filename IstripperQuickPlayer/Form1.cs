@@ -195,6 +195,10 @@ namespace IStripperQuickPlayer
             new("Resize player with mouse wheel") { CheckOnClick = true };
         private readonly ToolStripMenuItem allowWheelWhileLockedToolStripMenuItem =
             new("Allow Resize while Locked") { CheckOnClick = true };
+        // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+        private readonly ToolStripMenuItem debugPlayerHitTestingToolStripMenuItem =
+            new("Debug player hit testing") { CheckOnClick = true };
+        // END TEMPORARY HIT-TEST DIAGNOSTICS
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
             new("Playback History...");
         private readonly ToolStripMenuItem libraryHealthCheckToolStripMenuItem =
@@ -802,6 +806,10 @@ namespace IStripperQuickPlayer
                     allowWheelWhileLockedToolStripMenuItem.Checked;
                 ChangePlayerWheelWhileLocked();
             };
+            // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+            debugPlayerHitTestingToolStripMenuItem.CheckedChanged += (_, _) =>
+                ChangePlayerHitTestDiagnostics();
+            // END TEMPORARY HIT-TEST DIAGNOSTICS
             settingsToolStripMenuItem.DropDownItems.Insert(
                 settingsToolStripMenuItem.DropDownItems.IndexOf(
                     randomPlayOrderToolStripMenuItem) + 1,

@@ -60,6 +60,9 @@ internal sealed class CustomPlayerForm : Form
     bool? mouseTransparent;
     bool movingWindow;
     int pointerRefreshPending;
+    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+    HitTestDebugOverlay? hitTestDebugOverlay;
+    // END TEMPORARY HIT-TEST DIAGNOSTICS
     bool windowConfigured;
     bool preloadRequested;
     int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
@@ -109,6 +112,10 @@ internal sealed class CustomPlayerForm : Form
     static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll")]
     static extern bool GetClientRect(IntPtr window, out NativeRect rect);
+    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+    [DllImport("user32.dll")]
+    static extern bool ClientToScreen(IntPtr window, ref Point point);
+    // END TEMPORARY HIT-TEST DIAGNOSTICS
     [DllImport("user32.dll")]
     static extern bool ScreenToClient(IntPtr window, ref Point point);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
@@ -147,6 +154,9 @@ internal sealed class CustomPlayerForm : Form
         };
         FormClosed += (_, _) =>
         {
+            // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+            hitTestDebugOverlay?.Close();
+            // END TEMPORARY HIT-TEST DIAGNOSTICS
             ReleaseGlobalWheelHook();
             cancellation.Cancel();
             settleTimer.Dispose();
@@ -472,6 +482,25 @@ internal sealed class CustomPlayerForm : Form
                 0x1 | 0x2 | 0x4 | 0x10 | 0x20);
         }
     }
+    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+    internal void SetHitTestDebugOverlay(bool value)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => SetHitTestDebugOverlay(value));
+            return;
+        }
+        if (!value)
+        {
+            hitTestDebugOverlay?.Close();
+            hitTestDebugOverlay = null;
+            return;
+        }
+        if (hitTestDebugOverlay is { IsDisposed: false }) return;
+        hitTestDebugOverlay = new HitTestDebugOverlay(this);
+        hitTestDebugOverlay.Show(this);
+    }
+    // END TEMPORARY HIT-TEST DIAGNOSTICS
 
     void SetPointerClickThrough(bool value)
     {
@@ -596,6 +625,20 @@ internal sealed class CustomPlayerForm : Form
         return clientPoint.X >= rect.Left && clientPoint.Y >= rect.Top &&
             clientPoint.X < rect.Right && clientPoint.Y < rect.Bottom;
     }
+
+    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+    bool TryClientScreenBounds(out Rectangle bounds)
+    {
+        bounds = Rectangle.Empty;
+        if (!IsHandleCreated || !GetClientRect(Handle, out NativeRect rect))
+            return false;
+        Point origin = new(rect.Left, rect.Top);
+        if (!ClientToScreen(Handle, ref origin)) return false;
+        bounds = new Rectangle(origin.X, origin.Y,
+            rect.Right - rect.Left, rect.Bottom - rect.Top);
+        return bounds.Width > 0 && bounds.Height > 0;
+    }
+    // END TEMPORARY HIT-TEST DIAGNOSTICS
 
     static bool ShouldHandleHookWheel(bool locked, bool allowWhileLocked,
         bool resizeEnabled, bool control) =>
@@ -799,6 +842,142 @@ internal sealed class CustomPlayerForm : Form
         public void Dispose() =>
             Interlocked.Exchange(ref renderer, null)?.Dispose();
     }
+
+    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+    sealed class HitTestDebugOverlay : Form
+    {
+        readonly CustomPlayerForm player;
+        readonly System.Windows.Forms.Timer refreshTimer = new() { Interval = 75 };
+        AlphaHitMap? renderedAlpha;
+        Bitmap? mask;
+        Point screenPoint, clientPoint;
+        bool inside, alphaVisible;
+
+        internal HitTestDebugOverlay(CustomPlayerForm player)
+        {
+            this.player = player;
+            Text = "Custom player hit-test diagnostics";
+            AutoScaleMode = AutoScaleMode.None;
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            TopMost = true;
+            BackColor = Color.Fuchsia;
+            TransparencyKey = Color.Fuchsia;
+            Opacity = .72;
+            SetStyle(ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.UserPaint, true);
+            refreshTimer.Tick += (_, _) => RefreshSnapshot();
+            Shown += (_, _) => refreshTimer.Start();
+            FormClosed += (_, _) =>
+            {
+                refreshTimer.Dispose();
+                mask?.Dispose();
+            };
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams parameters = base.CreateParams;
+                parameters.ExStyle |= WsExTransparent | WsExLayered |
+                    WsExNoActivate | WsExToolWindow;
+                return parameters;
+            }
+        }
+        protected override bool ShowWithoutActivation => true;
+        protected override void OnPaintBackground(PaintEventArgs e) =>
+            e.Graphics.Clear(TransparencyKey);
+
+        void RefreshSnapshot()
+        {
+            if (player.IsDisposed ||
+                !player.TryClientScreenBounds(out Rectangle playerBounds))
+            {
+                Close();
+                return;
+            }
+            if (Bounds != playerBounds) Bounds = playerBounds;
+            if (!Visible) Show(player);
+            GetCursorPos(out screenPoint);
+            inside = player.TryClientPoint(screenPoint, out clientPoint);
+            alphaVisible = inside && player.IsAlphaVisible(clientPoint);
+            AlphaHitMap? alpha = player.hitTestAlpha;
+            if (alpha != null && !ReferenceEquals(alpha, renderedAlpha))
+            {
+                renderedAlpha = alpha;
+                Bitmap next = CreateMask(alpha, player.alphaThreshold);
+                Bitmap? previous = mask;
+                mask = next;
+                previous?.Dispose();
+            }
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.InterpolationMode =
+                System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            e.Graphics.PixelOffsetMode =
+                System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            if (mask != null)
+                e.Graphics.DrawImage(mask, ClientRectangle);
+            using Pen extentPen = new(Color.Cyan, 4);
+            e.Graphics.DrawRectangle(extentPen, 2, 2,
+                Math.Max(0, ClientSize.Width - 5),
+                Math.Max(0, ClientSize.Height - 5));
+            if (inside)
+            {
+                using Pen cursorPen = new(alphaVisible ? Color.Lime : Color.Red, 3);
+                e.Graphics.DrawEllipse(cursorPen,
+                    clientPoint.X - 9, clientPoint.Y - 9, 18, 18);
+                e.Graphics.DrawLine(cursorPen,
+                    clientPoint.X - 14, clientPoint.Y,
+                    clientPoint.X + 14, clientPoint.Y);
+                e.Graphics.DrawLine(cursorPen,
+                    clientPoint.X, clientPoint.Y - 14,
+                    clientPoint.X, clientPoint.Y + 14);
+            }
+            string decision = !inside ? "OUTSIDE" :
+                alphaVisible ? "OPAQUE (captured)" : "TRANSPARENT (pass through)";
+            string text = $"Native client {ClientSize.Width}x{ClientSize.Height}  " +
+                $"screen=({screenPoint.X},{screenPoint.Y})  " +
+                $"client=({clientPoint.X},{clientPoint.Y})  {decision}";
+            SizeF textSize = e.Graphics.MeasureString(text, Font);
+            using Brush background = new SolidBrush(Color.FromArgb(220, 0, 0, 0));
+            using Brush foreground = new SolidBrush(Color.White);
+            e.Graphics.FillRectangle(background, 6, 6,
+                textSize.Width + 10, textSize.Height + 6);
+            e.Graphics.DrawString(text, Font, foreground, 11, 9);
+        }
+
+        static Bitmap CreateMask(AlphaHitMap alpha, int threshold)
+        {
+            Bitmap bitmap = new(alpha.Width, alpha.Height,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            Rectangle rectangle = new(0, 0, alpha.Width, alpha.Height);
+            System.Drawing.Imaging.BitmapData bits = bitmap.LockBits(rectangle,
+                System.Drawing.Imaging.ImageLockMode.WriteOnly,
+                System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try
+            {
+                int[] pixels = new int[checked(alpha.Width * alpha.Height)];
+                for (int index = 0; index < pixels.Length; index++)
+                    pixels[index] = IsVisibleAlpha(alpha.Pixels[index], threshold)
+                        ? unchecked((int)0xffff0080) : 0;
+                Marshal.Copy(pixels, 0, bits.Scan0, pixels.Length);
+            }
+            finally
+            {
+                bitmap.UnlockBits(bits);
+            }
+            return bitmap;
+        }
+    }
+    // END TEMPORARY HIT-TEST DIAGNOSTICS
 
     internal sealed class PairedRenderer : IDisposable
     {

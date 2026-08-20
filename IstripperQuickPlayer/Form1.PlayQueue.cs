@@ -865,6 +865,9 @@ namespace IStripperQuickPlayer
                 clickThroughLockedPlayerToolStripMenuItem,
                 wheelResizePlayerToolStripMenuItem,
                 allowWheelWhileLockedToolStripMenuItem,
+                // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
+                debugPlayerHitTestingToolStripMenuItem,
+                // END TEMPORARY HIT-TEST DIAGNOSTICS
                 new ToolStripSeparator(),
                 playbackSettingsToolStripMenuItem,
                 librarySettingsToolStripMenuItem,
