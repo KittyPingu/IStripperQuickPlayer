@@ -35,6 +35,11 @@ internal sealed class CustomPlayerForm : Form
         internal uint Time;
         internal UIntPtr ExtraInfo;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    struct NativeRect
+    {
+        internal int Left, Top, Right, Bottom;
+    }
     internal sealed record AlphaHitMap(byte[] Pixels, int Width, int Height);
     static readonly LowLevelMouseProc globalWheelProc = GlobalWheelCallback;
     static readonly object globalMouseSync = new();
@@ -102,6 +107,10 @@ internal sealed class CustomPlayerForm : Form
     static extern short GetKeyState(int key);
     [DllImport("user32.dll")]
     static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")]
+    static extern bool GetClientRect(IntPtr window, out NativeRect rect);
+    [DllImport("user32.dll")]
+    static extern bool ScreenToClient(IntPtr window, ref Point point);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr GetModuleHandle(string? moduleName);
 
@@ -483,9 +492,9 @@ internal sealed class CustomPlayerForm : Form
             {
                 Interlocked.Exchange(ref pointerRefreshPending, 0);
                 if (!GetCursorPos(out Point screen)) return;
-                bool inside = RectangleToScreen(ClientRectangle).Contains(screen);
+                bool inside = TryClientPoint(screen, out Point client);
                 bool transparent = inside && !movingWindow &&
-                    !IsAlphaVisible(PointToClient(screen));
+                    !IsAlphaVisible(client);
                 SetPointerClickThrough(transparent);
             });
         }
@@ -534,10 +543,8 @@ internal sealed class CustomPlayerForm : Form
             CustomPlayerForm? player = PlayerAt(mouse.Point);
             if (player == null)
                 return CallNextHookEx(globalWheelHook, code, message, data);
-            bool inside = player.RectangleToScreen(
-                player.ClientRectangle).Contains(mouse.Point);
-            bool alphaVisible = inside &&
-                player.IsAlphaVisible(player.PointToClient(mouse.Point));
+            bool inside = player.TryClientPoint(mouse.Point, out Point client);
+            bool alphaVisible = inside && player.IsAlphaVisible(client);
             bool passThrough = inside &&
                 (player.locked && player.clickThroughLocked || !alphaVisible);
             if (mouseMessage != WmMouseWheel)
@@ -571,8 +578,7 @@ internal sealed class CustomPlayerForm : Form
                 CustomPlayerForm player = globalMousePlayers[index];
                 if (player.IsDisposed || !player.Visible)
                     continue;
-                if (player.RectangleToScreen(
-                        player.ClientRectangle).Contains(screenPoint))
+                if (player.TryClientPoint(screenPoint, out _))
                     return player;
             }
         }
@@ -581,6 +587,15 @@ internal sealed class CustomPlayerForm : Form
 
     static bool ShouldCaptureWheel(bool insidePlayer, bool alphaVisible) =>
         insidePlayer && alphaVisible;
+
+    bool TryClientPoint(Point screenPoint, out Point clientPoint)
+    {
+        clientPoint = screenPoint;
+        if (!IsHandleCreated || !GetClientRect(Handle, out NativeRect rect) ||
+            !ScreenToClient(Handle, ref clientPoint)) return false;
+        return clientPoint.X >= rect.Left && clientPoint.Y >= rect.Top &&
+            clientPoint.X < rect.Right && clientPoint.Y < rect.Bottom;
+    }
 
     static bool ShouldHandleHookWheel(bool locked, bool allowWhileLocked,
         bool resizeEnabled, bool control) =>
@@ -666,8 +681,9 @@ internal sealed class CustomPlayerForm : Form
         if (message.Msg == WmNcHitTest)
         {
             long coordinates = message.LParam.ToInt64();
-            Point point = PointToClient(new Point((short)(coordinates & 0xffff),
-                (short)((coordinates >> 16) & 0xffff)));
+            Point point = new((short)(coordinates & 0xffff),
+                (short)((coordinates >> 16) & 0xffff));
+            ScreenToClient(Handle, ref point);
             message.Result = new IntPtr(HitTest(
                 locked, clickThroughLocked, movingWindow,
                 IsAlphaVisible(point)));
