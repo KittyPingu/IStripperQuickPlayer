@@ -96,20 +96,38 @@ internal sealed class DatasetStore
         {
             Dataset.SourceFolders = Dataset.SourceFolders.Append(folder)
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            Dataset.ActiveSourceFolder = folder;
             SaveSourcesLocked();
         }
         return added;
     }
 
-    internal TrainingSample? NextCandidate()
+    internal TrainingSample? NextCandidate(string? preferredBurstId = null, int minimumResolution = 0,
+        IReadOnlySet<string>? excludedSampleIds = null)
     {
         lock (gate)
         {
-            TrainingSample? queued = Dataset.Samples.FirstOrDefault(value => value.Decision == "draft" &&
-                value.FramePath is not null && File.Exists(Resolve(value.FramePath)));
-            if (queued != null) return queued;
+            if (preferredBurstId != null)
+            {
+                TrainingSample? burst = Dataset.Samples.Where(value =>
+                        value.BurstId == preferredBurstId &&
+                        !(excludedSampleIds?.Contains(value.Id) ?? false) &&
+                        value.Decision == "draft" && value.FramePath is not null &&
+                        File.Exists(Resolve(value.FramePath)))
+                    .OrderBy(value => value.BurstIndex).FirstOrDefault();
+                if (burst != null) return burst;
+            }
+            List<TrainingSample> queued = Dataset.Samples.Where(value => value.Decision == "draft" &&
+                    !(excludedSampleIds?.Contains(value.Id) ?? false) &&
+                    value.FramePath is not null && File.Exists(Resolve(value.FramePath)) &&
+                    SampleIsInActiveFolder(value) && SampleMeetsResolution(value, minimumResolution))
+                .ToList();
+            if (queued.Count > 0) return queued[random.Next(queued.Count)];
             List<VideoSource> eligible = Dataset.Sources.Where(value => value.ProbeError == null &&
-                value.DurationMs > 60_000 && File.Exists(value.Path)).ToList();
+                value.DurationMs > 60_000 &&
+                (minimumResolution <= 0 || Math.Min(value.Width, value.Height) >= minimumResolution) &&
+                (Dataset.ActiveSourceFolder == null ||
+                    IsSourceInFolder(value.Path, Dataset.ActiveSourceFolder))).ToList();
             for (int attempt = 0; attempt < 2000 && eligible.Count > 0; attempt++)
             {
                 VideoSource source = eligible[random.Next(eligible.Count)];
@@ -125,6 +143,43 @@ internal sealed class DatasetStore
                 Dataset.Samples.Add(sample); SaveSampleLocked(sample); return sample;
             }
             return null;
+        }
+    }
+
+    internal static bool IsSourceInFolder(string source, string folder)
+    {
+        string relative = Path.GetRelativePath(Path.GetFullPath(folder), Path.GetFullPath(source));
+        return relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar,
+            StringComparison.Ordinal) && !Path.IsPathRooted(relative);
+    }
+
+    bool SampleIsInActiveFolder(TrainingSample sample)
+    {
+        if (Dataset.ActiveSourceFolder == null) return true;
+        VideoSource? source = Dataset.Sources.FirstOrDefault(value => value.Id == sample.SourceId);
+        return source != null && IsSourceInFolder(source.Path, Dataset.ActiveSourceFolder);
+    }
+
+    bool SampleMeetsResolution(TrainingSample sample, int minimumResolution)
+    {
+        if (minimumResolution <= 0) return true;
+        int width = sample.Width, height = sample.Height;
+        if (width <= 0 || height <= 0)
+        {
+            VideoSource? source = Dataset.Sources.FirstOrDefault(value => value.Id == sample.SourceId);
+            width = source?.Width ?? 0; height = source?.Height ?? 0;
+        }
+        return Math.Min(width, height) >= minimumResolution;
+    }
+
+    internal void SetActiveSourceFolder(string folder)
+    {
+        folder = Path.GetFullPath(folder);
+        lock (gate)
+        {
+            if (!Dataset.SourceFolders.Contains(folder, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("That folder has not been indexed.");
+            Dataset.ActiveSourceFolder = folder; SaveSourcesLocked();
         }
     }
 
@@ -145,28 +200,31 @@ internal sealed class DatasetStore
     }
 
     internal async Task<IReadOnlyList<TrainingSample>> CreateBurstAsync(TrainingSample anchor,
-        CancellationToken token)
+        CancellationToken token, bool forceNew = false)
     {
-        if (anchor.BurstId is string existingId)
+        if (!forceNew && anchor.BurstId is string existingId)
         {
             TrainingSample[] existing = Dataset.Samples.Where(value => value.BurstId == existingId)
                 .OrderBy(value => value.BurstIndex).ToArray();
-            if (existing.Length == 9) return existing;
+            if (existing.Length is 5 or 9) return existing;
         }
         VideoSource source = Source(anchor.SourceId);
-        string burstId = anchor.BurstId ?? Guid.NewGuid().ToString("N");
-        anchor.BurstId = burstId; anchor.BurstIndex = 4;
+        string burstId = forceNew ? Guid.NewGuid().ToString("N") :
+            anchor.BurstId ?? Guid.NewGuid().ToString("N");
+        int[] offsets = BurstFrameOffsets();
+        anchor.BurstId = burstId; anchor.BurstIndex = 2;
         double frameMs = 1000 / Math.Max(1, source.FramesPerSecond);
         List<TrainingSample> result = [anchor];
-        for (int offset = -4; offset <= 4; offset++)
+        for (int index = 0; index < offsets.Length; index++)
         {
+            int offset = offsets[index];
             if (offset == 0) continue;
             long timestamp = Math.Clamp((long)Math.Round(anchor.TimestampMs + offset * frameMs),
                 30_000, source.DurationMs - 30_000);
             TrainingSample sample = new()
             {
                 SourceId = source.Id, TimestampMs = timestamp, Split = source.Split,
-                BurstId = burstId, BurstIndex = offset + 4
+                BurstId = burstId, BurstIndex = index
             };
             lock (gate) { Dataset.Samples.Add(sample); SaveSampleLocked(sample); }
             await ExtractDraftFrameAsync(sample, token); result.Add(sample);
@@ -174,6 +232,8 @@ internal sealed class DatasetStore
         lock (gate) SaveSampleLocked(anchor);
         return result.OrderBy(value => value.BurstIndex).ToArray();
     }
+
+    internal static int[] BurstFrameOffsets() => [-20, -10, 0, 10, 20];
 
     internal void Accept(TrainingSample sample, int[] objectIds,
         IReadOnlyList<AnnotationObject> objects, string provenance)
@@ -194,10 +254,13 @@ internal sealed class DatasetStore
         try
         {
             Directory.CreateDirectory(temporary); File.Copy(sourceFrame, frame, true);
-            WriteEditableMask(editable, objectIds);
-            PngMaskWriter.SaveGray16(instance, sample.Width, sample.Height, objectIds);
             byte[] binary = objectIds.Select(value => value > 0 ? (byte)255 : (byte)0).ToArray();
             PngMaskWriter.SaveGray8(prop, sample.Width, sample.Height, binary);
+            if (positive)
+            {
+                WriteEditableMask(editable, objectIds);
+                PngMaskWriter.SaveGray16(instance, sample.Width, sample.Height, objectIds);
+            }
             WriteJsonAtomic(annotation, new SampleAnnotation
             {
                 Objects = objects.Where(value => objectIds.Contains(value.Id)).ToList(),
@@ -222,8 +285,10 @@ internal sealed class DatasetStore
             sample.Decision = positive ? "positive" : "negative";
             sample.ObjectCount = objects.Count(value => objectIds.Contains(value.Id));
             sample.FramePath = Relative(Path.Combine(folder, "frame.png"));
-            sample.EditableMaskPath = Relative(Path.Combine(folder, "instance-mask.i32.gz"));
-            sample.InstanceMaskPath = Relative(Path.Combine(folder, "instance-mask.png"));
+            sample.EditableMaskPath = positive
+                ? Relative(Path.Combine(folder, "instance-mask.i32.gz")) : null;
+            sample.InstanceMaskPath = positive
+                ? Relative(Path.Combine(folder, "instance-mask.png")) : null;
             sample.PropMaskPath = Relative(Path.Combine(folder, "prop-mask.png"));
             sample.AnnotationPath = Relative(Path.Combine(folder, "annotation.json"));
             sample.ReviewedUtc = DateTime.UtcNow;
@@ -279,9 +344,13 @@ internal sealed class DatasetStore
     internal (int[]? Ids, AnnotationObject[] Objects, string Provenance) LoadDraftAnnotation(
         TrainingSample sample)
     {
-        if (sample.EditableMaskPath == null || sample.AnnotationPath == null) return (null, [], "manual");
+        if (sample.EditableMaskPath == null || sample.AnnotationPath == null)
+            return (sample.Width > 0 && sample.Height > 0 ? new int[sample.Width * sample.Height] : null,
+                [], sample.ObjectCount == 0 ? "confirmed-negative" : "manual");
         string editable = Resolve(sample.EditableMaskPath), annotation = Resolve(sample.AnnotationPath);
-        if (!File.Exists(editable) || !File.Exists(annotation)) return (null, [], "manual");
+        if (!File.Exists(editable) || !File.Exists(annotation))
+            return (sample.Width > 0 && sample.Height > 0 ? new int[sample.Width * sample.Height] : null,
+                [], sample.ObjectCount == 0 ? "confirmed-negative" : "manual");
         int[] ids = new int[sample.Width * sample.Height];
         using (FileStream file = File.OpenRead(editable))
         using (GZipStream gzip = new(file, CompressionMode.Decompress))
@@ -299,7 +368,38 @@ internal sealed class DatasetStore
             sample.Decision = "rejected"; sample.ReviewedUtc = DateTime.UtcNow;
             sample.FramePath = null; SaveSampleLocked(sample);
         }
-        TryDeleteDraft(sample.Id);
+        _ = Task.Run(() => TryDeleteDraft(sample.Id));
+    }
+
+    internal TrainingSample? MostRecentDecision() => Dataset.Samples
+        .Where(value => value.Decision is "positive" or "negative" or "rejected" &&
+            value.ReviewedUtc != null)
+        .OrderByDescending(value => value.ReviewedUtc).FirstOrDefault();
+
+    internal void UndoDecision(TrainingSample sample)
+    {
+        if (sample.Decision is not ("positive" or "negative"))
+            throw new InvalidOperationException("Only accepted positive/negative decisions can currently be restored.");
+        if (sample.FramePath == null) throw new InvalidOperationException("The accepted frame is missing.");
+        string acceptedFolder = Path.GetDirectoryName(Resolve(sample.FramePath))!;
+        string draftFolder = Path.Combine(Root, "drafts", sample.Id);
+        if (!Directory.Exists(acceptedFolder)) throw new DirectoryNotFoundException(acceptedFolder);
+        if (Directory.Exists(draftFolder))
+            throw new IOException("The draft restore folder already exists.");
+        Directory.CreateDirectory(Path.GetDirectoryName(draftFolder)!);
+        Directory.Move(acceptedFolder, draftFolder);
+        lock (gate)
+        {
+            sample.Decision = "draft"; sample.ReviewedUtc = null;
+            sample.FramePath = Relative(Path.Combine(draftFolder, "frame.png"));
+            sample.EditableMaskPath = Relative(Path.Combine(draftFolder, "instance-mask.i32.gz"));
+            sample.InstanceMaskPath = Relative(Path.Combine(draftFolder, "instance-mask.png"));
+            sample.AnnotationPath = Relative(Path.Combine(draftFolder, "annotation.json"));
+            sample.PropMaskPath = null; sample.RvmPersonMaskPath = null;
+            sample.DesiredForegroundPath = null; sample.DerivationStatus = "pending";
+            sample.DerivationError = null; sample.RvmRevision = null; sample.RvmThreshold = 0;
+            SaveSampleLocked(sample);
+        }
     }
 
     internal void SetDerivation(TrainingSample sample, string status, string? personMask,
@@ -408,6 +508,10 @@ internal sealed class DatasetStore
         };
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using Process process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {executable}.");
+        using CancellationTokenRegistration cancellation = token.Register(() =>
+        {
+            try { if (!process.HasExited) process.Kill(true); } catch { }
+        });
         Task<string> stdout = process.StandardOutput.ReadToEndAsync(token);
         Task<string> stderr = process.StandardError.ReadToEndAsync(token);
         await process.WaitForExitAsync(token);

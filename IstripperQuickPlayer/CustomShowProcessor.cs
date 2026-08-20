@@ -1158,18 +1158,30 @@ internal sealed class CustomShowProcessingForm : Form
 {
     sealed class BufferedTableLayoutPanel : TableLayoutPanel
     {
+        const int WsClipChildren = 0x02000000;
         internal BufferedTableLayoutPanel()
         {
             DoubleBuffered = true;
             SetStyle(ControlStyles.AllPaintingInWmPaint |
                 ControlStyles.OptimizedDoubleBuffer, true);
         }
+        protected override CreateParams CreateParams
+        {
+            get { CreateParams value = base.CreateParams;
+                value.Style |= WsClipChildren; return value; }
+        }
     }
 
     sealed class BufferedGroupBox : GroupBox
     {
+        const int WsClipChildren = 0x02000000;
         internal BufferedGroupBox() => SetStyle(ControlStyles.AllPaintingInWmPaint |
             ControlStyles.OptimizedDoubleBuffer, true);
+        protected override CreateParams CreateParams
+        {
+            get { CreateParams value = base.CreateParams;
+                value.Style |= WsClipChildren; return value; }
+        }
     }
 
     sealed class BufferedLabel : Label
@@ -1303,9 +1315,11 @@ internal sealed class CustomShowProcessingForm : Form
                     "Loading cached optimized SAM2", StringComparison.Ordinal);
                 bar.Style = compiling ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks;
                 if (!compiling) bar.Value = (int)Math.Round(percent);
-                if (!string.IsNullOrWhiteSpace(value.PreviewSourceLabel))
+                if (!string.IsNullOrWhiteSpace(value.PreviewSourceLabel) &&
+                    sourceGroup.Text != value.PreviewSourceLabel)
                     sourceGroup.Text = value.PreviewSourceLabel;
-                if (!string.IsNullOrWhiteSpace(value.PreviewCompositeLabel))
+                if (!string.IsNullOrWhiteSpace(value.PreviewCompositeLabel) &&
+                    compositeGroup.Text != value.PreviewCompositeLabel)
                     compositeGroup.Text = value.PreviewCompositeLabel;
                 UpdatePreview(value.PreviewSource, value.PreviewComposite);
                 if (!string.IsNullOrWhiteSpace(value.InteractiveControlFolder))

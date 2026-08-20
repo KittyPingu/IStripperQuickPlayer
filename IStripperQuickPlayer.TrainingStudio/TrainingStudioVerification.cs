@@ -10,6 +10,9 @@ internal static class TrainingStudioVerification
         try
         {
             Directory.CreateDirectory(root);
+            if (!DatasetStore.IsSourceInFolder(Path.Combine(root, "videos", "one.mp4"), root) ||
+                DatasetStore.IsSourceInFolder(Path.Combine(Path.GetDirectoryName(root)!, "outside.mp4"), root))
+                return false;
             DatasetStore store = new(root);
             string split = DatasetStore.SplitFor("000000000000000000000000");
             if (split != "train" || DatasetStore.FrameTimestamp(1_033, 30) != 1_033) return false;
@@ -17,7 +20,16 @@ internal static class TrainingStudioVerification
                 return false;
             if (AnnotationCanvas.AdjustBrushSize(32, 120) != 36 ||
                 AnnotationCanvas.AdjustBrushSize(2, -120) != 2 ||
-                AnnotationCanvas.AdjustBrushSize(200, 120) != 200) return false;
+                AnnotationCanvas.AdjustBrushSize(200, 120) != 200 ||
+                !DatasetStore.BurstFrameOffsets().SequenceEqual(
+                    [-20, -10, 0, 10, 20])) return false;
+            using (AnnotationCanvas historyCanvas = new())
+            {
+                int promptCount = 1;
+                historyCanvas.RecordExternalChange(() => promptCount--, () => promptCount++);
+                historyCanvas.Undo(); if (promptCount != 0) return false;
+                historyCanvas.Redo(); if (promptCount != 1) return false;
+            }
             string sourcePath = Path.Combine(root, "source.mp4");
             File.WriteAllBytes(sourcePath, [1, 2, 3]);
             FileInfo sourceFile = new(sourcePath);
@@ -35,6 +47,7 @@ internal static class TrainingStudioVerification
             TrainingSample first = store.NextCandidate()!;
             if (first.TimestampMs < 30_000 || first.TimestampMs > 70_000 || first.Split != source.Split) return false;
             store.Reject(first);
+            if (store.NextCandidate(null, 2160) != null) return false;
             TrainingSample positive = store.NextCandidate()!;
             if (Math.Abs(positive.TimestampMs - first.TimestampMs) <= 10_000) return false;
             positive.Width = positive.Height = 2;
@@ -55,6 +68,12 @@ internal static class TrainingStudioVerification
             negative.FramePath = CreateDraftFrame(store, negative);
             store.Dataset.Samples.Add(negative); store.SaveSample(negative);
             store.Accept(negative, new int[4], [], "confirmed-negative");
+            if (store.MostRecentDecision()?.Id != negative.Id) return false;
+            store.UndoDecision(negative);
+            var restoredNegative = store.LoadDraftAnnotation(negative);
+            if (negative.Decision != "draft" || restoredNegative.Ids == null ||
+                restoredNegative.Ids.Any(value => value != 0)) return false;
+            store.Accept(negative, new int[4], [], "confirmed-negative");
             DatasetStatistics statistics = store.Statistics();
             if (statistics.Positive != 1 || statistics.Negative != 1 || statistics.Rejected != 1 ||
                 statistics.Objects != 1 || statistics.CoveredVideos != 1 || statistics.NegativeRatio != .5)
@@ -74,6 +93,25 @@ internal static class TrainingStudioVerification
             using (Bitmap bitmap = new(2, 2)) bitmap.Save(previewSource, ImageFormat.Png);
             using (Bitmap preview = TrainingStudioForm.LoadUnlockedImage(previewSource))
                 File.Move(previewSource, Path.Combine(root, "preview-moved.png"));
+            string review = Path.Combine(root, "runs", "verification", "package", "review");
+            Directory.CreateDirectory(review);
+            using (Bitmap bitmap = new(2, 2)) bitmap.Save(Path.Combine(review, "fp.png"), ImageFormat.Png);
+            DatasetStore.WriteJsonAtomic(Path.Combine(review, "review.json"), new Dictionary<string, object>
+            {
+                ["false-positive"] = new[] { new { sampleId = positive.Id,
+                    errorPixelsAt512 = 42, image = "fp.png" } },
+                ["false-negative"] = Array.Empty<object>()
+            });
+            string package = Directory.GetParent(review)!.FullName;
+            File.WriteAllText(Path.Combine(package, "manifest.json"), "{}");
+            File.WriteAllBytes(Path.Combine(package, "model.pth"), [1]);
+            IReadOnlyList<ErrorReviewItem> reviewItems = ErrorReviewForm.LoadItems(review);
+            if (reviewItems.Count != 1 || reviewItems[0].SampleId != positive.Id ||
+                reviewItems[0].Kind != "false-positive" || reviewItems[0].ErrorPixels != 42 ||
+                ErrorReviewForm.FindLatest(root) != review ||
+                TrainingRunner.FindLatestPackage(root) != package) return false;
+            ErrorReviewForm.MarkHidden(review, "false-positive", positive.Id);
+            if (!ErrorReviewForm.LoadItems(review)[0].Hidden) return false;
             TrainingDataset roundTrip = System.Text.Json.JsonSerializer.Deserialize<TrainingDataset>(
                 File.ReadAllText(Path.Combine(root, "dataset.json")),
                 new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;

@@ -10,18 +10,29 @@ internal sealed class TrainingRunner
     internal string? PackagePath { get; private set; }
     internal string? ReviewPath { get; private set; }
 
-    internal async Task<int> RunAsync(string datasetRoot, bool resume, CancellationToken token)
+    internal async Task<int> RunAsync(string datasetRoot, bool resume, int minimumResolution,
+        int inputSize, string negativeSelection, CancellationToken token)
     {
         string runs = Path.Combine(datasetRoot, "runs");
         string? resumable = resume && Directory.Exists(runs)
             ? Directory.EnumerateDirectories(runs)
-                .Where(directory => File.Exists(Path.Combine(directory, "last.pth")))
+                .Where(directory => Directory.EnumerateFiles(directory, "last.pth",
+                    SearchOption.AllDirectories).Any() &&
+                    ConfigurationMatches(directory, minimumResolution, inputSize, negativeSelection))
                 .OrderByDescending(Directory.GetLastWriteTimeUtc)
                 .FirstOrDefault()
             : null;
         string output = resumable ?? Path.Combine(runs, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff"));
         if (resume && resumable == null) Message?.Invoke("No resumable checkpoint was found; starting a new run.");
         else if (resumable != null) Message?.Invoke($"Resuming {Path.GetFileName(resumable)} from its last checkpoint.");
+        Directory.CreateDirectory(output);
+        File.WriteAllText(Path.Combine(output, "training-config.json"), JsonSerializer.Serialize(new
+        {
+            minimumResolution, inputSize, negativeSelection
+        }, new JsonSerializerOptions { WriteIndented = true }));
+        string eventsPath = Path.Combine(output, "events.ndjson");
+        string errorsPath = Path.Combine(output, "training.stderr.log");
+        Message?.Invoke($"Writing training logs to {output}");
         string worker = Path.Combine(AppContext.BaseDirectory, "training", "prop_segmenter_train.py");
         ProcessStartInfo start = new(Sam2Client.RuntimePython())
         {
@@ -30,11 +41,24 @@ internal sealed class TrainingRunner
         };
         foreach (string argument in new[] { worker, "--dataset", datasetRoot, "--output", output })
             start.ArgumentList.Add(argument);
+        start.ArgumentList.Add("--minimum-resolution");
+        start.ArgumentList.Add(minimumResolution.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        start.ArgumentList.Add("--input-size");
+        start.ArgumentList.Add(inputSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        start.ArgumentList.Add("--negative-selection");
+        start.ArgumentList.Add(negativeSelection);
         if (resumable != null) start.ArgumentList.Add("--resume");
         process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the training worker.");
-        Task<string> errors = process.StandardError.ReadToEndAsync(token);
-        while (await process.StandardOutput.ReadLineAsync(token) is string line)
+        using CancellationTokenRegistration cancellationRegistration =
+            token.Register(Cancel);
+        await using StreamWriter events = new(eventsPath, append: resumable != null)
+            { AutoFlush = true };
+        await using StreamWriter errors = new(errorsPath, append: resumable != null)
+            { AutoFlush = true };
+        Task errorPump = PumpAsync(process.StandardError, errors);
+        while (await process.StandardOutput.ReadLineAsync() is string line)
         {
+            await events.WriteLineAsync(line);
             try
             {
                 using JsonDocument json = JsonDocument.Parse(line);
@@ -47,21 +71,62 @@ internal sealed class TrainingRunner
                 {
                     string dice = root.TryGetProperty("validationDice", out JsonElement value)
                         ? value.GetDouble().ToString("0.000") : "—";
-                    Message?.Invoke($"Epoch {epoch.GetInt32()}: validation Dice {dice} {message}".Trim());
+                    string ratio = root.TryGetProperty("negativeRatio", out JsonElement ratioValue)
+                        ? $"{ratioValue.GetDouble():P0} negatives · " : "";
+                    Message?.Invoke($"{ratio}epoch {epoch.GetInt32()}: validation Dice {dice} {message}".Trim());
                 }
                 else Message?.Invoke(($"{stage}: {message}").Trim(' ', ':'));
             }
             catch { Message?.Invoke(line); }
         }
-        await process.WaitForExitAsync(token);
-        string error = await errors;
-        if (process.ExitCode != 0) Message?.Invoke(error.Trim());
+        await process.WaitForExitAsync();
+        await errorPump;
+        token.ThrowIfCancellationRequested();
+        if (process.ExitCode != 0)
+            Message?.Invoke($"Training failed; see {errorsPath}");
         return process.ExitCode;
+    }
+
+    static bool ConfigurationMatches(string run, int minimumResolution, int inputSize,
+        string negativeSelection)
+    {
+        string path = Path.Combine(run, "training-config.json");
+        if (!File.Exists(path)) return minimumResolution == 0 && inputSize == 512 &&
+            negativeSelection == "compare";
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            JsonElement root = document.RootElement;
+            int savedSize = root.TryGetProperty("inputSize", out JsonElement size) ? size.GetInt32() : 512;
+            string savedNegatives = root.TryGetProperty("negativeSelection", out JsonElement negatives)
+                ? negatives.GetString() ?? "compare" : "compare";
+            return root.GetProperty("minimumResolution").GetInt32() == minimumResolution &&
+                savedSize == inputSize && savedNegatives == negativeSelection;
+        }
+        catch { return false; }
+    }
+
+    static async Task PumpAsync(StreamReader source, StreamWriter destination)
+    {
+        while (await source.ReadLineAsync() is string line)
+            await destination.WriteLineAsync(line);
     }
 
     internal void Cancel()
     {
         try { if (process is { HasExited: false }) process.Kill(true); } catch { }
+    }
+
+    internal static string? FindLatestPackage(string datasetRoot)
+    {
+        string runs = Path.Combine(datasetRoot, "runs");
+        if (!Directory.Exists(runs)) return null;
+        return Directory.EnumerateDirectories(runs)
+            .Select(run => Path.Combine(run, "package"))
+            .Where(package => File.Exists(Path.Combine(package, "manifest.json")) &&
+                File.Exists(Path.Combine(package, "model.pth")))
+            .OrderByDescending(package => File.GetLastWriteTimeUtc(Path.Combine(package, "manifest.json")))
+            .FirstOrDefault();
     }
 
     internal static string InstallPackage(string packagePath)

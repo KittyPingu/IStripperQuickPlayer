@@ -9,6 +9,7 @@ internal sealed class TrainingDataset
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public string[] SourceFolders { get; set; } = [];
+    public string? ActiveSourceFolder { get; set; }
     public List<VideoSource> Sources { get; set; } = [];
     [JsonIgnore]
     public List<TrainingSample> Samples { get; set; } = [];

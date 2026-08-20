@@ -5,10 +5,17 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Platforms>x64</Platforms>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <RootNamespace>IStripperQuickPlayer.TrainingStudio</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.DirectComposition" Version="3.8.3" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.8.3" />
+  </ItemGroup>
 
   <ItemGroup>
     <Content Include="..\IstripperQuickPlayer\dependencies\ffmpeg.exe;..\IstripperQuickPlayer\dependencies\ffprobe.exe">
@@ -16,10 +23,13 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
-    <Content Include="..\tools\custom-shows\prop_segmenter.py" Link="training\prop_segmenter.py">
+    <Content Include="..\tools\custom-shows\prop_segmenter.py" Link="custom-shows\prop_segmenter.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\tools\training-studio\prop_segmenter_train.py" Link="training\prop_segmenter_train.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\training-studio\rvm_preview_worker.py" Link="custom-shows\rvm_preview_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\tools\custom-shows\sam_mask_worker.py" Link="custom-shows\sam_mask_worker.py">

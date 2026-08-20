@@ -42,7 +42,23 @@ internal sealed class Sam2Client : IAsyncDisposable
     internal async Task GenerateAsync(IEnumerable<PointF> points, IEnumerable<int> labels,
         RectangleF? box, string? seed, CancellationToken token)
     {
-        if (process == null || process.HasExited) throw new InvalidOperationException("SAM2 is not ready.");
+        PointF[] promptPoints = points.ToArray();
+        int[] promptLabels = labels.ToArray();
+        await EnsureRunningAsync(token);
+        try
+        {
+            await GenerateOnceAsync(promptPoints, promptLabels, box, seed, token);
+        }
+        catch (Exception) when (process == null || process.HasExited)
+        {
+            await RestartAsync(token);
+            await GenerateOnceAsync(promptPoints, promptLabels, box, seed, token);
+        }
+    }
+
+    async Task GenerateOnceAsync(PointF[] points, int[] labels,
+        RectangleF? box, string? seed, CancellationToken token)
+    {
         object request = new
         {
             command = "predict",
@@ -51,11 +67,25 @@ internal sealed class Sam2Client : IAsyncDisposable
             box = box is RectangleF value ? new[] { value.Left, value.Top, value.Right, value.Bottom } : null,
             seedMask = seed
         };
-        await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request));
-        await process.StandardInput.FlushAsync(token);
+        Process active = process ??
+            throw new InvalidOperationException("SAM2 is not ready.");
+        await active.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request));
+        await active.StandardInput.FlushAsync(token);
         JsonElement response = await ReadAsync(token);
         if (response.GetProperty("status").GetString() != "mask")
             throw new InvalidOperationException(Message(response));
+    }
+
+    async Task EnsureRunningAsync(CancellationToken token)
+    {
+        if (process is { HasExited: false }) return;
+        await RestartAsync(token);
+    }
+
+    async Task RestartAsync(CancellationToken token)
+    {
+        await StopAsync();
+        await StartAsync(token);
     }
 
     internal async Task LoadAsync(string path, CancellationToken token)
@@ -91,6 +121,11 @@ internal sealed class Sam2Client : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await StopAsync();
+    }
+
+    async Task StopAsync()
+    {
         if (process != null)
         {
             try
@@ -104,6 +139,57 @@ internal sealed class Sam2Client : IAsyncDisposable
             }
             catch { }
             process.Dispose();
+            process = null;
+            errors = null;
         }
+    }
+}
+
+internal sealed class PersistentSam2Session : IAsyncDisposable
+{
+    readonly SemaphoreSlim gate = new(1, 1);
+    readonly string temporary = Path.Combine(Path.GetTempPath(),
+        "iqp-training-sam2-" + Guid.NewGuid().ToString("N"));
+    Sam2Client? client;
+    string description = "SAM2";
+
+    internal async Task<(Sam2Client Client, string Description)> LoadAsync(string image,
+        CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        await gate.WaitAsync(token);
+        try
+        {
+            Directory.CreateDirectory(temporary);
+            if (client == null)
+            {
+                client = new Sam2Client(image, temporary);
+                description = await client.StartAsync(CancellationToken.None);
+                token.ThrowIfCancellationRequested();
+                return (client, description);
+            }
+            try { await client.LoadAsync(image, CancellationToken.None); }
+            catch
+            {
+                await client.DisposeAsync();
+                client = new Sam2Client(image, temporary);
+                description = await client.StartAsync(CancellationToken.None);
+            }
+            token.ThrowIfCancellationRequested();
+            return (client, description + " (warm; image embedding refreshed)");
+        }
+        finally { gate.Release(); }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await gate.WaitAsync();
+        try
+        {
+            if (client != null) await client.DisposeAsync();
+            client = null;
+            try { Directory.Delete(temporary, true); } catch { }
+        }
+        finally { gate.Release(); gate.Dispose(); }
     }
 }

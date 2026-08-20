@@ -63,9 +63,34 @@ def accepted_samples(manifest, split):
             sample.get("propMaskPath")]
 
 
+def resolution_samples(samples, minimum_resolution):
+    if minimum_resolution <= 0:
+        return list(samples)
+    return [sample for sample in samples
+            if min(int(sample.get("width", 0)), int(sample.get("height", 0))) >= minimum_resolution]
+
+
+def balanced_samples(samples, seed, split, negative_ratio=.30):
+    positives = [sample for sample in samples
+                 if sample.get("decision") == "positive"]
+    negatives = [sample for sample in samples
+                 if sample.get("decision") == "negative"]
+    if not positives:
+        return list(samples), len(negatives), len(negatives)
+    negative_limit = max(1, round(
+        len(positives) * negative_ratio / (1 - negative_ratio)))
+    if len(negatives) <= negative_limit:
+        return list(samples), len(negatives), len(negatives)
+    ordered = sorted(negatives, key=lambda sample: sample.get("id", ""))
+    random.Random(f"{seed}:{split}").shuffle(ordered)
+    selected = ordered[:negative_limit]
+    return positives + selected, len(negatives), len(selected)
+
+
 class PropDataset:
-    def __init__(self, root, samples, training):
-        self.root, self.samples, self.training = Path(root), samples, training
+    def __init__(self, root, samples, training, input_size=INPUT_SIZE):
+        self.root, self.samples, self.training, self.input_size = \
+            Path(root), samples, training, input_size
 
     def __len__(self):
         return len(self.samples)
@@ -79,7 +104,7 @@ class PropDataset:
         mask = Image.open(self.root / sample["propMaskPath"]).convert("L")
         if self.training:
             scale = random.uniform(.75, 1.5)
-            target = max(64, round(INPUT_SIZE * scale))
+            target = max(64, round(self.input_size * scale))
             ratio = target / min(image.size)
             size = (max(1, round(image.width * ratio)), max(1, round(image.height * ratio)))
             image = image.resize(size, Image.Resampling.BILINEAR)
@@ -94,21 +119,22 @@ class PropDataset:
             if random.random() < .05:
                 image = image.filter(ImageFilter.GaussianBlur(random.uniform(.2, 1.2)))
             fill = tuple(round(value * 255) for value in MEAN)
-            canvas = Image.new("RGB", (max(INPUT_SIZE, image.width), max(INPUT_SIZE, image.height)), fill)
+            canvas = Image.new("RGB", (max(self.input_size, image.width),
+                                       max(self.input_size, image.height)), fill)
             canvas_mask = Image.new("L", canvas.size, 0)
             left, top = (canvas.width - image.width) // 2, (canvas.height - image.height) // 2
             canvas.paste(image, (left, top)); canvas_mask.paste(mask, (left, top))
-            max_x, max_y = canvas.width - INPUT_SIZE, canvas.height - INPUT_SIZE
+            max_x, max_y = canvas.width - self.input_size, canvas.height - self.input_size
             x, y = random.randint(0, max_x), random.randint(0, max_y)
-            image = canvas.crop((x, y, x + INPUT_SIZE, y + INPUT_SIZE))
-            mask = canvas_mask.crop((x, y, x + INPUT_SIZE, y + INPUT_SIZE))
+            image = canvas.crop((x, y, x + self.input_size, y + self.input_size))
+            mask = canvas_mask.crop((x, y, x + self.input_size, y + self.input_size))
             pixels = np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255
             pixels = (pixels - np.asarray(MEAN, np.float32)[:, None, None]) / \
                 np.asarray(STD, np.float32)[:, None, None]
         else:
-            pixels, region, _ = prepare_image(image)
+            pixels, region, _ = prepare_image(image, self.input_size)
             left, top, width, height = region
-            canvas_mask = Image.new("L", (INPUT_SIZE, INPUT_SIZE), 0)
+            canvas_mask = Image.new("L", (self.input_size, self.input_size), 0)
             canvas_mask.paste(mask.resize((width, height), Image.Resampling.NEAREST), (left, top))
             mask = canvas_mask
         target = (np.asarray(mask, dtype=np.uint8) >= 128).astype(np.float32)[None]
@@ -162,7 +188,7 @@ def evaluate(torch, model, loader, device, thresholds=(.5,)):
     return {threshold: scores(value) for threshold, value in totals.items()}
 
 
-def save_error_review(torch, model, loader, device, threshold, destination, limit=12):
+def save_error_review(torch, model, loader, device, threshold, destination, limit=50):
     """Save the test frames with the largest false-positive/false-negative areas."""
     import numpy as np
     from PIL import Image
@@ -213,37 +239,31 @@ def positive_weight(root, samples):
     return min(20., max(1., (total - positive) / max(1, positive)))
 
 
-def train(args):
-    import torch
-    from torch.utils.data import DataLoader
-    root, output = args.dataset.resolve(), args.output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    manifest = load_manifest(root)
-    splits = {name: accepted_samples(manifest, name)
-              for name in ("train", "validation", "test")}
-    if not splits["train"] or not splits["validation"] or not splits["test"]:
-        raise RuntimeError("Train, validation, and test splits must each contain accepted frames")
-    random.seed(args.seed); torch.manual_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if device.type == "cuda":
-        memory = torch.cuda.get_device_properties(device).total_memory
-        batch = 4 if memory >= 20 * 1024 ** 3 else 2 if memory >= 12 * 1024 ** 3 else 1
-    else:
-        batch = 1
-    accumulation = max(1, math.ceil(8 / batch))
+def freeze_batch_norm(torch, model):
+    # DeepLab's final ResNet feature map is 1x1. A singleton final batch cannot
+    # calculate BatchNorm statistics, so retain the pretrained running values
+    # while the convolutional and classifier weights continue fine-tuning.
+    for module in model.modules():
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            module.eval()
+
+
+def train_candidate(torch, DataLoader, args, root, output, device, batch,
+                    accumulation, train_samples, validation_samples, negative_ratio,
+                    selection_name):
+    candidate = output / "candidates" / f"negative-{selection_name}"
+    candidate.mkdir(parents=True, exist_ok=True)
     loaders = {
-        "train": DataLoader(PropDataset(root, splits["train"], True), batch_size=batch,
-                            shuffle=True, num_workers=min(4, os.cpu_count() or 1), pin_memory=device.type == "cuda"),
-        "validation": DataLoader(PropDataset(root, splits["validation"], False), batch_size=batch,
-                                 shuffle=False, num_workers=1),
-        "test": DataLoader(PropDataset(root, splits["test"], False), batch_size=batch,
-                           shuffle=False, num_workers=1)}
-    emit("setup", f"Loading DeepLabV3-ResNet50 on {device}", batchSize=batch,
-         gradientAccumulation=accumulation)
+        "train": DataLoader(PropDataset(root, train_samples, True, args.input_size), batch_size=batch,
+                            shuffle=True, num_workers=min(4, os.cpu_count() or 1),
+                            pin_memory=device.type == "cuda"),
+        "validation": DataLoader(PropDataset(root, validation_samples, False, args.input_size), batch_size=batch,
+                                 shuffle=False, num_workers=1)}
+    random.seed(args.seed); torch.manual_seed(args.seed)
     model = build_model(torch, pretrained=True).to(device)
-    pos_weight = torch.tensor([positive_weight(root, splits["train"])], device=device)
+    pos_weight = torch.tensor([positive_weight(root, train_samples)], device=device)
     best_dice, stale, start_epoch = -1., 0, 0
-    last_path, best_path = output / "last.pth", output / "best.pth"
+    last_path, best_path = candidate / "last.pth", candidate / "best.pth"
     optimizer = torch.optim.AdamW([
         {"params": model.backbone.parameters(), "lr": 1e-5},
         {"params": model.classifier.parameters(), "lr": 1e-4},
@@ -254,7 +274,8 @@ def train(args):
         model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
         scaler.load_state_dict(state["scaler"]); start_epoch = state["epoch"] + 1
         best_dice, stale = state["bestDice"], state["stale"]
-        emit("resume", f"Resumed at epoch {start_epoch + 1}")
+        emit("resume", f"Resumed {negative_ratio:.0%} negatives at epoch {start_epoch + 1}",
+             negativeRatio=negative_ratio)
     total_epochs = args.warmup_epochs + args.epochs
     for epoch in range(start_epoch, total_epochs):
         frozen = epoch < args.warmup_epochs
@@ -264,7 +285,8 @@ def train(args):
         else:
             optimizer.param_groups[0]["lr"] = 1e-5
             optimizer.param_groups[1]["lr"] = optimizer.param_groups[2]["lr"] = 1e-4
-        model.train(); optimizer.zero_grad(set_to_none=True); running = 0.
+        model.train(); freeze_batch_norm(torch, model)
+        optimizer.zero_grad(set_to_none=True); running = 0.
         for step, (images, target, _) in enumerate(loaders["train"]):
             images, target = images.to(device, non_blocking=True), target.to(device, non_blocking=True)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
@@ -284,36 +306,117 @@ def train(args):
                     "stale": stale}, last_path)
         emit("epoch", "backbone frozen" if frozen else "full fine-tune",
              epoch=epoch + 1, trainingLoss=running / max(1, len(loaders["train"])),
-             validationDice=validation["dice"], best=improved)
+             validationDice=validation["dice"], best=improved,
+             negativeRatio=negative_ratio)
         if not frozen and stale >= args.patience:
             emit("early-stopping", f"No validation improvement for {stale} epochs")
             break
+    if not best_path.is_file():
+        raise RuntimeError(f"No checkpoint was produced for {negative_ratio:.0%} negatives")
     model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
     thresholds = tuple(round(value / 100, 2) for value in range(10, 91, 5))
     validation_all = evaluate(torch, model, loaders["validation"], device, thresholds)
     threshold = max(thresholds, key=lambda value: validation_all[value]["dice"])
-    test_metrics = evaluate(torch, model, loaders["test"], device, (threshold,))[threshold]
+    result = {"targetNegativeRatio": negative_ratio,
+              "negativeSelection": selection_name,
+              "actualNegativeRatio": sum(sample.get("decision") == "negative" for sample in train_samples) /
+                                     max(1, len(train_samples)),
+              "trainCount": len(train_samples), "threshold": threshold,
+              "validation": validation_all[threshold]}
+    emit("candidate-complete", f"{negative_ratio:.0%} negatives: validation Dice "
+         f"{result['validation']['dice']:.3f}", **result)
+    return result, best_path
+
+
+def train(args):
+    import torch
+    from torch.utils.data import DataLoader
+    root, output = args.dataset.resolve(), args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = load_manifest(root)
+    available = {name: resolution_samples(accepted_samples(manifest, name), args.minimum_resolution)
+                 for name in ("train", "validation", "test")}
+    if any(not available[name] for name in available):
+        raise RuntimeError("Train, validation, and test splits must each contain accepted frames "
+                           "at the selected minimum resolution")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        memory = torch.cuda.get_device_properties(device).total_memory
+        base_batch = 4 if memory >= 20 * 1024 ** 3 else 2 if memory >= 12 * 1024 ** 3 else 1
+        batch = max(1, math.floor(base_batch * (512 / args.input_size) ** 2))
+    else:
+        batch = 1
+    accumulation = max(1, math.ceil(8 / batch))
+    emit("setup", f"Loading DeepLabV3-ResNet50 on {device}",
+         batchSize=batch, gradientAccumulation=accumulation,
+         negativeSelection=args.negative_selection, minimumResolution=args.minimum_resolution,
+         inputSize=args.input_size)
+    if args.negative_selection == "compare":
+        requested = [(f"{round(ratio * 100):02d}", ratio) for ratio in (.20, .25, .30, .35)]
+    elif args.negative_selection == "all":
+        actual = sum(sample.get("decision") == "negative" for sample in available["train"]) / \
+                 max(1, len(available["train"]))
+        requested = [("all", actual)]
+    else:
+        requested = [(args.negative_selection.zfill(2), int(args.negative_selection) / 100)]
+    candidates = []
+    for selection_name, negative_ratio in requested:
+        if selection_name == "all":
+            train_samples = list(available["train"])
+            negative_available = negative_selected = sum(
+                sample.get("decision") == "negative" for sample in train_samples)
+            description = f"ALL negatives ({negative_ratio:.1%} of training samples)"
+        else:
+            train_samples, negative_available, negative_selected = balanced_samples(
+                available["train"], args.seed, "train", negative_ratio)
+            description = f"{negative_ratio:.0%} negatives"
+        emit("candidate", f"Training candidate with {description}",
+             negativeRatio=negative_ratio, negativeAvailable=negative_available,
+             negativeSelected=negative_selected, trainCount=len(train_samples),
+             negativeSelection=selection_name)
+        result, checkpoint_path = train_candidate(
+            torch, DataLoader, args, root, output, device, batch, accumulation,
+            train_samples, available["validation"], negative_ratio, selection_name)
+        result["checkpoint"] = str(checkpoint_path)
+        candidates.append(result)
+        if device.type == "cuda": torch.cuda.empty_cache()
+    winner = max(candidates, key=lambda value: value["validation"]["dice"])
+    best_path = Path(winner.pop("checkpoint"))
+    for candidate in candidates: candidate.pop("checkpoint", None)
+    threshold = winner["threshold"]
+    model = build_model(torch, pretrained=False).to(device)
+    model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
+    test_loader = DataLoader(PropDataset(root, available["test"], False, args.input_size), batch_size=batch,
+                             shuffle=False, num_workers=1)
+    test_metrics = evaluate(torch, model, test_loader, device, (threshold,))[threshold]
     package = output / "package"; package.mkdir(exist_ok=True)
     checkpoint = package / "model.pth"; shutil.copy2(best_path, checkpoint)
     checkpoint_hash = digest(checkpoint)
     model_id = f"prop-r50-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{checkpoint_hash[:8]}"
-    review = save_error_review(torch, model, loaders["test"], device, threshold, package / "review")
-    metrics = {"validation": validation_all[threshold], "test": test_metrics,
-               "threshold": threshold, "counts": {key: len(value) for key, value in splits.items()},
+    review = save_error_review(torch, model, test_loader, device, threshold, package / "review")
+    metrics = {"validation": winner["validation"], "test": test_metrics,
+               "threshold": threshold, "selectedNegativeRatio": winner["targetNegativeRatio"],
+               "selectedNegativeMode": winner["negativeSelection"],
+               "minimumResolution": args.minimum_resolution,
+               "inputSize": args.input_size,
+               "balanceCandidates": candidates,
+               "counts": {key: len(value) for key, value in available.items()},
                "review": {key: len(value) for key, value in review.items()}}
     atomic_json(package / "metrics.json", metrics)
     files = {str(path.relative_to(package)).replace("\\", "/"): digest(path)
              for path in package.rglob("*") if path.is_file() and path.name != "manifest.json"}
     atomic_json(package / "manifest.json", {
         "schemaVersion": 1, "modelId": model_id, "architecture": ARCHITECTURE,
-        "category": "foreground_prop", "inputSize": INPUT_SIZE,
+        "category": "foreground_prop", "inputSize": args.input_size,
         "mean": MEAN, "std": STD, "confidenceThreshold": threshold,
         "proximityRadiusAt512": 24, "checkpointSha256": checkpoint_hash,
-        "preprocessing": {"resize": "aspect-preserving-letterbox", "inputSize": INPUT_SIZE,
+        "preprocessing": {"resize": "aspect-preserving-letterbox", "inputSize": args.input_size,
                           "mean": MEAN, "std": STD},
         "postprocessing": {"contract": "rvm-proximity-union-v1", "confidenceThreshold": threshold,
                            "proximityRadiusAt512": 24, "componentConnectivity": 8},
         "datasetId": manifest["datasetId"], "runId": output.name,
+        "minimumTrainingResolution": args.minimum_resolution,
+        "negativeSelection": winner["negativeSelection"],
         "createdUtc": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         "pythonVersion": sys.version.split()[0], "torchVersion": torch.__version__,
         "torchvisionVersion": __import__("torchvision").__version__,
@@ -321,7 +424,49 @@ def train(args):
     emit("review", "Saved ranked false-positive and false-negative review images",
          review=str(package / "review"))
     emit("complete", "Training, threshold calibration, and test evaluation complete",
-         package=str(package), modelId=model_id, testDice=test_metrics["dice"])
+         package=str(package), modelId=model_id, testDice=test_metrics["dice"],
+         selectedNegativeRatio=winner["targetNegativeRatio"],
+         selectedNegativeMode=winner["negativeSelection"])
+
+
+def regenerate_review(args):
+    import torch
+    from torch.utils.data import DataLoader
+    root, output = args.dataset.resolve(), args.output.resolve()
+    package = output / "package"
+    checkpoint, metrics_path = package / "model.pth", package / "metrics.json"
+    manifest_path = package / "manifest.json"
+    if not checkpoint.is_file() or not metrics_path.is_file() or not manifest_path.is_file():
+        raise RuntimeError("The selected run does not contain a completed model package")
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    package_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    input_size = int(metrics.get("inputSize", package_manifest.get("inputSize", 512)))
+    minimum_resolution = int(metrics.get("minimumResolution", 0))
+    threshold = float(metrics["threshold"])
+    samples = resolution_samples(accepted_samples(load_manifest(root), "test"), minimum_resolution)
+    if not samples:
+        raise RuntimeError("No eligible test samples remain for error review")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    batch = max(1, math.floor((4 if device.type == "cuda" else 1) * (512 / input_size) ** 2))
+    emit("review", f"Regenerating error review from the saved model on {device}",
+         testCount=len(samples), inputSize=input_size, threshold=threshold)
+    model = build_model(torch, pretrained=False).to(device)
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
+    loader = DataLoader(PropDataset(root, samples, False, input_size), batch_size=batch,
+                        shuffle=False, num_workers=1)
+    review_folder = package / "review"
+    if review_folder.exists(): shutil.rmtree(review_folder)
+    review = save_error_review(torch, model, loader, device, threshold, review_folder)
+    metrics["review"] = {key: len(value) for key, value in review.items()}
+    atomic_json(metrics_path, metrics)
+    package_manifest["files"] = {
+        str(path.relative_to(package)).replace("\\", "/"): digest(path)
+        for path in package.rglob("*") if path.is_file() and path.name != "manifest.json"
+    }
+    atomic_json(manifest_path, package_manifest)
+    emit("complete", "Error review regenerated without retraining", review=str(review_folder),
+         falsePositive=len(review["false-positive"]),
+         falseNegative=len(review["false-negative"]))
 
 
 def self_test():
@@ -335,6 +480,18 @@ def self_test():
                        "framePath": "frame.png", "propMaskPath": "mask.png"}})
         loaded_manifest = load_manifest(root)
         assert len(accepted_samples(loaded_manifest, "train")) == 1
+        sized = [{"width": 1920, "height": 1080}, {"width": 1280, "height": 720},
+                 {"width": 1080, "height": 1920}]
+        assert len(resolution_samples(sized, 1080)) == 2
+        samples = ([{"id": f"p{index}", "decision": "positive"}
+                    for index in range(7)] +
+                   [{"id": f"n{index}", "decision": "negative"}
+                    for index in range(20)])
+        balanced, available, selected = balanced_samples(samples, 1729, "train")
+        repeated, _, _ = balanced_samples(samples, 1729, "train")
+        assert available == 20 and selected == 3 and len(balanced) == 10
+        assert [sample["id"] for sample in balanced] == \
+               [sample["id"] for sample in repeated]
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         image = torch.randn(2, 3, 8, 8); target = torch.zeros(2, 1, 8, 8)
         loss = torch.nn.functional.binary_cross_entropy_with_logits(model(image), target)
@@ -344,6 +501,11 @@ def self_test():
         resumed = torch.nn.Conv2d(3, 1, 1)
         state = torch.load(checkpoint, weights_only=False); resumed.load_state_dict(state["model"])
         assert state["epoch"] == 0 and digest(checkpoint) == hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        normalized = torch.nn.Sequential(torch.nn.Conv2d(3, 3, 1),
+                                         torch.nn.BatchNorm2d(3))
+        normalized.train(); freeze_batch_norm(torch, normalized)
+        assert normalized[0].training and not normalized[1].training
+        assert normalized(torch.randn(1, 3, 1, 1)).shape == (1, 3, 1, 1)
         values = {threshold: scores(confusion(torch.tensor([.1, .9]),
                   torch.tensor([0., 1.]), threshold)) for threshold in (.25, .5, .75)}
         assert max(values, key=lambda item: values[item]["dice"]) in values
@@ -370,12 +532,19 @@ def main():
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--patience", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1729)
+    parser.add_argument("--minimum-resolution", type=int, default=0)
+    parser.add_argument("--input-size", type=int, choices=(512, 768, 1024), default=512)
+    parser.add_argument("--negative-selection", choices=("compare", "20", "25", "30", "35", "all"),
+                        default="compare")
+    parser.add_argument("--regenerate-review", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         self_test(); return
     if args.dataset is None or args.output is None:
         parser.error("--dataset and --output are required")
+    if args.regenerate_review:
+        regenerate_review(args); return
     train(args)
 
 

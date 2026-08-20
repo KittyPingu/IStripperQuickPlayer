@@ -9,10 +9,39 @@ internal enum AnnotationTool { Brush, Eraser, Polygon, SamPositive, SamNegative,
 
 internal sealed class AnnotationCanvas : Control
 {
-    Bitmap? source, overlay;
+    Bitmap? source, overlay, rvmOverlay;
     int[] ids = [];
-    readonly Stack<int[]> undo = [];
-    readonly Stack<int[]> redo = [];
+    interface IHistoryEntry
+    {
+        void Undo(AnnotationCanvas canvas);
+        void Redo(AnnotationCanvas canvas);
+    }
+
+    sealed class MaskHistory(int[] before) : IHistoryEntry
+    {
+        int[] Before { get; set; } = before;
+        int[]? after;
+        public void Undo(AnnotationCanvas canvas)
+        {
+            after = (int[])canvas.ids.Clone(); canvas.ids = Before;
+            canvas.RebuildOverlay(); canvas.Invalidate(); canvas.MaskChanged?.Invoke();
+        }
+        public void Redo(AnnotationCanvas canvas)
+        {
+            if (after == null) return;
+            Before = (int[])canvas.ids.Clone(); canvas.ids = after;
+            canvas.RebuildOverlay(); canvas.Invalidate(); canvas.MaskChanged?.Invoke();
+        }
+    }
+
+    sealed class ExternalHistory(Action undo, Action redo) : IHistoryEntry
+    {
+        public void Undo(AnnotationCanvas canvas) => undo();
+        public void Redo(AnnotationCanvas canvas) => redo();
+    }
+
+    readonly Stack<IHistoryEntry> undo = [];
+    readonly Stack<IHistoryEntry> redo = [];
     readonly List<PointF> polygon = [];
     readonly List<(PointF Point, bool Positive)> samPromptPoints = [];
     float zoom = 1;
@@ -21,13 +50,45 @@ internal sealed class AnnotationCanvas : Control
     bool drawing, panning, spacePressed;
     RectangleF samBox;
     RectangleF? displayedSamBox;
+    Point? brushCursor;
+    AnnotationTool tool = AnnotationTool.Brush;
+    int brushSize = 32;
+    bool showRvmOverlay = true;
+    DirectCompositionCanvasRenderer? compositor;
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal AnnotationTool Tool { get; set; } = AnnotationTool.Brush;
+    internal AnnotationTool Tool
+    {
+        get => tool;
+        set
+        {
+            tool = value;
+            if (tool is not (AnnotationTool.Brush or AnnotationTool.Eraser))
+                SetBrushCursor(null);
+            Cursor = NormalCursor;
+        }
+    }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal int CurrentObjectId { get; set; } = 1;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal int BrushSize { get; set; } = 32;
+    internal int BrushSize
+    {
+        get => brushSize;
+        set
+        {
+            InvalidateBrushCursor();
+            brushSize = Math.Clamp(value, 2, 200);
+            InvalidateBrushCursor();
+        }
+    }
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool BrushResizeEnabled { get; set; }
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool ShowRvmOverlay
+    {
+        get => showRvmOverlay;
+        set { if (showRvmOverlay != value) { showRvmOverlay = value; Invalidate(); } }
+    }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal IReadOnlyDictionary<int, Color> ObjectColors { get; set; } = new Dictionary<int, Color>();
     internal bool CanUndo => undo.Count > 0;
@@ -35,15 +96,39 @@ internal sealed class AnnotationCanvas : Control
     internal int ImageWidth => source?.Width ?? 0;
     internal int ImageHeight => source?.Height ?? 0;
     internal event Action<PointF, bool>? SamPoint;
+    internal event Action? SamApplyRequested;
     internal event Action<RectangleF>? SamBoxReady;
     internal event Action? MaskChanged;
     internal event Action<int>? BrushSizeChanged;
 
     internal AnnotationCanvas()
     {
-        DoubleBuffered = true; BackColor = Color.FromArgb(32, 32, 32);
-        SetStyle(ControlStyles.ResizeRedraw, true);
+        BackColor = Color.FromArgb(32, 32, 32);
+        SetStyle(ControlStyles.Opaque | ControlStyles.ResizeRedraw |
+            ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
     }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        compositor = new DirectCompositionCanvasRenderer(Handle, ClientSize);
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        compositor?.Dispose(); compositor = null;
+        base.OnHandleDestroyed(e);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e); compositor?.Resize(ClientSize);
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs pevent) { }
+
+    Cursor NormalCursor => Tool is AnnotationTool.Brush or AnnotationTool.Eraser
+        ? Cursors.Default : Cursors.Cross;
 
     internal void LoadImage(string path)
     {
@@ -53,8 +138,41 @@ internal sealed class AnnotationCanvas : Control
         Fit(); RebuildOverlay(); Invalidate();
     }
 
+    internal void LoadRvmMask(string? path)
+    {
+        rvmOverlay?.Dispose(); rvmOverlay = null;
+        if (source == null || string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        using Bitmap opened = new(path);
+        using Bitmap resized = new(source.Width, source.Height, PixelFormat.Format32bppArgb);
+        using (Graphics graphics = Graphics.FromImage(resized))
+        {
+            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            graphics.DrawImage(opened, new Rectangle(Point.Empty, resized.Size));
+        }
+        rvmOverlay = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppArgb);
+        BitmapData input = resized.LockBits(new Rectangle(Point.Empty, resized.Size),
+            ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        BitmapData output = rvmOverlay.LockBits(new Rectangle(Point.Empty, rvmOverlay.Size),
+            ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+        int[] row = new int[source.Width];
+        try
+        {
+            for (int y = 0; y < source.Height; y++)
+            {
+                Marshal.Copy(input.Scan0 + y * input.Stride, row, 0, row.Length);
+                for (int x = 0; x < row.Length; x++)
+                    row[x] = ((row[x] >> 16) & 255) >= 128
+                        ? Color.FromArgb(105, 255, 80, 180).ToArgb() : 0;
+                Marshal.Copy(row, 0, output.Scan0 + y * output.Stride, row.Length);
+            }
+        }
+        finally { resized.UnlockBits(input); rvmOverlay.UnlockBits(output); }
+        Invalidate();
+    }
+
     internal int[] CopyObjectIds() => (int[])ids.Clone();
-    internal bool CurrentObjectHasPixels => ids.Contains(CurrentObjectId);
+    internal bool CurrentObjectHasPixels => ObjectHasPixels(CurrentObjectId);
+    internal bool ObjectHasPixels(int objectId) => ids.Contains(objectId);
     internal void LoadObjectIds(int[] values)
     {
         if (values.Length != ids.Length) throw new ArgumentException("Mask dimensions do not match the frame.");
@@ -63,20 +181,24 @@ internal sealed class AnnotationCanvas : Control
 
     internal void Undo()
     {
-        if (undo.TryPop(out int[]? previous))
+        if (undo.TryPop(out IHistoryEntry? entry))
         {
-            redo.Push((int[])ids.Clone());
-            ids = previous; RebuildOverlay(); Invalidate(); MaskChanged?.Invoke();
+            entry.Undo(this); redo.Push(entry);
         }
     }
 
     internal void Redo()
     {
-        if (redo.TryPop(out int[]? next))
+        if (redo.TryPop(out IHistoryEntry? entry))
         {
-            undo.Push((int[])ids.Clone());
-            ids = next; RebuildOverlay(); Invalidate(); MaskChanged?.Invoke();
+            entry.Redo(this); undo.Push(entry);
         }
+    }
+
+    internal void RecordExternalChange(Action undoAction, Action redoAction)
+    {
+        undo.Push(new ExternalHistory(undoAction, redoAction)); redo.Clear();
+        TrimUndoHistory();
     }
 
     internal void ClearCurrentObject()
@@ -95,13 +217,13 @@ internal sealed class AnnotationCanvas : Control
         displayedSamBox = box; Invalidate();
     }
 
-    internal void ExportCurrentObjectMask(string path)
+    internal void ExportObjectMask(string path, int objectId)
     {
-        byte[] mask = ids.Select(value => value == CurrentObjectId ? (byte)255 : (byte)0).ToArray();
+        byte[] mask = ids.Select(value => value == objectId ? (byte)255 : (byte)0).ToArray();
         PngMaskWriter.SaveGray8(path, ImageWidth, ImageHeight, mask);
     }
 
-    internal void ApplyObjectMask(string path)
+    internal void ApplyObjectMask(string path, int objectId)
     {
         using Bitmap loaded = new(path);
         if (loaded.Width != ImageWidth || loaded.Height != ImageHeight)
@@ -121,8 +243,8 @@ internal sealed class AnnotationCanvas : Control
                 {
                     int index = y * mask.Width + x;
                     bool on = ((row[x] >> 16) & 255) >= 128;
-                    if (on) ids[index] = CurrentObjectId;
-                    else if (ids[index] == CurrentObjectId) ids[index] = 0;
+                    if (on) ids[index] = objectId;
+                    else if (ids[index] == objectId) ids[index] = 0;
                 }
             }
         }
@@ -143,27 +265,41 @@ internal sealed class AnnotationCanvas : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        base.OnPaint(e); if (source == null) return;
-        e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-        e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+        if (source == null || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+        if (compositor?.Failure != null)
+        {
+            DrawScene(e.Graphics); return;
+        }
+        Bitmap frame = new(ClientSize.Width, ClientSize.Height, PixelFormat.Format32bppArgb);
+        using (Graphics graphics = Graphics.FromImage(frame)) DrawScene(graphics);
+        if (compositor != null) compositor.Present(frame); else frame.Dispose();
+    }
+
+    void DrawScene(Graphics graphics)
+    {
+        if (source == null) return;
+        graphics.Clear(BackColor);
+        graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+        graphics.PixelOffsetMode = PixelOffsetMode.Half;
         RectangleF target = new(pan.X, pan.Y, source.Width * zoom, source.Height * zoom);
-        e.Graphics.DrawImage(source, target);
-        if (overlay != null) e.Graphics.DrawImage(overlay, target);
+        graphics.DrawImage(source, target);
+        if (ShowRvmOverlay && rvmOverlay != null) graphics.DrawImage(rvmOverlay, target);
+        if (overlay != null) graphics.DrawImage(overlay, target);
         if (polygon.Count > 0)
         {
             PointF[] points = polygon.Select(ToClient).ToArray();
             using Pen pen = new(Color.Yellow, 2);
-            if (points.Length > 1) e.Graphics.DrawLines(pen, points);
-            foreach (PointF point in points) e.Graphics.FillEllipse(Brushes.Yellow,
+            if (points.Length > 1) graphics.DrawLines(pen, points);
+            foreach (PointF point in points) graphics.FillEllipse(Brushes.Yellow,
                 point.X - 3, point.Y - 3, 6, 6);
         }
         RectangleF? box = drawing && Tool == AnnotationTool.SamBox ? samBox : displayedSamBox;
         if (box is RectangleF visibleBox)
         {
             RectangleF clientBox = ToClient(visibleBox);
-            using Pen pen = new(Color.DeepSkyBlue, 2); e.Graphics.DrawRectangle(pen, clientBox);
+            using Pen pen = new(Color.DeepSkyBlue, 2); graphics.DrawRectangle(pen, clientBox);
         }
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
         foreach ((PointF point, bool positive) in samPromptPoints)
         {
             PointF client = ToClient(point);
@@ -171,9 +307,20 @@ internal sealed class AnnotationCanvas : Control
             using SolidBrush fill = new(positive ? Color.LimeGreen : Color.Red);
             using Pen outline = new(Color.White, 2);
             using Pen symbol = new(Color.Black, 2);
-            e.Graphics.FillEllipse(fill, marker); e.Graphics.DrawEllipse(outline, marker);
-            e.Graphics.DrawLine(symbol, client.X - 4, client.Y, client.X + 4, client.Y);
-            if (positive) e.Graphics.DrawLine(symbol, client.X, client.Y - 4, client.X, client.Y + 4);
+            graphics.FillEllipse(fill, marker); graphics.DrawEllipse(outline, marker);
+            graphics.DrawLine(symbol, client.X - 4, client.Y, client.X + 4, client.Y);
+            if (positive) graphics.DrawLine(symbol, client.X, client.Y - 4, client.X, client.Y + 4);
+        }
+        if (brushCursor is Point cursor &&
+            Tool is AnnotationTool.Brush or AnnotationTool.Eraser)
+        {
+            float diameter = Math.Max(2, BrushSize * zoom);
+            RectangleF outline = new(cursor.X - diameter / 2,
+                cursor.Y - diameter / 2, diameter, diameter);
+            using Pen shadow = new(Color.Black, 3);
+            using Pen edge = new(Color.White, 1);
+            graphics.DrawEllipse(shadow, outline);
+            graphics.DrawEllipse(edge, outline);
         }
     }
 
@@ -185,9 +332,15 @@ internal sealed class AnnotationCanvas : Control
             panning = true; Cursor = Cursors.Hand; return;
         }
         PointF? image = ToImage(e.Location); if (image == null) return;
-        if (Tool == AnnotationTool.SamPositive || Tool == AnnotationTool.SamNegative)
+        if (Tool == AnnotationTool.SamPositive && e.Button is MouseButtons.Left or MouseButtons.Right)
         {
-            SamPoint?.Invoke(image.Value, Tool == AnnotationTool.SamPositive); return;
+            if (e.Clicks > 1) { SamApplyRequested?.Invoke(); return; }
+            SamPoint?.Invoke(image.Value, e.Button == MouseButtons.Left); return;
+        }
+        if (Tool == AnnotationTool.SamNegative)
+        {
+            if (e.Clicks > 1) { SamApplyRequested?.Invoke(); return; }
+            SamPoint?.Invoke(image.Value, false); return;
         }
         if (Tool == AnnotationTool.Polygon)
         {
@@ -205,6 +358,8 @@ internal sealed class AnnotationCanvas : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        SetBrushCursor(Tool is AnnotationTool.Brush or AnnotationTool.Eraser &&
+            ToImage(e.Location) != null ? e.Location : null);
         if (panning)
         {
             pan = new(pan.X + e.X - lastMouse.X, pan.Y + e.Y - lastMouse.Y);
@@ -220,6 +375,12 @@ internal sealed class AnnotationCanvas : Control
                 Math.Max(origin.Y, image.Value.Y)); Invalidate();
         }
         else PaintBrush(image.Value, Tool == AnnotationTool.Eraser || e.Button == MouseButtons.Right);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        SetBrushCursor(null);
+        base.OnMouseLeave(e);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -240,7 +401,7 @@ internal sealed class AnnotationCanvas : Control
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
-        if ((ModifierKeys & Keys.Control) != 0)
+        if ((ModifierKeys & Keys.Control) != 0 && BrushResizeEnabled)
         {
             BrushSize = AdjustBrushSize(BrushSize, e.Delta);
             BrushSizeChanged?.Invoke(BrushSize); return;
@@ -269,18 +430,34 @@ internal sealed class AnnotationCanvas : Control
         base.OnKeyUp(e);
         if (e.KeyCode == Keys.Space)
         {
-            spacePressed = false; if (!panning) Cursor = Cursors.Default; e.Handled = true;
+            spacePressed = false; if (!panning) Cursor = NormalCursor; e.Handled = true;
         }
     }
 
     protected override void OnLostFocus(EventArgs e)
     {
-        spacePressed = panning = false; Cursor = Cursors.Default; base.OnLostFocus(e);
+        spacePressed = panning = false; Cursor = NormalCursor; base.OnLostFocus(e);
     }
 
     internal static int AdjustBrushSize(int current, int wheelDelta) => wheelDelta == 0
         ? Math.Clamp(current, 2, 200)
         : Math.Clamp(current + Math.Sign(wheelDelta) * 4, 2, 200);
+
+    void SetBrushCursor(Point? value)
+    {
+        if (brushCursor == value) return;
+        InvalidateBrushCursor();
+        brushCursor = value;
+        InvalidateBrushCursor();
+    }
+
+    void InvalidateBrushCursor()
+    {
+        if (brushCursor is not Point cursor) return;
+        int radius = (int)Math.Ceiling(Math.Max(2, BrushSize * zoom) / 2) + 4;
+        Invalidate(new Rectangle(cursor.X - radius, cursor.Y - radius,
+            radius * 2 + 1, radius * 2 + 1));
+    }
 
     void PaintBrush(PointF point, bool erase)
     {
@@ -320,14 +497,18 @@ internal sealed class AnnotationCanvas : Control
 
     void SaveUndo()
     {
-        undo.Push((int[])ids.Clone());
-        redo.Clear();
+        undo.Push(new MaskHistory((int[])ids.Clone())); redo.Clear();
+        TrimUndoHistory();
+    }
+
+    void TrimUndoHistory()
+    {
         int bytesPerState = Math.Max(1, ids.Length * sizeof(int));
         int limit = Math.Clamp((256 * 1024 * 1024) / bytesPerState, 2, 20);
         if (undo.Count <= limit) return;
-        int[][] newest = undo.Take(limit).Reverse().ToArray();
+        IHistoryEntry[] newest = undo.Take(limit).Reverse().ToArray();
         undo.Clear();
-        foreach (int[] state in newest) undo.Push(state);
+        foreach (IHistoryEntry state in newest) undo.Push(state);
     }
 
     void Changed() { RebuildOverlay(); Invalidate(); MaskChanged?.Invoke(); }
@@ -395,7 +576,7 @@ internal sealed class AnnotationCanvas : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { source?.Dispose(); overlay?.Dispose(); }
+        if (disposing) { source?.Dispose(); overlay?.Dispose(); rvmOverlay?.Dispose(); }
         base.Dispose(disposing);
     }
 }
