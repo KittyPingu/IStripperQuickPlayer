@@ -5,7 +5,6 @@
 #include <dwmapi.h>
 #include <compressapi.h>
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -7037,135 +7036,6 @@ namespace
         return visible;
     }
 
-    // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
-#pragma pack(push, 1)
-    struct PlayerHitTestDebugHeader
-    {
-        std::uint32_t magic;
-        std::uint32_t capacity;
-        std::uint32_t byteCount;
-        RECT bounds;
-        POINT cursor;
-        std::int32_t alphaWidth;
-        std::int32_t alphaHeight;
-        std::int32_t alphaX;
-        std::int32_t alphaY;
-        std::int32_t visible;
-        std::int32_t previewWidth;
-        std::int32_t previewHeight;
-    };
-#pragma pack(pop)
-    constexpr std::uint32_t PlayerHitTestDebugMagic = 0x44485051;
-    constexpr std::uint32_t MaximumPlayerHitTestDebugBytes = 512 * 512;
-
-    HRESULT GetPlayerHitTestDebugSnapshot(SIZE_T address)
-    {
-        auto header = reinterpret_cast<PlayerHitTestDebugHeader*>(address);
-        if (!IsReadable(header, sizeof(*header)) ||
-            header->magic != PlayerHitTestDebugMagic ||
-            header->capacity > MaximumPlayerHitTestDebugBytes ||
-            !IsWritable(header, sizeof(*header) + header->capacity))
-            return E_INVALIDARG;
-
-        HWND window = nullptr;
-        EnumWindows(&FindVisibleMovieWindow,
-            reinterpret_cast<LPARAM>(&window));
-        void* movie = ActiveMovie();
-        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
-        const auto tryLockMutex = qtCore == nullptr
-            ? nullptr
-            : reinterpret_cast<MutexTryLock>(GetProcAddress(
-                qtCore, "?tryLock@QMutex@@QEAA_NH@Z"));
-        const auto unlockMutex = qtCore == nullptr
-            ? nullptr
-            : reinterpret_cast<MutexAction>(GetProcAddress(
-                qtCore, "?unlock@QMutex@@QEAAXXZ"));
-        if (window == nullptr || movie == nullptr ||
-            tryLockMutex == nullptr || unlockMutex == nullptr)
-            return HRESULT_FROM_WIN32(ERROR_NOT_READY);
-
-        void* mutex = reinterpret_cast<unsigned char*>(movie) +
-            MovieMutexOffset;
-        bool mutexLocked = false;
-        HRESULT result = HRESULT_FROM_WIN32(ERROR_NOT_READY);
-        __try
-        {
-            if (!TryLockMovieMutex(mutex, tryLockMutex, 25))
-                __leave;
-            mutexLocked = true;
-
-            void* animation = IsReadable(movie,
-                MovieAnimationOffset + sizeof(void*))
-                ? *reinterpret_cast<void**>(
-                    reinterpret_cast<unsigned char*>(movie) +
-                        MovieAnimationOffset) : nullptr;
-            if (!CanResetAnimationAlpha(animation) ||
-                FAILED(DwmGetWindowAttribute(window,
-                    DWMWA_EXTENDED_FRAME_BOUNDS, &header->bounds,
-                    sizeof(header->bounds))))
-                __leave;
-
-            const auto bytes = reinterpret_cast<unsigned char*>(animation);
-            const auto alpha = reinterpret_cast<const unsigned char*>(
-                *reinterpret_cast<void**>(bytes + AnimationAlphaOutputOffset));
-            const int width = *reinterpret_cast<const int*>(
-                bytes + AnimationAlphaWidthOffset);
-            const int height = *reinterpret_cast<const int*>(
-                bytes + AnimationAlphaHeightOffset);
-            const int windowWidth = header->bounds.right - header->bounds.left;
-            const int windowHeight = header->bounds.bottom - header->bounds.top;
-            if (alpha == nullptr || width <= 0 || height <= 0 ||
-                windowWidth <= 0 || windowHeight <= 0)
-                __leave;
-
-            GetCursorPos(&header->cursor);
-            header->alphaWidth = width;
-            header->alphaHeight = height;
-            header->alphaX = width - 1 - std::clamp(static_cast<int>(
-                static_cast<long long>(header->cursor.x -
-                    header->bounds.left) * width / windowWidth),
-                0, width - 1);
-            header->alphaY = std::clamp(static_cast<int>(
-                static_cast<long long>(header->cursor.y -
-                    header->bounds.top) * height / windowHeight),
-                0, height - 1);
-            header->visible = IsPointOverVisibleMoviePixelLocked(
-                movie, window, header->cursor) ? 1 : 0;
-            const double scale = std::min(1.0, 512.0 /
-                static_cast<double>(std::max(width, height)));
-            header->previewWidth = std::max(1,
-                static_cast<int>(std::lround(width * scale)));
-            header->previewHeight = std::max(1,
-                static_cast<int>(std::lround(height * scale)));
-            header->byteCount = static_cast<std::uint32_t>(
-                header->previewWidth * header->previewHeight);
-            if (header->byteCount > header->capacity)
-            {
-                result = HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
-                __leave;
-            }
-            auto output = reinterpret_cast<unsigned char*>(header + 1);
-            for (int y = 0; y < header->previewHeight; ++y)
-            {
-                const int sourceY = y * height / header->previewHeight;
-                for (int x = 0; x < header->previewWidth; ++x)
-                    output[static_cast<std::size_t>(y) *
-                        header->previewWidth + x] =
-                        alpha[static_cast<std::size_t>(sourceY) * width +
-                            (header->previewWidth - 1 - x) * width /
-                                header->previewWidth];
-            }
-            result = BridgeSuccess;
-        }
-        __finally
-        {
-            if (mutexLocked)
-                unlockMutex(mutex);
-        }
-        return result;
-    }
-    // END TEMPORARY HIT-TEST DIAGNOSTICS
-
     bool ResetAnimationAlpha(void* animation)
     {
         if (!CanResetAnimationAlpha(animation))
@@ -9889,21 +9759,6 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerWheelResize(
         return E_UNEXPECTED;
     }
 }
-
-// BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
-extern "C" __declspec(dllexport) HRESULT WINAPI
-IStripperGetPlayerHitTestDebugSnapshot(SIZE_T address)
-{
-    __try
-    {
-        return GetPlayerHitTestDebugSnapshot(address);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return E_UNEXPECTED;
-    }
-}
-// END TEMPORARY HIT-TEST DIAGNOSTICS
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
     SIZE_T mode)

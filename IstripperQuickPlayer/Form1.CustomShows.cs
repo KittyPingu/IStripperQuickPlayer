@@ -1368,10 +1368,6 @@ public partial class Form1
         player.SetWheelResize(Properties.Settings.Default.EnablePlayerWheelResize);
         player.SetAllowWheelWhileLocked(
             Properties.Settings.Default.AllowWheelWhileLocked);
-        // BEGIN TEMPORARY HIT-TEST DIAGNOSTICS
-        player.SetHitTestDebugOverlay(
-            debugPlayerHitTestingToolStripMenuItem.Checked);
-        // END TEMPORARY HIT-TEST DIAGNOSTICS
         player.VolumeChanged += percent => BeginInvoke(() =>
         {
             if (customPlayer == player)
