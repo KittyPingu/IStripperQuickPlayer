@@ -145,8 +145,8 @@ internal static class TrainingStudioVerification
                        historyStore.Resolve(olderHistory.PropMaskPath!)))
             {
                 Color foregroundOverlay = overlay.GetPixel(1, 0);
-                if (overlay.Width != 2 || overlay.Height != 2 || foregroundOverlay.R < 140 ||
-                    foregroundOverlay.B < 140 || foregroundOverlay.G > 30) return false;
+                if (overlay.Width != 2 || overlay.Height != 2 || foregroundOverlay.G < 140 ||
+                    foregroundOverlay.R > 30 || foregroundOverlay.B > 30) return false;
             }
             string deletedFolder = Path.GetDirectoryName(historyStore.Resolve(newerHistory.FramePath!))!;
             historyStore.DeleteAcceptedSample(newerHistory);

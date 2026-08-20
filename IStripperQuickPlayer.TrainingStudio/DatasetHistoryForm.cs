@@ -175,9 +175,9 @@ internal sealed class DatasetHistoryForm : Form
                         int alpha = maskValue * 150 / 255;
                         if (alpha == 0) continue;
                         int inverse = 255 - alpha;
-                        framePixels[frameIndex] = (byte)((255 * alpha + framePixels[frameIndex] * inverse) / 255);
-                        framePixels[frameIndex + 1] = (byte)(framePixels[frameIndex + 1] * inverse / 255);
-                        framePixels[frameIndex + 2] = (byte)((255 * alpha + framePixels[frameIndex + 2] * inverse) / 255);
+                        framePixels[frameIndex] = (byte)(framePixels[frameIndex] * inverse / 255);
+                        framePixels[frameIndex + 1] = (byte)((255 * alpha + framePixels[frameIndex + 1] * inverse) / 255);
+                        framePixels[frameIndex + 2] = (byte)(framePixels[frameIndex + 2] * inverse / 255);
                     }
                 }
                 Marshal.Copy(framePixels, 0, frameData.Scan0, framePixels.Length);
