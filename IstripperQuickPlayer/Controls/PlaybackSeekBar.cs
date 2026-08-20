@@ -100,6 +100,9 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
     [DefaultValue(false)]
     public bool ShowTimeToolTip { get; set; }
 
+    [DefaultValue(false)]
+    public bool ShowValueText { get; set; }
+
     [DefaultValue(null)]
     public int? RangeStart
     {
@@ -289,10 +292,22 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
             System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         Rectangle thumb = new(
             thumbCenter - ThumbDiameter / 2,
-            (Height - ThumbDiameter) / 2,
+            track.Top + (TrackHeight - ThumbDiameter) / 2,
             ThumbDiameter,
             ThumbDiameter);
         e.Graphics.FillEllipse(activeBrush, thumb);
+
+        if (ShowValueText)
+        {
+            string text = ToolTipFormatter?.Invoke(value) ?? value.ToString();
+            Rectangle textBounds = new(0, thumb.Bottom + 1, ClientSize.Width,
+                Math.Max(0, ClientSize.Height - thumb.Bottom - 1));
+            TextRenderer.DrawText(e.Graphics, text, Font, textBounds,
+                Enabled ? ForeColor : SystemColors.GrayText,
+                TextFormatFlags.HorizontalCenter |
+                TextFormatFlags.Top |
+                TextFormatFlags.NoPadding);
+        }
 
         if (Focused && ShowFocusCues)
         {
@@ -332,9 +347,14 @@ internal sealed class PlaybackSeekBar : Control, ISupportInitialize
     {
         int left = ThumbDiameter / 2;
         int width = Math.Max(1, ClientSize.Width - ThumbDiameter);
+        int valueTextHeight = ShowValueText
+            ? TextRenderer.MeasureText("0", Font).Height + 2
+            : 0;
+        int trackAreaHeight = Math.Max(ThumbDiameter,
+            ClientSize.Height - valueTextHeight);
         return new Rectangle(
             left,
-            (ClientSize.Height - TrackHeight) / 2,
+            (trackAreaHeight - TrackHeight) / 2,
             width,
             TrackHeight);
     }

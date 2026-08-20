@@ -25,7 +25,7 @@ public partial class Form1
     readonly Controls.PlaybackSeekBar customAlphaThresholdInput = new()
     {
         Minimum = 0, Maximum = 255, SmallChange = 1, LargeChange = 10,
-        Width = 150, Height = 32, ShowTimeToolTip = true,
+        Width = 150, Height = 48, ShowTimeToolTip = true, ShowValueText = true,
         AccessibleName = "Custom player alpha threshold"
     };
     readonly Label customEdgeChokeLabel = new()
@@ -33,7 +33,8 @@ public partial class Form1
     readonly Controls.PlaybackSeekBar customEdgeChokeInput = new()
     {
         Minimum = 0, Maximum = 16, SmallChange = 1, LargeChange = 4,
-        Value = 4, Width = 150, Height = 32, ShowTimeToolTip = true,
+        Value = 4, Width = 150, Height = 48,
+        ShowTimeToolTip = true, ShowValueText = true,
         AccessibleName = "Custom player edge cleanup"
     };
     readonly ToolStripMenuItem editCustomShowMenu = new("Edit Custom Show Metadata...");
