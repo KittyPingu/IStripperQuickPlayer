@@ -6,6 +6,7 @@ from collections import deque
 from pathlib import Path
 
 ARCHITECTURE = "deeplabv3-resnet50-binary-v1"
+ARCHITECTURE_V2 = "rvm-conditioned-convnext-fpn-v2"
 INPUT_SIZE = 512
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
@@ -44,14 +45,21 @@ def load_package(package, device=None):
     if not manifest_path.is_file() or not checkpoint.is_file():
         raise RuntimeError("Prop-segmenter package is incomplete")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    if manifest.get("schemaVersion") != 1 or manifest.get("architecture") != ARCHITECTURE:
+    schema = manifest.get("schemaVersion")
+    architecture = manifest.get("architecture")
+    if (schema, architecture) not in ((1, ARCHITECTURE), (2, ARCHITECTURE_V2)):
         raise RuntimeError("Prop-segmenter package contract is unsupported")
     actual = digest(checkpoint)
     if actual.lower() != str(manifest.get("checkpointSha256", "")).lower():
         raise RuntimeError("Prop-segmenter checkpoint hash validation failed")
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = build_model(torch).eval().to(device)
+    if architecture == ARCHITECTURE_V2:
+        from prop_segmenter_v2 import build_model as build_v2_model
+        model = build_v2_model(torch, pretrained=False).eval().to(device)
+    else:
+        model = build_model(torch).eval().to(device)
     model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
+    model._prop_manifest = manifest
     return torch, model, device, manifest
 
 
@@ -74,7 +82,25 @@ def prepare_image(image, size=INPUT_SIZE):
     return pixels, (left, top, resized[0], resized[1]), (width, height)
 
 
-def predict_mask(torch, model, device, image, threshold=.5, size=INPUT_SIZE):
+def predict_mask(torch, model, device, image, threshold=.5, size=INPUT_SIZE,
+                 rvm_alpha=None):
+    manifest = getattr(model, "_prop_manifest", {})
+    if manifest.get("architecture") == ARCHITECTURE_V2:
+        if rvm_alpha is None:
+            raise RuntimeError("The v2 prop segmenter requires an RVM alpha mask")
+        from prop_segmenter_v2 import filter_prediction, predict
+        probability, presence = predict(torch, model, device, image, rvm_alpha,
+            int(manifest.get("input", {}).get("cropSize", size)),
+            float(manifest.get("input", {}).get("rvmThreshold", .4)))
+        runtime = manifest.get("runtime", {})
+        retained, components, radius = filter_prediction(probability, rvm_alpha,
+            float(runtime.get("pixelThreshold", threshold)), presence,
+            float(runtime.get("presenceThreshold", .5)),
+            int(runtime.get("maxComponentDistanceAt768", 96)),
+            int(manifest.get("input", {}).get("cropSize", 768)))
+        model._prop_last_details = {"presence": presence, "components": components,
+                                    "proximityRadius": radius}
+        return retained, probability
     import numpy as np
     from PIL import Image
     pixels, region, original = prepare_image(image, size)
@@ -91,10 +117,20 @@ def predict_mask(torch, model, device, image, threshold=.5, size=INPUT_SIZE):
 
 
 def predict_mask_tensor(torch, model, device, image, threshold=.5,
-                        size=INPUT_SIZE):
+                        size=INPUT_SIZE, rvm_alpha=None):
     """Predict directly from a CHW GPU frame and keep the mask on the GPU."""
     if image.ndim != 3 or image.shape[0] != 3:
         raise RuntimeError("Prop-segmenter tensor input must be CHW RGB")
+    manifest = getattr(model, "_prop_manifest", {})
+    if manifest.get("architecture") == ARCHITECTURE_V2:
+        if rvm_alpha is None:
+            raise RuntimeError("The v2 prop segmenter requires an RVM alpha mask")
+        pixels = image.detach().permute(1, 2, 0).to("cpu").numpy()
+        if pixels.max(initial=0) <= 1: pixels = pixels * 255
+        person = rvm_alpha.detach().float().to("cpu").numpy()
+        predicted, _ = predict_mask(torch, model, device,
+            pixels.astype("uint8"), threshold, size, person)
+        return torch.from_numpy(predicted).to(device)
     image = image.to(device=device, dtype=torch.float32)
     height, width = image.shape[-2:]
     scale = min(size / width, size / height)
@@ -197,6 +233,7 @@ def augment_rvm_mask(prop_mask, person_mask, base_radius=24):
 
 
 def self_test():
+    import tempfile
     import numpy as np
     person = np.zeros((64, 64), bool); person[20:44, 20:44] = True
     prop = np.zeros_like(person); prop[29:35, 44:50] = True; prop[2:6, 2:6] = True
@@ -207,6 +244,31 @@ def self_test():
     fallback = _filter_components_python(prop, person, 3)
     assert np.array_equal(native[0], fallback[0])
     assert native[1] == fallback[1] and native[2] == fallback[2]
+    # Exercise the side-by-side v2 package loader and checkpoint hash contract.
+    import torch
+    from prop_segmenter_v2 import build_model as build_v2_model
+    with tempfile.TemporaryDirectory(prefix="iqp-prop-package-") as value:
+        package = Path(value)
+        checkpoint = package / "model.pth"
+        model = build_v2_model(torch, pretrained=False)
+        torch.save(model.state_dict(), checkpoint); del model
+        checkpoint_hash = digest(checkpoint)
+        manifest = {"schemaVersion": 2, "modelId": "self-test-v2",
+            "architecture": ARCHITECTURE_V2, "checkpointSha256": checkpoint_hash,
+            "confidenceThreshold": .55, "proximityRadiusAt512": 64,
+            "inputSize": 768,
+            "input": {"cropSize": 768, "rvmThreshold": .4},
+            "runtime": {"pixelThreshold": .55, "presenceThreshold": .5,
+                        "maxComponentDistanceAt768": 96}}
+        (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        _, loaded, loaded_device, loaded_manifest = load_package(package, "cpu")
+        assert loaded_device.type == "cpu" and loaded_manifest["schemaVersion"] == 2
+        assert loaded.features[0][0].in_channels == 5
+        del loaded
+        manifest["checkpointSha256"] = "0" * 64
+        (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        try: load_package(package, "cpu"); raise AssertionError("invalid hash accepted")
+        except RuntimeError as error: assert "hash validation" in str(error)
     print(json.dumps({"status": "ok", "message": "prop-segmenter self-test passed"}))
 
 

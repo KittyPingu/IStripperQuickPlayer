@@ -2637,6 +2637,10 @@ internal sealed class CustomShowEditorForm : Form
         processing.PropSegmenterCheckpointSha256 = package.CheckpointSha256;
         processing.PropSegmenterConfidenceThreshold = package.ConfidenceThreshold;
         processing.PropSegmenterProximityRadiusAt512 = package.ProximityRadiusAt512;
+        processing.PropSegmenterManifestSchemaVersion = package.ManifestSchemaVersion;
+        processing.PropSegmenterArchitecture = package.Architecture;
+        processing.PropSegmenterManifestSha256 = package.ManifestSha256;
+        processing.PropSegmenterPostprocessingContract = package.PostprocessingContract;
     }
 
     void SaveNewQueuedPerformer(CustomPerformerProfile profile)

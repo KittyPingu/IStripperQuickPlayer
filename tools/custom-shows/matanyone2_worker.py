@@ -362,7 +362,10 @@ def automatic_rvm_mask(source, runtime, start, frame_rate, fps, total,
             alphas = alpha[0, :, 0].float().cpu().numpy()
             scores = [rvm_frame_score(value, threshold) for value in alphas]
             selected = max(range(count), key=lambda index: scores[index])
-            cleaned = clean_rvm_mask(alphas[selected], threshold=threshold)
+            selected_alpha = alphas[selected].copy()
+            temporal_indexes = [max(0, selected - 1), selected, min(count - 1, selected + 1)]
+            temporal_alphas = [alphas[index].copy() for index in temporal_indexes]
+            cleaned = clean_rvm_mask(selected_alpha, threshold=threshold)
             profiler.add("rvm_initialization",
                          time.perf_counter() - inference_started)
             del tensor, alpha, alphas
@@ -373,9 +376,23 @@ def automatic_rvm_mask(source, runtime, start, frame_rate, fps, total,
                                             predict_mask)
                 prop_torch, prop_model, prop_device, prop_manifest = load_package(
                     prop_package, device)
-                predicted, _ = predict_mask(prop_torch, prop_model, prop_device,
-                    frames[selected], prop_manifest.get("confidenceThreshold", .5),
-                    prop_manifest.get("inputSize", 512))
+                if prop_manifest.get("architecture") == "rvm-conditioned-convnext-fpn-v2":
+                    from prop_segmenter_v2 import confirm_temporal_masks
+                    predictions, probabilities = [], []
+                    for frame_index, frame_alpha in zip(temporal_indexes, temporal_alphas):
+                        frame_prediction, frame_probability = predict_mask(
+                            prop_torch, prop_model, prop_device, frames[frame_index],
+                            prop_manifest.get("confidenceThreshold", .5),
+                            prop_manifest.get("inputSize", 768), frame_alpha)
+                        predictions.append(frame_prediction); probabilities.append(frame_probability)
+                    high_threshold = min(.95, prop_manifest.get("confidenceThreshold", .5) + .20)
+                    predicted = confirm_temporal_masks(predictions,
+                        probabilities[1] >= high_threshold,
+                        prop_manifest.get("runtime", {}).get("temporalRequired", 2))
+                else:
+                    predicted, _ = predict_mask(prop_torch, prop_model, prop_device,
+                        frames[selected], prop_manifest.get("confidenceThreshold", .5),
+                        prop_manifest.get("inputSize", 512), selected_alpha)
                 combined, components, radius = augment_rvm_mask(predicted,
                     cleaned >= 128, prop_manifest.get("proximityRadiusAt512", 24))
                 cleaned = combined.astype(np.uint8) * 255
@@ -903,16 +920,17 @@ def _process_once(args, compile_enabled):
                     *rvm_refresh_state, downsample_ratio=1)
             return rvm_alpha[0, 0, 0].float().clamp(0, 1)
 
-        def predict_prop_refresh(frame_tensor, rvm_foreground):
+        def predict_prop_refresh(frame_tensor, rvm_alpha):
             if prop_refresh is None:
                 return None, {}
             prop_torch, prop_model, prop_device, prop_manifest, \
                 predict_prop_mask = prop_refresh
+            rvm_foreground = rvm_alpha > args.rvm_alpha_threshold
             prop_started = time.perf_counter()
             predicted_gpu = predict_prop_mask(
                 prop_torch, prop_model, prop_device, frame_tensor,
                 prop_manifest.get("confidenceThreshold", .5),
-                prop_manifest.get("inputSize", 512))
+                prop_manifest.get("inputSize", 512), rvm_alpha)
             predicted, rvm_cpu = torch.stack(
                 (predicted_gpu, rvm_foreground)).to(torch.uint8).cpu().numpy()
             predicted = predicted != 0
@@ -969,9 +987,17 @@ def _process_once(args, compile_enabled):
                             rvm_missing_streak = 0
                         prop_foreground, prop_values = (None, {})
                         prop_missing_pixels = prop_pixels = 0
-                        if args.prop_every_frame:
+                        sparse_interval = None
+                        if prop_refresh is not None and prop_refresh[3].get("architecture") == \
+                                "rvm-conditioned-convnext-fpn-v2":
+                            seconds = float(prop_refresh[3].get("runtime", {}).get(
+                                "discoveryIntervalSeconds", 2.0))
+                            sparse_interval = max(1, round(fps * seconds))
+                        prop_evaluated = args.prop_every_frame or (
+                            sparse_interval is not None and slot.index % sparse_interval == 0)
+                        if prop_evaluated:
                             prop_foreground, prop_values = predict_prop_refresh(
-                                frame_tensor, rvm_foreground)
+                                frame_tensor, rvm_alpha)
                             if prop_foreground is not None:
                                 prop_missing_pixels = int((prop_foreground &
                                     (ma_alpha <= .20)).sum().item())
@@ -985,7 +1011,7 @@ def _process_once(args, compile_enabled):
                         rvm_trigger = refresh_due(
                             rvm_missing_streak, slot.index, last_rvm_refresh,
                             RVM_REFRESH_PERSISTENCE, RVM_REFRESH_COOLDOWN)
-                        prop_trigger = args.prop_every_frame and refresh_due(
+                        prop_trigger = prop_evaluated and refresh_due(
                             prop_missing_streak, slot.index, last_prop_refresh,
                             PROP_REFRESH_PERSISTENCE, PROP_REFRESH_COOLDOWN)
                         if (args.debug_prop_contribution and
@@ -1002,14 +1028,14 @@ def _process_once(args, compile_enabled):
                             slot.prop_injected = prop_trigger
                         if rvm_trigger or prop_trigger:
                             if (rvm_trigger and prop_refresh is not None and
-                                    not args.prop_every_frame):
+                                    not prop_evaluated):
                                 prop_foreground, prop_values = \
-                                    predict_prop_refresh(frame_tensor, rvm_foreground)
+                                    predict_prop_refresh(frame_tensor, rvm_alpha)
                                 prop_pixels = 0 if prop_foreground is None else \
                                     int(prop_foreground.sum().item())
                             injected_prop = prop_foreground if (
                                 prop_trigger or rvm_trigger and
-                                not args.prop_every_frame) else None
+                                not prop_evaluated) else None
                             injected_rvm = rvm_foreground if rvm_trigger else \
                                 torch.zeros_like(rvm_foreground)
                             corrected = corrected_rvm_refresh_mask(

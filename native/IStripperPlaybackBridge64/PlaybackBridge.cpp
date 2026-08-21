@@ -468,8 +468,15 @@ namespace
         std::size_t index = 0;
         HANDLE completed = nullptr;
         HRESULT result = E_PENDING;
+
+        ~FullScreenQueueOperation()
+        {
+            if (completed != nullptr)
+                CloseHandle(completed);
+        }
     };
-    FullScreenQueueOperation g_fullScreenQueueOperation;
+    std::shared_ptr<FullScreenQueueOperation>
+        g_fullScreenQueueOperation;
     thread_local void* g_activeFullScreenReplacementNode = nullptr;
     thread_local std::string g_activeFullScreenReplacementClip;
     LONG volatile g_bridgePinned = 0;
@@ -2574,23 +2581,22 @@ namespace
     bool CompleteFullScreenQueueOperation(void* sequencer)
     {
         AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
-        if (g_fullScreenQueueOperation.kind ==
-                FullScreenQueueOperationKind::None ||
-            g_fullScreenQueueOperation.kind ==
+        if (g_fullScreenQueueOperation == nullptr ||
+            g_fullScreenQueueOperation->kind ==
                 FullScreenQueueOperationKind::Executing)
         {
             ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
             return false;
         }
 
+        const std::shared_ptr<FullScreenQueueOperation> operation =
+            g_fullScreenQueueOperation;
         const FullScreenQueueOperationKind kind =
-            g_fullScreenQueueOperation.kind;
-        const std::string card = g_fullScreenQueueOperation.card;
-        const std::string clip = g_fullScreenQueueOperation.clip;
-        const std::size_t index = g_fullScreenQueueOperation.index;
-        HANDLE completed = g_fullScreenQueueOperation.completed;
-        g_fullScreenQueueOperation.kind =
-            FullScreenQueueOperationKind::Executing;
+            operation->kind;
+        const std::string card = operation->card;
+        const std::string clip = operation->clip;
+        const std::size_t index = operation->index;
+        operation->kind = FullScreenQueueOperationKind::Executing;
         ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
 
         HRESULT result = E_UNEXPECTED;
@@ -2607,8 +2613,8 @@ namespace
         }
 
         AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
-        g_fullScreenQueueOperation.result = result;
-        SetEvent(completed);
+        operation->result = result;
+        SetEvent(operation->completed);
         ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
         return result >= 0;
     }
@@ -2617,30 +2623,33 @@ namespace
         const std::string& card = {}, const std::string& clip = {},
         std::size_t index = 0)
     {
-        HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (completed == nullptr)
+        const std::shared_ptr<FullScreenQueueOperation> operation =
+            std::make_shared<FullScreenQueueOperation>();
+        operation->kind = kind;
+        operation->card = card;
+        operation->clip = clip;
+        operation->index = index;
+        operation->completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (operation->completed == nullptr)
             return HRESULT_FROM_WIN32(GetLastError());
 
         AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
-        if (g_fullScreenQueueOperation.kind !=
-                FullScreenQueueOperationKind::None)
+        if (g_fullScreenQueueOperation != nullptr)
         {
             ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
-            CloseHandle(completed);
             return HRESULT_FROM_WIN32(ERROR_BUSY);
         }
-        g_fullScreenQueueOperation = { kind, card, clip, index, completed,
-            E_PENDING };
+        g_fullScreenQueueOperation = operation;
         ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
 
         HRESULT result = InvokeQtSingleton(g_cardSequencerVtableRva,
             &g_cardSequencerObject, ".?AVCardSequencer@Model@@",
             "Model::CardSequencer", "frequencyUpdated");
-        if (result >= 0 && WaitForSingleObject(completed, 5'000) ==
+        if (result >= 0 && WaitForSingleObject(operation->completed, 5'000) ==
                 WAIT_OBJECT_0)
         {
             AcquireSRWLockShared(&g_fullScreenQueueOperationLock);
-            result = g_fullScreenQueueOperation.result;
+            result = operation->result;
             ReleaseSRWLockShared(&g_fullScreenQueueOperationLock);
         }
         else if (result >= 0)
@@ -2649,9 +2658,9 @@ namespace
         }
 
         AcquireSRWLockExclusive(&g_fullScreenQueueOperationLock);
-        g_fullScreenQueueOperation = {};
+        if (g_fullScreenQueueOperation == operation)
+            g_fullScreenQueueOperation.reset();
         ReleaseSRWLockExclusive(&g_fullScreenQueueOperationLock);
-        CloseHandle(completed);
         return result;
     }
 
@@ -6526,6 +6535,21 @@ namespace
         ReleaseSRWLockExclusive(&g_audioControlLock);
     }
 
+    void ResetPlaybackAudioSession()
+    {
+        AcquireSRWLockExclusive(&g_audioControlLock);
+        WaitForAudioWrites();
+        InterlockedExchangePointer(&g_audioSeekMovie, nullptr);
+        InterlockedExchangePointer(&g_audioSuppressedSound, nullptr);
+        InterlockedExchangePointer(&g_audioResetPendingSound, nullptr);
+        InterlockedExchangePointer(
+            &g_audioReleaseAfterResetSound, nullptr);
+        InterlockedExchange(&g_audioResumeAfterReset, 0);
+        InterlockedExchange64(&g_audioPlaybackRateBits,
+            static_cast<LONGLONG>(0x3FF0000000000000ULL));
+        ReleaseSRWLockExclusive(&g_audioControlLock);
+    }
+
     bool IsNormalPlaybackRate(double playRate)
     {
         return playRate > 0.999 && playRate < 1.001;
@@ -8758,6 +8782,107 @@ namespace
         return S_OK;
     }
 
+    HRESULT ResetWmvPlaybackSession(void* movie)
+    {
+        AcquireSRWLockExclusive(&g_wmvRestartLock);
+        HRESULT result = BridgeSuccess;
+        __try
+        {
+            void* animation = g_wmvRateAnimation;
+            void* video = g_wmvRateVideo;
+            void* currentAnimation = IsMovie(movie) &&
+                IsReadable(movie,
+                    MovieAnimationOffset + sizeof(void*))
+                ? *reinterpret_cast<void**>(
+                    reinterpret_cast<unsigned char*>(movie) +
+                        MovieAnimationOffset)
+                : nullptr;
+            const bool restoreSystemClock = g_wmvUserClock &&
+                animation != nullptr && currentAnimation == animation &&
+                IsWmvDecoder(video) &&
+                AnimationVideoDecoder(animation) == video;
+
+            ClearWmvClock();
+            if (restoreSystemClock)
+            {
+                void* info = IsReadable(animation,
+                    AnimationInfoOffset + sizeof(void*))
+                    ? *reinterpret_cast<void**>(
+                        reinterpret_cast<unsigned char*>(animation) +
+                            AnimationInfoOffset)
+                    : nullptr;
+                auto currentAddress = reinterpret_cast<const int*>(
+                    reinterpret_cast<unsigned char*>(movie) +
+                        MovieCurrentFrameOffset);
+                auto stateAddress = reinterpret_cast<const int*>(
+                    reinterpret_cast<unsigned char*>(movie) +
+                        MovieStateOffset);
+                if (!IsReadable(info,
+                        AnimationFramesPerSecondOffset + sizeof(int)) ||
+                    !IsReadable(currentAddress, sizeof(*currentAddress)) ||
+                    !IsReadable(stateAddress, sizeof(*stateAddress)))
+                {
+                    result = ManagerError();
+                }
+                else
+                {
+                    const int totalFrames =
+                        *reinterpret_cast<const int*>(
+                            reinterpret_cast<unsigned char*>(info) +
+                                AnimationTotalFramesOffset);
+                    const int framesPerSecond =
+                        *reinterpret_cast<const int*>(
+                            reinterpret_cast<unsigned char*>(info) +
+                                AnimationFramesPerSecondOffset);
+                    const int currentFrame = *currentAddress;
+                    if (totalFrames <= 0 || framesPerSecond <= 0 ||
+                        currentFrame < 0)
+                    {
+                        result = E_INVALIDARG;
+                    }
+                    else
+                    {
+                        const int firstFrame =
+                            currentFrame < totalFrames - 1
+                                ? currentFrame + 1
+                                : totalFrames - 1;
+                        const bool wasPlaying =
+                            *stateAddress == PlayingState;
+                        if (wasPlaying)
+                        {
+                            FunctionAt<ManagerAction>(
+                                MoviePauseRva)(movie);
+                        }
+                        __try
+                        {
+                            result = RestartWmvReader(video, firstFrame,
+                                firstFrame + 1, framesPerSecond,
+                                totalFrames, false);
+                        }
+                        __finally
+                        {
+                            if (wasPlaying)
+                            {
+                                FunctionAt<ManagerAction>(
+                                    MovieResumeRva)(movie);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        __finally
+        {
+            ClearWmvClock();
+            g_wmvRateAnimation = nullptr;
+            g_wmvRateVideo = nullptr;
+            g_wmvRate = 1.0;
+            g_wmvUserClock = false;
+            ReleaseSRWLockExclusive(&g_wmvRestartLock);
+        }
+        return result;
+    }
+
     bool ObserveWmvQueueProgress(void* reader, int movieFrame)
     {
         const bool queuesPrimed = WmvColorQueuePrimed(reader);
@@ -10128,6 +10253,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperInstallMovieCaptureHook
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperResetPlaybackSession()
 {
+    InterlockedExchange(&g_decoderCatchupTargetFrame, -1);
+    InterlockedExchangePointer(&g_decoderCatchupVideo, nullptr);
+    InterlockedExchange(&g_fastForwardTargetFrame, -1);
+    InterlockedExchangePointer(&g_fastForwardMovie, nullptr);
+
+    void* movie = ActiveMovie();
+    HRESULT result = E_UNEXPECTED;
+    __try
+    {
+        result = ResetWmvPlaybackSession(movie);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        result = E_UNEXPECTED;
+    }
+    ResetPlaybackAudioSession();
+
     InterlockedExchange(&g_movieCaptureArmed, 0);
     InterlockedExchange(&g_movieCaptureReady, 0);
     InterlockedExchangePointer(&g_activeMovie, nullptr);
@@ -10137,7 +10279,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperResetPlaybackSession()
     InterlockedExchangePointer(&g_consumedSsv, nullptr);
     InterlockedExchangePointer(&g_consumedInfo, nullptr);
     ClearAlphaCheckpoints();
-    return BridgeSuccess;
+    return FAILED(result) ? result : BridgeSuccess;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperArmMovieCapture()

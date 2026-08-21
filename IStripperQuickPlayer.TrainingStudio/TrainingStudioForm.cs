@@ -28,15 +28,17 @@ internal sealed class TrainingStudioForm : Form
     readonly Button cancelTraining = new() { Text = "Cancel training", AutoSize = true, Enabled = false };
     readonly Button install = new() { Text = "Install trained model", AutoSize = true, Enabled = false };
     readonly Button openReview = new() { Text = "Open error review", AutoSize = true, Enabled = false };
+    readonly Button regenerateV2 = new() { Text = "Generate missing v2 RVM alpha", AutoSize = true };
     readonly ComboBox minimumResolution = new() { Width = 105, DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly ComboBox trainingSize = new() { Width = 75, DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly ComboBox negativeSelection = new() { Width = 145, DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly Label v2Training = new() { Text = "v2 · 768px · 50/25/25 crops",
+        AutoSize = true, Padding = new Padding(6, 7, 0, 0) };
     readonly Label queueStatus = new() { Text = "Queue: 0/10", AutoSize = true,
         Padding = new Padding(10, 8, 0, 0) };
     readonly CheckBox resumeTraining = new() { Text = "Resume latest checkpoint", AutoSize = true,
         Padding = new(6, 7, 0, 0) };
     readonly SemaphoreSlim derivationGate = new(1, 1);
     readonly RvmPreviewClient rvmPreview = new();
+    readonly PropProposalClient propProposal = new();
     readonly PersistentSam2Session annotationSam2 = new();
     DatasetStore? store;
     TrainingSample? current;
@@ -56,7 +58,9 @@ internal sealed class TrainingStudioForm : Form
     volatile bool queueIsDecoding;
     TrainingRunner? runner;
     string? installPackagePath;
+    string? proposalPackagePath;
     bool refreshingSourceFolders;
+    bool generatingV2Artifacts;
 
     internal TrainingStudioForm()
     {
@@ -87,23 +91,10 @@ internal sealed class TrainingStudioForm : Form
             new ResolutionOption("1440p+", 1440), new ResolutionOption("2160p+", 2160)
         });
         minimumResolution.SelectedIndex = 2;
-        trainingSize.Items.AddRange(new object[] { 512, 768, 1024 });
-        trainingSize.SelectedItem = 768;
-        negativeSelection.Items.AddRange(new object[]
-        {
-            new NegativeOption("Compare 20–35%", "compare"),
-            new NegativeOption("20%", "20"), new NegativeOption("25%", "25"),
-            new NegativeOption("30%", "30"), new NegativeOption("35%", "35"),
-            new NegativeOption("ALL negatives", "all")
-        });
-        negativeSelection.SelectedIndex = 3;
         trainActions.Controls.AddRange([train,
             new Label { Text = "Minimum", AutoSize = true, Padding = new Padding(6, 7, 0, 0) },
             minimumResolution,
-            new Label { Text = "Training size", AutoSize = true, Padding = new Padding(6, 7, 0, 0) },
-            trainingSize,
-            new Label { Text = "Negatives", AutoSize = true, Padding = new Padding(6, 7, 0, 0) },
-            negativeSelection, resumeTraining, cancelTraining, openReview, install]);
+            v2Training, regenerateV2, resumeTraining, cancelTraining, openReview, install]);
         Panel right = new() { Dock = DockStyle.Fill };
         Panel dashboard = new() { Dock = DockStyle.Top, Height = 242, Padding = new(8) };
         dashboard.Controls.Add(stats); dashboard.Controls.Add(new Label
@@ -138,6 +129,11 @@ internal sealed class TrainingStudioForm : Form
         train.Click += async (_, _) => await TrainAsync();
         cancelTraining.Click += (_, _) => { trainingCancellation?.Cancel(); runner?.Cancel(); };
         openReview.Click += async (_, _) => await OpenErrorReviewAsync();
+        regenerateV2.Click += async (_, _) =>
+        {
+            if (generatingV2Artifacts) operationCancellation?.Cancel();
+            else await GenerateMissingV2ArtifactsAsync();
+        };
         minimumResolution.SelectedIndexChanged += async (_, _) =>
         {
             UpdateStats();
@@ -146,7 +142,6 @@ internal sealed class TrainingStudioForm : Form
             if (minimum == 0 || Math.Min(current.Width, current.Height) >= minimum) return;
             activeBurstId = null; ClearPrefetchQueue(); ClearCurrent(); await NextAsync();
         };
-        negativeSelection.SelectedIndexChanged += (_, _) => UpdateStats();
         install.Click += (_, _) => InstallModel();
         Shown += (_, _) => OpenDataset(datasetPath.Text);
     }
@@ -340,10 +335,42 @@ internal sealed class TrainingStudioForm : Form
     {
         if (store == null || current == null) return;
         var draft = store.LoadDraftAnnotation(current);
+        string? rvmMaskPath = null;
+        if (!(draft.Ids?.Any(value => value > 0) ?? false) &&
+            LatestV2ProposalPackage() is string v2Package)
+        {
+            try
+            {
+                status.Text = "Generating RVM-conditioned v2 prop proposal…";
+                (rvmMaskPath, string alphaPath) = await GenerateDraftRvmArtifactsAsync(
+                    current, .4, CancellationToken.None);
+                string proposalPath = Path.Combine(Path.GetDirectoryName(
+                    store.Resolve(current.FramePath!))!, "v2-proposal-mask.png");
+                PropProposalResult proposal = await propProposal.GenerateAsync(v2Package,
+                    store.Resolve(current.FramePath!), alphaPath, proposalPath,
+                    CancellationToken.None);
+                current.ActiveLearningBucket = proposal.Bucket; store.SaveSample(current);
+                if (proposal.Pixels > 0)
+                {
+                    using Bitmap mask = new(proposal.MaskPath);
+                    byte[] pixels = BinaryPixels(mask);
+                    int[] ids = pixels.Select(value => value == 0 ? 0 : 1).ToArray();
+                    AnnotationObject prop = new() { Id = 1, Name = "v2 prop proposal",
+                        ColorArgb = Color.LimeGreen.ToArgb() };
+                    draft = (ids, new[] { prop }, $"v2-model-proposal:{proposal.ModelId}");
+                    store.SaveDraftAnnotation(current, ids, [prop], draft.Item3);
+                    status.Text = $"v2 proposed {proposal.Pixels:N0} pixels; accept or correct the green mask.";
+                }
+            }
+            catch (Exception error)
+            {
+                status.Text = "v2 proposal unavailable; opening manual/SAM2 annotation: " + error.Message;
+            }
+        }
         using AnnotationForm editor = new(store.Resolve(current.FramePath!), draft.Ids,
             draft.Objects, draft.Provenance,
             (ids, objects, provenance) => store.SaveDraftAnnotation(current, ids, objects, provenance),
-            null, threshold => GenerateRvmPreviewAsync(current, threshold, CancellationToken.None),
+            rvmMaskPath, threshold => GenerateRvmPreviewAsync(current, threshold, CancellationToken.None),
             annotationSam2.LoadAsync);
         if (editor.ShowDialog(this) != DialogResult.OK) return;
         TrainingSample accepted = current;
@@ -357,6 +384,52 @@ internal sealed class TrainingStudioForm : Form
         if (accepted.BurstId != null && IsBurstAnchor(accepted))
             await PropagateBurstDraftsAsync(accepted, acceptedIds, acceptedObjects);
         await NextAsync();
+    }
+
+    async Task<(string Person, string Alpha)> GenerateDraftRvmArtifactsAsync(TrainingSample sample,
+        double threshold, CancellationToken token)
+    {
+        if (store == null) throw new InvalidOperationException("Dataset is not open.");
+        string folder = Path.GetDirectoryName(store.Resolve(sample.FramePath!))!;
+        string person = Path.Combine(folder, "rvm-proposal-person.png");
+        string alpha = Path.Combine(folder, "rvm-proposal-alpha-16.png");
+        VideoSource source = store.Source(sample.SourceId);
+        await rvmPreview.GenerateAsync(source.Path, sample.TimestampMs, threshold, person, token,
+            alpha, sample.Width, sample.Height);
+        return (person, alpha);
+    }
+
+    async Task PrepareActiveLearningProposalAsync(TrainingSample sample, CancellationToken token)
+    {
+        if (store == null || sample.FramePath == null ||
+            LatestV2ProposalPackage() is not string package) return;
+        string folder = Path.GetDirectoryName(store.Resolve(sample.FramePath))!;
+        string proposalPath = Path.Combine(folder, "v2-proposal-mask.png");
+        if (File.Exists(proposalPath)) return;
+        try
+        {
+            (string _, string alphaPath) = await GenerateDraftRvmArtifactsAsync(sample, .4, token);
+            PropProposalResult proposal = await propProposal.GenerateAsync(package,
+                store.Resolve(sample.FramePath), alphaPath, proposalPath, token);
+            double strategy = Convert.ToByte(sample.Id[..2], 16) / 256d;
+            int sourceReviews = store.Dataset.Samples.Count(value => value.SourceId == sample.SourceId &&
+                value.Decision is "positive" or "negative");
+            sample.ActiveLearningBucket = strategy < .10 ? "random" :
+                strategy < .30 && sourceReviews < 3 ? "underrepresented" : proposal.Bucket;
+            store.SaveSample(sample);
+            if (proposal.Pixels <= 0) return;
+            using Bitmap mask = new(proposal.MaskPath);
+            int[] ids = BinaryPixels(mask).Select(value => value == 0 ? 0 : 1).ToArray();
+            AnnotationObject prop = new() { Id = 1, Name = "v2 prop proposal",
+                ColorArgb = Color.LimeGreen.ToArgb() };
+            store.SaveDraftAnnotation(sample, ids, [prop], $"v2-model-proposal:{proposal.ModelId}");
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch
+        {
+            // Active learning is optional; a failed proposal remains a uniform-random draft.
+            sample.ActiveLearningBucket = "random"; store.SaveSample(sample);
+        }
     }
 
     async Task PrefetchNextFrameAsync(TrainingSample editing, int minimumResolution,
@@ -380,6 +453,7 @@ internal sealed class TrainingStudioForm : Form
                     }
                     if (nextSample != null)
                     {
+                        await PrepareActiveLearningProposalAsync(nextSample, token);
                         token.ThrowIfCancellationRequested();
                         reserved.Add(nextSample.Id); CachePreview(nextSample, generation);
                     }
@@ -433,6 +507,7 @@ internal sealed class TrainingStudioForm : Form
                 reserved.Add(sample.Id);
                 if (sample.FramePath == null || !File.Exists(store.Resolve(sample.FramePath)))
                     await store.ExtractDraftFrameAsync(sample, token);
+                await PrepareActiveLearningProposalAsync(sample, token);
                 token.ThrowIfCancellationRequested();
                 CachePreview(sample, generation);
             }
@@ -506,6 +581,16 @@ internal sealed class TrainingStudioForm : Form
     {
         lock (previewCacheGate)
         {
+            if (store != null && previewSamples.Count > 0)
+            {
+                TrainingSample? selected = DatasetStore.SelectActiveLearningCandidate(
+                    previewSamples.Values, store.Dataset.Samples.Where(value => value.Decision != "draft"));
+                if (selected != null && previewCache.Remove(selected.Id, out Bitmap? selectedBitmap))
+                {
+                    previewSamples.Remove(selected.Id); RefreshQueueStatus();
+                    return (selected, selectedBitmap);
+                }
+            }
             while (previewOrder.TryDequeue(out string? sampleId))
             {
                 if (!previewCache.Remove(sampleId, out Bitmap? bitmap) ||
@@ -605,21 +690,23 @@ internal sealed class TrainingStudioForm : Form
         });
     }
 
-    async Task GenerateDerivedArtifactsAsync(TrainingSample sample, double rvmThreshold = .4)
+    async Task GenerateDerivedArtifactsAsync(TrainingSample sample, double rvmThreshold = .4,
+        CancellationToken token = default)
     {
         if (store == null) return;
         string? rvmRevision = null;
-        await derivationGate.WaitAsync();
+        await derivationGate.WaitAsync(token);
         try
         {
             string sampleFolder = Path.GetDirectoryName(store.Resolve(sample.FramePath!))!;
             string person = Path.Combine(sampleFolder, "rvm-person-mask.png");
+            string alpha = Path.Combine(sampleFolder, "rvm-alpha-16.png");
             string desired = Path.Combine(sampleFolder, "desired-foreground.png");
             string python = Sam2Client.RuntimePython();
             string runtime = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(python)!, "..", ".."));
             string revisionFile = Path.Combine(runtime, "RVM_COMMIT");
             if (File.Exists(revisionFile)) rvmRevision = File.ReadAllText(revisionFile).Trim();
-            await GenerateRvmPersonMaskAsync(sample, rvmThreshold, CancellationToken.None);
+            await GenerateRvmPersonMaskAsync(sample, rvmThreshold, token);
             using Bitmap personBitmap = new(person);
             byte[] personPixels = BinaryPixels(personBitmap);
             using Bitmap prop = new(store.Resolve(sample.PropMaskPath!));
@@ -627,12 +714,41 @@ internal sealed class TrainingStudioForm : Form
             byte[] union = personPixels.Zip(propPixels, (first, second) =>
                 first != 0 || second != 0 ? (byte)255 : (byte)0).ToArray();
             PngMaskWriter.SaveGray8(desired, sample.Width, sample.Height, union);
-            store.SetDerivation(sample, "ready", store.Relative(person), store.Relative(desired), null,
-                rvmRevision, rvmThreshold);
+            store.SetDerivation(sample, "ready", store.Relative(person), store.Relative(alpha),
+                store.Relative(desired), null, rvmRevision, rvmThreshold);
         }
-        catch (Exception error) { store.SetDerivation(sample, "failed", null, null, error.Message,
-            rvmRevision, rvmThreshold); }
+        catch (Exception error) { store.SetDerivation(sample, "failed", null, null, null,
+            error.Message, rvmRevision, rvmThreshold); }
         finally { derivationGate.Release(); if (!IsDisposed) BeginInvoke(UpdateStats); }
+    }
+
+    async Task GenerateMissingV2ArtifactsAsync()
+    {
+        if (store == null) return;
+        TrainingSample[] missing = store.Dataset.Samples.Where(sample => sample.Accepted &&
+            (string.IsNullOrWhiteSpace(sample.RvmAlphaPath) ||
+             !File.Exists(store.Resolve(sample.RvmAlphaPath)))).ToArray();
+        if (missing.Length == 0) { status.Text = "Every accepted sample already has v2 RVM alpha."; return; }
+        generatingV2Artifacts = true; regenerateV2.Text = "Cancel v2 alpha generation";
+        try
+        {
+            await BusyAsync(async token =>
+            {
+                int completed = 0;
+                foreach (TrainingSample sample in missing)
+                {
+                    token.ThrowIfCancellationRequested();
+                    status.Text = $"Generating v2 RVM alpha {completed + 1:N0}/{missing.Length:N0}...";
+                    await GenerateDerivedArtifactsAsync(sample, sample.RvmThreshold ?? .4, token);
+                    completed++; UpdateStats();
+                }
+                status.Text = $"Generated v2 RVM alpha for {completed:N0} accepted samples.";
+            });
+        }
+        finally
+        {
+            generatingV2Artifacts = false; regenerateV2.Text = "Generate missing v2 RVM alpha";
+        }
     }
 
     async Task<string> GenerateRvmPreviewAsync(TrainingSample sample, double threshold,
@@ -652,8 +768,10 @@ internal sealed class TrainingStudioForm : Form
         string folder = Path.GetDirectoryName(store.Resolve(sample.FramePath!))!;
         string person = Path.Combine(folder, "rvm-person-mask.png");
         string review = Path.Combine(folder, "rvm-person-review.png");
+        string alpha = Path.Combine(folder, "rvm-alpha-16.png");
         VideoSource source = store.Source(sample.SourceId);
-        await rvmPreview.GenerateAsync(source.Path, sample.TimestampMs, threshold, review, token);
+        await rvmPreview.GenerateAsync(source.Path, sample.TimestampMs, threshold, review, token,
+            alpha, sample.Width, sample.Height);
         {
             using Bitmap opened = new(review);
             using Bitmap resized = new(sample.Width, sample.Height, PixelFormat.Format32bppArgb);
@@ -671,6 +789,7 @@ internal sealed class TrainingStudioForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _ = rvmPreview.DisposeAsync().AsTask();
+        _ = propProposal.DisposeAsync().AsTask();
         _ = annotationSam2.DisposeAsync().AsTask(); derivationGate.Dispose();
         base.OnFormClosed(e);
     }
@@ -758,21 +877,34 @@ internal sealed class TrainingStudioForm : Form
     {
         if (store == null) return;
         int minimum = SelectedMinimumResolution();
-        int inputSize = trainingSize.SelectedItem is int selectedSize ? selectedSize : 512;
-        string negativeMode = negativeSelection.SelectedItem is NegativeOption selectedNegatives
-            ? selectedNegatives.Value : "compare";
         TrainingSample[] eligible = store.Dataset.Samples.Where(sample =>
             sample.Decision is "positive" or "negative" &&
+            !store.Source(sample.SourceId).SealedHoldout &&
             (minimum == 0 || Math.Min(sample.Width, sample.Height) >= minimum)).ToArray();
         DatasetStatistics value = store.Statistics();
         List<string> warnings = [];
-        int eligibleNegatives = eligible.Count(sample => sample.Decision == "negative");
-        double eligibleNegativeRatio = eligibleNegatives / (double)Math.Max(1, eligible.Length);
+        int missingAlpha = eligible.Count(sample => string.IsNullOrWhiteSpace(sample.RvmAlphaPath) ||
+            !File.Exists(store.Resolve(sample.RvmAlphaPath)));
+        if (missingAlpha > 0)
+        {
+            MessageBox.Show(this,
+                $"{missingAlpha:N0} eligible samples do not yet have source-sized v2 RVM alpha.\n\n" +
+                "Run 'Generate missing v2 RVM alpha' before training so v2 learns from raw RVM confidence rather than a binary fallback.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         if (eligible.Length < 300) warnings.Add($"only {eligible.Length} eligible accepted frames (300 recommended)");
-        if (eligibleNegativeRatio < .25) warnings.Add($"only {eligibleNegativeRatio:P0} eligible negatives (25–35% recommended)");
         if (new[] { "train", "validation", "test" }.Any(split =>
             !eligible.Any(sample => sample.Split == split)))
             warnings.Add("one or more source-level splits are empty after the resolution filter");
+        TrainingSample[] holdout = store.Dataset.Samples.Where(sample => sample.Accepted &&
+            store.Source(sample.SourceId).SealedHoldout).ToArray();
+        int holdoutSources = holdout.Select(sample => sample.SourceId).Distinct().Count();
+        int holdoutPositives = holdout.Count(sample => sample.Decision == "positive");
+        double holdoutPositiveRatio = (double)holdoutPositives / Math.Max(1, holdout.Length);
+        if (holdout.Length < 300 || holdoutSources < 60 || holdoutPositiveRatio is < .4 or > .6)
+            warnings.Add($"sealed v2 holdout has {holdout.Length}/300 frames from {holdoutSources}/60 videos " +
+                $"({holdoutPositives} positive, {holdout.Length - holdoutPositives} negative); training can screen but cannot package a model");
         if (warnings.Count > 0 && MessageBox.Show(this, "Training readiness warning:\n\n• " +
             string.Join("\n• ", warnings) + "\n\nTrain anyway?", Text, MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning) != DialogResult.Yes) return;
@@ -786,8 +918,7 @@ internal sealed class TrainingStudioForm : Form
         installPackagePath = null;
         try
         {
-            int exit = await runner.RunAsync(store.Root, resumeTraining.Checked, minimum, inputSize,
-                negativeMode,
+            int exit = await runner.RunAsync(store.Root, resumeTraining.Checked, minimum,
                 trainingCancellation.Token);
             status.Text = exit == 0 ? "Training and evaluation completed." : "Training failed; see the log.";
             installPackagePath = exit == 0 && Directory.Exists(runner.PackagePath)
@@ -810,11 +941,15 @@ internal sealed class TrainingStudioForm : Form
         try
         {
             string modelId = TrainingRunner.InstallPackage(installPackagePath);
+            proposalPackagePath = null;
             MessageBox.Show(this, $"Installed model {modelId}. Enable it explicitly in QuickPlayer Custom Show settings.",
                 Text, MessageBoxButtons.OK, MessageBoxIcon.Information); install.Enabled = false;
         }
         catch (Exception error) { MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error); }
     }
+
+    string? LatestV2ProposalPackage() => proposalPackagePath ??=
+        PropProposalClient.FindLatestV2Package();
 
     async Task OpenErrorReviewAsync()
     {
@@ -856,37 +991,30 @@ internal sealed class TrainingStudioForm : Form
     void UpdateStats()
     {
         if (store == null) { stats.Text = "Open or create a dataset."; return; }
-        DatasetStatistics value = store.Statistics(); int target = 500;
-        int desiredNegatives = (int)Math.Round(target * .30), desiredPositives = target - desiredNegatives;
-        string readiness = value.Accepted >= 300 && value.NegativeRatio >= .25 &&
+        DatasetStatistics value = store.Statistics();
+        string readiness = value.Accepted >= 300 && value.Positive > 0 && value.Negative > 0 &&
             value.Train > 0 && value.Validation > 0 && value.Test > 0 ? "Ready for a pilot training run" : "More data recommended";
-        string negativeMode = negativeSelection.SelectedItem is NegativeOption selectedNegatives
-            ? selectedNegatives.Value : "compare";
-        string balanceNote = negativeMode switch
-        {
-            "compare" => "\r\nTraining will compare source-balanced 20%, 25%, 30%, and 35% sampling targets; every negative remains eligible.",
-            "all" => "\r\nTraining will use every eligible negative sample.",
-            _ => $"\r\nTraining will target {negativeMode}% source-balanced negatives per epoch; every negative remains eligible."
-        };
+        string balanceNote = "\r\nv2 crops: 50% prop-centred, 25% near-RVM hard background, 25% empty-prop.";
         int minimum = SelectedMinimumResolution();
         int eligible = store.Dataset.Samples.Count(sample => sample.Decision is "positive" or "negative" &&
             (minimum == 0 || Math.Min(sample.Width, sample.Height) >= minimum));
         string resolutionNote = minimum == 0 ? "" : $"  ·  eligible at {minimum}p+: {eligible:N0}";
+        int sealedFrames = store.Dataset.Samples.Count(sample => sample.Accepted &&
+            store.Source(sample.SourceId).SealedHoldout);
+        int sealedPositives = store.Dataset.Samples.Count(sample => sample.Decision == "positive" &&
+            store.Source(sample.SourceId).SealedHoldout);
+        int sealedSources = store.Dataset.Sources.Count(source => source.SealedHoldout);
         stats.Text = $"{readiness}\r\n\r\nAccepted: {value.Accepted:N0}  ·  positive: {value.Positive:N0}  ·  negative: {value.Negative:N0} ({value.NegativeRatio:P1}){resolutionNote}\r\n" +
             $"Rejected: {value.Rejected:N0}  ·  drafts: {value.Draft:N0}  ·  objects: {value.Objects:N0}\r\n" +
             $"Videos: {value.CoveredVideos:N0}/{value.Videos:N0} covered  ·  train/validation/test: {value.Train:N0}/{value.Validation:N0}/{value.Test:N0}\r\n" +
-            $"Toward {target}: {Math.Max(0, desiredPositives - value.Positive):N0} positives and {Math.Max(0, desiredNegatives - value.Negative):N0} negatives remaining.{balanceNote}";
+            $"Sealed v2 holdout: {sealedFrames:N0}/300 frames ({sealedPositives:N0} positive, {sealedFrames - sealedPositives:N0} negative) from {sealedSources:N0}/60 videos\r\n" +
+            $"The v2 sampler balances crop types automatically; the raw frame ratio no longer selects a training candidate.{balanceNote}";
     }
 
     int SelectedMinimumResolution() => minimumResolution.SelectedItem is ResolutionOption option
         ? option.Pixels : 0;
 
     sealed record ResolutionOption(string Label, int Pixels)
-    {
-        public override string ToString() => Label;
-    }
-
-    sealed record NegativeOption(string Label, string Value)
     {
         public override string ToString() => Label;
     }

@@ -43,6 +43,7 @@ internal sealed class VideoSource
     public int Height { get; set; }
     public double FramesPerSecond { get; set; }
     public string Split { get; set; } = "train";
+    public bool SealedHoldout { get; set; }
     public string? ProbeError { get; set; }
 }
 
@@ -65,7 +66,11 @@ internal sealed class TrainingSample
     public string? InstanceMaskPath { get; set; }
     public string? PropMaskPath { get; set; }
     public string? RvmPersonMaskPath { get; set; }
+    public string? RvmAlphaPath { get; set; }
     public string? DesiredForegroundPath { get; set; }
+    public string[] PropFamilies { get; set; } = [];
+    public string[] PropRelationships { get; set; } = [];
+    public string? ActiveLearningBucket { get; set; }
     public string? RvmRevision { get; set; }
     public double? RvmThreshold { get; set; }
     public string? DerivationStatus { get; set; }

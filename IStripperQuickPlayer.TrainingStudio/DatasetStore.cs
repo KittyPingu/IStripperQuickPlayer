@@ -12,6 +12,9 @@ internal sealed class DatasetStore
     static readonly HashSet<string> VideoExtensions = new(StringComparer.OrdinalIgnoreCase)
     { ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".wmv", ".ts", ".mts", ".m2ts" };
     internal static readonly long[] CandidateSpacingMs = [10_000, 5_000, 2_000];
+    internal static readonly IReadOnlyDictionary<string, double> ActiveLearningTargets =
+        new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        { ["uncertain"] = .40, ["confident"] = .30, ["underrepresented"] = .20, ["random"] = .10 };
     static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     { WriteIndented = true };
     readonly object gate = new();
@@ -123,7 +126,8 @@ internal sealed class DatasetStore
                     value.FramePath is not null && File.Exists(Resolve(value.FramePath)) &&
                     SampleIsInActiveFolder(value) && SampleMeetsResolution(value, minimumResolution))
                 .ToList();
-            if (queued.Count > 0) return queued[random.Next(queued.Count)];
+            if (queued.Count > 0) return SelectActiveLearningCandidate(queued,
+                Dataset.Samples.Where(value => value.Decision != "draft")) ?? queued[random.Next(queued.Count)];
             List<VideoSource> eligible = Dataset.Sources.Where(value => value.ProbeError == null &&
                 value.DurationMs > 60_000 &&
                 (minimumResolution <= 0 || Math.Min(value.Width, value.Height) >= minimumResolution) &&
@@ -136,13 +140,36 @@ internal sealed class DatasetStore
                     if (!TryCandidateTimestamp(source, spacingMs, out long timestamp)) continue;
                     TrainingSample sample = new()
                     {
-                        SourceId = source.Id, TimestampMs = timestamp, Split = source.Split
+                        SourceId = source.Id, TimestampMs = timestamp, Split = source.Split,
+                        ActiveLearningBucket = "random"
                     };
                     Dataset.Samples.Add(sample); SaveSampleLocked(sample); return sample;
                 }
             }
             return null;
         }
+    }
+
+    internal static TrainingSample? SelectActiveLearningCandidate(IEnumerable<TrainingSample> candidates,
+        IEnumerable<TrainingSample> reviewed)
+    {
+        TrainingSample[] available = candidates.ToArray();
+        if (available.Length == 0) return null;
+        TrainingSample[] recent = reviewed.Where(value => value.ActiveLearningBucket != null)
+            .OrderByDescending(value => value.ReviewedUtc ?? value.PresentedUtc).Take(100).ToArray();
+        Dictionary<string, int> counts = ActiveLearningTargets.Keys.ToDictionary(value => value,
+            value => recent.Count(sample => value.Equals(sample.ActiveLearningBucket,
+                StringComparison.OrdinalIgnoreCase)), StringComparer.OrdinalIgnoreCase);
+        double total = counts.Values.Sum();
+        foreach (string bucket in ActiveLearningTargets.Keys.OrderByDescending(value =>
+                     ActiveLearningTargets[value] * (total + 1) - counts[value]))
+        {
+            TrainingSample? selected = available.Where(value => bucket.Equals(
+                    value.ActiveLearningBucket, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(value => value.PresentedUtc).FirstOrDefault();
+            if (selected != null) return selected;
+        }
+        return available.OrderBy(value => value.PresentedUtc).First();
     }
 
     bool TryCandidateTimestamp(VideoSource source, long spacingMs, out long timestamp)
@@ -440,6 +467,7 @@ internal sealed class DatasetStore
         string? framePath = sample.FramePath, annotationPath = sample.AnnotationPath;
         string? editableMaskPath = sample.EditableMaskPath, instanceMaskPath = sample.InstanceMaskPath;
         string? propMaskPath = sample.PropMaskPath, personMaskPath = sample.RvmPersonMaskPath;
+        string? alphaPath = sample.RvmAlphaPath;
         string? desiredPath = sample.DesiredForegroundPath, derivationStatus = sample.DerivationStatus;
         string? derivationError = sample.DerivationError, rvmRevision = sample.RvmRevision;
         double? rvmThreshold = sample.RvmThreshold;
@@ -451,6 +479,7 @@ internal sealed class DatasetStore
                 sample.Decision = "rejected"; sample.ObjectCount = 0;
                 sample.FramePath = null; sample.AnnotationPath = null; sample.EditableMaskPath = null;
                 sample.InstanceMaskPath = null; sample.PropMaskPath = null; sample.RvmPersonMaskPath = null;
+                sample.RvmAlphaPath = null;
                 sample.DesiredForegroundPath = null; sample.DerivationStatus = null;
                 sample.DerivationError = null; sample.RvmRevision = null; sample.RvmThreshold = null;
                 sample.ReviewedUtc = DateTime.UtcNow; SaveSampleLocked(sample);
@@ -464,6 +493,7 @@ internal sealed class DatasetStore
                 sample.FramePath = framePath; sample.AnnotationPath = annotationPath;
                 sample.EditableMaskPath = editableMaskPath; sample.InstanceMaskPath = instanceMaskPath;
                 sample.PropMaskPath = propMaskPath; sample.RvmPersonMaskPath = personMaskPath;
+                sample.RvmAlphaPath = alphaPath;
                 sample.DesiredForegroundPath = desiredPath; sample.DerivationStatus = derivationStatus;
                 sample.DerivationError = derivationError; sample.RvmRevision = rvmRevision;
                 sample.RvmThreshold = rvmThreshold; sample.ReviewedUtc = reviewedUtc;
@@ -493,7 +523,7 @@ internal sealed class DatasetStore
             sample.EditableMaskPath = Relative(Path.Combine(draftFolder, "instance-mask.i32.gz"));
             sample.InstanceMaskPath = Relative(Path.Combine(draftFolder, "instance-mask.png"));
             sample.AnnotationPath = Relative(Path.Combine(draftFolder, "annotation.json"));
-            sample.PropMaskPath = null; sample.RvmPersonMaskPath = null;
+            sample.PropMaskPath = null; sample.RvmPersonMaskPath = null; sample.RvmAlphaPath = null;
             sample.DesiredForegroundPath = null; sample.DerivationStatus = "pending";
             sample.DerivationError = null; sample.RvmRevision = null; sample.RvmThreshold = 0;
             SaveSampleLocked(sample);
@@ -501,14 +531,33 @@ internal sealed class DatasetStore
     }
 
     internal void SetDerivation(TrainingSample sample, string status, string? personMask,
-        string? desiredMask, string? error, string? rvmRevision, double rvmThreshold)
+        string? alphaMask, string? desiredMask, string? error, string? rvmRevision,
+        double rvmThreshold)
     {
         lock (gate)
         {
             sample.DerivationStatus = status; sample.RvmPersonMaskPath = personMask;
+            sample.RvmAlphaPath = alphaMask;
             sample.DesiredForegroundPath = desiredMask; sample.DerivationError = error;
             sample.RvmRevision = rvmRevision; sample.RvmThreshold = rvmThreshold;
             SaveSampleLocked(sample);
+        }
+    }
+
+    internal void SetReviewMetadata(TrainingSample sample, IEnumerable<string> families,
+        IEnumerable<string> relationships, bool sealedSource)
+    {
+        lock (gate)
+        {
+            sample.PropFamilies = families.Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+            sample.PropRelationships = relationships.Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+            VideoSource source = Source(sample.SourceId);
+            bool sourceChanged = source.SealedHoldout != sealedSource;
+            source.SealedHoldout = sealedSource;
+            SaveSampleLocked(sample);
+            if (sourceChanged) SaveSourcesLocked();
         }
     }
 

@@ -309,6 +309,10 @@ internal sealed class CustomShowProcessing
     public string? PropSegmenterCheckpointSha256 { get; set; }
     public double? PropSegmenterConfidenceThreshold { get; set; }
     public int? PropSegmenterProximityRadiusAt512 { get; set; }
+    public int? PropSegmenterManifestSchemaVersion { get; set; }
+    public string? PropSegmenterArchitecture { get; set; }
+    public string? PropSegmenterManifestSha256 { get; set; }
+    public string? PropSegmenterPostprocessingContract { get; set; }
     public bool RvmMatAnyoneMaskRefresh { get; set; }
     public bool PropSegmenterEveryFrame { get; set; }
     public bool DebugPropContribution { get; set; }
@@ -333,7 +337,9 @@ internal sealed class CustomShowProcessing
 }
 
 internal sealed record PropSegmenterPackage(string ModelId, string Folder,
-    string CheckpointSha256, double ConfidenceThreshold, int ProximityRadiusAt512)
+    string CheckpointSha256, double ConfidenceThreshold, int ProximityRadiusAt512,
+    int ManifestSchemaVersion, string Architecture, string ManifestSha256,
+    string PostprocessingContract)
 {
     internal static string ModelsRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -376,10 +382,12 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
             if (!File.Exists(manifestPath) || !File.Exists(checkpoint)) return false;
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(manifestPath));
             JsonElement root = document.RootElement;
-            if (root.GetProperty("schemaVersion").GetInt32() != 1 ||
-                root.GetProperty("modelId").GetString() != id ||
-                root.GetProperty("architecture").GetString() !=
-                    "deeplabv3-resnet50-binary-v1") return false;
+            int schemaVersion = root.GetProperty("schemaVersion").GetInt32();
+            string? architecture = root.GetProperty("architecture").GetString();
+            if (root.GetProperty("modelId").GetString() != id ||
+                !((schemaVersion == 1 && architecture == "deeplabv3-resnet50-binary-v1") ||
+                  (schemaVersion == 2 && architecture == "rvm-conditioned-convnext-fpn-v2")))
+                return false;
             string hash = root.GetProperty("checkpointSha256").GetString()!;
             if (hash.Length != 64 || hash.Any(value => !Uri.IsHexDigit(value))) return false;
             if (verifyCheckpoint)
@@ -403,7 +411,25 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
             double threshold = root.GetProperty("confidenceThreshold").GetDouble();
             int radius = root.GetProperty("proximityRadiusAt512").GetInt32();
             if (threshold is < .1 or > .9 || radius is < 1 or > 128) return false;
-            package = new(id, folder, hash.ToLowerInvariant(), threshold, radius); return true;
+            if (schemaVersion == 2)
+            {
+                JsonElement input = root.GetProperty("input");
+                JsonElement runtime = root.GetProperty("runtime");
+                if (input.GetProperty("cropSize").GetInt32() != 768 ||
+                    input.GetProperty("channels").GetArrayLength() != 5 ||
+                    runtime.GetProperty("contract").GetString() !=
+                        "rvm-conditioned-temporal-union-v2" ||
+                    runtime.GetProperty("pixelThreshold").GetDouble() != threshold ||
+                    runtime.GetProperty("temporalWindow").GetInt32() != 3)
+                    return false;
+            }
+            string contract = schemaVersion == 2
+                ? root.GetProperty("runtime").GetProperty("contract").GetString()!
+                : root.GetProperty("postprocessing").GetProperty("contract").GetString()!;
+            string manifestHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                File.ReadAllBytes(manifestPath))).ToLowerInvariant();
+            package = new(id, folder, hash.ToLowerInvariant(), threshold, radius,
+                schemaVersion, architecture!, manifestHash, contract); return true;
         }
         catch { return false; }
     }
@@ -1106,6 +1132,17 @@ internal sealed class CustomShowStore
                 processing.PropSegmenterConfidenceThreshold is < .1 or > .9 ||
                 processing.PropSegmenterProximityRadiusAt512 is < 1 or > 128))
             throw new InvalidDataException("Invalid prop-segmenter processing contract.");
+        bool hasExtendedPropIdentity = processing.PropSegmenterManifestSha256 != null ||
+            processing.PropSegmenterManifestSchemaVersion != null ||
+            processing.PropSegmenterArchitecture != null ||
+            processing.PropSegmenterPostprocessingContract != null;
+        if (hasExtendedPropIdentity && (!hasProp ||
+            processing.PropSegmenterManifestSha256?.Length != 64 ||
+            processing.PropSegmenterManifestSha256.Any(value => !Uri.IsHexDigit(value)) ||
+            processing.PropSegmenterManifestSchemaVersion is not (1 or 2) ||
+            string.IsNullOrWhiteSpace(processing.PropSegmenterArchitecture) ||
+            string.IsNullOrWhiteSpace(processing.PropSegmenterPostprocessingContract)))
+            throw new InvalidDataException("Invalid extended prop-segmenter identity.");
         if (processing.RvmMatAnyoneMaskRefresh &&
             processing.Algorithm != "rvm-matanyone2")
             throw new InvalidDataException(
@@ -1625,6 +1662,10 @@ internal sealed class CustomShowStore
                 PropSegmenterCheckpointSha256 = new string('a', 64),
                 PropSegmenterConfidenceThreshold = .5,
                 PropSegmenterProximityRadiusAt512 = 24,
+                PropSegmenterManifestSchemaVersion = 2,
+                PropSegmenterArchitecture = "rvm-conditioned-convnext-fpn-v2",
+                PropSegmenterManifestSha256 = new string('b', 64),
+                PropSegmenterPostprocessingContract = "rvm-conditioned-temporal-union-v2",
                 RvmMatAnyoneMaskRefresh = true,
                 PropSegmenterEveryFrame = true,
                 DebugPropContribution = true,

@@ -77,6 +77,9 @@
     <Content Include="..\tools\custom-shows\prop_segmenter.py" Link="custom-shows\prop_segmenter.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\custom-shows\prop_segmenter_v2.py" Link="custom-shows\prop_segmenter_v2.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\tools\custom-shows\rvm_vitmatte_worker.py" Link="custom-shows\rvm_vitmatte_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

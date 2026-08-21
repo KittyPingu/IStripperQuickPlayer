@@ -33,6 +33,19 @@ internal static class TrainingStudioVerification
             if (split != "train" || DatasetStore.FrameTimestamp(1_033, 30) != 1_033) return false;
             if (DatasetStore.SplitFor("ffffffff0000000000000000") is not ("train" or "validation" or "test"))
                 return false;
+            TrainingSample[] activeCandidates = DatasetStore.ActiveLearningTargets.Keys.Select(bucket =>
+                new TrainingSample { ActiveLearningBucket = bucket }).ToArray();
+            List<TrainingSample> activeHistory = [];
+            foreach ((string bucket, int count) in new[]
+                { ("uncertain", 40), ("confident", 30), ("underrepresented", 20), ("random", 9) })
+                for (int index = 0; index < count; index++) activeHistory.Add(new TrainingSample
+                    { Decision = "negative", ActiveLearningBucket = bucket, ReviewedUtc = DateTime.UtcNow });
+            if (DatasetStore.SelectActiveLearningCandidate(activeCandidates, activeHistory)?.
+                    ActiveLearningBucket != "random" ||
+                Math.Abs(DatasetStore.ActiveLearningTargets["uncertain"] - .4) > .0001 ||
+                Math.Abs(DatasetStore.ActiveLearningTargets["confident"] - .3) > .0001 ||
+                Math.Abs(DatasetStore.ActiveLearningTargets["underrepresented"] - .2) > .0001 ||
+                Math.Abs(DatasetStore.ActiveLearningTargets["random"] - .1) > .0001) return false;
             if (AnnotationCanvas.AdjustBrushSize(32, 120) != 36 ||
                 AnnotationCanvas.AdjustBrushSize(2, -120) != 2 ||
                 AnnotationCanvas.AdjustBrushSize(200, 120) != 200 ||
@@ -109,9 +122,10 @@ internal static class TrainingStudioVerification
             byte[] rejectedRecordHash = Hash(store.RecordPath(first.Id));
             byte[] negativeRecordHash = Hash(store.RecordPath(negative.Id));
             byte[] positiveRecordHash = Hash(store.RecordPath(positive.Id));
-            store.SetDerivation(positive, "ready", "person.png", "desired.png", null,
-                "verification-rvm", .4);
+            store.SetDerivation(positive, "ready", "person.png", "alpha.png", "desired.png",
+                null, "verification-rvm", .4);
             store.MarkFeedbackPriority(positive);
+            if (positive.RvmAlphaPath != "alpha.png") return false;
             if (!rejectedRecordHash.SequenceEqual(Hash(store.RecordPath(first.Id))) ||
                 !negativeRecordHash.SequenceEqual(Hash(store.RecordPath(negative.Id))) ||
                 positiveRecordHash.SequenceEqual(Hash(store.RecordPath(positive.Id)))) return false;
@@ -132,6 +146,11 @@ internal static class TrainingStudioVerification
             olderHistory.FramePath = CreateDraftFrame(historyStore, olderHistory);
             historyStore.Dataset.Samples.Add(olderHistory); historyStore.SaveSample(olderHistory);
             historyStore.Accept(olderHistory, [0, 7, 7, 0], [prop], "verification");
+            historyStore.SetReviewMetadata(olderHistory, ["head-worn", "other"],
+                ["worn"], true);
+            if (!historySource.SealedHoldout ||
+                !olderHistory.PropFamilies.SequenceEqual(["head-worn", "other"]) ||
+                !olderHistory.PropRelationships.SequenceEqual(["worn"])) return false;
             olderHistory.ReviewedUtc = DateTime.UtcNow.AddMinutes(-2); historyStore.SaveSample(olderHistory);
             TrainingSample newerHistory = new() { SourceId = historySource.Id, Split = "train",
                 TimestampMs = 50_000, Width = 2, Height = 2 };

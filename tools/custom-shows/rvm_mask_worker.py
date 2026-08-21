@@ -250,8 +250,8 @@ def main():
                     .unsqueeze(0).to(device=device, dtype=torch.float32).div_(255)
                 _, alpha, *rec = model(tensor, *rec,
                     downsample_ratio=min(1.0, 512 / max(review_width, review_height)))
-                masks = (alpha[0, :, 0].float().cpu().numpy() >=
-                         args.alpha_threshold).astype(np.uint8) * 255
+                rvm_alphas = alpha[0, :, 0].float().cpu().numpy()
+                masks = (rvm_alphas >= args.alpha_threshold).astype(np.uint8) * 255
                 prop_stats = []
                 prop_debug = []
                 if prop is not None:
@@ -267,7 +267,7 @@ def main():
                         predicted, _ = predict_prop_mask(
                             prop_torch, prop_model, prop_device, pixels,
                             prop_manifest.get("confidenceThreshold", .5),
-                            prop_manifest.get("inputSize", 512))
+                            prop_manifest.get("inputSize", 512), rvm_alphas[offset])
                         person = masks[offset] >= 128
                         combined, components, _ = augment_rvm_mask(
                             predicted, person,

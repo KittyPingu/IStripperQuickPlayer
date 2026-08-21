@@ -26,7 +26,8 @@ internal sealed class RvmPreviewClient : IAsyncDisposable
     }
 
     internal async Task<string> GenerateAsync(string source, long frameMs, double threshold,
-        string destination, CancellationToken token)
+        string destination, CancellationToken token, string? alphaDestination = null,
+        int outputWidth = 0, int outputHeight = 0)
     {
         await gate.WaitAsync(token);
         try
@@ -37,7 +38,8 @@ internal sealed class RvmPreviewClient : IAsyncDisposable
                 try
                 {
                     await process!.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new {
-                        source, mask = destination, frameMs, alphaThreshold = threshold }));
+                        source, mask = destination, alpha = alphaDestination, frameMs,
+                        alphaThreshold = threshold, outputWidth, outputHeight }));
                     JsonElement response = await ReadAsync(token);
                     if (response.GetProperty("status").GetString() != "mask")
                         throw new InvalidOperationException(Message(response));

@@ -1274,7 +1274,13 @@ internal static class CustomShowJobRunner
                 options.PropSegmenterCheckpointSha256,
                 StringComparison.OrdinalIgnoreCase) ||
             package.ConfidenceThreshold != options.PropSegmenterConfidenceThreshold ||
-            package.ProximityRadiusAt512 != options.PropSegmenterProximityRadiusAt512)
+            package.ProximityRadiusAt512 != options.PropSegmenterProximityRadiusAt512 ||
+            options.PropSegmenterManifestSha256 != null &&
+                (!package.ManifestSha256.Equals(options.PropSegmenterManifestSha256,
+                    StringComparison.OrdinalIgnoreCase) ||
+                 package.ManifestSchemaVersion != options.PropSegmenterManifestSchemaVersion ||
+                 package.Architecture != options.PropSegmenterArchitecture ||
+                 package.PostprocessingContract != options.PropSegmenterPostprocessingContract))
             throw new CustomShowQueueAttentionException(
                 $"The queued prop-segmenter model '{id}' is missing, changed, or incompatible. Reinstall that exact model or edit the job.");
         return package.Folder;

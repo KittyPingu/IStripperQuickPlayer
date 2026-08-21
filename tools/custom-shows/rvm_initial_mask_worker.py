@@ -93,8 +93,8 @@ def main():
         with torch.inference_mode(), torch.autocast(device_type=device.type,
                 dtype=torch.float16, enabled=fp16):
             _, alpha, *_ = model(tensor, *([None] * 4), downsample_ratio=1)
-        mask = clean_rvm_mask(alpha[0, 0].float().cpu().numpy(),
-                              threshold=threshold)
+        rvm_alpha = alpha[0, 0].float().cpu().numpy()
+        mask = clean_rvm_mask(rvm_alpha, threshold=threshold)
         if not mask.any():
             raise RuntimeError(
                 f"RVM could not find a usable person mask for scene {index + 1}/{count}")
@@ -102,7 +102,7 @@ def main():
             prop_torch, prop_model, prop_device, prop_manifest = prop
             predicted, _ = predict_prop_mask(prop_torch, prop_model, prop_device,
                 frame, prop_manifest.get("confidenceThreshold", .5),
-                prop_manifest.get("inputSize", 512))
+                prop_manifest.get("inputSize", 512), rvm_alpha)
             combined, components, radius = augment_rvm_mask(predicted, mask >= 128,
                 prop_manifest.get("proximityRadiusAt512", 24))
             mask = combined.astype(np.uint8) * 255

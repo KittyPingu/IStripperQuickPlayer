@@ -22,6 +22,7 @@ internal sealed class DatasetHistoryForm : Form
     readonly CheckBox showMask = new() { Text = "Show mask overlay", Checked = true, AutoSize = true,
         Padding = new Padding(8, 7, 0, 0) };
     readonly Button delete = new() { Text = "Delete from training data", AutoSize = true, Enabled = false };
+    readonly Button metadata = new() { Text = "Tags / sealed holdout", AutoSize = true, Enabled = false };
 
     internal DatasetHistoryForm(DatasetStore store, Func<TrainingSample, Task> deleteSample)
     {
@@ -45,13 +46,14 @@ internal sealed class DatasetHistoryForm : Form
         Button close = new() { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         FlowLayoutPanel actions = new() { Dock = DockStyle.Bottom, Height = 52,
             Padding = new Padding(8), FlowDirection = FlowDirection.RightToLeft };
-        actions.Controls.AddRange([close, delete]);
+        actions.Controls.AddRange([close, delete, metadata]);
         Controls.Add(split); Controls.Add(actions); CancelButton = close;
 
         samples.SelectedIndexChanged += (_, _) => ShowSelected();
         filter.SelectedIndexChanged += (_, _) => Populate();
         showMask.CheckedChanged += (_, _) => ShowSelected();
         delete.Click += async (_, _) => await DeleteSelectedAsync();
+        metadata.Click += (_, _) => EditMetadata();
         split.SizeChanged += (_, _) => SizePanels(split);
         Populate();
     }
@@ -92,21 +94,35 @@ internal sealed class DatasetHistoryForm : Form
     void ShowSelected()
     {
         preview.Image?.Dispose(); preview.Image = null;
-        TrainingSample? sample = SelectedSample(); delete.Enabled = sample != null;
+        TrainingSample? sample = SelectedSample(); delete.Enabled = metadata.Enabled = sample != null;
         if (sample?.FramePath == null)
         {
             details.Text = samples.Items.Count == 0 ? "No accepted samples match this filter." : "";
             return;
         }
         VideoSource source = store.Source(sample.SourceId);
+        string tags = string.Join(", ", sample.PropFamilies.Concat(sample.PropRelationships));
         details.Text = $"{DisplayDecision(sample.Decision)} · {Path.GetFileName(source.Path)} · " +
             $"{TimeSpan.FromMilliseconds(sample.TimestampMs):hh\\:mm\\:ss\\.fff} · {sample.Width}×{sample.Height} · " +
-            $"{sample.Split} · reviewed {(sample.ReviewedUtc ?? sample.PresentedUtc).ToLocalTime():g}";
+            $"{sample.Split}{(source.SealedHoldout ? " · SEALED V2 HOLDOUT" : "")} · " +
+            $"reviewed {(sample.ReviewedUtc ?? sample.PresentedUtc).ToLocalTime():g}" +
+            (tags.Length > 0 ? $" · {tags}" : "");
         string framePath = store.Resolve(sample.FramePath);
         if (!File.Exists(framePath)) { details.Text += " · frame missing"; return; }
         if (showMask.Checked && sample.PropMaskPath != null && File.Exists(store.Resolve(sample.PropMaskPath)))
             preview.Image = CreateMaskOverlay(framePath, store.Resolve(sample.PropMaskPath));
         else preview.Image = TrainingStudioForm.LoadUnlockedImage(framePath);
+    }
+
+    void EditMetadata()
+    {
+        if (SelectedSample() is not TrainingSample sample) return;
+        VideoSource source = store.Source(sample.SourceId);
+        using ReviewMetadataForm dialog = new(sample, source.SealedHoldout);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        store.SetReviewMetadata(sample, dialog.Families, dialog.Relationships,
+            dialog.SealedSource);
+        Populate(sample.Id);
     }
 
     async Task DeleteSelectedAsync()
@@ -199,5 +215,52 @@ internal sealed class DatasetHistoryForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         preview.Image?.Dispose(); base.OnFormClosed(e);
+    }
+}
+
+internal sealed class ReviewMetadataForm : Form
+{
+    static readonly string[] FamilyValues = ["toy/insertable", "head-worn", "jewellery/collar",
+        "rope/chain/restraint", "tail/plug", "other"];
+    static readonly string[] RelationshipValues = ["held", "worn", "inserted", "attached",
+        "entangled"];
+    readonly CheckedListBox families = new() { Dock = DockStyle.Fill, CheckOnClick = true };
+    readonly CheckedListBox relationships = new() { Dock = DockStyle.Fill, CheckOnClick = true };
+    readonly CheckBox sealedSource = new() { Dock = DockStyle.Top, Height = 42,
+        Text = "Seal this entire source video for the v2 holdout", Padding = new Padding(8) };
+
+    internal string[] Families => families.CheckedItems.Cast<string>().ToArray();
+    internal string[] Relationships => relationships.CheckedItems.Cast<string>().ToArray();
+    internal bool SealedSource => sealedSource.Checked;
+
+    internal ReviewMetadataForm(TrainingSample sample, bool sealedHoldout)
+    {
+        Text = "Prop metadata and v2 holdout"; Width = 560; Height = 440;
+        StartPosition = FormStartPosition.CenterParent; MinimumSize = new Size(480, 360);
+        families.Items.AddRange(FamilyValues); relationships.Items.AddRange(RelationshipValues);
+        CheckExisting(families, sample.PropFamilies); CheckExisting(relationships, sample.PropRelationships);
+        sealedSource.Checked = sealedHoldout;
+        GroupBox familyGroup = new() { Text = "Prop family (select all that apply)", Dock = DockStyle.Fill };
+        familyGroup.Controls.Add(families);
+        GroupBox relationshipGroup = new() { Text = "Performer relationship", Dock = DockStyle.Fill };
+        relationshipGroup.Controls.Add(relationships);
+        TableLayoutPanel lists = new() { Dock = DockStyle.Fill, ColumnCount = 2 };
+        lists.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        lists.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        lists.Controls.Add(familyGroup, 0, 0); lists.Controls.Add(relationshipGroup, 1, 0);
+        Button save = new() { Text = "Save", DialogResult = DialogResult.OK, AutoSize = true };
+        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
+        FlowLayoutPanel actions = new() { Dock = DockStyle.Bottom, Height = 52,
+            Padding = new Padding(8), FlowDirection = FlowDirection.RightToLeft };
+        actions.Controls.AddRange([cancel, save]);
+        Controls.Add(lists); Controls.Add(sealedSource); Controls.Add(actions);
+        AcceptButton = save; CancelButton = cancel;
+    }
+
+    static void CheckExisting(CheckedListBox list, IEnumerable<string> selected)
+    {
+        HashSet<string> values = selected.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        for (int index = 0; index < list.Items.Count; index++)
+            if (values.Contains((string)list.Items[index])) list.SetItemChecked(index, true);
     }
 }

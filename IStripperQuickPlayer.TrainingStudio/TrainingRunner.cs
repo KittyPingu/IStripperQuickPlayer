@@ -5,21 +5,21 @@ namespace IStripperQuickPlayer.TrainingStudio;
 
 internal sealed class TrainingRunner
 {
-    const int TrainingRevision = 5;
+    const int TrainingRevision = 6;
     Process? process;
     internal event Action<string>? Message;
     internal string? PackagePath { get; private set; }
     internal string? ReviewPath { get; private set; }
 
     internal async Task<int> RunAsync(string datasetRoot, bool resume, int minimumResolution,
-        int inputSize, string negativeSelection, CancellationToken token)
+        CancellationToken token)
     {
         string runs = Path.Combine(datasetRoot, "runs");
         string? resumable = resume && Directory.Exists(runs)
             ? Directory.EnumerateDirectories(runs)
                 .Where(directory => Directory.EnumerateFiles(directory, "last.pth",
                     SearchOption.AllDirectories).Any() &&
-                    ConfigurationMatches(directory, minimumResolution, inputSize, negativeSelection))
+                    ConfigurationMatches(directory, minimumResolution))
                 .OrderByDescending(Directory.GetLastWriteTimeUtc)
                 .FirstOrDefault()
             : null;
@@ -29,12 +29,13 @@ internal sealed class TrainingRunner
         Directory.CreateDirectory(output);
         File.WriteAllText(Path.Combine(output, "training-config.json"), JsonSerializer.Serialize(new
         {
-            trainingRevision = TrainingRevision, minimumResolution, inputSize, negativeSelection
+            trainingRevision = TrainingRevision, architecture = "rvm-conditioned-convnext-fpn-v2",
+            minimumResolution, inputSize = 768, seed = 20260821
         }, new JsonSerializerOptions { WriteIndented = true }));
         string eventsPath = Path.Combine(output, "events.ndjson");
         string errorsPath = Path.Combine(output, "training.stderr.log");
         Message?.Invoke($"Writing training logs to {output}");
-        string worker = Path.Combine(AppContext.BaseDirectory, "training", "prop_segmenter_train.py");
+        string worker = Path.Combine(AppContext.BaseDirectory, "training", "prop_segmenter_train_v2.py");
         ProcessStartInfo start = new(Sam2Client.RuntimePython())
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
@@ -45,9 +46,7 @@ internal sealed class TrainingRunner
         start.ArgumentList.Add("--minimum-resolution");
         start.ArgumentList.Add(minimumResolution.ToString(System.Globalization.CultureInfo.InvariantCulture));
         start.ArgumentList.Add("--input-size");
-        start.ArgumentList.Add(inputSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        start.ArgumentList.Add("--negative-selection");
-        start.ArgumentList.Add(negativeSelection);
+        start.ArgumentList.Add("768");
         if (resumable != null) start.ArgumentList.Add("--resume");
         process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the training worker.");
         using CancellationTokenRegistration cancellationRegistration =
@@ -102,24 +101,19 @@ internal sealed class TrainingRunner
         return process.ExitCode;
     }
 
-    static bool ConfigurationMatches(string run, int minimumResolution, int inputSize,
-        string negativeSelection)
+    static bool ConfigurationMatches(string run, int minimumResolution)
     {
         string path = Path.Combine(run, "training-config.json");
-        if (!File.Exists(path)) return minimumResolution == 0 && inputSize == 512 &&
-            negativeSelection == "compare";
+        if (!File.Exists(path)) return false;
         try
         {
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
             JsonElement root = document.RootElement;
             int revision = root.TryGetProperty("trainingRevision", out JsonElement revisionValue)
                 ? revisionValue.GetInt32() : 1;
-            int savedSize = root.TryGetProperty("inputSize", out JsonElement size) ? size.GetInt32() : 512;
-            string savedNegatives = root.TryGetProperty("negativeSelection", out JsonElement negatives)
-                ? negatives.GetString() ?? "compare" : "compare";
             return revision == TrainingRevision &&
                 root.GetProperty("minimumResolution").GetInt32() == minimumResolution &&
-                savedSize == inputSize && savedNegatives == negativeSelection;
+                root.GetProperty("inputSize").GetInt32() == 768;
         }
         catch { return false; }
     }
@@ -151,8 +145,16 @@ internal sealed class TrainingRunner
     {
         string manifestPath = Path.Combine(packagePath, "manifest.json");
         using JsonDocument manifest = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        int schemaVersion = manifest.RootElement.GetProperty("schemaVersion").GetInt32();
+        string? architecture = manifest.RootElement.GetProperty("architecture").GetString();
+        if (!((schemaVersion == 1 && architecture == "deeplabv3-resnet50-binary-v1") ||
+              (schemaVersion == 2 && architecture == "rvm-conditioned-convnext-fpn-v2")))
+            throw new InvalidDataException("The package schema or architecture is unsupported.");
         string modelId = manifest.RootElement.GetProperty("modelId").GetString()
             ?? throw new InvalidDataException("The package model ID is missing.");
+        if (modelId.Length is 0 or > 120 || modelId.Any(character =>
+                !char.IsAsciiLetterOrDigit(character) && character is not ('-' or '_')))
+            throw new InvalidDataException("The package model ID is unsafe.");
         string expected = manifest.RootElement.GetProperty("checkpointSha256").GetString()
             ?? throw new InvalidDataException("The package checkpoint hash is missing.");
         string checkpoint = Path.Combine(packagePath, "model.pth");
