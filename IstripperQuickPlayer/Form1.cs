@@ -567,6 +567,9 @@ namespace IStripperQuickPlayer
             System.Diagnostics.Debug.Assert(
                 AlphaCheckpointClipKey(@"A/B.VGHD") ==
                 AlphaCheckpointClipKey(@"a\b.vghd"));
+            System.Diagnostics.Debug.Assert(
+                AlphaCheckpointCacheBytes(2_048) == 2_147_483_648UL &&
+                AlphaCheckpointCacheBytes(4_096) == 4_294_967_296UL);
             System.Diagnostics.Debug.Assert(TryParseHotKey(
                 "Control+Alt+Left", out _, out _));
             System.Diagnostics.Debug.Assert(TryParseHotKey(
@@ -3329,9 +3332,8 @@ namespace IStripperQuickPlayer
                     unchecked((ulong)decoderThreads));
                 playbackFastDecodeEnabled = fastDecodeResult >= 0;
 
-                ulong cacheLimitParameter = unchecked((ulong)
-                    Properties.Settings.Default.AlphaCheckpointCacheSizeMB *
-                    1024 * 1024);
+                ulong cacheLimitParameter = AlphaCheckpointCacheBytes(
+                    Properties.Settings.Default.AlphaCheckpointCacheSizeMB);
                 int cacheLimitResult = playbackBridgeClient.Call(
                     "IStripperSetAlphaCheckpointCacheLimitBytes",
                     cacheLimitParameter);
@@ -4594,6 +4596,9 @@ namespace IStripperQuickPlayer
             }
             return hash == 0 ? 1 : hash;
         }
+
+        private static ulong AlphaCheckpointCacheBytes(int megabytes) =>
+            checked((ulong)megabytes * 1024UL * 1024UL);
 
         private bool PlaybackReachedEnd(int elapsed, int total)
         {
@@ -7109,7 +7114,7 @@ namespace IStripperQuickPlayer
                 {
                     CallPlaybackApi(
                         "IStripperSetAlphaCheckpointCacheLimitBytes",
-                        unchecked((ulong)size * 1024 * 1024));
+                        AlphaCheckpointCacheBytes(size));
                 }
                 catch { }
             });
