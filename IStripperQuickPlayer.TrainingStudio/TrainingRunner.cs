@@ -150,6 +150,19 @@ internal sealed class TrainingRunner
         if (!((schemaVersion == 1 && architecture == "deeplabv3-resnet50-binary-v1") ||
               (schemaVersion == 2 && architecture == "rvm-conditioned-convnext-fpn-v2")))
             throw new InvalidDataException("The package schema or architecture is unsupported.");
+        if (schemaVersion == 2)
+        {
+            JsonElement input = manifest.RootElement.GetProperty("input");
+            JsonElement runtime = manifest.RootElement.GetProperty("runtime");
+            string[] channels = input.GetProperty("channels").EnumerateArray()
+                .Select(value => value.GetString() ?? "").ToArray();
+            if (input.GetProperty("cropSize").GetInt32() != 768 ||
+                !channels.SequenceEqual(new[] { "red", "green", "blue", "rvmAlpha",
+                    "rvmSignedDistance" }) ||
+                runtime.GetProperty("contract").GetString() !=
+                    "rvm-conditioned-temporal-union-v2")
+                throw new InvalidDataException("The v2 input or postprocessing contract is invalid.");
+        }
         string modelId = manifest.RootElement.GetProperty("modelId").GetString()
             ?? throw new InvalidDataException("The package model ID is missing.");
         if (modelId.Length is 0 or > 120 || modelId.Any(character =>

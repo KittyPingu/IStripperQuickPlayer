@@ -415,12 +415,18 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
             {
                 JsonElement input = root.GetProperty("input");
                 JsonElement runtime = root.GetProperty("runtime");
+                string[] channels = input.GetProperty("channels").EnumerateArray()
+                    .Select(value => value.GetString() ?? "").ToArray();
                 if (input.GetProperty("cropSize").GetInt32() != 768 ||
-                    input.GetProperty("channels").GetArrayLength() != 5 ||
+                    !channels.SequenceEqual(new[] { "red", "green", "blue", "rvmAlpha",
+                        "rvmSignedDistance" }) ||
                     runtime.GetProperty("contract").GetString() !=
                         "rvm-conditioned-temporal-union-v2" ||
                     runtime.GetProperty("pixelThreshold").GetDouble() != threshold ||
-                    runtime.GetProperty("temporalWindow").GetInt32() != 3)
+                    runtime.GetProperty("presenceThreshold").GetDouble() is < .1 or > .9 ||
+                    runtime.GetProperty("temporalWindow").GetInt32() != 3 ||
+                    runtime.GetProperty("temporalRequired").GetInt32() != 2 ||
+                    runtime.GetProperty("discoveryIntervalSeconds").GetDouble() != 2)
                     return false;
             }
             string contract = schemaVersion == 2
@@ -1147,6 +1153,10 @@ internal sealed class CustomShowStore
             processing.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
             throw new InvalidDataException(
                 "RVM-conditioned v2 augmentation does not alter RVM-ViTMatte temporal masks.");
+        if (processing.PropSegmenterManifestSchemaVersion == 2 &&
+            processing.PropSegmenterEveryFrame)
+            throw new InvalidDataException(
+                "RVM-conditioned v2 uses its pinned sparse discovery interval, not per-frame discovery.");
         if (processing.RvmMatAnyoneMaskRefresh &&
             processing.Algorithm != "rvm-matanyone2")
             throw new InvalidDataException(
@@ -1671,8 +1681,8 @@ internal sealed class CustomShowStore
                 PropSegmenterManifestSha256 = new string('b', 64),
                 PropSegmenterPostprocessingContract = "rvm-conditioned-temporal-union-v2",
                 RvmMatAnyoneMaskRefresh = true,
-                PropSegmenterEveryFrame = true,
-                DebugPropContribution = true,
+                PropSegmenterEveryFrame = false,
+                DebugPropContribution = false,
                 RvmMatAnyoneRefreshStrengthPercent = 75,
                 MatAnyoneMaxMemoryFrames = 10,
                 MatAnyoneUseLongTermMemory = true,
@@ -1707,8 +1717,8 @@ internal sealed class CustomShowStore
                 roundTrip.Processing.MattingDetailPx != 512 ||
                 roundTrip.Processing.RvmInitializerAlphaThresholdPercent != 40 ||
                 !roundTrip.Processing.RvmMatAnyoneMaskRefresh ||
-                !roundTrip.Processing.PropSegmenterEveryFrame ||
-                !roundTrip.Processing.DebugPropContribution ||
+                roundTrip.Processing.PropSegmenterEveryFrame ||
+                roundTrip.Processing.DebugPropContribution ||
                 roundTrip.Processing.RvmMatAnyoneRefreshStrengthPercent != 75 ||
                 roundTrip.Processing.MatAnyoneMaxMemoryFrames != 10 ||
                 !roundTrip.Processing.MatAnyoneUseLongTermMemory ||

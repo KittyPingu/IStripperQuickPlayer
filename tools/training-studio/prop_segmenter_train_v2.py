@@ -889,6 +889,8 @@ def self_test():
         loaded = load_manifest(root); assert len(split_samples(loaded, "train")) == 1
         rgb, target, loaded_alpha = load_arrays(root, sample)
         assert rgb.shape == (64, 96, 3) and target.sum() == 150 and loaded_alpha.max() == 1
+        cropped = crop_square(rgb, target, loaded_alpha, (0, 0), 96, 64, False)
+        assert cropped[0].shape == (64, 64, 3) and cropped[1].shape == (64, 64)
         inputs = conditioned_array(rgb, loaded_alpha); assert inputs.shape == (5, 64, 96)
         model = build_model(torch, pretrained=False)
         assert model.features[0][0].in_channels == 5
@@ -898,9 +900,17 @@ def self_test():
         target_tensor = torch.from_numpy(target[None, None].astype("float32"))
         loss = training_loss(torch, output, target_tensor, target_tensor,
                              torch.ones(1)); assert torch.isfinite(loss)
+        empty = torch.zeros_like(target_tensor)
+        negative_loss = training_loss(torch, output, empty, empty,
+                                      torch.zeros(1)); assert torch.isfinite(negative_loss)
         synthetic = [("p", target.astype(np.float32), target, loaded_alpha, .9),
                      ("n", np.zeros_like(target, np.float32), np.zeros_like(target), loaded_alpha, .1)]
-        selected, _ = calibrate(synthetic); assert "exteriorF2" in selected
+        selected, _ = calibrate(synthetic)
+        assert "exteriorF2" in selected and "constraintsMet" in selected
+        hard_path = root / "hard.json"
+        save_hard_negative_set(hard_path, [(sample, "near-negative")])
+        restored = load_hard_negative_set(hard_path, [sample])
+        assert restored and restored[0][0]["id"] == sample["id"]
         confirmed = __import__("prop_segmenter_v2").confirm_temporal_masks(
             [target, target, np.zeros_like(target)])
         assert confirmed.sum() == target.sum()

@@ -88,7 +88,7 @@ def predict_mask(torch, model, device, image, threshold=.5, size=INPUT_SIZE,
     if manifest.get("architecture") == ARCHITECTURE_V2:
         if rvm_alpha is None:
             raise RuntimeError("The v2 prop segmenter requires an RVM alpha mask")
-        from prop_segmenter_v2 import filter_prediction, predict
+        from prop_segmenter_v2 import association_band, filter_prediction, predict
         probability, presence = predict(torch, model, device, image, rvm_alpha,
             int(manifest.get("input", {}).get("cropSize", size)),
             float(manifest.get("input", {}).get("rvmThreshold", .4)))
@@ -98,8 +98,14 @@ def predict_mask(torch, model, device, image, threshold=.5, size=INPUT_SIZE,
             float(runtime.get("presenceThreshold", .5)),
             int(runtime.get("maxComponentDistanceAt768", 96)),
             int(manifest.get("input", {}).get("cropSize", 768)))
+        selected = probability[retained]
+        contact, _ = association_band(rvm_alpha, 2,
+            int(manifest.get("input", {}).get("cropSize", 768)))
+        contacting = probability[retained & contact]
         model._prop_last_details = {"presence": presence, "components": components,
-                                    "proximityRadius": radius}
+            "proximityRadius": radius,
+            "maximumRetainedProbability": float(selected.max(initial=0)),
+            "maximumContactProbability": float(contacting.max(initial=0))}
         return retained, probability
     import numpy as np
     from PIL import Image

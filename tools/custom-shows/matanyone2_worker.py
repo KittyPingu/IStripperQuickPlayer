@@ -877,6 +877,8 @@ def _process_once(args, compile_enabled):
         prop_missing_streak = 0
         last_rvm_refresh = -RVM_REFRESH_COOLDOWN
         last_prop_refresh = -PROP_REFRESH_COOLDOWN
+        prop_recent_candidates = deque(maxlen=3)
+        last_prop_evaluation = -2
 
         def upload(slot):
             if device.type == "cuda":
@@ -956,6 +958,9 @@ def _process_once(args, compile_enabled):
             profiler.add("prop_component_filter_upload",
                          time.perf_counter() - post_started)
             profiler.add("prop_refresh", time.perf_counter() - prop_started)
+            details = getattr(prop_model, "_prop_last_details", {})
+            high_threshold = min(.95, float(prop_manifest.get(
+                "confidenceThreshold", .5)) + .20)
             return retained, {
                 "propModelId": prop_manifest["modelId"],
                 "propComponents": len(components),
@@ -963,11 +968,14 @@ def _process_once(args, compile_enabled):
                     value["retained"] for value in components),
                 "propAddedPixels": added_pixels,
                 "propProximityRadius": radius,
+                "propHighConfidence": float(details.get(
+                    "maximumContactProbability", 0)) >= high_threshold,
             }
 
         def step(slot, processor, first_frame=False, allow_rvm_refresh=False):
             nonlocal rvm_missing_streak, prop_missing_streak
             nonlocal last_rvm_refresh, last_prop_refresh
+            nonlocal last_prop_evaluation
             frame_tensor = upload(slot)
             try:
                 if device.type == "cuda":
@@ -1003,8 +1011,10 @@ def _process_once(args, compile_enabled):
                             seconds = float(prop_refresh[3].get("runtime", {}).get(
                                 "discoveryIntervalSeconds", 2.0))
                             sparse_interval = max(1, round(fps * seconds))
+                        sparse_phase = slot.index % sparse_interval if sparse_interval else None
                         prop_evaluated = (sparse_interval is None and args.prop_every_frame) or (
-                            sparse_interval is not None and slot.index % sparse_interval == 0)
+                            sparse_interval is not None and sparse_phase in
+                                (sparse_interval - 1, 0, 1))
                         if prop_evaluated:
                             prop_foreground, prop_values = predict_prop_refresh(
                                 frame_tensor, rvm_alpha)
@@ -1012,9 +1022,19 @@ def _process_once(args, compile_enabled):
                                 prop_missing_pixels = int((prop_foreground &
                                     (ma_alpha <= .20)).sum().item())
                                 prop_pixels = int(prop_foreground.sum().item())
-                                if rvm_refresh_candidate(
+                                prop_candidate = rvm_refresh_candidate(
                                         prop_missing_pixels, prop_pixels,
-                                        prop_foreground.numel(), 16):
+                                        prop_foreground.numel(), 16)
+                                prop_high_confidence = bool(prop_values.get(
+                                    "propHighConfidence")) and prop_candidate
+                                if sparse_interval is not None:
+                                    if slot.index != last_prop_evaluation + 1:
+                                        prop_recent_candidates.clear()
+                                    prop_recent_candidates.append(prop_candidate)
+                                    last_prop_evaluation = slot.index
+                                    prop_missing_streak = 2 if prop_high_confidence or \
+                                        prop_candidate and sum(prop_recent_candidates) >= 2 else 0
+                                elif prop_candidate:
                                     prop_missing_streak += 1
                                 else:
                                     prop_missing_streak = 0
@@ -1023,7 +1043,8 @@ def _process_once(args, compile_enabled):
                             RVM_REFRESH_PERSISTENCE, RVM_REFRESH_COOLDOWN)
                         prop_trigger = prop_evaluated and refresh_due(
                             prop_missing_streak, slot.index, last_prop_refresh,
-                            PROP_REFRESH_PERSISTENCE, PROP_REFRESH_COOLDOWN)
+                            2 if sparse_interval is not None else PROP_REFRESH_PERSISTENCE,
+                            PROP_REFRESH_COOLDOWN)
                         if (args.debug_prop_contribution and
                                 prop_foreground is not None):
                             slot.prop_detected = prop_foreground.to(
@@ -1070,6 +1091,7 @@ def _process_once(args, compile_enabled):
                             if injected_prop is not None and prop_pixels:
                                 last_prop_refresh = slot.index
                                 prop_missing_streak = 0
+                                prop_recent_candidates.clear()
                 if device.type == "cuda":
                     end_event.record()
                     slot.gpu_timings.append((
@@ -1420,6 +1442,7 @@ def _process_once(args, compile_enabled):
             def replay_forward_to(current_index, correction_index):
                 nonlocal rvm_refresh_state, rvm_missing_streak
                 nonlocal prop_missing_streak, last_rvm_refresh, last_prop_refresh
+                nonlocal last_prop_evaluation
                 checkpoint_index = max((index for index in checkpoint_files
                                         if index < current_index), default=None)
                 replay_start = selected_index if checkpoint_index is None else \
@@ -1438,6 +1461,8 @@ def _process_once(args, compile_enabled):
                 prop_missing_streak = 0
                 last_rvm_refresh = -RVM_REFRESH_COOLDOWN
                 last_prop_refresh = -PROP_REFRESH_COOLDOWN
+                last_prop_evaluation = -2
+                prop_recent_candidates.clear()
                 replay_slot = FrameSlot(torch, process_height, process_width, device)
                 replay_total = current_index - replay_start + 1
                 replay_started = time.perf_counter()
