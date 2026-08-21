@@ -620,20 +620,36 @@ def latest_v1_package(root):
 def evaluate_v1_on_samples(root, samples, device):
     package = latest_v1_package(root)
     if package is None or not samples: return None
-    from prop_segmenter import augment_rvm_mask, load_package, predict_mask
+    from prop_segmenter import load_package, predict_mask
     torch, model, model_device, manifest = load_package(package, device)
     values = []
     try:
         for index, sample in enumerate(samples, 1):
             rgb, target, alpha = load_arrays(root, sample)
-            prop, _ = predict_mask(torch, model, model_device, rgb,
+            _, probability = predict_mask(torch, model, model_device, rgb,
                 manifest.get("confidenceThreshold", .5), manifest.get("inputSize", 512))
-            combined, _, _ = augment_rvm_mask(prop, alpha >= .4,
-                manifest.get("proximityRadiusAt512", 24))
-            values.append((combined & ~(alpha >= .4), target, alpha))
+            near = association_band(alpha, manifest.get("proximityRadiusAt512", 24), 512)[0]
+            values.append((probability.astype("float16"), target, alpha, near))
             if index % 100 == 0:
                 emit("baseline", f"Evaluating v1 baseline {index:,}/{len(samples):,}")
-        metrics = binary_metrics(values); metrics["modelId"] = manifest.get("modelId")
+        options = []
+        thresholds = sorted(set([value / 10 for value in range(1, 10)] +
+            [float(manifest.get("confidenceThreshold", .5))]))
+        for threshold in thresholds:
+            predictions = []
+            for probability, target, alpha, near in values:
+                retained, _, _ = filter_prediction(probability, alpha, threshold, 1., 0.,
+                    manifest.get("proximityRadiusAt512", 24), 512, near)
+                predictions.append((retained, target, alpha))
+            metrics = binary_metrics(predictions); metrics["pixelThreshold"] = threshold
+            metrics["constraintsMet"] = \
+                metrics["negativeFrameFalsePositiveRate"] <= NEGATIVE_FRAME_CEILING and \
+                metrics["negativeP95AddedArea"] <= NEGATIVE_P95_AREA_CEILING
+            options.append(metrics)
+        feasible = [value for value in options if value["constraintsMet"]]
+        metrics = max(feasible or options, key=lambda value: (
+            value["constraintsMet"], value["exteriorF2"], value["exteriorRecall"]))
+        metrics["modelId"] = manifest.get("modelId")
         return metrics
     finally:
         del model
