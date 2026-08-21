@@ -676,6 +676,16 @@ def _process_once(args, compile_enabled):
     import numpy as np
     from PIL import Image
 
+    v2_sparse_discovery = False
+    if args.prop_model is not None:
+        try:
+            prop_contract = json.loads((args.prop_model / "manifest.json").read_text(
+                encoding="utf-8-sig"))
+            v2_sparse_discovery = prop_contract.get("architecture") == \
+                "rvm-conditioned-convnext-fpn-v2"
+        except (OSError, ValueError, TypeError):
+            pass
+
     cv2 = None
     if args.resize_backend in ("opencv", "opencv-output"):
         try:
@@ -993,7 +1003,7 @@ def _process_once(args, compile_enabled):
                             seconds = float(prop_refresh[3].get("runtime", {}).get(
                                 "discoveryIntervalSeconds", 2.0))
                             sparse_interval = max(1, round(fps * seconds))
-                        prop_evaluated = args.prop_every_frame or (
+                        prop_evaluated = (sparse_interval is None and args.prop_every_frame) or (
                             sparse_interval is not None and slot.index % sparse_interval == 0)
                         if prop_evaluated:
                             prop_foreground, prop_values = predict_prop_refresh(
@@ -1008,7 +1018,7 @@ def _process_once(args, compile_enabled):
                                     prop_missing_streak += 1
                                 else:
                                     prop_missing_streak = 0
-                        rvm_trigger = refresh_due(
+                        rvm_trigger = args.rvm_mask_refresh and refresh_due(
                             rvm_missing_streak, slot.index, last_rvm_refresh,
                             RVM_REFRESH_PERSISTENCE, RVM_REFRESH_COOLDOWN)
                         prop_trigger = prop_evaluated and refresh_due(
@@ -1320,7 +1330,7 @@ def _process_once(args, compile_enabled):
             alpha_map.flush()
             del backward
 
-        if args.rvm_mask_refresh:
+        if args.rvm_mask_refresh or v2_sparse_discovery:
             emit("startup", progress_base,
                  "Loading RVM for persistent foreground refresh...")
             rvm_torch, rvm_refresh_model, rvm_device = load_rvm_model(
@@ -1661,8 +1671,9 @@ def _process_once(args, compile_enabled):
         "alphaResize": "ffmpeg-bilinear",
         "selectedFrame": selected_index,
         "rvmMaskRefresh": args.rvm_mask_refresh,
-        "propMaskRefresh": args.rvm_mask_refresh and args.prop_model is not None,
-        "propEveryFrame": args.prop_every_frame,
+        "propMaskRefresh": (args.rvm_mask_refresh or v2_sparse_discovery) and
+            args.prop_model is not None,
+        "propEveryFrame": args.prop_every_frame and not v2_sparse_discovery,
         "debugPropContribution": args.debug_prop_contribution,
         "rvmRefreshStrength": args.rvm_refresh_strength,
         "maxMemFrames": args.max_mem_frames,

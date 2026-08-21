@@ -2633,6 +2633,14 @@ internal sealed class CustomShowEditorForm : Form
     {
         PropSegmenterPackage? package = PropSegmenterPackage.Active(configuration, compatible);
         if (package == null) return;
+        if (package.ManifestSchemaVersion == 2 && processing.Algorithm is
+                "rvm-vitmatte-s" or "rvm-vitmatte-b")
+            return;
+        if (package.ManifestSchemaVersion == 2)
+        {
+            processing.PropSegmenterEveryFrame = false;
+            processing.DebugPropContribution = false;
+        }
         processing.PropSegmenterModelId = package.ModelId;
         processing.PropSegmenterCheckpointSha256 = package.CheckpointSha256;
         processing.PropSegmenterConfidenceThreshold = package.ConfidenceThreshold;

@@ -30,7 +30,13 @@ public sealed class PlaybackBridgeClient : IDisposable
         0x0002 | 0x0400 | 0x0008 | 0x0020 | 0x0010;
     private const uint MemCommitReserve = 0x1000 | 0x2000;
     private const uint PageReadWrite = 0x04;
+    private const uint WaitObject0 = 0;
+    private const uint WaitTimeout = 258;
+    private const uint WaitFailed = 0xFFFFFFFF;
     private const uint Infinite = 0xFFFFFFFF;
+
+    private readonly record struct InjectionCleanupState(
+        nint Process, nint Thread, nint RemotePath);
 
     private readonly int processId;
     private readonly Func<string, byte[], bool> registryWrite;
@@ -367,7 +373,10 @@ public sealed class PlaybackBridgeClient : IDisposable
             Encoding.ASCII.GetString(texturePacket, 24, 10) ==
                 "scoreboard" &&
             texturePacket.AsSpan(ShaderTextureHeaderLength)
-                .SequenceEqual(texturePixels);
+                .SequenceEqual(texturePixels) &&
+            !InjectionThreadMayStillRun(WaitObject0) &&
+            InjectionThreadMayStillRun(WaitTimeout) &&
+            InjectionThreadMayStillRun(WaitFailed);
     }
 
     private static byte[] CreateFullscreenShaderDataPacket(float[] values)
@@ -512,6 +521,7 @@ public sealed class PlaybackBridgeClient : IDisposable
 
         byte[] path = Encoding.Unicode.GetBytes(fullPath + "\0");
         nint remotePath = 0;
+        nint thread = 0;
         try
         {
             remotePath = VirtualAllocEx(process, 0, (nuint)path.Length,
@@ -522,27 +532,74 @@ public sealed class PlaybackBridgeClient : IDisposable
                 written != (nuint)path.Length)
                 throw new Win32Exception(Marshal.GetLastWin32Error());
 
-            nint thread = CreateRemoteThread(process, 0, 0,
+            thread = CreateRemoteThread(process, 0, 0,
                 remoteLoadLibrary, remotePath, 0, out _);
             if (thread == 0)
                 throw new Win32Exception(Marshal.GetLastWin32Error());
-            try
+
+            uint waitResult = WaitForSingleObject(thread, 10_000);
+            if (InjectionThreadMayStillRun(waitResult))
             {
-                if (WaitForSingleObject(thread, 10_000) != 0 ||
-                    !GetExitCodeThread(thread, out uint module) || module == 0)
-                    throw new Win32Exception(Marshal.GetLastWin32Error(),
-                        "Could not load the iStripper playback bridge.");
+                int waitError = waitResult == WaitFailed
+                    ? Marshal.GetLastWin32Error() : 0;
+                var cleanup = new InjectionCleanupState(
+                    process, thread, remotePath);
+                try
+                {
+                    ThreadPool.QueueUserWorkItem(
+                        static state => CompleteDeferredInjectionCleanup(state),
+                        cleanup, preferLocal: false);
+                }
+                finally
+                {
+                    process = 0;
+                    thread = 0;
+                    remotePath = 0;
+                }
+
+                if (waitResult == WaitTimeout)
+                {
+                    throw new TimeoutException(
+                        "Loading the iStripper playback bridge timed out.");
+                }
+                throw new Win32Exception(waitError,
+                    "Could not wait for the iStripper playback bridge loader.");
             }
-            finally
-            {
+            if (!GetExitCodeThread(thread, out uint module) || module == 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error(),
+                    "Could not load the iStripper playback bridge.");
+        }
+        finally
+        {
+            if (thread != 0)
                 CloseHandle(thread);
+            if (remotePath != 0)
+                VirtualFreeEx(process, remotePath, 0, 0x8000);
+            if (process != 0)
+                CloseHandle(process);
+        }
+    }
+
+    private static bool InjectionThreadMayStillRun(uint waitResult) =>
+        waitResult != WaitObject0;
+
+    private static void CompleteDeferredInjectionCleanup(
+        InjectionCleanupState state)
+    {
+        try
+        {
+            if (WaitForSingleObject(state.Thread, Infinite) == WaitObject0 &&
+                state.RemotePath != 0)
+            {
+                VirtualFreeEx(state.Process, state.RemotePath, 0, 0x8000);
             }
         }
         finally
         {
-            if (remotePath != 0)
-                VirtualFreeEx(process, remotePath, 0, 0x8000);
-            CloseHandle(process);
+            if (state.Thread != 0)
+                CloseHandle(state.Thread);
+            if (state.Process != 0)
+                CloseHandle(state.Process);
         }
     }
 

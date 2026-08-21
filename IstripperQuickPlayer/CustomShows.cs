@@ -1143,6 +1143,10 @@ internal sealed class CustomShowStore
             string.IsNullOrWhiteSpace(processing.PropSegmenterArchitecture) ||
             string.IsNullOrWhiteSpace(processing.PropSegmenterPostprocessingContract)))
             throw new InvalidDataException("Invalid extended prop-segmenter identity.");
+        if (processing.PropSegmenterManifestSchemaVersion == 2 &&
+            processing.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
+            throw new InvalidDataException(
+                "RVM-conditioned v2 augmentation does not alter RVM-ViTMatte temporal masks.");
         if (processing.RvmMatAnyoneMaskRefresh &&
             processing.Algorithm != "rvm-matanyone2")
             throw new InvalidDataException(

@@ -56,7 +56,7 @@ def main():
     if not items:
         raise RuntimeError("No RVM initialization masks were requested")
 
-    width, height, _, _, duration = probe(source)
+    width, height, _, fps, duration = probe(source)
     review_width, review_height = model_size(width, height)
     torch, model, device = load_model(args.runtime.resolve(), "quality")
     prop = load_prop_package(args.prop_model, device) if args.prop_model else None
@@ -100,9 +100,47 @@ def main():
                 f"RVM could not find a usable person mask for scene {index + 1}/{count}")
         if prop is not None:
             prop_torch, prop_model, prop_device, prop_manifest = prop
-            predicted, _ = predict_prop_mask(prop_torch, prop_model, prop_device,
-                frame, prop_manifest.get("confidenceThreshold", .5),
-                prop_manifest.get("inputSize", 512), rvm_alpha)
+            if prop_manifest.get("architecture") == "rvm-conditioned-convnext-fpn-v2":
+                from prop_segmenter_v2 import confirm_temporal_masks
+                frames, alphas = [], []
+                for neighbour in (-1, 0, 1):
+                    if neighbour == 0:
+                        neighbour_frame, neighbour_alpha = frame, rvm_alpha
+                    else:
+                        neighbour_position = min(duration, max(0, position + neighbour / fps))
+                        neighbour_command = [executable("ffmpeg"), "-v", "error", "-ss",
+                            f"{neighbour_position:.6f}", "-i", str(source), "-frames:v", "1",
+                            "-vf", f"scale={review_width}:{review_height}:flags=bilinear,setsar=1",
+                            "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
+                        neighbour_decoded = subprocess.run(neighbour_command,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if neighbour_decoded.returncode != 0 or len(neighbour_decoded.stdout) < expected:
+                            raise RuntimeError("A neighbouring v2 discovery frame could not be decoded")
+                        neighbour_frame = np.frombuffer(neighbour_decoded.stdout[:expected],
+                            np.uint8).reshape(review_height, review_width, 3).copy()
+                        neighbour_tensor = torch.from_numpy(neighbour_frame).permute(2, 0, 1).unsqueeze(0).to(
+                            device=device, dtype=torch.float32).div_(255)
+                        with torch.inference_mode(), torch.autocast(device_type=device.type,
+                                dtype=torch.float16, enabled=fp16):
+                            _, neighbour_value, *_ = model(neighbour_tensor, *([None] * 4),
+                                downsample_ratio=1)
+                        neighbour_alpha = neighbour_value[0, 0].float().cpu().numpy()
+                    frames.append(neighbour_frame); alphas.append(neighbour_alpha)
+                predictions, probabilities = [], []
+                for neighbour_frame, neighbour_alpha in zip(frames, alphas):
+                    neighbour_prediction, neighbour_probability = predict_prop_mask(
+                        prop_torch, prop_model, prop_device, neighbour_frame,
+                        prop_manifest.get("confidenceThreshold", .5),
+                        prop_manifest.get("inputSize", 768), neighbour_alpha)
+                    predictions.append(neighbour_prediction); probabilities.append(neighbour_probability)
+                high_threshold = min(.95, prop_manifest.get("confidenceThreshold", .5) + .20)
+                predicted = confirm_temporal_masks(predictions,
+                    probabilities[1] >= high_threshold,
+                    prop_manifest.get("runtime", {}).get("temporalRequired", 2))
+            else:
+                predicted, _ = predict_prop_mask(prop_torch, prop_model, prop_device,
+                    frame, prop_manifest.get("confidenceThreshold", .5),
+                    prop_manifest.get("inputSize", 512), rvm_alpha)
             combined, components, radius = augment_rvm_mask(predicted, mask >= 128,
                 prop_manifest.get("proximityRadiusAt512", 24))
             mask = combined.astype(np.uint8) * 255

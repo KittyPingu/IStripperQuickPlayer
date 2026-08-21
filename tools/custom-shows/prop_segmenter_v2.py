@@ -9,7 +9,7 @@ STD = (0.229, 0.224, 0.225)
 DISTANCE_CLIP_AT_INPUT = 96
 ROI_EXPANSION = .35
 MIN_CONTEXT_AT_INPUT = 128
-MAX_TILES = 8
+MAX_TILES = 32
 
 
 def _decoder_block(torch, inputs, outputs):
@@ -179,8 +179,18 @@ def predict(torch, model, device, image, rvm_alpha, size=INPUT_SIZE, threshold=.
     return probability, max(presences, default=0.)
 
 
+def association_band(rvm_alpha, distance_at_input=96, input_size=INPUT_SIZE):
+    import cv2
+    import numpy as np
+    person = np.asarray(rvm_alpha, dtype=np.float32) >= .4
+    radius = max(1, round(distance_at_input * min(person.shape) / input_size))
+    distance = cv2.distanceTransform((~person).astype(np.uint8), cv2.DIST_L2, 3)
+    return distance <= radius, radius
+
+
 def filter_prediction(probability, rvm_alpha, pixel_threshold, presence,
-                      presence_threshold=.5, distance_at_input=96, input_size=INPUT_SIZE):
+                      presence_threshold=.5, distance_at_input=96, input_size=INPUT_SIZE,
+                      near_mask=None):
     """Keep complete predicted components that approach the RVM foreground."""
     import cv2
     import numpy as np
@@ -190,8 +200,10 @@ def filter_prediction(probability, rvm_alpha, pixel_threshold, presence,
         return np.zeros_like(person), [], max(1, round(distance_at_input * min(person.shape) / input_size))
     prediction = probability >= pixel_threshold
     count, labels = cv2.connectedComponents(prediction.astype(np.uint8), connectivity=8)
-    radius = max(1, round(distance_at_input * min(person.shape) / input_size))
-    near = cv2.dilate(person.astype(np.uint8), np.ones((radius * 2 + 1,) * 2, np.uint8)) != 0
+    if near_mask is None: near, radius = association_band(rvm_alpha, distance_at_input, input_size)
+    else:
+        near = np.asarray(near_mask, dtype=bool)
+        radius = max(1, round(distance_at_input * min(person.shape) / input_size))
     keep = np.zeros(count, dtype=bool)
     touching = np.unique(labels[near & prediction]); keep[touching[touching > 0]] = True
     retained = keep[labels]

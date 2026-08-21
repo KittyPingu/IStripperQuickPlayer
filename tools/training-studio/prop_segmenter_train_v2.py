@@ -26,7 +26,7 @@ PROMOTION_SMALL_RECALL_GAIN = .10
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom-shows"))
 from prop_segmenter import digest
 from prop_segmenter_v2 import (ARCHITECTURE, DISTANCE_CLIP_AT_INPUT, INPUT_SIZE,
-    MAX_TILES, MEAN, MIN_CONTEXT_AT_INPUT, ROI_EXPANSION, STD, build_model,
+    MAX_TILES, MEAN, MIN_CONTEXT_AT_INPUT, ROI_EXPANSION, STD, association_band, build_model,
     conditioned_array, expanded_roi, filter_prediction, predict)
 
 
@@ -160,15 +160,24 @@ def positive_crop(rgb, target, alpha, size):
     return crop_square(rgb, target, alpha, center, side, size, True)
 
 
-def context_crop(rgb, target, alpha, size, training=True):
+def context_crop(rgb, target, alpha, size, training=True, prefer_empty=False):
     import numpy as np
     foreground = alpha >= random.uniform(.35, .55)
     ys, xs = np.where(foreground)
-    if len(xs):
-        center = (float(random.choice(xs)), float(random.choice(ys)))
-    else:
-        center = (target.shape[1] / 2, target.shape[0] / 2)
-    side = random.uniform(size * .75, size * 1.5) if training else max(target.shape)
+    attempts = 20 if prefer_empty and target.any() else 1
+    best = None
+    for _ in range(attempts):
+        if len(xs):
+            point = random.randrange(len(xs)); center = (float(xs[point]), float(ys[point]))
+        else: center = (target.shape[1] / 2, target.shape[0] / 2)
+        side = random.uniform(size * .75, size * 1.5) if training else max(target.shape)
+        left, top = round(center[0] - side / 2), round(center[1] - side / 2)
+        right, bottom = min(target.shape[1], round(left + side)), \
+            min(target.shape[0], round(top + side))
+        count = int(target[max(0, top):bottom, max(0, left):right].sum())
+        if best is None or count < best[0]: best = (count, center, side)
+        if count == 0: break
+    _, center, side = best
     return crop_square(rgb, target, alpha, center, side, size, training)
 
 
@@ -271,7 +280,8 @@ class CropDataset:
         sample, mode = self.entries[index]
         rgb, target, alpha = load_arrays(self.root, sample)
         if mode == "positive": rgb, target, alpha = positive_crop(rgb, target, alpha, self.size)
-        else: rgb, target, alpha = context_crop(rgb, target, alpha, self.size, True)
+        else: rgb, target, alpha = context_crop(rgb, target, alpha, self.size, True,
+                                                mode == "near-negative")
         inputs = conditioned_array(rgb, alpha)
         exterior = target & ~(alpha >= .4)
         return (torch.from_numpy(inputs), torch.from_numpy(target[None].astype("float32")),
@@ -333,33 +343,43 @@ def collect_predictions(torch, model, loader, device):
     return values
 
 
-def binary_metrics(values):
+def binary_frame_statistics(predicted, target, alpha):
     import numpy as np
-    tp = fp = fn = 0; positive_frames = recovered = small_frames = small_recovered = 0
-    negative_frames = material_false = 0; false_areas = []
-    baseline_union = [0, 0, 0]; augmented_union = [0, 0, 0]
-    for predicted, target, alpha in values:
-        person = alpha >= .4
-        desired = person | target
-        for output, totals in ((person, baseline_union), (person | predicted, augmented_union)):
-            totals[0] += int((output & desired).sum())
-            totals[1] += int((output & ~desired).sum())
-            totals[2] += int((~output & desired).sum())
-        exterior_target = target & ~(alpha >= .4)
-        exterior_prediction = predicted & ~(alpha >= .4)
-        tp += int((exterior_prediction & exterior_target).sum())
-        fp += int((exterior_prediction & ~exterior_target).sum())
-        fn += int((~exterior_prediction & exterior_target).sum())
-        if exterior_target.any():
-            positive_frames += 1
-            coverage = int((exterior_prediction & exterior_target).sum()) / int(exterior_target.sum())
-            recovered += coverage >= .5
-            if target.mean() < .005:
-                small_frames += 1; small_recovered += coverage >= .5
-        elif not target.any():
-            negative_frames += 1
-            area = int(exterior_prediction.sum()) / exterior_prediction.size
-            false_areas.append(area); material_false += area > max(16 / exterior_prediction.size, .0001)
+    person = alpha >= .4; desired = person | target
+    exterior_target = target & ~person; exterior_prediction = predicted & ~person
+    tp = int((exterior_prediction & exterior_target).sum())
+    fp = int((exterior_prediction & ~exterior_target).sum())
+    fn = int((~exterior_prediction & exterior_target).sum())
+    positive = bool(exterior_target.any()); negative = bool(not target.any())
+    coverage = tp / max(1, int(exterior_target.sum()))
+    area = int(exterior_prediction.sum()) / exterior_prediction.size if negative else None
+    union = []
+    for output in (person, person | predicted):
+        union.append((int((output & desired).sum()), int((output & ~desired).sum()),
+                      int((~output & desired).sum())))
+    return {"tp": tp, "fp": fp, "fn": fn, "positive": positive,
+        "recovered": positive and coverage >= .5,
+        "small": positive and target.mean() < .005,
+        "smallRecovered": positive and target.mean() < .005 and coverage >= .5,
+        "negative": negative, "falseArea": area,
+        "materialFalse": negative and area > max(16 / exterior_prediction.size, .0001),
+        "baselineUnion": union[0], "augmentedUnion": union[1]}
+
+
+def aggregate_binary_statistics(statistics):
+    import numpy as np
+    tp = sum(value["tp"] for value in statistics)
+    fp = sum(value["fp"] for value in statistics)
+    fn = sum(value["fn"] for value in statistics)
+    positive_frames = sum(value["positive"] for value in statistics)
+    recovered = sum(value["recovered"] for value in statistics)
+    small_frames = sum(value["small"] for value in statistics)
+    small_recovered = sum(value["smallRecovered"] for value in statistics)
+    negative_frames = sum(value["negative"] for value in statistics)
+    material_false = sum(value["materialFalse"] for value in statistics)
+    false_areas = [value["falseArea"] for value in statistics if value["falseArea"] is not None]
+    baseline_union = [sum(value["baselineUnion"][index] for value in statistics) for index in range(3)]
+    augmented_union = [sum(value["augmentedUnion"][index] for value in statistics) for index in range(3)]
     precision = tp / max(1, tp + fp); recall = tp / max(1, tp + fn)
     dice = 2 * tp / max(1, 2 * tp + fp + fn)
     f2 = 5 * precision * recall / max(1e-12, 4 * precision + recall)
@@ -378,6 +398,10 @@ def binary_metrics(values):
             "rvmUnionDiceGain": augmented_union_dice - baseline_union_dice}
 
 
+def binary_metrics(values):
+    return aggregate_binary_statistics([binary_frame_statistics(*value) for value in values])
+
+
 def metrics_for(values, pixel_threshold, presence_threshold):
     predictions = []
     for _, probability, target, alpha, presence in values:
@@ -390,15 +414,19 @@ def metrics_for(values, pixel_threshold, presence_threshold):
 def calibrate(values):
     import numpy as np
     options = []
+    bands = [association_band(alpha, 96, INPUT_SIZE)[0]
+             for _, _, _, alpha, _ in values]
     for pixel in [value / 100 for value in range(10, 91, 5)]:
         filtered = []
-        for _, probability, target, alpha, presence_score in values:
-            predicted, _, _ = filter_prediction(probability, alpha, pixel, 1., 0., 96, INPUT_SIZE)
-            filtered.append((predicted, target, alpha, presence_score))
+        for (_, probability, target, alpha, presence_score), near in zip(values, bands):
+            predicted, _, _ = filter_prediction(probability, alpha, pixel, 1., 0., 96,
+                INPUT_SIZE, near)
+            filtered.append((binary_frame_statistics(predicted, target, alpha),
+                             binary_frame_statistics(np.zeros_like(predicted), target, alpha),
+                             presence_score))
         for presence in (.1, .2, .3, .4, .5, .6, .7, .8, .9):
-            metrics = binary_metrics([(prediction if score >= presence else
-                np.zeros_like(prediction), target, alpha)
-                for prediction, target, alpha, score in filtered])
+            metrics = aggregate_binary_statistics([active if score >= presence else inactive
+                for active, inactive, score in filtered])
             metrics.update(pixelThreshold=pixel, presenceThreshold=presence)
             metrics["constraintsMet"] = metrics["negativeFrameFalsePositiveRate"] <= NEGATIVE_FRAME_CEILING and \
                 metrics["negativeP95AddedArea"] <= NEGATIVE_P95_AREA_CEILING
