@@ -13,6 +13,14 @@ import tempfile
 import time
 from pathlib import Path
 
+TRAINING_REVISION = 5
+HARD_NEGATIVE_WEIGHT = 1.5
+HARD_NEGATIVE_FRACTION = .15
+MAX_HARD_NEGATIVES = 125
+EXTERIOR_RECALL_WEIGHT = .35
+RETAINED_NEGATIVE_FPR_CEILING = .10
+CHECKPOINT_SCORE_TOLERANCE = .015
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom-shows"))
 try:
     from prop_segmenter import (ARCHITECTURE, INPUT_SIZE, MEAN, STD,
@@ -33,6 +41,19 @@ def atomic_json(path, value):
     temporary = path.with_name(path.name + ".tmp-" + os.urandom(6).hex())
     temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def atomic_torch_save(torch, value, path):
+    path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp-" + os.urandom(6).hex())
+    try:
+        torch.save(value, temporary)
+        os.replace(temporary, path)
+    finally:
+        try:
+            if temporary.exists(): temporary.unlink()
+        except OSError:
+            pass
 
 
 def load_manifest(root):
@@ -89,6 +110,74 @@ def annotate_mask_statistics(root, samples, input_size):
         sample["_maskFraction"] = positive * scale * scale / (input_size * input_size)
 
 
+def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, batch, device):
+    """Use the latest completed model to rank only training-split negatives."""
+    manifests = sorted((root / "runs").glob("*/package/manifest.json"),
+                       key=lambda path: path.stat().st_mtime, reverse=True)
+    previous = package = None
+    for path in manifests:
+        checkpoint = path.parent / "model.pth"
+        if output in path.parents or not checkpoint.is_file(): continue
+        try:
+            candidate = json.loads(path.read_text(encoding="utf-8"))
+            if candidate.get("architecture") != ARCHITECTURE: continue
+            expected = candidate.get("checkpointSha256")
+            if expected and digest(checkpoint) != expected: continue
+            previous, package = path, candidate
+            break
+        except (OSError, ValueError, TypeError):
+            continue
+    negatives = [sample for sample in samples if sample.get("decision") == "negative"]
+    if previous is None or not negatives: return 0, None
+    threshold = float(package.get("confidenceThreshold", .5))
+    model = build_model(torch, pretrained=False).to(device)
+    model.load_state_dict(torch.load(previous.parent / "model.pth", map_location=device,
+                                     weights_only=True))
+    loader = DataLoader(PropDataset(root, negatives, False, input_size), batch_size=batch,
+                        shuffle=False, num_workers=0)
+    lookup = {sample["id"]: sample for sample in negatives}
+    ranked = []
+    model.eval()
+    bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
+    with torch.inference_mode():
+        for images, _, sample_ids in loader:
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=bf16):
+                probabilities = model(images.to(device))["out"].float().sigmoid().cpu()
+            for index, sample_id in enumerate(sample_ids):
+                sample = lookup[str(sample_id)]
+                probability = probabilities[index, 0].numpy()
+                prediction = probability >= threshold
+                retained = prediction
+                if sample.get("rvmPersonMaskPath"):
+                    try:
+                        person = load_evaluation_mask(root, sample["rvmPersonMaskPath"], input_size)
+                        retained, _, _ = filter_components(prediction, person, 24)
+                        retained &= ~person
+                    except (FileNotFoundError, OSError, ValueError):
+                        pass
+                pixels = int(retained.sum())
+                if pixels:
+                    ranked.append((pixels * float(probability[retained].mean()), str(sample_id)))
+    limit = min(MAX_HARD_NEGATIVES, max(40, round(len(negatives) * HARD_NEGATIVE_FRACTION)))
+    selected = {sample_id for _, sample_id in sorted(ranked, reverse=True)[:limit]}
+    for sample_id in selected: lookup[sample_id]["_hardNegative"] = True
+    del model
+    if device.type == "cuda": torch.cuda.empty_cache()
+    return len(selected), package.get("modelId")
+
+
+def split_profile(samples):
+    positives = [sample for sample in samples if sample.get("decision") == "positive"]
+    negatives = [sample for sample in samples if sample.get("decision") == "negative"]
+    buckets = {name: 0 for name in ("under-0.5pct", "0.5-2pct", "2-5pct", "over-5pct")}
+    for sample in positives:
+        buckets[mask_size_bucket(float(sample.get("_maskFraction", 0.)))] += 1
+    return {"count": len(samples), "sourceCount": len({sample.get("sourceId") for sample in samples}),
+            "positiveCount": len(positives), "negativeCount": len(negatives),
+            "rvmPersonMaskCount": sum(bool(sample.get("rvmPersonMaskPath")) for sample in samples),
+            "negativeRatio": len(negatives) / max(1, len(samples)), "positiveSizeBuckets": buckets}
+
+
 def sampling_plan(samples, negative_ratio):
     positives = [sample for sample in samples if sample.get("decision") == "positive"]
     negatives = [sample for sample in samples if sample.get("decision") == "negative"]
@@ -111,7 +200,8 @@ def source_balanced_weights(samples, negative_ratio):
     for (decision, source_id), indexes in groups.items():
         for index in indexes:
             sample = samples[index]
-            hard = 2. if sample.get("feedbackPriority") or sample.get("burstId") else 1.
+            hard = HARD_NEGATIVE_WEIGHT if sample.get("_hardNegative") else \
+                2. if sample.get("feedbackPriority") or sample.get("burstId") else 1.
             fraction = float(sample.get("_maskFraction", 0.))
             size_weight = 2. if decision == "positive" and fraction <= .005 else \
                 1.35 if decision == "positive" and fraction <= .02 else 1.
@@ -143,6 +233,19 @@ class PropDataset:
         image = Image.open(self.root / sample["framePath"]).convert("RGB")
         mask = Image.open(self.root / sample["propMaskPath"]).convert("L")
         if self.training:
+            person = Image.new("L", mask.size, 0)
+            person_available = False
+            person_path = sample.get("rvmPersonMaskPath")
+            if person_path:
+                try:
+                    person = Image.open(self.root / person_path).convert("L")
+                    if person.size != mask.size:
+                        person = person.resize(mask.size, Image.Resampling.NEAREST)
+                    person_available = True
+                except (FileNotFoundError, OSError, ValueError):
+                    person = Image.new("L", mask.size, 0)
+            availability = Image.new("L", mask.size, 255 if person_available else 0)
+            mask = Image.merge("RGB", (mask, person, availability))
             if random.random() < .5:
                 image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
                 mask = mask.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
@@ -151,32 +254,38 @@ class PropDataset:
             if geometry < .5:
                 image, mask = letterbox_pair(image, mask, self.input_size)
             else:
-                scale = random.uniform(.75, 1.5)
-                target = max(64, round(self.input_size * scale))
-                ratio = target / min(image.size)
-                size = (max(1, round(image.width * ratio)), max(1, round(image.height * ratio)))
-                image = image.resize(size, Image.Resampling.BILINEAR)
-                mask = mask.resize(size, Image.Resampling.NEAREST)
-                fill = tuple(round(value * 255) for value in MEAN)
-                canvas = Image.new("RGB", (max(self.input_size, image.width),
-                                           max(self.input_size, image.height)), fill)
-                canvas_mask = Image.new("L", canvas.size, 0)
-                left, top = (canvas.width - image.width) // 2, (canvas.height - image.height) // 2
-                canvas.paste(image, (left, top)); canvas_mask.paste(mask, (left, top))
-                max_x, max_y = canvas.width - self.input_size, canvas.height - self.input_size
-                foreground = canvas_mask.getbbox()
-                if foreground and geometry < .8:
-                    centre_x = (foreground[0] + foreground[2]) // 2
-                    centre_y = (foreground[1] + foreground[3]) // 2
-                    jitter = round(self.input_size * .2)
-                    x = max(0, min(max_x, centre_x - self.input_size // 2 +
-                                  random.randint(-jitter, jitter)))
-                    y = max(0, min(max_y, centre_y - self.input_size // 2 +
-                                  random.randint(-jitter, jitter)))
+                native_foreground = prop_mask_bounds(mask)
+                if native_foreground and geometry < .8 and \
+                        float(sample.get("_maskFraction", 0.)) <= .02:
+                    image, mask = focused_crop_pair(image, mask, self.input_size,
+                        float(sample.get("_maskFraction", 0.)))
                 else:
-                    x, y = random.randint(0, max_x), random.randint(0, max_y)
-                image = canvas.crop((x, y, x + self.input_size, y + self.input_size))
-                mask = canvas_mask.crop((x, y, x + self.input_size, y + self.input_size))
+                    scale = random.uniform(.75, 1.5)
+                    target = max(64, round(self.input_size * scale))
+                    ratio = target / min(image.size)
+                    size = (max(1, round(image.width * ratio)), max(1, round(image.height * ratio)))
+                    image = image.resize(size, Image.Resampling.BILINEAR)
+                    mask = mask.resize(size, Image.Resampling.NEAREST)
+                    fill = tuple(round(value * 255) for value in MEAN)
+                    canvas = Image.new("RGB", (max(self.input_size, image.width),
+                                               max(self.input_size, image.height)), fill)
+                    canvas_mask = Image.new(mask.mode, canvas.size, 0)
+                    left, top = (canvas.width - image.width) // 2, (canvas.height - image.height) // 2
+                    canvas.paste(image, (left, top)); canvas_mask.paste(mask, (left, top))
+                    max_x, max_y = canvas.width - self.input_size, canvas.height - self.input_size
+                    foreground = prop_mask_bounds(canvas_mask)
+                    if foreground and geometry < .8:
+                        centre_x = (foreground[0] + foreground[2]) // 2
+                        centre_y = (foreground[1] + foreground[3]) // 2
+                        jitter = round(self.input_size * .2)
+                        x = max(0, min(max_x, centre_x - self.input_size // 2 +
+                                      random.randint(-jitter, jitter)))
+                        y = max(0, min(max_y, centre_y - self.input_size // 2 +
+                                      random.randint(-jitter, jitter)))
+                    else:
+                        x, y = random.randint(0, max_x), random.randint(0, max_y)
+                    image = canvas.crop((x, y, x + self.input_size, y + self.input_size))
+                    mask = canvas_mask.crop((x, y, x + self.input_size, y + self.input_size))
             if random.random() < .08:
                 image = image.filter(ImageFilter.GaussianBlur(random.uniform(.2, 1.2)))
             pixels = np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255
@@ -191,7 +300,15 @@ class PropDataset:
             canvas_mask = Image.new("L", (self.input_size, self.input_size), 0)
             canvas_mask.paste(mask.resize((width, height), Image.Resampling.NEAREST), (left, top))
             mask = canvas_mask
-        target = (np.asarray(mask, dtype=np.uint8) >= 128).astype(np.float32)[None]
+        mask_pixels = np.asarray(mask, dtype=np.uint8)
+        if self.training:
+            target = (mask_pixels[..., 0] >= 128).astype(np.float32)[None]
+            person = mask_pixels[..., 1] >= 128
+            person_available = mask_pixels[..., 2] >= 128
+            exterior = ((target[0] >= .5) & ~person & person_available).astype(np.float32)[None]
+            return (torch.from_numpy(pixels), torch.from_numpy(target),
+                    torch.from_numpy(exterior), sample["id"])
+        target = (mask_pixels >= 128).astype(np.float32)[None]
         return torch.from_numpy(pixels), torch.from_numpy(target), sample["id"]
 
 
@@ -202,10 +319,35 @@ def letterbox_pair(image, mask, input_size):
     left, top = (input_size - size[0]) // 2, (input_size - size[1]) // 2
     fill = tuple(round(value * 255) for value in MEAN)
     canvas = Image.new("RGB", (input_size, input_size), fill)
-    canvas_mask = Image.new("L", (input_size, input_size), 0)
+    canvas_mask = Image.new(mask.mode, (input_size, input_size), 0)
     canvas.paste(image.resize(size, Image.Resampling.BILINEAR), (left, top))
     canvas_mask.paste(mask.resize(size, Image.Resampling.NEAREST), (left, top))
     return canvas, canvas_mask
+
+
+def focused_crop_pair(image, mask, input_size, mask_fraction):
+    """Zoom a small prop to a useful training scale while retaining context."""
+    from PIL import Image
+    bounds = prop_mask_bounds(mask)
+    if not bounds: return letterbox_pair(image, mask, input_size)
+    width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+    target_span = random.uniform(.14, .28) if mask_fraction <= .005 else random.uniform(.18, .36)
+    side = max(width, height, math.ceil(max(width, height) / target_span))
+    side = max(1, min(side, min(image.size)))
+    centre_x = (bounds[0] + bounds[2]) / 2
+    centre_y = (bounds[1] + bounds[3]) / 2
+    free_x, free_y = max(0, side - width), max(0, side - height)
+    centre_x += random.uniform(-.15 * free_x, .15 * free_x)
+    centre_y += random.uniform(-.15 * free_y, .15 * free_y)
+    left = max(0, min(image.width - side, round(centre_x - side / 2)))
+    top = max(0, min(image.height - side, round(centre_y - side / 2)))
+    box = (left, top, left + side, top + side)
+    return (image.crop(box).resize((input_size, input_size), Image.Resampling.BILINEAR),
+            mask.crop(box).resize((input_size, input_size), Image.Resampling.NEAREST))
+
+
+def prop_mask_bounds(mask):
+    return mask.getchannel("R").getbbox() if mask.mode == "RGB" else mask.getbbox()
 
 
 def augment_appearance(image, np):
@@ -265,16 +407,32 @@ def boundary_loss(torch, logits, target):
     return (1 - numerator / denominator).mean()
 
 
-def segmentation_loss(torch, output, target, pos_weight):
+def exterior_recall_loss(logits, exterior_target):
+    probability = logits.sigmoid()
+    positive = exterior_target.sum(dim=(1, 2, 3))
+    detected = (probability * exterior_target).sum(dim=(1, 2, 3))
+    available = positive > 0
+    if not available.any():
+        return logits.sum() * 0
+    return (1 - (detected[available] + 1) / (positive[available] + 1)).mean()
+
+
+def segmentation_loss(torch, output, target, pos_weight, exterior_target=None):
     total = (focal_bce(torch, output["out"], target, pos_weight) +
              dice_loss(output["out"], target) +
              .5 * tversky_loss(output["out"], target) +
              .2 * boundary_loss(torch, output["out"], target))
+    if exterior_target is not None:
+        total += EXTERIOR_RECALL_WEIGHT * exterior_recall_loss(
+            output["out"], exterior_target)
     if "aux" in output:
         aux = (focal_bce(torch, output["aux"], target, pos_weight) +
                dice_loss(output["aux"], target) +
                .5 * tversky_loss(output["aux"], target) +
                .1 * boundary_loss(torch, output["aux"], target))
+        if exterior_target is not None:
+            aux += .5 * EXTERIOR_RECALL_WEIGHT * exterior_recall_loss(
+                output["aux"], exterior_target)
         total += .4 * aux
     return total
 
@@ -301,8 +459,69 @@ def selection_score(value):
     if not downstream or downstream.get("coverage", 0.) < .8:
         return raw
     exterior = downstream["exteriorProp"]
-    final = downstream["finalForeground"]
-    return .55 * raw + .2 * exterior["dice"] + .1 * exterior["recall"] + .15 * final["dice"]
+    retained_fpr = downstream.get("retainedNegativeFrameFalsePositiveRate", 1.) \
+        if downstream.get("retainedNegativeCoverage", 0.) >= .8 \
+        else value["negativeFrameFalsePositiveRate"]
+    retained_negative_score = 1 - retained_fpr
+    return (.5 * raw + .3 * exterior["dice"] + .1 * exterior["precision"] +
+            .1 * retained_negative_score)
+
+
+def retained_negative_fpr(value):
+    downstream = value.get("rvmUnion", {})
+    if downstream.get("retainedNegativeCoverage", 0.) >= .8:
+        return downstream.get("retainedNegativeFrameFalsePositiveRate", 1.)
+    return value.get("negativeFrameFalsePositiveRate", 1.)
+
+
+def deployment_threshold(values, scorer=selection_score):
+    eligible = [threshold for threshold, value in values.items()
+                if retained_negative_fpr(value) <= RETAINED_NEGATIVE_FPR_CEILING]
+    pool = eligible or list(values)
+    threshold = max(pool, key=lambda current: scorer(values[current]))
+    return threshold, bool(eligible)
+
+
+def deployment_checkpoint(options):
+    eligible = [option for option in options
+                if retained_negative_fpr(option["validation"]) <=
+                RETAINED_NEGATIVE_FPR_CEILING]
+    pool = eligible or list(options)
+    best_score = max(option["selectionScore"] for option in pool)
+    near_best = [option for option in pool if option["selectionScore"] >=
+                 best_score - CHECKPOINT_SCORE_TOLERANCE]
+    selected = min(near_best, key=lambda option:
+                   (retained_negative_fpr(option["validation"]),
+                    -option["selectionScore"]))
+    return selected, bool(eligible)
+
+
+def conservative_score(value):
+    downstream = value.get("rvmUnion", {})
+    if downstream.get("coverage", 0.) < .8:
+        return .7 * value["precision"] + .3 * value["dice"]
+    exterior = downstream["exteriorProp"]
+    retained_fpr = downstream.get("retainedNegativeFrameFalsePositiveRate", 1.) \
+        if downstream.get("retainedNegativeCoverage", 0.) >= .8 \
+        else value["negativeFrameFalsePositiveRate"]
+    clean_negatives = 1 - retained_fpr
+    return (.45 * exterior["dice"] + .25 * exterior["precision"] +
+            .2 * clean_negatives + .1 * value["smallObjectRecall"])
+
+
+def checkpoint_objectives(values):
+    scorers = {
+        "balanced": lambda value: value["selectionScore"],
+        "raw-dice": lambda value: value["dice"],
+        "exterior-prop": lambda value: value.get("rvmUnion", {}).get(
+            "exteriorProp", {}).get("dice", value["dice"]),
+        "conservative": conservative_score}
+    result = {}
+    for name, scorer in scorers.items():
+        threshold = max(values, key=lambda current: scorer(values[current]))
+        result[name] = {"threshold": threshold, "score": scorer(values[threshold]),
+                        "validation": values[threshold]}
+    return result
 
 
 def boundary_f1(torch, prediction, truth):
@@ -347,7 +566,9 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
     per_image = {threshold: {"dice": [], "recall": [], "smallRecall": [], "boundary": [],
                              "negativeFrames": 0, "negativeFramesWithPrediction": 0,
                              "sourceTotals": {}, "sizeBuckets": {}, "rvmAvailable": 0,
-                             "rvmExterior": [0, 0, 0, 0], "rvmUnion": [0, 0, 0, 0]}
+                             "rvmExterior": [0, 0, 0, 0], "rvmUnion": [0, 0, 0, 0],
+                             "rvmNegativeFrames": 0, "rvmNegativeFramesWithRetained": 0,
+                             "rvmNegativeFractions": []}
                  for threshold in thresholds}
     sample_lookup = {sample["id"]: sample for sample in (samples or [])}
     total_samples = len(sample_lookup)
@@ -415,6 +636,13 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
                             add_confusion(per_image[threshold]["rvmUnion"],
                                           confusion(person | retained, desired, .5))
                             per_image[threshold]["rvmAvailable"] += 1
+                            if truth_pixels == 0:
+                                harmful_pixels = int(exterior.sum())
+                                per_image[threshold]["rvmNegativeFrames"] += 1
+                                per_image[threshold]["rvmNegativeFramesWithRetained"] += \
+                                    int(harmful_pixels > 0)
+                                per_image[threshold]["rvmNegativeFractions"].append(
+                                    harmful_pixels / exterior.size)
                         except (FileNotFoundError, OSError, ValueError):
                             pass
     result = {}
@@ -438,11 +666,24 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
                    "recall": sum(value["recall"]) / max(1, len(value["recall"]))}
             for name, value in current["sizeBuckets"].items()}
         if total_samples:
+            fractions = sorted(current["rvmNegativeFractions"])
+            percentile95 = fractions[min(len(fractions) - 1,
+                math.ceil(.95 * len(fractions)) - 1)] if fractions else 0.
             result[threshold]["rvmUnion"] = {
                 "coverage": current["rvmAvailable"] / total_samples,
                 "sampleCount": current["rvmAvailable"],
                 "exteriorProp": scores(current["rvmExterior"]),
-                "finalForeground": scores(current["rvmUnion"])}
+                "finalForeground": scores(current["rvmUnion"]),
+                "retainedNegativeFrameCount": current["rvmNegativeFrames"],
+                "retainedNegativeCoverage": current["rvmNegativeFrames"] /
+                    max(1, current["negativeFrames"]),
+                "retainedNegativeFrameFalsePositiveRate":
+                    current["rvmNegativeFramesWithRetained"] /
+                    max(1, current["rvmNegativeFrames"]),
+                "retainedNegativeMeanFalsePositiveFraction":
+                    sum(fractions) / max(1, len(fractions)),
+                "retainedNegativeP95FalsePositiveFraction": percentile95,
+                "retainedNegativeMaxFalsePositiveFraction": fractions[-1] if fractions else 0.}
         result[threshold]["rawSelectionScore"] = (
             .4 * result[threshold]["dice"] + .15 * result[threshold]["macroDice"] +
             .15 * result[threshold]["positiveRecall"] +
@@ -560,6 +801,7 @@ def write_dataset_snapshot(root, output, manifest, available, args):
                 "sourceId": sample.get("sourceId"), "timestampMs": sample.get("timestampMs"),
                 "burstId": sample.get("burstId"),
                 "feedbackPriority": bool(sample.get("feedbackPriority")),
+                "historicalHardNegative": bool(sample.get("_hardNegative")),
                 "recordPath": sample.get("_recordPath"),
                 "recordSha256": sample.get("_recordSha256"),
                 "maskFractionAtInput": sample.get("_maskFraction", 0.),
@@ -570,7 +812,7 @@ def write_dataset_snapshot(root, output, manifest, available, args):
                      completed=completed, total=total)
         snapshot_samples[split] = entries
     snapshot = {
-        "schemaVersion": 1, "trainingRevision": 3,
+        "schemaVersion": 1, "trainingRevision": TRAINING_REVISION,
         "createdUtc": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         "datasetId": manifest["datasetId"], "inputSize": args.input_size,
         "minimumResolution": args.minimum_resolution, "seed": args.seed,
@@ -619,7 +861,14 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
     model = build_model(torch, pretrained=True).to(device)
     pos_weight = torch.tensor([positive_weight(train_samples, sampler_weights)], device=device)
     best_score, stale, start_epoch = -1., 0, 0
-    last_path, best_path = candidate / "last.pth", candidate / "best.pth"
+    last_path = candidate / "last.pth"
+    checkpoint_paths = {
+        "balanced": candidate / "best.pth",
+        "raw-dice": candidate / "best-raw-dice.pth",
+        "exterior-prop": candidate / "best-exterior-prop.pth",
+        "conservative": candidate / "best-conservative.pth"}
+    best_objectives = {name: -1. for name in checkpoint_paths}
+    best_records = {}
     optimizer = torch.optim.AdamW([
         {"params": model.backbone.parameters(), "lr": 1e-5},
         {"params": model.classifier.parameters(), "lr": 1e-4},
@@ -632,6 +881,8 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
         model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
         scaler.load_state_dict(state["scaler"]); start_epoch = state["epoch"] + 1
         best_score = state.get("bestScore", state.get("bestDice", -1.)); stale = state["stale"]
+        best_objectives.update(state.get("bestObjectives", {"balanced": best_score}))
+        best_records.update(state.get("bestRecords", {}))
         if "samplerGenerator" in state:
             sampler_generator.set_state(state["samplerGenerator"])
         if "pythonRandomState" in state:
@@ -659,28 +910,39 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
             optimizer.param_groups[1]["lr"] = optimizer.param_groups[2]["lr"] = 1e-4 * multiplier
         model.train(); freeze_batch_norm(torch, model)
         optimizer.zero_grad(set_to_none=True); running = 0.
-        for step, (images, target, _) in enumerate(loaders["train"]):
-            images, target = images.to(device, non_blocking=True), target.to(device, non_blocking=True)
+        for step, (images, target, exterior_target, _) in enumerate(loaders["train"]):
+            images = images.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
+            exterior_target = exterior_target.to(device, non_blocking=True)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                loss = segmentation_loss(torch, model(images), target, pos_weight) / accumulation
+                loss = segmentation_loss(torch, model(images), target, pos_weight,
+                                         exterior_target) / accumulation
             scaler.scale(loss).backward(); running += float(loss.item()) * accumulation
             if (step + 1) % accumulation == 0 or step + 1 == len(loaders["train"]):
                 scaler.step(optimizer); scaler.update(); optimizer.zero_grad(set_to_none=True)
                 ema.update_parameters(model)
         validation_all = evaluate(torch, ema.module, loaders["validation"], device,
                                   checkpoint_thresholds, root, validation_samples)
-        validation_threshold = max(checkpoint_thresholds,
-            key=lambda value: validation_all[value]["selectionScore"])
-        validation = validation_all[validation_threshold]
-        improved = validation["selectionScore"] > best_score
-        if improved:
-            best_score, stale = validation["selectionScore"], 0
-            torch.save(ema.module.state_dict(), best_path)
-        else:
-            stale += 1
-        torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+        objectives = checkpoint_objectives(validation_all)
+        validation_threshold = objectives["balanced"]["threshold"]
+        validation = objectives["balanced"]["validation"]
+        improved_variants = []
+        for name, objective in objectives.items():
+            if objective["score"] > best_objectives[name]:
+                best_objectives[name] = objective["score"]
+                best_records[name] = {"epoch": epoch + 1, "threshold": objective["threshold"],
+                                      "objectiveScore": objective["score"],
+                                      "validation": objective["validation"]}
+                atomic_torch_save(torch, ema.module.state_dict(), checkpoint_paths[name])
+                improved_variants.append(name)
+        improved = "balanced" in improved_variants
+        if improved: best_score = best_objectives["balanced"]
+        if improved_variants: stale = 0
+        else: stale += 1
+        atomic_torch_save(torch, {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
                     "ema": ema.state_dict(), "scaler": scaler.state_dict(), "epoch": epoch,
                     "bestScore": best_score, "bestDice": validation["dice"],
+                    "bestObjectives": best_objectives, "bestRecords": best_records,
                     "stale": stale, "samplerGenerator": sampler_generator.get_state(),
                     "pythonRandomState": random.getstate(),
                     "torchRandomState": torch.get_rng_state(),
@@ -698,31 +960,59 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
              validationSelectionScore=validation["selectionScore"],
              validationRvmUnionDice=validation.get("rvmUnion", {}).get(
                 "finalForeground", {}).get("dice"),
+             validationExteriorPropDice=validation.get("rvmUnion", {}).get(
+                "exteriorProp", {}).get("dice"),
+             validationRetainedNegativeFalsePositiveRate=validation.get(
+                "rvmUnion", {}).get("retainedNegativeFrameFalsePositiveRate"),
+             improvedCheckpoints=improved_variants,
              validationThreshold=validation_threshold, best=improved,
              negativeRatio=negative_ratio)
         if not frozen and stale >= args.patience:
-            emit("early-stopping", f"No validation improvement for {stale} epochs")
+            emit("early-stopping", f"No checkpoint objective improvement for {stale} epochs")
             break
-    if not best_path.is_file():
+    if not checkpoint_paths["balanced"].is_file():
         raise RuntimeError(f"No checkpoint was produced for {negative_ratio:.0%} negatives")
-    model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
     thresholds = tuple(round(value / 100, 2) for value in range(10, 91, 5))
-    validation_all = evaluate(torch, model, loaders["validation"], device, thresholds,
-                              root, validation_samples)
-    threshold = max(thresholds, key=lambda value: validation_all[value]["selectionScore"])
+    swept = []
+    for name, path in checkpoint_paths.items():
+        if not path.is_file(): continue
+        model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
+        validation_all = evaluate(torch, model, loaders["validation"], device, thresholds,
+                                  root, validation_samples)
+        threshold, ceiling_met = deployment_threshold(validation_all)
+        swept.append({"name": name, "threshold": threshold,
+                      "selectionScore": validation_all[threshold]["selectionScore"],
+                      "validation": validation_all[threshold], "checkpoint": str(path),
+                      "retainedNegativeCeilingMet": ceiling_met,
+                      "retainedAt": best_records.get(name)})
+        emit("checkpoint-sweep", f"{name}: validation Dice "
+             f"{validation_all[threshold]['dice']:.3f} at {threshold:.2f}",
+             checkpoint=name, threshold=threshold, retainedNegativeCeilingMet=ceiling_met,
+             validation=validation_all[threshold])
+    selected, ceiling_met = deployment_checkpoint(swept)
+    threshold = selected["threshold"]
     result = {"targetNegativeRatio": negative_ratio,
               "negativeSelection": selection_name,
               "actualNegativeRatio": epoch_negative_count / max(1, epoch_size),
               "negativeAvailable": sum(sample.get("decision") == "negative"
                                        for sample in train_samples),
-              "hardExampleCount": sum(bool(sample.get("feedbackPriority") or sample.get("burstId"))
+              "hardExampleCount": sum(bool(sample.get("feedbackPriority") or sample.get("burstId") or
+                                             sample.get("_hardNegative"))
                                       for sample in train_samples),
+              "historicalHardNegativeCount": sum(bool(sample.get("_hardNegative"))
+                                                   for sample in train_samples),
               "trainCount": len(train_samples), "epochSize": epoch_size,
               "positiveWeight": float(pos_weight.item()), "threshold": threshold,
-              "validation": validation_all[threshold]}
-    emit("candidate-complete", f"{negative_ratio:.0%} negatives: validation Dice "
+              "retainedNegativeCeiling": RETAINED_NEGATIVE_FPR_CEILING,
+              "retainedNegativeCeilingMet": ceiling_met,
+              "selectedCheckpointVariant": selected["name"],
+              "checkpointVariants": [{key: value for key, value in item.items()
+                                      if key != "checkpoint"} for item in swept],
+              "validation": selected["validation"]}
+    emit("candidate-complete", f"{negative_ratio:.0%} negatives: selected "
+         f"{selected['name']} checkpoint with validation Dice "
          f"{result['validation']['dice']:.3f}", **result)
-    return result, best_path
+    return result, Path(selected["checkpoint"])
 
 
 def train(args):
@@ -738,7 +1028,9 @@ def train(args):
                            "at the selected minimum resolution")
     for samples in available.values():
         annotate_mask_statistics(root, samples, args.input_size)
-    snapshot_path = write_dataset_snapshot(root, output, manifest, available, args)
+    split_profiles = {key: split_profile(value) for key, value in available.items()}
+    emit("split-profile", "Recorded source-isolated split balance for this run",
+         profiles=split_profiles)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
         memory = torch.cuda.get_device_properties(device).total_memory
@@ -746,6 +1038,13 @@ def train(args):
         batch = max(1, math.floor(base_batch * (512 / args.input_size) ** 2))
     else:
         batch = 1
+    emit("hard-negative-mining", "Scoring training negatives with the latest completed model")
+    historical_hard_negatives, hard_negative_model = mine_hard_negatives(
+        torch, DataLoader, root, output, available["train"], args.input_size, batch, device)
+    emit("hard-negative-mining",
+         f"Promoted {historical_hard_negatives:,} difficult training negatives",
+         count=historical_hard_negatives, sourceModelId=hard_negative_model)
+    snapshot_path = write_dataset_snapshot(root, output, manifest, available, args)
     accumulation = max(1, math.ceil(8 / batch))
     emit("setup", f"Loading DeepLabV3-ResNet50 on {device}",
          batchSize=batch, gradientAccumulation=accumulation,
@@ -785,7 +1084,18 @@ def train(args):
         result["checkpoint"] = str(checkpoint_path)
         candidates.append(result)
         if device.type == "cuda": torch.cuda.empty_cache()
-    winner = max(candidates, key=lambda value: value["validation"]["selectionScore"])
+    candidate_options = [{"name": candidate["negativeSelection"],
+                          "selectionScore": candidate["validation"]["selectionScore"],
+                          "validation": candidate["validation"], "candidate": candidate}
+                         for candidate in candidates]
+    selected_candidate, candidate_ceiling_met = deployment_checkpoint(candidate_options)
+    winner = selected_candidate["candidate"]
+    emit("candidate-selection", f"Selected {winner['negativeSelection']} negatives with "
+         f"retained-negative FP {retained_negative_fpr(winner['validation']):.1%}",
+         negativeSelection=winner["negativeSelection"],
+         retainedNegativeCeiling=RETAINED_NEGATIVE_FPR_CEILING,
+         retainedNegativeCeilingMet=candidate_ceiling_met,
+         validation=winner["validation"])
     best_path = Path(winner.pop("checkpoint"))
     for candidate in candidates: candidate.pop("checkpoint", None)
     threshold = winner["threshold"]
@@ -810,15 +1120,29 @@ def train(args):
                "selectedNegativeMode": winner["negativeSelection"],
                "minimumResolution": args.minimum_resolution,
                "inputSize": args.input_size,
-               "trainingRevision": 3,
+               "trainingRevision": TRAINING_REVISION,
                "testSealed": True, "reviewSplit": "validation",
                "sampling": {"sourceBalanced": True, "allNegativesEligible": True,
-                            "smallMaskUpweighting": True},
+                            "smallMaskUpweighting": True,
+                            "historicalHardNegativeMining": True,
+                            "historicalHardNegativeCount": historical_hard_negatives,
+                            "hardNegativeSourceModelId": hard_negative_model,
+                            "hardNegativeWeight": HARD_NEGATIVE_WEIGHT,
+                            "hardNegativeFraction": HARD_NEGATIVE_FRACTION,
+                            "hardNegativeLimit": MAX_HARD_NEGATIVES},
                "geometryAugmentation": {"letterbox": .50, "foregroundCrop": .30,
-                                        "randomContextCrop": .20},
+                                        "randomContextCrop": .20,
+                                        "smallObjectFocusedZoom": True},
+               "checkpointSelection": {"variants": ["balanced", "raw-dice",
+                    "exterior-prop", "conservative"], "validationSweep": True,
+                    "finalRvmUnionUsedForSelection": False,
+                    "retainedNegativeFalsePositiveCeiling": RETAINED_NEGATIVE_FPR_CEILING,
+                    "nearBestScoreTolerance": CHECKPOINT_SCORE_TOLERANCE},
                "loss": {"positiveWeightCap": 10, "tverskyAlpha": .5,
-                        "tverskyBeta": .5, "boundaryWeight": .2},
+                        "tverskyBeta": .5, "boundaryWeight": .2,
+                        "exteriorRecallWeight": EXTERIOR_RECALL_WEIGHT},
                "balanceCandidates": candidates,
+               "splitProfiles": split_profiles,
                "counts": {key: len(value) for key, value in available.items()},
                "review": {key: len(value) for key, value in review.items()}}
     atomic_json(package / "metrics.json", metrics)
@@ -826,7 +1150,7 @@ def train(args):
              for path in package.rglob("*") if path.is_file() and path.name != "manifest.json"}
     atomic_json(package / "manifest.json", {
         "schemaVersion": 1, "modelId": model_id, "architecture": ARCHITECTURE,
-        "trainingRevision": 3,
+        "trainingRevision": TRAINING_REVISION,
         "category": "foreground_prop", "inputSize": args.input_size,
         "mean": MEAN, "std": STD, "confidenceThreshold": threshold,
         "proximityRadiusAt512": 24, "checkpointSha256": checkpoint_hash,
@@ -837,6 +1161,7 @@ def train(args):
         "datasetId": manifest["datasetId"], "runId": output.name,
         "minimumTrainingResolution": args.minimum_resolution,
         "negativeSelection": winner["negativeSelection"],
+        "checkpointVariant": winner["selectedCheckpointVariant"],
         "createdUtc": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         "pythonVersion": sys.version.split()[0], "torchVersion": torch.__version__,
         "torchvisionVersion": __import__("torchvision").__version__,
@@ -846,7 +1171,8 @@ def train(args):
     emit("complete", "Training, threshold calibration, and test evaluation complete",
          package=str(package), modelId=model_id, testDice=test_metrics["dice"],
          selectedNegativeRatio=winner["targetNegativeRatio"],
-         selectedNegativeMode=winner["negativeSelection"])
+         selectedNegativeMode=winner["negativeSelection"],
+         selectedCheckpointVariant=winner["selectedCheckpointVariant"])
 
 
 def regenerate_review(args):
@@ -921,12 +1247,18 @@ def self_test():
         assert abs(sum(weight for weight, sample in zip(weights, planned)
                        if sample["decision"] == "negative") - .3) < 1e-8
         assert weights[0] > weights[1]
+        planned[7]["_hardNegative"] = True
+        hard_weights = source_balanced_weights(planned, .30)
+        assert hard_weights[7] > hard_weights[11]
+        profile = split_profile(planned)
+        assert profile["positiveCount"] == 7 and profile["negativeCount"] == 20
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         image = torch.randn(2, 3, 8, 8); target = torch.zeros(2, 1, 8, 8)
         loss = torch.nn.functional.binary_cross_entropy_with_logits(model(image), target)
         loss.backward(); optimizer.step()
         checkpoint = root / "resume.pth"
-        torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": 0}, checkpoint)
+        atomic_torch_save(torch,
+            {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": 0}, checkpoint)
         resumed = torch.nn.Conv2d(3, 1, 1)
         state = torch.load(checkpoint, weights_only=False); resumed.load_state_dict(state["model"])
         assert state["epoch"] == 0 and digest(checkpoint) == hashlib.sha256(checkpoint.read_bytes()).hexdigest()
@@ -943,6 +1275,7 @@ def self_test():
                 return {"out": inputs[:, :1] * 4}
         images = torch.zeros(2, 3, 8, 8); images[:, 0] = -1
         images[0, 0, :4, :4] = 1
+        images[1, 0, 2:6, 2:6] = 1
         targets = torch.zeros(2, 1, 8, 8); targets[0, 0, 4:, 4:] = 1
         from PIL import Image
         import numpy as np
@@ -966,9 +1299,30 @@ def self_test():
                    ("macroDice", "positiveRecall", "smallObjectRecall", "boundaryF1",
                     "perVideoDice", "negativeFrameFalsePositiveRate", "selectionScore"))
         assert review_metrics["rvmUnion"]["coverage"] == 1
+        assert review_metrics["rvmUnion"]["retainedNegativeCoverage"] == 1
+        assert review_metrics["rvmUnion"]["retainedNegativeFrameFalsePositiveRate"] == 1
+        objectives = checkpoint_objectives({.5: review_metrics})
+        assert set(objectives) == {"balanced", "raw-dice", "exterior-prop", "conservative"}
+        dirty = json.loads(json.dumps(review_metrics))
+        clean = json.loads(json.dumps(review_metrics))
+        dirty["selectionScore"] = .9
+        dirty["rvmUnion"]["retainedNegativeFrameFalsePositiveRate"] = .2
+        clean["selectionScore"] = .89
+        clean["rvmUnion"]["retainedNegativeFrameFalsePositiveRate"] = .05
+        threshold, ceiling_met = deployment_threshold({.5: dirty, .75: clean})
+        assert ceiling_met and threshold == .75
+        selected, ceiling_met = deployment_checkpoint([
+            {"name": "dirty", "selectionScore": .9, "validation": dirty},
+            {"name": "clean", "selectionScore": .89, "validation": clean}])
+        assert ceiling_met and selected["name"] == "clean"
         combined_loss = segmentation_loss(torch, {"out": images[:, :1] * 4}, targets,
-                                          torch.tensor([2.]))
+                                          torch.tensor([2.]), targets)
         assert torch.isfinite(combined_loss)
+        random.seed(1729)
+        _, trained_target, trained_exterior, _ = PropDataset(root, [{
+            "id": "training-sample", "framePath": "frame.png", "propMaskPath": "mask.png",
+            "rvmPersonMaskPath": "person.png", "_maskFraction": .25}], True, 8)[0]
+        assert torch.equal(trained_target, trained_exterior)
         review = save_error_review(torch, ReviewModel(),
             [(images, targets, ("sample-a", "sample-b"))], torch.device("cpu"), .5,
             root / "review", limit=2, samples=evaluation_samples)
@@ -976,6 +1330,12 @@ def self_test():
         assert len(review["false-positive"]) == len(review["false-negative"]) == 1
         assert "errorPixelsAtInput" in review["false-positive"][0]
         assert (root / "review" / "review.json").is_file()
+        focus_image = Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8))
+        focus_mask = np.zeros((100, 100), dtype=np.uint8); focus_mask[49:51, 49:51] = 255
+        random.seed(1729)
+        _, zoomed_mask = focused_crop_pair(focus_image, Image.fromarray(focus_mask), 64, .0004)
+        zoomed_bounds = zoomed_mask.getbbox()
+        assert zoomed_bounds and zoomed_bounds[2] - zoomed_bounds[0] >= 7
         snapshot_sample = {"id": "sample-a", "decision": "positive", "sourceId": "source",
                            "timestampMs": 1000, "framePath": "frame.png",
                            "propMaskPath": "mask.png", "_maskFraction": .25}
@@ -984,7 +1344,7 @@ def self_test():
             "validation": [], "test": []}, argparse.Namespace(input_size=8,
             minimum_resolution=0, seed=1729))
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        assert snapshot["trainingRevision"] == 3
+        assert snapshot["trainingRevision"] == TRAINING_REVISION
         assert snapshot["splits"]["train"][0]["artifacts"]["framePath"]["sha256"] == \
             digest(root / "frame.png")
     emit("self-test", "prop-segmenter training self-test passed", status="ok")
@@ -997,10 +1357,10 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=40)
-    parser.add_argument("--patience", type=int, default=8)
+    parser.add_argument("--patience", type=int, default=12)
     parser.add_argument("--seed", type=int, default=1729)
-    parser.add_argument("--minimum-resolution", type=int, default=0)
-    parser.add_argument("--input-size", type=int, choices=(512, 768, 1024), default=512)
+    parser.add_argument("--minimum-resolution", type=int, default=720)
+    parser.add_argument("--input-size", type=int, choices=(512, 768, 1024), default=768)
     parser.add_argument("--negative-selection", choices=("compare", "20", "25", "30", "35", "all"),
                         default="compare")
     parser.add_argument("--regenerate-review", action="store_true")

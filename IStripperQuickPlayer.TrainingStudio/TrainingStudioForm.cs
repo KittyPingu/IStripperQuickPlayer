@@ -86,9 +86,9 @@ internal sealed class TrainingStudioForm : Form
             new ResolutionOption("720p+", 720), new ResolutionOption("1080p+", 1080),
             new ResolutionOption("1440p+", 1440), new ResolutionOption("2160p+", 2160)
         });
-        minimumResolution.SelectedIndex = 0;
+        minimumResolution.SelectedIndex = 2;
         trainingSize.Items.AddRange(new object[] { 512, 768, 1024 });
-        trainingSize.SelectedItem = 512;
+        trainingSize.SelectedItem = 768;
         negativeSelection.Items.AddRange(new object[]
         {
             new NegativeOption("Compare 20–35%", "compare"),
@@ -96,7 +96,7 @@ internal sealed class TrainingStudioForm : Form
             new NegativeOption("30%", "30"), new NegativeOption("35%", "35"),
             new NegativeOption("ALL negatives", "all")
         });
-        negativeSelection.SelectedIndex = 0;
+        negativeSelection.SelectedIndex = 3;
         trainActions.Controls.AddRange([train,
             new Label { Text = "Minimum", AutoSize = true, Padding = new Padding(6, 7, 0, 0) },
             minimumResolution,
@@ -864,9 +864,9 @@ internal sealed class TrainingStudioForm : Form
             ? selectedNegatives.Value : "compare";
         string balanceNote = negativeMode switch
         {
-            "compare" => "\r\nTraining will compare reproducible 20%, 25%, 30%, and 35% negative subsets.",
+            "compare" => "\r\nTraining will compare source-balanced 20%, 25%, 30%, and 35% sampling targets; every negative remains eligible.",
             "all" => "\r\nTraining will use every eligible negative sample.",
-            _ => $"\r\nTraining will use a reproducible {negativeMode}% negative subset."
+            _ => $"\r\nTraining will target {negativeMode}% source-balanced negatives per epoch; every negative remains eligible."
         };
         int minimum = SelectedMinimumResolution();
         int eligible = store.Dataset.Samples.Count(sample => sample.Decision is "positive" or "negative" &&
