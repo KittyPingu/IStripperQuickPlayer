@@ -674,7 +674,20 @@ namespace IStripperQuickPlayer
                         customPlayer != null || PlaybackControlEnabled &&
                         playbackControlsAvailableForAccount &&
                         playbackBridgeLoaded,
-                    seekReady = playbackSeekReady
+                    seekReady = playbackSeekReady,
+                    movieRegistered = playbackMovieRegistered,
+                    decoderKind = playbackDecoderKind,
+                    seekReadinessMask = playbackSeekReadinessMask,
+                    readinessElapsedMilliseconds =
+                        PlaybackReadinessElapsedMilliseconds(),
+                    movieRegistrationMilliseconds =
+                        playbackMovieRegistrationMilliseconds >= 0
+                            ? (int?)playbackMovieRegistrationMilliseconds
+                            : null,
+                    seekReadinessMilliseconds =
+                        playbackSeekReadinessMilliseconds >= 0
+                            ? (int?)playbackSeekReadinessMilliseconds
+                            : null
                 },
                 queue = CreateRestApiQueue()
             };
@@ -1688,6 +1701,7 @@ namespace IStripperQuickPlayer
                             "IStripperGetDecoderKind");
                         playbackSeekingSupported =
                             playbackDecoderKind is 1 or 2;
+                        RecordPlaybackMovieRegistration();
                     }
                 }
                 if (!playbackMovieRegistered)
@@ -1698,6 +1712,8 @@ namespace IStripperQuickPlayer
                 {
                     playbackMovieRegistered = false;
                     playbackSeekReady = false;
+                    ResetPlaybackReadinessDiagnostics(
+                        GetCurrentAnimationPath());
                     playbackLastKnownElapsedMilliseconds = 0;
                     playbackTimelineDurationMilliseconds = 0;
                     if (CallPlaybackBridgeApi(
@@ -1710,6 +1726,7 @@ namespace IStripperQuickPlayer
                         "IStripperGetDecoderKind");
                     playbackSeekingSupported =
                         playbackDecoderKind is 1 or 2;
+                    RecordPlaybackMovieRegistration();
                 }
 
                 int elapsed = CallPlaybackBridgeApi(
@@ -1723,8 +1740,16 @@ namespace IStripperQuickPlayer
 
                 if (!playbackSeekReady && playbackSeekingSupported)
                 {
+                    bool wasSeekReady = playbackSeekReady;
                     int ready = CallPlaybackBridgeApi(
                         "IStripperIsSeekReady");
+                    if (playbackDecoderKind == 1)
+                    {
+                        int readinessMask = CallPlaybackBridgeApi(
+                            "IStripperGetSeekReadinessMask");
+                        if (readinessMask >= 0)
+                            playbackSeekReadinessMask = readinessMask;
+                    }
                     if (ready == 1 && playbackDecoderKind == 1)
                     {
                         int checkpoint = CallPlaybackBridgeApi(
@@ -1739,6 +1764,8 @@ namespace IStripperQuickPlayer
                     }
                     playbackSeekReady = ready == 1 || elapsed >=
                         PlaybackForcedReadyMilliseconds;
+                    if (!wasSeekReady && playbackSeekReady)
+                        RecordPlaybackSeekReady();
                 }
                 int checkpointBucket = elapsed / 5_000;
                 if (playbackDecoderKind == 1 && playbackSeekReady &&

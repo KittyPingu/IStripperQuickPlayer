@@ -353,14 +353,15 @@ def binary_frame_statistics(predicted, target, alpha):
     positive = bool(exterior_target.any()); negative = bool(not target.any())
     coverage = tp / max(1, int(exterior_target.sum()))
     area = int(exterior_prediction.sum()) / exterior_prediction.size if negative else None
+    small = bool(positive and target.mean() < .005)
     union = []
     for output in (person, person | predicted):
         union.append((int((output & desired).sum()), int((output & ~desired).sum()),
                       int((~output & desired).sum())))
     return {"tp": tp, "fp": fp, "fn": fn, "positive": positive,
         "recovered": positive and coverage >= .5,
-        "small": positive and target.mean() < .005,
-        "smallRecovered": positive and target.mean() < .005 and coverage >= .5,
+        "small": small,
+        "smallRecovered": small and coverage >= .5,
         "negative": negative, "falseArea": area,
         "materialFalse": negative and area > max(16 / exterior_prediction.size, .0001),
         "baselineUnion": union[0], "augmentedUnion": union[1]}
@@ -923,6 +924,7 @@ def self_test():
                      ("n", np.zeros_like(target, np.float32), np.zeros_like(target), loaded_alpha, .1)]
         selected, _ = calibrate(synthetic)
         assert "exteriorF2" in selected and "constraintsMet" in selected
+        json.dumps(selected)
         hard_path = root / "hard.json"
         save_hard_negative_set(hard_path, [(sample, "near-negative")])
         restored = load_hard_negative_set(hard_path, [sample])

@@ -151,6 +151,10 @@ namespace IStripperQuickPlayer
         private volatile bool playbackSeekingSupported = true;
         private volatile bool playbackSeekReady;
         private volatile int playbackDecoderKind;
+        private volatile int playbackSeekReadinessMask;
+        private long playbackReadinessStartedTicks;
+        private int playbackMovieRegistrationMilliseconds = -1;
+        private int playbackSeekReadinessMilliseconds = -1;
         private volatile bool playbackBusy;
         private volatile bool playbackControlsAvailableForAccount;
         private bool PlaybackControlEnabled => apiOnlyMode ||
@@ -3170,6 +3174,7 @@ namespace IStripperQuickPlayer
                 playbackSeekingSupported = true;
                 playbackSeekReady = false;
                 playbackDecoderKind = 0;
+                ResetPlaybackReadinessDiagnostics("");
                 playbackTimelineAnimationPath = "";
                 playbackTimelineDurationMilliseconds = 0;
                 playbackLastKnownElapsedMilliseconds = 0;
@@ -3201,6 +3206,7 @@ namespace IStripperQuickPlayer
             playbackSeekingSupported = true;
             playbackSeekReady = false;
             playbackDecoderKind = 0;
+            ResetPlaybackReadinessDiagnostics("");
             playbackNextMovieDiscoveryAt = DateTime.MinValue;
             playbackFastDecodeEnabled = false;
 
@@ -3796,6 +3802,7 @@ namespace IStripperQuickPlayer
                     playbackSeekingSupported = true;
                     playbackSeekReady = false;
                     playbackDecoderKind = 0;
+                    ResetPlaybackReadinessDiagnostics(animationPath);
                     UpdatePlaybackControlsEnabled();
                     playbackNextMovieDiscoveryAt = DateTime.MinValue;
                     playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
@@ -3866,7 +3873,9 @@ namespace IStripperQuickPlayer
                 }
 
                 SetTimerInterval(playbackTimelineTimer,
-                    PlaybackTimelineIntervalMilliseconds);
+                    playbackSeekReady
+                        ? PlaybackTimelineIntervalMilliseconds
+                        : PlaybackTransitionIntervalMilliseconds);
 
                 if (!playbackMovieRegistered &&
                     DateTime.UtcNow >= playbackNextMovieDiscoveryAt)
@@ -3902,10 +3911,11 @@ namespace IStripperQuickPlayer
                     {
                         DisableMovieCapture();
                         SetTimerInterval(playbackTimelineTimer,
-                            PlaybackTimelineIntervalMilliseconds);
+                            PlaybackTransitionIntervalMilliseconds);
                         playbackDecoderKind = discoveredDecoderKind;
                         playbackSeekingSupported =
                             playbackDecoderKind is 1 or 2;
+                        RecordPlaybackMovieRegistration();
                         ApplyIStripperPlayerVolume(
                             Volatile.Read(ref playerMode));
                         SetPlaybackBusy(playbackBusy);
@@ -3949,11 +3959,11 @@ namespace IStripperQuickPlayer
                             ? CallPlaybackApi("IStripperIsSeekReady")
                             : cachedSeekReady ? 1 : 0;
                     int readinessMask = !cachedSeekReady &&
-                        decoderKind == 1 && seekReady != 1 &&
+                        decoderKind == 1 &&
                         elapsed < PlaybackForcedReadyMilliseconds
                             ? CallPlaybackApi(
                                 "IStripperGetSeekReadinessMask")
-                            : 0;
+                            : -1;
                     return new PlaybackPollSnapshot(elapsed, total,
                         decoderKind, state, seekReady, readinessMask);
                 });
@@ -3997,7 +4007,17 @@ namespace IStripperQuickPlayer
                     return;
                 }
 
+                if (snapshot.SeekReadinessMask >= 0 &&
+                    snapshot.SeekReadinessMask != playbackSeekReadinessMask)
+                {
+                    playbackSeekReadinessMask = snapshot.SeekReadinessMask;
+                    Debug.WriteLine(
+                        $"Playback seek readiness mask 0x{snapshot.SeekReadinessMask:X} " +
+                        $"after {PlaybackReadinessElapsedMilliseconds()} ms.");
+                }
+
                 int seekReadyResult = snapshot.SeekReady;
+                bool wasSeekReady = playbackSeekReady;
                 if (!playbackSeekReady && playbackDecoderKind is 1 or 2 &&
                     seekReadyResult == 1 &&
                     (playbackDecoderKind != 2 || elapsed >= 3_500))
@@ -4028,6 +4048,8 @@ namespace IStripperQuickPlayer
                     trkPlaybackPosition.AccessibleDescription =
                         $"Seek readiness 0x{snapshot.SeekReadinessMask:X}";
                 }
+                if (!wasSeekReady && playbackSeekReady)
+                    RecordPlaybackSeekReady();
 
                 int reapplyAfter = playbackDecoderKind == 2 ? 3_500 : 500;
                 if (Math.Abs(requestedPlaybackSpeed - 1.0) > 0.001 &&
@@ -4070,6 +4092,10 @@ namespace IStripperQuickPlayer
                     UpdatePlaybackTime(elapsed, playbackTimelineDurationMilliseconds);
                 }
                 UpdatePlaybackControlsEnabled();
+                SetTimerInterval(playbackTimelineTimer,
+                    playbackSeekReady
+                        ? PlaybackTimelineIntervalMilliseconds
+                        : PlaybackTransitionIntervalMilliseconds);
             }
             catch
             {
@@ -4087,6 +4113,61 @@ namespace IStripperQuickPlayer
             string text =
                 $"{FormatPlaybackTime(elapsedMilliseconds)} / {FormatPlaybackTime(totalMilliseconds)}";
             lblPlaybackTime.SetDisplayText(text);
+        }
+
+        private void ResetPlaybackReadinessDiagnostics(string animationPath)
+        {
+            Volatile.Write(ref playbackReadinessStartedTicks,
+                string.IsNullOrEmpty(animationPath)
+                    ? 0 : DateTime.UtcNow.Ticks);
+            Volatile.Write(ref playbackMovieRegistrationMilliseconds, -1);
+            Volatile.Write(ref playbackSeekReadinessMilliseconds, -1);
+            playbackSeekReadinessMask = 0;
+        }
+
+        private int PlaybackReadinessElapsedMilliseconds()
+        {
+            long startedTicks = Volatile.Read(
+                ref playbackReadinessStartedTicks);
+            if (startedTicks <= 0)
+                return 0;
+            long elapsedTicks = Math.Max(0,
+                DateTime.UtcNow.Ticks - startedTicks);
+            return (int)Math.Min(int.MaxValue,
+                elapsedTicks / TimeSpan.TicksPerMillisecond);
+        }
+
+        private void RecordPlaybackMovieRegistration()
+        {
+            if (Volatile.Read(ref playbackReadinessStartedTicks) <= 0)
+            {
+                Interlocked.CompareExchange(
+                    ref playbackReadinessStartedTicks,
+                    DateTime.UtcNow.Ticks, 0);
+            }
+            int elapsed = PlaybackReadinessElapsedMilliseconds();
+            if (Interlocked.CompareExchange(
+                    ref playbackMovieRegistrationMilliseconds,
+                    elapsed, -1) == -1)
+            {
+                Debug.WriteLine(
+                    $"Playback movie registered after {elapsed} ms " +
+                    $"(decoder {playbackDecoderKind}).");
+            }
+        }
+
+        private void RecordPlaybackSeekReady()
+        {
+            int elapsed = PlaybackReadinessElapsedMilliseconds();
+            if (Interlocked.CompareExchange(
+                    ref playbackSeekReadinessMilliseconds,
+                    elapsed, -1) == -1)
+            {
+                Debug.WriteLine(
+                    $"Playback seeking ready after {elapsed} ms " +
+                    $"(decoder {playbackDecoderKind}, " +
+                    $"mask 0x{playbackSeekReadinessMask:X}).");
+            }
         }
 
         [DllImport("user32.dll")]
@@ -4816,6 +4897,7 @@ namespace IStripperQuickPlayer
                     playbackTimelineAnimationPath = "";
                     playbackMovieRegistered = false;
                     playbackSeekReady = false;
+                    ResetPlaybackReadinessDiagnostics("");
                     playbackLastKnownElapsedMilliseconds = 0;
                     playbackTimelineDurationMilliseconds = 0;
                 }
@@ -4961,6 +5043,7 @@ namespace IStripperQuickPlayer
                     playbackSeekingSupported = true;
                     playbackSeekReady = false;
                     playbackDecoderKind = 0;
+                    ResetPlaybackReadinessDiagnostics(newcardstring);
                     playbackLastKnownElapsedMilliseconds = 0;
                     playbackTimelineDurationMilliseconds = 0;
                     ArmMovieCapture();

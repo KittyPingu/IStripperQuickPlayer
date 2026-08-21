@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Persistent RVM preview worker for Training Studio label editing."""
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,8 @@ from PIL import Image
 from custom_show_worker import model_size
 from matanyone2_worker import clean_rvm_mask
 from rvm_worker import executable, fast_fp16, load_model, probe
+
+RVM_WARMUP_FRAMES = 16
 
 
 def send(**values):
@@ -23,6 +26,10 @@ def self_test():
                              "outputHeight": 1080})
     assert request[3] == 1234 and abs(request[4] - .65) < .0001
     assert request[2].name == "alpha.png" and request[5:] == (1920, 1080)
+    start, frames = warmup_window(1.0, 30)
+    assert frames == 16 and abs(start - .5) < .0001
+    start, frames = warmup_window(.1, 30)
+    assert frames == 4 and start == 0
     send(status="ok", message="rvm-preview self-test passed")
 
 
@@ -40,6 +47,11 @@ def parse_request(value):
     return source, destination, alpha_destination, frame_ms, threshold, output_width, output_height
 
 
+def warmup_window(target, fps):
+    frames = min(RVM_WARMUP_FRAMES, max(1, math.floor(target * fps) + 1))
+    return max(0., target - (frames - 1) / fps), frames
+
+
 def infer(value, torch, model, device, fp16, cache):
     import numpy as np
     source, destination, alpha_destination, frame_ms, threshold, output_width, output_height = parse_request(value)
@@ -52,8 +64,7 @@ def infer(value, torch, model, device, fp16, cache):
     reused_alpha = alpha is not None
     if alpha is None:
         target = frame_ms / 1000
-        start = max(0.0, target - 2.0)
-        warm_frames = max(1, round((target - start) * fps) + 1)
+        start, warm_frames = warmup_window(target, fps)
         frame_bytes = review_width * review_height * 3
         command = [executable("ffmpeg"), "-v", "error", "-ss", f"{start:.6f}",
         "-i", str(source), "-frames:v", str(warm_frames), "-vf",
@@ -111,7 +122,8 @@ def main():
             destination, threshold, device_name, width, height, cached, alpha_destination = infer(
                 value, torch, model, device, fp16, cache)
             send(status="mask", mask=str(destination), alphaThreshold=threshold,
-                 device=device_name, width=width, height=height, temporalLeadInSeconds=2,
+                 device=device_name, width=width, height=height,
+                 temporalWarmupFrames=RVM_WARMUP_FRAMES,
                  alphaCached=cached, alpha=str(alpha_destination) if alpha_destination else None)
         except Exception as error:
             send(status="error", message=str(error))

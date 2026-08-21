@@ -147,6 +147,16 @@ namespace
     static_assert(!DecoderFramesReady(0, 0));
     static_assert(!DecoderFramesReady(30, 20));
     static_assert(DecoderFramesReady(30, 30));
+    constexpr bool AlphaDecoderProgressed(int previousFrame,
+        int currentFrame, int previousGeneration, int currentGeneration)
+    {
+        return currentFrame > previousFrame ||
+            currentGeneration != previousGeneration;
+    }
+
+    static_assert(!AlphaDecoderProgressed(12, 12, 4, 4));
+    static_assert(AlphaDecoderProgressed(12, 13, 4, 4));
+    static_assert(AlphaDecoderProgressed(12, 12, 4, 5));
     constexpr int RequiredAlphaProgressObservations = 4;
     static_assert(RequiredAlphaProgressObservations > 1);
 
@@ -592,7 +602,8 @@ namespace
     void* g_seekReadinessInfo = nullptr;
     void* g_seekReadinessOutput = nullptr;
     int g_seekReadinessMovieFrame = -1;
-    std::uint64_t g_seekReadinessAlphaSignature = 0;
+    int g_seekReadinessAlphaFrame = -1;
+    int g_seekReadinessAlphaGeneration = -1;
     int g_seekReadinessAlphaProgress = 0;
     void* g_seekReadinessWmvReader = nullptr;
     int g_seekReadinessWmvFrame = -1;
@@ -7156,7 +7167,8 @@ namespace
         g_seekReadinessInfo = nullptr;
         g_seekReadinessOutput = nullptr;
         g_seekReadinessMovieFrame = -1;
-        g_seekReadinessAlphaSignature = 0;
+        g_seekReadinessAlphaFrame = -1;
+        g_seekReadinessAlphaGeneration = -1;
         g_seekReadinessAlphaProgress = 0;
         g_seekReadinessWmvReader = nullptr;
         g_seekReadinessWmvFrame = -1;
@@ -7623,6 +7635,12 @@ namespace
             return false;
         }
 
+        auto animationBytes = static_cast<const unsigned char*>(animation);
+        const int alphaFrame = *reinterpret_cast<const int*>(
+            animationBytes + AnimationAlphaFrameOffset);
+        const int alphaGeneration = *reinterpret_cast<const int*>(
+            animationBytes + AnimationAlphaGenerationOffset);
+
         AcquireSRWLockExclusive(&g_seekReadinessLock);
         const bool sameIdentity =
             g_seekReadinessAnimation == animation &&
@@ -7636,32 +7654,6 @@ namespace
             ReleaseSRWLockExclusive(&g_seekReadinessLock);
             return true;
         }
-        ReleaseSRWLockExclusive(&g_seekReadinessLock);
-
-        auto animationBytes =
-            static_cast<const unsigned char*>(animation);
-        const auto state =
-            animationBytes + AnimationAlphaScratch1Offset;
-        const std::size_t stateSize =
-            AnimationSsvOffset - AnimationAlphaScratch1Offset;
-        auto outputBytes = static_cast<const unsigned char*>(output);
-        std::uint64_t signature = 1469598103934665603ULL;
-        bool hasState = false;
-        bool hasAlpha = false;
-        for (std::size_t index = 0; index < stateSize; index++)
-        {
-            hasState |= state[index] != 0;
-            signature ^= state[index];
-            signature *= 1099511628211ULL;
-        }
-        for (std::size_t index = 0; index < outputSize; index++)
-        {
-            hasAlpha |= outputBytes[index] != 0;
-            signature ^= outputBytes[index];
-            signature *= 1099511628211ULL;
-        }
-
-        AcquireSRWLockExclusive(&g_seekReadinessLock);
         if (!sameIdentity)
         {
             g_seekReadinessAnimation = animation;
@@ -7670,14 +7662,16 @@ namespace
             g_seekReadinessOutput = output;
             g_seekReadinessAlphaProgress = 0;
         }
-        else if (hasState && hasAlpha &&
+        else if (
             movieFrame > g_seekReadinessMovieFrame &&
-            signature != g_seekReadinessAlphaSignature)
+            AlphaDecoderProgressed(g_seekReadinessAlphaFrame, alphaFrame,
+                g_seekReadinessAlphaGeneration, alphaGeneration))
         {
             g_seekReadinessAlphaProgress++;
         }
         g_seekReadinessMovieFrame = movieFrame;
-        g_seekReadinessAlphaSignature = signature;
+        g_seekReadinessAlphaFrame = alphaFrame;
+        g_seekReadinessAlphaGeneration = alphaGeneration;
         const bool ready =
             g_seekReadinessAlphaProgress >=
                 RequiredAlphaProgressObservations;
