@@ -68,9 +68,6 @@ namespace
     std::string g_selectedDressingRoomResource;
     volatile LONG g_dressingRoomHookInstalled = 0;
     volatile LONG g_dressingRoomCacheScanPending = 0;
-    volatile LONG g_dressingRoomUrlSignalGeneration = 0;
-    volatile LONG g_dressingRoomLastScanGeneration = 0;
-    alignas(8) volatile LONG64 g_dressingRoomRequestStarted = 0;
     alignas(8) volatile LONG64 g_dressingRoomLastScanStarted = 0;
     PVOID volatile g_dressingRoomUrlRegion = nullptr;
     SRWLOCK g_dressingRoomObjectsLock = SRWLOCK_INIT;
@@ -932,6 +929,73 @@ namespace
         return false;
     }
 
+    bool CacheDressingRoomUrlRegion()
+    {
+        static const std::string marker = "/dressingroom/";
+        static const std::wstring wideMarker(marker.begin(), marker.end());
+        const auto asciiSearcher = std::boyer_moore_horspool_searcher(
+            marker.begin(), marker.end());
+        const auto wideSearcher = std::boyer_moore_horspool_searcher(
+            wideMarker.begin(), wideMarker.end());
+        SYSTEM_INFO systemInfo = {};
+        GetSystemInfo(&systemInfo);
+        const ULONGLONG started = GetTickCount64();
+        std::size_t scannedRegions = 0;
+        std::size_t scannedBytes = 0;
+        auto cursor = static_cast<unsigned char*>(
+            systemInfo.lpMinimumApplicationAddress);
+        const auto maximum = static_cast<unsigned char*>(
+            systemInfo.lpMaximumApplicationAddress);
+        while (cursor < maximum)
+        {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(cursor, &memory, sizeof(memory)) != sizeof(memory))
+                break;
+            auto next = static_cast<unsigned char*>(memory.BaseAddress) +
+                memory.RegionSize;
+            const DWORD blocked = PAGE_GUARD | PAGE_NOACCESS;
+            const DWORD writable = PAGE_READWRITE | PAGE_WRITECOPY |
+                PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+            if (memory.State == MEM_COMMIT && memory.Type == MEM_PRIVATE &&
+                (memory.Protect & blocked) == 0 &&
+                (memory.Protect & writable) != 0 &&
+                memory.RegionSize > marker.size())
+            {
+                ++scannedRegions;
+                scannedBytes += memory.RegionSize;
+                const char* begin = static_cast<const char*>(memory.BaseAddress);
+                const char* end = begin + memory.RegionSize;
+                const bool asciiFound = std::search(begin, end,
+                    asciiSearcher) != end;
+                const wchar_t* wideBegin = reinterpret_cast<const wchar_t*>(
+                    (reinterpret_cast<std::uintptr_t>(begin) + 1) &
+                    ~std::uintptr_t(1));
+                const wchar_t* wideEnd = reinterpret_cast<const wchar_t*>(
+                    reinterpret_cast<std::uintptr_t>(end) &
+                    ~std::uintptr_t(1));
+                const bool wideFound = !asciiFound && std::search(wideBegin,
+                    wideEnd, wideSearcher) != wideEnd;
+                if (asciiFound || wideFound)
+                {
+                    InterlockedExchangePointer(&g_dressingRoomUrlRegion,
+                        memory.BaseAddress);
+                    DressingRoomLog("Background URL region cached regions=%zu bytes=%zu elapsedMs=%llu",
+                        scannedRegions, scannedBytes,
+                        static_cast<unsigned long long>(
+                            GetTickCount64() - started));
+                    return true;
+                }
+            }
+            if (next <= cursor)
+                break;
+            cursor = next;
+        }
+        DressingRoomLog("Background URL region not found regions=%zu bytes=%zu elapsedMs=%llu",
+            scannedRegions, scannedBytes,
+            static_cast<unsigned long long>(GetTickCount64() - started));
+        return false;
+    }
+
     HRESULT RequestDressingRoomUrl(int dressingRoomId)
     {
         HRESULT hook = InstallDressingRoomUrlHook();
@@ -940,11 +1004,6 @@ namespace
         AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
         g_dressingRoomUrl.clear();
         ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
-        InterlockedExchange(&g_dressingRoomLastScanGeneration,
-            InterlockedCompareExchange(
-                &g_dressingRoomUrlSignalGeneration, 0, 0));
-        InterlockedExchange64(&g_dressingRoomRequestStarted,
-            static_cast<LONG64>(GetTickCount64()));
         InterlockedExchange64(&g_dressingRoomLastScanStarted, 0);
         InterlockedExchange(&g_dressingRoomCacheScanPending, 1);
 
@@ -2368,17 +2427,6 @@ namespace
                 IsSignal(metaObject, signalIndex, "nextRemoved(int)") ||
                 IsSignal(metaObject, signalIndex, "nextRemoved()") || changed;
         }
-        else if (senderClass != nullptr &&
-            std::strcmp(senderClass, "ViewModel::DressingRoomData") == 0 &&
-            (IsSignal(metaObject, signalIndex, "videoSourceChanged()") ||
-             IsSignal(metaObject, signalIndex, "videoPreviewChanged()") ||
-             IsSignal(metaObject, signalIndex, "vignetteOverlayChanged()") ||
-             IsSignal(metaObject, signalIndex, "takeOverlayChanged()") ||
-             IsSignal(metaObject, signalIndex, "previewImageChanged()")))
-        {
-            InterlockedIncrement(&g_dressingRoomUrlSignalGeneration);
-        }
-
         const auto original = reinterpret_cast<QMetaActivate>(
             InterlockedCompareExchangePointer(
                 &g_originalQMetaActivate, nullptr, nullptr));
@@ -10553,7 +10601,11 @@ IStripperPrepareDressingRoomUrls()
     __try
     {
         DressingRoomLog("Background Dressing Room URL preparation started");
-        return RequestDressingRoomUrl(1);
+        const HRESULT requested = RequestDressingRoomUrl(1);
+        if (FAILED(requested))
+            return requested;
+        CacheDressingRoomUrlRegion();
+        return requested;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
@@ -10602,10 +10654,6 @@ IStripperRequestDressingRoomUrl(SIZE_T packetAddress)
         if (!IsReadable(resourceName, 1) ||
             strnlen_s(resourceName, 8188) == 8188)
             return E_INVALIDARG;
-        wchar_t logPath[MAX_PATH] = {};
-        if (GetTempPathW(_countof(logPath), logPath) > 0 &&
-            wcscat_s(logPath, L"IstripperQuickPlayer-dressingroom.log") == 0)
-            DeleteFileW(logPath);
         DressingRoomLog("Request drcId=%d resource=%s", *packet,
             resourceName);
         AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
@@ -10639,30 +10687,15 @@ IStripperConsumeDressingRoomUrl(SIZE_T packetAddress)
                 InterlockedCompareExchange(
                     &g_dressingRoomCacheScanPending, 0, 0) == 0)
                 return HRESULT_FROM_WIN32(ERROR_NOT_READY);
-            const LONG generation = InterlockedCompareExchange(
-                &g_dressingRoomUrlSignalGeneration, 0, 0);
-            const LONG previousGeneration = InterlockedCompareExchange(
-                &g_dressingRoomLastScanGeneration, 0, 0);
             const ULONGLONG now = GetTickCount64();
-            const ULONGLONG requestStarted = static_cast<ULONGLONG>(
-                InterlockedCompareExchange64(
-                    &g_dressingRoomRequestStarted, 0, 0));
             const ULONGLONG lastScanStarted = static_cast<ULONGLONG>(
                 InterlockedCompareExchange64(
                     &g_dressingRoomLastScanStarted, 0, 0));
-            const bool signalReceived = generation != previousGeneration;
-            const bool fallbackReady = now - requestStarted >= 300;
-            const bool scanThrottleReady = lastScanStarted == 0 ||
-                now - lastScanStarted >= 500;
-            if ((!signalReceived && !fallbackReady) || !scanThrottleReady)
+            if (lastScanStarted != 0 && now - lastScanStarted < 500)
                 return HRESULT_FROM_WIN32(ERROR_NOT_READY);
-            InterlockedExchange(&g_dressingRoomLastScanGeneration,
-                generation);
             InterlockedExchange64(&g_dressingRoomLastScanStarted,
                 static_cast<LONG64>(now));
-            DressingRoomLog("URL scan triggered signal=%d generation=%ld previous=%ld elapsedMs=%llu",
-                signalReceived ? 1 : 0, generation, previousGeneration,
-                static_cast<unsigned long long>(now - requestStarted));
+            DressingRoomLog("URL scan triggered immediately");
             if (!FindCachedDressingRoomUrl(selected))
                 return HRESULT_FROM_WIN32(ERROR_NOT_READY);
             InterlockedExchange(&g_dressingRoomCacheScanPending, 0);
