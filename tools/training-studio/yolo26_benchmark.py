@@ -11,8 +11,14 @@ import tempfile
 import time
 from pathlib import Path
 
-EXPORT_FORMAT = 1
-TRAINING_REVISION = 1
+# The configured runtime launches the real interpreter through a wrapper, so
+# even a visible PowerShell window appears non-interactive to Ultralytics. Its
+# carriage-return progress then becomes one permanent line per update. Keep
+# Ultralytics' batch bars quiet; our callbacks emit one durable line per epoch.
+os.environ.setdefault("YOLO_VERBOSE", "False")
+
+EXPORT_FORMAT = 2
+TRAINING_REVISION = 2
 INPUT_SIZE = 1024
 VARIANTS = {"yolo26s-sem": "semantic", "yolo26s-seg": "segment"}
 NEGATIVE_FRAME_CEILING = .05
@@ -105,6 +111,82 @@ def crop_square(value, bounds, fill=0):
     return output
 
 
+def source_tile_bounds(mask, alpha, size=INPUT_SIZE):
+    """Choose a native-resolution inference tile, preserving deployment scale."""
+    tiles = inference_tiles(alpha, size)
+    if not tiles:
+        return square_bounds(mask, alpha)
+    if (mask > 0).any():
+        left, top, right, bottom = max(tiles, key=lambda value: int(
+            (mask[value[1]:value[3], value[0]:value[2]] > 0).sum()))
+        if not (mask[top:bottom, left:right] > 0).any():
+            return square_bounds(mask, alpha)
+    else:
+        left, top, right, bottom = tiles[0]
+    return left, top, size
+
+
+def mine_training_hard_negatives(root, samples, model_path, device, limit_per_source=3):
+    """Mine one semantic false-positive tile per training source."""
+    import cv2
+    import numpy as np
+    import torch
+    from ultralytics import YOLO
+    model_path = Path(model_path)
+    if not model_path.is_file():
+        raise RuntimeError(f"Hard-negative model does not exist: {model_path}")
+    grouped = {}
+    for sample in samples:
+        if sample["_exportSplit"] == "train" and sample["decision"] == "negative":
+            grouped.setdefault(sample["sourceId"], []).append(sample)
+    candidates = []
+    for source_id, values in sorted(grouped.items()):
+        ordered = sorted(values, key=lambda value: hashlib.sha256(
+            value["id"].encode()).digest())
+        candidates.extend(ordered[:limit_per_source])
+    model = YOLO(str(model_path)); model.model.to(device).eval()
+    best_by_source = {}
+    for index, sample in enumerate(candidates, 1):
+        frame = cv2.imread(str(root / sample["framePath"]), cv2.IMREAD_COLOR)
+        alpha_path = sample.get("rvmAlphaPath") or sample.get("rvmPersonMaskPath")
+        if frame is None or not alpha_path:
+            continue
+        alpha = read_gray(root / alpha_path).astype(np.float32)
+        alpha /= 65535. if alpha.max(initial=0) > 255 else 255.
+        for left, top, right, bottom in inference_tiles(alpha, INPUT_SIZE):
+            height, width = bottom - top, right - left
+            tile = np.full((INPUT_SIZE, INPUT_SIZE, 3), (124, 116, 104), np.uint8)
+            tile[:height, :width] = frame[top:bottom, left:right]
+            probability = candidate_probabilities(model, "yolo26s-sem", tile, device)
+            false_fraction = float((probability >= .25).mean())
+            score = (false_fraction, float(probability.max(initial=0)))
+            previous = best_by_source.get(sample["sourceId"])
+            if previous is None or score > previous[0]:
+                best_by_source[sample["sourceId"]] = (score, sample, (left, top, INPUT_SIZE))
+        if index % 100 == 0:
+            emit("hard-negative-mining",
+                 f"Scanned {index:,}/{len(candidates):,} training negatives",
+                 completed=index, total=len(candidates))
+    mined = []
+    for score, sample, bounds in best_by_source.values():
+        if score[0] <= .0001:
+            continue
+        value = dict(sample)
+        value["id"] = sample["id"] + "-hardneg"
+        value["_forcedBounds"] = bounds
+        value["_forcedNegative"] = True
+        value["_recordSha256"] = hashlib.sha256(
+            (sample["_recordSha256"] + repr(bounds)).encode()).hexdigest()
+        mined.append(value)
+    del model
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    emit("hard-negative-mining",
+         f"Mined {len(mined):,} source-balanced training hard negatives",
+         completed=len(mined), total=len(best_by_source))
+    return mined
+
+
 def instance_polygons(mask):
     import cv2
     import numpy as np
@@ -146,7 +228,8 @@ def prepare_dataset(root, output, manifest, samples, variant, size=INPUT_SIZE, d
         if frame is None or not alpha_path: raise RuntimeError(f"Sample {sample['id']} is incomplete")
         alpha = read_gray(root / alpha_path).astype(np.float32)
         alpha /= 65535. if alpha.max(initial=0) > 255 else 255.
-        bounds = square_bounds(prop, alpha)
+        bounds = tuple(sample.get("_forcedBounds") or
+                       source_tile_bounds(prop, alpha, size))
         image_crop = crop_square(frame, bounds, (124, 116, 104))
         prop_crop = crop_square(prop, bounds)
         alpha_crop = crop_square(alpha, bounds)
@@ -171,16 +254,23 @@ def prepare_dataset(root, output, manifest, samples, variant, size=INPUT_SIZE, d
         else:
             label_path = destination / "labels" / split / f"{sample['id']}.txt"
             label_path.parent.mkdir(parents=True, exist_ok=True)
-            if sample.get("decision") == "positive" and sample.get("instanceMaskPath"):
+            if not sample.get("_forcedNegative") and sample.get("decision") == "positive" and sample.get("instanceMaskPath"):
                 instances = read_gray(root / sample["instanceMaskPath"])
                 instances = crop_square(instances, bounds)
                 instances = cv2.resize(instances, (size, size), interpolation=cv2.INTER_NEAREST)
                 lines, polygon_iou = instance_polygons(instances)
-                if polygon_iou < .98: failures.append({"sampleId": sample["id"], "iou": polygon_iou})
+                if polygon_iou < .98:
+                    failures.append({"sampleId": sample["id"], "iou": polygon_iou,
+                                     "reason": "mask-not-representable-as-yolo-polygons"})
+                    for generated in (image_path, alpha_path_out, truth_path, label_path):
+                        generated.unlink(missing_ok=True)
+                    continue
                 label_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
             else: label_path.write_text("", encoding="utf-8")
         exported.append({"id": sample["id"], "sourceId": sample["sourceId"], "split": split,
-            "decision": sample["decision"], "recordSha256": sample["_recordSha256"],
+            "decision": "negative" if sample.get("_forcedNegative") else sample["decision"],
+            "hardNegative": bool(sample.get("_forcedNegative")),
+            "recordSha256": sample["_recordSha256"],
             "crop": list(bounds), "maskFraction": float((prop_crop > 0).mean()),
             "polygonIoU": polygon_iou})
         if index % 250 == 0: emit("prepare", f"Prepared {index:,}/{len(samples):,} YOLO crops",
@@ -189,7 +279,8 @@ def prepare_dataset(root, output, manifest, samples, variant, size=INPUT_SIZE, d
         "variant": variant, "inputSize": size, "samples": exported, "polygonFailures": failures})
     if failures:
         atomic_json(output / "polygon-conversion-failures.json", failures)
-        raise RuntimeError(f"{len(failures)} instance masks converted below 0.98 IoU")
+        emit("prepare", f"Excluded {len(failures):,} masks that cannot be represented at 0.98 polygon IoU",
+             completed=len(failures), total=len(samples))
     data = {"path": str(destination), "train": "images/train", "val": "images/validation",
             "test": "images/test"}
     if variant == "yolo26s-sem":
@@ -258,13 +349,51 @@ def candidate_probabilities(model, variant, image_or_path, device):
 
 def aggregate_at_threshold(values, threshold):
     predictions = []
-    for probability, target, alpha in values:
-        retained, _, _ = filter_prediction(probability, alpha, threshold, 1., 0., 96, INPUT_SIZE)
+    for value in values:
+        probability, target, alpha = value[:3]
+        association_input_size = value[3] if len(value) > 3 else INPUT_SIZE
+        retained, _, _ = filter_prediction(
+            probability, alpha, threshold, 1., 0., 96, association_input_size)
         predictions.append((retained, target, alpha))
     metrics = binary_metrics(predictions); metrics["threshold"] = threshold
     metrics["constraintsMet"] = metrics["negativeFrameFalsePositiveRate"] <= NEGATIVE_FRAME_CEILING and \
         metrics["negativeP95AddedArea"] <= NEGATIVE_P95_AREA_CEILING
     return metrics
+
+
+def select_threshold(options):
+    feasible = [value for value in options if value["constraintsMet"]]
+    if feasible:
+        return max(feasible, key=lambda value: (
+            value["exteriorRecall"], value["exteriorF2"], value["exteriorPrecision"]))
+    # If no threshold satisfies both ceilings, prefer the closest one rather
+    # than the highest-recall (usually lowest) threshold, which can flood
+    # negative frames with false positives.
+    return min(options, key=lambda value: (constraint_violation(value),
+        -value["exteriorRecall"], -value["exteriorF2"], -value["exteriorPrecision"]))
+
+
+def constraint_violation(value):
+    frame_excess = max(0., value["negativeFrameFalsePositiveRate"] /
+                       NEGATIVE_FRAME_CEILING - 1.)
+    area_excess = max(0., value["negativeP95AddedArea"] /
+                      NEGATIVE_P95_AREA_CEILING - 1.)
+    return frame_excess + area_excess
+
+
+def source_validation_subset(samples, limit):
+    eligible = [value for value in samples if value["_exportSplit"] == "validation"]
+    ordered = sorted(eligible, key=lambda value: hashlib.sha256(value["id"].encode()).digest())
+    selected, sources = [], set()
+    for value in ordered:
+        if value["sourceId"] not in sources:
+            selected.append(value); sources.add(value["sourceId"])
+            if len(selected) >= limit: return selected
+    for value in ordered:
+        if value not in selected:
+            selected.append(value)
+            if len(selected) >= limit: break
+    return selected
 
 
 def evaluate(model_path, variant, dataset, split, device):
@@ -283,13 +412,12 @@ def evaluate(model_path, variant, dataset, split, device):
         values.append((probability, target, alpha))
         if index % 100 == 0: emit("evaluation", f"Evaluating {split} {index:,}/{len(images):,}")
     options = [aggregate_at_threshold(values, value / 100) for value in range(5, 96, 5)]
-    feasible = [value for value in options if value["constraintsMet"]]
-    best = max(feasible or options, key=lambda value: (value["constraintsMet"],
-        value["exteriorRecall"], value["exteriorF2"], value["exteriorPrecision"]))
+    best = select_threshold(options)
     return best, values, elapsed / max(1, len(images))
 
 
-def evaluate_sources(model_path, variant, root, samples, split, device):
+def evaluate_sources(model_path, variant, root, samples, split, device,
+                     calibrated_threshold=None):
     """Evaluate tiled model output at each accepted frame's original resolution."""
     import cv2
     import numpy as np
@@ -299,22 +427,32 @@ def evaluate_sources(model_path, variant, root, samples, split, device):
     values, elapsed = [], 0.
     for index, sample in enumerate(selected, 1):
         rgb, target, alpha = load_arrays(root, sample)
-        probability = np.zeros(target.shape, np.float32); started = time.perf_counter()
+        probability_sum = np.zeros(target.shape, np.float32)
+        weight_sum = np.zeros(target.shape, np.float32)
+        started = time.perf_counter()
         for left, top, right, bottom in inference_tiles(alpha, INPUT_SIZE):
             height, width = bottom - top, right - left
             tile = np.full((INPUT_SIZE, INPUT_SIZE, 3), (104, 116, 124), np.uint8)
             tile[:height, :width] = rgb[top:bottom, left:right, ::-1]
             tile_probability = candidate_probabilities(model, variant, tile, device)
-            probability[top:bottom, left:right] = np.maximum(
-                probability[top:bottom, left:right], tile_probability[:height, :width])
+            wy = np.hanning(max(3, height))[:height]
+            wx = np.hanning(max(3, width))[:width]
+            weight = np.maximum(.05, wy[:, None] * wx[None, :]).astype(np.float32)
+            probability_sum[top:bottom, left:right] += \
+                tile_probability[:height, :width] * weight
+            weight_sum[top:bottom, left:right] += weight
         elapsed += time.perf_counter() - started
-        values.append((probability, target, alpha))
+        probability = np.divide(probability_sum, weight_sum,
+            out=np.zeros_like(probability_sum), where=weight_sum > 0)
+        # Source tiles are evaluated at native pixel scale, so the 96px RVM
+        # association distance must remain 96px regardless of full-frame size.
+        values.append((probability, target, alpha, min(target.shape)))
         if index % 100 == 0:
             emit("evaluation", f"Evaluating source-resolution {split} {index:,}/{len(selected):,}")
-    options = [aggregate_at_threshold(values, value / 100) for value in range(5, 96, 5)]
-    feasible = [value for value in options if value["constraintsMet"]]
-    best = max(feasible or options, key=lambda value: (value["constraintsMet"],
-        value["exteriorRecall"], value["exteriorF2"], value["exteriorPrecision"]))
+    options = [aggregate_at_threshold(values, calibrated_threshold)] if \
+        calibrated_threshold is not None else [
+            aggregate_at_threshold(values, value / 100) for value in range(5, 96, 5)]
+    best = select_threshold(options)
     return best, elapsed / max(1, len(selected))
 
 
@@ -351,7 +489,11 @@ def train(args):
     holdout = [value for value in samples if value["_sealed"]]
     trainable = [value for value in samples if not value["_sealed"]]
     if not holdout or not trainable: raise RuntimeError("YOLO benchmark requires trainable and sealed samples")
-    all_samples = trainable + holdout
+    hard_negatives = []
+    if args.hard_negative_model and not args.evaluate_only:
+        hard_negatives = mine_training_hard_negatives(root, trainable,
+            args.hard_negative_model, torch.device("cuda:0"))
+    all_samples = trainable + hard_negatives + holdout
     # Keep this compatible with snapshots written before shared exports existed.
     snapshot_fingerprint = hashlib.sha256("\n".join(sorted(
         value["_recordSha256"] for value in all_samples)).encode()).hexdigest()
@@ -367,14 +509,19 @@ def train(args):
         raise RuntimeError("A source leaked between training and sealed holdout")
     pretrained = output / "pretrained" / (args.variant + ".pt")
     pretrained.parent.mkdir(parents=True, exist_ok=True)
-    model = YOLO(str((output / "ultralytics" / "weights" / "last.pt") if args.resume else pretrained))
-    pretrained_path = pretrained if pretrained.is_file() else Path(model.ckpt_path or pretrained)
+    model = None if args.evaluate_only else YOLO(str(
+        (output / "ultralytics" / "weights" / "last.pt") if args.resume else pretrained))
+    pretrained_path = pretrained if pretrained.is_file() else Path(
+        model.ckpt_path if model is not None and model.ckpt_path else pretrained)
     snapshot = {"schemaVersion": 1, "datasetId": manifest["datasetId"], "variant": args.variant,
         "trainingRevision": TRAINING_REVISION, "exportFormat": EXPORT_FORMAT,
         "inputSize": INPUT_SIZE, "ultralyticsVersion": ultralytics.__version__,
         "pretrainedWeight": pretrained_path.name,
         "pretrainedSha256": digest(pretrained_path) if pretrained_path.is_file() else None,
         "datasetSnapshotSha256": snapshot_fingerprint,
+        "hardNegativeModelSha256": digest(args.hard_negative_model)
+            if args.hard_negative_model else None,
+        "hardNegativeCount": len(hard_negatives),
         "sharedExport": str(dataset),
         "counts": {name: sum(value["split"] == name for value in exported)
                    for name in ("train", "validation", "test", "holdout")},
@@ -386,15 +533,15 @@ def train(args):
             "outsideSafety": sum(value["decision"] == "positive" and
                 not .005 <= value["maskFraction"] <= .30 for value in exported)}}
     snapshot_path = output / "dataset-snapshot.json"
-    if args.resume and snapshot_path.is_file():
+    if (args.resume or args.evaluate_only) and snapshot_path.is_file():
         previous = json.loads(snapshot_path.read_text(encoding="utf-8"))
         for key in ("variant", "trainingRevision", "exportFormat", "inputSize",
                     "ultralyticsVersion", "datasetSnapshotSha256"):
             if previous.get(key) != snapshot.get(key):
                 raise RuntimeError(f"Resume configuration mismatch: {key}")
     atomic_json(snapshot_path, snapshot)
-    emit("setup", f"Training {args.variant} on cuda", architecture=args.variant,
-         frameCount=len(exported), holdoutCount=len(holdout))
+    emit("setup", f"{'Evaluating' if args.evaluate_only else 'Training'} {args.variant} on cuda",
+         architecture=args.variant, frameCount=len(exported), holdoutCount=len(holdout))
     def epoch_callback(trainer):
         metrics = trainer.metrics or {}; fitness = float(trainer.fitness or 0.)
         if args.variant == "yolo26s-sem":
@@ -406,37 +553,54 @@ def train(args):
                  validationDice=fitness,
                  validationPrecision=float(metrics.get("metrics/precision(M)", 0.)),
                  validationRecall=float(metrics.get("metrics/recall(M)", 0.)))
-    model.add_callback("on_fit_epoch_end", epoch_callback)
-    model.train(data=str(dataset / "dataset.yaml"), task=VARIANTS[args.variant],
-        epochs=args.epochs, patience=20, imgsz=INPUT_SIZE, batch=-1, device=0, optimizer="AdamW",
-        project=str(output), name="ultralytics", exist_ok=True, lr0=.001,
-        mosaic=.25, mixup=0., copy_paste=0., fliplr=.5, flipud=0., degrees=3., scale=.25,
-        save_period=5, cache="disk", fraction=args.fraction, resume=args.resume, verbose=False)
+    if not args.evaluate_only:
+        model.add_callback("on_fit_epoch_end", epoch_callback)
+        model.train(data=str(dataset / "dataset.yaml"), task=VARIANTS[args.variant],
+            epochs=args.epochs, patience=20, imgsz=INPUT_SIZE, batch=-1, device=0, optimizer="AdamW",
+            project=str(output), name="ultralytics", exist_ok=True, lr0=.001,
+            mosaic=.25, mixup=0., copy_paste=0., fliplr=.5, flipud=0., degrees=3., scale=.25,
+            save_period=5, cache="disk", fraction=args.fraction, resume=args.resume, verbose=False)
     weights = output / "ultralytics" / "weights"
-    candidates = sorted(weights.glob("epoch*.pt")) + [weights / name for name in ("best.pt", "last.pt")]
+    selected_checkpoint = output / "benchmark" / "selected.pt"
+    candidates = [selected_checkpoint] if args.finalize_selected else \
+        sorted(weights.glob("epoch*.pt")) + [selected_checkpoint,
+            weights / "best.pt", weights / "last.pt"]
     results = []
     device = torch.device("cuda:0")
+    checkpoint_samples = source_validation_subset(
+        trainable, args.source_checkpoint_limit)
     for checkpoint in candidates:
         if not checkpoint.is_file(): continue
-        validation, values, speed = evaluate(checkpoint, args.variant, dataset, "validation", device)
+        validation, speed = evaluate_sources(checkpoint, args.variant, root,
+            checkpoint_samples, "validation", device)
         results.append({"checkpoint": str(checkpoint), "metrics": validation, "secondsPerCrop": speed,
-                        "values": values})
-    winner = max(results, key=lambda value: (value["metrics"]["constraintsMet"],
-        value["metrics"]["exteriorRecall"], value["metrics"]["exteriorF2"]))
+                        })
+    feasible_results = [value for value in results if value["metrics"]["constraintsMet"]]
+    winner = max(feasible_results, key=lambda value: (
+        value["metrics"]["exteriorRecall"], value["metrics"]["exteriorF2"])) \
+        if feasible_results else min(results, key=lambda value: (
+            constraint_violation(value["metrics"]),
+            -value["metrics"]["exteriorRecall"], -value["metrics"]["exteriorF2"]))
     selected_path = Path(winner["checkpoint"])
     if selected_path.name not in ("best.pt", "last.pt"):
         retained = output / "benchmark" / "selected.pt"
         retained.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(selected_path, retained); winner["checkpoint"] = str(retained)
+        if selected_path.resolve() != retained.resolve():
+            shutil.copy2(selected_path, retained)
+        winner["checkpoint"] = str(retained)
+    crop_validation, review_values, crop_speed = evaluate(
+        winner["checkpoint"], args.variant, dataset, "validation", device)
+    winner["metrics"] = crop_validation
+    winner["secondsPerCrop"] = crop_speed
     validation, source_validation_speed = evaluate_sources(winner["checkpoint"], args.variant,
         root, trainable, "validation", device)
     test, test_speed = evaluate_sources(winner["checkpoint"], args.variant,
-        root, trainable, "test", device)
+        root, trainable, "test", device, validation["threshold"])
     sealed, sealed_speed = evaluate_sources(winner["checkpoint"], args.variant,
-        root, holdout, "holdout", device)
+        root, holdout, "holdout", device, validation["threshold"])
     baseline = evaluate_v1_on_samples(root, [value for value in trainable if value["_exportSplit"] == "validation"], device)
     review = output / "benchmark" / "review"
-    save_review(dataset, winner["values"], winner["metrics"]["threshold"], review)
+    save_review(dataset, review_values, winner["metrics"]["threshold"], review)
     result = {"schemaVersion": 1, "benchmarkOnly": True, "architecture": args.variant,
         "selectedCheckpoint": winner["checkpoint"], "validation": validation,
         "cropValidation": winner["metrics"],
@@ -468,6 +632,13 @@ def self_test():
     alpha = np.zeros((64, 64), np.float32); alpha[12:52, 12:52] = 1
     bounds = square_bounds(mask, alpha); cropped = crop_square(mask, bounds)
     assert cropped.ndim == 2 and cropped.max() == 2
+    option = lambda fp, area, recall, feasible=False: {
+        "constraintsMet": feasible, "negativeFrameFalsePositiveRate": fp,
+        "negativeP95AddedArea": area, "exteriorRecall": recall,
+        "exteriorF2": recall, "exteriorPrecision": recall}
+    assert select_threshold([option(.8, .1, .9), option(.1, .002, .5)])["exteriorRecall"] == .5
+    assert select_threshold([option(.04, .0005, .4, True),
+                             option(.03, .0004, .6, True)])["exteriorRecall"] == .6
     with tempfile.TemporaryDirectory(prefix="iqp-yolo26-test-") as value:
         root = Path(value); output = root / "run"
         (root / "frames").mkdir(); (root / "masks").mkdir()
@@ -559,7 +730,11 @@ def main():
     parser.add_argument("--minimum-resolution", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--fraction", type=float, default=1.)
+    parser.add_argument("--hard-negative-model")
+    parser.add_argument("--source-checkpoint-limit", type=int, default=96)
     parser.add_argument("--resume", action="store_true"); parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--evaluate-only", action="store_true")
+    parser.add_argument("--finalize-selected", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     args = parser.parse_args()
     if args.self_test: self_test(); return

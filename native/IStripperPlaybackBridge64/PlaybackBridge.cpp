@@ -431,6 +431,9 @@ namespace
     LONG volatile g_playerSmallSizePercent = 0;
     LONG volatile g_playerLargeSizePercent = 0;
     LONG volatile g_playerMode = 2;
+    PVOID volatile g_pointerMovieWindow = nullptr;
+    LONG volatile g_pointerOverVisiblePixel = 0;
+    LONGLONG volatile g_lastHitTestRefreshTick = 0;
     std::uintptr_t g_liveVtableRva = 0;
     PVOID volatile g_liveObject = nullptr;
     std::uintptr_t g_fullScreenVtableRva = 0;
@@ -702,27 +705,36 @@ namespace
     {
         POINT point = {};
         HWND window = nullptr;
+        bool visiblePixel = false;
     };
 
     bool IsPointOverVisibleMoviePixel(HWND window, POINT point);
 
-    BOOL CALLBACK FindVisibleMovieWindowAtPoint(HWND window, LPARAM parameter)
+    MovieWindowAtPoint FindVisibleMovieWindowAtPoint(POINT point)
     {
-        auto search = reinterpret_cast<MovieWindowAtPoint*>(parameter);
-        RECT bounds = {};
-        if (!IsWindowVisible(window) || !IsMovieWindow(window) ||
-            FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS,
-                &bounds, sizeof(bounds))) ||
-            !PtInRect(&bounds, search->point))
+        HWND windows[MaximumMovieWindows] = {};
+        AcquireSRWLockShared(&g_movieWindowLock);
+        for (int index = 0; index < MaximumMovieWindows; ++index)
         {
-            return TRUE;
+            windows[index] = g_movieWindows[index].window;
         }
-        if (!IsPointOverVisibleMoviePixel(window, search->point))
+        ReleaseSRWLockShared(&g_movieWindowLock);
+
+        for (HWND window : windows)
         {
-            return TRUE;
+            RECT bounds = {};
+            if (window == nullptr || !IsWindowVisible(window) ||
+                !IsMovieWindow(window) ||
+                FAILED(DwmGetWindowAttribute(window,
+                    DWMWA_EXTENDED_FRAME_BOUNDS, &bounds,
+                    sizeof(bounds))) || !PtInRect(&bounds, point))
+            {
+                continue;
+            }
+            return { point, window,
+                IsPointOverVisibleMoviePixel(window, point) };
         }
-        search->window = window;
-        return FALSE;
+        return { point, nullptr, false };
     }
 
     struct QtGenericArgument
@@ -3230,15 +3242,71 @@ namespace
         return true;
     }
 
+    void RefreshStaleMovieHitTest(HWND window)
+    {
+        const LONGLONG now = static_cast<LONGLONG>(GetTickCount64());
+        const LONGLONG previous = InterlockedCompareExchange64(
+            &g_lastHitTestRefreshTick, now, now);
+        if (now - previous < 1'000 ||
+            InterlockedCompareExchange64(
+                &g_lastHitTestRefreshTick, now, previous) != previous)
+        {
+            return;
+        }
+        SetWindowPos(window, nullptr, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+            SWP_FRAMECHANGED);
+    }
+
     LRESULT CALLBACK MovieMouseHook(int code, WPARAM wParam, LPARAM lParam)
     {
-        if (code == HC_ACTION && wParam == WM_MOUSEWHEEL)
+        if (code == HC_ACTION)
         {
+            const bool mouseMove = wParam == WM_MOUSEMOVE;
+            const bool wheel = wParam == WM_MOUSEWHEEL ||
+                wParam == WM_MOUSEHWHEEL;
+            const bool buttonDown = wParam == WM_LBUTTONDOWN ||
+                wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN ||
+                wParam == WM_XBUTTONDOWN;
+            if (!mouseMove && !wheel && !buttonDown)
+            {
+                return CallNextHookEx(
+                    g_movieMouseHook, code, wParam, lParam);
+            }
+
+            static ULONGLONG lastMoveSample = 0;
+            const ULONGLONG now = GetTickCount64();
+            if (mouseMove && now - lastMoveSample < 16)
+            {
+                return CallNextHookEx(
+                    g_movieMouseHook, code, wParam, lParam);
+            }
+            if (mouseMove)
+            {
+                lastMoveSample = now;
+            }
+
             const auto mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
-            MovieWindowAtPoint search = { mouse->pt, nullptr };
-            EnumWindows(&FindVisibleMovieWindowAtPoint,
-                reinterpret_cast<LPARAM>(&search));
-            if (search.window != nullptr)
+            MovieWindowAtPoint search =
+                FindVisibleMovieWindowAtPoint(mouse->pt);
+            InterlockedExchangePointer(&g_pointerMovieWindow, search.window);
+            InterlockedExchange(&g_pointerOverVisiblePixel,
+                search.visiblePixel ? 1 : 0);
+
+            if (wheel && search.window != nullptr &&
+                !search.visiblePixel)
+            {
+                RefreshStaleMovieHitTest(search.window);
+            }
+
+            if (mouseMove || buttonDown)
+            {
+                return CallNextHookEx(
+                    g_movieMouseHook, code, wParam, lParam);
+            }
+
+            if (wheel && search.window != nullptr &&
+                search.visiblePixel)
             {
                 if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
                     InterlockedCompareExchange(
@@ -3341,6 +3409,15 @@ namespace
             message == WM_CONTEXTMENU;
     }
 
+    bool IsMouseButtonDown()
+    {
+        return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0 ||
+            (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0;
+    }
+
     LRESULT CALLBACK MovieWindowProc(HWND window, UINT message,
         WPARAM wParam, LPARAM lParam)
     {
@@ -3352,9 +3429,37 @@ namespace
         if (message == WM_NCHITTEST &&
             InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
         {
-            return InterlockedCompareExchange(
-                &g_playerClickThrough, 0, 0) != 0
-                ? HTTRANSPARENT : HTCLIENT;
+            if (InterlockedCompareExchange(
+                    &g_playerClickThrough, 0, 0) != 0)
+            {
+                RefreshStaleMovieHitTest(window);
+                return HTTRANSPARENT;
+            }
+            const HWND pointerWindow = static_cast<HWND>(
+                InterlockedCompareExchangePointer(
+                    &g_pointerMovieWindow, nullptr, nullptr));
+            if (pointerWindow == window && InterlockedCompareExchange(
+                    &g_pointerOverVisiblePixel, 0, 0) == 0)
+            {
+                RefreshStaleMovieHitTest(window);
+                return HTTRANSPARENT;
+            }
+            // Windows normally excludes zero-alpha layered pixels before
+            // reaching this procedure. If that cached state goes stale, do
+            // an immediate alpha check for a real click. Ordinary mouse-move
+            // hit tests use the 16 ms hook cache above.
+            if (IsMouseButtonDown())
+            {
+                POINT point = {
+                    static_cast<short>(LOWORD(lParam)),
+                    static_cast<short>(HIWORD(lParam))
+                };
+                if (!IsPointOverVisibleMoviePixel(window, point))
+                {
+                    return HTTRANSPARENT;
+                }
+            }
+            return HTCLIENT;
         }
         if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
             IsLockedPlayerInteractionMessage(message))
