@@ -29,8 +29,10 @@ internal sealed class TrainingStudioForm : Form
     readonly Button install = new() { Text = "Install trained model", AutoSize = true, Enabled = false };
     readonly Button openReview = new() { Text = "Open error review", AutoSize = true, Enabled = false };
     readonly Button regenerateV2 = new() { Text = "Generate missing v2 RVM alpha", AutoSize = true };
+    readonly ComboBox trainingArchitecture = new() { Width = 190,
+        DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox minimumResolution = new() { Width = 105, DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly Label v2Training = new() { Text = "v2 · 768px · 50/25/25 crops",
+    readonly Label v2Training = new() { Text = "768px · conditioned crops",
         AutoSize = true, Padding = new Padding(6, 7, 0, 0) };
     readonly Label queueStatus = new() { Text = "Queue: 0/10", AutoSize = true,
         Padding = new Padding(10, 8, 0, 0) };
@@ -91,7 +93,22 @@ internal sealed class TrainingStudioForm : Form
             new ResolutionOption("1440p+", 1440), new ResolutionOption("2160p+", 2160)
         });
         minimumResolution.SelectedIndex = 2;
+        trainingArchitecture.Items.AddRange(new object[]
+        {
+            new ArchitectureOption("ConvNeXt/FPN v2", TrainingArchitecture.ConvNextV2),
+            new ArchitectureOption("YOLO26s Semantic", TrainingArchitecture.Yolo26Semantic),
+            new ArchitectureOption("YOLO26s Instance", TrainingArchitecture.Yolo26Instance)
+        });
+        trainingArchitecture.SelectedIndex = 0;
+        trainingArchitecture.SelectedIndexChanged += (_, _) =>
+        {
+            bool yolo = SelectedTrainingArchitecture() != TrainingArchitecture.ConvNextV2;
+            v2Training.Text = yolo ? "1024px · benchmark only" : "768px · conditioned crops";
+            install.Enabled = !yolo && installPackagePath != null;
+        };
         trainActions.Controls.AddRange([train,
+            new Label { Text = "Architecture", AutoSize = true, Padding = new Padding(6, 7, 0, 0) },
+            trainingArchitecture,
             new Label { Text = "Minimum", AutoSize = true, Padding = new Padding(6, 7, 0, 0) },
             minimumResolution,
             v2Training, regenerateV2, resumeTraining, cancelTraining, openReview, install]);
@@ -914,13 +931,18 @@ internal sealed class TrainingStudioForm : Form
             trainingLog.AppendText(value + Environment.NewLine); trainingLog.SelectionStart = trainingLog.TextLength;
             trainingLog.ScrollToCaret();
         });
+        runner.Progress += value => BeginInvoke(() => status.Text = value);
         train.Enabled = false; cancelTraining.Enabled = true; install.Enabled = openReview.Enabled = false;
         installPackagePath = null;
         try
         {
+            TrainingArchitecture architecture = SelectedTrainingArchitecture();
             int exit = await runner.RunAsync(store.Root, resumeTraining.Checked, minimum,
-                trainingCancellation.Token);
-            status.Text = exit == 0 ? "Training and evaluation completed." : "Training failed; see the log.";
+                architecture, trainingCancellation.Token);
+            bool yolo = architecture != TrainingArchitecture.ConvNextV2;
+            status.Text = exit == 0 ? yolo
+                ? "YOLO benchmark completed; this candidate is not installable yet."
+                : "Training and evaluation completed." : "Training failed; see the log.";
             installPackagePath = exit == 0 && Directory.Exists(runner.PackagePath)
                 ? runner.PackagePath : null;
             install.Enabled = installPackagePath != null;
@@ -1014,7 +1036,16 @@ internal sealed class TrainingStudioForm : Form
     int SelectedMinimumResolution() => minimumResolution.SelectedItem is ResolutionOption option
         ? option.Pixels : 0;
 
+    TrainingArchitecture SelectedTrainingArchitecture() =>
+        trainingArchitecture.SelectedItem is ArchitectureOption option
+            ? option.Architecture : TrainingArchitecture.ConvNextV2;
+
     sealed record ResolutionOption(string Label, int Pixels)
+    {
+        public override string ToString() => Label;
+    }
+
+    sealed record ArchitectureOption(string Label, TrainingArchitecture Architecture)
     {
         public override string ToString() => Label;
     }

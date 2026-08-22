@@ -7,10 +7,13 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cwchar>
 #include <cstring>
 #include <float.h>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -27,6 +30,53 @@
 // layouts from the loaded image. The INI is an audit trail, never trusted input.
 namespace
 {
+    void DressingRoomLog(const char* format, ...)
+    {
+        char message[1024] = {};
+        va_list arguments;
+        va_start(arguments, format);
+        vsnprintf_s(message, _countof(message), _TRUNCATE, format, arguments);
+        va_end(arguments);
+        wchar_t path[MAX_PATH] = {};
+        DWORD length = GetTempPathW(_countof(path), path);
+        if (length == 0 || length >= _countof(path) ||
+            wcscat_s(path, L"IstripperQuickPlayer-dressingroom.log") != 0)
+            return;
+        HANDLE file = CreateFileW(path, FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+            return;
+        SYSTEMTIME now = {};
+        GetLocalTime(&now);
+        char line[1280] = {};
+        int count = snprintf(line, _countof(line),
+            "%04u-%02u-%02u %02u:%02u:%02u.%03u pid=%lu tid=%lu %s\r\n",
+            now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute,
+            now.wSecond, now.wMilliseconds, GetCurrentProcessId(),
+            GetCurrentThreadId(), message);
+        DWORD written = 0;
+        if (count > 0)
+            WriteFile(file, line, static_cast<DWORD>(count), &written, nullptr);
+        CloseHandle(file);
+    }
+
+    using AvformatOpenInput = int(__cdecl*)(void**, const char*, void*, void*);
+    AvformatOpenInput g_originalAvformatOpenInput = nullptr;
+    SRWLOCK g_dressingRoomUrlLock = SRWLOCK_INIT;
+    std::string g_dressingRoomUrl;
+    std::string g_selectedDressingRoomResource;
+    volatile LONG g_dressingRoomHookInstalled = 0;
+    volatile LONG g_dressingRoomCacheScanPending = 0;
+    volatile LONG g_dressingRoomUrlSignalGeneration = 0;
+    volatile LONG g_dressingRoomLastScanGeneration = 0;
+    alignas(8) volatile LONG64 g_dressingRoomRequestStarted = 0;
+    alignas(8) volatile LONG64 g_dressingRoomLastScanStarted = 0;
+    PVOID volatile g_dressingRoomUrlRegion = nullptr;
+    SRWLOCK g_dressingRoomObjectsLock = SRWLOCK_INIT;
+    void* g_dressingRoomObjects[256] = {};
+    LONG g_dressingRoomObjectCount = 0;
+
     std::uintptr_t AnimationFrameRva = 0;
     std::uintptr_t MovieAdvanceRva = 0;
     std::uintptr_t MoviePauseRva = 0;
@@ -697,6 +747,252 @@ namespace
         QObjectInherits inherits = nullptr;
         QMetaInvoke invoke = nullptr;
     };
+
+    void* FindQtObject(const QtObjectFunctions& qt,
+        std::uintptr_t& vtableRva, PVOID volatile* cachedObject,
+        const char* decoratedClassName, const char* className);
+    int RefreshDressingRoomDataUrls(const QtObjectFunctions& qt);
+
+    int __cdecl DressingRoomAvformatOpenInput(void** context,
+        const char* url, void* format, void* options)
+    {
+        if (url != nullptr &&
+            std::strstr(url, "/fileaccess/dressingroom/") != nullptr)
+        {
+            DressingRoomLog("FFmpeg captured Dressing Room URL (redacted)");
+            AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+            g_dressingRoomUrl.assign(url);
+            ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+        }
+        return g_originalAvformatOpenInput(context, url, format, options);
+    }
+
+    HRESULT InstallDressingRoomUrlHook()
+    {
+        if (InterlockedCompareExchange(&g_dressingRoomHookInstalled, 0, 0) != 0)
+        {
+            DressingRoomLog("FFmpeg hook already installed");
+            return BridgeSuccess;
+        }
+        HMODULE avformat = GetModuleHandleW(L"avformat-57.dll");
+        void* target = avformat == nullptr ? nullptr :
+            reinterpret_cast<void*>(GetProcAddress(avformat, "avformat_open_input"));
+        if (target == nullptr)
+        {
+            DressingRoomLog("FFmpeg target unavailable module=%p target=%p",
+                avformat, target);
+            return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
+        }
+        MH_STATUS status = MH_Initialize();
+        if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED)
+            return E_FAIL;
+        status = MH_CreateHook(target,
+            reinterpret_cast<void*>(&DressingRoomAvformatOpenInput),
+            reinterpret_cast<void**>(&g_originalAvformatOpenInput));
+        if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED)
+            return E_FAIL;
+        status = MH_EnableHook(target);
+        if (status != MH_OK && status != MH_ERROR_ENABLED)
+            return E_FAIL;
+        InterlockedExchange(&g_dressingRoomHookInstalled, 1);
+        DressingRoomLog("FFmpeg hook installed");
+        return BridgeSuccess;
+    }
+
+    bool FindCachedDressingRoomUrl(const char* resourceName)
+    {
+        if (resourceName == nullptr || *resourceName == '\0')
+            return false;
+        // The URL includes a model folder between /dressingroom/ and the
+        // resource name (for example /dressingroom/toree/toree_take4).
+        const std::string marker = std::string(resourceName) + "?jwt=";
+        std::wstring wideMarker(marker.begin(), marker.end());
+        const auto asciiSearcher = std::boyer_moore_horspool_searcher(
+            marker.begin(), marker.end());
+        const auto wideSearcher = std::boyer_moore_horspool_searcher(
+            wideMarker.begin(), wideMarker.end());
+        SYSTEM_INFO systemInfo = {};
+        GetSystemInfo(&systemInfo);
+        const ULONGLONG started = GetTickCount64();
+        std::size_t scannedRegions = 0;
+        std::size_t scannedBytes = 0;
+        void* cachedRegion = InterlockedCompareExchangePointer(
+            &g_dressingRoomUrlRegion, nullptr, nullptr);
+        for (int pass = cachedRegion == nullptr ? 1 : 0; pass < 2; ++pass)
+        {
+          auto cursor = pass == 0 ? static_cast<unsigned char*>(cachedRegion) :
+              static_cast<unsigned char*>(systemInfo.lpMinimumApplicationAddress);
+          const auto maximum = pass == 0 ? cursor + 1 :
+              static_cast<unsigned char*>(systemInfo.lpMaximumApplicationAddress);
+          while (cursor < maximum)
+          {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(cursor, &memory, sizeof(memory)) != sizeof(memory))
+                break;
+            auto next = static_cast<unsigned char*>(memory.BaseAddress) +
+                memory.RegionSize;
+            const DWORD blocked = PAGE_GUARD | PAGE_NOACCESS;
+            const DWORD writable = PAGE_READWRITE | PAGE_WRITECOPY |
+                PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+            if (memory.State == MEM_COMMIT &&
+                memory.Type == MEM_PRIVATE &&
+                (pass == 0 || memory.BaseAddress != cachedRegion) &&
+                (memory.Protect & blocked) == 0 &&
+                (memory.Protect & writable) != 0 &&
+                memory.RegionSize > marker.size())
+            {
+                ++scannedRegions;
+                scannedBytes += memory.RegionSize;
+                const char* begin = static_cast<const char*>(memory.BaseAddress);
+                const char* end = begin + memory.RegionSize;
+                const char* match = std::search(begin, end, asciiSearcher);
+                while (match != end)
+                {
+                    const char* urlStart = match;
+                    const char* lower = match - (std::min<std::ptrdiff_t>)(
+                        match - begin, 512);
+                    while (urlStart > lower && *(urlStart - 1) >= 0x21 &&
+                        *(urlStart - 1) <= 0x7e)
+                        --urlStart;
+                    if (std::strncmp(urlStart, "http://", 7) == 0 ||
+                        std::strncmp(urlStart, "https://", 8) == 0)
+                    {
+                        const char* urlEnd = match + marker.size();
+                        while (urlEnd < end && *urlEnd >= 0x21 &&
+                            *urlEnd <= 0x7e && *urlEnd != '"' &&
+                            *urlEnd != '\'')
+                            ++urlEnd;
+                        AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+                        g_dressingRoomUrl.assign(urlStart, urlEnd);
+                        ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+                        InterlockedExchangePointer(&g_dressingRoomUrlRegion,
+                            memory.BaseAddress);
+                        DressingRoomLog("Cached URL found in ASCII (value redacted) regions=%zu bytes=%zu elapsedMs=%llu",
+                            scannedRegions, scannedBytes,
+                            static_cast<unsigned long long>(GetTickCount64() - started));
+                        return true;
+                    }
+                    match = std::search(match + 1, end, asciiSearcher);
+                }
+
+                const wchar_t* wideBegin = reinterpret_cast<const wchar_t*>(
+                    (reinterpret_cast<std::uintptr_t>(begin) + 1) & ~std::uintptr_t(1));
+                const wchar_t* wideEnd = reinterpret_cast<const wchar_t*>(
+                    reinterpret_cast<std::uintptr_t>(end) & ~std::uintptr_t(1));
+                const wchar_t* wideMatch = std::search(wideBegin, wideEnd,
+                    wideSearcher);
+                while (wideMatch != wideEnd)
+                {
+                    const wchar_t* urlStart = wideMatch;
+                    const wchar_t* lower = wideMatch -
+                        (std::min<std::ptrdiff_t>)(wideMatch - wideBegin, 512);
+                    while (urlStart > lower && *(urlStart - 1) >= 0x21 &&
+                        *(urlStart - 1) <= 0x7e)
+                        --urlStart;
+                    if (std::wcsncmp(urlStart, L"http://", 7) == 0 ||
+                        std::wcsncmp(urlStart, L"https://", 8) == 0)
+                    {
+                        const wchar_t* urlEnd = wideMatch + wideMarker.size();
+                        while (urlEnd < wideEnd && *urlEnd >= 0x21 &&
+                            *urlEnd <= 0x7e && *urlEnd != L'"' &&
+                            *urlEnd != L'\'')
+                            ++urlEnd;
+                        int byteCount = WideCharToMultiByte(CP_UTF8, 0,
+                            urlStart, static_cast<int>(urlEnd - urlStart),
+                            nullptr, 0, nullptr, nullptr);
+                        if (byteCount > 0)
+                        {
+                            std::string url(static_cast<std::size_t>(byteCount), '\0');
+                            WideCharToMultiByte(CP_UTF8, 0, urlStart,
+                                static_cast<int>(urlEnd - urlStart), url.data(),
+                                byteCount, nullptr, nullptr);
+                            AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+                            g_dressingRoomUrl = std::move(url);
+                            ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+                            InterlockedExchangePointer(&g_dressingRoomUrlRegion,
+                                memory.BaseAddress);
+                            DressingRoomLog("Cached URL found in UTF-16 (value redacted) regions=%zu bytes=%zu elapsedMs=%llu",
+                                scannedRegions, scannedBytes,
+                                static_cast<unsigned long long>(GetTickCount64() - started));
+                            return true;
+                        }
+                    }
+                    wideMatch = std::search(wideMatch + 1, wideEnd,
+                        wideSearcher);
+                }
+            }
+            if (next <= cursor)
+                break;
+            cursor = next;
+          }
+        }
+        DressingRoomLog("No cached URL marker found for resource=%s regions=%zu bytes=%zu elapsedMs=%llu",
+            resourceName, scannedRegions, scannedBytes,
+            static_cast<unsigned long long>(GetTickCount64() - started));
+        return false;
+    }
+
+    HRESULT RequestDressingRoomUrl(int dressingRoomId)
+    {
+        HRESULT hook = InstallDressingRoomUrlHook();
+        if (FAILED(hook))
+            return hook;
+        AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+        g_dressingRoomUrl.clear();
+        ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+        InterlockedExchange(&g_dressingRoomLastScanGeneration,
+            InterlockedCompareExchange(
+                &g_dressingRoomUrlSignalGeneration, 0, 0));
+        InterlockedExchange64(&g_dressingRoomRequestStarted,
+            static_cast<LONG64>(GetTickCount64()));
+        InterlockedExchange64(&g_dressingRoomLastScanStarted, 0);
+        InterlockedExchange(&g_dressingRoomCacheScanPending, 1);
+
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
+                GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
+            reinterpret_cast<QMetaInvoke>(core == nullptr ? nullptr :
+                GetProcAddress(core,
+                    "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+                    "VQGenericArgument@@222222222@Z"))
+        };
+        if (qt.inherits == nullptr || qt.invoke == nullptr)
+            return E_NOINTERFACE;
+        int refreshed = RefreshDressingRoomDataUrls(qt);
+        DressingRoomLog("updateUrls invoked=%d", refreshed);
+        if (refreshed > 0)
+        {
+            return BridgeSuccess;
+        }
+        struct Candidate { std::uintptr_t* vtable; PVOID volatile* object;
+            const char* decorated; const char* className; };
+        static std::uintptr_t dressingRoomModelVtable = 0;
+        static PVOID volatile dressingRoomModelObject = nullptr;
+        static std::uintptr_t collectionModelVtable = 0;
+        static PVOID volatile collectionModelObject = nullptr;
+        Candidate candidates[] = {
+            { &dressingRoomModelVtable, &dressingRoomModelObject,
+                ".?AVDressingRoomModel@ViewModel@@", "ViewModel::DressingRoomModel" },
+            { &collectionModelVtable, &collectionModelObject,
+                ".?AVCollectionDressingRoomProxyModel@ViewModel@@",
+                "ViewModel::CollectionDressingRoomProxyModel" }
+        };
+        const QtGenericArgument argument = { &dressingRoomId, "int" };
+        const QtGenericArgument empty = {};
+        for (const Candidate& candidate : candidates)
+        {
+            void* object = FindQtObject(qt, *candidate.vtable,
+                candidate.object, candidate.decorated, candidate.className);
+            if (object == nullptr)
+                continue;
+            for (const char* method : { "requestOpenDressingRoomPIP", "openDressingRoomPIP" })
+                if (qt.invoke(object, method, argument, empty, empty, empty,
+                    empty, empty, empty, empty, empty, empty))
+                    return BridgeSuccess;
+        }
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    }
 
     unsigned char* ImageBase();
     const IMAGE_NT_HEADERS64* ImageHeaders();
@@ -1387,6 +1683,101 @@ namespace
         return returned;
     }
 
+    int RefreshDressingRoomDataUrls(const QtObjectFunctions& qt)
+    {
+        static std::uintptr_t vtableRva = 0;
+        auto base = ImageBase();
+        if (vtableRva == 0)
+            vtableRva = FindVtableRva(
+                ".?AVDressingRoomData@ViewModel@@");
+        if (base == nullptr || vtableRva == 0)
+            return 0;
+        const void* expectedVtable = base + vtableRva;
+        const QtGenericArgument empty = {};
+        int invoked = 0;
+        AcquireSRWLockShared(&g_dressingRoomObjectsLock);
+        LONG cachedCount = g_dressingRoomObjectCount;
+        for (LONG index = 0; index < cachedCount; ++index)
+        {
+            void* object = g_dressingRoomObjects[index];
+            if (IsQtObject(qt, object, expectedVtable,
+                "ViewModel::DressingRoomData") &&
+                qt.invoke(object, "updateUrls", empty, empty, empty, empty,
+                    empty, empty, empty, empty, empty, empty))
+                ++invoked;
+        }
+        ReleaseSRWLockShared(&g_dressingRoomObjectsLock);
+        if (invoked > 0)
+        {
+            DressingRoomLog("DressingRoomData cache reused objects=%d invoked=%d",
+                cachedCount, invoked);
+            return invoked;
+        }
+        AcquireSRWLockExclusive(&g_dressingRoomObjectsLock);
+        g_dressingRoomObjectCount = 0;
+        ReleaseSRWLockExclusive(&g_dressingRoomObjectsLock);
+
+        int matches = 0;
+        int valid = 0;
+        int skippedRegions = 0;
+        SYSTEM_INFO systemInfo = {};
+        GetSystemInfo(&systemInfo);
+        auto cursor = static_cast<unsigned char*>(
+            systemInfo.lpMinimumApplicationAddress);
+        const auto maximum = static_cast<unsigned char*>(
+            systemInfo.lpMaximumApplicationAddress);
+        while (cursor < maximum)
+        {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(cursor, &memory, sizeof(memory)) != sizeof(memory))
+                break;
+            auto next = static_cast<unsigned char*>(memory.BaseAddress) +
+                memory.RegionSize;
+            if (memory.State == MEM_COMMIT &&
+                (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0 &&
+                (memory.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                    PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0)
+            {
+                auto slots = static_cast<void**>(memory.BaseAddress);
+                const std::size_t count = memory.RegionSize / sizeof(void*);
+                __try
+                {
+                    for (std::size_t index = 0; index < count; ++index)
+                    {
+                        if (slots[index] != expectedVtable)
+                            continue;
+                        ++matches;
+                        void* object = slots + index;
+                        if (!IsQtObject(qt, object, expectedVtable,
+                            "ViewModel::DressingRoomData"))
+                            continue;
+                    ++valid;
+                    AcquireSRWLockExclusive(&g_dressingRoomObjectsLock);
+                    if (g_dressingRoomObjectCount <
+                        static_cast<LONG>(_countof(g_dressingRoomObjects)))
+                        g_dressingRoomObjects[g_dressingRoomObjectCount++] = object;
+                    ReleaseSRWLockExclusive(&g_dressingRoomObjectsLock);
+                    if (qt.invoke(object, "updateUrls", empty, empty,
+                            empty, empty, empty, empty, empty, empty, empty,
+                            empty))
+                            ++invoked;
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER)
+                {
+                    ++skippedRegions;
+                }
+            }
+            if (next <= cursor)
+                break;
+            cursor = next;
+        }
+        DressingRoomLog("DressingRoomData scan rva=0x%llx matches=%d valid=%d invoked=%d skippedRegions=%d",
+            static_cast<unsigned long long>(vtableRva), matches, valid,
+            invoked, skippedRegions);
+        return invoked;
+    }
+
     GlActiveTexture ResolveGlActiveTexture()
     {
         if (g_wglGetProcAddress == nullptr)
@@ -1976,6 +2367,16 @@ namespace
                     "nextInserted(int,Model::NextCard)") ||
                 IsSignal(metaObject, signalIndex, "nextRemoved(int)") ||
                 IsSignal(metaObject, signalIndex, "nextRemoved()") || changed;
+        }
+        else if (senderClass != nullptr &&
+            std::strcmp(senderClass, "ViewModel::DressingRoomData") == 0 &&
+            (IsSignal(metaObject, signalIndex, "videoSourceChanged()") ||
+             IsSignal(metaObject, signalIndex, "videoPreviewChanged()") ||
+             IsSignal(metaObject, signalIndex, "vignetteOverlayChanged()") ||
+             IsSignal(metaObject, signalIndex, "takeOverlayChanged()") ||
+             IsSignal(metaObject, signalIndex, "previewImageChanged()")))
+        {
+            InterlockedIncrement(&g_dressingRoomUrlSignalGeneration);
         }
 
         const auto original = reinterpret_cast<QMetaActivate>(
@@ -10139,6 +10540,141 @@ IStripperDumpFullscreenTree()
     __try
     {
         return DumpFullScreenObjectTree();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperPrepareDressingRoomUrls()
+{
+    __try
+    {
+        DressingRoomLog("Background Dressing Room URL preparation started");
+        return RequestDressingRoomUrl(1);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperWarmDressingRoomCache()
+{
+    __try
+    {
+        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
+                GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
+            reinterpret_cast<QMetaInvoke>(core == nullptr ? nullptr :
+                GetProcAddress(core,
+                    "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+                    "VQGenericArgument@@222222222@Z"))
+        };
+        if (qt.inherits == nullptr || qt.invoke == nullptr)
+            return E_NOINTERFACE;
+        DressingRoomLog("Background DressingRoomData cache warm-up started");
+        const int refreshed = RefreshDressingRoomDataUrls(qt);
+        DressingRoomLog("Background DressingRoomData cache warm-up completed invoked=%d",
+            refreshed);
+        return refreshed > 0 ? BridgeSuccess :
+            HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperRequestDressingRoomUrl(SIZE_T packetAddress)
+{
+    __try
+    {
+        auto packet = reinterpret_cast<const int*>(packetAddress);
+        if (!IsReadable(packet, sizeof(*packet)) || *packet <= 0)
+            return E_INVALIDARG;
+        const char* resourceName = reinterpret_cast<const char*>(packet) + 4;
+        if (!IsReadable(resourceName, 1) ||
+            strnlen_s(resourceName, 8188) == 8188)
+            return E_INVALIDARG;
+        wchar_t logPath[MAX_PATH] = {};
+        if (GetTempPathW(_countof(logPath), logPath) > 0 &&
+            wcscat_s(logPath, L"IstripperQuickPlayer-dressingroom.log") == 0)
+            DeleteFileW(logPath);
+        DressingRoomLog("Request drcId=%d resource=%s", *packet,
+            resourceName);
+        AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+        g_selectedDressingRoomResource.assign(resourceName);
+        ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+        return RequestDressingRoomUrl(*packet);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperConsumeDressingRoomUrl(SIZE_T packetAddress)
+{
+    __try
+    {
+        constexpr std::size_t capacity = 8192;
+        auto packet = reinterpret_cast<char*>(packetAddress);
+        if (!IsWritable(packet, capacity))
+            return E_INVALIDARG;
+        AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+        if (g_dressingRoomUrl.empty())
+        {
+            char selected[256] = {};
+            strncpy_s(selected, g_selectedDressingRoomResource.c_str(),
+                _TRUNCATE);
+            ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+            if (*selected == '\0' ||
+                InterlockedCompareExchange(
+                    &g_dressingRoomCacheScanPending, 0, 0) == 0)
+                return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+            const LONG generation = InterlockedCompareExchange(
+                &g_dressingRoomUrlSignalGeneration, 0, 0);
+            const LONG previousGeneration = InterlockedCompareExchange(
+                &g_dressingRoomLastScanGeneration, 0, 0);
+            const ULONGLONG now = GetTickCount64();
+            const ULONGLONG requestStarted = static_cast<ULONGLONG>(
+                InterlockedCompareExchange64(
+                    &g_dressingRoomRequestStarted, 0, 0));
+            const ULONGLONG lastScanStarted = static_cast<ULONGLONG>(
+                InterlockedCompareExchange64(
+                    &g_dressingRoomLastScanStarted, 0, 0));
+            const bool signalReceived = generation != previousGeneration;
+            const bool fallbackReady = now - requestStarted >= 300;
+            const bool scanThrottleReady = lastScanStarted == 0 ||
+                now - lastScanStarted >= 500;
+            if ((!signalReceived && !fallbackReady) || !scanThrottleReady)
+                return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+            InterlockedExchange(&g_dressingRoomLastScanGeneration,
+                generation);
+            InterlockedExchange64(&g_dressingRoomLastScanStarted,
+                static_cast<LONG64>(now));
+            DressingRoomLog("URL scan triggered signal=%d generation=%ld previous=%ld elapsedMs=%llu",
+                signalReceived ? 1 : 0, generation, previousGeneration,
+                static_cast<unsigned long long>(now - requestStarted));
+            if (!FindCachedDressingRoomUrl(selected))
+                return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+            InterlockedExchange(&g_dressingRoomCacheScanPending, 0);
+            AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+        }
+        const std::size_t count = (std::min)(capacity - 1,
+            g_dressingRoomUrl.size());
+        std::memcpy(packet, g_dressingRoomUrl.data(), count);
+        packet[count] = '\0';
+        g_dressingRoomUrl.clear();
+        ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+        return BridgeSuccess;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {

@@ -35,6 +35,10 @@
     <Content Include="..\tools\training-studio\prop_segmenter_train_v2.py" Link="training\prop_segmenter_train_v2.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\training-studio\yolo26_benchmark.py" Link="training\yolo26_benchmark.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
     <Content Include="..\tools\training-studio\prop_proposal_worker.py" Link="training\prop_proposal_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

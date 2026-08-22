@@ -55,6 +55,10 @@ binary foreground-prop model used by compatible automatic RVM initializers.
    drafts for its neighbours; review then advances through the remaining burst
    automatically, but every frame still requires an explicit decision.
 6. Train after the dashboard has a useful mixture of sources and negatives.
+   Select **ConvNeXt/FPN v2**, **YOLO26s Semantic**, or **YOLO26s Instance**.
+   YOLO choices produce benchmark-only artifacts at 1024px and cannot be
+   installed into QuickPlayer. Semantic uses the binary PNG union masks;
+   instance uses the saved object-ID masks converted to one-class polygons.
    The **Minimum** dropdown can exclude lower-resolution frames using the image's
    shorter dimension, so the same choices work for landscape and portrait media.
    It also filters random frame selection and queued drafts while it is selected.

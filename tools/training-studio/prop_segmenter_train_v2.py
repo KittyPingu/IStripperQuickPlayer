@@ -12,8 +12,9 @@ import tempfile
 import time
 from pathlib import Path
 
-TRAINING_REVISION = 6
+TRAINING_REVISION = 9
 SCREEN_EPOCHS = 12
+HARD_NEGATIVE_MINING_EPOCH = 3
 MAX_EPOCHS = 40
 WARMUP_EPOCHS = 3
 EARLY_STOPPING_PATIENCE = 8
@@ -22,6 +23,11 @@ NEGATIVE_P95_AREA_CEILING = .001
 SCREEN_RECALL_GAIN = .05
 PROMOTION_RECALL_GAIN = .08
 PROMOTION_SMALL_RECALL_GAIN = .10
+POSITIVE_CROP_MIN_FRACTION = .005
+POSITIVE_CROP_PREFERRED_MIN_FRACTION = .02
+POSITIVE_CROP_PREFERRED_MAX_FRACTION = .15
+POSITIVE_CROP_MAX_FRACTION = .30
+POSITIVE_CROP_ATTEMPTS = 12
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom-shows"))
 from prop_segmenter import digest
@@ -153,11 +159,24 @@ def positive_crop(rgb, target, alpha, size):
     ys, xs = np.where(target)
     if not len(xs): return context_crop(rgb, target, alpha, size, False)
     extent = max(int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
-    desired = random.uniform(48, 192)
-    side = max(192, round(extent * size / desired))
-    center = (float(xs.mean()) + random.uniform(-.1, .1) * side,
-              float(ys.mean()) + random.uniform(-.1, .1) * side)
-    return crop_square(rgb, target, alpha, center, side, size, True)
+    best = None
+    for _ in range(POSITIVE_CROP_ATTEMPTS):
+        desired = random.uniform(48, 224)
+        side = max(32, round(extent * size / desired))
+        center = (float(xs.mean()) + random.uniform(-.1, .1) * side,
+                  float(ys.mean()) + random.uniform(-.1, .1) * side)
+        crop = crop_square(rgb, target, alpha, center, side, size, True)
+        fraction = float(crop[1].mean())
+        outside = max(0., POSITIVE_CROP_MIN_FRACTION - fraction) + \
+            max(0., fraction - POSITIVE_CROP_MAX_FRACTION)
+        preferred = max(0., POSITIVE_CROP_PREFERRED_MIN_FRACTION - fraction) + \
+            max(0., fraction - POSITIVE_CROP_PREFERRED_MAX_FRACTION)
+        score = outside * 100 + preferred
+        if best is None or score < best[0]: best = (score, crop)
+        if POSITIVE_CROP_PREFERRED_MIN_FRACTION <= fraction <= \
+                POSITIVE_CROP_PREFERRED_MAX_FRACTION:
+            return crop
+    return best[1]
 
 
 def context_crop(rgb, target, alpha, size, training=True, prefer_empty=False):
@@ -254,7 +273,7 @@ def annotate_mask_fractions(root, samples):
 
 def crop_sampler(torch, plan):
     from collections import Counter, defaultdict
-    mode_target = {"positive": .5, "near-negative": .25, "empty-negative": .25}
+    mode_target = {"positive": .4, "near-negative": .3, "empty-negative": .3}
     source_counts = Counter((mode, sample.get("sourceId")) for sample, mode in plan)
     raw_weights = []
     for sample, mode in plan:
@@ -324,7 +343,22 @@ def training_loss(torch, output, target, exterior, presence_target):
     tversky = torch.where(positive, 1 - (tp + 1) / (tp + .3 * fp + .7 * fn + 1), 0).sum() / \
         positive.sum().clamp_min(1)
     presence_loss = torch.nn.functional.binary_cross_entropy_with_logits(presence, presence_target)
-    return focal + .75 * tversky + .2 * presence_loss
+    # Focal loss deliberately downweights easy background pixels, which can
+    # leave a high-confidence segmentation tail on empty frames. Penalize that
+    # tail explicitly and give the frame-presence gate enough weight to reject
+    # retained negative components during calibration.
+    negative = ~positive
+    if negative.any():
+        negative_logits = logits[negative]
+        negative_bce = torch.nn.functional.softplus(negative_logits).mean()
+        flat_probability = probability[negative].flatten(1)
+        tail_count = max(1, flat_probability.shape[1] // 200)
+        negative_tail = flat_probability.topk(tail_count, dim=1).values.mean()
+    else:
+        negative_bce = logits.sum() * 0
+        negative_tail = logits.sum() * 0
+    return focal + .75 * tversky + presence_loss + \
+        .5 * negative_bce + .5 * negative_tail
 
 
 def collect_predictions(torch, model, loader, device):
@@ -434,7 +468,7 @@ def calibrate(values):
             options.append(metrics)
     feasible = [value for value in options if value["constraintsMet"]]
     selected = max(feasible or options, key=lambda value: (
-        value["constraintsMet"], value["exteriorF2"], value["exteriorRecall"],
+        value["constraintsMet"], value["exteriorRecall"], value["exteriorF2"],
         value["exteriorPrecision"]))
     return selected, options
 
@@ -555,7 +589,7 @@ def runtime_evaluate(torch, model, root, samples, device, pixel, presence,
         "peakVramGiB": peak, "measuredFrames": measured}
 
 
-def mine_hard_negative_tiles(torch, model, root, plan, size, device, limit=125):
+def mine_hard_negative_tiles(torch, model, root, plan, size, device, limit=250):
     """Promote the highest-scoring near-RVM/empty crops, not whole frames."""
     from torch.utils.data import DataLoader
     entries = [entry for entry in plan if entry[1] != "positive"]
@@ -741,7 +775,7 @@ def train(args):
         emit("resume", f"Resuming v2 at epoch {start_epoch + 1}")
     best_path = output / "best-v2.pth"; hard_negative_count = 0
     hard_negative_path = output / "hard-negative-tiles.json"
-    if start_epoch >= SCREEN_EPOCHS:
+    if start_epoch >= HARD_NEGATIVE_MINING_EPOCH:
         hard_entries = load_hard_negative_set(hard_negative_path, splits["train"])
         if hard_entries is None:
             hard_entries = mine_hard_negative_tiles(torch, model, root, plan,
@@ -766,7 +800,8 @@ def train(args):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); optimizer.step(); optimizer.zero_grad(set_to_none=True)
         values = collect_predictions(torch, model, validation_loader, device)
         selected, sweep = calibrate(values)
-        score = selected["exteriorF2"] if selected["constraintsMet"] else -1 + selected["exteriorF2"]
+        score = selected["exteriorRecall"] + .1 * selected["exteriorF2"] \
+            if selected["constraintsMet"] else -1 + selected["exteriorF2"]
         improved = best is None or score > best["score"] + 1e-5
         if improved:
             best = {"score": score, "epoch": epoch + 1, "metrics": selected}
@@ -781,6 +816,18 @@ def train(args):
             validationThreshold=selected["pixelThreshold"], validationPresenceThreshold=selected["presenceThreshold"],
             validationExteriorF2=selected["exteriorF2"], negativeP95AddedArea=selected["negativeP95AddedArea"],
             constraintsMet=selected["constraintsMet"], trainingLoss=total / max(1, len(train_loader)))
+        if epoch + 1 == HARD_NEGATIVE_MINING_EPOCH:
+            hard_entries = mine_hard_negative_tiles(torch, model, root, plan,
+                args.input_size, device)
+            hard_negative_count = len(hard_entries)
+            save_hard_negative_set(hard_negative_path, hard_entries)
+            plan.extend(hard_entries)
+            train_loader = DataLoader(CropDataset(root, plan, args.input_size), batch_size=batch,
+                sampler=crop_sampler(torch, plan), num_workers=1,
+                pin_memory=device.type == "cuda")
+            emit("hard-negative-mining",
+                f"Promoted {hard_negative_count:,} difficult tiles before screening",
+                count=hard_negative_count, unit="crop")
         if epoch + 1 == SCREEN_EPOCHS:
             gain = best["metrics"]["exteriorRecall"] - baseline["exteriorRecall"]
             passed = best["metrics"]["constraintsMet"] and gain >= SCREEN_RECALL_GAIN
@@ -796,16 +843,6 @@ def train(args):
                     best["metrics"]["pixelThreshold"], best["metrics"]["presenceThreshold"], review_path)
                 emit("review", "Saved v2 screening error review", review=str(review_path))
                 return
-            hard_entries = mine_hard_negative_tiles(torch, model, root, plan,
-                args.input_size, device)
-            hard_negative_count = len(hard_entries)
-            save_hard_negative_set(hard_negative_path, hard_entries)
-            plan.extend(hard_entries)
-            train_loader = DataLoader(CropDataset(root, plan, args.input_size), batch_size=batch,
-                sampler=crop_sampler(torch, plan), num_workers=1, pin_memory=device.type == "cuda")
-            emit("hard-negative-mining",
-                f"Promoted {hard_negative_count:,} difficult near-RVM/empty tiles",
-                count=hard_negative_count, unit="crop")
         if epoch + 1 >= SCREEN_EPOCHS and stale >= EARLY_STOPPING_PATIENCE:
             emit("early-stopping", f"No constrained exterior-F2 improvement for {stale} epochs"); break
     model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
@@ -847,9 +884,14 @@ def train(args):
         "review": {name: len(items) for name, items in review.items()},
         "hardNegativeTiles": hard_negative_count,
         "counts": {**{name: len(value) for name, value in splits.items()}, "sealedHoldout": len(holdout)},
-        "cropSampling": {"positive": .5, "nearRvmNegative": .25, "emptyNegative": .25},
+        "cropSampling": {"positive": .4, "nearRvmNegative": .3, "emptyNegative": .3},
         "loss": {"focalGamma": 2, "tverskyAlpha": .3, "tverskyBeta": .7,
-                 "exteriorWeight": 3, "presenceWeight": .2}}
+                 "exteriorWeight": 3, "presenceWeight": 1,
+                 "negativeBceWeight": .5, "negativeTopHalfPercentWeight": .5},
+        "positiveCropMaskFraction": {"minimum": POSITIVE_CROP_MIN_FRACTION,
+            "preferredMinimum": POSITIVE_CROP_PREFERRED_MIN_FRACTION,
+            "preferredMaximum": POSITIVE_CROP_PREFERRED_MAX_FRACTION,
+            "maximum": POSITIVE_CROP_MAX_FRACTION, "attempts": POSITIVE_CROP_ATTEMPTS}}
     atomic_json(output / "metrics.json", metrics)
     if not promotion:
         emit("acceptance-failed", "v2 completed but was not packaged because sealed promotion criteria were not met",
@@ -908,6 +950,9 @@ def self_test():
         assert rgb.shape == (64, 96, 3) and target.sum() == 150 and loaded_alpha.max() == 1
         cropped = crop_square(rgb, target, loaded_alpha, (0, 0), 96, 64, False)
         assert cropped[0].shape == (64, 64, 3) and cropped[1].shape == (64, 64)
+        positive = positive_crop(rgb, target, loaded_alpha, 64)
+        positive_fraction = float(positive[1].mean())
+        assert POSITIVE_CROP_MIN_FRACTION <= positive_fraction <= POSITIVE_CROP_MAX_FRACTION
         inputs = conditioned_array(rgb, loaded_alpha); assert inputs.shape == (5, 64, 96)
         model = build_model(torch, pretrained=False)
         assert model.features[0][0].in_channels == 5

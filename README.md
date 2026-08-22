@@ -7,6 +7,11 @@
 A Windows companion for browsing your local iStripper library, launching the
 card or clip you want, and controlling compatible desktop playback.
 
+This project is licensed under GNU AGPL-3.0. The optional Training Studio
+YOLO26 benchmark uses Ultralytics code, pretrained weights, and fine-tuned
+models under Ultralytics' AGPL-3.0 terms. YOLO benchmark outputs are research
+artifacts and are not installable QuickPlayer runtime models.
+
 ![QuickPlayer library and playback controls](docs/images/quickplayer-overview.jpg)
 
 QuickPlayer uses the cards already installed by iStripper. It does not download

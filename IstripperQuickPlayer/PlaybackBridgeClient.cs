@@ -138,6 +138,13 @@ public sealed class PlaybackBridgeClient : IDisposable
         return CallBuffer(apiName, data, readBackLength: 0);
     }
 
+    public int CallRoundTrip(string apiName, byte[] packet)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiName);
+        ArgumentNullException.ThrowIfNull(packet);
+        return CallBuffer(apiName, packet, packet.Length);
+    }
+
     public int SetFullscreenShaderData(float[] values, out uint sequence)
     {
         ArgumentNullException.ThrowIfNull(values);

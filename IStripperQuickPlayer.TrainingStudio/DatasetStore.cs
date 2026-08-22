@@ -111,6 +111,7 @@ internal sealed class DatasetStore
     {
         lock (gate)
         {
+            ReplaceUnusableSealedSourcesLocked();
             if (preferredBurstId != null)
             {
                 TrainingSample? burst = Dataset.Samples.Where(value =>
@@ -120,6 +121,45 @@ internal sealed class DatasetStore
                         File.Exists(Resolve(value.FramePath)))
                     .OrderBy(value => value.BurstIndex).FirstOrDefault();
                 if (burst != null) return burst;
+            }
+            TrainingSample? sealedDraft = Dataset.Samples.Where(value =>
+                    value.Decision == "draft" &&
+                    Source(value.SourceId).SealedHoldout &&
+                    !(excludedSampleIds?.Contains(value.Id) ?? false) &&
+                    SampleMeetsResolution(value, minimumResolution))
+                .OrderBy(value => value.PresentedUtc).FirstOrDefault();
+            if (sealedDraft != null) return sealedDraft;
+            VideoSource[] sealedSources = Dataset.Sources
+                .Where(source => source.SealedHoldout).ToArray();
+            if (sealedSources.Length > 0)
+            {
+                HashSet<string> sealedIds = sealedSources.Select(source => source.Id)
+                    .ToHashSet(StringComparer.Ordinal);
+                int accepted = Dataset.Samples.Count(sample =>
+                    sealedIds.Contains(sample.SourceId) && sample.Accepted);
+                if (accepted < 300)
+                {
+                    foreach (VideoSource source in sealedSources.OrderBy(source =>
+                                 Dataset.Samples.Count(sample =>
+                                     sample.SourceId == source.Id && sample.Accepted))
+                             .ThenBy(source => source.Id, StringComparer.Ordinal))
+                    {
+                        if (!TryCandidateTimestamp(source, 2_000,
+                            out long timestamp)) continue;
+                        TrainingSample replacement = new()
+                        {
+                            SourceId = source.Id,
+                            TimestampMs = timestamp,
+                            Split = source.Split,
+                            ActiveLearningBucket = "random"
+                        };
+                        Dataset.Samples.Add(replacement);
+                        SaveSampleLocked(replacement);
+                        return replacement;
+                    }
+                    throw new InvalidOperationException(
+                        "No unused timestamp remains in the sealed holdout videos.");
+                }
             }
             List<TrainingSample> queued = Dataset.Samples.Where(value => value.Decision == "draft" &&
                     !(excludedSampleIds?.Contains(value.Id) ?? false) &&
@@ -559,6 +599,208 @@ internal sealed class DatasetStore
             SaveSampleLocked(sample);
             if (sourceChanged) SaveSourcesLocked();
         }
+    }
+
+    internal (int Sources, int Frames, string Backup) SeedSealedHoldout(
+        int sourceCount = 60, int framesPerSource = 5)
+    {
+        lock (gate)
+        {
+            if (Dataset.Sources.Any(source => source.SealedHoldout))
+                throw new InvalidOperationException(
+                    "A sealed holdout already exists; it was not changed.");
+            HashSet<string> recordedSources = Dataset.Samples
+                .Select(sample => sample.SourceId).ToHashSet(StringComparer.Ordinal);
+            var groups = Dataset.Sources.Where(source =>
+                    !recordedSources.Contains(source.Id) &&
+                    source.ProbeError == null && source.DurationMs >= 5 * 60_000 &&
+                    Math.Min(source.Width, source.Height) >= 720)
+                .GroupBy(source => new
+                {
+                    source.Split,
+                    Resolution = Math.Min(source.Width, source.Height) >= 2160 ? 2 :
+                        Math.Min(source.Width, source.Height) >= 1080 ? 1 : 0,
+                    Duration = source.DurationMs >= 60 * 60_000 ? 2 :
+                        source.DurationMs >= 20 * 60_000 ? 1 : 0
+                })
+                .OrderBy(group => group.Key.Split, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.Resolution)
+                .ThenBy(group => group.Key.Duration)
+                .Select(group => new Queue<VideoSource>(group
+                    .OrderBy(source => source.Id, StringComparer.Ordinal)))
+                .ToList();
+            List<VideoSource> selected = [];
+            while (selected.Count < sourceCount && groups.Any(group => group.Count > 0))
+            {
+                foreach (Queue<VideoSource> group in groups)
+                {
+                    while (group.Count > 0)
+                    {
+                        VideoSource candidate = group.Dequeue();
+                        if (!File.Exists(candidate.Path)) continue;
+                        selected.Add(candidate);
+                        break;
+                    }
+                    if (selected.Count == sourceCount) break;
+                }
+            }
+            if (selected.Count != sourceCount)
+                throw new InvalidOperationException(
+                    $"Only {selected.Count} untouched eligible videos were available.");
+
+            string backup = ManifestPath + ".before-sealed-holdout-" +
+                DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) +
+                ".bak";
+            File.Copy(ManifestPath, backup, false);
+            DateTime presented = DateTime.UtcNow;
+            int frameCount = 0;
+            foreach (VideoSource source in selected)
+            {
+                source.SealedHoldout = true;
+                long usable = source.DurationMs - 60_000;
+                for (int frame = 1; frame <= framesPerSource; frame++)
+                {
+                    TrainingSample sample = new()
+                    {
+                        SourceId = source.Id,
+                        TimestampMs = FrameTimestamp(30_000 +
+                            usable * frame / (framesPerSource + 1),
+                            source.FramesPerSecond),
+                        Split = source.Split,
+                        ActiveLearningBucket = "random",
+                        PresentedUtc = presented.AddTicks(frameCount++)
+                    };
+                    Dataset.Samples.Add(sample);
+                    SaveSampleLocked(sample);
+                }
+            }
+            SaveSourcesLocked();
+            return (selected.Count, frameCount, backup);
+        }
+    }
+
+    internal int TopUpSealedHoldout(int targetAccepted = 300)
+    {
+        lock (gate)
+        {
+            VideoSource[] sealedSources = Dataset.Sources
+                .Where(source => source.SealedHoldout).ToArray();
+            if (sealedSources.Length == 0)
+                throw new InvalidOperationException("No sealed holdout exists.");
+            HashSet<string> sealedIds = sealedSources.Select(source => source.Id)
+                .ToHashSet(StringComparer.Ordinal);
+            int accepted = Dataset.Samples.Count(sample =>
+                sealedIds.Contains(sample.SourceId) && sample.Accepted);
+            int queued = Dataset.Samples.Count(sample =>
+                sealedIds.Contains(sample.SourceId) && sample.Decision == "draft");
+            int needed = Math.Max(0, targetAccepted - accepted - queued);
+            if (needed == 0) return 0;
+
+            Dictionary<string, int> coverage = sealedSources.ToDictionary(
+                source => source.Id,
+                source => Dataset.Samples.Count(sample =>
+                    sample.SourceId == source.Id &&
+                    (sample.Accepted || sample.Decision == "draft")),
+                StringComparer.Ordinal);
+            DateTime presented = DateTime.UtcNow;
+            int created = 0;
+            while (created < needed)
+            {
+                VideoSource source = sealedSources
+                    .OrderBy(value => coverage[value.Id])
+                    .ThenBy(value => value.Id, StringComparer.Ordinal)
+                    .First();
+                if (!TryCandidateTimestamp(source, 2_000, out long timestamp))
+                {
+                    coverage[source.Id] = int.MaxValue;
+                    if (coverage.Values.All(value => value == int.MaxValue))
+                        throw new InvalidOperationException(
+                            $"Only {created} replacement holdout drafts could be created.");
+                    continue;
+                }
+                TrainingSample sample = new()
+                {
+                    SourceId = source.Id,
+                    TimestampMs = timestamp,
+                    Split = source.Split,
+                    ActiveLearningBucket = "random",
+                    PresentedUtc = presented.AddTicks(created)
+                };
+                Dataset.Samples.Add(sample);
+                SaveSampleLocked(sample);
+                coverage[source.Id]++;
+                created++;
+            }
+            return created;
+        }
+    }
+
+    internal (int Retired, int Replacements, string? Backup) RepairSealedHoldout()
+    {
+        lock (gate) return ReplaceUnusableSealedSourcesLocked();
+    }
+
+    private (int Retired, int Replacements, string? Backup)
+        ReplaceUnusableSealedSourcesLocked(int rejectionThreshold = 5)
+    {
+        VideoSource[] unusable = Dataset.Sources.Where(source => source.SealedHoldout)
+            .Where(source =>
+            {
+                TrainingSample[] recentReviews = Dataset.Samples
+                    .Where(sample => sample.SourceId == source.Id &&
+                        sample.Decision != "draft" && sample.ReviewedUtc != null)
+                    .OrderByDescending(sample => sample.ReviewedUtc)
+                    .Take(rejectionThreshold).ToArray();
+                return recentReviews.Length == rejectionThreshold &&
+                    recentReviews.All(sample => sample.Decision == "rejected");
+            }).ToArray();
+        if (unusable.Length == 0) return (0, 0, null);
+
+        string backup = ManifestPath + ".before-holdout-repair-" +
+            DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".bak";
+        File.Copy(ManifestPath, backup, false);
+        HashSet<string> recordedSources = Dataset.Samples.Select(sample => sample.SourceId)
+            .ToHashSet(StringComparer.Ordinal);
+        List<VideoSource> candidates = Dataset.Sources.Where(source =>
+                !source.SealedHoldout && !recordedSources.Contains(source.Id) &&
+                source.ProbeError == null && source.DurationMs >= 5 * 60_000 &&
+                Math.Min(source.Width, source.Height) >= 720 && File.Exists(source.Path))
+            .ToList();
+        if (candidates.Count < unusable.Length)
+            throw new InvalidOperationException(
+                $"Only {candidates.Count} untouched videos are available to replace " +
+                $"{unusable.Length} unusable sealed-holdout videos.");
+
+        int replacements = 0;
+        foreach (VideoSource retired in unusable)
+        {
+            retired.SealedHoldout = false;
+            foreach (TrainingSample draft in Dataset.Samples.Where(sample =>
+                         sample.SourceId == retired.Id && sample.Decision == "draft"))
+            {
+                draft.Decision = "rejected";
+                draft.ReviewedUtc = DateTime.UtcNow;
+                SaveSampleLocked(draft);
+            }
+
+            int retiredResolution = Math.Min(retired.Width, retired.Height) >= 2160 ? 2 :
+                Math.Min(retired.Width, retired.Height) >= 1080 ? 1 : 0;
+            int retiredDuration = retired.DurationMs >= 60 * 60_000 ? 2 :
+                retired.DurationMs >= 20 * 60_000 ? 1 : 0;
+            VideoSource replacement = candidates
+                .OrderBy(source => string.Equals(source.Split, retired.Split,
+                    StringComparison.Ordinal) ? 0 : 100)
+                .ThenBy(source => Math.Abs((Math.Min(source.Width, source.Height) >= 2160 ? 2 :
+                    Math.Min(source.Width, source.Height) >= 1080 ? 1 : 0) - retiredResolution))
+                .ThenBy(source => Math.Abs((source.DurationMs >= 60 * 60_000 ? 2 :
+                    source.DurationMs >= 20 * 60_000 ? 1 : 0) - retiredDuration))
+                .ThenBy(source => source.Id, StringComparer.Ordinal).First();
+            replacement.SealedHoldout = true;
+            candidates.Remove(replacement);
+            replacements++;
+        }
+        SaveSourcesLocked();
+        return (unusable.Length, replacements, backup);
     }
 
     internal DatasetStatistics Statistics()

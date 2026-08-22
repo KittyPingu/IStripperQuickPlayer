@@ -112,7 +112,9 @@ $python = Join-Path $venv 'Scripts\python.exe'
 Write-Host 'Installing Python packages...'
 & $python -m pip install --upgrade pip
 & $python -m pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
-& $python -m pip install numpy==2.3.2
+& $python -m pip install numpy==2.2.6
+& $python -m pip install opencv-python==4.12.0.88 ultralytics==8.4.126
+if ($LASTEXITCODE -ne 0) { throw 'Ultralytics YOLO26 benchmark dependencies failed to install.' }
 Write-Host 'Downloading and pinning Robust Video Matting...'
 if (-not (Test-Path (Join-Path $rvm '.git'))) {
     git clone https://github.com/PeterL1n/RobustVideoMatting.git $rvm

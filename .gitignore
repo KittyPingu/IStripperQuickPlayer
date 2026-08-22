@@ -377,6 +377,8 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/Form1.LibraryCleanup.cs
 !/IstripperQuickPlayer/Form1.RestApi.cs
+!/IstripperQuickPlayer/Form1.DressingRooms.cs
+!/IstripperQuickPlayer/DressingRoomStreamRelay.cs
 !/IstripperQuickPlayer/CustomShowQueue.cs
 !/IstripperQuickPlayer/CustomShowFailedCleanup.cs
 !/IstripperQuickPlayer/CustomShowCheckForm.cs
@@ -426,3 +428,5 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/DataModel/
 /IstripperQuickPlayer/DataModel/*
 !/IstripperQuickPlayer/DataModel/Persistence.cs
+/*.pt
+/yolo-cache/

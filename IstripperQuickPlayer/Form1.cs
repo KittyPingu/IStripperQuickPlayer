@@ -222,6 +222,14 @@ namespace IStripperQuickPlayer
             Visible = false,
             UseVisualStyleBackColor = false
         };
+        private readonly Button dressingRoomsTestButton = new()
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Name = "dressingRoomsTestButton",
+            Padding = new Padding(6, 2, 6, 3),
+            Text = "Dressing Rooms (test)"
+        };
         private readonly ToolStripMenuItem backupToolStripMenuItem =
             new("Backup QuickPlayer Data...");
         private readonly ToolStripMenuItem restoreToolStripMenuItem =
@@ -731,6 +739,7 @@ namespace IStripperQuickPlayer
             listClips.SetDoubleBuffered();
             listModelsNew.RefreshOnFocusChanged = false;
             panicResumeButton.Click += panicResumeButton_Click;
+            dressingRoomsTestButton.Click += dressingRoomsTestButton_Click;
             panelClip.Controls.Add(panicResumeButton);
             cardScaleSeekBar.Scroll += cardScaleSeekBar_Scroll;
             splitContainer1.Panel1.Controls.Add(cardScaleSeekBar);
@@ -3291,17 +3300,38 @@ namespace IStripperQuickPlayer
                 }
                 if (!PlaybackControlEnabled)
                 {
+                    WarmDressingRoomCache();
                     return;
                 }
 
                 ConfigureMovieCaptureHook();
                 ConfigurePlaybackFunctions();
+                WarmDressingRoomCache();
             }
             catch (Exception exception)
             {
                 playbackBridgeLoaded = false;
                 SetPlaybackStatus("Playback controls could not attach: " + exception.Message);
             }
+        }
+
+        private void WarmDressingRoomCache()
+        {
+            PlaybackBridgeClient? bridge = playbackBridgeClient;
+            if (bridge == null)
+                return;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    int result = bridge.Call("IStripperWarmDressingRoomCache");
+                    Debug.WriteLine($"Dressing Room cache warm-up result: 0x{result:X8}");
+                }
+                catch (Exception exception)
+                {
+                    Debug.WriteLine("Dressing Room cache warm-up failed: " + exception.Message);
+                }
+            });
         }
 
         private void ConfigureMovieCaptureHook()
@@ -5452,6 +5482,7 @@ namespace IStripperQuickPlayer
             }
 
             formIsClosing = true;
+            DisposeDressingRoomStreams();
             StopCustomPlayback(restoreIstripper: true);
             StopRestApi();
             cardOverlayTimer.Stop();
@@ -6740,7 +6771,7 @@ namespace IStripperQuickPlayer
             nowPlayingActions.WrapContents = false;
             AddFlowControls(nowPlayingActions,
                 cmdWallpaper, cmdNextClip, cmdShowModel,
-                panicResumeButton);
+                dressingRoomsTestButton, panicResumeButton);
             lblNowPlaying.AutoSize = false;
             lblNowPlaying.AutoEllipsis = true;
             lblNowPlaying.Dock = DockStyle.Fill;
