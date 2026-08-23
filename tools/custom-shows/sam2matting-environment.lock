@@ -26,12 +26,6 @@
       "file": "SAM2Matting-SAM2.1Base+.pt",
       "bytes": 383180506,
       "sha256": "1f0eb2eda3e8bc9101eafc0b30b8b8fcae1ff83d8fd3adc18e2f3b410fdaae60"
-    },
-    {
-      "tracker": "sam3",
-      "file": "SAM2Matting-SAM3.pt",
-      "bytes": 3509720141,
-      "sha256": "7102d695be6070b39acd67464f93207df725514a688b545ed1267d913d3b9c7d"
     }
   ]
 }

@@ -438,7 +438,6 @@ internal sealed class CustomShowQueueManager : IDisposable
                     ? value.Stage : value.Message);
                 progress.Report(value);
             });
-            await EnsureSam3ScenePlanAsync(job, trackedProgress, token);
             await EnsureRvmScenePromptsAsync(job, trackedProgress, token);
             string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
                 configuration, storage, trackedProgress, preparePublication, token,
@@ -495,7 +494,6 @@ internal sealed class CustomShowQueueManager : IDisposable
                 Progress<CustomShowProgress> progress = new(value => UpdateProgress(
                     job.Id, value.Percent, string.IsNullOrWhiteSpace(value.Message)
                         ? value.Stage : value.Message));
-                await EnsureSam3ScenePlanAsync(job, progress, token);
                 await EnsureRvmScenePromptsAsync(job, progress, token);
                 string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
                     configuration, storage, progress, preparePublication, token);
@@ -611,46 +609,6 @@ internal sealed class CustomShowQueueManager : IDisposable
             dependent.Error = "The preceding append completed, but the next " +
                 "queued video could not be rebased onto the updated show.";
         }
-    }
-
-    async Task EnsureSam3ScenePlanAsync(CustomShowQueueJob job,
-        IProgress<CustomShowProgress> progress, CancellationToken token)
-    {
-        CustomShowProcessing? options = job.Manifest.Processing;
-        if (options?.Algorithm != Sam2MattingSupport.Algorithm ||
-            options.Tracker != "sam3" || options.Scenes.Length != 0)
-            return;
-        CustomShowClipDetection requested = job.Manifest.ClipDetection ??
-            throw new CustomShowQueueAttentionException(
-                "The queued SAM3 scene-detector settings are missing. Edit the job to review it.");
-        using FfmpegCpuDecoder media = new(job.SourcePath, fastDecode: true);
-        if (!CustomShowStore.TryFrameRate(media.FrameRate, out double fps))
-            throw new CustomShowQueueAttentionException(
-                "The source frame rate is invalid.");
-        long totalFrames = Math.Max(1, job.Clips.Where(value => value.Included).Sum(
-            value => Math.Max(1, Sam2MattingScenePlanner.Frame(value.EndMs, fps) -
-                Sam2MattingScenePlanner.Frame(value.StartMs, fps))));
-        Progress<int> detectorProgress = new(value =>
-        {
-            long analysed = Math.Clamp(checked((long)Math.Round(
-                totalFrames * value / 100d)), 0, totalFrames);
-            progress.Report(new CustomShowProgress("scene-analysis", value,
-                $"Detecting processing scenes… {analysed:N0}/{totalFrames:N0} " +
-                $"frames ({value}%)"));
-        });
-        var resolved = await Sam2MattingScenePlanner.DetectAsync(configuration,
-            job.SourcePath, job.Clips, detectorProgress, token, requested);
-        lock (gate)
-        {
-            // Persist exactly once before inference. Retry and restart now use
-            // these immutable boundaries rather than consulting global settings.
-            job.Manifest.ClipDetection = resolved.Detection;
-            job.Manifest.Processing!.Scenes = resolved.Scenes;
-            job.Message = $"Resolved {resolved.Scenes.Length} processing scenes";
-            SaveLocked();
-        }
-        progress.Report(new CustomShowProgress("scene-analysis", 100,
-            $"Resolved {resolved.Scenes.Length} processing scenes"));
     }
 
     async Task EnsureRvmScenePromptsAsync(CustomShowQueueJob job,
@@ -1191,22 +1149,17 @@ internal static class CustomShowJobRunner
         if (job.Manifest.Processing?.Algorithm == "sam2matting")
         {
             CustomShowProcessing options = job.Manifest.Processing;
-            bool deferredSam3Plan = options.Tracker == "sam3" &&
-                options.Scenes.Length == 0;
             try
             {
-                if (!deferredSam3Plan)
-                {
-                    Sam2MattingScenePlanner.Validate(options.Scenes, job.Clips);
-                    using FfmpegCpuDecoder decoder = new(job.SourcePath,
-                        fastDecode: true);
-                    if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
-                            out double sceneFps))
-                        throw new InvalidDataException(
-                            "The source frame rate is invalid.");
-                    Sam2MattingScenePlanner.ValidateCoverage(options.Scenes,
-                        job.Clips, sceneFps);
-                }
+                Sam2MattingScenePlanner.Validate(options.Scenes, job.Clips);
+                using FfmpegCpuDecoder decoder = new(job.SourcePath,
+                    fastDecode: true);
+                if (!CustomShowStore.TryFrameRate(decoder.FrameRate,
+                        out double sceneFps))
+                    throw new InvalidDataException(
+                        "The source frame rate is invalid.");
+                Sam2MattingScenePlanner.ValidateCoverage(options.Scenes,
+                    job.Clips, sceneFps);
             }
             catch (InvalidDataException error)
             {
@@ -1215,19 +1168,7 @@ internal static class CustomShowJobRunner
             if (string.IsNullOrWhiteSpace(job.RequestedOutputPath))
                 throw new CustomShowQueueAttentionException(
                     "The queued output target is missing. Edit the job to review it.");
-            if (options.Tracker == "sam3")
-            {
-                if (job.ScenePrompts.Length != 0)
-                    throw new CustomShowQueueAttentionException(
-                        "SAM3 jobs cannot contain saved scene masks.");
-                try { _ = Sam2MattingSupport.ParseConcepts(
-                    string.Join('\n', options.ForegroundConcepts)); }
-                catch (InvalidDataException error)
-                {
-                    throw new CustomShowQueueAttentionException(error.Message);
-                }
-            }
-            else if (options.PromptMode != "rvm-initial-mask")
+            if (options.PromptMode != "rvm-initial-mask")
             {
                 CustomShowProcessingScene[] scenes = options.Scenes.Where(scene =>
                     ClipsToProcess(job, job.Clips).Any(clip =>
@@ -2011,9 +1952,7 @@ internal sealed class CustomShowQueueForm : Form
     {
         if (Selected() is not { } job) return;
         CustomShowProcessing? processing = job.Manifest.Processing;
-        string prompt = processing?.Tracker == "sam3"
-            ? "Text concepts: " + string.Join(", ", processing.ForegroundConcepts)
-            : processing?.Algorithm == "sam2matting"
+        string prompt = processing?.Algorithm == "sam2matting"
                 ? processing.PromptMode == "rvm-initial-mask" &&
                     job.ScenePrompts.Length == 0
                     ? $"Automatic RVM initial masks: pending; created when the job runs " +

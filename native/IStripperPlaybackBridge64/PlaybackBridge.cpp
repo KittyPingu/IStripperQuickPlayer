@@ -3258,6 +3258,8 @@ namespace
             SWP_FRAMECHANGED);
     }
 
+    void SetMovieWindowClickThrough(HWND window, bool enabled);
+
     LRESULT CALLBACK MovieMouseHook(int code, WPARAM wParam, LPARAM lParam)
     {
         if (code == HC_ACTION)
@@ -3292,6 +3294,21 @@ namespace
             InterlockedExchangePointer(&g_pointerMovieWindow, search.window);
             InterlockedExchange(&g_pointerOverVisiblePixel,
                 search.visiblePixel ? 1 : 0);
+
+            const bool locked = InterlockedCompareExchange(
+                &g_playerLocked, 0, 0) != 0;
+            const bool clickThrough = InterlockedCompareExchange(
+                &g_playerClickThrough, 0, 0) != 0;
+            if (search.window != nullptr && locked)
+            {
+                // HTTRANSPARENT only continues hit testing through windows
+                // owned by the same GUI thread. The application beneath the
+                // iStripper movie belongs to another process, so let Windows
+                // route all pointer input across that boundary by changing the
+                // extended style while the sampled movie pixel is transparent.
+                SetMovieWindowClickThrough(search.window,
+                    clickThrough || !search.visiblePixel);
+            }
 
             if (wheel && search.window != nullptr &&
                 !search.visiblePixel)
@@ -3529,6 +3546,10 @@ namespace
         MovieWindowSubclass* existing = nullptr;
         for (auto& entry : g_movieWindows)
         {
+            if (entry.window != nullptr && !IsWindow(entry.window))
+            {
+                entry = {};
+            }
             if (entry.window == window)
             {
                 existing = &entry;
@@ -3645,10 +3666,27 @@ namespace
             return 0;
         }
 
+        const UINT_PTR movieWindowHealthTimer =
+            SetTimer(nullptr, 0, 1'000, nullptr);
+
         while (GetMessageW(&message, nullptr, 0, 0) > 0)
         {
+            if (message.message == WM_TIMER &&
+                movieWindowHealthTimer != 0 &&
+                message.wParam == movieWindowHealthTimer)
+            {
+                // Qt can replace the movie window procedure without creating
+                // or moving the HWND. Re-probe infrequently so a stale or
+                // newly replaced procedure is repaired without per-frame work.
+                EnumWindows(&FindMovieWindow, 0);
+                continue;
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
+        }
+        if (movieWindowHealthTimer != 0)
+        {
+            KillTimer(nullptr, movieWindowHealthTimer);
         }
         UnhookWindowsHookEx(g_movieMouseHook);
         UnhookWinEvent(g_movieWindowEventHook);

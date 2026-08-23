@@ -14,20 +14,19 @@ internal static class Sam2MattingSupport
     internal const string CheckpointRevision =
         "4315db9c60d27fde396b09765748a0ca6c97bed5";
     internal static readonly HashSet<string> Trackers =
-        ["sam2.1-tiny", "sam2.1-base-plus", "sam3"];
+        ["sam2.1-tiny", "sam2.1-base-plus"];
     internal static string RuntimeRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "IStripperQuickPlayer", "sam2matting-sam3-worker", "v1");
+        "IStripperQuickPlayer", "sam2matting-worker", "v1");
 
     internal static string DisplayName(string? tracker) => tracker switch
     {
         "sam2.1-tiny" => "SAM2.1-T",
-        "sam2.1-base-plus" => "SAM2.1-B+",
-        _ => "SAM3"
+        _ => "SAM2.1-B+"
     };
 
     internal static bool IsValidPromptMode(string tracker, string? promptMode) =>
-        tracker == "sam3" ? promptMode == "text-concepts" :
+        Trackers.Contains(tracker) &&
         promptMode is "initial-mask" or "rvm-initial-mask";
 
     internal static bool IsSupportedOptionContract(int version, string tracker,
@@ -39,48 +38,21 @@ internal static class Sam2MattingSupport
     internal static string CheckpointFile(string? tracker) => tracker switch
     {
         "sam2.1-tiny" => "SAM2Matting-SAM2.1Tiny.pt",
-        "sam2.1-base-plus" => "SAM2Matting-SAM2.1Base+.pt",
-        _ => "SAM2Matting-SAM3.pt"
+        _ => "SAM2Matting-SAM2.1Base+.pt"
     };
 
     internal static string CheckpointSha256(string? tracker) => tracker switch
     {
         "sam2.1-tiny" =>
             "5b9321e3b51bc20f5b84c208746cc083dd3053dd701590f2e88dc8640afcc39d",
-        "sam2.1-base-plus" =>
-            "1f0eb2eda3e8bc9101eafc0b30b8b8fcae1ff83d8fd3adc18e2f3b410fdaae60",
-        _ => "7102d695be6070b39acd67464f93207df725514a688b545ed1267d913d3b9c7d"
+        _ => "1f0eb2eda3e8bc9101eafc0b30b8b8fcae1ff83d8fd3adc18e2f3b410fdaae60"
     };
 
     internal static long CheckpointSize(string? tracker) => tracker switch
     {
         "sam2.1-tiny" => 215_569_778,
-        "sam2.1-base-plus" => 383_180_506,
-        _ => 3_509_720_141
+        _ => 383_180_506
     };
-
-    internal static string[] ParseConcepts(string? text)
-    {
-        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-        List<string> result = [];
-        foreach (string line in (text ?? "").Replace("\r\n", "\n")
-                     .Replace('\r', '\n').Split('\n'))
-        {
-            string value = line.Trim();
-            if (value.Length == 0 || !seen.Add(value)) continue;
-            if (value.Length > 200)
-                throw new InvalidDataException(
-                    "A foreground concept cannot exceed 200 characters.");
-            result.Add(value);
-        }
-        if (result.Count == 0)
-            throw new InvalidDataException(
-                "Enter at least one foreground concept for SAM3.");
-        if (result.Count > 64)
-            throw new InvalidDataException(
-                "A SAM3 job cannot contain more than 64 foreground concepts.");
-        return [.. result];
-    }
 
     internal static bool IsInstalled(CustomShowConfiguration configuration,
         string? tracker = null)
@@ -100,25 +72,12 @@ internal static class Sam2MattingSupport
         catch { return false; }
     }
 
-    internal static bool VerifyConceptParser()
-    {
-        string[] parsed = ParseConcepts(" person \r\nBicycle\nPERSON\n\n" +
-            "handbag held by a person ");
-        try { _ = ParseConcepts(" \r\n "); return false; }
-        catch (InvalidDataException) { }
-        return parsed.SequenceEqual(
-            ["person", "Bicycle", "handbag held by a person"]);
-    }
-
     internal static bool VerifyPromptModes() =>
         IsValidPromptMode("sam2.1-tiny", "initial-mask") &&
         IsValidPromptMode("sam2.1-tiny", "rvm-initial-mask") &&
         IsValidPromptMode("sam2.1-base-plus", "initial-mask") &&
         IsValidPromptMode("sam2.1-base-plus", "rvm-initial-mask") &&
-        IsValidPromptMode("sam3", "text-concepts") &&
-        !IsValidPromptMode("sam3", "rvm-initial-mask") &&
         !IsValidPromptMode("sam2.1-tiny", "text-concepts") &&
-        IsSupportedOptionContract(2, "sam3", "text-concepts") &&
         IsSupportedOptionContract(2, "sam2.1-tiny", "initial-mask") &&
         !IsSupportedOptionContract(2, "sam2.1-tiny", "rvm-initial-mask") &&
         IsSupportedOptionContract(OptionVersion, "sam2.1-tiny",

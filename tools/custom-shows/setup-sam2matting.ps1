@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'IStripperQuickPlayer\sam2matting-sam3-worker\v1'),
+    [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'IStripperQuickPlayer\sam2matting-worker\v1'),
     [string]$PythonLauncher = 'py',
     [switch]$Repair
 )
@@ -194,8 +194,7 @@ try {
 
     $files = @(
         @{ Name='SAM2Matting-SAM2.1Tiny.pt'; Size=215569778L; Hash='5B9321E3B51BC20F5B84C208746CC083DD3053DD701590F2E88DC8640AFCC39D' },
-        @{ Name='SAM2Matting-SAM2.1Base+.pt'; Size=383180506L; Hash='1F0EB2EDA3E8BC9101EAFC0B30B8B8FCAE1FF83D8FD3ADC18E2F3B410FDAAE60' },
-        @{ Name='SAM2Matting-SAM3.pt'; Size=3509720141L; Hash='7102D695BE6070B39ACD67464F93207DF725514A688B545ED1267D913D3B9C7D' }
+        @{ Name='SAM2Matting-SAM2.1Base+.pt'; Size=383180506L; Hash='1F0EB2EDA3E8BC9101EAFC0B30B8B8FCAE1FF83D8FD3ADC18E2F3B410FDAAE60' }
     )
     foreach ($file in $files) {
         $uri = "https://huggingface.co/FudanCVL/SAM2Matting/resolve/$checkpointRevision/checkpoints/$($file.Name)?download=true"

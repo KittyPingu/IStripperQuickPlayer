@@ -400,16 +400,24 @@ def remember_prompt_preview(state, baselines, frame, obj_id=1):
 
 
 def clear_prompt_preview(state, baselines, frame, obj_id=1):
-    obj = state["obj_id_to_idx"][obj_id]
+    obj = state.get("obj_id_to_idx", {}).get(obj_id)
+    point_objects = state.get("point_inputs_per_obj", [])
+    mask_objects = state.get("mask_inputs_per_obj", [])
+    temporary_objects = state.get("temp_output_dict_per_obj", [])
+    output_objects = state.get("output_dict_per_obj", [])
+    if obj is None or obj < 0 or obj >= min(len(point_objects),
+            len(mask_objects), len(temporary_objects), len(output_objects)):
+        baselines.pop(frame, None)
+        return None
     had_points, old_points, had_mask, old_mask = baselines.pop(
         frame, (False, None, False, None))
-    points, masks = state["point_inputs_per_obj"][obj], state["mask_inputs_per_obj"][obj]
+    points, masks = point_objects[obj], mask_objects[obj]
     if had_points: points[frame] = old_points
     else: points.pop(frame, None)
     if had_mask: masks[frame] = old_mask
     else: masks.pop(frame, None)
-    for outputs in state["temp_output_dict_per_obj"][obj].values(): outputs.pop(frame, None)
-    outputs = state["output_dict_per_obj"][obj]
+    for outputs in temporary_objects[obj].values(): outputs.pop(frame, None)
+    outputs = output_objects[obj]
     original = outputs["cond_frame_outputs"].get(frame)
     return original if original is not None else outputs["non_cond_frame_outputs"].get(frame)
 
@@ -529,7 +537,14 @@ def load_resume_state(path, masks, total, fps, width, height):
                 int(value.get("reviewWidth", -1)) != width or \
                 int(value.get("reviewHeight", -1)) != height:
             return None
-        anchors = value.get("anchors", [])
+        anchors = list(value.get("anchors", []))
+        pending = value.get("pendingAnchor")
+        if pending is not None:
+            if not isinstance(pending, dict): return None
+            pending_frame = int(pending.get("frame", -1))
+            anchors = [anchor for anchor in anchors
+                       if int(anchor.get("frame", -1)) != pending_frame]
+            anchors.append(pending)
         if not isinstance(anchors, list): return None
         for anchor in anchors:
             frame = int(anchor.get("frame", -1))
@@ -543,6 +558,7 @@ def load_resume_state(path, masks, total, fps, width, height):
                     any(not isinstance(point, list) or len(point) != 2
                         for point in points):
                 return None
+        value["anchors"] = anchors
         # A draft is deliberately useful before generation has completed.  Only
         # require the contiguous prefix that can safely be resumed; stale preview
         # files after a gap are overwritten when propagation continues.
@@ -1304,8 +1320,7 @@ def process(args):
                         send(status="preview", frame=frame, automatic=False,
                              removed=True); continue
                     if command == "reset":
-                        original = clear_prompt_preview(state, preview_baselines, frame)
-                        if original is None: raise RuntimeError("The original tracked mask is unavailable")
+                        clear_prompt_preview(state, preview_baselines, frame)
                         # Restore the exact saved PNG rather than converting the
                         # internal low-resolution tensor again.  Apart from being
                         # lossless, this avoids shape/size failures in SAM2 after
@@ -1531,8 +1546,12 @@ def self_test():
             resume = folder / "resume.json"
             atomic_json(resume, {"schemaVersion": 1, "frameCount": 12,
                 "fps": 25.0, "reviewWidth": 2, "reviewHeight": 2,
-                "anchors": [{"frame": 4, "mode": "prompt"}]})
-            assert load_resume_state(resume, resume_folder, 12, 25.0, 2, 2) is not None
+                "anchors": [{"frame": 4, "mode": "prompt"}],
+                "pendingAnchor": {"frame": 6, "mode": "paint",
+                                  "points": [], "labels": []}})
+            loaded = load_resume_state(resume, resume_folder, 12, 25.0, 2, 2)
+            assert loaded is not None and {item["frame"] for item in
+                loaded["anchors"]} == {4, 6}
             assert load_resume_state(resume, resume_folder, 11, 25.0, 2, 2) is None
             (resume_folder / "00000009.png").unlink()
             partial = load_resume_state(resume, resume_folder, 12, 25.0, 2, 2)

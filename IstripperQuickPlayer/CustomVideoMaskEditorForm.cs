@@ -280,7 +280,12 @@ internal sealed class CustomVideoMaskEditorForm : Form
         if (saved.Fps > 0 && double.IsFinite(saved.Fps)) fps = saved.Fps;
         reviewWidth = Math.Max(0, saved.ReviewWidth);
         reviewHeight = Math.Max(0, saved.ReviewHeight);
-        foreach (CustomVideoMaskAnchor anchor in saved.Anchors)
+        IEnumerable<CustomVideoMaskAnchor> savedAnchors = saved.Anchors;
+        if (saved.PendingAnchor != null)
+            savedAnchors = savedAnchors
+                .Where(value => value.Frame != saved.PendingAnchor.Frame)
+                .Append(saved.PendingAnchor);
+        foreach (CustomVideoMaskAnchor anchor in savedAnchors)
         {
             if (anchor.Frame < 0 || anchor.Frame >= frameCount ||
                 anchor.Points.Length != anchor.Labels.Length ||
@@ -319,6 +324,14 @@ internal sealed class CustomVideoMaskEditorForm : Form
                         value => new[] { value.X, value.Y }).ToArray(),
                     Labels = [.. labels.GetValueOrDefault(frame, [])]
                 }).ToArray(),
+            PendingAnchor = pendingFrame < 0 || pendingRemoval ? null : new()
+            {
+                Frame = pendingFrame,
+                Mode = pendingMode,
+                Points = points.GetValueOrDefault(pendingFrame, []).Select(
+                    value => new[] { value.X, value.Y }).ToArray(),
+                Labels = [.. labels.GetValueOrDefault(pendingFrame, [])]
+            },
             CorrectedRanges = correctedRanges.OrderBy(pair => pair.Key).Select(pair =>
                 new CustomVideoMaskRange
                 {
@@ -681,8 +694,19 @@ internal sealed class CustomVideoMaskEditorForm : Form
         catch (Exception error)
         {
             if (!closing && !IsDisposed && !Disposing)
-                MessageBox.Show(this, error.Message, Text,
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            {
+                // The latest successful preview and its mask are durable before
+                // any recovery attempt. Restarting with --resume-state rebuilds
+                // SAM2 around that anchor instead of leaving the editor disabled.
+                SaveDraftState();
+                string detail = error.Message;
+                await StopWorkerAsync(graceful: false);
+                status.Text = "SAM2 stopped; recovering the saved correction...";
+                await StartWorkerAsync();
+                if (worker is { HasExited: false })
+                    status.Text = "SAM2 recovered after an error. Your latest " +
+                        "successful correction was retained. (" + detail + ")";
+            }
         }
         finally
         {
@@ -957,6 +981,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             if (!reset && !removeAnchor)
                 pendingMode = paintedMask != null ? "paint" :
                     useAutomatic ? "auto" : "prompt";
+            SaveDraftState();
             updateMasks.Enabled = !reset;
             LoadPreview();
             status.Text = removeAnchor
@@ -971,8 +996,19 @@ internal sealed class CustomVideoMaskEditorForm : Form
         catch (Exception error)
         {
             if (!closing && !IsDisposed && !Disposing)
-                MessageBox.Show(this, error.Message, Text,
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            {
+                // Preserve the latest successful pending preview, then rebuild
+                // the worker from that atomic draft instead of leaving the
+                // editor disabled after an inference-state failure.
+                SaveDraftState();
+                string detail = error.Message;
+                await StopWorkerAsync(graceful: false);
+                status.Text = "SAM2 stopped; recovering the saved correction...";
+                await StartWorkerAsync();
+                if (worker is { HasExited: false })
+                    status.Text = "SAM2 recovered after an error. Your latest " +
+                        "successful correction was retained. (" + detail + ")";
+            }
         }
         finally
         {
@@ -1051,6 +1087,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             pendingFrame = -1;
             pendingRemoval = false;
             ApplyTerminalState(terminal);
+            SaveDraftState();
             status.Text = generationPaused
                 ? "Forward generation paused. Correct another generated mask, or continue."
                 : anchorModes.ContainsKey(frame)

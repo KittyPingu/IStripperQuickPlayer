@@ -39,24 +39,7 @@ CHECKPOINTS = {
         "1f0eb2eda3e8bc9101eafc0b30b8b8fcae1ff83d8fd3adc18e2f3b410fdaae60",
         "configs/sam2matting-sam2.1base+.yaml",
     ),
-    "sam3": (
-        "SAM2Matting-SAM3.pt",
-        3_509_720_141,
-        "7102d695be6070b39acd67464f93207df725514a688b545ed1267d913d3b9c7d",
-        None,
-    ),
 }
-
-# Keep each SAM3 core block bounded. At 4K this yields 64 new frames per block;
-# later blocks prepend a small tracking context, while the float16 max-union
-# remains smaller than the previous non-overlapped float32 backing file. At
-# lower resolutions the cap also prevents the upstream loader from retaining a
-# long video on the GPU. Persisted logical scene boundaries remain unchanged.
-SAM3_MAX_UNION_BYTES = 2 * 1024 * 1024 * 1024
-SAM3_MAX_CHUNK_FRAMES = 128
-SAM3_CONTEXT_FRAMES = 16
-SAM3_UNION_DTYPE = "float16"
-SAM3_WORKING_EDGE = 1008
 _NVENC_AVAILABLE = None
 
 
@@ -270,23 +253,6 @@ def cheap_checkpoint_check(runtime, tracker, expected_hash):
     return path
 
 
-def normalize_concepts(values):
-    normalized = []
-    seen = set()
-    for line in values or []:
-        value = str(line).strip()
-        folded = value.casefold()
-        if not value or folded in seen:
-            continue
-        if len(value) > 200:
-            raise RuntimeError("A foreground concept cannot exceed 200 characters")
-        seen.add(folded)
-        normalized.append(value)
-    if not normalized:
-        raise RuntimeError("Enter at least one foreground concept for SAM3")
-    if len(normalized) > 64:
-        raise RuntimeError("A SAM3 job cannot contain more than 64 concepts")
-    return normalized
 
 
 def validate_scene_contract(request, fps):
@@ -323,22 +289,8 @@ def frame_rates_match(first, second):
     return difference <= max(float(first), float(second)) * 0.00001
 
 
-def sam3_working_size(width, height):
-    scale = min(1.0, SAM3_WORKING_EDGE / max(1, int(width), int(height)))
-    working_width = max(2, int(round(int(width) * scale / 2)) * 2)
-    working_height = max(2, int(round(int(height) * scale / 2)) * 2)
-    return working_width, working_height
 
 
-def sam3_chunk_size(width, height):
-    bytes_per_frame = max(1, int(width) * int(height) * 4)
-    return max(1, min(SAM3_MAX_CHUNK_FRAMES,
-                      SAM3_MAX_UNION_BYTES // bytes_per_frame))
-
-
-def tracker_scene_chunk_size(tracker, width, height, scene_count):
-    return (sam3_chunk_size(width, height)
-            if tracker == "sam3" else int(scene_count))
 
 
 def frame_chunks(frame_count, chunk_size, context_frames=0):
@@ -357,25 +309,6 @@ def frame_chunks(frame_count, chunk_size, context_frames=0):
     return chunks
 
 
-def prepare_union(path, shape):
-    import numpy as np
-
-    union = np.memmap(path, mode="w+", dtype=SAM3_UNION_DTYPE, shape=shape)
-    union[:] = 0
-    union.flush()
-    mapping = getattr(union, "_mmap", None)
-    if mapping is not None:
-        mapping.close()
-
-
-def prepare_sam3_chunk(source, directory, union_path, start_frame, frame_count,
-                       width, height, fps, on_frame=None,
-                       check_cancelled=None):
-    extract_scene(source, directory, start_frame, frame_count, fps, on_frame,
-                  check_cancelled, (width, height))
-    if check_cancelled is not None:
-        check_cancelled()
-    prepare_union(union_path, (frame_count, height, width))
 
 
 def full_checkpoint_check(path, expected_size, expected_hash):
@@ -559,22 +492,13 @@ def load_variant(runtime, tracker):
     sys.path.insert(0, str(source))
     checkpoint = runtime / "checkpoints" / CHECKPOINTS[tracker][0]
     emit("checkpoint-loading", 1, f"Loading {tracker} checkpoint")
-    if tracker == "sam3":
-        from sam3.model_builder import build_sam3_video_predictor
-        with contextlib.redirect_stdout(sys.stderr):
-            predictor = build_sam3_video_predictor(
-                gpus_to_use=[0], checkpoint_path=str(checkpoint),
-                strict_state_dict_loading=False,
-                bpe_path=str(source / "sam3" / "bpe_simple_vocab_16e6.txt.gz"),
-            )
-    else:
-        from sam2.build_sam import build_sam2matting_video_predictor
-        install_float32_sam2_image_loader()
-        with contextlib.redirect_stdout(sys.stderr):
-            predictor = build_sam2matting_video_predictor(
-                CHECKPOINTS[tracker][3], str(checkpoint), device="cuda",
-                hydra_overrides_extra=[],
-            )
+    from sam2.build_sam import build_sam2matting_video_predictor
+    install_float32_sam2_image_loader()
+    with contextlib.redirect_stdout(sys.stderr):
+        predictor = build_sam2matting_video_predictor(
+            CHECKPOINTS[tracker][3], str(checkpoint), device="cuda",
+            hydra_overrides_extra=[],
+        )
     emit("checkpoint-loading", 5, f"Loaded {tracker} in eager BF16 mode")
     return predictor
 
@@ -748,42 +672,6 @@ def ensure_frame_cache(model, state, frame_idx):
         model._prepare_backbone_feats(state, frame_idx, reverse=False)
 
 
-def sam3_alpha(model, state, frame_idx, mask_hw):
-    import numpy as np
-    import torch
-    import torch.nn.functional as functional
-
-    ensure_frame_cache(model, state, frame_idx)
-    image, cache = state["feature_cache"][frame_idx]
-    if image.dim() == 3:
-        image = image.unsqueeze(0)
-    image = image.to("cuda")
-    high_res_features = list(cache["tracker_backbone_out"]["backbone_fpn"])
-    if torch.is_tensor(mask_hw):
-        mask = mask_hw.detach().to(device="cuda", dtype=torch.float32)
-    else:
-        mask = torch.as_tensor(np.asarray(mask_hw), device="cuda",
-                               dtype=torch.float32)
-    while mask.dim() > 2:
-        mask = mask[0]
-    # SAM3 returns binary masks, but PyTorch's bilinear interpolation has no
-    # Bool kernel. Resize a float boundary mask and threshold it again for the
-    # matting head's binary ROI input.
-    mask = (mask > 0).float()
-    mask_288 = functional.interpolate(
-        mask[None, None], size=(288, 288), mode="bilinear",
-        align_corners=False, antialias=True,
-    )
-    alpha, _, _ = model.tracker._forward_alpha_heads(
-        input=image, backbone_features=None, point_inputs=None,
-        mask_inputs=(mask_288 > 0).float(), unknown_region_inputs=None,
-        high_res_features=high_res_features, image=None, trimap_input=None,
-    )
-    alpha = functional.interpolate(
-        alpha.float(), size=(state["orig_height"], state["orig_width"]),
-        mode="bilinear", align_corners=False,
-    )
-    return alpha.squeeze().detach().float().cpu().numpy().clip(0, 1)
 
 
 def write_detection_preview(scene_dir, frame_idx, alpha, preview_dir):
@@ -805,10 +693,10 @@ def write_detection_preview(scene_dir, frame_idx, alpha, preview_dir):
         source_array * alpha_array_2d[..., None] +
         green * (1 - alpha_array_2d[..., None])).astype(np.uint8), mode="RGB")
     preview_dir.mkdir(parents=True, exist_ok=True)
-    source_preview = preview_dir / "sam3-source.jpg"
-    composite_preview = preview_dir / "sam3-composite.jpg"
-    source_temp = preview_dir / "sam3-source.tmp.jpg"
-    composite_temp = preview_dir / "sam3-composite.tmp.jpg"
+    source_preview = preview_dir / "source.jpg"
+    composite_preview = preview_dir / "composite.jpg"
+    source_temp = preview_dir / "source.tmp.jpg"
+    composite_temp = preview_dir / "composite.tmp.jpg"
     source.save(source_temp, format="JPEG", quality=88)
     composite.save(composite_temp, format="JPEG", quality=88)
     os.replace(source_temp, source_preview)
@@ -816,64 +704,6 @@ def write_detection_preview(scene_dir, frame_idx, alpha, preview_dir):
     return str(source_preview), str(composite_preview)
 
 
-def process_sam3_scene(predictor, request, scene_dir, union,
-                       completed_units=0, total_units=1, preview_dir=None,
-                       context_frames=0, core_count=None, scene_number=1,
-                       scene_total=1, completed_frames=0, total_frames=1):
-    import numpy as np
-
-    if core_count is None:
-        core_count = union.shape[0] - context_frames
-    for concept_index, concept in enumerate(request["concepts"]):
-        response = predictor.handle_request({
-            "type": "start_session", "resource_path": str(scene_dir),
-        })
-        session_id = response["session_id"]
-        try:
-            cancelled(request)
-            concept_units = completed_units + concept_index * union.shape[0]
-            emit("concept-detection",
-                 5 + 92 * concept_units / max(1, total_units),
-                 f"Detecting concept {concept_index + 1}/{len(request['concepts'])}: {concept}")
-            state = predictor._get_session(session_id)["state"]
-            predictor.model.add_prompt(
-                inference_state=state, frame_idx=0, text_str=concept)
-            for response in predictor.handle_stream_request({
-                    "type": "propagate_in_video", "session_id": session_id,
-                    "propagation_direction": "forward"}):
-                cancelled(request)
-                index = int(response["frame_index"])
-                outputs = response["outputs"]
-                masks = outputs.get("out_binary_masks", [])
-                for mask in masks:
-                    cancelled(request)
-                    alpha = sam3_alpha(predictor.model, state, index, mask)
-                    union[index] = np.maximum(union[index], alpha)
-                core_index = index - context_frames
-                in_core = 0 <= core_index < core_count
-                show_preview = preview_dir is not None and in_core and (
-                    core_index % 32 == 0 or core_index + 1 == core_count)
-                source_preview = composite_preview = None
-                if show_preview:
-                    source_preview, composite_preview = write_detection_preview(
-                        scene_dir, index, union[index], preview_dir)
-                if in_core and (core_index % 10 == 0 or show_preview):
-                    processed = (completed_units + concept_index *
-                                 union.shape[0] + index + 1)
-                    emit("tracking", 5 + 92 * processed / max(1, total_units),
-                         f"Scene {scene_number}/{scene_total} • concept "
-                         f"{concept_index + 1}/{len(request['concepts'])} • "
-                         f"output frame {core_index + 1}/{core_count} • overall "
-                         f"{min(total_frames, completed_frames + core_index + 1)}/"
-                         f"{total_frames}" +
-                         (f" • warmed with {context_frames} prior frames"
-                          if context_frames else ""),
-                         previewSource=source_preview,
-                         previewComposite=composite_preview,
-                         previewSourceLabel="Current source frame",
-                         previewCompositeLabel="Detected foreground on green")
-        finally:
-            predictor.handle_request({"type": "close_session", "session_id": session_id})
 
 
 def encode_alpha(raw_path, destination, width, height, fps, count,
@@ -1112,17 +942,6 @@ def write_union(union, raw_stream, check_cancelled=None, start_index=0):
         raw_stream.write(quantized.tobytes(order="C"))
 
 
-def write_and_release_union(union, raw_stream, union_path,
-                            check_cancelled=None, start_index=0):
-    try:
-        write_union(union, raw_stream, check_cancelled, start_index)
-        raw_stream.flush()
-    finally:
-        union.flush()
-        mapping = getattr(union, "_mmap", None)
-        if mapping is not None:
-            mapping.close()
-        union_path.unlink(missing_ok=True)
 
 
 def run_job(request, loaded=None):
@@ -1142,34 +961,23 @@ def run_job(request, loaded=None):
             "SAM2Matting requires the current H.264 8-bit alpha output policy")
     checkpoint = cheap_checkpoint_check(runtime, tracker,
                                         request.get("checkpointSha256"))
-    if tracker == "sam3" and not request.get("concepts"):
-        raise RuntimeError("SAM3 requires at least one foreground concept")
-    if tracker != "sam3" and request.get("concepts"):
+    if request.get("concepts"):
         raise RuntimeError("SAM2.1 trackers do not accept text concepts")
     source = request["sourcePath"]
     media = probe_source(source)
     validate_scene_contract(request, media["fps"])
-    if tracker == "sam3":
-        normalized = normalize_concepts(request.get("concepts"))
-        if normalized != request.get("concepts") or request.get("prompts"):
-            raise RuntimeError("SAM3 concepts are not normalized or the job contains scene masks")
-        sam3_width, sam3_height = sam3_working_size(
-            media["width"], media["height"])
-    else:
-        sam3_width = sam3_height = None
     output = Path(request["outputPath"])
     output.mkdir(parents=True, exist_ok=True)
     emit("preflight", 0, "Validated saved SAM2Matting job contract")
     predictor = loaded if loaded is not None else load_variant(runtime, tracker)
-    sam2_frame_size = (None if tracker == "sam3" else
-                       int(getattr(predictor, "image_size", 1024)))
+    sam2_frame_size = int(getattr(predictor, "image_size", 1024))
     scenes_by_clip = {}
     for scene in request["scenes"]:
         scenes_by_clip.setdefault(scene["clipId"].lower(), []).append(scene)
     prompt_ids = [item["sceneId"].lower() for item in request.get("prompts", [])]
-    if tracker != "sam3" and (len(prompt_ids) != len(set(prompt_ids)) or
-                              set(prompt_ids) != {scene["id"].lower()
-                                                  for scene in request["scenes"]}):
+    if (len(prompt_ids) != len(set(prompt_ids)) or
+            set(prompt_ids) != {scene["id"].lower()
+                                for scene in request["scenes"]}):
         raise RuntimeError("Every SAM2.1 scene requires exactly one saved initial mask")
     results = []
     work = output / ".sam2matting-work"
@@ -1180,18 +988,10 @@ def run_job(request, loaded=None):
         total_scenes = max(1, len(request["scenes"]))
         total_frames = sum(int(scene["endFrameExclusive"] - scene["startFrame"])
                            for scene in request["scenes"])
-        concept_passes = (len(request["concepts"])
-                          if tracker == "sam3" else 1)
+        concept_passes = 1
         # Count overlap work as well as output frames so ETA covers the complete
         # job rather than becoming optimistic at every bounded-session restart.
-        if tracker == "sam3":
-            chunk_size = sam3_chunk_size(sam3_width, sam3_height)
-            session_frames = sum(sum(chunk[1] for chunk in frame_chunks(
-                int(scene["endFrameExclusive"] - scene["startFrame"]),
-                chunk_size, min(SAM3_CONTEXT_FRAMES, chunk_size - 1)))
-                for scene in request["scenes"])
-        else:
-            session_frames = total_frames
+        session_frames = total_frames
         total_units = (session_frames * (concept_passes + 1) +
                        total_frames * 2)
         completed_scenes = 0
@@ -1212,8 +1012,7 @@ def run_job(request, loaded=None):
                 max_workers=1, thread_name_prefix="sam2matting-alpha-write")
             pending_write = None
             try:
-                raw_context = (raw_path.open("w+b") if tracker == "sam3"
-                               else contextlib.nullcontext(None))
+                raw_context = contextlib.nullcontext(None)
                 with raw_context as raw:
                     carried_prefetch = None
                     carried_prefetch_staging = None
@@ -1221,15 +1020,8 @@ def run_job(request, loaded=None):
                     for scene_index, scene in enumerate(clip_scenes):
                         cancelled(request)
                         scene_count = int(scene["endFrameExclusive"] - scene["startFrame"])
-                        chunk_size = tracker_scene_chunk_size(
-                            tracker,
-                            sam3_width if tracker == "sam3" else media["width"],
-                            sam3_height if tracker == "sam3" else media["height"],
-                            scene_count)
-                        context_frames = (min(SAM3_CONTEXT_FRAMES,
-                                              chunk_size - 1)
-                                          if tracker == "sam3" and
-                                          scene_count > chunk_size else 0)
+                        chunk_size = scene_count
+                        context_frames = 0
                         chunks = frame_chunks(scene_count, chunk_size,
                                               context_frames)
                         has_next_scene = scene_index + 1 < len(clip_scenes)
@@ -1283,22 +1075,13 @@ def run_job(request, loaded=None):
 
                                 extraction_progress(0)
                                 if prefetched is None:
-                                    if tracker == "sam3":
-                                        prepare_sam3_chunk(
-                                            source, scene_dir, union_path,
-                                            int(scene["startFrame"]) + input_offset,
-                                            input_count, sam3_width,
-                                            sam3_height, media["fps"],
-                                            extraction_progress,
-                                            lambda: cancelled(request))
-                                    else:
-                                        extract_scene(
-                                            source, scene_dir,
-                                            int(scene["startFrame"]) + input_offset,
-                                            input_count, media["fps"],
-                                            extraction_progress,
-                                            lambda: cancelled(request),
-                                            sam2_frame_size)
+                                    extract_scene(
+                                        source, scene_dir,
+                                        int(scene["startFrame"]) + input_offset,
+                                        input_count, media["fps"],
+                                        extraction_progress,
+                                        lambda: cancelled(request),
+                                        sam2_frame_size)
                                 else:
                                     while True:
                                         try:
@@ -1331,30 +1114,20 @@ def run_job(request, loaded=None):
                                         chunk_index + 1)
                                     prefetched_progress = {"frames": 0}
                                     prefetched = extractor.submit(
-                                        prepare_sam3_chunk, source, next_dir,
-                                        next_union_path,
+                                        extract_scene, source, next_dir,
                                         int(scene["startFrame"]) + next_offset,
-                                        next_input_count, sam3_width,
-                                        sam3_height, media["fps"],
+                                        next_input_count, media["fps"],
                                         lambda frames, state=prefetched_progress:
                                             state.__setitem__("frames", frames),
-                                        check_prefetch_cancelled)
+                                        check_prefetch_cancelled, sam2_frame_size)
                                     prefetched_staging = None
                                 elif extractor is not None and has_next_scene:
                                     next_scene = clip_scenes[scene_index + 1]
                                     next_scene_count = int(
                                         next_scene["endFrameExclusive"] -
                                         next_scene["startFrame"])
-                                    next_chunk_size = tracker_scene_chunk_size(
-                                        tracker,
-                                        sam3_width if tracker == "sam3" else media["width"],
-                                        sam3_height if tracker == "sam3" else media["height"],
-                                        next_scene_count)
-                                    next_context_frames = (min(
-                                        SAM3_CONTEXT_FRAMES,
-                                        next_chunk_size - 1)
-                                        if tracker == "sam3" and
-                                        next_scene_count > next_chunk_size else 0)
+                                    next_chunk_size = next_scene_count
+                                    next_context_frames = 0
                                     next_chunks = frame_chunks(
                                         next_scene_count, next_chunk_size,
                                         next_context_frames)
@@ -1371,118 +1144,64 @@ def run_job(request, loaded=None):
                                     next_union_path = work / \
                                         f"union-{next_scene['id']}{next_suffix}.float16"
                                     next_progress = {"frames": 0}
-                                    if tracker == "sam3":
-                                        carried_prefetch = extractor.submit(
-                                            prepare_sam3_chunk, source,
-                                            next_staging_dir,
-                                            next_union_path,
-                                            int(next_scene["startFrame"]) + next_offset,
-                                            next_input_count, sam3_width,
-                                            sam3_height, media["fps"],
-                                            lambda frames, state=next_progress:
-                                                state.__setitem__("frames", frames),
-                                            check_carry_cancelled)
-                                    else:
-                                        carried_prefetch = extractor.submit(
-                                            extract_scene, source,
-                                            next_staging_dir,
-                                            int(next_scene["startFrame"]) + next_offset,
-                                            next_input_count, media["fps"],
-                                            lambda frames, state=next_progress:
-                                                state.__setitem__("frames", frames),
-                                            check_carry_cancelled,
-                                            sam2_frame_size)
+                                    carried_prefetch = extractor.submit(
+                                        extract_scene, source,
+                                        next_staging_dir,
+                                        int(next_scene["startFrame"]) + next_offset,
+                                        next_input_count, media["fps"],
+                                        lambda frames, state=next_progress:
+                                            state.__setitem__("frames", frames),
+                                        check_carry_cancelled,
+                                        sam2_frame_size)
                                     carried_prefetch_staging = next_staging_dir
                                     carried_prefetch_progress = next_progress
 
-                                if tracker == "sam3":
-                                    union = np.memmap(
-                                        union_path, mode="r+",
-                                        dtype=SAM3_UNION_DTYPE,
-                                        shape=(input_count, sam3_height,
-                                               sam3_width))
-                                else:
-                                    prompt = next(
-                                        (item for item in request["prompts"]
-                                         if item["sceneId"].lower() ==
-                                         scene["id"].lower()), None)
-                                    if prompt is None:
-                                        raise RuntimeError(
-                                            f"Scene {scene['id']} has no initial mask")
-                                    local_prompt = int(
-                                        prompt["promptFrame"] -
-                                        scene["startFrame"])
-                                    union_path = None
-                                    union = Sam2SceneAlphaSink(
-                                        work, f"{scene['id']}{suffix}",
-                                        local_prompt, input_count,
-                                        media["width"], media["height"],
-                                        media["fps"])
+                                prompt = next(
+                                    (item for item in request["prompts"]
+                                     if item["sceneId"].lower() ==
+                                     scene["id"].lower()), None)
+                                if prompt is None:
+                                    raise RuntimeError(
+                                        f"Scene {scene['id']} has no initial mask")
+                                local_prompt = int(
+                                    prompt["promptFrame"] -
+                                    scene["startFrame"])
+                                union_path = None
+                                union = Sam2SceneAlphaSink(
+                                    work, f"{scene['id']}{suffix}",
+                                    local_prompt, input_count,
+                                    media["width"], media["height"],
+                                    media["fps"])
                                 write_submitted = False
                                 sam2_sink_finished = False
                                 try:
                                     with torch.inference_mode(), torch.autocast(
                                             "cuda", dtype=torch.bfloat16):
-                                        if tracker == "sam3":
-                                            tracking_base_units = (completed_units +
-                                                                   input_count)
-                                            process_sam3_scene(
-                                                predictor, request, scene_dir, union,
-                                                tracking_base_units, total_units,
-                                                work / "previews" if request.get(
-                                                    "generatePreviews") else None,
-                                                context, count,
-                                                completed_scenes + 1, total_scenes,
-                                                completed_frames, total_frames)
-                                        else:
-                                            process_sam2_scene(
-                                                predictor, request, scene, scene_dir,
-                                                union, completed_units + input_count,
-                                                 total_units, completed_scenes + 1,
-                                                 total_scenes, completed_frames,
-                                                 total_frames, media["width"],
-                                                 media["height"],
-                                                 work / "previews" if request.get(
-                                                     "generatePreviews") else None)
+                                        process_sam2_scene(
+                                            predictor, request, scene, scene_dir,
+                                            union, completed_units + input_count,
+                                             total_units, completed_scenes + 1,
+                                             total_scenes, completed_frames,
+                                             total_frames, media["width"],
+                                             media["height"],
+                                             work / "previews" if request.get(
+                                                 "generatePreviews") else None)
                                     chunk_text = (f", chunk {chunk_index + 1}/"
                                                   f"{len(chunks)}"
                                                   if len(chunks) > 1 else "")
                                     completed_chunk_units = (completed_units + input_count *
                                                              (concept_passes + 1))
-                                    if tracker == "sam3":
-                                        emit("matting", 5 + 92 *
-                                             completed_chunk_units /
-                                             max(1, total_units),
-                                             f"Writing progressive alpha for scene "
-                                             f"{completed_scenes + 1}/{total_scenes}"
-                                             f"{chunk_text}")
-                                        if pending_write is not None:
-                                            pending_write.result()
-                                            pending_write = None
-                                        pending_write = writer.submit(
-                                            write_and_release_union, union, raw,
-                                            union_path,
-                                            lambda: cancelled(request), context)
-                                    else:
-                                        alpha_segments.extend(union.finish(
-                                            lambda: cancelled(request)))
-                                        sam2_sink_finished = True
-                                        emit("matting", 5 + 92 *
-                                             completed_chunk_units /
-                                             max(1, total_units),
-                                             f"Progressive alpha complete for scene "
-                                             f"{completed_scenes + 1}/{total_scenes}")
+                                    alpha_segments.extend(union.finish(
+                                        lambda: cancelled(request)))
+                                    sam2_sink_finished = True
+                                    emit("matting", 5 + 92 *
+                                         completed_chunk_units /
+                                         max(1, total_units),
+                                         f"Progressive alpha complete for scene "
+                                         f"{completed_scenes + 1}/{total_scenes}")
                                     write_submitted = True
                                 finally:
-                                    if tracker == "sam3" and not write_submitted:
-                                        union.flush()
-                                        mapping = getattr(union, "_mmap", None)
-                                        if mapping is not None:
-                                            mapping.close()
-                                        union_path.unlink(missing_ok=True)
-                                        shutil.rmtree(scene_dir, ignore_errors=True)
-                                    elif (tracker != "sam3" and
-                                          not sam2_sink_finished):
+                                    if not sam2_sink_finished:
                                         union.abort()
                                 decoded_count += count
                                 completed_frames += count
@@ -1514,18 +1233,12 @@ def run_job(request, loaded=None):
                      (completed_units + frames) / max(1, total_units),
                      f"Encoding foreground video • {frames}/{decoded_count} frames")
 
-            if tracker == "sam3":
-                encode_alpha(
-                    raw_path, alpha_path, media["width"], media["height"],
-                    media["fps"], decoded_count, alpha_encoding_progress,
-                    lambda: cancelled(request), sam3_width, sam3_height)
-            else:
-                emit("encoding", 5 + 92 * completed_units /
-                     max(1, total_units),
-                     "Finalizing streamed H.264 alpha")
-                concat_alpha_segments(
-                    alpha_segments, alpha_path,
-                    work / f"{clip['id']}-alpha-concat.txt")
+            emit("encoding", 5 + 92 * completed_units /
+                 max(1, total_units),
+                 "Finalizing streamed H.264 alpha")
+            concat_alpha_segments(
+                alpha_segments, alpha_path,
+                work / f"{clip['id']}-alpha-concat.txt")
             completed_units += decoded_count
             foreground_encoder, foreground_preset = encode_foreground(
                 source, foreground_path,
@@ -1667,9 +1380,7 @@ def validate(runtime, full_hash=False):
             emit("setup", 0, f"Hashing {name}")
             full_checkpoint_check(path, size, digest)
     source = runtime / "source" / "SAM2Matting"
-    required = [source / "sam2" / "build_sam.py",
-                source / "sam3" / "model_builder.py",
-                source / "sam3" / "bpe_simple_vocab_16e6.txt.gz"]
+    required = [source / "sam2" / "build_sam.py"]
     if not all(path.is_file() for path in required):
         raise RuntimeError("Pinned Fudan source contract is incomplete")
     if full_hash:
@@ -1682,22 +1393,15 @@ def validate(runtime, full_hash=False):
                 runtime / "checkpoints" / CHECKPOINTS[tracker][0],
                 map_location="cpu", weights_only=True)
             state_dict = checkpoint.get("model", checkpoint)
-            target = predictor.model if tracker == "sam3" else predictor
-            missing, unexpected = target.load_state_dict(state_dict, strict=False)
+            missing, unexpected = predictor.load_state_dict(state_dict, strict=False)
             if missing or unexpected:
                 raise RuntimeError(
                     f"Checkpoint key contract changed for {tracker}: "
                     f"missing={sorted(missing)!r}, unexpected={sorted(unexpected)!r}")
-            del checkpoint, state_dict, target, predictor
+            del checkpoint, state_dict, predictor
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        from sam3.perflib.connected_components import connected_components
-        sample = torch.zeros((1, 1, 8, 8), dtype=torch.bool, device="cuda")
-        sample[:, :, 2:6, 2:6] = True
-        labels, counts = connected_components(sample)
-        if int(counts.max().item()) != 16 or int(labels.max().item()) < 1:
-            raise RuntimeError("Native Windows connected-components validation failed")
     print(json.dumps({"status": "ok", "sourceRevision": SOURCE_REVISION,
                       "checkpointRevision": CHECKPOINT_REVISION}), flush=True)
 

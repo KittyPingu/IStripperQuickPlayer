@@ -54,7 +54,7 @@ internal sealed class CustomShowConfiguration
     public int VitMatteSmallPreferredBatchSize { get; set; } = 2;
     public int VitMatteBasePreferredBatchSize { get; set; } = 1;
     public string LastProcessingAlgorithm { get; set; } = "quality";
-    public string LastSam2MattingTracker { get; set; } = "sam3";
+    public string LastSam2MattingTracker { get; set; } = "sam2.1-base-plus";
     public string LastMaskEngine { get; set; } = "sam2";
     public string LastSam2Model { get; set; } = "base-plus";
     public int LastMattingDetailPx { get; set; } = 512;
@@ -139,7 +139,7 @@ internal sealed class CustomShowConfiguration
                 configuration.LastProcessingAlgorithm = "quality";
             if (!Sam2MattingSupport.Trackers.Contains(
                     configuration.LastSam2MattingTracker))
-                configuration.LastSam2MattingTracker = "sam3";
+                configuration.LastSam2MattingTracker = "sam2.1-base-plus";
             if (configuration.LastMaskEngine is not
                 ("sam2" or "edgetam" or "rvm" or "rvm-sam2"))
                 configuration.LastMaskEngine = "sam2";
@@ -1097,15 +1097,7 @@ internal sealed class CustomShowStore
                 processing.ScenePlanVersion != Sam2MattingSupport.ScenePlanVersion)
                 throw new InvalidDataException(
                     "The SAM2Matting processing contract is invalid or unsupported.");
-            if (processing.Tracker == "sam3")
-            {
-                string[] normalized = Sam2MattingSupport.ParseConcepts(
-                    string.Join('\n', processing.ForegroundConcepts ?? []));
-                if (!(processing.ForegroundConcepts ?? []).SequenceEqual(normalized))
-                    throw new InvalidDataException(
-                        "SAM3 foreground concepts are not normalized.");
-            }
-            else if ((processing.ForegroundConcepts?.Length ?? 0) != 0)
+            if ((processing.ForegroundConcepts?.Length ?? 0) != 0)
                 throw new InvalidDataException(
                     "SAM2.1 trackers do not accept text concepts.");
             if (processing.Scenes == null)
@@ -1610,7 +1602,6 @@ internal sealed class CustomShowStore
             TryFrameRate("30000/1001", out double rate) && rate > 29.9 && rate < 30 &&
             (FindPythonForVerification() is string python &&
                 (python.Length == 0 || File.Exists(python))) &&
-            Sam2MattingSupport.VerifyConceptParser() &&
             Sam2MattingSupport.VerifyPromptModes() &&
             Sam2MattingScenePlanner.VerifySceneValidation() &&
             PropSegmenterCompatible("rvm-matanyone2", false, null) &&

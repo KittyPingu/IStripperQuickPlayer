@@ -6,20 +6,17 @@ from sam2matting_worker import (
     CHECKPOINT_REVISION,
     SOURCE_REVISION,
     frame_rates_match,
-    normalize_concepts,
     prune_sam2_tracking_state,
     release_sam2_frame_alpha,
     sam2_tracking_history,
-    tracker_scene_chunk_size,
     validate_scene_contract,
 )
 
 
-def test_pinned_contract_rejects_sam31():
+def test_pinned_contract_has_supported_trackers():
     assert SOURCE_REVISION == "73dd721d77b56749248aefe5e8824d7f61b9d13c"
     assert CHECKPOINT_REVISION == "4315db9c60d27fde396b09765748a0ca6c97bed5"
-    assert set(CHECKPOINTS) == {"sam2.1-tiny", "sam2.1-base-plus", "sam3"}
-    assert all("SAM3.1" not in item[0] for item in CHECKPOINTS.values())
+    assert set(CHECKPOINTS) == {"sam2.1-tiny", "sam2.1-base-plus"}
 
 
 def test_float_max_union_never_adds_alpha():
@@ -80,17 +77,6 @@ def test_sam2_tracking_state_keeps_only_future_dependencies():
     assert set(remaining) == set(range(1, 16))
 
 
-def test_concepts_are_trimmed_and_deduplicated_in_first_seen_order():
-    assert normalize_concepts([
-        " person ", "Bicycle", "PERSON", "", "handbag held by a person"
-    ]) == ["person", "Bicycle", "handbag held by a person"]
-    try:
-        normalize_concepts(["", "   "])
-        assert False, "an empty normalized concept list must be rejected"
-    except RuntimeError:
-        pass
-
-
 def test_scene_contract_requires_exact_gap_free_clip_coverage():
     request = {
         "clips": [{"id": "clip", "startMs": 0, "endMs": 1000}],
@@ -108,9 +94,3 @@ def test_scene_contract_requires_exact_gap_free_clip_coverage():
         assert False, "a scene-plan gap must be rejected"
     except RuntimeError:
         pass
-
-
-def test_sam2_prefetch_uses_the_upcoming_scene_size():
-    assert tracker_scene_chunk_size("sam2.1-tiny", 3840, 2160, 180) == 180
-    assert tracker_scene_chunk_size("sam2.1-tiny", 3840, 2160, 315) == 315
-    assert tracker_scene_chunk_size("sam2.1-base-plus", 3840, 2160, 315) == 315

@@ -271,6 +271,7 @@ internal sealed class CustomVideoMaskDraft
     public int ReviewWidth { get; set; }
     public int ReviewHeight { get; set; }
     public CustomVideoMaskAnchor[] Anchors { get; set; } = [];
+    public CustomVideoMaskAnchor? PendingAnchor { get; set; }
     public CustomVideoMaskRange[] CorrectedRanges { get; set; } = [];
 }
 

@@ -289,9 +289,8 @@ internal sealed class CustomShowEditorForm : Form
             "SAM2.1-T — fastest, interactive initial mask",
             "SAM2.1-B+ — higher-capacity, interactive initial mask",
             "RVM → SAM2.1-T — automatic person mask",
-            "RVM → SAM2.1-B+ — automatic person mask",
-            "SAM3 — automatic text concepts"]);
-        sam2MattingTracker.SelectedIndex = 4;
+            "RVM → SAM2.1-B+ — automatic person mask"]);
+        sam2MattingTracker.SelectedIndex = 3;
         sam2MattingTrackerRow = AddRow(processingTable, "Backbone tracker",
             Flow(sam2MattingTracker, sam2MattingStatus, openSam2MattingSetup));
         foregroundConceptsRow = AddRow(processingTable, "Foreground concepts",
@@ -443,7 +442,6 @@ internal sealed class CustomShowEditorForm : Form
             {
                 "rvm-initial-mask" =>
                     "RVM will create one automatic person mask per scene when the job runs",
-                "text-concepts" => "Automatic text prompts",
                 _ => "Initial masks: not created"
             };
             UpdateProcessingOptions();
@@ -595,7 +593,6 @@ internal sealed class CustomShowEditorForm : Form
         bool rvm = selected is "quality" or "fast";
         bool sam2Matting = selected == Sam2MattingSupport.Algorithm;
         string sam2MattingPromptMode = SelectedSam2MattingPromptMode();
-        bool sam3 = sam2Matting && sam2MattingPromptMode == "text-concepts";
         bool rvmSam2Matting = sam2Matting &&
             sam2MattingPromptMode == "rvm-initial-mask";
         mattingDetail.Enabled = (rvm || selected is "matanyone2" or
@@ -676,9 +673,9 @@ internal sealed class CustomShowEditorForm : Form
                 processingDetails.Text !=
                     "Recorded in show.json after processing completes.");
             SetRowVisible(processingTable, sam2MattingTrackerRow, sam2Matting);
-            SetRowVisible(processingTable, foregroundConceptsRow, sam3);
+            SetRowVisible(processingTable, foregroundConceptsRow, false);
             SetRowVisible(processingTable, sceneMaskSummaryRow,
-                sam2Matting && !sam3);
+                sam2Matting);
             SetRowVisible(processingTable, autoAcceptRow, !sam2Matting);
             if (reprocessingRow >= 0)
                 SetRowVisible(processingTable, reprocessingRow, reprocess);
@@ -693,7 +690,7 @@ internal sealed class CustomShowEditorForm : Form
         sam2MattingStatus.ForeColor = installed ? Color.ForestGreen : Color.DarkOrange;
         openSam2MattingSetup.Visible = sam2Matting && !sam2Installed;
         string? queueAction = sam2Matting
-            ? sam3 || rvmSam2Matting ? "Queue" : "Mask Scenes and Queue"
+            ? rvmSam2Matting ? "Queue" : "Mask Scenes and Queue"
             : QueueAction(selected, autoAccept.Checked);
         queue.Visible = queueManager != null && CanProcess && queueAction != null;
         queueBatch.Visible = false;
@@ -703,7 +700,7 @@ internal sealed class CustomShowEditorForm : Form
             save.Visible = sam2Matting ||
                 queueJobId == null && queueDraft == null;
             if (sam2Matting)
-                save.Text = sam3 || rvmSam2Matting
+                save.Text = rvmSam2Matting
                     ? (reprocess ? "Reprocess and Preview" :
                     Appending ? "Process and Add Clips" : "Process and Preview") :
                     "Mask Scenes and Process";
@@ -761,13 +758,12 @@ internal sealed class CustomShowEditorForm : Form
     {
         0 or 2 => "sam2.1-tiny",
         1 or 3 => "sam2.1-base-plus",
-        _ => "sam3"
+        _ => "sam2.1-base-plus"
     };
 
     string SelectedSam2MattingPromptMode() => sam2MattingTracker.SelectedIndex switch
     {
         2 or 3 => "rvm-initial-mask",
-        4 => "text-concepts",
         _ => "initial-mask"
     };
 
@@ -1040,7 +1036,9 @@ internal sealed class CustomShowEditorForm : Form
         {
             "sam2.1-tiny" when processing.PromptMode == "rvm-initial-mask" => 2,
             "sam2.1-base-plus" when processing.PromptMode == "rvm-initial-mask" => 3,
-            "sam2.1-tiny" => 0, "sam2.1-base-plus" => 1, _ => 4
+            "sam2.1-tiny" => 0, "sam2.1-base-plus" => 1,
+            // Retired/unknown trackers reopen on the automatic Base+ path.
+            _ => 3
         };
         if (processing.Algorithm == "sam2matting")
             foregroundConcepts.Text = string.Join(Environment.NewLine,
@@ -1125,9 +1123,9 @@ internal sealed class CustomShowEditorForm : Form
             _ => "RVM Quality"
         };
         SelectStartingWith(preset, prefix);
-        // A newly authored SAM2Matting job always starts on the automatic
-        // text-prompt path, even if an earlier job used a manual tracker.
-        sam2MattingTracker.SelectedIndex = 4;
+        // New jobs and retired tracker preferences start on automatic Base+.
+        sam2MattingTracker.SelectedIndex =
+            configuration.LastSam2MattingTracker == "sam2.1-tiny" ? 2 : 3;
         SelectStartingWith(maskEngine, configuration.LastMaskEngine switch
         {
             "edgetam" => "EdgeTAM", "rvm" => "RVM",
@@ -2206,14 +2204,6 @@ internal sealed class CustomShowEditorForm : Form
                     // provenance, but do not run it again.
                     manifest.ClipDetection = clipDetection;
                 }
-                else if (tracker == "sam3")
-                {
-                    // SAM3 has no interactive scene prompts, so scene analysis is
-                    // the first unattended queue stage. Freeze the detector choice
-                    // now; the resolved boundaries are persisted by the runner.
-                    clipDetection = Sam2MattingScenePlanner.ResolveRequest(configuration);
-                    manifest.ClipDetection = clipDetection;
-                }
                 else
                 {
                     long detectionTotalFrames;
@@ -2267,9 +2257,7 @@ internal sealed class CustomShowEditorForm : Form
                         "Scene detection did not return a processing plan.");
                 }
             }
-            string[] concepts = algorithm == Sam2MattingSupport.Algorithm &&
-                tracker == "sam3"
-                ? Sam2MattingSupport.ParseConcepts(foregroundConcepts.Text) : [];
+            string[] concepts = [];
             CustomShowProcessing processingOptions = new()
             {
                 Algorithm = algorithm,
@@ -2427,11 +2415,6 @@ internal sealed class CustomShowEditorForm : Form
             }
             if (algorithm == Sam2MattingSupport.Algorithm)
             {
-                if (tracker == "sam3")
-                {
-                    job.ScenePrompts = [];
-                }
-                else
                 {
                     CustomShowProcessingScene[] scenesNeedingProcessing =
                         processingScenes.Where(scene => clipsNeedingProcessing.Any(clip =>
@@ -2580,8 +2563,7 @@ internal sealed class CustomShowEditorForm : Form
                 !CustomShowProcessor.IsRvmInitialMaskInstalled(configuration))
                 throw new InvalidDataException(
                     "Setup required: install or repair the Robust Video Matting processing tools.");
-            string[] concepts = tracker == "sam3"
-                ? Sam2MattingSupport.ParseConcepts(foregroundConcepts.Text) : [];
+            string[] concepts = [];
             using OpenFileDialog files = new()
             {
                 Filter = "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*",
@@ -2664,7 +2646,7 @@ internal sealed class CustomShowEditorForm : Form
                 {
                     job.ScenePrompts = [];
                 }
-                else if (tracker != "sam3")
+                else
                 {
                     draftRoot ??= Path.Combine(store.Root, ".queue-mask-work",
                         "batch-" + Guid.NewGuid().ToString("N"));
@@ -5593,7 +5575,7 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
 internal sealed class CustomShowSetupOptionsForm : Form
 {
     readonly CheckBox sam2Matting = new() { Text =
-        "SAM2Matting with SAM2.1-T, SAM2.1-B+, and SAM3 (~3.9 GB, NVIDIA CUDA required)",
+        "SAM2Matting with SAM2.1-T and SAM2.1-B+ (~600 MB, NVIDIA CUDA required)",
         AutoSize = true, Checked = true };
     readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
         AutoSize = true, Checked = true };
