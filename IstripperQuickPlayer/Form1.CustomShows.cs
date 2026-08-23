@@ -1650,7 +1650,10 @@ public partial class Form1
         };
         BeginAnimationReplacement(animationPath);
         ShowNowPlaying(animationPath, doWallpaper: true);
-        player.Show(this);
+        // Keep the always-on-top playback surface independent from the library
+        // window. An owned Win32 window is minimized automatically with its
+        // owner, which is not appropriate for desktop-style custom playback.
+        player.Show();
         return true;
     }
 
