@@ -3291,7 +3291,9 @@ namespace
             const auto mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
             MovieWindowAtPoint search =
                 FindVisibleMovieWindowAtPoint(mouse->pt);
-            InterlockedExchangePointer(&g_pointerMovieWindow, search.window);
+            const HWND previousWindow = static_cast<HWND>(
+                InterlockedExchangePointer(
+                    &g_pointerMovieWindow, search.window));
             InterlockedExchange(&g_pointerOverVisiblePixel,
                 search.visiblePixel ? 1 : 0);
 
@@ -3299,6 +3301,11 @@ namespace
                 &g_playerLocked, 0, 0) != 0;
             const bool clickThrough = InterlockedCompareExchange(
                 &g_playerClickThrough, 0, 0) != 0;
+            if (previousWindow != nullptr && previousWindow != search.window &&
+                locked && !clickThrough)
+            {
+                SetMovieWindowClickThrough(previousWindow, false);
+            }
             if (search.window != nullptr && locked)
             {
                 // HTTRANSPARENT only continues hit testing through windows
@@ -3524,19 +3531,20 @@ namespace
             return false;
         }
 
-        if (InterlockedCompareExchange(&g_playerClickThrough, 0, 0) != 0)
-        {
-            SetMovieWindowClickThrough(window, true);
-        }
+        const bool clickThrough = InterlockedCompareExchange(
+            &g_playerClickThrough, 0, 0) != 0;
         if (InterlockedCompareExchange(&g_playerLocked, 0, 0) == 0)
         {
             SetMovieWindowClickThrough(window, false);
             return false;
         }
-        if (InterlockedCompareExchange(&g_playerClickThrough, 0, 0) == 0)
-        {
-            SetMovieWindowClickThrough(window, false);
-        }
+        const HWND pointerWindow = static_cast<HWND>(
+            InterlockedCompareExchangePointer(
+                &g_pointerMovieWindow, nullptr, nullptr));
+        const bool pointerOverVisiblePixel = InterlockedCompareExchange(
+            &g_pointerOverVisiblePixel, 0, 0) != 0;
+        SetMovieWindowClickThrough(window, clickThrough ||
+            pointerWindow == window && !pointerOverVisiblePixel);
 
         bool alreadySubclassed = false;
         const bool probeCompleted =

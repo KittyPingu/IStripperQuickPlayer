@@ -93,6 +93,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
     bool generationPaused;
     bool generationComplete;
     bool canStopBackward;
+    int incompleteRecoveryAttempts;
     int availableEnd = -1;
     int initialFrame = -1;
     long lastGenerationPreview;
@@ -399,7 +400,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             workerError = worker.StandardError.ReadToEndAsync();
             JsonElement terminal = await ReadUntilAsync("ready", "paused");
             workerClock.Stop(); workerElapsed.Stop(); progress.Style = ProgressBarStyle.Blocks;
-            ApplyTerminalState(terminal);
+            await ApplyVerifiedTerminalStateAsync(terminal);
         }
         catch (Exception error)
         {
@@ -621,6 +622,41 @@ internal sealed class CustomVideoMaskEditorForm : Form
         else status.Text = "Generation paused. Correct this mask, then update masks, or continue.";
     }
 
+    async Task ApplyVerifiedTerminalStateAsync(JsonElement response)
+    {
+        string kind = response.GetProperty("status").GetString() ?? "";
+        if (kind == "ready")
+        {
+            int contiguousEnd = await Task.Run(ContiguousMaskEnd);
+            if (contiguousEnd < frameCount - 1)
+            {
+                if (++incompleteRecoveryAttempts > 2)
+                    throw new InvalidDataException(
+                        $"SAM2 reported completion, but only {contiguousEnd + 1:N0} " +
+                        $"of {frameCount:N0} masks were saved. The completed prefix " +
+                        "and all corrections remain preserved in the draft.");
+                availableEnd = contiguousEnd;
+                generationComplete = false;
+                generationPaused = true;
+                status.Text = $"Recovering saved masks from frame " +
+                    $"{contiguousEnd + 2:N0} of {frameCount:N0}…";
+                await StopWorkerAsync(graceful: false);
+                await StartWorkerAsync();
+                return;
+            }
+        }
+        incompleteRecoveryAttempts = 0;
+        ApplyTerminalState(response);
+    }
+
+    int ContiguousMaskEnd()
+    {
+        for (int frame = 0; frame < frameCount; frame++)
+            if (!File.Exists(Path.Combine(maskFolder, $"{frame + 1:00000000}.png")))
+                return frame - 1;
+        return frameCount - 1;
+    }
+
     async Task ToggleGenerationAsync()
     {
         if (!supportsCorrections || worker == null || worker.HasExited) return;
@@ -655,7 +691,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             await worker.StandardInput.FlushAsync();
             JsonElement terminal = await ReadUntilAsync("ready", "paused");
             workerClock.Stop(); workerElapsed.Stop();
-            ApplyTerminalState(terminal);
+            await ApplyVerifiedTerminalStateAsync(terminal);
         }
         catch (Exception error)
         {
@@ -1086,7 +1122,7 @@ internal sealed class CustomVideoMaskEditorForm : Form
             RefreshTimelineRanges();
             pendingFrame = -1;
             pendingRemoval = false;
-            ApplyTerminalState(terminal);
+            await ApplyVerifiedTerminalStateAsync(terminal);
             SaveDraftState();
             status.Text = generationPaused
                 ? "Forward generation paused. Correct another generated mask, or continue."
