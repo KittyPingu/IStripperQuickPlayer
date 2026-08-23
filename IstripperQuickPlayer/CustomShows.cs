@@ -69,6 +69,11 @@ internal sealed class CustomShowConfiguration
     public int MatAnyoneMemoryDefaultsVersion { get; set; } = 1;
     public int LastMatAnyoneMaxMemoryFrames { get; set; } = 14;
     public bool LastMatAnyoneUseLongTermMemory { get; set; } = true;
+    public bool LastTemporalAlphaCleanup { get; set; }
+    public int LastTemporalAlphaCleanupWindowFrames { get; set; } = 3;
+    public int LastTemporalAlphaCleanupStrengthPercent { get; set; } = 100;
+    public int LastTemporalAlphaCleanupAlphaThreshold { get; set; } =
+        CustomShowClip.DefaultAlphaThreshold;
     public bool LastAutoAcceptAlphaThreshold { get; set; }
     public bool PropSegmenterEnabled { get; set; }
     public string? ActivePropSegmenterModelId { get; set; }
@@ -170,6 +175,12 @@ internal sealed class CustomShowConfiguration
                             ? MatAnyoneLongTermMinimumMemoryFrames : 2,
                         configuration.LastMatAnyoneUseLongTermMemory
                             ? MatAnyoneLongTermMaximumMemoryFrames : 30);
+            configuration.LastTemporalAlphaCleanupWindowFrames = Math.Clamp(
+                configuration.LastTemporalAlphaCleanupWindowFrames, 1, 12);
+            configuration.LastTemporalAlphaCleanupStrengthPercent = Math.Clamp(
+                configuration.LastTemporalAlphaCleanupStrengthPercent, 25, 100);
+            configuration.LastTemporalAlphaCleanupAlphaThreshold = Math.Clamp(
+                configuration.LastTemporalAlphaCleanupAlphaThreshold, 0, 255);
             return configuration;
         }
         catch { return new(); }
@@ -319,6 +330,11 @@ internal sealed class CustomShowProcessing
     public int RvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
     public int MatAnyoneMaxMemoryFrames { get; set; } = 5;
     public bool MatAnyoneUseLongTermMemory { get; set; }
+    public bool TemporalAlphaCleanup { get; set; }
+    public int TemporalAlphaCleanupWindowFrames { get; set; } = 3;
+    public int TemporalAlphaCleanupStrengthPercent { get; set; } = 100;
+    public int TemporalAlphaCleanupAlphaThreshold { get; set; } =
+        CustomShowClip.DefaultAlphaThreshold;
     public int? AutoAcceptedAlphaThreshold { get; set; }
     public string? Sam2Model { get; set; }
     public string? MaskEngine { get; set; }
@@ -913,7 +929,7 @@ internal sealed class CustomShowStore
             return;
         }
 
-        foreach (string path in new[] { foreground, alpha }
+        foreach (string path in new[] { foreground, alpha, CleanedAlphaPath(alpha) }
                      .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (!File.Exists(path)) continue;
@@ -1186,6 +1202,11 @@ internal sealed class CustomShowStore
             !matAnyone && (processing.MatAnyoneMaxMemoryFrames != 5 ||
                 processing.MatAnyoneUseLongTermMemory))
             throw new InvalidDataException("Invalid MatAnyone memory configuration.");
+        if (processing.TemporalAlphaCleanupWindowFrames is < 1 or > 12 ||
+            processing.TemporalAlphaCleanupStrengthPercent is < 25 or > 100 ||
+            processing.TemporalAlphaCleanupAlphaThreshold is < 0 or > 255)
+            throw new InvalidDataException(
+                "Invalid temporal alpha-cleanup window, strength, or alpha threshold.");
         if (processing.AutoAcceptedAlphaThreshold is int acceptedThreshold &&
             acceptedThreshold is < 0 or > 255)
             throw new InvalidDataException("Invalid automatically accepted alpha threshold.");
@@ -1313,6 +1334,27 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("A media path leaves its show folder.");
         return full;
     }
+
+    internal static string CleanedAlphaPath(string alphaPath)
+    {
+        string full = Path.GetFullPath(alphaPath);
+        string stem = Path.GetFileNameWithoutExtension(full);
+        if (stem.EndsWith("_cleaned", StringComparison.OrdinalIgnoreCase))
+            return full;
+        return Path.Combine(Path.GetDirectoryName(full)!,
+            stem + "_cleaned" + Path.GetExtension(full));
+    }
+
+    internal static string PreferredAlphaPath(string alphaPath)
+    {
+        string original = Path.GetFullPath(alphaPath);
+        string cleaned = CleanedAlphaPath(original);
+        return !string.Equals(cleaned, original, StringComparison.OrdinalIgnoreCase) &&
+            File.Exists(cleaned) ? cleaned : original;
+    }
+
+    internal static string ResolvePlaybackAlpha(string folder, string relative) =>
+        PreferredAlphaPath(ResolveRelative(folder, relative));
 
     internal static int AgeAt(DateOnly birthDate, DateOnly releaseDate)
     {
@@ -1452,7 +1494,7 @@ internal sealed class CustomShowStore
             {
                 CustomClipMedia media = clip.Media!;
                 string clipForeground = ResolveRelative(folder, media.Foreground);
-                string clipAlpha = ResolveRelative(folder, media.Alpha);
+                string clipAlpha = ResolvePlaybackAlpha(folder, media.Alpha);
                 long size = checked(new FileInfo(clipForeground).Length +
                     new FileInfo(clipAlpha).Length);
                 string clipName = playableMedia.Length == 1
@@ -1686,6 +1728,10 @@ internal sealed class CustomShowStore
                 RvmMatAnyoneRefreshStrengthPercent = 75,
                 MatAnyoneMaxMemoryFrames = 10,
                 MatAnyoneUseLongTermMemory = true,
+                TemporalAlphaCleanup = true,
+                TemporalAlphaCleanupWindowFrames = 4,
+                TemporalAlphaCleanupStrengthPercent = 75,
+                TemporalAlphaCleanupAlphaThreshold = 90,
                 AutoAcceptedAlphaThreshold = 25,
                 ExecutionPolicy = "auto",
                 ResolvedExecutionMode = "eager",
@@ -1722,6 +1768,10 @@ internal sealed class CustomShowStore
                 roundTrip.Processing.RvmMatAnyoneRefreshStrengthPercent != 75 ||
                 roundTrip.Processing.MatAnyoneMaxMemoryFrames != 10 ||
                 !roundTrip.Processing.MatAnyoneUseLongTermMemory ||
+                !roundTrip.Processing.TemporalAlphaCleanup ||
+                roundTrip.Processing.TemporalAlphaCleanupWindowFrames != 4 ||
+                roundTrip.Processing.TemporalAlphaCleanupStrengthPercent != 75 ||
+                roundTrip.Processing.TemporalAlphaCleanupAlphaThreshold != 90 ||
                 roundTrip.Processing.AutoAcceptedAlphaThreshold != 25 ||
                 roundTrip.Processing.Sam2Model != null ||
                 roundTrip.Processing.ResolvedExecutionMode != "eager" ||
@@ -1801,6 +1851,8 @@ internal sealed class CustomShowStore
                 using FileStream unlocked = new(alphaProbe, FileMode.Open,
                     FileAccess.Read, FileShare.None);
             }
+            string cleanedAlphaProbe = CleanedAlphaPath(alphaProbe);
+            File.Copy(alphaProbe, cleanedAlphaProbe);
             IReadOnlyList<ModelCard> cards = store.LoadCards(false);
             List<ModelClip>? loadedClips = cards.FirstOrDefault()?.clips;
             if (cards.Count != 1 || cards[0].name != "custom:" + show.Id ||
@@ -1812,6 +1864,8 @@ internal sealed class CustomShowStore
                 loadedClips[0].customEndMs != 300 ||
                 loadedClips[0].customAlphaThreshold != 24 ||
                 loadedClips[0].customEdgeChokePixels != 1.25f ||
+                !string.Equals(loadedClips[0].customAlphaPath,
+                    cleanedAlphaProbe, StringComparison.OrdinalIgnoreCase) ||
                 loadedClips[1].customStartMs != 0 ||
                 loadedClips[1].hotnessCode != HotnessCode.topless)
             {

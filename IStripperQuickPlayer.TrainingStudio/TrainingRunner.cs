@@ -5,6 +5,7 @@ namespace IStripperQuickPlayer.TrainingStudio;
 
 internal enum TrainingArchitecture
 {
+    DeepLabV11,
     ConvNextV2,
     Yolo26Semantic,
     Yolo26Instance
@@ -13,21 +14,26 @@ internal enum TrainingArchitecture
 internal sealed class TrainingRunner
 {
     const int TrainingRevision = 9;
+    const int V11TrainingRevision = 7;
     Process? process;
     internal event Action<string>? Message;
     internal event Action<string>? Progress;
     internal string? PackagePath { get; private set; }
     internal string? ReviewPath { get; private set; }
     internal string? BenchmarkPath { get; private set; }
+    internal bool PromotionEligible { get; private set; } = true;
 
     internal async Task<int> RunAsync(string datasetRoot, bool resume, int minimumResolution,
         TrainingArchitecture architecture, CancellationToken token)
     {
-        bool yolo = architecture != TrainingArchitecture.ConvNextV2;
+        bool yolo = architecture is TrainingArchitecture.Yolo26Semantic or
+            TrainingArchitecture.Yolo26Instance;
+        bool v11 = architecture == TrainingArchitecture.DeepLabV11;
         int inputSize = yolo ? 1024 : 768;
-        int revision = yolo ? 1 : TrainingRevision;
+        int revision = v11 ? V11TrainingRevision : yolo ? 2 : TrainingRevision;
         string architectureId = architecture switch
         {
+            TrainingArchitecture.DeepLabV11 => "deeplabv3-resnet50-v1.1",
             TrainingArchitecture.Yolo26Semantic => "yolo26s-sem",
             TrainingArchitecture.Yolo26Instance => "yolo26s-seg",
             _ => "rvm-conditioned-convnext-fpn-v2"
@@ -50,7 +56,7 @@ internal sealed class TrainingRunner
         {
             trainingRevision = revision, architecture = architectureId,
             minimumResolution, inputSize, seed = 20260821,
-            exportFormat = yolo ? 1 : (int?)null,
+            exportFormat = yolo ? 2 : (int?)null,
             ultralyticsVersion = yolo ? "8.4.126" : null
         }, new JsonSerializerOptions { WriteIndented = true }));
         string eventsPath = Path.Combine(output, "events.ndjson");
@@ -58,7 +64,8 @@ internal sealed class TrainingRunner
         string consolePath = Path.Combine(output, "training.console.log");
         Message?.Invoke($"Writing training logs to {output}");
         string worker = Path.Combine(AppContext.BaseDirectory, "training",
-            yolo ? "yolo26_benchmark.py" : "prop_segmenter_train_v2.py");
+            yolo ? "yolo26_benchmark.py" : v11 ? "prop_segmenter_train.py" :
+            "prop_segmenter_train_v2.py");
         ProcessStartInfo start = new(Sam2Client.RuntimePython())
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
@@ -79,6 +86,18 @@ internal sealed class TrainingRunner
             start.ArgumentList.RemoveAt(start.ArgumentList.Count - 1);
             start.ArgumentList.Add("--variant");
             start.ArgumentList.Add(architectureId);
+        }
+        else if (v11)
+        {
+            start.ArgumentList.Add("--warm-start-latest");
+            start.ArgumentList.Add("--warmup-epochs");
+            start.ArgumentList.Add("0");
+            start.ArgumentList.Add("--epochs");
+            start.ArgumentList.Add("40");
+            start.ArgumentList.Add("--runtime-epochs");
+            start.ArgumentList.Add("8");
+            start.ArgumentList.Add("--negative-selection");
+            start.ArgumentList.Add("30");
         }
         if (resumable != null) start.ArgumentList.Add("--resume");
         process = Process.Start(start) ?? throw new InvalidOperationException("Could not start the training worker.");
@@ -117,6 +136,10 @@ internal sealed class TrainingRunner
                 if (root.TryGetProperty("review", out JsonElement review)) ReviewPath = review.GetString();
                 if (root.TryGetProperty("benchmark", out JsonElement benchmark))
                     BenchmarkPath = benchmark.GetString();
+                if (root.TryGetProperty("promotion", out JsonElement promotion) &&
+                    promotion.ValueKind == JsonValueKind.Object &&
+                    promotion.TryGetProperty("eligible", out JsonElement eligible))
+                    PromotionEligible = eligible.GetBoolean();
                 string stage = root.TryGetProperty("stage", out JsonElement stageValue) ? stageValue.GetString() ?? "" : "";
                 string message = root.TryGetProperty("message", out JsonElement messageValue) ? messageValue.GetString() ?? "" : "";
                 if (root.TryGetProperty("epoch", out JsonElement epoch))

@@ -32,7 +32,7 @@ internal sealed class TrainingStudioForm : Form
     readonly ComboBox trainingArchitecture = new() { Width = 190,
         DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox minimumResolution = new() { Width = 105, DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly Label v2Training = new() { Text = "768px · conditioned crops",
+    readonly Label v2Training = new() { Text = "768px · warm-started · sealed benchmark",
         AutoSize = true, Padding = new Padding(6, 7, 0, 0) };
     readonly Label queueStatus = new() { Text = "Queue: 0/10", AutoSize = true,
         Padding = new Padding(10, 8, 0, 0) };
@@ -95,6 +95,7 @@ internal sealed class TrainingStudioForm : Form
         minimumResolution.SelectedIndex = 2;
         trainingArchitecture.Items.AddRange(new object[]
         {
+            new ArchitectureOption("DeepLab v1.1 (recommended)", TrainingArchitecture.DeepLabV11),
             new ArchitectureOption("ConvNeXt/FPN v2", TrainingArchitecture.ConvNextV2),
             new ArchitectureOption("YOLO26s Semantic", TrainingArchitecture.Yolo26Semantic),
             new ArchitectureOption("YOLO26s Instance", TrainingArchitecture.Yolo26Instance)
@@ -102,8 +103,15 @@ internal sealed class TrainingStudioForm : Form
         trainingArchitecture.SelectedIndex = 0;
         trainingArchitecture.SelectedIndexChanged += (_, _) =>
         {
-            bool yolo = SelectedTrainingArchitecture() != TrainingArchitecture.ConvNextV2;
-            v2Training.Text = yolo ? "1024px · benchmark only" : "768px · conditioned crops";
+            TrainingArchitecture selected = SelectedTrainingArchitecture();
+            bool yolo = selected is TrainingArchitecture.Yolo26Semantic or
+                TrainingArchitecture.Yolo26Instance;
+            v2Training.Text = selected switch
+            {
+                TrainingArchitecture.DeepLabV11 => "768px · warm-started · sealed benchmark",
+                TrainingArchitecture.ConvNextV2 => "768px · conditioned crops",
+                _ => "1024px · benchmark only"
+            };
             install.Enabled = !yolo && installPackagePath != null;
         };
         trainActions.Controls.AddRange([train,
@@ -939,13 +947,16 @@ internal sealed class TrainingStudioForm : Form
             TrainingArchitecture architecture = SelectedTrainingArchitecture();
             int exit = await runner.RunAsync(store.Root, resumeTraining.Checked, minimum,
                 architecture, trainingCancellation.Token);
-            bool yolo = architecture != TrainingArchitecture.ConvNextV2;
+            bool yolo = architecture is TrainingArchitecture.Yolo26Semantic or
+                TrainingArchitecture.Yolo26Instance;
             status.Text = exit == 0 ? yolo
                 ? "YOLO benchmark completed; this candidate is not installable yet."
-                : "Training and evaluation completed." : "Training failed; see the log.";
+                : architecture == TrainingArchitecture.DeepLabV11 && !runner.PromotionEligible
+                    ? "v1.1 benchmark completed but did not beat v1 promotion criteria."
+                    : "Training and evaluation completed." : "Training failed; see the log.";
             installPackagePath = exit == 0 && Directory.Exists(runner.PackagePath)
                 ? runner.PackagePath : null;
-            install.Enabled = installPackagePath != null;
+            install.Enabled = installPackagePath != null && runner.PromotionEligible;
             openReview.Enabled = exit == 0 && Directory.Exists(runner.ReviewPath);
         }
         catch (OperationCanceledException) { status.Text = "Training cancelled; the last checkpoint can be resumed."; }
@@ -1038,7 +1049,7 @@ internal sealed class TrainingStudioForm : Form
 
     TrainingArchitecture SelectedTrainingArchitecture() =>
         trainingArchitecture.SelectedItem is ArchitectureOption option
-            ? option.Architecture : TrainingArchitecture.ConvNextV2;
+            ? option.Architecture : TrainingArchitecture.DeepLabV11;
 
     sealed record ResolutionOption(string Label, int Pixels)
     {

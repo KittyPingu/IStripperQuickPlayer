@@ -43,6 +43,8 @@ public partial class Form1
     readonly ContextMenuStrip customClipContextMenu = new();
     readonly ToolStripMenuItem trimCustomClipMenu =
         new("Trim Custom Clip...");
+    readonly ToolStripMenuItem cleanCustomClipAlphaMenu =
+        new("Automatically Stabilize Alpha...");
     readonly ToolStripMenuItem deleteCustomClipMenu =
         new("Delete Custom Clip...");
     readonly ToolStripMenuItem customClipHotnessMenu = new("Hotness");
@@ -121,6 +123,8 @@ public partial class Form1
         ToolStripMenuItem backgroundLock = new(
             "Camera / Background Lock (Stabilo + SAM2)...");
         ToolStripMenuItem removeWatermark = new("Remove Video Object / Watermark...");
+        ToolStripMenuItem compareTemporalAlpha = new(
+            "Compare Automatic Alpha Stabilization...");
         ToolStripMenuItem settings = new("Settings...");
         customShowQueueManager = new CustomShowQueueManager(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
@@ -132,10 +136,11 @@ public partial class Form1
         stabilize.Click += (_, _) => StabilizeVideo();
         backgroundLock.Click += (_, _) => StabilizeBackgroundVideo();
         removeWatermark.Click += (_, _) => RemoveVideoWatermark();
+        compareTemporalAlpha.Click += (_, _) => CompareTemporalAlphaCleanup();
         settings.Click += (_, _) => ConfigureCustomShows();
         customShowsMenu.DropDownItems.AddRange(
             [create, queues, check, new ToolStripSeparator(), stabilize,
-                backgroundLock, removeWatermark, settings]);
+                backgroundLock, removeWatermark, compareTemporalAlpha, settings]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
         editCustomShowMenu.Click += (_, _) =>
@@ -220,6 +225,11 @@ public partial class Form1
             PersistContextClipAlphaThreshold();
             await TrimSelectedCustomClipAsync();
         };
+        cleanCustomClipAlphaMenu.Click += (_, _) =>
+        {
+            PersistContextClipAlphaThreshold();
+            CompareSelectedCustomClipAlpha();
+        };
         foreach (string hotness in CustomShowStore.HotnessOptions)
         {
             string label = hotness switch
@@ -246,7 +256,7 @@ public partial class Form1
             customClipAlphaHost, new ToolStripSeparator(),
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
-            trimCustomClipMenu, deleteCustomClipMenu]);
+            cleanCustomClipAlphaMenu, trimCustomClipMenu, deleteCustomClipMenu]);
         customClipContextMenu.Opening += (sender, eventArgs) =>
         {
             bool custom = TryGetSelectedCustomClip(
@@ -270,6 +280,7 @@ public partial class Form1
             customClipAlphaHost.Visible = custom;
             customClipHotnessMenu.Visible = custom;
             customClipTypesMenu.Visible = custom;
+            cleanCustomClipAlphaMenu.Visible = custom;
             trimCustomClipMenu.Visible = custom;
             deleteCustomClipMenu.Visible = custom;
             eventArgs.Cancel = !custom;
@@ -279,6 +290,46 @@ public partial class Form1
         listClips.ContextMenuStrip = customClipContextMenu;
         listClips.MouseDown += listClips_MouseDownForCustomContext;
         AppTheme.Apply(alphaPanel);
+    }
+
+    void CompareTemporalAlphaCleanup(string? showId = null, string? clipId = null)
+    {
+        try
+        {
+            using TemporalAlphaComparisonForm dialog = new(
+                customShowConfiguration, showId, clipId);
+            dialog.ShowDialog(this);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Automatic Alpha Stabilization",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    void CompareSelectedCustomClipAlpha()
+    {
+        try
+        {
+            if (customClipAlphaCard?.customShowId == null ||
+                customClipAlphaCard.clips == null || customClipAlphaClip == null)
+                return;
+            CustomShowManifest show = new CustomShowStore(
+                customShowConfiguration.LibraryRoot).LoadManifest(
+                    customClipAlphaCard.customShowId);
+            int index = customClipAlphaCard.clips.IndexOf(customClipAlphaClip);
+            CustomShowClip[] included = show.Clips.Where(clip => clip.Included &&
+                clip.Media != null).ToArray();
+            if (index < 0 || index >= included.Length)
+                throw new InvalidDataException(
+                    "The selected clip no longer matches the saved custom show.");
+            CompareTemporalAlphaCleanup(show.Id, included[index].Id);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Automatic Alpha Stabilization",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     void SetupCustomPlayerVolumeMenu()
@@ -1232,7 +1283,7 @@ public partial class Form1
             using CustomClipTrimForm trim = new(
                 $"{card.outfit} (Clip {modelClip.clipNumber})",
                 CustomShowStore.ResolveRelative(folder, media.Foreground),
-                CustomShowStore.ResolveRelative(folder, media.Alpha), media,
+                CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha), media,
                 included[index].AlphaThreshold,
                 customShowConfiguration.FullOpacityThreshold,
                 included[index].EdgeChokePixels);
@@ -1466,8 +1517,11 @@ public partial class Form1
             GetCardTagFromAnimationPath(animationPath));
         ModelClip? clip = card?.clips?.FirstOrDefault(item => string.Equals(
             item.clipName, animationPath, StringComparison.OrdinalIgnoreCase));
+        string? playbackAlpha = clip?.customAlphaPath == null ? null :
+            CustomShowStore.PreferredAlphaPath(clip.customAlphaPath);
         if (clip?.customForegroundPath == null || clip.customAlphaPath == null ||
-            !File.Exists(clip.customForegroundPath) || !File.Exists(clip.customAlphaPath))
+            playbackAlpha == null || !File.Exists(clip.customForegroundPath) ||
+            !File.Exists(playbackAlpha))
             return false;
         CustomPlayerForm? previous = customPlayer;
         LogCustomPlayerPosition($"start {animationPath}; previous=" +
@@ -1485,7 +1539,7 @@ public partial class Form1
         Task<CustomPlayerForm.PreparedPlayback?>? preparedPlayback =
             TakeCustomPreload(animationPath);
         CustomPlayerForm player = new(clip.customForegroundPath,
-            clip.customAlphaPath, size,
+            playbackAlpha, size,
             CustomPlayerVolume(playerMode == 1), clip.customAlphaThreshold,
             customShowConfiguration.FullOpacityThreshold,
             startMs: clip.customStartMs,
@@ -1608,9 +1662,12 @@ public partial class Form1
             next = index + 1 < playable.Count ? playable[index + 1] : null;
         }
         if (next == null) return;
+        string? playbackAlpha = next.customAlphaPath == null ? null :
+            CustomShowStore.PreferredAlphaPath(next.customAlphaPath);
         if (next.customForegroundPath == null || next.customAlphaPath == null ||
+            playbackAlpha == null ||
             !File.Exists(next.customForegroundPath) ||
-            !File.Exists(next.customAlphaPath)) return;
+            !File.Exists(playbackAlpha)) return;
         string path = GetAnimationPath(next);
         if (string.Equals(customPreloadedAnimationPath, path,
                 StringComparison.OrdinalIgnoreCase)) return;
@@ -1619,7 +1676,7 @@ public partial class Form1
         customPreloadCancellation = new CancellationTokenSource();
         customPreloadedAnimationPath = path;
         customPreloadedPlayback = CustomPlayerForm.PrepareAsync(
-            next.customForegroundPath, next.customAlphaPath,
+            next.customForegroundPath, playbackAlpha,
             next.customAlphaThreshold,
             customShowConfiguration.FullOpacityThreshold,
             next.customEdgeChokePixels,

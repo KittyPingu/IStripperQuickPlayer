@@ -104,6 +104,17 @@ internal sealed class CustomShowEditorForm : Form
         { Minimum = 6, Maximum = 14, Value = 14, Width = 70 };
     readonly CheckBox matAnyoneUseLongTermMemory = new()
         { Text = "Use compressed long-term memory", AutoSize = true, Checked = true };
+    readonly CheckBox temporalAlphaCleanup = new()
+        { Text = "Repair short alpha flicker after matting", AutoSize = true };
+    readonly NumericUpDown temporalAlphaCleanupWindow = new()
+        { Minimum = 1, Maximum = 12, Value = 3, Width = 58 };
+    readonly TrackBar temporalAlphaCleanupStrength = new()
+        { Minimum = 25, Maximum = 100, Value = 100, TickFrequency = 5,
+          SmallChange = 1, LargeChange = 5, Width = 220, Height = 32 };
+    readonly Label temporalAlphaCleanupStrengthValue = new()
+        { Text = "100%", AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+    readonly NumericUpDown temporalAlphaCleanupAlphaThreshold = new()
+        { Minimum = 0, Maximum = 255, Value = 120, Width = 62 };
     readonly Label matAnyoneMemoryWarning = new()
     {
         Text = "Above Standard matting detail, lower max frames to avoid exhausting VRAM.",
@@ -134,7 +145,7 @@ internal sealed class CustomShowEditorForm : Form
         maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
         rvmThresholdRow, rvmMaskRefreshRow, rvmMaskRefreshStrengthRow,
         rvmPropEveryFrameRow, debugPropContributionRow,
-        matAnyoneMemoryRow,
+        matAnyoneMemoryRow, temporalAlphaCleanupRow, temporalAlphaCleanupControlsRow,
         batchSizeRow, autoAcceptRow, processingDetailsRow;
     int reprocessingRow = -1;
     int reprocessClipsRow = -1;
@@ -335,6 +346,23 @@ internal sealed class CustomShowEditorForm : Form
                     Text = "max frames", AutoSize = true,
                     Margin = new Padding(3, 7, 12, 3)
                 }, matAnyoneUseLongTermMemory), matAnyoneMemoryWarning));
+        temporalAlphaCleanupRow = AddRow(processingTable,
+            "Automatic alpha stabilization", temporalAlphaCleanup);
+        temporalAlphaCleanupControlsRow = AddRow(processingTable,
+            "Stabilization controls", Flow(new Label
+            {
+                Text = "Maximum flicker", AutoSize = true,
+                Margin = new Padding(0, 7, 3, 3)
+            }, temporalAlphaCleanupWindow, new Label
+            {
+                Text = "frames   Strength", AutoSize = true,
+                Margin = new Padding(3, 7, 3, 3)
+            }, temporalAlphaCleanupStrength,
+                temporalAlphaCleanupStrengthValue, new Label
+            {
+                Text = "Alpha threshold", AutoSize = true,
+                Margin = new Padding(12, 7, 3, 3)
+            }, temporalAlphaCleanupAlphaThreshold));
         sequenceChunk.Items.Add("Auto");
         sequenceChunk.Items.AddRange([1, 2, 3, 4, 6, 8, 12, 16, 24]);
         sequenceChunk.SelectedIndex = 0;
@@ -373,6 +401,11 @@ internal sealed class CustomShowEditorForm : Form
                 $"{rvmMatAnyoneRefreshStrength.Value}%";
         rvmMatAnyoneMaskRefresh.CheckedChanged += (_, _) =>
             UpdateProcessingOptions();
+        temporalAlphaCleanup.CheckedChanged += (_, _) =>
+            UpdateProcessingOptions();
+        temporalAlphaCleanupStrength.ValueChanged += (_, _) =>
+            temporalAlphaCleanupStrengthValue.Text =
+                $"{temporalAlphaCleanupStrength.Value}%";
         propSegmenterEveryFrame.CheckedChanged += (_, _) =>
             UpdateProcessingOptions();
         matAnyoneUseLongTermMemory.CheckedChanged += (_, _) =>
@@ -589,6 +622,12 @@ internal sealed class CustomShowEditorForm : Form
         bool matAnyone = selected is "matanyone2" or "rvm-matanyone2";
         matAnyoneMaxMemoryFrames.Enabled = matAnyoneUseLongTermMemory.Enabled =
             matAnyone && CanProcess;
+        temporalAlphaCleanup.Enabled = CanProcess;
+        temporalAlphaCleanupWindow.Enabled =
+            temporalAlphaCleanupStrength.Enabled =
+            temporalAlphaCleanupStrengthValue.Enabled =
+            temporalAlphaCleanupAlphaThreshold.Enabled =
+                CanProcess && temporalAlphaCleanup.Checked;
         autoAccept.Enabled = CanProcess;
         if (processingTable != null)
         {
@@ -613,6 +652,9 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, rvmMaskRefreshStrengthRow,
                 selected == "rvm-matanyone2");
             SetRowVisible(processingTable, matAnyoneMemoryRow, matAnyone);
+            SetRowVisible(processingTable, temporalAlphaCleanupRow, true);
+            SetRowVisible(processingTable, temporalAlphaCleanupControlsRow,
+                temporalAlphaCleanup.Checked);
             SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
                 selected is "rvm-vitmatte-s" or "rvm-vitmatte-b");
             SetRowVisible(processingTable, processingDetailsRow,
@@ -913,6 +955,11 @@ internal sealed class CustomShowEditorForm : Form
                 rvmInitializerThreshold.Enabled = rvmInitializerThresholdValue.Enabled =
                 rvmMatAnyoneRefreshStrength.Enabled =
                 rvmMatAnyoneRefreshStrengthValue.Enabled =
+                temporalAlphaCleanup.Enabled =
+                temporalAlphaCleanupWindow.Enabled =
+                temporalAlphaCleanupStrength.Enabled =
+                temporalAlphaCleanupStrengthValue.Enabled =
+                temporalAlphaCleanupAlphaThreshold.Enabled =
                 autoAccept.Enabled = false;
         UpdateClipButton();
         UpdateReprocessClipSelectionAvailability();
@@ -1017,6 +1064,19 @@ internal sealed class CustomShowEditorForm : Form
             processing.MatAnyoneMaxMemoryFrames,
             (int)matAnyoneMaxMemoryFrames.Minimum,
             (int)matAnyoneMaxMemoryFrames.Maximum);
+        temporalAlphaCleanup.Checked = processing.TemporalAlphaCleanup;
+        temporalAlphaCleanupWindow.Value = Math.Clamp(
+            processing.TemporalAlphaCleanupWindowFrames,
+            (int)temporalAlphaCleanupWindow.Minimum,
+            (int)temporalAlphaCleanupWindow.Maximum);
+        temporalAlphaCleanupStrength.Value = Math.Clamp(
+            processing.TemporalAlphaCleanupStrengthPercent,
+            temporalAlphaCleanupStrength.Minimum,
+            temporalAlphaCleanupStrength.Maximum);
+        temporalAlphaCleanupAlphaThreshold.Value = Math.Clamp(
+            processing.TemporalAlphaCleanupAlphaThreshold,
+            (int)temporalAlphaCleanupAlphaThreshold.Minimum,
+            (int)temporalAlphaCleanupAlphaThreshold.Maximum);
         autoAccept.Checked = processing.AutoAcceptedAlphaThreshold.HasValue;
     }
 
@@ -1083,6 +1143,19 @@ internal sealed class CustomShowEditorForm : Form
             configuration.LastMatAnyoneMaxMemoryFrames,
             (int)matAnyoneMaxMemoryFrames.Minimum,
             (int)matAnyoneMaxMemoryFrames.Maximum);
+        temporalAlphaCleanup.Checked = configuration.LastTemporalAlphaCleanup;
+        temporalAlphaCleanupWindow.Value = Math.Clamp(
+            configuration.LastTemporalAlphaCleanupWindowFrames,
+            (int)temporalAlphaCleanupWindow.Minimum,
+            (int)temporalAlphaCleanupWindow.Maximum);
+        temporalAlphaCleanupStrength.Value = Math.Clamp(
+            configuration.LastTemporalAlphaCleanupStrengthPercent,
+            temporalAlphaCleanupStrength.Minimum,
+            temporalAlphaCleanupStrength.Maximum);
+        temporalAlphaCleanupAlphaThreshold.Value = Math.Clamp(
+            configuration.LastTemporalAlphaCleanupAlphaThreshold,
+            (int)temporalAlphaCleanupAlphaThreshold.Minimum,
+            (int)temporalAlphaCleanupAlphaThreshold.Maximum);
         autoAccept.Checked = configuration.LastAutoAcceptAlphaThreshold;
         UpdateProcessingOptions();
         SelectBatchSize(configuration.LastProcessingBatchSize);
@@ -1110,6 +1183,13 @@ internal sealed class CustomShowEditorForm : Form
             (int)matAnyoneMaxMemoryFrames.Value;
         configuration.LastMatAnyoneUseLongTermMemory =
             matAnyoneUseLongTermMemory.Checked;
+        configuration.LastTemporalAlphaCleanup = temporalAlphaCleanup.Checked;
+        configuration.LastTemporalAlphaCleanupWindowFrames =
+            (int)temporalAlphaCleanupWindow.Value;
+        configuration.LastTemporalAlphaCleanupStrengthPercent =
+            temporalAlphaCleanupStrength.Value;
+        configuration.LastTemporalAlphaCleanupAlphaThreshold =
+            (int)temporalAlphaCleanupAlphaThreshold.Value;
         configuration.LastAutoAcceptAlphaThreshold = autoAccept.Checked;
         configuration.Save();
     }
@@ -1194,9 +1274,14 @@ internal sealed class CustomShowEditorForm : Form
             ? $"; memory {value.MatAnyoneMaxMemoryFrames} frames" +
                 (value.MatAnyoneUseLongTermMemory ? " + long-term" : "")
             : "";
+        string cleanup = value.TemporalAlphaCleanup
+            ? $"; temporal cleanup {value.TemporalAlphaCleanupWindowFrames} frames " +
+                $"at {value.TemporalAlphaCleanupStrengthPercent}% " +
+                $"(alpha {value.TemporalAlphaCleanupAlphaThreshold})"
+            : "";
         string accepted = value.AutoAcceptedAlphaThreshold is int alpha ?
             $"; automatically accepted at alpha {alpha}" : "";
-        return $"{algorithm}{detailText}; batch {requestedBatch}{effective}{sam2}{mask}{initializer}{refresh}{prop}{propDebug}{memory}{accepted}{execution}{encoder}\r\n" +
+        return $"{algorithm}{detailText}; batch {requestedBatch}{effective}{sam2}{mask}{initializer}{refresh}{prop}{propDebug}{memory}{cleanup}{accepted}{execution}{encoder}\r\n" +
             $"Processed {value.ProcessedUtc.ToLocalTime():g}; QuickPlayer {value.QuickPlayerVersion}";
     }
 
@@ -1459,6 +1544,13 @@ internal sealed class CustomShowEditorForm : Form
                         MatAnyoneUseLongTermMemory = selectedPreset is
                             "matanyone2" or "rvm-matanyone2" &&
                             matAnyoneUseLongTermMemory.Checked,
+                        TemporalAlphaCleanup = temporalAlphaCleanup.Checked,
+                        TemporalAlphaCleanupWindowFrames =
+                            (int)temporalAlphaCleanupWindow.Value,
+                        TemporalAlphaCleanupStrengthPercent =
+                            temporalAlphaCleanupStrength.Value,
+                        TemporalAlphaCleanupAlphaThreshold =
+                            (int)temporalAlphaCleanupAlphaThreshold.Value,
                         AutoAcceptedAlphaThreshold = autoAccept.Checked
                             ? configuration.DefaultAlphaThreshold : null,
                         Sam2Model = UsesSam2(selectedPreset) ? selectedSam2Model : null,
@@ -2201,6 +2293,13 @@ internal sealed class CustomShowEditorForm : Form
                 MatAnyoneUseLongTermMemory = algorithm is
                     "matanyone2" or "rvm-matanyone2" &&
                     matAnyoneUseLongTermMemory.Checked,
+                TemporalAlphaCleanup = temporalAlphaCleanup.Checked,
+                TemporalAlphaCleanupWindowFrames =
+                    (int)temporalAlphaCleanupWindow.Value,
+                TemporalAlphaCleanupStrengthPercent =
+                    temporalAlphaCleanupStrength.Value,
+                TemporalAlphaCleanupAlphaThreshold =
+                    (int)temporalAlphaCleanupAlphaThreshold.Value,
                 AutoAcceptedAlphaThreshold = algorithm ==
                     Sam2MattingSupport.Algorithm ? null :
                         configuration.DefaultAlphaThreshold,
@@ -3644,9 +3743,12 @@ internal sealed class CustomShowPickerForm : Form
 
     internal string? ShowId { get; private set; }
 
-    internal CustomShowPickerForm(CustomShowStore store)
+    internal CustomShowPickerForm(CustomShowStore store,
+        string title = "Add To Existing Show",
+        string selectText = "Add to selected show")
     {
-        Text = "Add To Existing Show";
+        Text = title;
+        select.Text = selectText;
         ClientSize = new Size(560, 520);
         MinimumSize = new Size(420, 340);
         StartPosition = FormStartPosition.CenterParent;
@@ -4084,6 +4186,13 @@ internal sealed class CustomShowSettingsForm : Form
             LastMatAnyoneMaxMemoryFrames = current.LastMatAnyoneMaxMemoryFrames,
             LastMatAnyoneUseLongTermMemory =
                 current.LastMatAnyoneUseLongTermMemory,
+            LastTemporalAlphaCleanup = current.LastTemporalAlphaCleanup,
+            LastTemporalAlphaCleanupWindowFrames =
+                current.LastTemporalAlphaCleanupWindowFrames,
+            LastTemporalAlphaCleanupStrengthPercent =
+                current.LastTemporalAlphaCleanupStrengthPercent,
+            LastTemporalAlphaCleanupAlphaThreshold =
+                current.LastTemporalAlphaCleanupAlphaThreshold,
             LastAutoAcceptAlphaThreshold = current.LastAutoAcceptAlphaThreshold,
             PropSegmenterEnabled = current.PropSegmenterEnabled,
             ActivePropSegmenterModelId = current.ActivePropSegmenterModelId

@@ -59,6 +59,8 @@ namespace IStripperQuickPlayer
                     ("divider handles", ClipTimelineControl.VerifyMarkerHitTesting()),
                     ("time estimate", CustomShowProcessingForm.VerifyEstimate()),
                     ("alpha review", CustomShowDecisionForm.VerifyAlphaReview()),
+                    ("temporal alpha threshold preview",
+                        TemporalAlphaComparisonForm.VerifyThresholdPreview()),
                     ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),
                     ("card index refresh", Datastore.VerifyTagIndexReplacement()),
                     ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),

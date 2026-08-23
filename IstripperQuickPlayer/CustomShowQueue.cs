@@ -1180,16 +1180,39 @@ internal static class CustomShowJobRunner
         string? propSegmenterPath = PropSegmenterPath(options);
         CustomShowClip[] included = clips.Where(value => value.Included).ToArray();
         long total = included.Sum(value => Math.Max(1, value.EndMs - value.StartMs));
+        bool cleanup = options.TemporalAlphaCleanup;
+        async Task CleanupAlpha(string output,
+            IProgress<CustomShowProgress> cleanupProgress) =>
+            await CustomShowProcessor.RunTemporalAlphaCleanupAsync(configuration,
+                output, options.TemporalAlphaCleanupWindowFrames,
+                options.TemporalAlphaCleanupStrengthPercent,
+                options.TemporalAlphaCleanupAlphaThreshold,
+                log, cleanupProgress, token);
         if (options.Algorithm == "sam2matting")
         {
+            IProgress<CustomShowProgress> processingProgress = cleanup
+                ? new Progress<CustomShowProgress>(value => progress.Report(value with
+                    { Percent = value.Percent * .9 }))
+                : progress;
             CustomShowProcessResult result = await CustomShowProcessor.RunSam2MattingAsync(
                 configuration, job, included, staging, queue.Assets(job.Id), log,
-                progress, token, generatePreviews);
+                processingProgress, token, generatePreviews);
             if (result.Clips == null || result.Clips.Length != included.Length)
                 throw new InvalidDataException(
                     "SAM2Matting returned an incomplete clip result contract.");
             for (int index = 0; index < included.Length; index++)
+            {
+                int clipIndex = index;
+                if (cleanup)
+                    await CleanupAlpha(Path.Combine(staging, "clips", included[index].Id),
+                        new Progress<CustomShowProgress>(value => progress.Report(value with
+                        {
+                            Percent = 90 + 10d * (clipIndex + value.Percent / 100) /
+                                included.Length,
+                            Message = $"Clip {clipIndex + 1}/{included.Length}: {value.Message}"
+                        })));
                 SetMedia(included[index], result.Clips[index]);
+            }
             return result;
         }
         if (options.Algorithm is "quality" or "fast")
@@ -1199,12 +1222,23 @@ internal static class CustomShowJobRunner
             CustomShowProcessResult first = await CustomShowProcessor.RunAsync(configuration,
                 job.SourcePath, staging, options.Algorithm, null, null,
                 options.MattingDetailPx, options.BatchSize, 0, null, log, false,
-                progress, token, jobs);
+                cleanup ? new Progress<CustomShowProgress>(value => progress.Report(
+                    value with { Percent = value.Percent * .9 })) : progress,
+                token, jobs);
             for (int i = 0; i < included.Length; i++)
             {
+                int clipIndex = i;
                 CustomShowProcessResult media = i == 0 ? first : JsonSerializer.Deserialize<
                     CustomShowProcessResult>(await File.ReadAllTextAsync(Path.Combine(
                         jobs[i].Output, "result.json"), token), CustomShowStore.JsonOptions)!;
+                if (cleanup)
+                    await CleanupAlpha(jobs[i].Output,
+                        new Progress<CustomShowProgress>(value => progress.Report(value with
+                        {
+                            Percent = 90 + 10d * (clipIndex + value.Percent / 100) /
+                                included.Length,
+                            Message = $"Clip {clipIndex + 1}/{included.Length}: {value.Message}"
+                        })));
                 SetMedia(included[i], media);
             }
             return first;
@@ -1215,12 +1249,18 @@ internal static class CustomShowJobRunner
         {
             CustomShowClip clip = included[i];
             long before = completed, clipDuration = clip.EndMs - clip.StartMs;
-            Progress<CustomShowProgress> aggregate = new(value => progress.Report(value with
+            IProgress<CustomShowProgress> aggregate = new Progress<CustomShowProgress>(value => progress.Report(value with
             {
                 Percent = CustomShowProcessingForm.AggregateClipPercent(before,
                     clipDuration, total, value.Percent),
                 Message = $"Clip {i + 1}/{included.Length}: {value.Message}"
             }));
+            IProgress<CustomShowProgress> processingProgress = cleanup
+                ? new Progress<CustomShowProgress>(value => aggregate.Report(value with
+                    { Percent = value.Percent * .9 }))
+                : aggregate;
+            IProgress<CustomShowProgress> cleanupProgress = new Progress<CustomShowProgress>(value =>
+                aggregate.Report(value with { Percent = 90 + value.Percent * .1 }));
             string output = Path.Combine(staging, "clips", clip.Id);
             string? mask = job.InitialMaskAssets.TryGetValue(clip.Id, out string? relative)
                 ? Path.Combine(queue.Assets(job.Id), relative.Replace('/',
@@ -1230,7 +1270,7 @@ internal static class CustomShowJobRunner
             CustomShowProcessResult media = await CustomShowProcessor.RunAsync(configuration,
                 job.SourcePath, output, options.Algorithm, mask, tracked,
                 options.MattingDetailPx, options.BatchSize, clip.StartMs, clip.EndMs,
-                log, i > 0, aggregate, token, maskFrameMs:
+                log, i > 0, processingProgress, token, maskFrameMs:
                     job.InitialMaskFrameMs.GetValueOrDefault(clip.Id, clip.StartMs),
                 rvmInitializerAlphaThresholdPercent:
                     options.RvmInitializerAlphaThresholdPercent ?? 40,
@@ -1245,6 +1285,8 @@ internal static class CustomShowJobRunner
                 vitMatteInferenceDetailPx:
                     options.VitMatteInferenceDetailPx ?? 1024,
                 propSegmenterModelPath: propSegmenterPath);
+            if (cleanup)
+                await CleanupAlpha(output, cleanupProgress);
             if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
             {
                 string masks = Path.Combine(output, ".rvm-masks");

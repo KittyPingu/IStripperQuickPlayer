@@ -72,6 +72,8 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "stabilo_worker.py");
     internal static string Sam2MattingWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "sam2matting_worker.py");
+    internal static string TemporalAlphaCleanupWorkerPath => Path.Combine(
+        AppContext.BaseDirectory, "custom-shows", "temporal_alpha_cleanup_worker.py");
 
     internal static string Sam2FrameCacheRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -908,6 +910,119 @@ internal static class CustomShowProcessor
                 await File.WriteAllTextAsync(destination, text, CancellationToken.None);
             foreach (string preview in new[] { "preview-source.jpg", "preview-composite.jpg" })
                 try { File.Delete(Path.Combine(stagingFolder, preview)); } catch { }
+        }
+    }
+
+    internal static async Task RunTemporalAlphaCleanupAsync(
+        CustomShowConfiguration configuration, string outputFolder,
+        int windowFrames, int strengthPercent, int alphaThreshold,
+        string logPath, IProgress<CustomShowProgress>? progress,
+        CancellationToken cancellationToken, string? foregroundPath = null,
+        string? alphaPath = null, string? destinationPath = null,
+        string? previewCache = null)
+    {
+        string python = File.Exists(configuration.PythonExecutable)
+            ? configuration.PythonExecutable
+            : configuration.Sam2MattingPythonExecutable;
+        if (!File.Exists(python))
+            throw new FileNotFoundException(
+                "Install the custom-show processing environment before using automatic alpha stabilization.",
+                python);
+        if (!File.Exists(TemporalAlphaCleanupWorkerPath))
+            throw new FileNotFoundException(
+                "The automatic alpha-stabilization worker is missing.",
+                TemporalAlphaCleanupWorkerPath);
+        string runtime = Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(python)!, "..", ".."));
+        ProcessStartInfo start = new(python)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        foreach (string argument in new[]
+        {
+            TemporalAlphaCleanupWorkerPath,
+            "--output", outputFolder,
+            "--runtime", runtime,
+            "--window", Math.Clamp(windowFrames, 1, 12).ToString(),
+            "--strength", Math.Clamp(strengthPercent, 25, 100).ToString(),
+            "--alpha-threshold", Math.Clamp(alphaThreshold, 0, 255).ToString()
+        }) start.ArgumentList.Add(argument);
+        if (foregroundPath != null)
+        {
+            start.ArgumentList.Add("--foreground");
+            start.ArgumentList.Add(foregroundPath);
+        }
+        if (alphaPath != null)
+        {
+            start.ArgumentList.Add("--alpha");
+            start.ArgumentList.Add(alphaPath);
+        }
+        if (destinationPath != null)
+        {
+            start.ArgumentList.Add("--destination");
+            start.ArgumentList.Add(destinationPath);
+        }
+        if (previewCache != null)
+        {
+            start.ArgumentList.Add("--preview-cache");
+            start.ArgumentList.Add(previewCache);
+        }
+        start.Environment["IQP_FFMPEG"] = Path.Combine(
+            AppContext.BaseDirectory, "ffmpeg.exe");
+        start.Environment["IQP_FFPROBE"] = Path.Combine(
+            AppContext.BaseDirectory, "ffprobe.exe");
+        ConfigureProcessingPriorities(start, configuration);
+
+        using Process process = new() { StartInfo = start };
+        StringBuilder log = new();
+        string? workerError = null;
+        process.Start();
+        await using ProcessCancellationScope cancellationScope =
+            new(process, cancellationToken);
+        Task stderr = Task.Run(async () =>
+        {
+            while (await process.StandardError.ReadLineAsync() is string line)
+                lock (log) log.AppendLine(line);
+        });
+        try
+        {
+            while (await process.StandardOutput.ReadLineAsync() is string line)
+            {
+                lock (log) log.AppendLine(line);
+                try
+                {
+                    using JsonDocument document = JsonDocument.Parse(line);
+                    JsonElement root = document.RootElement;
+                    string stage = root.TryGetProperty("stage", out JsonElement stageNode)
+                        ? stageNode.GetString() ?? "temporal-stabilization"
+                        : "temporal-stabilization";
+                    string message = root.TryGetProperty("message",
+                        out JsonElement messageNode)
+                        ? messageNode.GetString() ?? "Stabilizing alpha flicker"
+                        : "Stabilizing alpha flicker";
+                    if (stage == "error")
+                        workerError = WorkerErrorMessage(line) ?? workerError;
+                    progress?.Report(new CustomShowProgress(stage,
+                        root.TryGetProperty("percent", out JsonElement percentNode)
+                            ? percentNode.GetDouble() : 0, message));
+                }
+                catch (JsonException) { }
+            }
+            await process.WaitForExitAsync(CancellationToken.None);
+            await stderr;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException(workerError ??
+                    $"Automatic alpha stabilization failed (exit code {process.ExitCode}).");
+        }
+        finally
+        {
+            string text;
+            lock (log) text = log.ToString();
+            await File.AppendAllTextAsync(logPath, text, CancellationToken.None);
         }
     }
 

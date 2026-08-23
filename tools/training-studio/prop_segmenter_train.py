@@ -13,12 +13,19 @@ import tempfile
 import time
 from pathlib import Path
 
-TRAINING_REVISION = 5
-HARD_NEGATIVE_WEIGHT = 1.5
+TRAINING_REVISION = 7
+HARD_NEGATIVE_WEIGHT = 2.0
 HARD_NEGATIVE_FRACTION = .15
 MAX_HARD_NEGATIVES = 125
+HARD_NEGATIVE_THRESHOLD_OFFSET = .15
+HARD_NEGATIVE_MINIMUM_THRESHOLD = .45
+HARD_POSITIVE_WEIGHT = 2.0
+HARD_POSITIVE_FRACTION = .20
+MAX_HARD_POSITIVES = 250
+HARD_POSITIVE_MINING_REVISION = 1
+HARD_NEGATIVE_MINING_REVISION = 2
 EXTERIOR_RECALL_WEIGHT = .35
-RETAINED_NEGATIVE_FPR_CEILING = .10
+RETAINED_NEGATIVE_FPR_CEILING = .05
 CHECKPOINT_SCORE_TOLERANCE = .015
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom-shows"))
@@ -34,6 +41,18 @@ except ImportError:
 def emit(stage, message="", **values):
     print(json.dumps({"stage": stage, "message": message, **values},
                      separators=(",", ":")), flush=True)
+
+
+def format_duration(seconds):
+    seconds = max(0, int(seconds)); hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{hours:d}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
+
+def write_console_progress(message, finish=False):
+    width = 118
+    sys.stdout.write("\r" + message[:width].ljust(width) + ("\n" if finish else ""))
+    sys.stdout.flush()
 
 
 def atomic_json(path, value):
@@ -88,6 +107,97 @@ def accepted_samples(manifest, split):
             sample.get("propMaskPath")]
 
 
+def partition_samples(manifest, minimum_resolution):
+    """Keep every sealed source out of model selection and expose it only at the end."""
+    sealed_sources = {source["id"] for source in manifest.get("sources", [])
+                      if source.get("sealedHoldout")}
+    accepted = [sample for sample in manifest.get("samples", [])
+                if sample.get("decision") in ("positive", "negative") and
+                sample.get("framePath") and sample.get("propMaskPath")]
+    accepted = resolution_samples(accepted, minimum_resolution)
+    available = {split: [sample for sample in accepted
+                         if sample.get("split") == split and
+                         sample.get("sourceId") not in sealed_sources]
+                 for split in ("train", "validation", "test")}
+    available["sealedHoldout"] = [sample for sample in accepted
+                                  if sample.get("sourceId") in sealed_sources]
+    return available, sealed_sources
+
+
+def latest_v1_package(root, output):
+    candidates = sorted((Path(root) / "runs").glob("*/package/manifest.json"),
+                        key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates:
+        checkpoint = path.parent / "model.pth"
+        if Path(output) in path.parents or not checkpoint.is_file(): continue
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            if manifest.get("architecture") != ARCHITECTURE: continue
+            if manifest.get("promotionEligible") is False: continue
+            expected = manifest.get("checkpointSha256")
+            if expected and digest(checkpoint) != expected: continue
+            return path.parent, manifest
+        except (OSError, ValueError, TypeError):
+            continue
+    return None, None
+
+
+def mining_dataset_fingerprint(samples):
+    rows = [f"{sample.get('id')}:{sample.get('_recordSha256', sample.get('recordSha256', ''))}:"
+            f"{sample.get('decision')}" for sample in samples]
+    return hashlib.sha256("\n".join(sorted(rows)).encode()).hexdigest()
+
+
+def mining_cache_path(root, kind, revision, checkpoint_sha256, dataset_fingerprint,
+                      input_size):
+    name = f"{kind}-r{revision}-{checkpoint_sha256[:16]}-{dataset_fingerprint[:16]}-{input_size}.json"
+    return Path(root) / "mining-cache" / name
+
+
+def load_mining_selection(root, output, kind, revision, checkpoint_sha256,
+                          model_id, samples, input_size, snapshot_field=None):
+    fingerprint = mining_dataset_fingerprint(samples)
+    path = mining_cache_path(root, kind, revision, checkpoint_sha256,
+                             fingerprint, input_size)
+    if path.is_file():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if (value.get("modelCheckpointSha256") == checkpoint_sha256 and
+                    value.get("datasetFingerprint") == fingerprint and
+                    value.get("inputSize") == input_size and
+                    value.get("algorithmRevision") == revision):
+                return set(value.get("sampleIds", [])), "cache", path
+        except (OSError, ValueError, TypeError):
+            pass
+    if snapshot_field:
+        snapshots = sorted((Path(root) / "runs").glob("*/dataset-snapshot.json"),
+                           key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+        for snapshot_path in snapshots:
+            if Path(output) in snapshot_path.parents: continue
+            try:
+                snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                entries = snapshot.get("splits", {}).get("train", [])
+                if (snapshot.get("warmStartModelId") != model_id or
+                        snapshot.get("warmStartCheckpointSha256") != checkpoint_sha256 or
+                        snapshot.get("inputSize") != input_size or
+                        mining_dataset_fingerprint(entries) != fingerprint):
+                    continue
+                selected = {entry["id"] for entry in entries if entry.get(snapshot_field)}
+                if selected: return selected, "snapshot", path
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+    return set(), None, path
+
+
+def save_mining_selection(path, kind, revision, checkpoint_sha256, model_id,
+                          samples, input_size, selected, **metadata):
+    atomic_json(path, {"schemaVersion": 1, "kind": kind,
+        "algorithmRevision": revision, "modelId": model_id,
+        "modelCheckpointSha256": checkpoint_sha256,
+        "datasetFingerprint": mining_dataset_fingerprint(samples),
+        "inputSize": input_size, "sampleIds": sorted(selected), **metadata})
+
+
 def resolution_samples(samples, minimum_resolution):
     if minimum_resolution <= 0:
         return list(samples)
@@ -110,28 +220,18 @@ def annotate_mask_statistics(root, samples, input_size):
         sample["_maskFraction"] = positive * scale * scale / (input_size * input_size)
 
 
-def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, batch, device):
+def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, batch, device,
+                        prior_package=None, prior_manifest=None, progress_callback=None):
     """Use the latest completed model to rank only training-split negatives."""
-    manifests = sorted((root / "runs").glob("*/package/manifest.json"),
-                       key=lambda path: path.stat().st_mtime, reverse=True)
-    previous = package = None
-    for path in manifests:
-        checkpoint = path.parent / "model.pth"
-        if output in path.parents or not checkpoint.is_file(): continue
-        try:
-            candidate = json.loads(path.read_text(encoding="utf-8"))
-            if candidate.get("architecture") != ARCHITECTURE: continue
-            expected = candidate.get("checkpointSha256")
-            if expected and digest(checkpoint) != expected: continue
-            previous, package = path, candidate
-            break
-        except (OSError, ValueError, TypeError):
-            continue
+    if prior_package is None:
+        prior_package, prior_manifest = latest_v1_package(root, output)
     negatives = [sample for sample in samples if sample.get("decision") == "negative"]
-    if previous is None or not negatives: return 0, None
-    threshold = float(package.get("confidenceThreshold", .5))
+    if prior_package is None or not negatives: return 0, None, None, set()
+    deployed_threshold = float(prior_manifest.get("confidenceThreshold", .5))
+    threshold = max(HARD_NEGATIVE_MINIMUM_THRESHOLD,
+                    deployed_threshold - HARD_NEGATIVE_THRESHOLD_OFFSET)
     model = build_model(torch, pretrained=False).to(device)
-    model.load_state_dict(torch.load(previous.parent / "model.pth", map_location=device,
+    model.load_state_dict(torch.load(Path(prior_package) / "model.pth", map_location=device,
                                      weights_only=True))
     loader = DataLoader(PropDataset(root, negatives, False, input_size), batch_size=batch,
                         shuffle=False, num_workers=0)
@@ -140,7 +240,7 @@ def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, ba
     model.eval()
     bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
     with torch.inference_mode():
-        for images, _, sample_ids in loader:
+        for batch_index, (images, _, sample_ids) in enumerate(loader):
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=bf16):
                 probabilities = model(images.to(device))["out"].float().sigmoid().cpu()
             for index, sample_id in enumerate(sample_ids):
@@ -158,12 +258,71 @@ def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, ba
                 pixels = int(retained.sum())
                 if pixels:
                     ranked.append((pixels * float(probability[retained].mean()), str(sample_id)))
+            if progress_callback is not None:
+                progress_callback(batch_index + 1, len(loader))
     limit = min(MAX_HARD_NEGATIVES, max(40, round(len(negatives) * HARD_NEGATIVE_FRACTION)))
     selected = {sample_id for _, sample_id in sorted(ranked, reverse=True)[:limit]}
     for sample_id in selected: lookup[sample_id]["_hardNegative"] = True
     del model
     if device.type == "cuda": torch.cuda.empty_cache()
-    return len(selected), package.get("modelId")
+    return len(selected), prior_manifest.get("modelId"), threshold, selected
+
+
+def mine_hard_positives(torch, DataLoader, root, samples, input_size, batch, device,
+                        prior_package, prior_manifest, progress_callback=None):
+    """Promote low-recall positives, deduplicated by source video."""
+    import numpy as np
+    positives = [sample for sample in samples if sample.get("decision") == "positive"]
+    if prior_package is None or not positives: return 0
+    threshold = float(prior_manifest.get("confidenceThreshold", .5))
+    model = build_model(torch, pretrained=False).to(device)
+    model.load_state_dict(torch.load(Path(prior_package) / "model.pth", map_location=device,
+                                     weights_only=True))
+    loader = DataLoader(PropDataset(root, positives, False, input_size), batch_size=batch,
+                        shuffle=False, num_workers=0)
+    lookup = {sample["id"]: sample for sample in positives}
+    per_source = {}
+    model.eval()
+    bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
+    with torch.inference_mode():
+        for batch_index, (images, targets, sample_ids) in enumerate(loader):
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=bf16):
+                probabilities = model(images.to(device))["out"].float().sigmoid().cpu().numpy()
+            truths = targets.numpy() >= .5
+            for index, sample_id in enumerate(sample_ids):
+                sample = lookup[str(sample_id)]
+                truth = truths[index, 0]
+                needed = truth
+                person = None
+                if sample.get("rvmPersonMaskPath"):
+                    try:
+                        person = load_evaluation_mask(root, sample["rvmPersonMaskPath"], input_size)
+                        needed = truth & ~person
+                    except (FileNotFoundError, OSError, ValueError):
+                        person = None
+                needed_pixels = int(needed.sum())
+                if not needed_pixels: continue
+                prediction = probabilities[index, 0] >= threshold
+                if person is not None:
+                    prediction, _, _ = filter_components(prediction, person, 24)
+                    prediction &= ~person
+                recall = int((prediction & needed).sum()) / needed_pixels
+                mean_probability = float(probabilities[index, 0][needed].mean())
+                size_bonus = 1.25 if needed_pixels / needed.size <= .005 else 1.
+                score = size_bonus * ((1 - recall) + .25 * (1 - mean_probability))
+                source = sample.get("sourceId", sample["id"])
+                previous = per_source.get(source)
+                value = (score, -recall, str(sample_id))
+                if previous is None or value > previous: per_source[source] = value
+            if progress_callback is not None:
+                progress_callback(batch_index + 1, len(loader))
+    limit = min(MAX_HARD_POSITIVES, max(60, round(len(positives) * HARD_POSITIVE_FRACTION)))
+    selected = {sample_id for _, _, sample_id in
+                sorted(per_source.values(), reverse=True)[:limit]}
+    for sample_id in selected: lookup[sample_id]["_hardPositive"] = True
+    del model
+    if device.type == "cuda": torch.cuda.empty_cache()
+    return len(selected), selected
 
 
 def split_profile(samples):
@@ -201,6 +360,7 @@ def source_balanced_weights(samples, negative_ratio):
         for index in indexes:
             sample = samples[index]
             hard = HARD_NEGATIVE_WEIGHT if sample.get("_hardNegative") else \
+                HARD_POSITIVE_WEIGHT if sample.get("_hardPositive") else \
                 2. if sample.get("feedbackPriority") or sample.get("burstId") else 1.
             fraction = float(sample.get("_maskFraction", 0.))
             size_weight = 2. if decision == "positive" and fraction <= .005 else \
@@ -221,6 +381,7 @@ class PropDataset:
     def __init__(self, root, samples, training, input_size=INPUT_SIZE):
         self.root, self.samples, self.training, self.input_size = \
             Path(root), samples, training, input_size
+        self.geometry_mode = "balanced"
 
     def __len__(self):
         return len(self.samples)
@@ -251,11 +412,13 @@ class PropDataset:
                 mask = mask.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
             image = augment_appearance(image, np)
             geometry = random.random()
-            if geometry < .5:
+            letterbox_limit, focus_limit = ((.80, .90)
+                if self.geometry_mode == "runtime" else (.50, .80))
+            if geometry < letterbox_limit:
                 image, mask = letterbox_pair(image, mask, self.input_size)
             else:
                 native_foreground = prop_mask_bounds(mask)
-                if native_foreground and geometry < .8 and \
+                if native_foreground and geometry < focus_limit and \
                         float(sample.get("_maskFraction", 0.)) <= .02:
                     image, mask = focused_crop_pair(image, mask, self.input_size,
                         float(sample.get("_maskFraction", 0.)))
@@ -474,6 +637,24 @@ def retained_negative_fpr(value):
     return value.get("negativeFrameFalsePositiveRate", 1.)
 
 
+def promotion_result(candidate, baseline):
+    candidate_exterior = candidate.get("rvmUnion", {}).get("exteriorProp", {})
+    baseline_exterior = baseline.get("rvmUnion", {}).get("exteriorProp", {})
+    result = {
+        "recallGain": candidate_exterior.get("recall", 0.) -
+            baseline_exterior.get("recall", 0.),
+        "diceGain": candidate_exterior.get("dice", 0.) -
+            baseline_exterior.get("dice", 0.),
+        "retainedNegativeFalsePositiveRate": retained_negative_fpr(candidate),
+        "rvmUnionDiceGain": candidate.get("rvmUnion", {}).get(
+            "finalForeground", {}).get("dice", 0.) - baseline.get(
+            "rvmUnion", {}).get("finalForeground", {}).get("dice", 0.)}
+    result["eligible"] = (result["recallGain"] >= .05 and
+        result["retainedNegativeFalsePositiveRate"] <= RETAINED_NEGATIVE_FPR_CEILING and
+        result["rvmUnionDiceGain"] > 0)
+    return result
+
+
 def deployment_threshold(values, scorer=selection_score):
     eligible = [threshold for threshold, value in values.items()
                 if retained_negative_fpr(value) <= RETAINED_NEGATIVE_FPR_CEILING]
@@ -561,7 +742,8 @@ def mask_size_bucket(fraction):
     return "over-5pct"
 
 
-def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=None):
+def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=None,
+             progress_callback=None):
     totals = {threshold: [0, 0, 0, 0] for threshold in thresholds}
     per_image = {threshold: {"dice": [], "recall": [], "smallRecall": [], "boundary": [],
                              "negativeFrames": 0, "negativeFramesWithPrediction": 0,
@@ -575,7 +757,7 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
     model.eval()
     bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
     with torch.inference_mode():
-        for images, target, sample_ids in loader:
+        for batch_index, (images, target, sample_ids) in enumerate(loader):
             images, target = images.to(device), target.to(device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=bf16):
                 probability = model(images)["out"].float().sigmoid()
@@ -645,6 +827,8 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
                                     harmful_pixels / exterior.size)
                         except (FileNotFoundError, OSError, ValueError):
                             pass
+            if progress_callback is not None:
+                progress_callback(batch_index + 1, len(loader))
     result = {}
     for threshold, value in totals.items():
         result[threshold] = scores(value)
@@ -802,6 +986,7 @@ def write_dataset_snapshot(root, output, manifest, available, args):
                 "burstId": sample.get("burstId"),
                 "feedbackPriority": bool(sample.get("feedbackPriority")),
                 "historicalHardNegative": bool(sample.get("_hardNegative")),
+                "historicalHardPositive": bool(sample.get("_hardPositive")),
                 "recordPath": sample.get("_recordPath"),
                 "recordSha256": sample.get("_recordSha256"),
                 "maskFractionAtInput": sample.get("_maskFraction", 0.),
@@ -816,12 +1001,15 @@ def write_dataset_snapshot(root, output, manifest, available, args):
         "createdUtc": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         "datasetId": manifest["datasetId"], "inputSize": args.input_size,
         "minimumResolution": args.minimum_resolution, "seed": args.seed,
+        "warmStartModelId": getattr(args, "warm_start_model_id", None),
+        "warmStartCheckpointSha256": getattr(args, "warm_start_checkpoint_sha256", None),
         "splits": snapshot_samples}
     path = output / "dataset-snapshot.json"
     if path.is_file():
         previous = json.loads(path.read_text(encoding="utf-8"))
         comparable_keys = ("schemaVersion", "trainingRevision", "datasetId", "inputSize",
-                           "minimumResolution", "seed", "splits")
+                           "minimumResolution", "seed", "warmStartModelId",
+                           "warmStartCheckpointSha256", "splits")
         if any(previous.get(key) != snapshot.get(key) for key in comparable_keys):
             raise RuntimeError("The dataset changed since this run started; start a new training run "
                                "instead of resuming this checkpoint")
@@ -844,7 +1032,8 @@ def freeze_batch_norm(torch, model):
 
 def train_candidate(torch, DataLoader, args, root, output, device, batch,
                     accumulation, train_samples, validation_samples, negative_ratio,
-                    selection_name, epoch_size, epoch_negative_count):
+                    selection_name, epoch_size, epoch_negative_count,
+                    warm_start_checkpoint=None, warm_start_model_id=None):
     candidate = output / "candidates" / f"negative-{selection_name}"
     candidate.mkdir(parents=True, exist_ok=True)
     sampler_weights = source_balanced_weights(train_samples, negative_ratio)
@@ -858,7 +1047,12 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
         "validation": DataLoader(PropDataset(root, validation_samples, False, args.input_size), batch_size=batch,
                                  shuffle=False, num_workers=1)}
     random.seed(args.seed); torch.manual_seed(args.seed)
-    model = build_model(torch, pretrained=True).to(device)
+    model = build_model(torch, pretrained=warm_start_checkpoint is None).to(device)
+    if warm_start_checkpoint is not None:
+        model.load_state_dict(torch.load(warm_start_checkpoint, map_location=device,
+                                         weights_only=True))
+        emit("warm-start", f"Initialized {selection_name} from {warm_start_model_id}",
+             modelId=warm_start_model_id, checkpoint=str(warm_start_checkpoint))
     pos_weight = torch.tensor([positive_weight(train_samples, sampler_weights)], device=device)
     best_score, stale, start_epoch = -1., 0, 0
     last_path = candidate / "last.pth"
@@ -869,10 +1063,12 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
         "conservative": candidate / "best-conservative.pth"}
     best_objectives = {name: -1. for name in checkpoint_paths}
     best_records = {}
+    backbone_lr = 3e-6 if warm_start_checkpoint is not None else 1e-5
+    head_lr = 3e-5 if warm_start_checkpoint is not None else 1e-4
     optimizer = torch.optim.AdamW([
-        {"params": model.backbone.parameters(), "lr": 1e-5},
-        {"params": model.classifier.parameters(), "lr": 1e-4},
-        {"params": model.aux_classifier.parameters(), "lr": 1e-4}], weight_decay=1e-4)
+        {"params": model.backbone.parameters(), "lr": backbone_lr},
+        {"params": model.classifier.parameters(), "lr": head_lr},
+        {"params": model.aux_classifier.parameters(), "lr": head_lr}], weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
     resume_state = None
     if args.resume and last_path.is_file():
@@ -897,19 +1093,33 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
         multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(.99))
     if resume_state and "ema" in resume_state: ema.load_state_dict(resume_state["ema"])
     total_epochs = args.warmup_epochs + args.epochs
+    runtime_start = max(args.warmup_epochs, total_epochs - args.runtime_epochs)
     checkpoint_thresholds = tuple(round(value / 100, 2) for value in range(15, 86, 10))
     for epoch in range(start_epoch, total_epochs):
-        frozen = epoch < args.warmup_epochs
+        runtime_phase = epoch >= runtime_start
+        if epoch == runtime_start:
+            stale = 0
+            emit("curriculum", f"Switched to runtime-matched geometry for the final "
+                 f"{total_epochs - runtime_start} epochs", epoch=epoch + 1,
+                 letterboxFraction=.80)
+        loaders["train"].dataset.geometry_mode = "runtime" if runtime_phase else "balanced"
+        frozen = epoch < args.warmup_epochs and warm_start_checkpoint is None
         for parameter in model.backbone.parameters(): parameter.requires_grad = not frozen
         if frozen:
             for group in optimizer.param_groups: group["lr"] = 0 if group is optimizer.param_groups[0] else 1e-3
         else:
             progress = (epoch - args.warmup_epochs) / max(1, args.epochs - 1)
             multiplier = .05 + .95 * .5 * (1 + math.cos(math.pi * progress))
-            optimizer.param_groups[0]["lr"] = 1e-5 * multiplier
-            optimizer.param_groups[1]["lr"] = optimizer.param_groups[2]["lr"] = 1e-4 * multiplier
+            phase_multiplier = .5 if runtime_phase else 1.
+            optimizer.param_groups[0]["lr"] = backbone_lr * multiplier * phase_multiplier
+            optimizer.param_groups[1]["lr"] = optimizer.param_groups[2]["lr"] = \
+                head_lr * multiplier * phase_multiplier
         model.train(); freeze_batch_norm(torch, model)
         optimizer.zero_grad(set_to_none=True); running = 0.
+        epoch_started = time.monotonic()
+        if args.console_progress:
+            write_console_progress(f"Epoch {epoch + 1}/{total_epochs}  "
+                f"[------------------------------]   0%  batch 0/{len(loaders['train'])}")
         for step, (images, target, exterior_target, _) in enumerate(loaders["train"]):
             images = images.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
@@ -921,8 +1131,29 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
             if (step + 1) % accumulation == 0 or step + 1 == len(loaders["train"]):
                 scaler.step(optimizer); scaler.update(); optimizer.zero_grad(set_to_none=True)
                 ema.update_parameters(model)
+            if args.console_progress:
+                completed, total = step + 1, len(loaders["train"])
+                fraction = completed / max(1, total); filled = min(30, int(fraction * 30))
+                elapsed = time.monotonic() - epoch_started
+                remaining = elapsed * (total - completed) / completed
+                write_console_progress(f"Epoch {epoch + 1}/{total_epochs}  "
+                    f"[{'=' * filled}{'-' * (30 - filled)}] {fraction:4.0%}  "
+                    f"batch {completed}/{total}  ETA {format_duration(remaining)}")
+        validation_started = time.monotonic()
+        def validation_progress(completed, total):
+            if not args.console_progress: return
+            fraction = completed / max(1, total); filled = min(30, int(fraction * 30))
+            elapsed = time.monotonic() - validation_started
+            remaining = elapsed * (total - completed) / completed
+            write_console_progress(f"Epoch {epoch + 1}/{total_epochs}  validating "
+                f"[{'=' * filled}{'-' * (30 - filled)}] {fraction:4.0%}  "
+                f"batch {completed}/{total}  ETA {format_duration(remaining)}")
         validation_all = evaluate(torch, ema.module, loaders["validation"], device,
-                                  checkpoint_thresholds, root, validation_samples)
+                                  checkpoint_thresholds, root, validation_samples,
+                                  validation_progress)
+        if args.console_progress:
+            write_console_progress(f"Epoch {epoch + 1}/{total_epochs}  "
+                "[==============================] 100%  validation complete", finish=True)
         objectives = checkpoint_objectives(validation_all)
         validation_threshold = objectives["balanced"]["threshold"]
         validation = objectives["balanced"]["validation"]
@@ -948,7 +1179,8 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
                     "torchRandomState": torch.get_rng_state(),
                     "cudaRandomState": torch.cuda.get_rng_state_all()
                         if device.type == "cuda" else None}, last_path)
-        emit("epoch", "backbone frozen" if frozen else "full fine-tune",
+        emit("epoch", "runtime-geometry fine-tune" if runtime_phase else
+             "backbone frozen" if frozen else "balanced-geometry fine-tune",
              epoch=epoch + 1, trainingLoss=running / max(1, len(loaders["train"])),
              validationDice=validation["dice"], validationPrecision=validation["precision"],
              validationRecall=validation["recall"],
@@ -967,7 +1199,7 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
              improvedCheckpoints=improved_variants,
              validationThreshold=validation_threshold, best=improved,
              negativeRatio=negative_ratio)
-        if not frozen and stale >= args.patience:
+        if runtime_phase and epoch + 1 >= total_epochs and stale >= args.patience:
             emit("early-stopping", f"No checkpoint objective improvement for {stale} epochs")
             break
     if not checkpoint_paths["balanced"].is_file():
@@ -1001,6 +1233,9 @@ def train_candidate(torch, DataLoader, args, root, output, device, batch,
                                       for sample in train_samples),
               "historicalHardNegativeCount": sum(bool(sample.get("_hardNegative"))
                                                    for sample in train_samples),
+              "historicalHardPositiveCount": sum(bool(sample.get("_hardPositive"))
+                                                   for sample in train_samples),
+              "warmStartModelId": warm_start_model_id,
               "trainCount": len(train_samples), "epochSize": epoch_size,
               "positiveWeight": float(pos_weight.item()), "threshold": threshold,
               "retainedNegativeCeiling": RETAINED_NEGATIVE_FPR_CEILING,
@@ -1021,11 +1256,15 @@ def train(args):
     root, output = args.dataset.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     manifest = load_manifest(root)
-    available = {name: resolution_samples(accepted_samples(manifest, name), args.minimum_resolution)
-                 for name in ("train", "validation", "test")}
-    if any(not available[name] for name in available):
+    available, sealed_sources = partition_samples(manifest, args.minimum_resolution)
+    if any(not available[name] for name in ("train", "validation", "test")):
         raise RuntimeError("Train, validation, and test splits must each contain accepted frames "
                            "at the selected minimum resolution")
+    if not available["sealedHoldout"]:
+        raise RuntimeError("v1.1 requires the source-isolated sealed holdout")
+    leaked = {sample.get("sourceId") for name in ("train", "validation", "test")
+              for sample in available[name]} & sealed_sources
+    if leaked: raise RuntimeError("A sealed source leaked into model development splits")
     for samples in available.values():
         annotate_mask_statistics(root, samples, args.input_size)
     split_profiles = {key: split_profile(value) for key, value in available.items()}
@@ -1038,18 +1277,116 @@ def train(args):
         batch = max(1, math.floor(base_batch * (512 / args.input_size) ** 2))
     else:
         batch = 1
-    emit("hard-negative-mining", "Scoring training negatives with the latest completed model")
-    historical_hard_negatives, hard_negative_model = mine_hard_negatives(
-        torch, DataLoader, root, output, available["train"], args.input_size, batch, device)
-    emit("hard-negative-mining",
-         f"Promoted {historical_hard_negatives:,} difficult training negatives",
-         count=historical_hard_negatives, sourceModelId=hard_negative_model)
+    prior_package, prior_manifest = latest_v1_package(root, output)
+    if args.warm_start_latest and prior_package is None:
+        raise RuntimeError("No completed v1 package is available for the v1.1 warm start")
+    warm_checkpoint = prior_package / "model.pth" if args.warm_start_latest else None
+    warm_model_id = prior_manifest.get("modelId") if args.warm_start_latest else None
+    args.warm_start_model_id = warm_model_id
+    args.warm_start_checkpoint_sha256 = digest(warm_checkpoint) if warm_checkpoint else None
+    mining_checkpoint_sha256 = digest(prior_package / "model.pth") if prior_package else ""
+    def phase_progress(label):
+        started = time.monotonic()
+        def update(completed, total):
+            if not args.console_progress: return
+            fraction = completed / max(1, total); filled = min(30, int(fraction * 30))
+            elapsed = time.monotonic() - started
+            remaining = elapsed * (total - completed) / completed
+            write_console_progress(f"{label}  [{'=' * filled}{'-' * (30 - filled)}] "
+                f"{fraction:4.0%}  {completed}/{total}  ETA {format_duration(remaining)}")
+        return update
+    emit("hard-example-mining", "Scoring training mistakes with the current v1 model",
+         sourceModelId=prior_manifest.get("modelId") if prior_manifest else None)
+    train_lookup = {sample["id"]: sample for sample in available["train"]}
+    hard_negative_model = warm_model_id
+    mining_threshold = max(HARD_NEGATIVE_MINIMUM_THRESHOLD,
+        float(prior_manifest.get("confidenceThreshold", .5)) - HARD_NEGATIVE_THRESHOLD_OFFSET)
+    hard_negative_ids, hard_negative_source, hard_negative_cache = load_mining_selection(
+        root, output, "hard-negative", HARD_NEGATIVE_MINING_REVISION,
+        mining_checkpoint_sha256, prior_manifest.get("modelId"), available["train"], args.input_size)
+    if hard_negative_ids:
+        for sample_id in hard_negative_ids & train_lookup.keys():
+            train_lookup[sample_id]["_hardNegative"] = True
+        historical_hard_negatives = len(hard_negative_ids & train_lookup.keys())
+    else:
+        historical_hard_negatives, hard_negative_model, mining_threshold, hard_negative_ids = \
+            mine_hard_negatives(torch, DataLoader, root, output, available["train"],
+                args.input_size, batch, device, prior_package, prior_manifest,
+                phase_progress("Mining near-miss negatives"))
+        if args.console_progress:
+            write_console_progress("Near-miss negative mining complete", finish=True)
+        save_mining_selection(hard_negative_cache, "hard-negative",
+            HARD_NEGATIVE_MINING_REVISION, mining_checkpoint_sha256,
+            prior_manifest.get("modelId"), available["train"], args.input_size, hard_negative_ids,
+            miningThreshold=mining_threshold,
+            deployedThreshold=float(prior_manifest.get("confidenceThreshold", .5)))
+        hard_negative_source = "new"
+    hard_positive_ids, hard_positive_source, hard_positive_cache = load_mining_selection(
+        root, output, "hard-positive", HARD_POSITIVE_MINING_REVISION,
+        mining_checkpoint_sha256, prior_manifest.get("modelId"), available["train"], args.input_size,
+        "historicalHardPositive")
+    if hard_positive_ids:
+        for sample_id in hard_positive_ids & train_lookup.keys():
+            train_lookup[sample_id]["_hardPositive"] = True
+        historical_hard_positives = len(hard_positive_ids & train_lookup.keys())
+        if hard_positive_source == "snapshot":
+            save_mining_selection(hard_positive_cache, "hard-positive",
+                HARD_POSITIVE_MINING_REVISION, mining_checkpoint_sha256,
+                prior_manifest.get("modelId"), available["train"], args.input_size, hard_positive_ids)
+    else:
+        historical_hard_positives, hard_positive_ids = mine_hard_positives(
+            torch, DataLoader, root, available["train"], args.input_size, batch, device,
+            prior_package, prior_manifest, phase_progress("Mining missed positives"))
+        if args.console_progress: write_console_progress("Hard-positive mining complete", finish=True)
+        save_mining_selection(hard_positive_cache, "hard-positive",
+            HARD_POSITIVE_MINING_REVISION, mining_checkpoint_sha256,
+            prior_manifest.get("modelId"), available["train"], args.input_size, hard_positive_ids)
+        hard_positive_source = "new"
+    emit("hard-example-mining",
+         f"Promoted {historical_hard_positives:,} missed positives and "
+         f"{historical_hard_negatives:,} near-miss negatives at {mining_threshold:.2f}",
+         hardPositiveCount=historical_hard_positives,
+         hardPositiveSource=hard_positive_source,
+         hardNegativeCount=historical_hard_negatives,
+         hardNegativeSource=hard_negative_source, miningThreshold=mining_threshold,
+         sourceModelId=hard_negative_model)
     snapshot_path = write_dataset_snapshot(root, output, manifest, available, args)
     accumulation = max(1, math.ceil(8 / batch))
     emit("setup", f"Loading DeepLabV3-ResNet50 on {device}",
          batchSize=batch, gradientAccumulation=accumulation,
          negativeSelection=args.negative_selection, minimumResolution=args.minimum_resolution,
          inputSize=args.input_size)
+    baseline = None
+    if prior_package is not None:
+        baseline_model = build_model(torch, pretrained=False).to(device)
+        baseline_model.load_state_dict(torch.load(prior_package / "model.pth", map_location=device,
+                                                   weights_only=True))
+        baseline_thresholds = tuple(round(value / 100, 2) for value in range(10, 91, 5))
+        baseline_validation_all = evaluate(torch, baseline_model, DataLoader(
+            PropDataset(root, available["validation"], False, args.input_size), batch_size=batch,
+            shuffle=False, num_workers=1), device, baseline_thresholds,
+            root, available["validation"], phase_progress("Baseline validation"))
+        if args.console_progress: write_console_progress("Baseline validation complete", finish=True)
+        baseline_threshold, baseline_ceiling = deployment_threshold(baseline_validation_all)
+        baseline = {"modelId": prior_manifest.get("modelId"),
+                    "threshold": baseline_threshold,
+                    "validation": baseline_validation_all[baseline_threshold],
+                    "validationCeilingMet": baseline_ceiling}
+        for split in ("test", "sealedHoldout"):
+            loader = DataLoader(PropDataset(root, available[split], False, args.input_size),
+                                batch_size=batch, shuffle=False, num_workers=1)
+            baseline[split] = evaluate(torch, baseline_model, loader, device,
+                                       (baseline_threshold,), root,
+                                       available[split], phase_progress(
+                                           f"Baseline {split}"))[baseline_threshold]
+            if args.console_progress:
+                write_console_progress(f"Baseline {split} complete", finish=True)
+        atomic_json(output / "v1-baseline.json", baseline)
+        emit("baseline", f"Recorded {baseline['modelId']} at threshold "
+             f"{baseline_threshold:.2f} on validation, test, and sealed holdout",
+             baseline=str(output / "v1-baseline.json"), **baseline)
+        del baseline_model
+        if device.type == "cuda": torch.cuda.empty_cache()
     if args.negative_selection == "compare":
         requested = [(f"{round(ratio * 100):02d}", ratio) for ratio in (.20, .25, .30, .35)]
     elif args.negative_selection == "all":
@@ -1080,7 +1417,7 @@ def train(args):
         result, checkpoint_path = train_candidate(
             torch, DataLoader, args, root, output, device, batch, accumulation,
             train_samples, available["validation"], negative_ratio, selection_name,
-            epoch_size, negative_selected)
+            epoch_size, negative_selected, warm_checkpoint, warm_model_id)
         result["checkpoint"] = str(checkpoint_path)
         candidates.append(result)
         if device.type == "cuda": torch.cuda.empty_cache()
@@ -1104,7 +1441,15 @@ def train(args):
     test_loader = DataLoader(PropDataset(root, available["test"], False, args.input_size), batch_size=batch,
                              shuffle=False, num_workers=1)
     test_metrics = evaluate(torch, model, test_loader, device, (threshold,),
-                            root, available["test"])[threshold]
+                            root, available["test"], phase_progress("Final test"))[threshold]
+    if args.console_progress: write_console_progress("Final test complete", finish=True)
+    holdout_loader = DataLoader(PropDataset(root, available["sealedHoldout"], False,
+                                            args.input_size), batch_size=batch,
+                                shuffle=False, num_workers=1)
+    holdout_metrics = evaluate(torch, model, holdout_loader, device, (threshold,),
+                               root, available["sealedHoldout"],
+                               phase_progress("Sealed holdout"))[threshold]
+    if args.console_progress: write_console_progress("Sealed holdout complete", finish=True)
     validation_loader = DataLoader(
         PropDataset(root, available["validation"], False, args.input_size), batch_size=batch,
         shuffle=False, num_workers=1)
@@ -1115,24 +1460,41 @@ def train(args):
     model_id = f"prop-r50-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{checkpoint_hash[:8]}"
     review = save_error_review(torch, model, validation_loader, device, threshold,
                                package / "review", samples=available["validation"])
+    baseline_holdout = baseline.get("sealedHoldout", {}) if baseline else {}
+    promotion = promotion_result(holdout_metrics, baseline_holdout)
     metrics = {"validation": winner["validation"], "test": test_metrics,
+               "sealedHoldout": holdout_metrics, "v1Baseline": baseline,
+               "promotion": promotion,
                "threshold": threshold, "selectedNegativeRatio": winner["targetNegativeRatio"],
                "selectedNegativeMode": winner["negativeSelection"],
                "minimumResolution": args.minimum_resolution,
                "inputSize": args.input_size,
                "trainingRevision": TRAINING_REVISION,
-               "testSealed": True, "reviewSplit": "validation",
+               "testSealed": False, "sealedSourceCount": len(sealed_sources),
+               "reviewSplit": "validation",
                "sampling": {"sourceBalanced": True, "allNegativesEligible": True,
                             "smallMaskUpweighting": True,
                             "historicalHardNegativeMining": True,
                             "historicalHardNegativeCount": historical_hard_negatives,
+                            "hardNegativeMiningRevision": HARD_NEGATIVE_MINING_REVISION,
+                            "hardNegativeMiningThreshold": mining_threshold,
+                            "hardNegativeSelectionSource": hard_negative_source,
+                            "historicalHardPositiveMining": True,
+                            "historicalHardPositiveCount": historical_hard_positives,
+                            "hardPositiveMiningRevision": HARD_POSITIVE_MINING_REVISION,
+                            "hardPositiveSelectionSource": hard_positive_source,
                             "hardNegativeSourceModelId": hard_negative_model,
                             "hardNegativeWeight": HARD_NEGATIVE_WEIGHT,
                             "hardNegativeFraction": HARD_NEGATIVE_FRACTION,
                             "hardNegativeLimit": MAX_HARD_NEGATIVES},
+               "warmStart": {"enabled": bool(warm_checkpoint), "modelId": warm_model_id,
+                             "checkpointSha256": digest(warm_checkpoint)
+                                if warm_checkpoint else None},
                "geometryAugmentation": {"letterbox": .50, "foregroundCrop": .30,
                                         "randomContextCrop": .20,
-                                        "smallObjectFocusedZoom": True},
+                                        "smallObjectFocusedZoom": True,
+                                        "runtimeFineTuneEpochs": args.runtime_epochs,
+                                        "runtimeLetterbox": .80},
                "checkpointSelection": {"variants": ["balanced", "raw-dice",
                     "exterior-prop", "conservative"], "validationSweep": True,
                     "finalRvmUnionUsedForSelection": False,
@@ -1146,6 +1508,7 @@ def train(args):
                "counts": {key: len(value) for key, value in available.items()},
                "review": {key: len(value) for key, value in review.items()}}
     atomic_json(package / "metrics.json", metrics)
+    atomic_json(output / "promotion-result.json", promotion)
     files = {str(path.relative_to(package)).replace("\\", "/"): digest(path)
              for path in package.rglob("*") if path.is_file() and path.name != "manifest.json"}
     atomic_json(package / "manifest.json", {
@@ -1162,6 +1525,8 @@ def train(args):
         "minimumTrainingResolution": args.minimum_resolution,
         "negativeSelection": winner["negativeSelection"],
         "checkpointVariant": winner["selectedCheckpointVariant"],
+        "warmStartModelId": warm_model_id,
+        "promotionEligible": promotion["eligible"],
         "createdUtc": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         "pythonVersion": sys.version.split()[0], "torchVersion": torch.__version__,
         "torchvisionVersion": __import__("torchvision").__version__,
@@ -1170,6 +1535,7 @@ def train(args):
          review=str(package / "review"))
     emit("complete", "Training, threshold calibration, and test evaluation complete",
          package=str(package), modelId=model_id, testDice=test_metrics["dice"],
+         sealedHoldout=holdout_metrics, promotion=promotion,
          selectedNegativeRatio=winner["targetNegativeRatio"],
          selectedNegativeMode=winner["negativeSelection"],
          selectedCheckpointVariant=winner["selectedCheckpointVariant"])
@@ -1228,6 +1594,52 @@ def self_test():
                        "framePath": "frame.png", "propMaskPath": "mask.png"}})
         loaded_manifest = load_manifest(root)
         assert len(accepted_samples(loaded_manifest, "train")) == 1
+        partition_manifest = {"sources": [
+            {"id": "ordinary", "sealedHoldout": False},
+            {"id": "sealed", "sealedHoldout": True}], "samples": [
+            {"id": "train", "decision": "positive", "split": "train",
+             "sourceId": "ordinary", "framePath": "frame.png", "propMaskPath": "mask.png",
+             "width": 1920, "height": 1080},
+            {"id": "leak", "decision": "positive", "split": "train",
+             "sourceId": "sealed", "framePath": "frame.png", "propMaskPath": "mask.png",
+             "width": 1920, "height": 1080}]}
+        partitioned, sealed_sources = partition_samples(partition_manifest, 720)
+        assert sealed_sources == {"sealed"}
+        assert [sample["id"] for sample in partitioned["train"]] == ["train"]
+        assert [sample["id"] for sample in partitioned["sealedHoldout"]] == ["leak"]
+        selection_root = root / "selection"
+        good_package = selection_root / "runs" / "good" / "package"
+        failed_package = selection_root / "runs" / "failed" / "package"
+        good_package.mkdir(parents=True); failed_package.mkdir(parents=True)
+        (good_package / "model.pth").write_bytes(b"good")
+        (failed_package / "model.pth").write_bytes(b"failed")
+        atomic_json(good_package / "manifest.json", {"architecture": ARCHITECTURE,
+            "modelId": "good-model", "confidenceThreshold": .7})
+        atomic_json(failed_package / "manifest.json", {"architecture": ARCHITECTURE,
+            "modelId": "failed-model", "promotionEligible": False})
+        os.utime(failed_package / "manifest.json", (time.time() + 1, time.time() + 1))
+        selected_package, selected_manifest = latest_v1_package(selection_root,
+                                                                 selection_root / "new")
+        assert selected_package == good_package and selected_manifest["modelId"] == "good-model"
+        cache_samples = [{"id": "a", "decision": "positive", "_recordSha256": "1"},
+                         {"id": "b", "decision": "negative", "_recordSha256": "2"}]
+        cache_path = mining_cache_path(selection_root, "hard-negative", 2, "a" * 64,
+            mining_dataset_fingerprint(cache_samples), 768)
+        save_mining_selection(cache_path, "hard-negative", 2, "a" * 64, "good-model",
+                              cache_samples, 768, {"b"}, miningThreshold=.55)
+        cached, source, _ = load_mining_selection(selection_root, selection_root / "new",
+            "hard-negative", 2, "a" * 64, "good-model", cache_samples, 768)
+        assert cached == {"b"} and source == "cache"
+        atomic_json(selection_root / "runs" / "snapshot" / "dataset-snapshot.json", {
+            "warmStartModelId": "good-model", "warmStartCheckpointSha256": "a" * 64,
+            "inputSize": 768, "splits": {"train": [
+                {"id": "a", "decision": "positive", "recordSha256": "1",
+                 "historicalHardPositive": True},
+                {"id": "b", "decision": "negative", "recordSha256": "2"}]}})
+        snapshot_ids, source, _ = load_mining_selection(selection_root,
+            selection_root / "new", "hard-positive", 1, "a" * 64, "good-model",
+            cache_samples, 768, "historicalHardPositive")
+        assert snapshot_ids == {"a"} and source == "snapshot"
         sized = [{"width": 1920, "height": 1080}, {"width": 1280, "height": 720},
                  {"width": 1080, "height": 1920}]
         assert len(resolution_samples(sized, 1080)) == 2
@@ -1250,6 +1662,9 @@ def self_test():
         planned[7]["_hardNegative"] = True
         hard_weights = source_balanced_weights(planned, .30)
         assert hard_weights[7] > hard_weights[11]
+        planned[0]["_hardPositive"] = True
+        hard_positive_weights = source_balanced_weights(planned, .30)
+        assert hard_positive_weights[0] > hard_positive_weights[1]
         profile = split_profile(planned)
         assert profile["positiveCount"] == 7 and profile["negativeCount"] == 20
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -1315,6 +1730,13 @@ def self_test():
             {"name": "dirty", "selectionScore": .9, "validation": dirty},
             {"name": "clean", "selectionScore": .89, "validation": clean}])
         assert ceiling_met and selected["name"] == "clean"
+        baseline_promotion = {"rvmUnion": {"exteriorProp": {"recall": .30, "dice": .40},
+            "finalForeground": {"dice": .99}, "retainedNegativeCoverage": 1.,
+            "retainedNegativeFrameFalsePositiveRate": .04}}
+        improved_promotion = {"rvmUnion": {"exteriorProp": {"recall": .36, "dice": .45},
+            "finalForeground": {"dice": .991}, "retainedNegativeCoverage": 1.,
+            "retainedNegativeFrameFalsePositiveRate": .05}}
+        assert promotion_result(improved_promotion, baseline_promotion)["eligible"]
         combined_loss = segmentation_loss(torch, {"out": images[:, :1] * 4}, targets,
                                           torch.tensor([2.]), targets)
         assert torch.isfinite(combined_loss)
@@ -1355,8 +1777,11 @@ def main():
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--warm-start-latest", action="store_true")
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=40)
+    parser.add_argument("--runtime-epochs", type=int, default=8)
+    parser.add_argument("--console-progress", action="store_true")
     parser.add_argument("--patience", type=int, default=12)
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--minimum-resolution", type=int, default=720)

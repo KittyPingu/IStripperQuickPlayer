@@ -753,18 +753,32 @@ def _process_once(args, compile_enabled):
                 mask_path, profiler, args.rvm_alpha_threshold, args.prop_model)
         correction_start_ms = round((start + selected_index / fps) * 1000)
         correction_anchors = {}
+        reset_anchors = set()
         checkpoint_folder = work / "interactive-checkpoints"
         checkpoint_files = {}
+        anchor_folder = args.anchor_folder.resolve() if args.anchor_folder else interactive
         if interactive is not None:
             checkpoint_folder.mkdir()
-            for path in interactive.glob("correction-*.png"):
+        if anchor_folder is not None:
+            for path in anchor_folder.glob("correction-*.png"):
                 try:
                     frame_ms = int(path.stem.removeprefix("correction-"))
                     index = interactive_anchor_index(frame_ms, args.start_ms, fps,
                         total, selected_index, total - 1)
                     correction_anchors[index] = path
                 except ValueError:
-                    path.unlink(missing_ok=True)
+                    if interactive is not None:
+                        path.unlink(missing_ok=True)
+            for path in anchor_folder.glob("reset-*.png"):
+                try:
+                    frame_ms = int(path.stem.removeprefix("reset-"))
+                    index = interactive_anchor_index(frame_ms, args.start_ms, fps,
+                        total, selected_index, total - 1)
+                    correction_anchors[index] = path
+                    reset_anchors.add(index)
+                except ValueError:
+                    if interactive is not None:
+                        path.unlink(missing_ok=True)
         prepared = work / "source"
         prepared.mkdir()
         extract_earlier_frames(ffmpeg, source, prepared, start, frame_rate,
@@ -972,7 +986,8 @@ def _process_once(args, compile_enabled):
                     "maximumContactProbability", 0)) >= high_threshold,
             }
 
-        def step(slot, processor, first_frame=False, allow_rvm_refresh=False):
+        def step(slot, processor, first_frame=False, allow_rvm_refresh=False,
+                 first_mask_tensor=None):
             nonlocal rvm_missing_streak, prop_missing_streak
             nonlocal last_rvm_refresh, last_prop_refresh
             nonlocal last_prop_evaluation
@@ -985,9 +1000,14 @@ def _process_once(args, compile_enabled):
                 with torch.inference_mode(), torch.amp.autocast(
                         device_type=device.type, enabled=fp16):
                     if first_frame:
-                        processor.step(frame_tensor, mask_tensor, objects=[1])
-                        for _ in range(11):
-                            output_prob = processor.step(frame_tensor, first_frame_pred=True)
+                        seed_mask = (mask_tensor if first_mask_tensor is None
+                                     else first_mask_tensor)
+                        output_prob = processor.step(
+                            frame_tensor, seed_mask, objects=[1])
+                        if first_mask_tensor is None and compile_enabled:
+                            for _ in range(11):
+                                output_prob = processor.step(
+                                    frame_tensor, first_frame_pred=True)
                     else:
                         output_prob = processor.step(frame_tensor)
                     rvm_alpha = update_rvm(frame_tensor)
@@ -1141,15 +1161,22 @@ def _process_once(args, compile_enabled):
             last_preview = now
             profiler.add("preview_generation", time.perf_counter() - started)
 
-        def apply_correction_mask(slot, processor, frame_tensor, corrected_path):
+        def correction_mask_tensor(corrected_path):
             with Image.open(corrected_path) as corrected_image:
                 corrected = corrected_image.convert("L").resize(
                     (process_width, process_height), Image.Resampling.NEAREST)
-            corrected_tensor = torch.from_numpy(np.asarray(
+            return torch.from_numpy(np.asarray(
                 corrected, dtype=np.uint8).copy()).float().to(device)
+
+        def apply_correction_mask(slot, processor, frame_tensor, corrected_path,
+                                  replace_memory=False):
+            corrected_tensor = correction_mask_tensor(corrected_path)
             if slot.download_done is not None:
                 slot.download_done.synchronize()
-            processor.clear_non_permanent_memory()
+            if replace_memory:
+                processor.clear_memory()
+            else:
+                processor.clear_non_permanent_memory()
             with torch.inference_mode(), torch.amp.autocast(
                     device_type=device.type, enabled=fp16):
                 output_prob = processor.step(frame_tensor, corrected_tensor,
@@ -1547,10 +1574,18 @@ def _process_once(args, compile_enabled):
                             "createdUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                         }))
                 else:
-                    frame_tensor = step(slot, forward, allow_rvm_refresh=True)
-                    if slot.index in correction_anchors:
+                    reset = slot.index in reset_anchors
+                    if reset:
+                        forward.clear_memory()
+                    reset_mask = (correction_mask_tensor(
+                        correction_anchors[slot.index]) if reset else None)
+                    frame_tensor = step(slot, forward, first_frame=reset,
+                        allow_rvm_refresh=not reset,
+                        first_mask_tensor=reset_mask)
+                    if slot.index in correction_anchors and not reset:
                         apply_correction_mask(slot, forward, frame_tensor,
-                                              correction_anchors[slot.index])
+                            correction_anchors[slot.index],
+                            replace_memory=args.anchor_folder is not None)
                     save_processor_checkpoint(slot.index, forward)
                     apply_interactive_correction(slot, forward, frame_tensor)
 
@@ -1772,6 +1807,7 @@ def main():
     parser.add_argument("--max-mem-frames", type=int, default=5)
     parser.add_argument("--use-long-term", action="store_true")
     parser.add_argument("--interactive-control", type=Path)
+    parser.add_argument("--anchor-folder", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--start-ms", type=int, default=0)
