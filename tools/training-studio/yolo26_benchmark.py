@@ -36,6 +36,20 @@ def emit(stage, message="", **values):
                      separators=(",", ":")), flush=True)
 
 
+def format_duration(seconds):
+    seconds = max(0, int(seconds))
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    return f"{hours:d}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
+
+def write_console_progress(message, finish=False):
+    """Update one terminal line without polluting the structured UI output."""
+    width = 118
+    sys.stdout.write("\r" + message[:width].ljust(width) + ("\n" if finish else ""))
+    sys.stdout.flush()
+
+
 def atomic_json(path, value):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp-" + os.urandom(6).hex())
@@ -490,17 +504,36 @@ def train(args):
     trainable = [value for value in samples if not value["_sealed"]]
     if not holdout or not trainable: raise RuntimeError("YOLO benchmark requires trainable and sealed samples")
     hard_negatives = []
-    if args.hard_negative_model and not args.evaluate_only:
+    previous_snapshot_path = output / "dataset-snapshot.json"
+    previous_snapshot = json.loads(previous_snapshot_path.read_text(encoding="utf-8")) \
+        if args.reuse_prepared_export and previous_snapshot_path.is_file() else None
+    if args.reuse_prepared_export and previous_snapshot is None:
+        raise RuntimeError("--reuse-prepared-export requires an existing dataset snapshot")
+    if args.hard_negative_model and not args.evaluate_only and previous_snapshot is None:
         hard_negatives = mine_training_hard_negatives(root, trainable,
             args.hard_negative_model, torch.device("cuda:0"))
     all_samples = trainable + hard_negatives + holdout
-    # Keep this compatible with snapshots written before shared exports existed.
-    snapshot_fingerprint = hashlib.sha256("\n".join(sorted(
-        value["_recordSha256"] for value in all_samples)).encode()).hexdigest()
-    shared_export = root / "yolo-cache" / \
-        f"{args.variant}-r{TRAINING_REVISION}-{INPUT_SIZE}-{snapshot_fingerprint[:16]}"
-    dataset, exported = prepare_dataset(root, output, manifest, all_samples, args.variant,
-        destination=shared_export)
+    if previous_snapshot is not None:
+        for key, expected in (("variant", args.variant),
+                              ("trainingRevision", TRAINING_REVISION),
+                              ("exportFormat", EXPORT_FORMAT), ("inputSize", INPUT_SIZE)):
+            if previous_snapshot.get(key) != expected:
+                raise RuntimeError(f"Prepared export configuration mismatch: {key}")
+        snapshot_fingerprint = previous_snapshot["datasetSnapshotSha256"]
+        dataset = Path(previous_snapshot["sharedExport"])
+        export_path = dataset / "export.json"
+        if not (dataset / "READY").is_file() or not export_path.is_file():
+            raise RuntimeError("Prepared shared export is incomplete")
+        exported = json.loads(export_path.read_text(encoding="utf-8"))["samples"]
+        emit("prepare", f"Reusing prepared {args.variant} export ({len(exported):,} crops)")
+    else:
+        # Keep this compatible with snapshots written before shared exports existed.
+        snapshot_fingerprint = hashlib.sha256("\n".join(sorted(
+            value["_recordSha256"] for value in all_samples)).encode()).hexdigest()
+        shared_export = root / "yolo-cache" / \
+            f"{args.variant}-r{TRAINING_REVISION}-{INPUT_SIZE}-{snapshot_fingerprint[:16]}"
+        dataset, exported = prepare_dataset(root, output, manifest, all_samples, args.variant,
+            destination=shared_export)
     cleanup_stale_shared_exports(root, args.variant, dataset)
     cleanup_legacy_exports(root, output if args.resume else None)
     training_sources = {value["sourceId"] for value in exported if value["split"] != "holdout"}
@@ -515,13 +548,15 @@ def train(args):
         model.ckpt_path if model is not None and model.ckpt_path else pretrained)
     snapshot = {"schemaVersion": 1, "datasetId": manifest["datasetId"], "variant": args.variant,
         "trainingRevision": TRAINING_REVISION, "exportFormat": EXPORT_FORMAT,
-        "inputSize": INPUT_SIZE, "ultralyticsVersion": ultralytics.__version__,
+        "inputSize": INPUT_SIZE, "batchSize": args.batch_size,
+        "ultralyticsVersion": ultralytics.__version__,
         "pretrainedWeight": pretrained_path.name,
         "pretrainedSha256": digest(pretrained_path) if pretrained_path.is_file() else None,
         "datasetSnapshotSha256": snapshot_fingerprint,
         "hardNegativeModelSha256": digest(args.hard_negative_model)
             if args.hard_negative_model else None,
-        "hardNegativeCount": len(hard_negatives),
+        "hardNegativeCount": previous_snapshot.get("hardNegativeCount", 0)
+            if previous_snapshot is not None else len(hard_negatives),
         "sharedExport": str(dataset),
         "counts": {name: sum(value["split"] == name for value in exported)
                    for name in ("train", "validation", "test", "holdout")},
@@ -533,7 +568,7 @@ def train(args):
             "outsideSafety": sum(value["decision"] == "positive" and
                 not .005 <= value["maskFraction"] <= .30 for value in exported)}}
     snapshot_path = output / "dataset-snapshot.json"
-    if (args.resume or args.evaluate_only) and snapshot_path.is_file():
+    if (args.resume or args.evaluate_only or args.reuse_prepared_export) and snapshot_path.is_file():
         previous = json.loads(snapshot_path.read_text(encoding="utf-8"))
         for key in ("variant", "trainingRevision", "exportFormat", "inputSize",
                     "ultralyticsVersion", "datasetSnapshotSha256"):
@@ -542,7 +577,53 @@ def train(args):
     atomic_json(snapshot_path, snapshot)
     emit("setup", f"{'Evaluating' if args.evaluate_only else 'Training'} {args.variant} on cuda",
          architecture=args.variant, frameCount=len(exported), holdoutCount=len(holdout))
+    console_state = {"batch": 0, "started": 0., "active": False, "epoch": 0}
+
+    def train_epoch_start(trainer):
+        if not args.console_progress: return
+        console_state.update(batch=0, started=time.monotonic(), active=True,
+                             epoch=trainer.epoch + 1)
+        write_console_progress(f"Epoch {trainer.epoch + 1}/{trainer.epochs}  [------------------------------]   0%  batch 0/{len(trainer.train_loader)}")
+
+    def train_batch_end(trainer):
+        if not args.console_progress: return
+        console_state["batch"] += 1
+        completed = console_state["batch"]
+        total = max(1, len(trainer.train_loader))
+        fraction = min(1., completed / total)
+        filled = min(30, int(fraction * 30))
+        elapsed = time.monotonic() - console_state["started"]
+        remaining = elapsed * (total - completed) / completed if completed else 0.
+        bar = "=" * filled + "-" * (30 - filled)
+        write_console_progress(
+            f"Epoch {trainer.epoch + 1}/{trainer.epochs}  [{bar}] {fraction:4.0%}  "
+            f"batch {completed}/{total}  elapsed {format_duration(elapsed)}  ETA {format_duration(remaining)}")
+
+    def validation_start(validator):
+        if not args.console_progress: return
+        console_state.update(batch=0, started=time.monotonic())
+        write_console_progress(
+            f"Epoch {console_state['epoch']}/{args.epochs}  validating [------------------------------]   0%")
+
+    def validation_batch_end(validator):
+        if not args.console_progress: return
+        completed = validator.batch_i + 1
+        total = max(1, len(validator.dataloader))
+        fraction = min(1., completed / total)
+        filled = min(30, int(fraction * 30))
+        elapsed = time.monotonic() - console_state["started"]
+        remaining = elapsed * (total - completed) / completed
+        bar = "=" * filled + "-" * (30 - filled)
+        write_console_progress(
+            f"Epoch {console_state['epoch']}/{args.epochs}  validating [{bar}] {fraction:4.0%}  "
+            f"batch {completed}/{total}  ETA {format_duration(remaining)}")
+
     def epoch_callback(trainer):
+        if args.console_progress and console_state["active"]:
+            write_console_progress(
+                f"Epoch {trainer.epoch + 1}/{trainer.epochs}  [==============================] 100%  validating complete",
+                finish=True)
+            console_state["active"] = False
         metrics = trainer.metrics or {}; fitness = float(trainer.fitness or 0.)
         if args.variant == "yolo26s-sem":
             emit("epoch", f"{args.variant} fine-tune", epoch=trainer.epoch + 1,
@@ -554,9 +635,14 @@ def train(args):
                  validationPrecision=float(metrics.get("metrics/precision(M)", 0.)),
                  validationRecall=float(metrics.get("metrics/recall(M)", 0.)))
     if not args.evaluate_only:
+        model.add_callback("on_train_epoch_start", train_epoch_start)
+        model.add_callback("on_train_batch_end", train_batch_end)
+        model.add_callback("on_val_start", validation_start)
+        model.add_callback("on_val_batch_end", validation_batch_end)
         model.add_callback("on_fit_epoch_end", epoch_callback)
         model.train(data=str(dataset / "dataset.yaml"), task=VARIANTS[args.variant],
-            epochs=args.epochs, patience=20, imgsz=INPUT_SIZE, batch=-1, device=0, optimizer="AdamW",
+            epochs=args.epochs, patience=20, imgsz=INPUT_SIZE, batch=args.batch_size,
+            device=0, optimizer="AdamW",
             project=str(output), name="ultralytics", exist_ok=True, lr0=.001,
             mosaic=.25, mixup=0., copy_paste=0., fliplr=.5, flipud=0., degrees=3., scale=.25,
             save_period=5, cache="disk", fraction=args.fraction, resume=args.resume, verbose=False)
@@ -730,6 +816,9 @@ def main():
     parser.add_argument("--minimum-resolution", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--fraction", type=float, default=1.)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--reuse-prepared-export", action="store_true")
+    parser.add_argument("--console-progress", action="store_true")
     parser.add_argument("--hard-negative-model")
     parser.add_argument("--source-checkpoint-limit", type=int, default=96)
     parser.add_argument("--resume", action="store_true"); parser.add_argument("--self-test", action="store_true")
