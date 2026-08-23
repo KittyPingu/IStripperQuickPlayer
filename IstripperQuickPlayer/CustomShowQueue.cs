@@ -29,6 +29,7 @@ internal sealed class CustomShowQueueJob
     public long SourceLastWriteUtcTicks { get; set; }
     public string? TargetShowId { get; set; }
     public string? TargetManifestSha256 { get; set; }
+    public string? DependsOnQueueJobId { get; set; }
     public string? CoverAsset { get; set; }
     public Dictionary<string, string> InitialMaskAssets { get; set; } = [];
     public Dictionary<string, long> InitialMaskFrameMs { get; set; } = [];
@@ -178,6 +179,8 @@ internal sealed class CustomShowPublicationException(string message, Exception i
 
 internal sealed class CustomShowQueueManager : IDisposable
 {
+    const string WaitingForEarlierAppend =
+        "Waiting for an earlier append to this show";
     readonly object gate = new();
     readonly CustomShowStore shows;
     readonly CustomShowConfiguration configuration;
@@ -212,19 +215,49 @@ internal sealed class CustomShowQueueManager : IDisposable
     internal bool HasActiveJob { get { lock (gate) return document.Jobs.Any(
         job => job.Status == CustomShowQueueStatus.Running); } }
 
+    void PrepareTargetDependencyLocked(CustomShowQueueJob job,
+        string? existingId)
+    {
+        if (job.TargetShowId == null) return;
+        CustomShowQueueJob[] active = document.Jobs.Where(value =>
+            value.Id != existingId &&
+            value.Status is CustomShowQueueStatus.Pending or
+                CustomShowQueueStatus.Running &&
+            string.Equals(value.TargetShowId, job.TargetShowId,
+                StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (active.Length == 0) return;
+        if (job.Operation != CustomShowQueueOperation.Append ||
+            active.Any(value => value.Operation != CustomShowQueueOperation.Append))
+            throw new InvalidOperationException(
+                "That show already has a pending or running queue job.");
+
+        bool alreadyPrecedesChain = active.Any(value => string.Equals(
+            value.DependsOnQueueJobId, job.Id,
+            StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(job.DependsOnQueueJobId) &&
+            !alreadyPrecedesChain)
+            job.DependsOnQueueJobId = active[^1].Id;
+        if (!string.IsNullOrWhiteSpace(job.DependsOnQueueJobId))
+            job.Message = WaitingForEarlierAppend;
+    }
+
+    bool DependencyIncompleteLocked(CustomShowQueueJob job)
+    {
+        if (string.IsNullOrWhiteSpace(job.DependsOnQueueJobId)) return false;
+        CustomShowQueueJob? dependency = document.Jobs.FirstOrDefault(value =>
+            string.Equals(value.Id, job.DependsOnQueueJobId,
+                StringComparison.OrdinalIgnoreCase));
+        return dependency != null &&
+            dependency.Status != CustomShowQueueStatus.Completed;
+    }
+
     internal string AddOrUpdate(CustomShowQueueJob job, string? existingId,
         string? coverSource, IReadOnlyDictionary<string, string> masks,
         IReadOnlyDictionary<string, string>? sceneMasks = null)
     {
         lock (gate)
         {
-            if (job.TargetShowId != null && document.Jobs.Any(value =>
-                value.Id != existingId &&
-                value.Status is CustomShowQueueStatus.Pending or CustomShowQueueStatus.Running &&
-                string.Equals(value.TargetShowId, job.TargetShowId,
-                    StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidOperationException(
-                    "That show already has a pending or running queue job.");
+            PrepareTargetDependencyLocked(job, existingId);
             if (existingId != null)
             {
                 int index = document.Jobs.FindIndex(value => value.Id == existingId);
@@ -386,6 +419,9 @@ internal sealed class CustomShowQueueManager : IDisposable
             if (job.Status != CustomShowQueueStatus.Pending)
                 throw new InvalidOperationException(
                     "Only a pending job can be processed immediately.");
+            if (DependencyIncompleteLocked(job))
+                throw new InvalidOperationException(
+                    "An earlier queued append to this show must complete first.");
             job.Status = CustomShowQueueStatus.Running;
             job.StartedUtc = DateTime.UtcNow;
             job.Percent = 0;
@@ -409,12 +445,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                 reviewBeforePublication, generatePreviews: true);
             lock (gate)
             {
-                job.Status = CustomShowQueueStatus.Completed;
-                job.Percent = 100;
-                job.Message = "Completed";
-                job.CompletedUtc = DateTime.UtcNow;
-                job.PublishedShowId = publishedId;
-                job.ReadyToPublish = false;
+                CompleteJobLocked(job, publishedId);
                 SaveLocked();
             }
             try { published(); } catch (Exception error)
@@ -447,7 +478,8 @@ internal sealed class CustomShowQueueManager : IDisposable
             {
                 if (pauseAfterCurrent) break;
                 job = document.Jobs.FirstOrDefault(value =>
-                    value.Status == CustomShowQueueStatus.Pending);
+                    value.Status == CustomShowQueueStatus.Pending &&
+                    !DependencyIncompleteLocked(value));
                 if (job == null) break;
                 job.Status = CustomShowQueueStatus.Running;
                 job.StartedUtc = DateTime.UtcNow;
@@ -469,12 +501,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     configuration, storage, progress, preparePublication, token);
                 lock (gate)
                 {
-                    job.Status = CustomShowQueueStatus.Completed;
-                    job.Percent = 100;
-                    job.Message = "Completed";
-                    job.CompletedUtc = DateTime.UtcNow;
-                    job.PublishedShowId = publishedId;
-                    job.ReadyToPublish = false;
+                    CompleteJobLocked(job, publishedId);
                     SaveLocked();
                 }
                 try { published(); } catch (Exception error)
@@ -549,6 +576,41 @@ internal sealed class CustomShowQueueManager : IDisposable
         }
         if (!completedOutput)
             CustomShowQueueStore.TryDelete(work);
+    }
+
+    void CompleteJobLocked(CustomShowQueueJob job, string publishedId)
+    {
+        job.Status = CustomShowQueueStatus.Completed;
+        job.Percent = 100;
+        job.Message = "Completed";
+        job.CompletedUtc = DateTime.UtcNow;
+        job.PublishedShowId = publishedId;
+        job.ReadyToPublish = false;
+        if (job.Operation != CustomShowQueueOperation.Append ||
+            string.IsNullOrWhiteSpace(job.TargetShowId)) return;
+
+        CustomShowQueueJob? dependent = document.Jobs.FirstOrDefault(value =>
+            string.Equals(value.DependsOnQueueJobId, job.Id,
+                StringComparison.OrdinalIgnoreCase));
+        if (dependent == null) return;
+        dependent.DependsOnQueueJobId = null;
+        try
+        {
+            dependent.TargetManifestSha256 = CustomShowQueueStore.HashFile(
+                Path.Combine(shows.ShowsFolder, job.TargetShowId, "show.json"));
+            if (dependent.Status == CustomShowQueueStatus.Pending &&
+                string.Equals(dependent.Message, WaitingForEarlierAppend,
+                    StringComparison.Ordinal))
+                dependent.Message = "Pending";
+        }
+        catch (Exception error) when (error is IOException or
+            UnauthorizedAccessException)
+        {
+            dependent.Status = CustomShowQueueStatus.NeedsAttention;
+            dependent.Message = "Needs attention";
+            dependent.Error = "The preceding append completed, but the next " +
+                "queued video could not be rebased onto the updated show.";
+        }
     }
 
     async Task EnsureSam3ScenePlanAsync(CustomShowQueueJob job,
@@ -737,15 +799,19 @@ internal sealed class CustomShowQueueManager : IDisposable
                 CustomShowQueueStatus.NeedsAttention)) return;
             try
             {
+                PrepareTargetDependencyLocked(job, job.Id);
                 CustomShowJobRunner.Validate(job, shows, configuration, storage);
                 job.Status = CustomShowQueueStatus.Pending;
                 job.Percent = job.ReadyToPublish ? 100 : 0;
-                job.Message = job.ReadyToPublish ? "Ready to retry publication" : "Pending";
+                job.Message = !string.IsNullOrWhiteSpace(job.DependsOnQueueJobId)
+                    ? WaitingForEarlierAppend
+                    : job.ReadyToPublish ? "Ready to retry publication" : "Pending";
                 job.Error = null;
                 job.StartedUtc = null;
                 job.CompletedUtc = null;
             }
-            catch (CustomShowQueueAttentionException error)
+            catch (Exception error) when (error is
+                CustomShowQueueAttentionException or InvalidOperationException)
             {
                 job.Status = CustomShowQueueStatus.NeedsAttention;
                 job.Message = "Needs attention";
@@ -762,6 +828,7 @@ internal sealed class CustomShowQueueManager : IDisposable
         {
             int index = document.Jobs.FindIndex(value => value.Id == id);
             if (index < 0 || document.Jobs[index].Status == CustomShowQueueStatus.Running) return;
+            RewireDependentsLocked(document.Jobs[index]);
             document.Jobs.RemoveAt(index);
             storage.DeleteAssets(id);
             SaveLocked();
@@ -777,6 +844,7 @@ internal sealed class CustomShowQueueManager : IDisposable
             if (index < 0 ||
                 document.Jobs[index].Status != CustomShowQueueStatus.Failed)
                 return false;
+            RewireDependentsLocked(document.Jobs[index]);
             document.Jobs.RemoveAt(index);
             storage.DeleteAssets(id);
             SaveLocked();
@@ -815,11 +883,29 @@ internal sealed class CustomShowQueueManager : IDisposable
                     CustomShowQueueStatus.Completed ||
                 document.Jobs[other].Status is CustomShowQueueStatus.Running or
                     CustomShowQueueStatus.Completed) return;
+            if (string.Equals(document.Jobs[index].DependsOnQueueJobId,
+                    document.Jobs[other].Id, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(document.Jobs[other].DependsOnQueueJobId,
+                    document.Jobs[index].Id, StringComparison.OrdinalIgnoreCase))
+                return;
             (document.Jobs[index], document.Jobs[other]) =
                 (document.Jobs[other], document.Jobs[index]);
             SaveLocked();
         }
         OnChanged();
+    }
+
+    void RewireDependentsLocked(CustomShowQueueJob removed)
+    {
+        foreach (CustomShowQueueJob dependent in document.Jobs.Where(value =>
+            string.Equals(value.DependsOnQueueJobId, removed.Id,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            dependent.DependsOnQueueJobId = removed.DependsOnQueueJobId;
+            dependent.Message = string.IsNullOrWhiteSpace(
+                dependent.DependsOnQueueJobId) ? "Pending" :
+                WaitingForEarlierAppend;
+        }
     }
 
     void SaveLocked() { storage.Save(document); lastSavedUtc = DateTime.UtcNow; }
@@ -1186,6 +1272,7 @@ internal static class CustomShowJobRunner
             await CustomShowProcessor.RunTemporalAlphaCleanupAsync(configuration,
                 output, options.TemporalAlphaCleanupWindowFrames,
                 options.TemporalAlphaCleanupStrengthPercent,
+                options.TemporalAlphaTrackingStrengthPercent,
                 options.TemporalAlphaCleanupAlphaThreshold,
                 log, cleanupProgress, token);
         if (options.Algorithm == "sam2matting")
@@ -1608,6 +1695,51 @@ internal static class CustomShowJobRunner
             {
                 manager.AddOrUpdate(new() { TargetShowId = "target" }, null, null,
                     new Dictionary<string, string>());
+                return false;
+            }
+            catch (InvalidOperationException) { }
+            manager.Delete(firstTarget.Id);
+
+            CustomShowQueueJob firstAppend = new()
+            {
+                Operation = CustomShowQueueOperation.Append,
+                TargetShowId = "append-target"
+            };
+            CustomShowQueueJob secondAppend = new()
+            {
+                Operation = CustomShowQueueOperation.Append,
+                TargetShowId = "append-target"
+            };
+            CustomShowQueueJob thirdAppend = new()
+            {
+                Operation = CustomShowQueueOperation.Append,
+                TargetShowId = "append-target"
+            };
+            manager.AddOrUpdate(firstAppend, null, null,
+                new Dictionary<string, string>());
+            manager.AddOrUpdate(secondAppend, null, null,
+                new Dictionary<string, string>());
+            manager.AddOrUpdate(thirdAppend, null, null,
+                new Dictionary<string, string>());
+            if (manager.Find(secondAppend.Id)?.DependsOnQueueJobId !=
+                    firstAppend.Id ||
+                manager.Find(thirdAppend.Id)?.DependsOnQueueJobId !=
+                    secondAppend.Id)
+                return false;
+            manager.Delete(secondAppend.Id);
+            if (manager.Find(thirdAppend.Id)?.DependsOnQueueJobId !=
+                    firstAppend.Id)
+                return false;
+            manager.Delete(firstAppend.Id);
+            if (manager.Find(thirdAppend.Id)?.DependsOnQueueJobId != null)
+                return false;
+            try
+            {
+                manager.AddOrUpdate(new()
+                {
+                    Operation = CustomShowQueueOperation.Reprocess,
+                    TargetShowId = "append-target"
+                }, null, null, new Dictionary<string, string>());
                 return false;
             }
             catch (InvalidOperationException) { }

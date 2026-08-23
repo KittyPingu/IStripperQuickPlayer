@@ -915,7 +915,8 @@ internal static class CustomShowProcessor
 
     internal static async Task RunTemporalAlphaCleanupAsync(
         CustomShowConfiguration configuration, string outputFolder,
-        int windowFrames, int strengthPercent, int alphaThreshold,
+        int windowFrames, int strengthPercent, int trackingStrengthPercent,
+        int alphaThreshold,
         string logPath, IProgress<CustomShowProgress>? progress,
         CancellationToken cancellationToken, string? foregroundPath = null,
         string? alphaPath = null, string? destinationPath = null,
@@ -946,8 +947,9 @@ internal static class CustomShowProcessor
             TemporalAlphaCleanupWorkerPath,
             "--output", outputFolder,
             "--runtime", runtime,
-            "--window", Math.Clamp(windowFrames, 1, 12).ToString(),
+            "--window", Math.Clamp(windowFrames, 1, 30).ToString(),
             "--strength", Math.Clamp(strengthPercent, 25, 100).ToString(),
+            "--tracking-strength", Math.Clamp(trackingStrengthPercent, 0, 100).ToString(),
             "--alpha-threshold", Math.Clamp(alphaThreshold, 0, 255).ToString()
         }) start.ArgumentList.Add(argument);
         if (foregroundPath != null)

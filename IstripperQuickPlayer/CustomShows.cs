@@ -72,6 +72,7 @@ internal sealed class CustomShowConfiguration
     public bool LastTemporalAlphaCleanup { get; set; }
     public int LastTemporalAlphaCleanupWindowFrames { get; set; } = 3;
     public int LastTemporalAlphaCleanupStrengthPercent { get; set; } = 100;
+    public int LastTemporalAlphaTrackingStrengthPercent { get; set; } = 100;
     public int LastTemporalAlphaCleanupAlphaThreshold { get; set; } =
         CustomShowClip.DefaultAlphaThreshold;
     public bool LastAutoAcceptAlphaThreshold { get; set; }
@@ -176,9 +177,11 @@ internal sealed class CustomShowConfiguration
                         configuration.LastMatAnyoneUseLongTermMemory
                             ? MatAnyoneLongTermMaximumMemoryFrames : 30);
             configuration.LastTemporalAlphaCleanupWindowFrames = Math.Clamp(
-                configuration.LastTemporalAlphaCleanupWindowFrames, 1, 12);
+                configuration.LastTemporalAlphaCleanupWindowFrames, 1, 30);
             configuration.LastTemporalAlphaCleanupStrengthPercent = Math.Clamp(
                 configuration.LastTemporalAlphaCleanupStrengthPercent, 25, 100);
+            configuration.LastTemporalAlphaTrackingStrengthPercent = Math.Clamp(
+                configuration.LastTemporalAlphaTrackingStrengthPercent, 0, 100);
             configuration.LastTemporalAlphaCleanupAlphaThreshold = Math.Clamp(
                 configuration.LastTemporalAlphaCleanupAlphaThreshold, 0, 255);
             return configuration;
@@ -333,6 +336,7 @@ internal sealed class CustomShowProcessing
     public bool TemporalAlphaCleanup { get; set; }
     public int TemporalAlphaCleanupWindowFrames { get; set; } = 3;
     public int TemporalAlphaCleanupStrengthPercent { get; set; } = 100;
+    public int TemporalAlphaTrackingStrengthPercent { get; set; } = 100;
     public int TemporalAlphaCleanupAlphaThreshold { get; set; } =
         CustomShowClip.DefaultAlphaThreshold;
     public int? AutoAcceptedAlphaThreshold { get; set; }
@@ -1202,11 +1206,13 @@ internal sealed class CustomShowStore
             !matAnyone && (processing.MatAnyoneMaxMemoryFrames != 5 ||
                 processing.MatAnyoneUseLongTermMemory))
             throw new InvalidDataException("Invalid MatAnyone memory configuration.");
-        if (processing.TemporalAlphaCleanupWindowFrames is < 1 or > 12 ||
+        if (processing.TemporalAlphaCleanupWindowFrames is < 1 or > 30 ||
             processing.TemporalAlphaCleanupStrengthPercent is < 25 or > 100 ||
+            processing.TemporalAlphaTrackingStrengthPercent is < 0 or > 100 ||
             processing.TemporalAlphaCleanupAlphaThreshold is < 0 or > 255)
             throw new InvalidDataException(
-                "Invalid temporal alpha-cleanup window, strength, or alpha threshold.");
+                "Invalid temporal alpha-cleanup window, strength, tracking strength, " +
+                "or alpha threshold.");
         if (processing.AutoAcceptedAlphaThreshold is int acceptedThreshold &&
             acceptedThreshold is < 0 or > 255)
             throw new InvalidDataException("Invalid automatically accepted alpha threshold.");
@@ -1731,6 +1737,7 @@ internal sealed class CustomShowStore
                 TemporalAlphaCleanup = true,
                 TemporalAlphaCleanupWindowFrames = 4,
                 TemporalAlphaCleanupStrengthPercent = 75,
+                TemporalAlphaTrackingStrengthPercent = 60,
                 TemporalAlphaCleanupAlphaThreshold = 90,
                 AutoAcceptedAlphaThreshold = 25,
                 ExecutionPolicy = "auto",
@@ -1771,6 +1778,7 @@ internal sealed class CustomShowStore
                 !roundTrip.Processing.TemporalAlphaCleanup ||
                 roundTrip.Processing.TemporalAlphaCleanupWindowFrames != 4 ||
                 roundTrip.Processing.TemporalAlphaCleanupStrengthPercent != 75 ||
+                roundTrip.Processing.TemporalAlphaTrackingStrengthPercent != 60 ||
                 roundTrip.Processing.TemporalAlphaCleanupAlphaThreshold != 90 ||
                 roundTrip.Processing.AutoAcceptedAlphaThreshold != 25 ||
                 roundTrip.Processing.Sam2Model != null ||

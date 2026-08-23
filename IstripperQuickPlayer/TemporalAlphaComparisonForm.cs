@@ -25,11 +25,16 @@ internal sealed class TemporalAlphaComparisonForm : Form
     readonly ComboBox selectedClip = new()
         { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     readonly NumericUpDown windowFrames = new()
-        { Minimum = 1, Maximum = 12, Value = 3, Width = 58 };
+        { Minimum = 1, Maximum = 30, Value = 3, Width = 58 };
     readonly TrackBar strength = new()
         { Minimum = 25, Maximum = 100, Value = 100, TickFrequency = 5,
           SmallChange = 1, LargeChange = 5, Width = 240, Height = 32 };
     readonly Label strengthValue = new()
+        { Text = "100%", AutoSize = true, Padding = new Padding(0, 7, 0, 0) };
+    readonly TrackBar trackingStrength = new()
+        { Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 5,
+          SmallChange = 1, LargeChange = 5, Width = 200, Height = 32 };
+    readonly Label trackingStrengthValue = new()
         { Text = "100%", AutoSize = true, Padding = new Padding(0, 7, 0, 0) };
     readonly NumericUpDown alphaThreshold = new()
         { Minimum = 0, Maximum = 255, Value = 120, Width = 62 };
@@ -84,12 +89,15 @@ internal sealed class TemporalAlphaComparisonForm : Form
         this.configuration = configuration;
         store = new(configuration.LibraryRoot);
         windowFrames.Value = Math.Clamp(
-            configuration.LastTemporalAlphaCleanupWindowFrames, 1, 12);
+            configuration.LastTemporalAlphaCleanupWindowFrames, 1, 30);
         strength.Value = Math.Clamp(
             configuration.LastTemporalAlphaCleanupStrengthPercent, 25, 100);
+        trackingStrength.Value = Math.Clamp(
+            configuration.LastTemporalAlphaTrackingStrengthPercent, 0, 100);
         alphaThreshold.Value = Math.Clamp(
             configuration.LastTemporalAlphaCleanupAlphaThreshold, 0, 255);
         strengthValue.Text = $"{strength.Value}%";
+        trackingStrengthValue.Text = $"{trackingStrength.Value}%";
         speed.Items.AddRange(["0.25×", "0.5×", "1×", "2×"]);
         speed.SelectedIndex = 2;
         speed.SelectedIndexChanged += (_, _) => Volatile.Write(ref playbackSpeed,
@@ -137,6 +145,9 @@ internal sealed class TemporalAlphaComparisonForm : Form
                 Padding = new Padding(0, 7, 12, 0) },
             new Label { Text = "Strength", AutoSize = true,
                 Padding = new Padding(0, 7, 0, 0) }, strength, strengthValue,
+            new Label { Text = "Tracking strength", AutoSize = true,
+                Padding = new Padding(12, 7, 0, 0) }, trackingStrength,
+                trackingStrengthValue,
             new Label { Text = "Alpha threshold", AutoSize = true,
                 Padding = new Padding(12, 7, 0, 0) }, alphaThreshold,
             run, stop, progress, status]);
@@ -183,6 +194,7 @@ internal sealed class TemporalAlphaComparisonForm : Form
         stop.Click += async (_, _) => await StopProcessingAsync();
         windowFrames.ValueChanged += SettingsChanged;
         strength.ValueChanged += SettingsChanged;
+        trackingStrength.ValueChanged += SettingsChanged;
         alphaThreshold.ValueChanged += ThresholdChanged;
         selectedClip.SelectedIndexChanged += (_, _) => ApplySelectedClip();
         timeline.Scroll += (_, _) => StartPreview(timeline.Value, false);
@@ -314,6 +326,7 @@ internal sealed class TemporalAlphaComparisonForm : Form
     void SettingsChanged(object? sender, EventArgs e)
     {
         strengthValue.Text = $"{strength.Value}%";
+        trackingStrengthValue.Text = $"{trackingStrength.Value}%";
         if (!processingActive && !processingComplete) return;
         status.Text = "Settings changed; restarting stabilization shortly...";
         settingsDelay.Stop(); settingsDelay.Start();
@@ -349,6 +362,8 @@ internal sealed class TemporalAlphaComparisonForm : Form
             Directory.CreateDirectory(PreviewFolder);
             configuration.LastTemporalAlphaCleanupWindowFrames = (int)windowFrames.Value;
             configuration.LastTemporalAlphaCleanupStrengthPercent = strength.Value;
+            configuration.LastTemporalAlphaTrackingStrengthPercent =
+                trackingStrength.Value;
             configuration.LastTemporalAlphaCleanupAlphaThreshold =
                 (int)alphaThreshold.Value;
             configuration.Save();
@@ -370,6 +385,7 @@ internal sealed class TemporalAlphaComparisonForm : Form
             CancellationTokenSource cancellation = processingCancellation;
             Task task = CustomShowProcessor.RunTemporalAlphaCleanupAsync(
                 configuration, temporary, (int)windowFrames.Value, strength.Value,
+                trackingStrength.Value,
                 (int)alphaThreshold.Value,
                 Path.Combine(temporary, "processing.log"), updates, cancellation.Token,
                 foreground, alpha, output, PreviewFolder);

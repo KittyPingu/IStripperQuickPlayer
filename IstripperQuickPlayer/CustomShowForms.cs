@@ -107,11 +107,16 @@ internal sealed class CustomShowEditorForm : Form
     readonly CheckBox temporalAlphaCleanup = new()
         { Text = "Repair short alpha flicker after matting", AutoSize = true };
     readonly NumericUpDown temporalAlphaCleanupWindow = new()
-        { Minimum = 1, Maximum = 12, Value = 3, Width = 58 };
+        { Minimum = 1, Maximum = 30, Value = 3, Width = 58 };
     readonly TrackBar temporalAlphaCleanupStrength = new()
         { Minimum = 25, Maximum = 100, Value = 100, TickFrequency = 5,
           SmallChange = 1, LargeChange = 5, Width = 220, Height = 32 };
     readonly Label temporalAlphaCleanupStrengthValue = new()
+        { Text = "100%", AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
+    readonly TrackBar temporalAlphaTrackingStrength = new()
+        { Minimum = 0, Maximum = 100, Value = 100, TickFrequency = 5,
+          SmallChange = 1, LargeChange = 5, Width = 180, Height = 32 };
+    readonly Label temporalAlphaTrackingStrengthValue = new()
         { Text = "100%", AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
     readonly NumericUpDown temporalAlphaCleanupAlphaThreshold = new()
         { Minimum = 0, Maximum = 255, Value = 120, Width = 62 };
@@ -360,6 +365,11 @@ internal sealed class CustomShowEditorForm : Form
             }, temporalAlphaCleanupStrength,
                 temporalAlphaCleanupStrengthValue, new Label
             {
+                Text = "Tracking strength", AutoSize = true,
+                Margin = new Padding(12, 7, 3, 3)
+            }, temporalAlphaTrackingStrength,
+                temporalAlphaTrackingStrengthValue, new Label
+            {
                 Text = "Alpha threshold", AutoSize = true,
                 Margin = new Padding(12, 7, 3, 3)
             }, temporalAlphaCleanupAlphaThreshold));
@@ -406,6 +416,9 @@ internal sealed class CustomShowEditorForm : Form
         temporalAlphaCleanupStrength.ValueChanged += (_, _) =>
             temporalAlphaCleanupStrengthValue.Text =
                 $"{temporalAlphaCleanupStrength.Value}%";
+        temporalAlphaTrackingStrength.ValueChanged += (_, _) =>
+            temporalAlphaTrackingStrengthValue.Text =
+                $"{temporalAlphaTrackingStrength.Value}%";
         propSegmenterEveryFrame.CheckedChanged += (_, _) =>
             UpdateProcessingOptions();
         matAnyoneUseLongTermMemory.CheckedChanged += (_, _) =>
@@ -626,6 +639,8 @@ internal sealed class CustomShowEditorForm : Form
         temporalAlphaCleanupWindow.Enabled =
             temporalAlphaCleanupStrength.Enabled =
             temporalAlphaCleanupStrengthValue.Enabled =
+            temporalAlphaTrackingStrength.Enabled =
+            temporalAlphaTrackingStrengthValue.Enabled =
             temporalAlphaCleanupAlphaThreshold.Enabled =
                 CanProcess && temporalAlphaCleanup.Checked;
         autoAccept.Enabled = CanProcess;
@@ -959,6 +974,8 @@ internal sealed class CustomShowEditorForm : Form
                 temporalAlphaCleanupWindow.Enabled =
                 temporalAlphaCleanupStrength.Enabled =
                 temporalAlphaCleanupStrengthValue.Enabled =
+                temporalAlphaTrackingStrength.Enabled =
+                temporalAlphaTrackingStrengthValue.Enabled =
                 temporalAlphaCleanupAlphaThreshold.Enabled =
                 autoAccept.Enabled = false;
         UpdateClipButton();
@@ -1073,6 +1090,10 @@ internal sealed class CustomShowEditorForm : Form
             processing.TemporalAlphaCleanupStrengthPercent,
             temporalAlphaCleanupStrength.Minimum,
             temporalAlphaCleanupStrength.Maximum);
+        temporalAlphaTrackingStrength.Value = Math.Clamp(
+            processing.TemporalAlphaTrackingStrengthPercent,
+            temporalAlphaTrackingStrength.Minimum,
+            temporalAlphaTrackingStrength.Maximum);
         temporalAlphaCleanupAlphaThreshold.Value = Math.Clamp(
             processing.TemporalAlphaCleanupAlphaThreshold,
             (int)temporalAlphaCleanupAlphaThreshold.Minimum,
@@ -1152,6 +1173,10 @@ internal sealed class CustomShowEditorForm : Form
             configuration.LastTemporalAlphaCleanupStrengthPercent,
             temporalAlphaCleanupStrength.Minimum,
             temporalAlphaCleanupStrength.Maximum);
+        temporalAlphaTrackingStrength.Value = Math.Clamp(
+            configuration.LastTemporalAlphaTrackingStrengthPercent,
+            temporalAlphaTrackingStrength.Minimum,
+            temporalAlphaTrackingStrength.Maximum);
         temporalAlphaCleanupAlphaThreshold.Value = Math.Clamp(
             configuration.LastTemporalAlphaCleanupAlphaThreshold,
             (int)temporalAlphaCleanupAlphaThreshold.Minimum,
@@ -1188,6 +1213,8 @@ internal sealed class CustomShowEditorForm : Form
             (int)temporalAlphaCleanupWindow.Value;
         configuration.LastTemporalAlphaCleanupStrengthPercent =
             temporalAlphaCleanupStrength.Value;
+        configuration.LastTemporalAlphaTrackingStrengthPercent =
+            temporalAlphaTrackingStrength.Value;
         configuration.LastTemporalAlphaCleanupAlphaThreshold =
             (int)temporalAlphaCleanupAlphaThreshold.Value;
         configuration.LastAutoAcceptAlphaThreshold = autoAccept.Checked;
@@ -1277,7 +1304,8 @@ internal sealed class CustomShowEditorForm : Form
         string cleanup = value.TemporalAlphaCleanup
             ? $"; temporal cleanup {value.TemporalAlphaCleanupWindowFrames} frames " +
                 $"at {value.TemporalAlphaCleanupStrengthPercent}% " +
-                $"(alpha {value.TemporalAlphaCleanupAlphaThreshold})"
+                $"(tracking {value.TemporalAlphaTrackingStrengthPercent}%, " +
+                $"alpha {value.TemporalAlphaCleanupAlphaThreshold})"
             : "";
         string accepted = value.AutoAcceptedAlphaThreshold is int alpha ?
             $"; automatically accepted at alpha {alpha}" : "";
@@ -1549,6 +1577,8 @@ internal sealed class CustomShowEditorForm : Form
                             (int)temporalAlphaCleanupWindow.Value,
                         TemporalAlphaCleanupStrengthPercent =
                             temporalAlphaCleanupStrength.Value,
+                        TemporalAlphaTrackingStrengthPercent =
+                            temporalAlphaTrackingStrength.Value,
                         TemporalAlphaCleanupAlphaThreshold =
                             (int)temporalAlphaCleanupAlphaThreshold.Value,
                         AutoAcceptedAlphaThreshold = autoAccept.Checked
@@ -2298,6 +2328,8 @@ internal sealed class CustomShowEditorForm : Form
                     (int)temporalAlphaCleanupWindow.Value,
                 TemporalAlphaCleanupStrengthPercent =
                     temporalAlphaCleanupStrength.Value,
+                TemporalAlphaTrackingStrengthPercent =
+                    temporalAlphaTrackingStrength.Value,
                 TemporalAlphaCleanupAlphaThreshold =
                     (int)temporalAlphaCleanupAlphaThreshold.Value,
                 AutoAcceptedAlphaThreshold = algorithm ==
@@ -4191,6 +4223,8 @@ internal sealed class CustomShowSettingsForm : Form
                 current.LastTemporalAlphaCleanupWindowFrames,
             LastTemporalAlphaCleanupStrengthPercent =
                 current.LastTemporalAlphaCleanupStrengthPercent,
+            LastTemporalAlphaTrackingStrengthPercent =
+                current.LastTemporalAlphaTrackingStrengthPercent,
             LastTemporalAlphaCleanupAlphaThreshold =
                 current.LastTemporalAlphaCleanupAlphaThreshold,
             LastAutoAcceptAlphaThreshold = current.LastAutoAcceptAlphaThreshold,

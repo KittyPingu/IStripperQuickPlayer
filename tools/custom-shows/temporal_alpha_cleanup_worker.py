@@ -2,6 +2,7 @@
 """Automatic, memory-propagated temporal alpha stabilization for QuickPlayer."""
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -80,26 +81,112 @@ def temporal_bounds(cuts, frame, window):
     return lower, lower + length
 
 
-def temporal_consensus(alpha, frame, cuts, window, threshold, cv2, np):
+def frame_components(alpha, threshold, cv2, np):
+    mask = alpha >= max(1, threshold)
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=8)
+    minimum = max(6, mask.size // 75_000)
+    records = []
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < minimum:
+            continue
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        component_alpha = alpha[labels == label]
+        records.append({"label": label, "x": x, "y": y, "width": width,
+            "height": height, "area": area,
+            "confidence": int(component_alpha.sum()) / 255,
+            "cx": float(centroids[label, 0]), "cy": float(centroids[label, 1])})
+    if len(records) > 128:
+        records = sorted(records, key=lambda item: item["area"], reverse=True)[:128]
+    return labels, records
+
+
+def component_match_score(component, observations, frame):
+    previous = observations[-1]
+    gap = frame - previous["frame"]
+    if gap <= 0:
+        return None
+    predicted_x, predicted_y = previous["cx"], previous["cy"]
+    if len(observations) > 1:
+        earlier = observations[-2]
+        elapsed = max(1, previous["frame"] - earlier["frame"])
+        predicted_x += (previous["cx"] - earlier["cx"]) * gap / elapsed
+        predicted_y += (previous["cy"] - earlier["cy"]) * gap / elapsed
+    distance = math.hypot(component["cx"] - predicted_x,
+                          component["cy"] - predicted_y)
+    motion_limit = max(12.0, .8 * max(previous["width"], previous["height"]) +
+                       4.0 * gap)
+    area_ratio = component["area"] / max(1, previous["area"])
+    if distance > motion_limit or not .12 <= area_ratio <= 8:
+        return None
+    size_change = abs(math.log(max(area_ratio, 1e-6)))
+    return distance / motion_limit + size_change * .22
+
+
+def track_components(alpha, cuts, window, threshold, cv2, np):
+    by_frame = [[] for _ in range(alpha.shape[0])]
+    tracks = {}
+    next_track = 0
+    for shot_start, shot_end in zip(cuts, cuts[1:]):
+        active = set()
+        for frame in range(shot_start, shot_end):
+            _, current = frame_components(alpha[frame], threshold, cv2, np)
+            candidates = []
+            for component_index, component in enumerate(current):
+                for track_id in active:
+                    observations = tracks[track_id]
+                    if frame - observations[-1]["frame"] > window + 1:
+                        continue
+                    score = component_match_score(component, observations, frame)
+                    if score is not None:
+                        candidates.append((score, component_index, track_id))
+            assigned_components, assigned_tracks = set(), set()
+            for _, component_index, track_id in sorted(candidates):
+                if component_index in assigned_components or track_id in assigned_tracks:
+                    continue
+                component = current[component_index]
+                component["frame"] = frame
+                component["track"] = track_id
+                tracks[track_id].append(component)
+                assigned_components.add(component_index)
+                assigned_tracks.add(track_id)
+            for component_index, component in enumerate(current):
+                if component_index in assigned_components:
+                    continue
+                component["frame"] = frame
+                component["track"] = next_track
+                tracks[next_track] = [component]
+                active.add(next_track)
+                next_track += 1
+            active = {track_id for track_id in active
+                if frame - tracks[track_id][-1]["frame"] <= window + 1}
+            by_frame[frame] = current
+    return by_frame, tracks
+
+
+def persistent_component(component, frame, cuts, window, tracks):
     lower, upper = temporal_bounds(cuts, frame, window)
-    masks = np.asarray(alpha[lower:upper]) >= max(1, threshold)
-    kernel = np.ones((3, 3), np.uint8)
-    support = np.zeros(masks.shape[1:], np.uint16)
-    for mask in masks:
-        support += cv2.dilate(mask.astype(np.uint8), kernel)
-    persistent = support >= (len(masks) // 2 + 1)
-    return cv2.dilate(persistent.astype(np.uint8), kernel).astype(bool)
+    observations = tracks[component["track"]]
+    present = sum(lower <= item["frame"] < upper for item in observations)
+    return present >= (upper - lower) // 2 + 1
 
 
-def alpha_score(alpha, frame, cuts, window, threshold, cv2, np):
-    visible = alpha[frame] >= max(1, threshold)
-    persistent = temporal_consensus(alpha, frame, cuts, window, threshold,
-                                    cv2, np)
-    supported = visible & persistent
-    unsupported = visible & ~persistent
-    confident = alpha[frame] >= min(255, max(1, threshold) + 32)
-    return (int(supported.sum()) + int((confident & persistent).sum()) // 4 -
-            int(unsupported.sum()) * 2)
+def alpha_score(alpha, frame, cuts, window, tracking_strength,
+                components, tracks):
+    persistent = transient = 0.0
+    untracked = 0.0
+    for component in components[frame]:
+        untracked += component["confidence"]
+        if persistent_component(component, frame, cuts, window, tracks):
+            persistent += component["area"] + component["confidence"] * .25
+        else:
+            transient += component["area"]
+    tracked = persistent - transient * 2
+    return untracked * (1 - tracking_strength) + tracked * tracking_strength
 
 
 def clean_anchor(alpha, threshold, cv2, np):
@@ -115,7 +202,7 @@ def clean_anchor(alpha, threshold, cv2, np):
                             np.ones((3, 3), np.uint8))
 
 
-def choose_anchors(alpha, cuts, window, threshold, cv2, np):
+def choose_anchors(alpha, cuts, window, tracking_strength, components, tracks):
     span = max(3, window * 2 + 1)
     anchors = []
     for segment_start, segment_end in zip(cuts, cuts[1:]):
@@ -123,7 +210,7 @@ def choose_anchors(alpha, cuts, window, threshold, cv2, np):
             end = min(segment_end, start + span)
             best = max(range(start, end),
                 key=lambda index: alpha_score(alpha, index, cuts, window,
-                                              threshold, cv2, np))
+                    tracking_strength, components, tracks))
             if not anchors or best != anchors[-1]:
                 anchors.append(best)
         if segment_start and segment_start not in anchors:
@@ -132,7 +219,7 @@ def choose_anchors(alpha, cuts, window, threshold, cv2, np):
 
 
 def instability_weight(alpha, frame, cuts, window, threshold, strength,
-                       cv2, np):
+                       tracking_strength, components, tracks, cv2, np):
     lower, upper = temporal_bounds(cuts, frame, window)
     if upper - lower < 3:
         return np.zeros(alpha.shape[1:], np.float32)
@@ -144,6 +231,14 @@ def instability_weight(alpha, frame, cuts, window, threshold, strength,
     unstable = cv2.dilate(unstable.astype(np.uint8),
                           np.ones((3, 3), np.uint8)).astype(np.float32)
     unstable = cv2.GaussianBlur(unstable, (3, 3), .65)
+    labels, _ = frame_components(alpha[frame], threshold, cv2, np)
+    protected = np.zeros(alpha.shape[1:], np.uint8)
+    for component in components[frame]:
+        if persistent_component(component, frame, cuts, window, tracks):
+            protected[labels == component["label"]] = 1
+    if protected.any():
+        protected = cv2.erode(protected, np.ones((3, 3), np.uint8))
+        unstable *= 1 - protected.astype(np.float32) * tracking_strength
     return np.clip(unstable * strength, 0, 1)
 
 
@@ -206,20 +301,31 @@ def analyse_inputs(foreground, alpha_path, rate, total, preview_width,
         raise
 
 
-def anchor_mask(alpha, frame, cuts, window, threshold, cv2, np):
-    persistent = temporal_consensus(alpha, frame, cuts, window, threshold,
-                                    cv2, np)
-    candidate = np.where(persistent, alpha[frame], 0).astype(np.uint8)
-    return clean_anchor(candidate, threshold, cv2, np)
+def anchor_mask(alpha, frame, cuts, window, threshold, tracking_strength,
+                components, tracks, cv2, np):
+    labels, _ = frame_components(alpha[frame], threshold, cv2, np)
+    keep = [component for component in components[frame]
+        if persistent_component(component, frame, cuts, window, tracks)]
+    if not keep and components[frame]:
+        keep = [max(components[frame], key=lambda item: item["area"])]
+    candidate = np.zeros(alpha.shape[1:], np.uint8)
+    for component in keep:
+        candidate[labels == component["label"]] = alpha[frame][
+            labels == component["label"]]
+    tracked = clean_anchor(candidate, threshold, cv2, np)
+    if tracking_strength >= 1:
+        return tracked
+    untracked = clean_anchor(alpha[frame], threshold, cv2, np)
+    return blend(untracked, tracked, tracking_strength, np)
 
 
 def write_anchor_files(folder, alpha, anchors, cuts, window, threshold, fps,
-                       cv2, np):
+                       tracking_strength, components, tracks, cv2, np):
     from PIL import Image
     folder.mkdir(parents=True, exist_ok=True)
     first = anchors[0]
-    Image.fromarray(anchor_mask(alpha, first, cuts, window, threshold, cv2, np),
-                    "L").save(
+    Image.fromarray(anchor_mask(alpha, first, cuts, window, threshold,
+        tracking_strength, components, tracks, cv2, np), "L").save(
         folder / "initial-mask.png")
     cut_frames = set(cuts[1:-1])
     used_times = set()
@@ -230,7 +336,7 @@ def write_anchor_files(folder, alpha, anchors, cuts, window, threshold, fps,
         used_times.add(frame_ms)
         prefix = "reset" if frame in cut_frames else "correction"
         Image.fromarray(anchor_mask(alpha, frame, cuts, window, threshold,
-                                    cv2, np), "L").save(
+            tracking_strength, components, tracks, cv2, np), "L").save(
             folder / f"{prefix}-{frame_ms}.png")
     return first
 
@@ -246,7 +352,7 @@ def preview_metadata(folder, width, height, rate, total):
 
 def append_preview_frames(raw_path, model_size, original, start, end,
                           preview_folder, cuts, window, threshold, strength,
-                          cv2, np):
+                          tracking_strength, components, tracks, cv2, np):
     if preview_folder is None:
         return
     model_width, model_height = model_size
@@ -261,7 +367,8 @@ def append_preview_frames(raw_path, model_size, original, start, end,
                     (original.shape[2], original.shape[1]),
                     interpolation=cv2.INTER_LINEAR)
             weight = instability_weight(original, frame, cuts, window,
-                                          threshold, strength, cv2, np)
+                threshold, strength, tracking_strength, components, tracks,
+                cv2, np)
             cleaned = blend(original[frame], stabilized, weight, np)
             difference = cleaned.astype(np.int16) - original[frame].astype(np.int16)
             output.write(memoryview(cleaned).cast("B"))
@@ -275,14 +382,14 @@ def append_preview_frames(raw_path, model_size, original, start, end,
 
 def run_model(args, source, runtime, model_output, raw_path, anchors,
               first_anchor, fps, total, model_size, original, preview_folder,
-              cuts, cv2, np):
+              cuts, components, tracks, cv2, np):
     worker = Path(__file__).with_name("matanyone2_worker.py")
     command = [sys.executable, str(worker), "--source", str(source),
         "--output", str(model_output), "--runtime", str(runtime),
         "--mask", str(anchors / "initial-mask.png"), "--mask-frame-ms",
         str(round(first_anchor * 1000 / fps)), "--anchor-folder", str(anchors),
         "--max-size", str(MODEL_DETAIL), "--max-mem-frames",
-        str(max(2, min(30, args.window * 2 + 1))), "--compile-mode", "eager",
+        str(max(2, min(9, args.window * 2 + 1))), "--compile-mode", "eager",
         "--disable-previews", "--raw-alpha-output", str(raw_path)]
     process = subprocess.Popen(command, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, bufsize=1, env=os.environ.copy())
@@ -310,7 +417,7 @@ def run_model(args, source, runtime, model_output, raw_path, anchors,
                     append_preview_frames(raw_path, model_size, original,
                         preview_count, available, preview_folder, cuts,
                         args.window, args.alpha_threshold, args.strength / 100,
-                        cv2, np)
+                        args.tracking_strength / 100, components, tracks, cv2, np)
                     preview_count = available
             reported_percent = max(reported_percent,
                 min(100.0, float(value.get("percent", 0))))
@@ -323,7 +430,8 @@ def run_model(args, source, runtime, model_output, raw_path, anchors,
         if preview_count < total:
             append_preview_frames(raw_path, model_size, original, preview_count,
                 total, preview_folder, cuts, args.window, args.alpha_threshold,
-                args.strength / 100, cv2, np)
+                args.strength / 100, args.tracking_strength / 100,
+                components, tracks, cv2, np)
     except BaseException:
         if process.poll() is None:
             process.kill()
@@ -333,7 +441,7 @@ def run_model(args, source, runtime, model_output, raw_path, anchors,
 
 def encode_blended_output(args, original_path, model_path, destination,
                           rate, width, height, original_preview, cuts,
-                          ffmpeg, cv2, np):
+                          components, tracks, ffmpeg, cv2, np):
     original = decoder(ffmpeg, original_path, f"fps={rate},format=gray", "gray")
     model = decoder(ffmpeg, model_path, f"fps={rate},format=gray", "gray")
     temporary = destination.with_name(destination.stem + ".stabilizing.mkv")
@@ -349,7 +457,8 @@ def encode_blended_output(args, original_path, model_path, destination,
             source_alpha = np.frombuffer(source_data, np.uint8).reshape(height, width)
             model_alpha = np.frombuffer(model_data, np.uint8).reshape(height, width)
             weight = instability_weight(original_preview, count, cuts,
-                args.window, args.alpha_threshold, args.strength / 100, cv2, np)
+                args.window, args.alpha_threshold, args.strength / 100,
+                args.tracking_strength / 100, components, tracks, cv2, np)
             if weight.shape != source_alpha.shape:
                 weight = cv2.resize(weight, (width, height),
                                     interpolation=cv2.INTER_LINEAR)
@@ -408,11 +517,17 @@ def process(args):
         emit("temporal-stabilization", 0, "Analysing alpha stability and camera cuts...")
         original, cuts, total = analyse_inputs(foreground, alpha_path, rate,
             total, preview_width, preview_height, original_cache, ffmpeg, cv2, np)
-        anchors = choose_anchors(original, cuts, args.window,
-                                 args.alpha_threshold, cv2, np)
+        emit("temporal-stabilization", 2,
+             "Tracking moving alpha components across camera shots...")
+        components, tracks = track_components(original, cuts, args.window,
+                                               args.alpha_threshold, cv2, np)
+        tracking_strength = args.tracking_strength / 100
+        anchors = choose_anchors(original, cuts, args.window, tracking_strength,
+                                 components, tracks)
         anchor_folder = temporary / "anchors"
         first_anchor = write_anchor_files(anchor_folder, original, anchors, cuts,
-            args.window, args.alpha_threshold, fps, cv2, np)
+            args.window, args.alpha_threshold, fps, tracking_strength,
+            components, tracks, cv2, np)
         if args.preview_cache:
             preview_metadata(args.preview_cache, preview_width, preview_height,
                              rate, total)
@@ -425,9 +540,10 @@ def process(args):
              f"{len(cuts) - 1} camera shots")
         run_model(args, foreground, args.runtime, model_output, raw_path,
             anchor_folder, first_anchor, fps, total, (model_width, model_height),
-            original, args.preview_cache, cuts, cv2, np)
+            original, args.preview_cache, cuts, components, tracks, cv2, np)
         encode_blended_output(args, alpha_path, model_output / "alpha.mkv",
-            destination, rate, width, height, original, cuts, ffmpeg, cv2, np)
+            destination, rate, width, height, original, cuts, components, tracks,
+            ffmpeg, cv2, np)
         original.flush()
         del original
     emit("temporal-stabilization", 100,
@@ -446,24 +562,36 @@ def self_test():
     alpha[:, 2:6, 2:6] = 220
     alpha[4, 2:6, 2:6] = 0
     cuts = [0, 9]
-    weight = instability_weight(alpha, 4, cuts, 4, 120, 1, cv2, np)
+    components, tracks = track_components(alpha, cuts, 4, 120, cv2, np)
+    weight = instability_weight(alpha, 4, cuts, 4, 120, 1,
+                                1, components, tracks, cv2, np)
     assert weight[3, 3] == 1 and weight[0, 0] < .2
-    anchors = choose_anchors(alpha, cuts, 2, 120, cv2, np)
+    protected = instability_weight(alpha, 0, cuts, 4, 120, 1,
+                                   1, components, tracks, cv2, np)
+    unprotected = instability_weight(alpha, 0, cuts, 4, 120, 1,
+                                     0, components, tracks, cv2, np)
+    assert protected[3, 3] == 0 and unprotected[3, 3] == 1
+    anchors = choose_anchors(alpha, cuts, 2, 1, components, tracks)
     assert anchors and 4 not in anchors
-    consensus_alpha = np.zeros((9, 32, 32), np.uint8)
-    consensus_alpha[:, 10:22, 10:22] = 220
-    consensus_alpha[4, 10:22, 10:22] = 0
-    consensus_alpha[1:5, 2:6, 2:6] = 220
-    persistent = anchor_mask(consensus_alpha, 1, cuts, 4, 120, cv2, np)
-    assert persistent[12, 12] == 255 and persistent[3, 3] == 0
-    automatic = np.zeros((9, 32, 32), np.uint8)
-    automatic[:, 10:22, 10:22] = 220
-    automatic[:5, 2:6, 2:6] = 220       # real detail, absent for four frames
-    automatic[:4, 26:30, 26:30] = 220   # false detail, present for four frames
-    selected = choose_anchors(automatic, cuts, 4, 120, cv2, np)[0]
-    automatic_mask = anchor_mask(automatic, selected, cuts, 4, 120, cv2, np)
-    assert selected < 5 and automatic_mask[3, 3] == 255
-    assert automatic_mask[27, 27] == 0
+    automatic = np.zeros((9, 40, 40), np.uint8)
+    automatic[:, 16:28, 16:28] = 220
+    for frame in range(5):
+        automatic[frame, 2:6, 2 + frame:6 + frame] = 220
+    automatic[:4, 32:36, 32:36] = 220
+    moving_components, moving_tracks = track_components(
+        automatic, cuts, 4, 120, cv2, np)
+    moving_ids = {component["track"] for frame in range(5)
+        for component in moving_components[frame]
+        if component["cy"] < 10 and component["cx"] < 14}
+    assert len(moving_ids) == 1
+    selected = choose_anchors(automatic, cuts, 4, 1,
+                              moving_components, moving_tracks)[0]
+    automatic_mask = anchor_mask(automatic, selected, cuts, 4, 120, 1,
+        moving_components, moving_tracks, cv2, np)
+    untracked_mask = anchor_mask(automatic, 0, cuts, 4, 120, 0,
+        moving_components, moving_tracks, cv2, np)
+    assert selected < 5 and automatic_mask[3, 3 + selected] == 255
+    assert automatic_mask[33, 33] == 0 and untracked_mask[33, 33] == 255
     cleaned = clean_anchor(alpha[0], 120, cv2, np)
     assert cleaned[3, 3] == 255 and cleaned[0, 0] == 0
     original = np.array([[0, 200]], np.uint8)
@@ -483,6 +611,7 @@ def main():
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--window", type=int, default=3)
     parser.add_argument("--strength", type=int, default=100)
+    parser.add_argument("--tracking-strength", type=int, default=100)
     parser.add_argument("--alpha-threshold", type=int, default=120)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
@@ -494,10 +623,12 @@ def main():
         parser.error("--output or --foreground/--alpha/--destination is required")
     if args.runtime is None or not args.runtime.is_dir():
         parser.error("--runtime must identify the installed processing runtime")
-    if not 1 <= args.window <= 12:
-        parser.error("--window must be 1-12 frames")
+    if not 1 <= args.window <= 30:
+        parser.error("--window must be 1-30 frames")
     if not 25 <= args.strength <= 100:
         parser.error("--strength must be 25-100 percent")
+    if not 0 <= args.tracking_strength <= 100:
+        parser.error("--tracking-strength must be 0-100 percent")
     if not 0 <= args.alpha_threshold <= 255:
         parser.error("--alpha-threshold must be 0-255")
     args.output = args.output.resolve() if args.output else None

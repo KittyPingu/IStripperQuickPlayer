@@ -45,6 +45,8 @@ public partial class Form1
         new("Trim Custom Clip...");
     readonly ToolStripMenuItem cleanCustomClipAlphaMenu =
         new("Automatically Stabilize Alpha...");
+    readonly ToolStripMenuItem openCustomClipFolderMenu =
+        new("Open Folder");
     readonly ToolStripMenuItem deleteCustomClipMenu =
         new("Delete Custom Clip...");
     readonly ToolStripMenuItem customClipHotnessMenu = new("Hotness");
@@ -230,6 +232,7 @@ public partial class Form1
             PersistContextClipAlphaThreshold();
             CompareSelectedCustomClipAlpha();
         };
+        openCustomClipFolderMenu.Click += (_, _) => OpenSelectedCustomClipFolder();
         foreach (string hotness in CustomShowStore.HotnessOptions)
         {
             string label = hotness switch
@@ -256,7 +259,8 @@ public partial class Form1
             customClipAlphaHost, new ToolStripSeparator(),
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
-            cleanCustomClipAlphaMenu, trimCustomClipMenu, deleteCustomClipMenu]);
+            openCustomClipFolderMenu, cleanCustomClipAlphaMenu,
+            trimCustomClipMenu, deleteCustomClipMenu]);
         customClipContextMenu.Opening += (sender, eventArgs) =>
         {
             bool custom = TryGetSelectedCustomClip(
@@ -280,6 +284,7 @@ public partial class Form1
             customClipAlphaHost.Visible = custom;
             customClipHotnessMenu.Visible = custom;
             customClipTypesMenu.Visible = custom;
+            openCustomClipFolderMenu.Visible = custom;
             cleanCustomClipAlphaMenu.Visible = custom;
             trimCustomClipMenu.Visible = custom;
             deleteCustomClipMenu.Visible = custom;
@@ -1248,6 +1253,20 @@ public partial class Form1
         clip = card.clips.FirstOrDefault(value => string.Equals(
             value.clipName, clipName, StringComparison.OrdinalIgnoreCase))!;
         return clip != null;
+    }
+
+    void OpenSelectedCustomClipFolder()
+    {
+        if (!TryGetSelectedCustomClip(out _, out ModelClip clip)) return;
+        string? folder = Path.GetDirectoryName(clip.customForegroundPath);
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            MessageBox.Show(this, "The selected clip folder no longer exists.",
+                "Open Clip Folder", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
     }
 
     async Task TrimSelectedCustomClipAsync()
