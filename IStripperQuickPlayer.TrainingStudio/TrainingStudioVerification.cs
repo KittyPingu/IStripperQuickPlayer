@@ -104,6 +104,66 @@ internal static class TrainingStudioVerification
             if (loaded.Ids == null || !loaded.Ids.SequenceEqual(editedPositiveIds) ||
                 loaded.Objects.Single().Id != 7) return false;
             store.Accept(positive, editedPositiveIds, [prop], "verification");
+            ClassifiedObject classified = new()
+            {
+                Id = 1, Category = "dildo", States = ["held"],
+                ColorArgb = ClassificationForm.ClassificationColor("dildo", ["held"]).ToArgb()
+            };
+            bool rejectedIncompleteClassification = false;
+            try { store.SaveObjectClassification(positive, [1, 0, 0, 0], [classified], true); }
+            catch (InvalidDataException) { rejectedIncompleteClassification = true; }
+            if (!rejectedIncompleteClassification) return false;
+            ClassifiedObject diaper = new()
+            {
+                Id = 1, Category = "diaper", States = ["held"],
+                ColorArgb = ClassificationForm.ClassificationColor("diaper", ["held"]).ToArgb()
+            };
+            store.SaveObjectClassification(positive, [1, 1, 1, 0], [diaper], true);
+            ObjectClassification canonicalDiaper = store.LoadObjectClassification(positive);
+            if (canonicalDiaper.Objects.Single().States.Length != 0 ||
+                canonicalDiaper.Objects.Single().ColorArgb !=
+                    ClassificationForm.ClassificationColor("diaper", []).ToArgb()) return false;
+            store.SaveObjectClassification(positive, [1, 1, 1, 0], [classified], true);
+            ObjectClassification loadedClassification = store.LoadObjectClassification(positive);
+            if (!loadedClassification.Reviewed ||
+                !loadedClassification.Ids.SequenceEqual([1, 1, 1, 0]) ||
+                loadedClassification.Objects.Single().Category != "dildo" ||
+                !loadedClassification.Objects.Single().States.SequenceEqual(["held"]) ||
+                ClassificationForm.ClassificationColor("dildo", []).ToArgb() ==
+                    ClassificationForm.ClassificationColor("dildo", ["held"]).ToArgb() ||
+                ClassificationForm.ClassificationColor("dildo", ["held"]).ToArgb() ==
+                    ClassificationForm.ClassificationColor("dildo", ["inserted"]).ToArgb() ||
+                ClassificationForm.Categories.Length != 15 ||
+                !ClassificationForm.Categories.Contains("necklace") ||
+                !ClassificationForm.Categories.Contains("gloves") ||
+                !ClassificationForm.Categories.Contains("mask") ||
+                !ClassificationForm.Categories.Contains("diaper") ||
+                !ClassificationForm.Categories.Contains("fluids") ||
+                !ClassificationForm.Categories.Contains("chastity") ||
+                !ClassificationForm.Categories.Contains("unclassified") ||
+                !ClassificationForm.CategorySupportsStates("dildo") ||
+                !ClassificationForm.CategorySupportsStates("butt-plug") ||
+                ClassificationForm.CategorySupportsStates("diaper") ||
+                ClassificationForm.ClassificationColor("diaper", []).ToArgb() !=
+                    ClassificationForm.ClassificationColor("diaper", ["held"]).ToArgb() ||
+                ClassificationForm.ClassificationColor("other", []).R ==
+                    ClassificationForm.ClassificationColor("other", []).G &&
+                ClassificationForm.ClassificationColor("other", []).G ==
+                    ClassificationForm.ClassificationColor("other", []).B) return false;
+            using (AnnotationCanvas classificationCanvas = new())
+            {
+                classificationCanvas.LoadImage(store.Resolve(positive.FramePath!));
+                classificationCanvas.LoadSelectableMask(store.Resolve(positive.PropMaskPath!));
+                classificationCanvas.CurrentObjectId = 9;
+                classificationCanvas.ApplyConnectedMask(new PointF(0, 0), false);
+                if (classificationCanvas.SelectablePixelCount != 3 ||
+                    classificationCanvas.AssignedSelectablePixelCount != 3 ||
+                    !classificationCanvas.CopyObjectIds().SequenceEqual([9, 9, 9, 0])) return false;
+                classificationCanvas.ApplyMaskedRectangle(new RectangleF(0, 0, 1, 1), true);
+                if (!classificationCanvas.CopyObjectIds().SequenceEqual([0, 9, 9, 0])) return false;
+                if (classificationCanvas.AssignAllUnassignedSelectablePixels(10) != 1 ||
+                    !classificationCanvas.CopyObjectIds().SequenceEqual([10, 9, 9, 0])) return false;
+            }
             TrainingSample negative = new() { SourceId = sourceId, Split = source.Split,
                 TimestampMs = 69_500, Width = 2, Height = 2 };
             negative.FramePath = CreateDraftFrame(store, negative);
@@ -119,6 +179,11 @@ internal static class TrainingStudioVerification
             if (statistics.Positive != 1 || statistics.Negative != 1 || statistics.Rejected != 1 ||
                 statistics.Objects != 1 || statistics.CoveredVideos != 1 || statistics.NegativeRatio != .5)
                 return false;
+            ClassificationStatistics classificationStatistics = store.ClassificationStatistics();
+            if (classificationStatistics.ReviewedImages != 1 ||
+                classificationStatistics.TotalImages != 1 || classificationStatistics.ObjectCount != 1 ||
+                classificationStatistics.CategoryCounts.GetValueOrDefault("dildo") != 1 ||
+                classificationStatistics.StateCounts.GetValueOrDefault("held") != 1) return false;
             byte[] rejectedRecordHash = Hash(store.RecordPath(first.Id));
             byte[] negativeRecordHash = Hash(store.RecordPath(negative.Id));
             byte[] positiveRecordHash = Hash(store.RecordPath(positive.Id));

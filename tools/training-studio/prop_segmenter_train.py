@@ -23,7 +23,7 @@ HARD_POSITIVE_WEIGHT = 2.0
 HARD_POSITIVE_FRACTION = .20
 MAX_HARD_POSITIVES = 250
 HARD_POSITIVE_MINING_REVISION = 1
-HARD_NEGATIVE_MINING_REVISION = 2
+HARD_NEGATIVE_MINING_REVISION = 3
 EXTERIOR_RECALL_WEIGHT = .35
 RETAINED_NEGATIVE_FPR_CEILING = .05
 CHECKPOINT_SCORE_TOLERANCE = .015
@@ -222,7 +222,9 @@ def annotate_mask_statistics(root, samples, input_size):
 
 def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, batch, device,
                         prior_package=None, prior_manifest=None, progress_callback=None):
-    """Use the latest completed model to rank only training-split negatives."""
+    """Rank source-diverse harmful and sub-threshold RVM-adjacent negative responses."""
+    import cv2
+    import numpy as np
     if prior_package is None:
         prior_package, prior_manifest = latest_v1_package(root, output)
     negatives = [sample for sample in samples if sample.get("decision") == "negative"]
@@ -236,7 +238,7 @@ def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, ba
     loader = DataLoader(PropDataset(root, negatives, False, input_size), batch_size=batch,
                         shuffle=False, num_workers=0)
     lookup = {sample["id"]: sample for sample in negatives}
-    ranked = []
+    per_source = {}
     model.eval()
     bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
     with torch.inference_mode():
@@ -248,20 +250,39 @@ def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, ba
                 probability = probabilities[index, 0].numpy()
                 prediction = probability >= threshold
                 retained = prediction
+                person = None
                 if sample.get("rvmPersonMaskPath"):
                     try:
                         person = load_evaluation_mask(root, sample["rvmPersonMaskPath"], input_size)
                         retained, _, _ = filter_components(prediction, person, 24)
                         retained &= ~person
                     except (FileNotFoundError, OSError, ValueError):
-                        pass
+                        person = None
                 pixels = int(retained.sum())
-                if pixels:
-                    ranked.append((pixels * float(probability[retained].mean()), str(sample_id)))
+                if person is not None:
+                    radius = max(1, round(24 * min(person.shape) / 512))
+                    kernel = np.ones((radius * 2 + 1, radius * 2 + 1), np.uint8)
+                    adjacent = cv2.dilate(person.astype(np.uint8), kernel) != 0
+                    candidates = probability[adjacent & ~person]
+                else:
+                    candidates = probability.ravel()
+                if candidates.size:
+                    top_count = min(128, candidates.size)
+                    top = np.partition(candidates, candidates.size - top_count)[-top_count:]
+                    near_miss_score = float(candidates.max()) + .25 * float(top.mean())
+                else:
+                    near_miss_score = 0.
+                harmful_score = .35 * min(1., pixels / 256) + \
+                    (.15 * float(probability[retained].mean()) if pixels else 0.)
+                value = (near_miss_score + harmful_score, pixels, str(sample_id))
+                source = sample.get("sourceId", sample["id"])
+                previous = per_source.get(source)
+                if previous is None or value > previous: per_source[source] = value
             if progress_callback is not None:
                 progress_callback(batch_index + 1, len(loader))
     limit = min(MAX_HARD_NEGATIVES, max(40, round(len(negatives) * HARD_NEGATIVE_FRACTION)))
-    selected = {sample_id for _, sample_id in sorted(ranked, reverse=True)[:limit]}
+    selected = {sample_id for _, _, sample_id in
+                sorted(per_source.values(), reverse=True)[:limit]}
     for sample_id in selected: lookup[sample_id]["_hardNegative"] = True
     del model
     if device.type == "cuda": torch.cuda.empty_cache()
@@ -1319,7 +1340,8 @@ def train(args):
             HARD_NEGATIVE_MINING_REVISION, mining_checkpoint_sha256,
             prior_manifest.get("modelId"), available["train"], args.input_size, hard_negative_ids,
             miningThreshold=mining_threshold,
-            deployedThreshold=float(prior_manifest.get("confidenceThreshold", .5)))
+            deployedThreshold=float(prior_manifest.get("confidenceThreshold", .5)),
+            selectionPolicy="source-diverse-rvm-adjacent-top-response")
         hard_negative_source = "new"
     hard_positive_ids, hard_positive_source, hard_positive_cache = load_mining_selection(
         root, output, "hard-positive", HARD_POSITIVE_MINING_REVISION,

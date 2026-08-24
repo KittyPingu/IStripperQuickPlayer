@@ -11,6 +11,7 @@ internal sealed class TrainingStudioForm : Form
     readonly ComboBox activeSource = new() { Width = 300, DropDownStyle = ComboBoxStyle.DropDownList };
     readonly Button rescanSource = new() { Text = "Rescan", AutoSize = true, Enabled = false };
     readonly Button history = new() { Text = "Dataset history", AutoSize = true, Enabled = false };
+    readonly Button classify = new() { Text = "Classify masks", AutoSize = true, Enabled = false };
     readonly PictureBox preview = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom,
         BackColor = Color.FromArgb(30, 30, 30) };
     readonly Label candidateInfo = new() { Dock = DockStyle.Top, Height = 44, AutoEllipsis = true };
@@ -74,7 +75,7 @@ internal sealed class TrainingStudioForm : Form
         Button indexFolder = new() { Text = "Index video folder", AutoSize = true };
         FlowLayoutPanel top = new() { Dock = DockStyle.Top, Height = 44, Padding = new(6) };
         top.Controls.AddRange([new Label { Text = "Dataset", AutoSize = true, Padding = new(0, 8, 0, 0) },
-            datasetPath, openDataset, indexFolder, history, queueStatus]);
+            datasetPath, openDataset, indexFolder, history, classify, queueStatus]);
         FlowLayoutPanel reviewActions = new() { Dock = DockStyle.Top, Height = 44, Padding = new(6) };
         reviewActions.Controls.AddRange([
             rescanSource,
@@ -135,6 +136,7 @@ internal sealed class TrainingStudioForm : Form
         openDataset.Click += (_, _) => ChooseDataset();
         indexFolder.Click += async (_, _) => await IndexFolderAsync();
         history.Click += (_, _) => OpenDatasetHistory();
+        classify.Click += (_, _) => OpenClassification();
         rescanSource.Click += async (_, _) => await RescanActiveFolderAsync();
         activeSource.SelectedIndexChanged += async (_, _) =>
         {
@@ -188,6 +190,7 @@ internal sealed class TrainingStudioForm : Form
             ClearPrefetchQueue(); ClearCurrent();
             store = new DatasetStore(path); RefreshSourceFolders(); UpdateStats(); UpdateUndoDecision();
             history.Enabled = true;
+            classify.Enabled = store.Dataset.Samples.Any(value => value.Decision == "positive");
             openReview.Enabled = ErrorReviewForm.FindLatest(store.Root) != null;
             installPackagePath = TrainingRunner.FindLatestPackage(store.Root);
             install.Enabled = installPackagePath != null;
@@ -202,6 +205,14 @@ internal sealed class TrainingStudioForm : Form
         using DatasetHistoryForm form = new(store, DeleteHistorySampleAsync);
         form.ShowDialog(this);
         UpdateStats(); UpdateUndoDecision();
+    }
+
+    void OpenClassification()
+    {
+        if (store == null) return;
+        using ClassificationForm form = new(store);
+        form.ShowDialog(this);
+        UpdateStats();
     }
 
     async Task DeleteHistorySampleAsync(TrainingSample sample)
@@ -1025,6 +1036,7 @@ internal sealed class TrainingStudioForm : Form
     {
         if (store == null) { stats.Text = "Open or create a dataset."; return; }
         DatasetStatistics value = store.Statistics();
+        classify.Enabled = value.Positive > 0;
         string readiness = value.Accepted >= 300 && value.Positive > 0 && value.Negative > 0 &&
             value.Train > 0 && value.Validation > 0 && value.Test > 0 ? "Ready for a pilot training run" : "More data recommended";
         string balanceNote = "\r\nv2 crops: 50% prop-centred, 25% near-RVM hard background, 25% empty-prop.";

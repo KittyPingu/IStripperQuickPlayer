@@ -68,6 +68,9 @@ internal sealed class TrainingSample
     public string? RvmPersonMaskPath { get; set; }
     public string? RvmAlphaPath { get; set; }
     public string? DesiredForegroundPath { get; set; }
+    public string? ClassificationMaskPath { get; set; }
+    public string? ClassificationPath { get; set; }
+    public DateTime? ClassifiedUtc { get; set; }
     public string[] PropFamilies { get; set; } = [];
     public string[] PropRelationships { get; set; } = [];
     public string? ActiveLearningBucket { get; set; }
@@ -97,6 +100,30 @@ internal sealed class AnnotationObject
     public string Name { get; set; } = "Prop";
     public int ColorArgb { get; set; }
 }
+
+internal sealed class ObjectClassificationAnnotation
+{
+    public int SchemaVersion { get; set; } = 1;
+    public List<ClassifiedObject> Objects { get; set; } = [];
+    public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? ReviewedUtc { get; set; }
+}
+
+internal sealed class ClassifiedObject
+{
+    public int Id { get; set; }
+    public string Category { get; set; } = "other";
+    public string[] States { get; set; } = [];
+    public int ColorArgb { get; set; }
+}
+
+internal readonly record struct ObjectClassification(
+    int[] Ids, ClassifiedObject[] Objects, bool Reviewed);
+
+internal readonly record struct ClassificationStatistics(
+    int ReviewedImages, int TotalImages, int ObjectCount,
+    IReadOnlyDictionary<string, int> CategoryCounts,
+    IReadOnlyDictionary<string, int> StateCounts);
 
 internal readonly record struct DatasetStatistics(
     int Positive, int Negative, int Rejected, int Draft, int Objects,

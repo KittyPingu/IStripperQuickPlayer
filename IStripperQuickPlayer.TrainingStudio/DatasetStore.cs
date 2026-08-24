@@ -467,6 +467,132 @@ internal sealed class DatasetStore
         return (ids, value.Objects.ToArray(), value.Provenance);
     }
 
+    internal ObjectClassification LoadObjectClassification(TrainingSample sample)
+    {
+        int pixelCount = checked(sample.Width * sample.Height);
+        if (sample.ClassificationMaskPath == null || sample.ClassificationPath == null)
+            return new(new int[pixelCount], [], sample.ClassifiedUtc != null);
+        string maskPath = Resolve(sample.ClassificationMaskPath);
+        string annotationPath = Resolve(sample.ClassificationPath);
+        if (!File.Exists(maskPath) || !File.Exists(annotationPath))
+            return new(new int[pixelCount], [], false);
+        int[] ids = ReadEditableMask(maskPath, pixelCount);
+        ObjectClassificationAnnotation annotation = JsonSerializer.Deserialize<ObjectClassificationAnnotation>(
+            File.ReadAllText(annotationPath), JsonOptions) ?? new();
+        if (annotation.SchemaVersion != 1)
+            throw new InvalidDataException("Unsupported object-classification schema.");
+        if (annotation.SchemaVersion != 1)
+            throw new InvalidDataException("Unsupported object-classification schema.");
+        return new(ids, annotation.Objects.Where(value => ids.Contains(value.Id)).ToArray(),
+            annotation.ReviewedUtc != null && sample.ClassifiedUtc != null);
+    }
+
+    internal void NormalizeStoredClassificationStates(TrainingSample sample)
+    {
+        if (sample.ClassificationPath == null) return;
+        string annotationPath = Resolve(sample.ClassificationPath);
+        if (!File.Exists(annotationPath)) return;
+        ObjectClassificationAnnotation annotation = JsonSerializer.Deserialize<ObjectClassificationAnnotation>(
+            File.ReadAllText(annotationPath), JsonOptions) ?? new();
+        bool changed = false;
+        foreach (ClassifiedObject item in annotation.Objects)
+        {
+            if (ClassificationForm.CategorySupportsStates(item.Category)) continue;
+            if (item.States.Length > 0) changed = true;
+            int canonicalColor = ClassificationForm.ClassificationColor(item.Category, []).ToArgb();
+            if (item.ColorArgb != canonicalColor) changed = true;
+            item.States = [];
+            item.ColorArgb = canonicalColor;
+        }
+        if (changed) WriteJsonAtomic(annotationPath, annotation);
+    }
+
+    internal void SaveObjectClassification(TrainingSample sample, int[] objectIds,
+        IReadOnlyList<ClassifiedObject> objects, bool reviewed)
+    {
+        if (sample.Decision != "positive" || sample.FramePath == null || sample.PropMaskPath == null)
+            throw new InvalidOperationException("Only accepted positive samples can be classified.");
+        if (objectIds.Length != checked(sample.Width * sample.Height) ||
+            objectIds.Any(value => value < 0))
+            throw new InvalidDataException("The classification mask dimensions or IDs are invalid.");
+        byte[] propMask = ReadBinaryMask(Resolve(sample.PropMaskPath), sample.Width, sample.Height);
+        for (int index = 0; index < objectIds.Length; index++)
+            if (objectIds[index] > 0 && propMask[index] == 0)
+                throw new InvalidDataException("Classification pixels must remain inside the existing prop mask.");
+        if (reviewed && Enumerable.Range(0, objectIds.Length).Any(index =>
+                propMask[index] != 0 && objectIds[index] == 0))
+            throw new InvalidDataException("Every prop-mask pixel must be classified before review is complete.");
+        HashSet<int> used = objectIds.Where(value => value > 0).ToHashSet();
+        if (used.Any(id => objects.All(value => value.Id != id)))
+            throw new InvalidDataException("The classification mask contains an unknown object ID.");
+        ClassifiedObject[] usedObjects = objects.Where(value => used.Contains(value.Id)).ToArray();
+        if (usedObjects.Select(value => value.Id).Distinct().Count() != usedObjects.Length ||
+            usedObjects.Any(value => !ClassificationForm.Categories.Contains(value.Category,
+                StringComparer.OrdinalIgnoreCase) || value.States.Any(state =>
+                !ClassificationForm.States.Contains(state, StringComparer.OrdinalIgnoreCase))))
+            throw new InvalidDataException("The classification contains an unknown or duplicate category/state.");
+
+        string folder = Path.GetDirectoryName(Resolve(sample.FramePath))!;
+        string mask = Path.Combine(folder, "classification-mask.i32.gz");
+        string annotation = Path.Combine(folder, "classification.json");
+        string suffix = ".saving-" + Guid.NewGuid().ToString("N");
+        string temporaryMask = mask + suffix;
+        DateTime? reviewedUtc = reviewed ? DateTime.UtcNow : null;
+        try
+        {
+            WriteEditableMask(temporaryMask, objectIds);
+            File.Move(temporaryMask, mask, true);
+            WriteJsonAtomic(annotation, new ObjectClassificationAnnotation
+            {
+                Objects = usedObjects.Select(value =>
+                    new ClassifiedObject
+                    {
+                        Id = value.Id, Category = value.Category,
+                        States = ClassificationForm.CategorySupportsStates(value.Category)
+                            ? value.States.Distinct(StringComparer.OrdinalIgnoreCase).ToArray() : [],
+                        ColorArgb = ClassificationForm.ClassificationColor(value.Category,
+                            ClassificationForm.CategorySupportsStates(value.Category)
+                                ? value.States : []).ToArgb()
+                    }).ToList(),
+                ReviewedUtc = reviewedUtc
+            });
+        }
+        finally { try { File.Delete(temporaryMask); } catch { } }
+        lock (gate)
+        {
+            sample.ClassificationMaskPath = Relative(mask);
+            sample.ClassificationPath = Relative(annotation);
+            sample.ClassifiedUtc = reviewedUtc;
+            SaveSampleLocked(sample);
+        }
+    }
+
+    internal ClassificationStatistics ClassificationStatistics()
+    {
+        TrainingSample[] positives;
+        lock (gate) positives = Dataset.Samples.Where(value => value.Decision == "positive" &&
+            value.FramePath != null && value.PropMaskPath != null).ToArray();
+        Dictionary<string, int> categories = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, int> states = new(StringComparer.OrdinalIgnoreCase);
+        int reviewed = 0, objects = 0;
+        foreach (TrainingSample sample in positives.Where(value => value.ClassifiedUtc != null))
+        {
+            ObjectClassification classification;
+            try { classification = LoadObjectClassification(sample); }
+            catch { continue; }
+            if (!classification.Reviewed) continue;
+            reviewed++;
+            foreach (ClassifiedObject item in classification.Objects)
+            {
+                objects++;
+                categories[item.Category] = categories.GetValueOrDefault(item.Category) + 1;
+                foreach (string state in item.States)
+                    states[state] = states.GetValueOrDefault(state) + 1;
+            }
+        }
+        return new(reviewed, positives.Length, objects, categories, states);
+    }
+
     internal void Reject(TrainingSample sample)
     {
         lock (gate)
@@ -509,6 +635,9 @@ internal sealed class DatasetStore
         string? propMaskPath = sample.PropMaskPath, personMaskPath = sample.RvmPersonMaskPath;
         string? alphaPath = sample.RvmAlphaPath;
         string? desiredPath = sample.DesiredForegroundPath, derivationStatus = sample.DerivationStatus;
+        string? classificationMaskPath = sample.ClassificationMaskPath;
+        string? classificationPath = sample.ClassificationPath;
+        DateTime? classifiedUtc = sample.ClassifiedUtc;
         string? derivationError = sample.DerivationError, rvmRevision = sample.RvmRevision;
         double? rvmThreshold = sample.RvmThreshold;
         DateTime? reviewedUtc = sample.ReviewedUtc;
@@ -521,6 +650,8 @@ internal sealed class DatasetStore
                 sample.InstanceMaskPath = null; sample.PropMaskPath = null; sample.RvmPersonMaskPath = null;
                 sample.RvmAlphaPath = null;
                 sample.DesiredForegroundPath = null; sample.DerivationStatus = null;
+                sample.ClassificationMaskPath = null; sample.ClassificationPath = null;
+                sample.ClassifiedUtc = null;
                 sample.DerivationError = null; sample.RvmRevision = null; sample.RvmThreshold = null;
                 sample.ReviewedUtc = DateTime.UtcNow; SaveSampleLocked(sample);
             }
@@ -535,6 +666,8 @@ internal sealed class DatasetStore
                 sample.PropMaskPath = propMaskPath; sample.RvmPersonMaskPath = personMaskPath;
                 sample.RvmAlphaPath = alphaPath;
                 sample.DesiredForegroundPath = desiredPath; sample.DerivationStatus = derivationStatus;
+                sample.ClassificationMaskPath = classificationMaskPath;
+                sample.ClassificationPath = classificationPath; sample.ClassifiedUtc = classifiedUtc;
                 sample.DerivationError = derivationError; sample.RvmRevision = rvmRevision;
                 sample.RvmThreshold = rvmThreshold; sample.ReviewedUtc = reviewedUtc;
             }
@@ -565,6 +698,8 @@ internal sealed class DatasetStore
             sample.AnnotationPath = Relative(Path.Combine(draftFolder, "annotation.json"));
             sample.PropMaskPath = null; sample.RvmPersonMaskPath = null; sample.RvmAlphaPath = null;
             sample.DesiredForegroundPath = null; sample.DerivationStatus = "pending";
+            sample.ClassificationMaskPath = null; sample.ClassificationPath = null;
+            sample.ClassifiedUtc = null;
             sample.DerivationError = null; sample.RvmRevision = null; sample.RvmThreshold = 0;
             SaveSampleLocked(sample);
         }
@@ -929,6 +1064,44 @@ internal sealed class DatasetStore
         using GZipStream gzip = new(file, CompressionLevel.Fastest);
         using BinaryWriter writer = new(gzip);
         foreach (int value in objectIds) writer.Write(value);
+    }
+
+    static int[] ReadEditableMask(string path, int pixelCount)
+    {
+        int[] ids = new int[pixelCount];
+        using FileStream file = File.OpenRead(path);
+        using GZipStream gzip = new(file, CompressionMode.Decompress);
+        using BinaryReader reader = new(gzip);
+        for (int index = 0; index < ids.Length; index++) ids[index] = reader.ReadInt32();
+        if (gzip.ReadByte() != -1)
+            throw new InvalidDataException("The editable mask contains excess data.");
+        return ids;
+    }
+
+    static byte[] ReadBinaryMask(string path, int width, int height)
+    {
+        using Bitmap opened = new(path);
+        if (opened.Width != width || opened.Height != height)
+            throw new InvalidDataException("The prop mask dimensions do not match the sample.");
+        using Bitmap mask = new(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using (Graphics graphics = Graphics.FromImage(mask)) graphics.DrawImageUnscaled(opened, 0, 0);
+        byte[] result = new byte[checked(width * height)];
+        System.Drawing.Imaging.BitmapData data = mask.LockBits(new Rectangle(0, 0, width, height),
+            System.Drawing.Imaging.ImageLockMode.ReadOnly,
+            System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        int[] row = new int[width];
+        try
+        {
+            for (int y = 0; y < height; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(data.Scan0 + y * data.Stride,
+                    row, 0, row.Length);
+                for (int x = 0; x < row.Length; x++)
+                    result[y * width + x] = (byte)(((row[x] >> 16) & 255) >= 128 ? 1 : 0);
+            }
+        }
+        finally { mask.UnlockBits(data); }
+        return result;
     }
 
     internal static void WriteJsonAtomic<T>(string path, T value)

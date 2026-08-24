@@ -344,7 +344,7 @@ namespace IStripperQuickPlayer
 
         private void actNowPlayingInfo()
         {
-            string cardTag = nowPlayingPath.Split('\\')[0].Split('-')[0];
+            string cardTag = GetCardTagFromAnimationPath(nowPlayingPath);
             ModelCard? card = Datastore.findCardByTag(cardTag);
             if (card == null)
                 return;

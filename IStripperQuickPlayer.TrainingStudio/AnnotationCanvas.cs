@@ -5,12 +5,18 @@ using System.ComponentModel;
 
 namespace IStripperQuickPlayer.TrainingStudio;
 
-internal enum AnnotationTool { Brush, Eraser, Polygon, SamPositive, SamNegative, SamBox }
+internal enum AnnotationTool
+{
+    Brush, Eraser, Polygon, SamPositive, SamNegative, SamBox,
+    ClassifyRectangle, ClassifyPaint, ClassifyConnected
+}
 
 internal sealed class AnnotationCanvas : Control
 {
     Bitmap? source, overlay, rvmOverlay;
     int[] ids = [];
+    byte[] selectableMask = [];
+    int selectablePixelCount;
     interface IHistoryEntry
     {
         void Undo(AnnotationCanvas canvas);
@@ -48,6 +54,7 @@ internal sealed class AnnotationCanvas : Control
     PointF pan;
     Point lastMouse;
     bool drawing, panning, spacePressed;
+    bool classificationErase;
     RectangleF samBox;
     RectangleF? displayedSamBox;
     Point? brushCursor;
@@ -63,7 +70,7 @@ internal sealed class AnnotationCanvas : Control
         set
         {
             tool = value;
-            if (tool is not (AnnotationTool.Brush or AnnotationTool.Eraser))
+            if (tool is not (AnnotationTool.Brush or AnnotationTool.Eraser or AnnotationTool.ClassifyPaint))
                 SetBrushCursor(null);
             Cursor = NormalCursor;
         }
@@ -100,6 +107,8 @@ internal sealed class AnnotationCanvas : Control
     internal event Action<RectangleF>? SamBoxReady;
     internal event Action? MaskChanged;
     internal event Action<int>? BrushSizeChanged;
+    internal event Func<int>? ClassificationObjectRequested;
+    internal event Action? ClassificationGestureCompleted;
 
     internal AnnotationCanvas()
     {
@@ -127,7 +136,7 @@ internal sealed class AnnotationCanvas : Control
 
     protected override void OnPaintBackground(PaintEventArgs pevent) { }
 
-    Cursor NormalCursor => Tool is AnnotationTool.Brush or AnnotationTool.Eraser
+    Cursor NormalCursor => Tool is AnnotationTool.Brush or AnnotationTool.Eraser or AnnotationTool.ClassifyPaint
         ? Cursors.Default : Cursors.Cross;
 
     internal void LoadImage(string path)
@@ -135,7 +144,39 @@ internal sealed class AnnotationCanvas : Control
         source?.Dispose(); overlay?.Dispose();
         using Image opened = Image.FromFile(path); source = new Bitmap(opened);
         ids = new int[source.Width * source.Height]; undo.Clear(); redo.Clear(); polygon.Clear();
+        selectableMask = [];
+        selectablePixelCount = 0;
         Fit(); RebuildOverlay(); Invalidate();
+    }
+
+    internal void LoadSelectableMask(string path)
+    {
+        if (source == null) throw new InvalidOperationException("Load the frame before its mask.");
+        using Bitmap opened = new(path);
+        if (opened.Width != source.Width || opened.Height != source.Height)
+            throw new InvalidDataException("The selectable mask dimensions do not match the frame.");
+        using Bitmap mask = new(opened.Width, opened.Height, PixelFormat.Format32bppArgb);
+        using (Graphics graphics = Graphics.FromImage(mask)) graphics.DrawImageUnscaled(opened, 0, 0);
+        selectableMask = new byte[ids.Length];
+        selectablePixelCount = 0;
+        BitmapData data = mask.LockBits(new Rectangle(Point.Empty, mask.Size),
+            ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        int[] row = new int[mask.Width];
+        try
+        {
+            for (int y = 0; y < mask.Height; y++)
+            {
+                Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                for (int x = 0; x < row.Length; x++)
+                {
+                    byte value = (byte)(((row[x] >> 16) & 255) >= 128 ? 1 : 0);
+                    selectableMask[y * mask.Width + x] = value;
+                    selectablePixelCount += value;
+                }
+            }
+        }
+        finally { mask.UnlockBits(data); }
+        RebuildOverlay(); Invalidate();
     }
 
     internal void LoadRvmMask(string? path)
@@ -173,6 +214,9 @@ internal sealed class AnnotationCanvas : Control
     internal int[] CopyObjectIds() => (int[])ids.Clone();
     internal bool CurrentObjectHasPixels => ObjectHasPixels(CurrentObjectId);
     internal bool ObjectHasPixels(int objectId) => ids.Contains(objectId);
+    internal int SelectablePixelCount => selectablePixelCount;
+    internal int AssignedSelectablePixelCount => Enumerable.Range(0, ids.Length)
+        .Count(index => selectableMask.Length == ids.Length && selectableMask[index] != 0 && ids[index] > 0);
     internal void LoadObjectIds(int[] values)
     {
         if (values.Length != ids.Length) throw new ArgumentException("Mask dimensions do not match the frame.");
@@ -293,7 +337,8 @@ internal sealed class AnnotationCanvas : Control
             foreach (PointF point in points) graphics.FillEllipse(Brushes.Yellow,
                 point.X - 3, point.Y - 3, 6, 6);
         }
-        RectangleF? box = drawing && Tool == AnnotationTool.SamBox ? samBox : displayedSamBox;
+        RectangleF? box = drawing && Tool is AnnotationTool.SamBox or AnnotationTool.ClassifyRectangle
+            ? samBox : displayedSamBox;
         if (box is RectangleF visibleBox)
         {
             RectangleF clientBox = ToClient(visibleBox);
@@ -312,7 +357,7 @@ internal sealed class AnnotationCanvas : Control
             if (positive) graphics.DrawLine(symbol, client.X, client.Y - 4, client.X, client.Y + 4);
         }
         if (brushCursor is Point cursor &&
-            Tool is AnnotationTool.Brush or AnnotationTool.Eraser)
+            Tool is AnnotationTool.Brush or AnnotationTool.Eraser or AnnotationTool.ClassifyPaint)
         {
             float diameter = Math.Max(2, BrushSize * zoom);
             RectangleF outline = new(cursor.X - diameter / 2,
@@ -352,13 +397,30 @@ internal sealed class AnnotationCanvas : Control
         {
             drawing = true; samBox = new(image.Value, SizeF.Empty); return;
         }
+        if (Tool == AnnotationTool.ClassifyConnected)
+        {
+            bool erase = e.Button == MouseButtons.Right;
+            if (!erase && !RequestClassificationObject()) return;
+            SaveUndo(); ApplyConnectedMask(image.Value, erase);
+            ClassificationGestureCompleted?.Invoke(); return;
+        }
+        if (Tool is AnnotationTool.ClassifyRectangle or AnnotationTool.ClassifyPaint)
+        {
+            classificationErase = e.Button == MouseButtons.Right;
+            if (!classificationErase && !RequestClassificationObject()) return;
+            SaveUndo(); drawing = true;
+            if (Tool == AnnotationTool.ClassifyRectangle)
+                samBox = new(image.Value, SizeF.Empty);
+            else PaintBrush(image.Value, classificationErase);
+            return;
+        }
         SaveUndo(); drawing = true; PaintBrush(image.Value, Tool == AnnotationTool.Eraser || e.Button == MouseButtons.Right);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        SetBrushCursor(Tool is AnnotationTool.Brush or AnnotationTool.Eraser &&
+        SetBrushCursor(Tool is AnnotationTool.Brush or AnnotationTool.Eraser or AnnotationTool.ClassifyPaint &&
             ToImage(e.Location) != null ? e.Location : null);
         if (panning)
         {
@@ -367,7 +429,7 @@ internal sealed class AnnotationCanvas : Control
         }
         if (!drawing) return;
         PointF? image = ToImage(e.Location); if (image == null) return;
-        if (Tool == AnnotationTool.SamBox)
+        if (Tool is AnnotationTool.SamBox or AnnotationTool.ClassifyRectangle)
         {
             PointF origin = samBox.Location;
             samBox = RectangleF.FromLTRB(Math.Min(origin.X, image.Value.X),
@@ -395,6 +457,14 @@ internal sealed class AnnotationCanvas : Control
             displayedSamBox = samBox;
             SamBoxReady?.Invoke(samBox);
         }
+        else if (drawing && Tool == AnnotationTool.ClassifyRectangle &&
+                 samBox.Width >= 1 && samBox.Height >= 1)
+        {
+            ApplyMaskedRectangle(samBox, classificationErase);
+            ClassificationGestureCompleted?.Invoke();
+        }
+        else if (drawing && Tool == AnnotationTool.ClassifyPaint)
+            ClassificationGestureCompleted?.Invoke();
         drawing = false;
     }
 
@@ -469,6 +539,8 @@ internal sealed class AnnotationCanvas : Control
             if ((x - point.X) * (x - point.X) + (y - point.Y) * (y - point.Y) <= r2)
             {
                 int index = y * ImageWidth + x;
+                if (Tool == AnnotationTool.ClassifyPaint &&
+                    (selectableMask.Length != ids.Length || selectableMask[index] == 0)) continue;
                 if (erase) ids[index] = 0; else ids[index] = CurrentObjectId;
             }
         UpdateOverlay(new Rectangle(left, top, right - left + 1, bottom - top + 1));
@@ -513,6 +585,70 @@ internal sealed class AnnotationCanvas : Control
 
     void Changed() { RebuildOverlay(); Invalidate(); MaskChanged?.Invoke(); }
 
+    bool RequestClassificationObject()
+    {
+        int id = ClassificationObjectRequested?.Invoke() ?? CurrentObjectId;
+        if (id <= 0) return false;
+        CurrentObjectId = id; return true;
+    }
+
+    internal void ApplyMaskedRectangle(RectangleF box, bool erase)
+    {
+        if (selectableMask.Length != ids.Length) return;
+        int left = Math.Clamp((int)Math.Floor(box.Left), 0, ImageWidth - 1);
+        int top = Math.Clamp((int)Math.Floor(box.Top), 0, ImageHeight - 1);
+        int right = Math.Clamp((int)Math.Ceiling(box.Right), 0, ImageWidth);
+        int bottom = Math.Clamp((int)Math.Ceiling(box.Bottom), 0, ImageHeight);
+        for (int y = top; y < bottom; y++)
+            for (int x = left; x < right; x++)
+            {
+                int index = y * ImageWidth + x;
+                if (selectableMask[index] != 0) ids[index] = erase ? 0 : CurrentObjectId;
+            }
+        displayedSamBox = null; Changed();
+    }
+
+    internal void ApplyConnectedMask(PointF point, bool erase)
+    {
+        if (selectableMask.Length != ids.Length) return;
+        int startX = Math.Clamp((int)point.X, 0, ImageWidth - 1);
+        int startY = Math.Clamp((int)point.Y, 0, ImageHeight - 1);
+        int start = startY * ImageWidth + startX;
+        if (selectableMask[start] == 0) return;
+        bool[] visited = new bool[ids.Length];
+        Queue<int> pending = new(); pending.Enqueue(start); visited[start] = true;
+        while (pending.TryDequeue(out int index))
+        {
+            ids[index] = erase ? 0 : CurrentObjectId;
+            int x = index % ImageWidth, y = index / ImageWidth;
+            if (x > 0) Enqueue(index - 1);
+            if (x + 1 < ImageWidth) Enqueue(index + 1);
+            if (y > 0) Enqueue(index - ImageWidth);
+            if (y + 1 < ImageHeight) Enqueue(index + ImageWidth);
+        }
+        Changed();
+
+        void Enqueue(int index)
+        {
+            if (visited[index] || selectableMask[index] == 0) return;
+            visited[index] = true; pending.Enqueue(index);
+        }
+    }
+
+    internal int AssignAllUnassignedSelectablePixels(int objectId)
+    {
+        if (objectId <= 0 || selectableMask.Length != ids.Length) return 0;
+        SaveUndo();
+        int assigned = 0;
+        for (int index = 0; index < ids.Length; index++)
+        {
+            if (selectableMask[index] == 0 || ids[index] != 0) continue;
+            ids[index] = objectId; assigned++;
+        }
+        if (assigned > 0) Changed();
+        return assigned;
+    }
+
     void RebuildOverlay()
     {
         overlay?.Dispose(); if (source == null) return;
@@ -520,7 +656,12 @@ internal sealed class AnnotationCanvas : Control
         int[] pixels = new int[ids.Length];
         for (int i = 0; i < ids.Length; i++)
         {
-            if (ids[i] == 0) continue;
+            if (ids[i] == 0)
+            {
+                if (selectableMask.Length == ids.Length && selectableMask[i] != 0)
+                    pixels[i] = Color.FromArgb(92, Color.White).ToArgb();
+                continue;
+            }
             Color color = ObjectColors.TryGetValue(ids[i], out Color value) ? value : Color.Lime;
             pixels[i] = Color.FromArgb(115, color).ToArgb();
         }
