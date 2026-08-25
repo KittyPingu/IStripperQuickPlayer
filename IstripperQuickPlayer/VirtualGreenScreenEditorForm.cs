@@ -23,14 +23,17 @@ internal sealed class VirtualGreenScreenEditorForm : Form
           DropDownWidth = 340 };
     readonly CheckBox showEnabled = new()
         { Text = "Enable virtual green screen", AutoSize = true };
+    readonly ComboBox colorDomain = new()
+        { DropDownStyle = ComboBoxStyle.DropDownList, Width = ControlWidth,
+          DropDownWidth = ControlWidth };
     readonly DxgiMaskPreviewControl preview = new()
         { Dock = DockStyle.Fill, AccessibleName = "Virtual green-screen comparison" };
     readonly ListBox keyColors = new()
         { Width = ControlWidth, Height = 220, DrawMode = DrawMode.OwnerDrawFixed,
-          ItemHeight = 28 };
+          ItemHeight = 28, SelectionMode = SelectionMode.MultiExtended };
     readonly ListBox lockedColors = new()
         { Width = ControlWidth, Height = 220, DrawMode = DrawMode.OwnerDrawFixed,
-          ItemHeight = 28 };
+          ItemHeight = 28, SelectionMode = SelectionMode.MultiExtended };
     readonly ToolTip matchToolTip = new()
         { InitialDelay = 150, ReshowDelay = 50, AutoPopDelay = 10_000,
           ShowAlways = true };
@@ -51,6 +54,12 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         Minimum = 0, Maximum = 100, Value = 5, Width = ControlWidth, Height = 42,
         ShowValueText = true, ShowTimeToolTip = true,
         AccessibleName = "Locked-colour edge feather"
+    };
+    readonly Controls.PlaybackSeekBar keyOverLockedThreshold = new()
+    {
+        Minimum = 0, Maximum = 100, Value = 0, Width = ControlWidth, Height = 42,
+        ShowValueText = true, ShowTimeToolTip = true,
+        AccessibleName = "Key-over-locked match threshold"
     };
     readonly Controls.PlaybackSeekBar smallPatchSize = new()
     {
@@ -89,7 +98,9 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     byte[]? currentRaw;
     int frameWidth, frameHeight;
     bool playing, loadingColorControls, loadingRoleFeathers, loadingPatchSize,
-        loadingMinimumTransparentArea, syncingColorSelection;
+        loadingMinimumTransparentArea, loadingColorDomain,
+        loadingKeyOverLockedThreshold,
+        syncingColorSelection;
     int lastKeyTolerance = 18, lastLockTolerance = 18;
     CustomVirtualGreenScreenColor? replaceColor;
     Point lastTooltipPixel = new(-1, -1);
@@ -138,11 +149,19 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         InitializeRoleDefaults(clipSettings);
         InitializeRoleDefaults(EffectiveSettings);
         showEnabled.Checked = showSettings.Enabled;
+        colorDomain.Items.AddRange([
+            new DomainChoice("ycbcr", "YCbCr chroma — ignores brightness"),
+            new DomainChoice("rgb", "RGB — includes brightness"),
+            new DomainChoice("hsv", "HSV — hue, saturation and brightness"),
+            new DomainChoice("oklab", "OKLab — perceptual colour distance")
+        ]);
         speed.Items.AddRange(["0.25×", "0.5×", "1×", "2×"]);
         speed.SelectedIndex = 2;
         tolerance.ToolTipFormatter = value => $"Tolerance {value}";
         keyFeather.ToolTipFormatter = value => $"Key edge feather {value}";
         lockedFeather.ToolTipFormatter = value => $"Locked edge feather {value}";
+        keyOverLockedThreshold.ToolTipFormatter = value =>
+            $"Key must beat locked match by more than {value}%";
         smallPatchSize.ToolTipFormatter = value => value == 0
             ? "Small-patch removal off"
             : $"Sample within a {value} source-pixel radius";
@@ -199,6 +218,9 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         palette.Controls.Add(new Label { Text = "Transparency key colours",
             AutoSize = true,
             Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) });
+        palette.Controls.Add(new Label { Text = "Tolerance colour domain",
+            AutoSize = true, Margin = new Padding(3, 6, 3, 0) });
+        palette.Controls.Add(colorDomain);
         palette.Controls.Add(keyColors);
         palette.Controls.Add(new Label { Text = "Transparency-key edge feather",
             AutoSize = true, Margin = new Padding(3, 4, 3, 0) });
@@ -210,6 +232,12 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         palette.Controls.Add(new Label { Text = "Locked-colour edge feather",
             AutoSize = true, Margin = new Padding(3, 4, 3, 0) });
         palette.Controls.Add(lockedFeather);
+        palette.Controls.Add(new Label
+        {
+            Text = "Key-over-locked match threshold (%)",
+            AutoSize = true, Margin = new Padding(3, 4, 3, 0)
+        });
+        palette.Controls.Add(keyOverLockedThreshold);
         palette.Controls.Add(new Label { Text = "Small-patch radius (source px)",
             AutoSize = true, Margin = new Padding(3, 10, 3, 0) });
         palette.Controls.Add(smallPatchSize);
@@ -260,18 +288,19 @@ internal sealed class VirtualGreenScreenEditorForm : Form
 
         keyColors.DrawItem += DrawColor;
         lockedColors.DrawItem += DrawColor;
-        keyColors.SelectedIndexChanged += (_, _) =>
-            ColorSelectionChanged(keyColors, lockedColors);
-        lockedColors.SelectedIndexChanged += (_, _) =>
-            ColorSelectionChanged(lockedColors, keyColors);
+        keyColors.SelectedIndexChanged += (_, _) => ColorSelectionChanged();
+        lockedColors.SelectedIndexChanged += (_, _) => ColorSelectionChanged();
         keyColors.MouseDown += ColorListMouseDown;
         lockedColors.MouseDown += ColorListMouseDown;
         smallPatchSize.Scroll += (_, _) => SmallPatchSizeChanged();
         minimumTransparentArea.Scroll += (_, _) =>
             MinimumTransparentAreaChanged();
         tolerance.Scroll += (_, _) => ToleranceChanged();
+        colorDomain.SelectedIndexChanged += (_, _) => ColorDomainChanged();
         keyFeather.Scroll += (_, _) => RoleFeatherChanged(false);
         lockedFeather.Scroll += (_, _) => RoleFeatherChanged(true);
+        keyOverLockedThreshold.Scroll += (_, _) =>
+            KeyOverLockedThresholdChanged();
         repick.Click += (_, _) => BeginPick();
         remove.Click += (_, _) => RemoveSelected();
         preview.MouseClick += PreviewClicked;
@@ -309,6 +338,11 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         public override string ToString() => $"Clip {Number}: " +
             $"{FormatTime(Clip.Media!.PlaybackStartMs)}–" +
             $"{FormatTime(CustomShowStore.PlaybackEnd(Clip.Media))}";
+    }
+
+    sealed record DomainChoice(string Value, string Label)
+    {
+        public override string ToString() => Label;
     }
 
     static Label Heading(string text) => new()
@@ -382,7 +416,8 @@ internal sealed class VirtualGreenScreenEditorForm : Form
 
     void RefreshPalette()
     {
-        CustomVirtualGreenScreenColor? selected = SelectedColor;
+        CustomVirtualGreenScreenColor[] selected = SelectedColors;
+        syncingColorSelection = true;
         keyColors.BeginUpdate(); lockedColors.BeginUpdate();
         keyColors.Items.Clear(); lockedColors.Items.Clear();
         CustomVirtualGreenScreen settings = EffectiveSettings;
@@ -390,22 +425,39 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         foreach (CustomVirtualGreenScreenColor color in settings.Colors)
             (color.Locked ? lockedColors : keyColors).Items.Add(color);
         keyColors.EndUpdate(); lockedColors.EndUpdate();
-        if (selected != null && settings.Colors.Contains(selected))
-            SelectColor(selected);
+        foreach (CustomVirtualGreenScreenColor color in selected.Where(
+                     settings.Colors.Contains))
+            SelectColorInList(color);
+        syncingColorSelection = false;
+        if (SelectedColors.Length > 0)
+            LoadSelectedColorControls();
         else if (keyColors.Items.Count > 0)
             SelectColor((CustomVirtualGreenScreenColor)keyColors.Items[0]);
         else if (lockedColors.Items.Count > 0)
             SelectColor((CustomVirtualGreenScreenColor)lockedColors.Items[0]);
         else SelectColor(null);
         bool editable = EditableSettings != null;
-        bool hasSelection = SelectedColor != null;
-        repick.Enabled = remove.Enabled = editable && hasSelection;
-        tolerance.Enabled = editable && hasSelection;
+        loadingColorDomain = true;
+        string domain = settings.ColorDomain ?? "ycbcr";
+        colorDomain.SelectedItem = colorDomain.Items.Cast<DomainChoice>()
+            .FirstOrDefault(value => string.Equals(value.Value, domain,
+                StringComparison.OrdinalIgnoreCase)) ?? colorDomain.Items[0];
+        loadingColorDomain = false;
+        colorDomain.Enabled = editable;
+        int selectionCount = SelectedColors.Length;
+        repick.Enabled = editable && selectionCount == 1;
+        remove.Enabled = editable && selectionCount > 0;
+        tolerance.Enabled = editable && selectionCount > 0;
         loadingRoleFeathers = true;
         keyFeather.Value = VirtualGreenScreenMath.EffectiveFeather(settings, false);
         lockedFeather.Value = VirtualGreenScreenMath.EffectiveFeather(settings, true);
         loadingRoleFeathers = false;
         keyFeather.Enabled = lockedFeather.Enabled = editable;
+        loadingKeyOverLockedThreshold = true;
+        keyOverLockedThreshold.Value = Math.Clamp(
+            settings.KeyOverLockedThreshold, 0, 100);
+        loadingKeyOverLockedThreshold = false;
+        keyOverLockedThreshold.Enabled = editable;
         loadingPatchSize = true;
         smallPatchSize.Value = VirtualGreenScreenMath.SmallPatchSize(settings);
         loadingPatchSize = false;
@@ -448,8 +500,12 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     }
 
     CustomVirtualGreenScreenColor? SelectedColor =>
-        keyColors.SelectedItem as CustomVirtualGreenScreenColor ??
-        lockedColors.SelectedItem as CustomVirtualGreenScreenColor;
+        SelectedColors.FirstOrDefault();
+
+    CustomVirtualGreenScreenColor[] SelectedColors =>
+        keyColors.SelectedItems.Cast<CustomVirtualGreenScreenColor>()
+            .Concat(lockedColors.SelectedItems.Cast<CustomVirtualGreenScreenColor>())
+            .ToArray();
 
     void InitializeRoleDefaults(CustomVirtualGreenScreen settings)
     {
@@ -469,18 +525,27 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             lastLockTolerance = Math.Clamp(locked.Tolerance, 0, 100);
     }
 
-    void ColorSelectionChanged(ListBox source, ListBox other)
+    void ColorSelectionChanged()
     {
-        if (syncingColorSelection || source.SelectedIndex < 0) return;
-        syncingColorSelection = true;
-        other.ClearSelected();
-        syncingColorSelection = false;
+        if (syncingColorSelection) return;
         LoadSelectedColorControls();
     }
 
     void ColorListMouseDown(object? sender, MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Right || sender is not ListBox list) return;
+        if (sender is not ListBox list) return;
+        if (e.Button == MouseButtons.Left)
+        {
+            if ((ModifierKeys & Keys.Control) == 0)
+            {
+                syncingColorSelection = true;
+                (ReferenceEquals(list, keyColors) ? lockedColors : keyColors)
+                    .ClearSelected();
+                syncingColorSelection = false;
+            }
+            return;
+        }
+        if (e.Button != MouseButtons.Right) return;
         int index = list.IndexFromPoint(e.Location);
         if (index < 0 || index >= list.Items.Count) return;
         CustomVirtualGreenScreenColor item =
@@ -499,41 +564,58 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     {
         syncingColorSelection = true;
         keyColors.ClearSelected(); lockedColors.ClearSelected();
-        if (color != null)
-        {
-            ListBox list = color.Locked ? lockedColors : keyColors;
-            int index = list.Items.IndexOf(color);
-            if (index >= 0) list.SelectedIndex = index;
-        }
+        if (color != null) SelectColorInList(color);
         syncingColorSelection = false;
         LoadSelectedColorControls();
+    }
+
+    void SelectColorInList(CustomVirtualGreenScreenColor color)
+    {
+        ListBox list = color.Locked ? lockedColors : keyColors;
+        int index = list.Items.IndexOf(color);
+        if (index >= 0) list.SetSelected(index, true);
     }
 
     void LoadSelectedColorControls()
     {
         loadingColorControls = true;
-        if (SelectedColor is CustomVirtualGreenScreenColor color)
+        CustomVirtualGreenScreenColor[] selected = SelectedColors;
+        if (selected.FirstOrDefault() is CustomVirtualGreenScreenColor color)
         {
             tolerance.Value = Math.Clamp(color.Tolerance, 0, 100);
-            if (color.Locked)
-                lastLockTolerance = tolerance.Value;
-            else
-                lastKeyTolerance = tolerance.Value;
         }
         loadingColorControls = false;
-        bool editable = EditableSettings != null && SelectedColor != null;
-        tolerance.Enabled = repick.Enabled = remove.Enabled = editable;
+        bool editable = EditableSettings != null && selected.Length > 0;
+        tolerance.Enabled = remove.Enabled = editable;
+        repick.Enabled = editable && selected.Length == 1;
     }
 
     void ToleranceChanged()
     {
-        if (loadingColorControls || EditableSettings == null ||
-            SelectedColor is not CustomVirtualGreenScreenColor color) return;
-        color.Tolerance = tolerance.Value;
-        if (color.Locked) lastLockTolerance = tolerance.Value;
-        else lastKeyTolerance = tolerance.Value;
+        if (loadingColorControls || EditableSettings == null) return;
+        CustomVirtualGreenScreenColor[] selected = SelectedColors;
+        if (selected.Length == 0) return;
+        foreach (CustomVirtualGreenScreenColor color in selected)
+            color.Tolerance = tolerance.Value;
+        if (selected.Any(color => color.Locked))
+            lastLockTolerance = tolerance.Value;
+        if (selected.Any(color => !color.Locked))
+            lastKeyTolerance = tolerance.Value;
         Volatile.Write(ref renderSettings, EffectiveSettings.Clone());
         keyColors.Invalidate(); lockedColors.Invalidate();
+        status.Text = $"Tolerance {tolerance.Value} applied to " +
+            $"{selected.Length} selected colour{(selected.Length == 1 ? "" : "s")}.";
+        RenderCurrentFrame();
+    }
+
+    void ColorDomainChanged()
+    {
+        if (loadingColorDomain || EditableSettings is not
+                CustomVirtualGreenScreen settings ||
+            colorDomain.SelectedItem is not DomainChoice selected) return;
+        settings.ColorDomain = selected.Value;
+        Volatile.Write(ref renderSettings, EffectiveSettings.Clone());
+        HideMatchToolTip();
         RenderCurrentFrame();
     }
 
@@ -545,6 +627,15 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         else settings.KeyFeather = keyFeather.Value;
         Volatile.Write(ref renderSettings, EffectiveSettings.Clone());
         HideMatchToolTip();
+        RenderCurrentFrame();
+    }
+
+    void KeyOverLockedThresholdChanged()
+    {
+        if (loadingKeyOverLockedThreshold || EditableSettings is not
+            CustomVirtualGreenScreen settings) return;
+        settings.KeyOverLockedThreshold = keyOverLockedThreshold.Value;
+        Volatile.Write(ref renderSettings, EffectiveSettings.Clone());
         RenderCurrentFrame();
     }
 
@@ -640,7 +731,7 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             status.Text = $"Replaced selected colour with {value} as " +
                 (locked ? "locked." : "a transparency key.");
         }
-        else if (settings.Colors.Length < CustomVirtualGreenScreen.MaximumColors)
+        else
         {
             int initialTolerance = locked ? lastLockTolerance : lastKeyTolerance;
             CustomVirtualGreenScreenColor added = new()
@@ -652,17 +743,20 @@ internal sealed class VirtualGreenScreenEditorForm : Form
                 (locked ? "locked" : "a transparency key") +
                 $" with tolerance {initialTolerance}.";
         }
-        else status.Text = $"The palette already contains the maximum of " +
-            $"{CustomVirtualGreenScreen.MaximumColors} colours.";
         replaceColor = null;
         RefreshPalette();
         if (selectedAfter != null) SelectColor(selectedAfter);
         RenderCurrentFrame();
+        HideMatchToolTip();
+        UpdateMatchToolTip(e.Location);
     }
 
     void PreviewMouseMoved(object? sender, MouseEventArgs e)
+        => UpdateMatchToolTip(e.Location);
+
+    void UpdateMatchToolTip(Point location)
     {
-        if (preview.ImagePoint(e.Location) is not PointF point)
+        if (preview.ImagePoint(location) is not PointF point)
         {
             HideMatchToolTip();
             return;
@@ -691,27 +785,29 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             VirtualGreenScreenMath.FormatColor(source) + "\n" +
             MatchSummary("Key", keyColors, source, EffectiveSettings) + "\n" +
             MatchSummary("Locked", lockedColors, source, EffectiveSettings);
-        matchToolTip.Show(text, preview, e.X + 16, e.Y + 20, 10_000);
+        matchToolTip.Show(text, preview, location.X + 16, location.Y + 20,
+            10_000);
     }
 
     static string MatchSummary(string label, ListBox list, Color source,
         CustomVirtualGreenScreen settings)
     {
-        List<string> matches = [];
+        int bestIndex = -1;
+        float bestStrength = 0;
         for (int index = 0; index < list.Items.Count; index++)
         {
             CustomVirtualGreenScreenColor item =
                 (CustomVirtualGreenScreenColor)list.Items[index];
+            if (item.Disabled) continue;
             float strength = VirtualGreenScreenMath.MatchStrength(source, item,
                 settings);
-            if (strength <= 0) continue;
-            int percent = Math.Clamp((int)Math.Round(strength * 100), 1, 100);
-            matches.Add(item.Disabled
-                ? $"#{index + 1} (disabled, {percent}%)"
-                : $"#{index + 1} ({percent}%)");
+            if (strength <= bestStrength) continue;
+            bestStrength = strength;
+            bestIndex = index;
         }
-        return $"{label} matches: " +
-            (matches.Count == 0 ? "none" : string.Join(", ", matches));
+        if (bestIndex < 0) return $"{label} max: none";
+        int percent = Math.Clamp((int)Math.Round(bestStrength * 100), 1, 100);
+        return $"{label} max: #{bestIndex + 1} ({percent}%)";
     }
 
     void HideMatchToolTip()
@@ -724,10 +820,10 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     void RemoveSelected()
     {
         CustomVirtualGreenScreen? settings = EditableSettings;
-        CustomVirtualGreenScreenColor? selected = SelectedColor;
-        if (settings == null || selected == null) return;
+        CustomVirtualGreenScreenColor[] selected = SelectedColors;
+        if (settings == null || selected.Length == 0) return;
         settings.Colors = settings.Colors.Where(item =>
-            !ReferenceEquals(item, selected)).ToArray();
+            !selected.Contains(item)).ToArray();
         RefreshPalette(); RenderCurrentFrame();
     }
 
@@ -922,11 +1018,8 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         {
             int source = pixel * 4;
             byte blue = raw[source], green = raw[source + 1], red = raw[source + 2];
-            float cb = Math.Clamp(128 + (-.114572f * red - .385428f * green +
-                .5f * blue), 0, 255) / 255f;
-            float cr = Math.Clamp(128 + (.5f * red - .454153f * green -
-                .045847f * blue), 0, 255) / 255f;
-            float keep = VirtualGreenScreenMath.Keep(cb, cr, samples);
+            float keep = VirtualGreenScreenMath.Keep(
+                Color.FromArgb(red, green, blue), samples);
             before[pixel] = Threshold(choked[pixel]);
             keyed[pixel] = Threshold((byte)Math.Clamp((int)Math.Round(
                 choked[pixel] * keep), 0, 255));
@@ -1104,6 +1197,9 @@ internal sealed class VirtualGreenScreenEditorForm : Form
                     SmallPatchSize = clipSettings.SmallPatchSize,
                     MinimumTransparentAreaRadius =
                         clipSettings.MinimumTransparentAreaRadius,
+                    ColorDomain = clipSettings.ColorDomain,
+                    KeyOverLockedThreshold =
+                        clipSettings.KeyOverLockedThreshold,
                     KeyFeather = clipSettings.KeyFeather,
                     LockedFeather = clipSettings.LockedFeather,
                     Colors = clipSettings.Colors.Select(value =>

@@ -508,11 +508,12 @@ internal sealed class CustomShowClip
 
 internal sealed class CustomVirtualGreenScreen
 {
-    internal const int MaximumColors = 64;
     internal const int MaximumSmallPatchSize = 64;
     public bool Enabled { get; set; } = true;
     public int SmallPatchSize { get; set; }
     public int MinimumTransparentAreaRadius { get; set; }
+    public string ColorDomain { get; set; } = "ycbcr";
+    public int KeyOverLockedThreshold { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? KeyFeather { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -524,6 +525,8 @@ internal sealed class CustomVirtualGreenScreen
         Enabled = Enabled,
         SmallPatchSize = SmallPatchSize,
         MinimumTransparentAreaRadius = MinimumTransparentAreaRadius,
+        ColorDomain = ColorDomain,
+        KeyOverLockedThreshold = KeyOverLockedThreshold,
         KeyFeather = KeyFeather,
         LockedFeather = LockedFeather,
         Colors = Colors.Select(value => new CustomVirtualGreenScreenColor
@@ -549,11 +552,26 @@ internal sealed class CustomVirtualGreenScreenColor
     public bool Disabled { get; set; }
 }
 
+internal enum VirtualGreenScreenColorDomain
+{
+    YCbCr,
+    Rgb,
+    Hsv,
+    OkLab
+}
+
 internal readonly record struct VirtualGreenScreenSample(
-    float Cb, float Cr, float Tolerance, float Feather, bool Locked);
+    float X, float Y, float Z, float Tolerance, float Feather, bool Locked,
+    VirtualGreenScreenColorDomain Domain, float KeyOverLockedThreshold)
+{
+    internal float Cb => X;
+    internal float Cr => Y;
+}
 
 internal static class VirtualGreenScreenMath
 {
+    internal static readonly string[] ColorDomains =
+        ["ycbcr", "rgb", "hsv", "oklab"];
     internal const int SmallPatchMinimumDiskSupport = 4;
     internal const int SmallPatchMinimumConnectedRays = 2;
     internal const int MinimumTransparentDiskSupport = 8;
@@ -600,22 +618,34 @@ internal static class VirtualGreenScreenMath
         CustomVirtualGreenScreen? settings)
     {
         if (settings?.Enabled != true || settings.Colors.Length == 0) return [];
+        VirtualGreenScreenColorDomain domain = Domain(settings);
         float keyFeather = EffectiveFeather(settings, false);
         float lockedFeather = EffectiveFeather(settings, true);
-        return settings.Colors.Take(CustomVirtualGreenScreen.MaximumColors)
+        return settings.Colors
             .Where(value => !value.Disabled)
             .OrderByDescending(value => value.Locked)
             .Select(value =>
             {
                 Color color = ParseColor(value.Color);
-                (float cb, float cr) = Chroma(color);
+                (float x, float y, float z) = Components(color, domain);
                 float tolerance = Math.Clamp(value.Tolerance, 0, 100);
                 float feather = value.Locked ? lockedFeather : keyFeather;
                 return new VirtualGreenScreenSample(
-                    cb, cr,
-                    tolerance / 255f, feather / 255f, value.Locked);
+                    x, y, z, tolerance / 255f, feather / 255f, value.Locked,
+                    domain, Math.Clamp(settings.KeyOverLockedThreshold, 0, 100) /
+                        100f);
             }).ToArray();
     }
+
+    internal static VirtualGreenScreenColorDomain Domain(
+        CustomVirtualGreenScreen? settings) =>
+        (settings?.ColorDomain ?? "ycbcr").Trim().ToLowerInvariant() switch
+        {
+            "rgb" => VirtualGreenScreenColorDomain.Rgb,
+            "hsv" => VirtualGreenScreenColorDomain.Hsv,
+            "oklab" => VirtualGreenScreenColorDomain.OkLab,
+            _ => VirtualGreenScreenColorDomain.YCbCr
+        };
 
     internal static (float Cb, float Cr) Chroma(Color color)
     {
@@ -630,10 +660,12 @@ internal static class VirtualGreenScreenMath
         CustomVirtualGreenScreenColor target,
         CustomVirtualGreenScreen settings)
     {
-        (float sourceCb, float sourceCr) = Chroma(source);
-        (float targetCb, float targetCr) = Chroma(ParseColor(target.Color));
-        float deltaCb = sourceCb - targetCb, deltaCr = sourceCr - targetCr;
-        float distance = MathF.Sqrt(deltaCb * deltaCb + deltaCr * deltaCr);
+        VirtualGreenScreenColorDomain domain = Domain(settings);
+        (float sourceX, float sourceY, float sourceZ) = Components(source, domain);
+        (float targetX, float targetY, float targetZ) =
+            Components(ParseColor(target.Color), domain);
+        float distance = Distance(sourceX, sourceY, sourceZ,
+            targetX, targetY, targetZ);
         float tolerance = Math.Clamp(target.Tolerance, 0, 100) / 255f;
         float feather = EffectiveFeather(settings, target.Locked) / 255f;
         return 1 - SmoothStep(tolerance, tolerance + feather, distance);
@@ -654,22 +686,44 @@ internal static class VirtualGreenScreenMath
         return legacy == null ? 5 : EffectiveFeather(legacy);
     }
 
-    internal static float Keep(float cb, float cr,
+    internal static float Keep(float x, float y,
+        ReadOnlySpan<VirtualGreenScreenSample> samples)
+        => KeepComponents(x, y, 0, samples);
+
+    internal static float Keep(Color source,
         ReadOnlySpan<VirtualGreenScreenSample> samples)
     {
-        float keep = 1, protection = 0;
+        if (samples.Length == 0) return 1;
+        (float x, float y, float z) = Components(source, samples[0].Domain);
+        return KeepComponents(x, y, z, samples);
+    }
+
+    internal static float Keep(float y, float cb, float cr,
+        ReadOnlySpan<VirtualGreenScreenSample> samples)
+    {
+        if (samples.Length == 0) return 1;
+        (float x, float componentY, float z) = ComponentsFromYcbcr(
+            y, cb, cr, samples[0].Domain);
+        return KeepComponents(x, componentY, z, samples);
+    }
+
+    static float KeepComponents(float x, float y, float z,
+        ReadOnlySpan<VirtualGreenScreenSample> samples)
+    {
+        if (samples.Length == 0) return 1;
+        float keyStrength = 0, lockedStrength = 0;
         foreach (VirtualGreenScreenSample sample in samples)
         {
-            float deltaCb = cb - sample.Cb, deltaCr = cr - sample.Cr;
-            float distance = MathF.Sqrt(deltaCb * deltaCb + deltaCr * deltaCr);
-            float value = SmoothStep(sample.Tolerance,
+            float distance = Distance(x, y, z, sample.X, sample.Y, sample.Z);
+            float strength = 1 - SmoothStep(sample.Tolerance,
                 sample.Tolerance + sample.Feather, distance);
             if (sample.Locked)
-                protection = Math.Max(protection, 1 - value);
+                lockedStrength = Math.Max(lockedStrength, strength);
             else
-                keep = Math.Min(keep, value);
+                keyStrength = Math.Max(keyStrength, strength);
         }
-        return keep + (1 - keep) * protection;
+        return keyStrength - lockedStrength > samples[0].KeyOverLockedThreshold
+            ? 0 : 1;
     }
 
     internal static byte Apply(byte alpha, byte cb, byte cr, int lower,
@@ -680,10 +734,93 @@ internal static class VirtualGreenScreenMath
         int upper, ReadOnlySpan<VirtualGreenScreenSample> samples)
     {
         float keyed = alpha * Keep(cb / 255f, cr / 255f, samples);
+        return ApplyThresholds(keyed, lower, upper);
+    }
+
+    internal static byte Apply(byte alpha, byte y, byte cb, byte cr, int lower,
+        int upper, ReadOnlySpan<VirtualGreenScreenSample> samples)
+    {
+        float keyed = alpha * Keep(y / 255f, cb / 255f, cr / 255f, samples);
+        return ApplyThresholds(keyed, lower, upper);
+    }
+
+    static byte ApplyThresholds(float keyed, int lower, int upper)
+    {
         return keyed < Math.Clamp(lower, 0, 255) ? (byte)0 :
             keyed >= Math.Clamp(upper, 1, 255) ? (byte)255 :
             (byte)Math.Clamp((int)MathF.Round(keyed), 0, 255);
     }
+
+    static float Distance(float x1, float y1, float z1,
+        float x2, float y2, float z2)
+    {
+        float dx = x1 - x2, dy = y1 - y2, dz = z1 - z2;
+        return MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    static (float X, float Y, float Z) Components(Color color,
+        VirtualGreenScreenColorDomain domain)
+    {
+        float red = color.R / 255f, green = color.G / 255f,
+            blue = color.B / 255f;
+        return Components(red, green, blue, domain);
+    }
+
+    static (float X, float Y, float Z) ComponentsFromYcbcr(float y, float cb,
+        float cr, VirtualGreenScreenColorDomain domain)
+    {
+        if (domain == VirtualGreenScreenColorDomain.YCbCr)
+            return (cb, cr, 0);
+        float scaledY = 1.16438356f * (y - 16f / 255);
+        float u = cb - .5f, v = cr - .5f;
+        return Components(Math.Clamp(scaledY + 1.79274107f * v, 0, 1),
+            Math.Clamp(scaledY - .21324861f * u - .53290933f * v, 0, 1),
+            Math.Clamp(scaledY + 2.11240179f * u, 0, 1), domain);
+    }
+
+    static (float X, float Y, float Z) Components(float red, float green,
+        float blue, VirtualGreenScreenColorDomain domain)
+    {
+        if (domain == VirtualGreenScreenColorDomain.YCbCr)
+        {
+            (float cb, float cr) = Chroma(Color.FromArgb(
+                (int)MathF.Round(red * 255), (int)MathF.Round(green * 255),
+                (int)MathF.Round(blue * 255)));
+            return (cb, cr, 0);
+        }
+        if (domain == VirtualGreenScreenColorDomain.Rgb)
+            return (red, green, blue);
+        if (domain == VirtualGreenScreenColorDomain.Hsv)
+        {
+            float maximum = Math.Max(red, Math.Max(green, blue));
+            float minimum = Math.Min(red, Math.Min(green, blue));
+            float delta = maximum - minimum, hue = 0;
+            if (delta > .000001f)
+            {
+                hue = maximum == red ? (green - blue) / delta :
+                    maximum == green ? 2 + (blue - red) / delta :
+                    4 + (red - green) / delta;
+                hue = (hue / 6 + 1) % 1;
+            }
+            float saturation = maximum <= 0 ? 0 : delta / maximum;
+            float angle = hue * MathF.PI * 2;
+            return (.5f + MathF.Cos(angle) * saturation * .5f,
+                .5f + MathF.Sin(angle) * saturation * .5f, maximum);
+        }
+        red = Linear(red); green = Linear(green); blue = Linear(blue);
+        float l = MathF.Cbrt(.4122214708f * red + .5363325363f * green +
+            .0514459929f * blue);
+        float m = MathF.Cbrt(.2119034982f * red + .6806995451f * green +
+            .1073969566f * blue);
+        float s = MathF.Cbrt(.0883024619f * red + .2817188376f * green +
+            .6299787005f * blue);
+        return (.2104542553f * l + .793617785f * m - .0040720468f * s,
+            1.9779984951f * l - 2.428592205f * m + .4505937099f * s + .5f,
+            .0259040371f * l + .7827717662f * m - .808675766f * s + .5f);
+    }
+
+    static float Linear(float value) => value <= .04045f
+        ? value / 12.92f : MathF.Pow((value + .055f) / 1.055f, 2.4f);
 
     internal static bool ReducesAlpha(byte before, byte after) => after < before;
 
@@ -1561,11 +1698,13 @@ internal sealed class CustomShowStore
     static void ValidateVirtualGreenScreen(CustomVirtualGreenScreen? settings)
     {
         if (settings == null) return;
-        if (settings.Colors == null ||
-            settings.Colors.Length > CustomVirtualGreenScreen.MaximumColors)
+        if (!VirtualGreenScreenMath.ColorDomains.Contains(
+                settings.ColorDomain ?? "", StringComparer.OrdinalIgnoreCase))
             throw new InvalidDataException(
-                $"Virtual green screen supports no more than " +
-                $"{CustomVirtualGreenScreen.MaximumColors} colours.");
+                "Virtual green-screen colour domain must be ycbcr, rgb, hsv, or oklab.");
+        if (settings.Colors == null)
+            throw new InvalidDataException(
+                "Virtual green-screen colours cannot be null.");
         if (settings.SmallPatchSize is < 0 or >
             CustomVirtualGreenScreen.MaximumSmallPatchSize)
             throw new InvalidDataException(
@@ -1580,6 +1719,9 @@ internal sealed class CustomShowStore
             settings.LockedFeather is < 0 or > 100)
             throw new InvalidDataException(
                 "Virtual green-screen key and locked feather values must be 0–100.");
+        if (settings.KeyOverLockedThreshold is < 0 or > 100)
+            throw new InvalidDataException(
+                "Virtual green-screen key-over-lock threshold must be 0–100.");
         foreach (CustomVirtualGreenScreenColor color in settings.Colors)
             if (!VirtualGreenScreenMath.IsColor(color.Color) ||
                 color.Tolerance is < 0 or > 100 || color.Feather is < 0 or > 100)
@@ -1907,6 +2049,10 @@ internal sealed class CustomShowStore
                     Locked = true }
             ]
         };
+        CustomVirtualGreenScreen blockedByThreshold = show.Clone();
+        blockedByThreshold.KeyOverLockedThreshold = 100;
+        CustomVirtualGreenScreen allowedByThreshold = show.Clone();
+        allowedByThreshold.KeyOverLockedThreshold = 99;
         CustomVirtualGreenScreen disabledColor = new()
         {
             Colors = [new() { Color = "#00FF00", Tolerance = 18,
@@ -1925,17 +2071,32 @@ internal sealed class CustomShowStore
         };
         VirtualGreenScreenSample[] roleSamples =
             VirtualGreenScreenMath.Samples(roleFeathers);
-        bool excessivePaletteRejected = false;
-        try
+        CustomVirtualGreenScreen neutralChroma = new()
         {
-            ValidateVirtualGreenScreen(new CustomVirtualGreenScreen
+            ColorDomain = "ycbcr",
+            Colors = [new() { Color = "#808080", Tolerance = 1, Feather = 0 }]
+        };
+        CustomVirtualGreenScreen neutralRgb = neutralChroma.Clone();
+        neutralRgb.ColorDomain = "rgb";
+        bool domainsMatchTheirOwnTargets = VirtualGreenScreenMath.ColorDomains.All(
+            domain =>
             {
-                Colors = Enumerable.Range(0,
-                    CustomVirtualGreenScreen.MaximumColors + 1)
-                    .Select(_ => new CustomVirtualGreenScreenColor()).ToArray()
+                CustomVirtualGreenScreen settings = new()
+                {
+                    ColorDomain = domain,
+                    Colors = [new() { Color = "#28C070", Tolerance = 1,
+                        Feather = 0 }]
+                };
+                return VirtualGreenScreenMath.MatchStrength(
+                    Color.FromArgb(0x28, 0xC0, 0x70), settings.Colors[0],
+                    settings) == 1;
             });
-        }
-        catch (InvalidDataException) { excessivePaletteRejected = true; }
+        CustomVirtualGreenScreen largePalette = new()
+        {
+            Colors = Enumerable.Range(0, 300)
+                .Select(_ => new CustomVirtualGreenScreenColor()).ToArray()
+        };
+        ValidateVirtualGreenScreen(largePalette);
         return VirtualGreenScreenMath.Resolve(show, null).Colors[0].Color ==
                 "#00FF00" &&
             VirtualGreenScreenMath.SmallPatchSize(show) == 12 &&
@@ -1949,11 +2110,21 @@ internal sealed class CustomShowStore
             VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200,
                 protectedColor) == 255 &&
             VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200,
+                blockedByThreshold) == 255 &&
+            VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200,
+                allowedByThreshold) == 0 &&
+            VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200,
                 disabledColor) == 255 &&
             roleSamples.Length == 2 && roleSamples[0].Locked &&
             Math.Abs(roleSamples[0].Feather - 20f / 255) < .0001f &&
             !roleSamples[1].Locked && roleSamples[1].Feather == 0 &&
-            feathered is > 0 and < 1 && excessivePaletteRejected &&
+            feathered == 0 &&
+            VirtualGreenScreenMath.Samples(largePalette).Length == 300 &&
+            domainsMatchTheirOwnTargets &&
+            VirtualGreenScreenMath.MatchStrength(Color.FromArgb(32, 32, 32),
+                neutralChroma.Colors[0], neutralChroma) == 1 &&
+            VirtualGreenScreenMath.MatchStrength(Color.FromArgb(32, 32, 32),
+                neutralRgb.Colors[0], neutralRgb) == 0 &&
             VirtualGreenScreenMath.ReducesAlpha(200, 199) &&
             !VirtualGreenScreenMath.ReducesAlpha(200, 200) &&
             !VirtualGreenScreenMath.ReducesAlpha(200, 201) &&
@@ -2020,6 +2191,8 @@ internal sealed class CustomShowStore
                 {
                     SmallPatchSize = 8,
                     MinimumTransparentAreaRadius = 6,
+                    ColorDomain = "oklab",
+                    KeyOverLockedThreshold = 23,
                     KeyFeather = 7,
                     LockedFeather = 11,
                     Colors = [new() { Color = "#00FF00", Tolerance = 18,
@@ -2156,6 +2329,8 @@ internal sealed class CustomShowStore
                 roundTrip.VirtualGreenScreen?.Colors.Single().Color != "#00FF00" ||
                 roundTrip.VirtualGreenScreen.SmallPatchSize != 8 ||
                 roundTrip.VirtualGreenScreen.MinimumTransparentAreaRadius != 6 ||
+                roundTrip.VirtualGreenScreen.ColorDomain != "oklab" ||
+                roundTrip.VirtualGreenScreen.KeyOverLockedThreshold != 23 ||
                 roundTrip.VirtualGreenScreen.KeyFeather != 7 ||
                 roundTrip.VirtualGreenScreen.LockedFeather != 11 ||
                 roundTrip.VirtualGreenScreen.Colors[0].Tolerance != 18 ||

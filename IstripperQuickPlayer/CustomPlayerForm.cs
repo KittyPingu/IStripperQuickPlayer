@@ -41,7 +41,7 @@ internal sealed class CustomPlayerForm : Form
     {
         internal int Left, Top, Right, Bottom;
     }
-    internal sealed record AlphaHitMap(byte[] Pixels, byte[] Cb, byte[] Cr,
+    internal sealed record AlphaHitMap(byte[] Pixels, byte[] Y, byte[] Cb, byte[] Cr,
         int Width, int Height);
     static readonly LowLevelMouseProc globalWheelProc = GlobalWheelCallback;
     static readonly object globalMouseSync = new();
@@ -517,8 +517,9 @@ internal sealed class CustomPlayerForm : Form
         byte sourceAlpha = ChokedHitTestAlpha(alpha, x, y);
         VirtualGreenScreenSample[] samples =
             Volatile.Read(ref hitTestGreenSamples);
-        byte keyed = VirtualGreenScreenMath.Apply(sourceAlpha, alpha.Cb[offset],
-            alpha.Cr[offset], alphaThreshold, fullOpacityThreshold, samples);
+        byte keyed = VirtualGreenScreenMath.Apply(sourceAlpha, alpha.Y[offset],
+            alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
+            fullOpacityThreshold, samples);
         bool visible = keyed > 0;
         int patch = Volatile.Read(ref smallPatchSize);
         if (visible && patch > 0 && renderer != null)
@@ -558,7 +559,7 @@ internal sealed class CustomPlayerForm : Form
             int sy = Math.Clamp(y + (int)Math.Round(direction.Y * radius),
                 0, alpha.Height - 1);
             int offset = sy * alpha.Width + sx;
-            if (VirtualGreenScreenMath.Apply(alpha.Pixels[offset],
+            if (VirtualGreenScreenMath.Apply(alpha.Pixels[offset], alpha.Y[offset],
                 alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
                 fullOpacityThreshold, samples) > 0) support++;
         }
@@ -585,7 +586,7 @@ internal sealed class CustomPlayerForm : Form
                     (int)Math.Round(direction.Y * distance), 0, alpha.Height - 1);
                 int offset = sy * alpha.Width + sx;
                 if (VirtualGreenScreenMath.Apply(alpha.Pixels[offset],
-                    alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
+                    alpha.Y[offset], alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
                     fullOpacityThreshold, samples) > 0) continue;
                 connected = false;
                 break;
@@ -617,7 +618,7 @@ internal sealed class CustomPlayerForm : Form
                 byte source = ApplyOpacityThresholds(alpha.Pixels[offset],
                     alphaThreshold, fullOpacityThreshold);
                 byte keyed = VirtualGreenScreenMath.Apply(alpha.Pixels[offset],
-                    alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
+                    alpha.Y[offset], alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
                     fullOpacityThreshold, samples);
                 if (VirtualGreenScreenMath.ReducesAlpha(source, keyed)) continue;
                 connected = false;
@@ -642,7 +643,7 @@ internal sealed class CustomPlayerForm : Form
             byte source = ApplyOpacityThresholds(alpha.Pixels[offset],
                 alphaThreshold, fullOpacityThreshold);
             byte keyed = VirtualGreenScreenMath.Apply(alpha.Pixels[offset],
-                alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
+                alpha.Y[offset], alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
                 fullOpacityThreshold, samples);
             if (VirtualGreenScreenMath.ReducesAlpha(source, keyed)) support++;
         }
@@ -1024,8 +1025,11 @@ internal sealed class CustomPlayerForm : Form
             SamplerState S:register(s0);
             static const float2 Disk[16]={float2(.1767767,0),float2(-.2257722,.2068258),float2(.0345581,-.3937712),float2(.2845712,.3711728),float2(-.5222232,-.0923739),float2(.4946954,-.3146847),float2(-.1654659,.6155250),float2(-.3155615,-.6075944),float2(.6846422,.2500302),float2(-.7122561,.2940090),float2(.3433545,-.7337286),float2(.2537302,.8089320),float2(-.7647459,-.4431859),float2(.8971340,-.1972324),float2(-.5475069,.7787722),float2(-.1264868,-.9760897)};
             static const float2 Rays[8]={float2(1,0),float2(.7071068,.7071068),float2(0,1),float2(-.7071068,.7071068),float2(-1,0),float2(-.7071068,-.7071068),float2(0,-1),float2(.7071068,-.7071068)};
-            float PaletteKeep(float2 uv,int count,int locked){float2 chroma=float2(U.Sample(S,uv),V.Sample(S,uv));float keep=1;float protection=0;[loop]for(int n=0;n<count&&n<64;n++){float4 k=K.Load(int3(n,0,0));float d=distance(chroma,k.xy);float keyed=k.w<=0?(d<=k.z?0:1):smoothstep(k.z,k.z+k.w,d);if(n<locked)protection=max(protection,1-keyed);else keep=min(keep,keyed);}return keep+(1-keep)*protection;}
-            float MatteMain(O i):SV_TARGET{float4 t=T.Load(int3(0,0,0));float4 spatial=T.Load(int3(1,0,0));int count=(int)round(t.a*255.0);int locked=(int)round(spatial.b*255.0);return PaletteKeep(i.uv,count,locked);}
+            float LinearChannel(float c){return c<=.04045?c/12.92:pow((c+.055)/1.055,2.4);}
+            float3 RgbAt(float2 uv){float y=1.16438356*(Y.Sample(S,uv)-16.0/255.0);float u=U.Sample(S,uv)-.5;float v=V.Sample(S,uv)-.5;return saturate(float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u));}
+            float3 DomainAt(float2 uv,int domain){if(domain==0)return float3(U.Sample(S,uv),V.Sample(S,uv),0);float3 c=RgbAt(uv);if(domain==1)return c;if(domain==2){float maximum=max(c.r,max(c.g,c.b));float minimum=min(c.r,min(c.g,c.b));float delta=maximum-minimum;float hue=0;if(delta>.000001){hue=maximum==c.r?(c.g-c.b)/delta:maximum==c.g?2+(c.b-c.r)/delta:4+(c.r-c.g)/delta;hue=frac(hue/6+1);}float saturation=maximum<=0?0:delta/maximum;float angle=hue*6.283185307;return float3(.5+cos(angle)*saturation*.5,.5+sin(angle)*saturation*.5,maximum);}c=float3(LinearChannel(c.r),LinearChannel(c.g),LinearChannel(c.b));float l=pow(max(0,.4122214708*c.r+.5363325363*c.g+.0514459929*c.b),1.0/3.0);float m=pow(max(0,.2119034982*c.r+.6806995451*c.g+.1073969566*c.b),1.0/3.0);float s=pow(max(0,.0883024619*c.r+.2817188376*c.g+.6299787005*c.b),1.0/3.0);return float3(.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s+.5,.0259040371*l+.7827717662*m-.808675766*s+.5);}
+            float PaletteKeep(float2 uv,int domain,float threshold){float3 source=DomainAt(uv,domain);float keyStrength=0;float lockedStrength=0;uint width,height;K.GetDimensions(width,height);int capacity=(int)width/2;[loop]for(int n=0;n<capacity;n++){float4 meta=K.Load(int3(n+capacity,0,0));if(meta.y<.5)continue;float4 k=K.Load(int3(n,0,0));float d=distance(source,k.xyz);float keep=meta.x<=0?(d<=k.w?0:1):smoothstep(k.w,k.w+meta.x,d);float strength=1-keep;if(meta.z>.5)lockedStrength=max(lockedStrength,strength);else keyStrength=max(keyStrength,strength);}return keyStrength-lockedStrength>threshold?0:1;}
+            float MatteMain(O i):SV_TARGET{float4 spatial=T.Load(int3(1,0,0));int domain=(int)round(spatial.a*255.0);return PaletteKeep(i.uv,domain,spatial.b);}
             float Supported(float2 uv,float lower){float a=A.Sample(S,uv);if(a<=0||a<lower)return 0;a*=M.Sample(S,uv);return a>0&&a>=lower?1:0;}
             float DiskSupport(float2 uv,float2 radius,float lower){float support=0;[unroll]for(int n=0;n<16;n++)support+=Supported(uv+Disk[n]*radius,lower);return support;}
             float ConnectedSupportedRays(float2 uv,float2 radius,float lower){float rays=0;[unroll]for(int n=0;n<8;n++){float connected=1;[unroll]for(int step=1;step<=4;step++)connected*=Supported(uv+Rays[n]*radius*(step*.25),lower);rays+=connected;}return rays;}
@@ -1056,15 +1060,16 @@ internal sealed class CustomPlayerForm : Form
         IDCompositionVisual? visual;
         bool pending, playing, disposed, frameUploaded; long rgbTick, alphaTick;
         int alphaThreshold, fullOpacityThreshold, smallPatchSize,
-            minimumTransparentAreaRadius;
+            minimumTransparentAreaRadius, greenDomain;
         float edgeChokePixels;
         VirtualGreenScreenSample[] greenSamples;
         VirtualGreenScreenSample[]? uploadedGreenSamples;
+        int keyTextureCapacity = 1;
         int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1,
             uploadedEdgeChokeQuarters = -1, uploadedSmallPatchSize = -1,
-            uploadedMinimumTransparentAreaRadius = -1;
+            uploadedMinimumTransparentAreaRadius = -1, uploadedGreenDomain = -1;
         double clockSeconds, rate = 1;
-        readonly byte[] alphaRow, cbRow, crRow;
+        readonly byte[] alphaRow, yRow, cbRow, crRow;
         readonly bool alpha16;
         internal int Width => rgb.Width; internal int Height => rgb.Height;
         internal double Duration { get; }
@@ -1080,6 +1085,7 @@ internal sealed class CustomPlayerForm : Form
             this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
             this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
             greenSamples = VirtualGreenScreenMath.Samples(virtualGreenScreen);
+            greenDomain = (int)VirtualGreenScreenMath.Domain(virtualGreenScreen);
             smallPatchSize = VirtualGreenScreenMath.SmallPatchSize(
                 virtualGreenScreen);
             minimumTransparentAreaRadius =
@@ -1095,6 +1101,7 @@ internal sealed class CustomPlayerForm : Form
             Duration = Math.Min(rgb.Duration, alpha.Duration);
             alpha16 = alpha.IsGray16;
             alphaRow = new byte[checked(Width * (alpha16 ? 2 : 1))];
+            yRow = new byte[Width];
             cbRow = new byte[(Width + 1) / 2];
             crRow = new byte[(Width + 1) / 2];
             audio = InternalAudioPlayer.TryOpen(foreground);
@@ -1118,7 +1125,7 @@ internal sealed class CustomPlayerForm : Form
             vTex = Texture((Width+1)/2, (Height+1)/2); aTex = Texture(Width, Height,
                 alpha16 ? DxgiFormat.R16_UNorm : DxgiFormat.R8_UNorm);
             thresholdTex = Texture(2, 1, DxgiFormat.R8G8B8A8_UNorm);
-            keyTex = Texture(CustomVirtualGreenScreen.MaximumColors, 1,
+            keyTex = Texture(2, 1,
                 DxgiFormat.R32G32B32A32_Float);
             matteTex = RenderTexture((Width + 1) / 2, (Height + 1) / 2);
             yView=device.CreateShaderResourceView(yTex); uView=device.CreateShaderResourceView(uTex);
@@ -1165,10 +1172,24 @@ internal sealed class CustomPlayerForm : Form
         {
             Volatile.Write(ref greenSamples,
                 VirtualGreenScreenMath.Samples(settings));
+            Volatile.Write(ref greenDomain,
+                (int)VirtualGreenScreenMath.Domain(settings));
             Volatile.Write(ref smallPatchSize,
                 VirtualGreenScreenMath.SmallPatchSize(settings));
             Volatile.Write(ref minimumTransparentAreaRadius,
                 VirtualGreenScreenMath.MinimumTransparentAreaRadius(settings));
+        }
+        void EnsureKeyTextureCapacity(int count)
+        {
+            int capacity = Math.Max(1, count);
+            if (capacity == keyTextureCapacity) return;
+            keyView?.Dispose();
+            keyTex?.Dispose();
+            keyTex = Texture(checked(capacity * 2), 1,
+                DxgiFormat.R32G32B32A32_Float);
+            keyView = device!.CreateShaderResourceView(keyTex);
+            keyTextureCapacity = capacity;
+            uploadedGreenSamples = null;
         }
         internal bool RefreshCurrentFrame()
         {
@@ -1194,23 +1215,23 @@ internal sealed class CustomPlayerForm : Form
                 context!.UpdateSubresource(yTex!,0,null,yd,yp,0); context.UpdateSubresource(uTex!,0,null,ud,up,0); context.UpdateSubresource(vTex!,0,null,vd,vp,0); context.UpdateSubresource(aTex!,0,null,ad,ap,0);
                 frameUploaded=true;
                 DrawCurrentFrameLocked();
-                if(captureHitMap) alphaBytes=CreateHitMap(ad,ap,ud,up,vd,vp);
+                if(captureHitMap) alphaBytes=CreateHitMap(ad,ap,yd,yp,ud,up,vd,vp);
                 pending=false; return true;
             }
         }
         unsafe void DrawCurrentFrameLocked()
         {
-            int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4), patch=Volatile.Read(ref smallPatchSize), area=Volatile.Read(ref minimumTransparentAreaRadius); VirtualGreenScreenSample[] samples=Volatile.Read(ref greenSamples); int locked=samples.Count(value=>value.Locked); bool greenChanged=!ReferenceEquals(samples,uploadedGreenSamples); if(greenChanged){float[] values=new float[CustomVirtualGreenScreen.MaximumColors*4];for(int index=0;index<samples.Length;index++){int offset=index*4;values[offset]=samples[index].Cb;values[offset+1]=samples[index].Cr;values[offset+2]=samples[index].Tolerance;values[offset+3]=samples[index].Feather;}fixed(float* data=values)context!.UpdateSubresource(keyTex!,0,null,new IntPtr(data),(uint)(CustomVirtualGreenScreen.MaximumColors*16),0);uploadedGreenSamples=samples;} if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters||patch!=uploadedSmallPatchSize||area!=uploadedMinimumTransparentAreaRadius||greenChanged){uint[] values=[(uint)(lower|(upper<<8)|(chokeQuarters<<16)|(samples.Length<<24)),(uint)(patch|(area<<8)|(locked<<16))];fixed(uint* data=values)context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(data),8,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;uploadedSmallPatchSize=patch;uploadedMinimumTransparentAreaRadius=area;}
+            int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4), patch=Volatile.Read(ref smallPatchSize), area=Volatile.Read(ref minimumTransparentAreaRadius), domain=Volatile.Read(ref greenDomain); VirtualGreenScreenSample[] samples=Volatile.Read(ref greenSamples); int competition=samples.Length==0?0:(int)Math.Round(samples[0].KeyOverLockedThreshold*255); EnsureKeyTextureCapacity(samples.Length); bool greenChanged=!ReferenceEquals(samples,uploadedGreenSamples); if(greenChanged){float[] values=new float[keyTextureCapacity*8];for(int index=0;index<samples.Length;index++){int offset=index*4;values[offset]=samples[index].X;values[offset+1]=samples[index].Y;values[offset+2]=samples[index].Z;values[offset+3]=samples[index].Tolerance;int metadata=(index+keyTextureCapacity)*4;values[metadata]=samples[index].Feather;values[metadata+1]=1;values[metadata+2]=samples[index].Locked?1:0;}fixed(float* data=values)context!.UpdateSubresource(keyTex!,0,null,new IntPtr(data),(uint)(keyTextureCapacity*32),0);uploadedGreenSamples=samples;} if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters||patch!=uploadedSmallPatchSize||area!=uploadedMinimumTransparentAreaRadius||domain!=uploadedGreenDomain||greenChanged){uint[] values=[(uint)(lower|(upper<<8)|(chokeQuarters<<16)),(uint)(patch|(area<<8)|(competition<<16)|(domain<<24))];fixed(uint* data=values)context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(data),8,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;uploadedSmallPatchSize=patch;uploadedMinimumTransparentAreaRadius=area;uploadedGreenDomain=domain;}
             context!.PSUnsetShaderResource(6);
             context.OMSetRenderTargets(matteTarget!);
             context.RSSetViewport(new GpuViewport(0, 0,
                 matteTex!.Description.Width, matteTex.Description.Height));
             context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
             context.VSSetShader(vs); context.PSSetShader(mattePs);
-            context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView);
+            context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView);
             context.PSSetShaderResource(4,thresholdView); context.PSSetShaderResource(5,keyView);
             context.PSSetSampler(0,sampler); context.Draw(3,0);
-            context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2);
+            context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2);
             context.PSUnsetShaderResource(4); context.PSUnsetShaderResource(5);
 
             context.OMSetRenderTargets(target!);
@@ -1233,11 +1254,13 @@ internal sealed class CustomPlayerForm : Form
             swap!.Present(0, PresentFlags.None);
         }
         AlphaHitMap CreateHitMap(IntPtr alphaPlane, uint pitch,
-            IntPtr cbPlane, uint cbPitch, IntPtr crPlane, uint crPitch)
+            IntPtr yPlane, uint yPitch, IntPtr cbPlane, uint cbPitch,
+            IntPtr crPlane, uint crPitch)
         {
             Size size = HitMapSize(Width, Height, 512);
             byte[] pixels = GC.AllocateUninitializedArray<byte>(
                 checked(size.Width * size.Height));
+            byte[] yValues = GC.AllocateUninitializedArray<byte>(pixels.Length);
             byte[] cb = GC.AllocateUninitializedArray<byte>(pixels.Length);
             byte[] cr = GC.AllocateUninitializedArray<byte>(pixels.Length);
             for (int y = 0; y < size.Height; y++)
@@ -1245,6 +1268,8 @@ internal sealed class CustomPlayerForm : Form
                 int sourceY = Math.Min(Height - 1, y * Height / size.Height);
                 Marshal.Copy(alphaPlane + sourceY * (int)pitch,
                     alphaRow, 0, alphaRow.Length);
+                Marshal.Copy(yPlane + sourceY * (int)yPitch,
+                    yRow, 0, yRow.Length);
                 int chromaY = sourceY / 2;
                 Marshal.Copy(cbPlane + chromaY * (int)cbPitch,
                     cbRow, 0, cbRow.Length);
@@ -1258,11 +1283,13 @@ internal sealed class CustomPlayerForm : Form
                         ? Alpha16ToByte((ushort)(alphaRow[sourceX * 2] |
                             alphaRow[sourceX * 2 + 1] << 8))
                         : alphaRow[sourceX];
+                    yValues[destination + x] = yRow[sourceX];
                     cb[destination + x] = cbRow[sourceX / 2];
                     cr[destination + x] = crRow[sourceX / 2];
                 }
             }
-            return new AlphaHitMap(pixels, cb, cr, size.Width, size.Height);
+            return new AlphaHitMap(pixels, yValues, cb, cr,
+                size.Width, size.Height);
         }
         internal static byte Alpha16ToByte(ushort value) =>
             (byte)((value + 128u) / 257u);
