@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Train, evaluate, and package QuickPlayer's binary prop segmenter."""
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -13,7 +14,16 @@ import tempfile
 import time
 from pathlib import Path
 
-TRAINING_REVISION = 7
+TRAINING_REVISION = 9
+CLASSIFICATION_REVISION = 1
+CATEGORIES = ("dildo", "butt-plug", "strap-on", "choker", "necklace", "ears",
+              "chains", "restraints", "other", "gloves", "mask", "diaper",
+              "fluids", "chastity", "unclassified")
+TRAINABLE_CATEGORIES = CATEGORIES[:-1]
+TARGET_CATEGORIES = {"dildo", "butt-plug"}
+SPECIALIZED_ARCHITECTURE = "deeplabv3-resnet50-v1.1-dildo-butt-plug"
+CLASSIFICATION_STATES = ("held", "inserted")
+STATE_CATEGORIES = {"dildo", "butt-plug"}
 HARD_NEGATIVE_WEIGHT = 2.0
 HARD_NEGATIVE_FRACTION = .15
 MAX_HARD_NEGATIVES = 125
@@ -22,11 +32,13 @@ HARD_NEGATIVE_MINIMUM_THRESHOLD = .45
 HARD_POSITIVE_WEIGHT = 2.0
 HARD_POSITIVE_FRACTION = .20
 MAX_HARD_POSITIVES = 250
-HARD_POSITIVE_MINING_REVISION = 1
-HARD_NEGATIVE_MINING_REVISION = 3
+HARD_POSITIVE_MINING_REVISION = 2
+HARD_NEGATIVE_MINING_REVISION = 4
 EXTERIOR_RECALL_WEIGHT = .35
 RETAINED_NEGATIVE_FPR_CEILING = .05
 CHECKPOINT_SCORE_TOLERANCE = .015
+REV5_MODEL_ID = "prop-r50-20260821-001652-b0430521"
+REV5_CHECKPOINT_SHA256 = "b0430521c679194f2789f6188843dade9eefe687ea014154b2e2118d9d4d0325"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "custom-shows"))
 try:
@@ -124,7 +136,7 @@ def partition_samples(manifest, minimum_resolution):
     return available, sealed_sources
 
 
-def latest_v1_package(root, output):
+def latest_v1_package(root, output, required_model_id=None, required_checkpoint_sha256=None):
     candidates = sorted((Path(root) / "runs").glob("*/package/manifest.json"),
                         key=lambda path: path.stat().st_mtime, reverse=True)
     for path in candidates:
@@ -134,8 +146,10 @@ def latest_v1_package(root, output):
             manifest = json.loads(path.read_text(encoding="utf-8"))
             if manifest.get("architecture") != ARCHITECTURE: continue
             if manifest.get("promotionEligible") is False: continue
+            if required_model_id and manifest.get("modelId") != required_model_id: continue
             expected = manifest.get("checkpointSha256")
             if expected and digest(checkpoint) != expected: continue
+            if required_checkpoint_sha256 and digest(checkpoint) != required_checkpoint_sha256: continue
             return path.parent, manifest
         except (OSError, ValueError, TypeError):
             continue
@@ -220,6 +234,210 @@ def annotate_mask_statistics(root, samples, input_size):
         sample["_maskFraction"] = positive * scale * scale / (input_size * input_size)
 
 
+def read_classification_ids(path, width, height):
+    import numpy as np
+    with gzip.open(path, "rb") as stream:
+        raw = stream.read()
+    expected = width * height * 4
+    if len(raw) != expected:
+        raise RuntimeError(f"Classification mask has {len(raw):,} bytes; expected {expected:,}: {path}")
+    return np.frombuffer(raw, dtype="<i4").reshape(height, width).copy()
+
+
+def annotate_classifications(root, output, available, input_size):
+    """Validate every positive classification and attach object-aware training metadata."""
+    import numpy as np
+    from PIL import Image
+    samples = [sample for values in available.values() for sample in values]
+    positives = [sample for sample in samples if sample.get("decision") == "positive"]
+    category_objects = {name: 0 for name in CATEGORIES}
+    category_pixels = {name: 0 for name in CATEGORIES}
+    state_objects = {name: 0 for name in CLASSIFICATION_STATES}
+    errors = []
+    for index, sample in enumerate(positives, 1):
+        current_errors = []
+        classification_path = sample.get("classificationPath")
+        classification_mask_path = sample.get("classificationMaskPath")
+        if not classification_path or not classification_mask_path or not sample.get("classifiedUtc"):
+            errors.append({"sampleId": sample["id"], "errors": ["classification is incomplete"]})
+            continue
+        annotation_path = Path(root) / classification_path
+        ids_path = Path(root) / classification_mask_path
+        try:
+            annotation = json.loads(annotation_path.read_text(encoding="utf-8-sig"))
+            if annotation.get("schemaVersion") != 1:
+                raise RuntimeError("unsupported classification schema")
+            width, height = int(sample["width"]), int(sample["height"])
+            ids = read_classification_ids(ids_path, width, height)
+            prop = np.asarray(Image.open(Path(root) / sample["propMaskPath"]).convert("L"),
+                              dtype=np.uint8) >= 128
+            if ids.shape != prop.shape: current_errors.append("classification dimensions differ from prop mask")
+            else:
+                if np.any((ids > 0) & ~prop): current_errors.append("classified pixels outside prop mask")
+                if np.any(prop & (ids == 0)): current_errors.append("unassigned prop pixels")
+            objects = annotation.get("objects", [])
+            by_id = {int(value.get("id", 0)): value for value in objects}
+            used = {int(value) for value in np.unique(ids) if value > 0}
+            if 0 in by_id or len(by_id) != len(objects): current_errors.append("invalid or duplicate object IDs")
+            if used - set(by_id): current_errors.append("classification mask references unknown objects")
+            focus_objects = []
+            categories, states = set(), set()
+            for object_id in sorted(used & set(by_id)):
+                value = by_id[object_id]; category = value.get("category")
+                object_states = tuple(dict.fromkeys(value.get("states") or []))
+                if category not in CATEGORIES:
+                    current_errors.append(f"object {object_id} has unknown category {category!r}"); continue
+                if any(state not in CLASSIFICATION_STATES for state in object_states):
+                    current_errors.append(f"object {object_id} has an unknown state")
+                if object_states and category not in STATE_CATEGORIES:
+                    current_errors.append(f"object {object_id} has states but category is {category}")
+                region = ids == object_id; ys, xs = np.where(region); pixels = int(region.sum())
+                if not pixels: continue
+                bounds = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+                fraction = pixels * min(input_size / width, input_size / height) ** 2 / input_size ** 2
+                focus_objects.append({"id": object_id, "category": category,
+                    "states": list(object_states), "bounds": bounds, "pixels": pixels,
+                    "fractionAtInput": fraction})
+                categories.add(category); states.update(object_states)
+                category_objects[category] += 1; category_pixels[category] += pixels
+                for state in object_states:
+                    if state in state_objects: state_objects[state] += 1
+            sample["_classificationObjects"] = focus_objects
+            sample["_classificationCategories"] = sorted(categories)
+            sample["_classificationStates"] = sorted(states)
+            sample["_classificationRevision"] = CLASSIFICATION_REVISION
+            sample["_classificationArtifacts"] = {
+                "classificationPath": {"path": str(classification_path).replace("\\", "/"),
+                    "size": annotation_path.stat().st_size, "sha256": digest(annotation_path)},
+                "classificationMaskPath": {"path": str(classification_mask_path).replace("\\", "/"),
+                    "size": ids_path.stat().st_size, "sha256": digest(ids_path)}}
+        except Exception as error:
+            current_errors.append(str(error))
+        if current_errors: errors.append({"sampleId": sample["id"], "errors": current_errors})
+        if index % 100 == 0:
+            emit("classification-audit", f"Audited {index:,}/{len(positives):,} classified images",
+                 completed=index, total=len(positives))
+    if errors:
+        atomic_json(Path(output) / "classification-audit-errors.json", {
+            "schemaVersion": 1, "trainingRevision": TRAINING_REVISION, "errors": errors})
+        raise RuntimeError(f"Classification audit failed for {len(errors):,} images")
+    training_category_objects = {name: 0 for name in CATEGORIES}
+    for sample in available.get("train", []):
+        for value in sample.get("_classificationObjects", []):
+            training_category_objects[value["category"]] += 1
+    counts = [training_category_objects[name] for name in TRAINABLE_CATEGORIES
+              if training_category_objects[name]]
+    median = sorted(counts)[len(counts) // 2] if counts else 1
+    category_weights = {name: min(2.5, max(.75, math.sqrt(
+                            median / max(1, training_category_objects[name]))))
+                        for name in TRAINABLE_CATEGORIES}
+    for sample in samples:
+        if sample.get("decision") != "positive":
+            sample["_classificationObjects"] = []; sample["_classificationCategories"] = []
+            sample["_classificationStates"] = []; sample["_categoryBalanceWeight"] = 1.; continue
+        represented = [name for name in sample.get("_classificationCategories", [])
+                       if name in category_weights]
+        sample["_categoryBalanceWeight"] = max(
+            (category_weights[name] for name in represented), default=1.)
+    summary = {"revision": CLASSIFICATION_REVISION, "complete": True,
+        "images": len(positives), "objects": sum(category_objects.values()),
+        "categoryObjects": category_objects, "categoryPixels": category_pixels,
+        "stateObjects": state_objects, "categorySamplingWeights": category_weights,
+        "objectFocusedCropProbability": .30}
+    emit("classification-audit",
+         f"Validated {len(positives):,} images and {summary['objects']:,} classified objects",
+         **summary)
+    return summary
+
+
+def materialize_specialized_targets(root, output, available, input_size):
+    """Build deterministic dildo/butt-plug targets and ignore unclassified pixels."""
+    import numpy as np
+    from PIL import Image
+    destination = Path(output) / "target-masks"
+    destination.mkdir(parents=True, exist_ok=True)
+    samples = [sample for values in available.values() for sample in values]
+    target_objects = {name: 0 for name in sorted(TARGET_CATEGORIES)}
+    target_pixels = {name: 0 for name in sorted(TARGET_CATEGORIES)}
+    target_frames = {name: 0 for name in sorted(TARGET_CATEGORIES)}
+    split_counts = {}
+    ignored_pixels = 0
+    for split, split_samples in available.items():
+        counts = {"positive": 0, "negative": 0, "categoryHardNegative": 0}
+        for sample in split_samples:
+            source_decision = sample.get("decision")
+            sample["_sourceDecision"] = source_decision
+            sample["_sourceMaskFraction"] = float(sample.get("_maskFraction", 0.))
+            if source_decision != "positive":
+                sample["_maskFraction"] = 0.
+                sample["_positivePixels"] = 0
+                sample["_categoryBalanceWeight"] = 1.
+                counts["negative"] += 1
+                continue
+            ids = read_classification_ids(Path(root) / sample["classificationMaskPath"],
+                                          int(sample["width"]), int(sample["height"]))
+            objects = sample.get("_classificationObjects", [])
+            selected_ids = [value["id"] for value in objects
+                            if value["category"] in TARGET_CATEGORIES]
+            ignored_ids = [value["id"] for value in objects
+                           if value["category"] == "unclassified"]
+            target = np.isin(ids, selected_ids) if selected_ids else np.zeros(ids.shape, dtype=bool)
+            ignored = np.isin(ids, ignored_ids) if ignored_ids else np.zeros(ids.shape, dtype=bool)
+            encoded = np.zeros(ids.shape, dtype=np.uint8)
+            encoded[ignored] = 128
+            encoded[target] = 255
+            filename = hashlib.sha256(str(sample["id"]).encode("utf-8")).hexdigest() + ".png"
+            path = destination / filename
+            temporary = path.with_name(path.name + ".tmp-" + os.urandom(6).hex())
+            try:
+                Image.fromarray(encoded).save(temporary, format="PNG", compress_level=6)
+                os.replace(temporary, path)
+            finally:
+                try:
+                    if temporary.exists(): temporary.unlink()
+                except OSError:
+                    pass
+            target_count = int(target.sum())
+            scale = min(input_size / ids.shape[1], input_size / ids.shape[0])
+            sample["_targetMaskPath"] = str(path)
+            sample["_positivePixels"] = target_count
+            sample["_maskFraction"] = target_count * scale * scale / (input_size * input_size)
+            sample["decision"] = "positive" if target_count else "negative"
+            counts[sample["decision"]] += 1
+            if not target_count: counts["categoryHardNegative"] += 1
+            ignored_pixels += int(ignored.sum())
+            represented = set()
+            for value in objects:
+                category = value["category"]
+                if category not in TARGET_CATEGORIES: continue
+                object_pixels = int((ids == value["id"]).sum())
+                target_objects[category] += 1
+                target_pixels[category] += object_pixels
+                represented.add(category)
+            for category in represented: target_frames[category] += 1
+        split_counts[split] = counts
+    training_counts = {name: sum(name in sample.get("_classificationCategories", [])
+                                 for sample in available.get("train", []))
+                       for name in TARGET_CATEGORIES}
+    largest = max(training_counts.values(), default=1)
+    category_weights = {name: min(3., max(.75, math.sqrt(largest / max(1, count))))
+                        for name, count in training_counts.items()}
+    for sample in samples:
+        represented = [name for name in sample.get("_classificationCategories", [])
+                       if name in TARGET_CATEGORIES]
+        sample["_categoryBalanceWeight"] = max(
+            (category_weights[name] for name in represented), default=1.)
+    summary = {"mode": "binary-specialized", "foregroundCategories": sorted(TARGET_CATEGORIES),
+               "ignoredCategories": ["unclassified"], "backgroundCategories":
+               [name for name in TRAINABLE_CATEGORIES if name not in TARGET_CATEGORIES],
+               "targetObjects": target_objects, "targetPixels": target_pixels,
+               "targetFrames": target_frames, "trainingCategorySamplingWeights": category_weights,
+               "ignoredPixels": ignored_pixels, "splitCounts": split_counts}
+    emit("target-preparation", "Prepared dildo/butt-plug foreground targets; unclassified pixels ignored",
+         **summary)
+    return summary
+
+
 def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, batch, device,
                         prior_package=None, prior_manifest=None, progress_callback=None):
     """Rank source-diverse harmful and sub-threshold RVM-adjacent negative responses."""
@@ -242,13 +460,14 @@ def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, ba
     model.eval()
     bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
     with torch.inference_mode():
-        for batch_index, (images, _, sample_ids) in enumerate(loader):
+        for batch_index, (images, targets, sample_ids) in enumerate(loader):
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=bf16):
                 probabilities = model(images.to(device))["out"].float().sigmoid().cpu()
             for index, sample_id in enumerate(sample_ids):
                 sample = lookup[str(sample_id)]
                 probability = probabilities[index, 0].numpy()
-                prediction = probability >= threshold
+                valid = targets[index, 0].numpy() >= 0
+                prediction = (probability >= threshold) & valid
                 retained = prediction
                 person = None
                 if sample.get("rvmPersonMaskPath"):
@@ -263,9 +482,9 @@ def mine_hard_negatives(torch, DataLoader, root, output, samples, input_size, ba
                     radius = max(1, round(24 * min(person.shape) / 512))
                     kernel = np.ones((radius * 2 + 1, radius * 2 + 1), np.uint8)
                     adjacent = cv2.dilate(person.astype(np.uint8), kernel) != 0
-                    candidates = probability[adjacent & ~person]
+                    candidates = probability[adjacent & ~person & valid]
                 else:
-                    candidates = probability.ravel()
+                    candidates = probability[valid]
                 if candidates.size:
                     top_count = min(128, candidates.size)
                     top = np.partition(candidates, candidates.size - top_count)[-top_count:]
@@ -352,10 +571,16 @@ def split_profile(samples):
     buckets = {name: 0 for name in ("under-0.5pct", "0.5-2pct", "2-5pct", "over-5pct")}
     for sample in positives:
         buckets[mask_size_bucket(float(sample.get("_maskFraction", 0.)))] += 1
+    category_counts = {name: sum(name in sample.get("_classificationCategories", [])
+                                 for sample in positives) for name in CATEGORIES}
+    state_counts = {name: sum(name in sample.get("_classificationStates", [])
+                              for sample in positives) for name in CLASSIFICATION_STATES}
     return {"count": len(samples), "sourceCount": len({sample.get("sourceId") for sample in samples}),
             "positiveCount": len(positives), "negativeCount": len(negatives),
             "rvmPersonMaskCount": sum(bool(sample.get("rvmPersonMaskPath")) for sample in samples),
-            "negativeRatio": len(negatives) / max(1, len(samples)), "positiveSizeBuckets": buckets}
+            "negativeRatio": len(negatives) / max(1, len(samples)), "positiveSizeBuckets": buckets,
+            "classifiedPositiveFramesByCategory": category_counts,
+            "classifiedPositiveFramesByState": state_counts}
 
 
 def sampling_plan(samples, negative_ratio):
@@ -386,7 +611,8 @@ def source_balanced_weights(samples, negative_ratio):
             fraction = float(sample.get("_maskFraction", 0.))
             size_weight = 2. if decision == "positive" and fraction <= .005 else \
                 1.35 if decision == "positive" and fraction <= .02 else 1.
-            weights[index] = hard * size_weight / \
+            category_weight = float(sample.get("_categoryBalanceWeight", 1.))
+            weights[index] = hard * size_weight * category_weight / \
                 (max(1, len(class_sources[decision])) * len(indexes))
     for decision, target in class_target.items():
         total = sum(weight for weight, sample in zip(weights, samples)
@@ -413,22 +639,35 @@ class PropDataset:
         from PIL import Image, ImageEnhance, ImageFilter
         sample = self.samples[index]
         image = Image.open(self.root / sample["framePath"]).convert("RGB")
-        mask = Image.open(self.root / sample["propMaskPath"]).convert("L")
+        mask_path = Path(sample.get("_targetMaskPath", sample["propMaskPath"]))
+        if not mask_path.is_absolute(): mask_path = self.root / mask_path
+        encoded_mask = Image.open(mask_path).convert("L")
+        target_mask = encoded_mask.point(lambda value: 255 if value >= 192 else 0)
+        ignore_mask = encoded_mask.point(lambda value: 255 if 64 <= value < 192 else 0)
         if self.training:
-            person = Image.new("L", mask.size, 0)
+            focus_candidates = [value for value in sample.get("_classificationObjects", [])
+                                if value.get("category") in TARGET_CATEGORIES]
+            focus = random.choice(focus_candidates) if focus_candidates else None
+            focus_bounds = tuple(focus["bounds"]) if focus else None
+            focus_fraction = float(focus.get("fractionAtInput", sample.get("_maskFraction", 0.))) \
+                if focus else float(sample.get("_maskFraction", 0.))
+            person = Image.new("L", target_mask.size, 0)
             person_available = False
             person_path = sample.get("rvmPersonMaskPath")
             if person_path:
                 try:
                     person = Image.open(self.root / person_path).convert("L")
-                    if person.size != mask.size:
-                        person = person.resize(mask.size, Image.Resampling.NEAREST)
+                    if person.size != target_mask.size:
+                        person = person.resize(target_mask.size, Image.Resampling.NEAREST)
                     person_available = True
                 except (FileNotFoundError, OSError, ValueError):
-                    person = Image.new("L", mask.size, 0)
-            availability = Image.new("L", mask.size, 255 if person_available else 0)
-            mask = Image.merge("RGB", (mask, person, availability))
+                    person = Image.new("L", target_mask.size, 0)
+            availability = Image.new("L", target_mask.size, 255 if person_available else 0)
+            mask = Image.merge("RGBA", (target_mask, person, availability, ignore_mask))
             if random.random() < .5:
+                if focus_bounds:
+                    left, top, right, bottom = focus_bounds
+                    focus_bounds = (image.width - right, top, image.width - left, bottom)
                 image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
                 mask = mask.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
             image = augment_appearance(image, np)
@@ -438,11 +677,11 @@ class PropDataset:
             if geometry < letterbox_limit:
                 image, mask = letterbox_pair(image, mask, self.input_size)
             else:
-                native_foreground = prop_mask_bounds(mask)
+                native_foreground = focus_bounds or prop_mask_bounds(mask)
                 if native_foreground and geometry < focus_limit and \
-                        float(sample.get("_maskFraction", 0.)) <= .02:
+                        (focus_bounds is not None or float(sample.get("_maskFraction", 0.)) <= .02):
                     image, mask = focused_crop_pair(image, mask, self.input_size,
-                        float(sample.get("_maskFraction", 0.)))
+                        focus_fraction, focus_bounds)
                 else:
                     scale = random.uniform(.75, 1.5)
                     target = max(64, round(self.input_size * scale))
@@ -482,7 +721,8 @@ class PropDataset:
             pixels, region, _ = prepare_image(image, self.input_size)
             left, top, width, height = region
             canvas_mask = Image.new("L", (self.input_size, self.input_size), 0)
-            canvas_mask.paste(mask.resize((width, height), Image.Resampling.NEAREST), (left, top))
+            canvas_mask.paste(encoded_mask.resize((width, height), Image.Resampling.NEAREST),
+                              (left, top))
             mask = canvas_mask
         mask_pixels = np.asarray(mask, dtype=np.uint8)
         if self.training:
@@ -490,9 +730,11 @@ class PropDataset:
             person = mask_pixels[..., 1] >= 128
             person_available = mask_pixels[..., 2] >= 128
             exterior = ((target[0] >= .5) & ~person & person_available).astype(np.float32)[None]
+            target[mask_pixels[..., 3][None] >= 128] = -1.
             return (torch.from_numpy(pixels), torch.from_numpy(target),
                     torch.from_numpy(exterior), sample["id"])
-        target = (mask_pixels >= 128).astype(np.float32)[None]
+        target = (mask_pixels >= 192).astype(np.float32)[None]
+        target[((mask_pixels >= 64) & (mask_pixels < 192))[None]] = -1.
         return torch.from_numpy(pixels), torch.from_numpy(target), sample["id"]
 
 
@@ -509,10 +751,10 @@ def letterbox_pair(image, mask, input_size):
     return canvas, canvas_mask
 
 
-def focused_crop_pair(image, mask, input_size, mask_fraction):
+def focused_crop_pair(image, mask, input_size, mask_fraction, bounds=None):
     """Zoom a small prop to a useful training scale while retaining context."""
     from PIL import Image
-    bounds = prop_mask_bounds(mask)
+    bounds = bounds or prop_mask_bounds(mask)
     if not bounds: return letterbox_pair(image, mask, input_size)
     width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
     target_span = random.uniform(.14, .28) if mask_fraction <= .005 else random.uniform(.18, .36)
@@ -531,7 +773,8 @@ def focused_crop_pair(image, mask, input_size, mask_fraction):
 
 
 def prop_mask_bounds(mask):
-    return mask.getchannel("R").getbbox() if mask.mode == "RGB" else mask.getbbox()
+    channel = mask.getchannel("R") if mask.mode in ("RGB", "RGBA") else mask
+    return channel.point(lambda value: 255 if value >= 192 else 0).getbbox()
 
 
 def augment_appearance(image, np):
@@ -555,39 +798,47 @@ def augment_appearance(image, np):
     return image
 
 
-def dice_loss(logits, target):
+def dice_loss(logits, target, valid=None):
+    valid = target.new_ones(target.shape) if valid is None else valid
     probability = logits.sigmoid()
-    numerator = 2 * (probability * target).sum(dim=(1, 2, 3)) + 1
-    denominator = probability.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3)) + 1
+    numerator = 2 * (probability * target * valid).sum(dim=(1, 2, 3)) + 1
+    denominator = (probability * valid).sum(dim=(1, 2, 3)) + \
+        (target * valid).sum(dim=(1, 2, 3)) + 1
     return (1 - numerator / denominator).mean()
 
 
-def tversky_loss(logits, target, alpha=.5, beta=.5):
+def tversky_loss(logits, target, alpha=.5, beta=.5, valid=None):
+    valid = target.new_ones(target.shape) if valid is None else valid
     probability = logits.sigmoid()
-    true_positive = (probability * target).sum(dim=(1, 2, 3))
-    false_positive = (probability * (1 - target)).sum(dim=(1, 2, 3))
-    false_negative = ((1 - probability) * target).sum(dim=(1, 2, 3))
+    true_positive = (probability * target * valid).sum(dim=(1, 2, 3))
+    false_positive = (probability * (1 - target) * valid).sum(dim=(1, 2, 3))
+    false_negative = ((1 - probability) * target * valid).sum(dim=(1, 2, 3))
     return (1 - (true_positive + 1) /
             (true_positive + alpha * false_positive + beta * false_negative + 1)).mean()
 
 
-def focal_bce(torch, logits, target, pos_weight, gamma=2.):
+def focal_bce(torch, logits, target, pos_weight, gamma=2., valid=None):
+    valid = torch.ones_like(target) if valid is None else valid
     loss = torch.nn.functional.binary_cross_entropy_with_logits(
         logits, target, pos_weight=pos_weight, reduction="none")
     probability = logits.sigmoid()
     correct_probability = probability * target + (1 - probability) * (1 - target)
-    return ((1 - correct_probability).pow(gamma) * loss).mean()
+    weighted = (1 - correct_probability).pow(gamma) * loss * valid
+    return weighted.sum() / valid.sum().clamp_min(1)
 
 
-def boundary_loss(torch, logits, target):
+def boundary_loss(torch, logits, target, valid=None):
     import torch.nn.functional as functional
-    probability = logits.sigmoid()
+    valid = torch.ones_like(target) if valid is None else valid
+    probability = logits.sigmoid() * valid
+    target = target * valid
     predicted = functional.max_pool2d(probability, 3, 1, 1) - \
         (-functional.max_pool2d(-probability, 3, 1, 1))
     truth = functional.max_pool2d(target, 3, 1, 1) - \
         (-functional.max_pool2d(-target, 3, 1, 1))
-    numerator = 2 * (predicted * truth).sum(dim=(1, 2, 3)) + 1
-    denominator = predicted.sum(dim=(1, 2, 3)) + truth.sum(dim=(1, 2, 3)) + 1
+    numerator = 2 * (predicted * truth * valid).sum(dim=(1, 2, 3)) + 1
+    denominator = (predicted * valid).sum(dim=(1, 2, 3)) + \
+        (truth * valid).sum(dim=(1, 2, 3)) + 1
     return (1 - numerator / denominator).mean()
 
 
@@ -602,18 +853,20 @@ def exterior_recall_loss(logits, exterior_target):
 
 
 def segmentation_loss(torch, output, target, pos_weight, exterior_target=None):
-    total = (focal_bce(torch, output["out"], target, pos_weight) +
-             dice_loss(output["out"], target) +
-             .5 * tversky_loss(output["out"], target) +
-             .2 * boundary_loss(torch, output["out"], target))
+    valid = (target >= 0).to(target.dtype)
+    target = target.clamp(0, 1)
+    total = (focal_bce(torch, output["out"], target, pos_weight, valid=valid) +
+             dice_loss(output["out"], target, valid) +
+             .5 * tversky_loss(output["out"], target, valid=valid) +
+             .2 * boundary_loss(torch, output["out"], target, valid))
     if exterior_target is not None:
         total += EXTERIOR_RECALL_WEIGHT * exterior_recall_loss(
             output["out"], exterior_target)
     if "aux" in output:
-        aux = (focal_bce(torch, output["aux"], target, pos_weight) +
-               dice_loss(output["aux"], target) +
-               .5 * tversky_loss(output["aux"], target) +
-               .1 * boundary_loss(torch, output["aux"], target))
+        aux = (focal_bce(torch, output["aux"], target, pos_weight, valid=valid) +
+               dice_loss(output["aux"], target, valid) +
+               .5 * tversky_loss(output["aux"], target, valid=valid) +
+               .1 * boundary_loss(torch, output["aux"], target, valid))
         if exterior_target is not None:
             aux += .5 * EXTERIOR_RECALL_WEIGHT * exterior_recall_loss(
                 output["aux"], exterior_target)
@@ -621,10 +874,11 @@ def segmentation_loss(torch, output, target, pos_weight, exterior_target=None):
     return total
 
 
-def confusion(probability, target, threshold):
+def confusion(probability, target, threshold, valid=None):
     prediction = probability >= threshold; truth = target >= .5
-    return (int((prediction & truth).sum()), int((prediction & ~truth).sum()),
-            int((~prediction & truth).sum()), int((~prediction & ~truth).sum()))
+    valid = target >= 0 if valid is None else valid
+    return (int((prediction & truth & valid).sum()), int((prediction & ~truth & valid).sum()),
+            int((~prediction & truth & valid).sum()), int((~prediction & ~truth & valid).sum()))
 
 
 def scores(values):
@@ -752,6 +1006,31 @@ def load_evaluation_mask(root, relative, input_size):
     return np.asarray(canvas, dtype=np.uint8) >= 128
 
 
+def load_classification_regions(root, sample, input_size):
+    """Letterbox precise classified object pixels for category/state recall reporting."""
+    import numpy as np
+    from PIL import Image
+    objects = sample.get("_classificationObjects", [])
+    relative = sample.get("classificationMaskPath")
+    if not objects or not relative: return {"categories": {}, "states": {}}
+    ids = read_classification_ids(Path(root) / relative,
+        int(sample["width"]), int(sample["height"]))
+    scale = min(input_size / ids.shape[1], input_size / ids.shape[0])
+    size = (max(1, round(ids.shape[1] * scale)), max(1, round(ids.shape[0] * scale)))
+    left, top = (input_size - size[0]) // 2, (input_size - size[1]) // 2
+    grouped = {"categories": {}, "states": {}}
+    for kind, names in (("categories", CATEGORIES), ("states", CLASSIFICATION_STATES)):
+        for name in names:
+            object_ids = [value["id"] for value in objects if
+                (value["category"] == name if kind == "categories" else name in value["states"])]
+            if not object_ids: continue
+            native = np.isin(ids, object_ids).astype(np.uint8) * 255
+            canvas = Image.new("L", (input_size, input_size), 0)
+            canvas.paste(Image.fromarray(native).resize(size, Image.Resampling.NEAREST), (left, top))
+            grouped[kind][name] = np.asarray(canvas, dtype=np.uint8) >= 128
+    return grouped
+
+
 def add_confusion(destination, value):
     for index, current in enumerate(value): destination[index] += current
 
@@ -764,14 +1043,15 @@ def mask_size_bucket(fraction):
 
 
 def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=None,
-             progress_callback=None):
+             progress_callback=None, classification_breakdown=False):
     totals = {threshold: [0, 0, 0, 0] for threshold in thresholds}
     per_image = {threshold: {"dice": [], "recall": [], "smallRecall": [], "boundary": [],
                              "negativeFrames": 0, "negativeFramesWithPrediction": 0,
                              "sourceTotals": {}, "sizeBuckets": {}, "rvmAvailable": 0,
                              "rvmExterior": [0, 0, 0, 0], "rvmUnion": [0, 0, 0, 0],
                              "rvmNegativeFrames": 0, "rvmNegativeFramesWithRetained": 0,
-                             "rvmNegativeFractions": []}
+                             "rvmNegativeFractions": [], "classificationCategoryRecall": {},
+                             "classificationStateRecall": {}}
                  for threshold in thresholds}
     sample_lookup = {sample["id"]: sample for sample in (samples or [])}
     total_samples = len(sample_lookup)
@@ -785,26 +1065,46 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
             evaluation_artifacts = []
             for sample_id in sample_ids:
                 sample = sample_lookup.get(str(sample_id))
-                if root is None or not sample or not sample.get("rvmPersonMaskPath") or \
-                        not sample.get("desiredForegroundPath"):
+                if root is None or not sample or not sample.get("rvmPersonMaskPath"):
                     evaluation_artifacts.append(None); continue
                 try:
-                    evaluation_artifacts.append((
-                        load_evaluation_mask(root, sample["rvmPersonMaskPath"], images.shape[-1]),
-                        load_evaluation_mask(root, sample["desiredForegroundPath"], images.shape[-1])))
+                    evaluation_artifacts.append(
+                        load_evaluation_mask(root, sample["rvmPersonMaskPath"], images.shape[-1]))
                 except (FileNotFoundError, OSError, ValueError):
                     evaluation_artifacts.append(None)
+            classification_artifacts = []
+            for sample_id in sample_ids:
+                sample = sample_lookup.get(str(sample_id))
+                if not classification_breakdown or root is None or not sample:
+                    classification_artifacts.append(None); continue
+                try: classification_artifacts.append(
+                    load_classification_regions(root, sample, images.shape[-1]))
+                except (FileNotFoundError, OSError, ValueError):
+                    classification_artifacts.append(None)
             for threshold in thresholds:
                 current = confusion(probability, target, threshold)
                 add_confusion(totals[threshold], current)
                 for index in range(target.shape[0]):
                     truth = target[index] >= .5
+                    valid = target[index] >= 0
                     truth_pixels = int(truth.sum())
-                    predicted = probability[index] >= threshold
+                    raw_predicted = probability[index] >= threshold
+                    predicted = raw_predicted & valid
                     sample = sample_lookup.get(str(sample_ids[index]))
                     source_id = sample.get("sourceId", sample.get("id")) if sample else str(sample_ids[index])
                     source_totals = per_image[threshold]["sourceTotals"].setdefault(source_id, [0, 0, 0, 0])
-                    add_confusion(source_totals, confusion(predicted, truth, .5))
+                    add_confusion(source_totals, confusion(predicted, truth, .5, valid))
+                    if classification_artifacts[index] is not None:
+                        predicted_np = raw_predicted[0].detach().cpu().numpy() \
+                            if raw_predicted.ndim == 3 else raw_predicted.detach().cpu().numpy()
+                        for kind, destination_name in (("categories", "classificationCategoryRecall"),
+                                                       ("states", "classificationStateRecall")):
+                            destination = per_image[threshold][destination_name]
+                            for name, region in classification_artifacts[index][kind].items():
+                                current_recall = destination.setdefault(name, [0, 0, 0])
+                                current_recall[0] += int((predicted_np & region).sum())
+                                current_recall[1] += int(region.sum())
+                                current_recall[2] += 1
                     if truth_pixels == 0:
                         per_image[threshold]["negativeFrames"] += 1
                         per_image[threshold]["negativeFramesWithPrediction"] += int(bool(predicted.any()))
@@ -826,18 +1126,20 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
                         if fraction <= .02: per_image[threshold]["smallRecall"].append(recall)
                     if evaluation_artifacts[index] is not None:
                         try:
-                            person, desired = evaluation_artifacts[index]
+                            person = evaluation_artifacts[index]
                             prediction_np = predicted[0].detach().cpu().numpy() if predicted.ndim == 3 \
                                 else predicted.detach().cpu().numpy()
                             truth_np = truth[0].detach().cpu().numpy() if truth.ndim == 3 \
                                 else truth.detach().cpu().numpy()
+                            valid_np = valid[0].detach().cpu().numpy() if valid.ndim == 3 \
+                                else valid.detach().cpu().numpy()
                             retained, _, _ = filter_components(prediction_np, person, 24)
-                            exterior = retained & ~person
+                            exterior = retained & ~person & valid_np
                             needed = truth_np & ~person
                             add_confusion(per_image[threshold]["rvmExterior"],
-                                          confusion(exterior, needed, .5))
+                                          confusion(exterior, needed, .5, valid_np))
                             add_confusion(per_image[threshold]["rvmUnion"],
-                                          confusion(person | retained, desired, .5))
+                                          confusion(person | retained, person | truth_np, .5, valid_np))
                             per_image[threshold]["rvmAvailable"] += 1
                             if truth_pixels == 0:
                                 harmful_pixels = int(exterior.sum())
@@ -870,6 +1172,14 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
                    "dice": sum(value["dice"]) / max(1, len(value["dice"])),
                    "recall": sum(value["recall"]) / max(1, len(value["recall"]))}
             for name, value in current["sizeBuckets"].items()}
+        if classification_breakdown:
+            result[threshold]["classificationRecall"] = {
+                "byCategory": {name: {"recall": value[0] / max(1, value[1]),
+                    "pixels": value[1], "frames": value[2]}
+                    for name, value in current["classificationCategoryRecall"].items()},
+                "byState": {name: {"recall": value[0] / max(1, value[1]),
+                    "pixels": value[1], "frames": value[2]}
+                    for name, value in current["classificationStateRecall"].items()}}
         if total_samples:
             fractions = sorted(current["rvmNegativeFractions"])
             percentile95 = fractions[min(len(fractions) - 1,
@@ -914,7 +1224,9 @@ def save_error_review(torch, model, loader, device, threshold, destination, limi
             for index, sample_id in enumerate(sample_ids):
                 prediction = probabilities[index, 0].numpy() >= threshold
                 truth = targets[index, 0].numpy() >= .5
-                false_positive = prediction & ~truth
+                valid = targets[index, 0].numpy() >= 0
+                prediction &= valid
+                false_positive = prediction & ~truth & valid
                 false_negative = ~prediction & truth
                 sample = sample_lookup.get(str(sample_id), {})
                 source_id = sample.get("sourceId", str(sample_id))
@@ -947,6 +1259,8 @@ def save_error_review(torch, model, loader, device, threshold, destination, limi
             for index in wanted:
                 sample_id = str(sample_ids[index]); prediction = probabilities[index, 0].numpy() >= threshold
                 truth = targets[index, 0].numpy() >= .5
+                valid = targets[index, 0].numpy() >= 0
+                prediction &= valid
                 pixels = images[index].numpy().transpose(1, 2, 0)
                 pixels = np.clip((pixels * np.asarray(STD) + np.asarray(MEAN)) * 255,
                                  0, 255).astype(np.uint8)
@@ -992,7 +1306,7 @@ def write_dataset_snapshot(root, output, manifest, available, args):
     for split, samples in available.items():
         entries = []
         for sample in samples:
-            artifacts = {}
+            artifacts = dict(sample.get("_classificationArtifacts", {}))
             for name in artifact_names:
                 relative = sample.get(name)
                 if not relative: continue
@@ -1001,13 +1315,24 @@ def write_dataset_snapshot(root, output, manifest, available, args):
                 stat = path.stat()
                 artifacts[name] = {"path": str(relative).replace("\\", "/"),
                                    "size": stat.st_size, "sha256": digest(path)}
+            target_path = Path(sample["_targetMaskPath"]) if sample.get("_targetMaskPath") else None
+            if target_path and target_path.is_file():
+                stat = target_path.stat()
+                artifacts["specializedTargetMask"] = {"path": str(target_path),
+                    "size": stat.st_size, "sha256": digest(target_path)}
             entries.append({
                 "id": sample["id"], "decision": sample["decision"],
+                "sourceDecision": sample.get("_sourceDecision", sample["decision"]),
                 "sourceId": sample.get("sourceId"), "timestampMs": sample.get("timestampMs"),
                 "burstId": sample.get("burstId"),
                 "feedbackPriority": bool(sample.get("feedbackPriority")),
                 "historicalHardNegative": bool(sample.get("_hardNegative")),
                 "historicalHardPositive": bool(sample.get("_hardPositive")),
+                "classificationRevision": sample.get("_classificationRevision"),
+                "classificationCategories": sample.get("_classificationCategories", []),
+                "classificationStates": sample.get("_classificationStates", []),
+                "classificationObjects": sample.get("_classificationObjects", []),
+                "categoryBalanceWeight": sample.get("_categoryBalanceWeight", 1.),
                 "recordPath": sample.get("_recordPath"),
                 "recordSha256": sample.get("_recordSha256"),
                 "maskFractionAtInput": sample.get("_maskFraction", 0.),
@@ -1022,6 +1347,7 @@ def write_dataset_snapshot(root, output, manifest, available, args):
         "createdUtc": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         "datasetId": manifest["datasetId"], "inputSize": args.input_size,
         "minimumResolution": args.minimum_resolution, "seed": args.seed,
+        "classification": getattr(args, "classification_summary", None),
         "warmStartModelId": getattr(args, "warm_start_model_id", None),
         "warmStartCheckpointSha256": getattr(args, "warm_start_checkpoint_sha256", None),
         "splits": snapshot_samples}
@@ -1030,7 +1356,7 @@ def write_dataset_snapshot(root, output, manifest, available, args):
         previous = json.loads(path.read_text(encoding="utf-8"))
         comparable_keys = ("schemaVersion", "trainingRevision", "datasetId", "inputSize",
                            "minimumResolution", "seed", "warmStartModelId",
-                           "warmStartCheckpointSha256", "splits")
+                           "warmStartCheckpointSha256", "classification", "splits")
         if any(previous.get(key) != snapshot.get(key) for key in comparable_keys):
             raise RuntimeError("The dataset changed since this run started; start a new training run "
                                "instead of resuming this checkpoint")
@@ -1288,9 +1614,22 @@ def train(args):
     if leaked: raise RuntimeError("A sealed source leaked into model development splits")
     for samples in available.values():
         annotate_mask_statistics(root, samples, args.input_size)
+    args.classification_summary = annotate_classifications(
+        root, output, available, args.input_size)
+    args.target_summary = materialize_specialized_targets(
+        root, output, available, args.input_size)
+    args.classification_summary["targetDefinition"] = args.target_summary
     split_profiles = {key: split_profile(value) for key, value in available.items()}
     emit("split-profile", "Recorded source-isolated split balance for this run",
          profiles=split_profiles)
+    if args.audit_only:
+        args.warm_start_model_id = REV5_MODEL_ID
+        args.warm_start_checkpoint_sha256 = REV5_CHECKPOINT_SHA256
+        snapshot_path = write_dataset_snapshot(root, output, manifest, available, args)
+        emit("complete", "Classification audit and Rev 9 specialized dataset snapshot completed",
+             snapshot=str(snapshot_path), baselineModelId=REV5_MODEL_ID,
+             classification=args.classification_summary)
+        return
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
         memory = torch.cuda.get_device_properties(device).total_memory
@@ -1298,7 +1637,8 @@ def train(args):
         batch = max(1, math.floor(base_batch * (512 / args.input_size) ** 2))
     else:
         batch = 1
-    prior_package, prior_manifest = latest_v1_package(root, output)
+    prior_package, prior_manifest = latest_v1_package(
+        root, output, REV5_MODEL_ID, REV5_CHECKPOINT_SHA256)
     if args.warm_start_latest and prior_package is None:
         raise RuntimeError("No completed v1 package is available for the v1.1 warm start")
     warm_checkpoint = prior_package / "model.pth" if args.warm_start_latest else None
@@ -1387,7 +1727,8 @@ def train(args):
         baseline_validation_all = evaluate(torch, baseline_model, DataLoader(
             PropDataset(root, available["validation"], False, args.input_size), batch_size=batch,
             shuffle=False, num_workers=1), device, baseline_thresholds,
-            root, available["validation"], phase_progress("Baseline validation"))
+            root, available["validation"], phase_progress("Baseline validation"),
+            classification_breakdown=True)
         if args.console_progress: write_console_progress("Baseline validation complete", finish=True)
         baseline_threshold, baseline_ceiling = deployment_threshold(baseline_validation_all)
         baseline = {"modelId": prior_manifest.get("modelId"),
@@ -1400,7 +1741,8 @@ def train(args):
             baseline[split] = evaluate(torch, baseline_model, loader, device,
                                        (baseline_threshold,), root,
                                        available[split], phase_progress(
-                                           f"Baseline {split}"))[baseline_threshold]
+                                           f"Baseline {split}"),
+                                       classification_breakdown=True)[baseline_threshold]
             if args.console_progress:
                 write_console_progress(f"Baseline {split} complete", finish=True)
         atomic_json(output / "v1-baseline.json", baseline)
@@ -1463,18 +1805,24 @@ def train(args):
     test_loader = DataLoader(PropDataset(root, available["test"], False, args.input_size), batch_size=batch,
                              shuffle=False, num_workers=1)
     test_metrics = evaluate(torch, model, test_loader, device, (threshold,),
-                            root, available["test"], phase_progress("Final test"))[threshold]
+                            root, available["test"], phase_progress("Final test"),
+                            classification_breakdown=True)[threshold]
     if args.console_progress: write_console_progress("Final test complete", finish=True)
     holdout_loader = DataLoader(PropDataset(root, available["sealedHoldout"], False,
                                             args.input_size), batch_size=batch,
                                 shuffle=False, num_workers=1)
     holdout_metrics = evaluate(torch, model, holdout_loader, device, (threshold,),
                                root, available["sealedHoldout"],
-                               phase_progress("Sealed holdout"))[threshold]
+                               phase_progress("Sealed holdout"),
+                               classification_breakdown=True)[threshold]
     if args.console_progress: write_console_progress("Sealed holdout complete", finish=True)
     validation_loader = DataLoader(
         PropDataset(root, available["validation"], False, args.input_size), batch_size=batch,
         shuffle=False, num_workers=1)
+    validation_metrics = evaluate(torch, model, validation_loader, device, (threshold,),
+        root, available["validation"], phase_progress("Final validation breakdown"),
+        classification_breakdown=True)[threshold]
+    winner["validation"] = validation_metrics
     package = output / "package"; package.mkdir(exist_ok=True)
     checkpoint = package / "model.pth"; shutil.copy2(best_path, checkpoint)
     shutil.copy2(snapshot_path, package / "dataset-snapshot.json")
@@ -1484,6 +1832,9 @@ def train(args):
                                package / "review", samples=available["validation"])
     baseline_holdout = baseline.get("sealedHoldout", {}) if baseline else {}
     promotion = promotion_result(holdout_metrics, baseline_holdout)
+    promotion["benchmarkCandidateEligible"] = promotion["eligible"]
+    promotion["eligible"] = False
+    promotion["reason"] = "Specialized dildo/butt-plug benchmark; not a general foreground replacement"
     metrics = {"validation": winner["validation"], "test": test_metrics,
                "sealedHoldout": holdout_metrics, "v1Baseline": baseline,
                "promotion": promotion,
@@ -1492,10 +1843,18 @@ def train(args):
                "minimumResolution": args.minimum_resolution,
                "inputSize": args.input_size,
                "trainingRevision": TRAINING_REVISION,
+               "classification": args.classification_summary,
                "testSealed": False, "sealedSourceCount": len(sealed_sources),
                "reviewSplit": "validation",
                "sampling": {"sourceBalanced": True, "allNegativesEligible": True,
                             "smallMaskUpweighting": True,
+                            "categoryBalanced": True,
+                            "categorySamplingWeights": args.target_summary[
+                                "trainingCategorySamplingWeights"],
+                            "foregroundCategories": sorted(TARGET_CATEGORIES),
+                            "ignoredCategories": ["unclassified"],
+                            "objectFocusedCrops": True,
+                            "objectFocusedCropProbability": .30,
                             "historicalHardNegativeMining": True,
                             "historicalHardNegativeCount": historical_hard_negatives,
                             "hardNegativeMiningRevision": HARD_NEGATIVE_MINING_REVISION,
@@ -1534,9 +1893,9 @@ def train(args):
     files = {str(path.relative_to(package)).replace("\\", "/"): digest(path)
              for path in package.rglob("*") if path.is_file() and path.name != "manifest.json"}
     atomic_json(package / "manifest.json", {
-        "schemaVersion": 1, "modelId": model_id, "architecture": ARCHITECTURE,
+        "schemaVersion": 1, "modelId": model_id, "architecture": SPECIALIZED_ARCHITECTURE,
         "trainingRevision": TRAINING_REVISION,
-        "category": "foreground_prop", "inputSize": args.input_size,
+        "category": "dildo_or_butt_plug", "inputSize": args.input_size,
         "mean": MEAN, "std": STD, "confidenceThreshold": threshold,
         "proximityRadiusAt512": 24, "checkpointSha256": checkpoint_hash,
         "preprocessing": {"resize": "aspect-preserving-letterbox", "inputSize": args.input_size,
@@ -1681,6 +2040,10 @@ def self_test():
         assert abs(sum(weight for weight, sample in zip(weights, planned)
                        if sample["decision"] == "negative") - .3) < 1e-8
         assert weights[0] > weights[1]
+        planned[1]["_categoryBalanceWeight"] = 2.
+        category_weights = source_balanced_weights(planned, .30)
+        assert category_weights[1] > weights[1]
+        planned[1].pop("_categoryBalanceWeight")
         planned[7]["_hardNegative"] = True
         hard_weights = source_balanced_weights(planned, .30)
         assert hard_weights[7] > hard_weights[11]
@@ -1721,23 +2084,56 @@ def self_test():
         Image.fromarray(person).save(root / "person.png")
         Image.fromarray(desired).save(root / "desired.png")
         Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(root / "frame.png")
-        Image.fromarray((targets[0, 0].numpy() * 255).astype(np.uint8)).save(root / "mask.png")
+        source_mask = (targets[0, 0].numpy() * 255).astype(np.uint8)
+        source_mask[:2, 4:] = 255
+        source_mask[4:, :2] = 255
+        Image.fromarray(source_mask).save(root / "mask.png")
+        classification_ids = np.zeros((8, 8), dtype=np.int32)
+        classification_ids[4:, 4:] = 1
+        classification_ids[:2, 4:] = 2
+        classification_ids[4:, :2] = 3
+        with gzip.open(root / "classification-mask.i32.gz", "wb") as stream:
+            stream.write(classification_ids.astype("<i4").tobytes())
+        atomic_json(root / "classification.json", {"schemaVersion": 1,
+            "reviewedUtc": "2026-08-24T00:00:00Z", "objects": [
+                {"id": 1, "category": "dildo", "states": ["held"], "colorArgb": 0},
+                {"id": 2, "category": "unclassified", "states": [], "colorArgb": 0},
+                {"id": 3, "category": "strap-on", "states": [], "colorArgb": 0}]})
+        classified_sample = {"id": "sample-a", "decision": "positive",
+            "sourceId": "same-source", "timestampMs": 1000, "width": 8, "height": 8,
+            "classifiedUtc": "2026-08-24T00:00:00Z", "framePath": "frame.png",
+            "propMaskPath": "mask.png", "classificationPath": "classification.json",
+            "classificationMaskPath": "classification-mask.i32.gz",
+            "rvmPersonMaskPath": "person.png", "desiredForegroundPath": "desired.png"}
+        classification_summary = annotate_classifications(root, root / "classification-audit",
+            {"train": [classified_sample], "validation": [], "test": [], "sealedHoldout": []}, 8)
+        assert classification_summary["objects"] == 3
+        assert classified_sample["_classificationObjects"][0]["bounds"] == [4, 4, 8, 8]
+        target_summary = materialize_specialized_targets(root, root / "specialized",
+            {"train": [classified_sample], "validation": [], "test": [], "sealedHoldout": []}, 8)
+        encoded_target = np.asarray(Image.open(classified_sample["_targetMaskPath"]), dtype=np.uint8)
+        assert np.all(encoded_target[4:, 4:] == 255)
+        assert np.all(encoded_target[:2, 4:] == 128)
+        assert np.all(encoded_target[4:, :2] == 0)
+        assert classified_sample["decision"] == "positive"
+        assert target_summary["targetObjects"]["dildo"] == 1
+        assert target_summary["splitCounts"]["train"]["positive"] == 1
         evaluation_samples = [
-            {"id": "sample-a", "decision": "positive", "sourceId": "same-source",
-             "timestampMs": 1000, "rvmPersonMaskPath": "person.png",
-             "desiredForegroundPath": "desired.png"},
+            classified_sample,
             {"id": "sample-b", "decision": "negative", "sourceId": "same-source",
              "timestampMs": 2000, "rvmPersonMaskPath": "person.png",
              "desiredForegroundPath": "person.png"}]
         review_metrics = evaluate(torch, ReviewModel(),
             [(images, targets, ("sample-a", "sample-b"))], torch.device("cpu"), (.5,),
-            root, evaluation_samples)[.5]
+            root, evaluation_samples, classification_breakdown=True)[.5]
         assert all(name in review_metrics for name in
                    ("macroDice", "positiveRecall", "smallObjectRecall", "boundaryF1",
                     "perVideoDice", "negativeFrameFalsePositiveRate", "selectionScore"))
         assert review_metrics["rvmUnion"]["coverage"] == 1
         assert review_metrics["rvmUnion"]["retainedNegativeCoverage"] == 1
         assert review_metrics["rvmUnion"]["retainedNegativeFrameFalsePositiveRate"] == 1
+        assert review_metrics["classificationRecall"]["byCategory"]["dildo"]["pixels"] == 16
+        assert review_metrics["classificationRecall"]["byState"]["held"]["recall"] == 0
         objectives = checkpoint_objectives({.5: review_metrics})
         assert set(objectives) == {"balanced", "raw-dice", "exterior-prop", "conservative"}
         dirty = json.loads(json.dumps(review_metrics))
@@ -1759,6 +2155,12 @@ def self_test():
             "finalForeground": {"dice": .991}, "retainedNegativeCoverage": 1.,
             "retainedNegativeFrameFalsePositiveRate": .05}}
         assert promotion_result(improved_promotion, baseline_promotion)["eligible"]
+        ignored_target = torch.tensor([[[[1., -1.], [0., 0.]]]])
+        ignored_probability = torch.tensor([[[[.9, .9], [.1, .1]]]])
+        assert confusion(ignored_probability, ignored_target, .5) == (1, 0, 0, 2)
+        ignored_loss = segmentation_loss(torch, {"out": torch.zeros_like(ignored_target)},
+                                         ignored_target, torch.tensor([2.]))
+        assert torch.isfinite(ignored_loss)
         combined_loss = segmentation_loss(torch, {"out": images[:, :1] * 4}, targets,
                                           torch.tensor([2.]), targets)
         assert torch.isfinite(combined_loss)
@@ -1777,7 +2179,8 @@ def self_test():
         focus_image = Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8))
         focus_mask = np.zeros((100, 100), dtype=np.uint8); focus_mask[49:51, 49:51] = 255
         random.seed(1729)
-        _, zoomed_mask = focused_crop_pair(focus_image, Image.fromarray(focus_mask), 64, .0004)
+        _, zoomed_mask = focused_crop_pair(focus_image, Image.fromarray(focus_mask), 64, .0004,
+                                           (49, 49, 51, 51))
         zoomed_bounds = zoomed_mask.getbbox()
         assert zoomed_bounds and zoomed_bounds[2] - zoomed_bounds[0] >= 7
         snapshot_sample = {"id": "sample-a", "decision": "positive", "sourceId": "source",
@@ -1811,6 +2214,7 @@ def main():
     parser.add_argument("--negative-selection", choices=("compare", "20", "25", "30", "35", "all"),
                         default="compare")
     parser.add_argument("--regenerate-review", action="store_true")
+    parser.add_argument("--audit-only", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:

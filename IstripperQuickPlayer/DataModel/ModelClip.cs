@@ -21,6 +21,8 @@ namespace IStripperQuickPlayer
         internal string? customAlphaPath;
         internal int customAlphaThreshold = CustomShowClip.DefaultAlphaThreshold;
         internal float customEdgeChokePixels = 1;
+        internal CustomVirtualGreenScreen customVirtualGreenScreen =
+            new() { Enabled = false };
         internal long customStartMs;
         internal long customEndMs;
     }

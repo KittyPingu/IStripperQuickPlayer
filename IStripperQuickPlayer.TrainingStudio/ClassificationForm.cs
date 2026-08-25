@@ -36,6 +36,7 @@ internal sealed class ClassificationForm : Form
     readonly TrackBar brush = new() { Minimum = 2, Maximum = 200, Value = 40, Width = 130 };
     int sampleIndex;
     int nextObjectId = 1;
+    int lastClassificationObjectId;
     bool loading, dirty, reviewed;
     string selectedCategory = Categories[0];
 
@@ -45,12 +46,11 @@ internal sealed class ClassificationForm : Form
         samples = store.Dataset.Samples.Where(value => value.Decision == "positive" &&
                 value.FramePath != null && value.PropMaskPath != null && value.Width > 0 && value.Height > 0)
             .OrderBy(value => value.PresentedUtc).ToArray();
-        foreach (TrainingSample sample in samples)
+        foreach (TrainingSample sample in samples.Where(value => value.ClassificationPath != null))
         {
             try
             {
-                store.NormalizeStoredClassificationStates(sample);
-                ObjectClassification saved = store.LoadObjectClassification(sample);
+                var saved = store.LoadObjectClassificationMetadata(sample, normalizeStates: true);
                 if (saved.Reviewed) reviewedObjects[sample.Id] = saved.Objects;
             }
             catch { }
@@ -171,6 +171,7 @@ internal sealed class ClassificationForm : Form
             AnnotationTool.ClassifyPaint => "Paint across existing mask pixels. Right-drag clears. Ctrl+wheel changes brush size.",
             _ => "Click a masked area to select its complete connected component. Right-click clears it."
         };
+        status.Text += " Hold Shift to add this gesture to the previous object.";
     }
 
     void LoadSample(int index)
@@ -188,7 +189,7 @@ internal sealed class ClassificationForm : Form
                 value => Color.FromArgb(value.ColorArgb));
             canvas.LoadObjectIds(saved.Ids); reviewed = saved.Reviewed;
             nextObjectId = Math.Max(1, objects.Select(value => value.Id).DefaultIfEmpty().Max() + 1);
-            RefreshObjectList(); BeginNewObject(); dirty = false;
+            RefreshObjectList(); lastClassificationObjectId = 0; BeginNewObject(); dirty = false;
             imageProgress.Text = $"Image {sampleIndex + 1:N0}/{samples.Length:N0}";
             UpdateCoverage(); UpdateTotals(); canvas.Fit();
             status.Text = reviewed ? "This image is classified; edits will update it."
@@ -201,6 +202,12 @@ internal sealed class ClassificationForm : Form
     {
         if (objectList.SelectedIndex >= 0)
             return objects[objectList.SelectedIndex].Id;
+        if ((ModifierKeys & Keys.Shift) != 0 && objects.Count > 0)
+        {
+            int previous = objects.FindIndex(value => value.Id == lastClassificationObjectId);
+            objectList.SelectedIndex = previous >= 0 ? previous : objects.Count - 1;
+            return objects[objectList.SelectedIndex].Id;
+        }
         ClassifiedObject item = new()
         {
             Id = nextObjectId++, Category = selectedCategory,
@@ -215,6 +222,7 @@ internal sealed class ClassificationForm : Form
     {
         int currentId = canvas.CurrentObjectId;
         RemoveEmptyObjects();
+        if (objects.Any(value => value.Id == currentId)) lastClassificationObjectId = currentId;
         int selected = continueObject.Checked ? objects.FindIndex(value => value.Id == currentId) : -1;
         RefreshObjectList(selected); UpdateCoverage(); dirty = true;
         if (selected < 0) BeginNewObject();

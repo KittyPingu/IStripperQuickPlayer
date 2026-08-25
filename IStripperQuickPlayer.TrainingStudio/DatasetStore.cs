@@ -477,25 +477,23 @@ internal sealed class DatasetStore
         if (!File.Exists(maskPath) || !File.Exists(annotationPath))
             return new(new int[pixelCount], [], false);
         int[] ids = ReadEditableMask(maskPath, pixelCount);
-        ObjectClassificationAnnotation annotation = JsonSerializer.Deserialize<ObjectClassificationAnnotation>(
-            File.ReadAllText(annotationPath), JsonOptions) ?? new();
-        if (annotation.SchemaVersion != 1)
-            throw new InvalidDataException("Unsupported object-classification schema.");
-        if (annotation.SchemaVersion != 1)
-            throw new InvalidDataException("Unsupported object-classification schema.");
-        return new(ids, annotation.Objects.Where(value => ids.Contains(value.Id)).ToArray(),
-            annotation.ReviewedUtc != null && sample.ClassifiedUtc != null);
+        var metadata = LoadObjectClassificationMetadata(sample, normalizeStates: true);
+        return new(ids, metadata.Objects.Where(value => ids.Contains(value.Id)).ToArray(),
+            metadata.Reviewed);
     }
 
-    internal void NormalizeStoredClassificationStates(TrainingSample sample)
+    internal (ClassifiedObject[] Objects, bool Reviewed) LoadObjectClassificationMetadata(
+        TrainingSample sample, bool normalizeStates = false)
     {
-        if (sample.ClassificationPath == null) return;
+        if (sample.ClassificationPath == null) return ([], false);
         string annotationPath = Resolve(sample.ClassificationPath);
-        if (!File.Exists(annotationPath)) return;
+        if (!File.Exists(annotationPath)) return ([], false);
         ObjectClassificationAnnotation annotation = JsonSerializer.Deserialize<ObjectClassificationAnnotation>(
             File.ReadAllText(annotationPath), JsonOptions) ?? new();
+        if (annotation.SchemaVersion != 1)
+            throw new InvalidDataException("Unsupported object-classification schema.");
         bool changed = false;
-        foreach (ClassifiedObject item in annotation.Objects)
+        if (normalizeStates) foreach (ClassifiedObject item in annotation.Objects)
         {
             if (ClassificationForm.CategorySupportsStates(item.Category)) continue;
             if (item.States.Length > 0) changed = true;
@@ -505,6 +503,8 @@ internal sealed class DatasetStore
             item.ColorArgb = canonicalColor;
         }
         if (changed) WriteJsonAtomic(annotationPath, annotation);
+        return (annotation.Objects.ToArray(),
+            annotation.ReviewedUtc != null && sample.ClassifiedUtc != null);
     }
 
     internal void SaveObjectClassification(TrainingSample sample, int[] objectIds,
@@ -577,8 +577,8 @@ internal sealed class DatasetStore
         int reviewed = 0, objects = 0;
         foreach (TrainingSample sample in positives.Where(value => value.ClassifiedUtc != null))
         {
-            ObjectClassification classification;
-            try { classification = LoadObjectClassification(sample); }
+            (ClassifiedObject[] Objects, bool Reviewed) classification;
+            try { classification = LoadObjectClassificationMetadata(sample); }
             catch { continue; }
             if (!classification.Reviewed) continue;
             reviewed++;

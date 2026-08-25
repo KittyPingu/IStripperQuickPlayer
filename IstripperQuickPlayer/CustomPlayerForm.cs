@@ -9,6 +9,7 @@ using D3D11 = Vortice.Direct3D11.D3D11;
 using DComp = Vortice.DirectComposition.DComp;
 using DxgiAlphaMode = Vortice.DXGI.AlphaMode;
 using DxgiFormat = Vortice.DXGI.Format;
+using GpuColor = Vortice.Mathematics.Color4;
 using GpuViewport = Vortice.Mathematics.Viewport;
 
 namespace IStripperQuickPlayer;
@@ -40,7 +41,8 @@ internal sealed class CustomPlayerForm : Form
     {
         internal int Left, Top, Right, Bottom;
     }
-    internal sealed record AlphaHitMap(byte[] Pixels, int Width, int Height);
+    internal sealed record AlphaHitMap(byte[] Pixels, byte[] Cb, byte[] Cr,
+        int Width, int Height);
     static readonly LowLevelMouseProc globalWheelProc = GlobalWheelCallback;
     static readonly object globalMouseSync = new();
     static readonly List<CustomPlayerForm> globalMousePlayers = [];
@@ -66,7 +68,10 @@ internal sealed class CustomPlayerForm : Form
     int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
         settleStart, settleTarget;
     volatile int alphaThreshold, fullOpacityThreshold;
+    int smallPatchSize, minimumTransparentAreaRadius;
     volatile float edgeChokePixels;
+    CustomVirtualGreenScreen virtualGreenScreen;
+    VirtualGreenScreenSample[] hitTestGreenSamples;
     Task playbackTask = Task.CompletedTask;
     long requestedSeekBits = BitConverter.DoubleToInt64Bits(double.NaN);
     long requestedRateBits = BitConverter.DoubleToInt64Bits(1d);
@@ -123,7 +128,8 @@ internal sealed class CustomPlayerForm : Form
         bool suppressErrorDialog = false, long startMs = 0, long endMs = 0,
         Rectangle? initialBounds = null,
         Task<PreparedPlayback?>? preparedPlayback = null,
-        float edgeChokePixels = 1)
+        float edgeChokePixels = 1,
+        CustomVirtualGreenScreen? virtualGreenScreen = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
@@ -137,6 +143,15 @@ internal sealed class CustomPlayerForm : Form
         this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
         this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
         this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
+        this.virtualGreenScreen = virtualGreenScreen?.Clone() ??
+            new CustomVirtualGreenScreen { Enabled = false };
+        smallPatchSize = VirtualGreenScreenMath.SmallPatchSize(
+            this.virtualGreenScreen);
+        minimumTransparentAreaRadius =
+            VirtualGreenScreenMath.MinimumTransparentAreaRadius(
+                this.virtualGreenScreen);
+        hitTestGreenSamples = VirtualGreenScreenMath.Samples(
+            this.virtualGreenScreen);
         Text = "QuickPlayer Custom Show";
         AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
@@ -220,12 +235,14 @@ internal sealed class CustomPlayerForm : Form
             bool rendererWasPrepared = renderer != null;
             renderer ??= await Task.Run(() => new PairedRenderer(
                 foregroundPath, alphaPath, alphaThreshold,
-                fullOpacityThreshold, edgeChokePixels), cancellation.Token);
+                fullOpacityThreshold, edgeChokePixels,
+                virtualGreenScreen), cancellation.Token);
             prepared?.Dispose();
             renderer.SetVolume(volumePercent);
             renderer.SetAlphaThreshold(alphaThreshold);
             renderer.SetFullOpacityThreshold(fullOpacityThreshold);
             renderer.SetEdgeChoke(edgeChokePixels);
+            renderer.SetVirtualGreenScreen(virtualGreenScreen);
             if (rangeStartSeconds >= RangeEndSeconds)
                 throw new InvalidDataException("The custom clip time range is invalid.");
             if (!rendererWasPrepared)
@@ -413,6 +430,23 @@ internal sealed class CustomPlayerForm : Form
         QueuePointerTransparencyRefresh();
     }
 
+    internal void SetVirtualGreenScreen(CustomVirtualGreenScreen? settings)
+    {
+        CustomVirtualGreenScreen next = settings?.Clone() ??
+            new CustomVirtualGreenScreen { Enabled = false };
+        Volatile.Write(ref virtualGreenScreen, next);
+        Volatile.Write(ref hitTestGreenSamples,
+            VirtualGreenScreenMath.Samples(next));
+        Volatile.Write(ref smallPatchSize,
+            VirtualGreenScreenMath.SmallPatchSize(next));
+        Volatile.Write(ref minimumTransparentAreaRadius,
+            VirtualGreenScreenMath.MinimumTransparentAreaRadius(next));
+        renderer?.SetVirtualGreenScreen(next);
+        RequestVisualRefresh();
+        UpdateMouseTransparency();
+        QueuePointerTransparencyRefresh();
+    }
+
     void RequestVisualRefresh() =>
         Interlocked.Exchange(ref visualRefreshPending, 1);
     internal void SetSizePercent(int percent, int minimumPercent = 10,
@@ -451,11 +485,13 @@ internal sealed class CustomPlayerForm : Form
 
     internal static Task<PreparedPlayback?> PrepareAsync(string foregroundPath,
         string alphaPath, int alphaThreshold, int fullOpacityThreshold,
-        float edgeChokePixels, long startMs,
+        float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen,
+        long startMs,
         CancellationToken cancellationToken) => Task.Run(() =>
         {
             PairedRenderer renderer = new(foregroundPath, alphaPath,
-                alphaThreshold, fullOpacityThreshold, edgeChokePixels);
+                alphaThreshold, fullOpacityThreshold, edgeChokePixels,
+                virtualGreenScreen);
             try
             {
                 renderer.Seek(Math.Max(0, startMs / 1000d));
@@ -477,7 +513,72 @@ internal sealed class CustomPlayerForm : Form
             point.X >= ClientSize.Width || point.Y >= ClientSize.Height) return false;
         int x = Math.Min(alpha.Width - 1, point.X * alpha.Width / ClientSize.Width);
         int y = Math.Min(alpha.Height - 1, point.Y * alpha.Height / ClientSize.Height);
-        return IsVisibleAlpha(ChokedHitTestAlpha(alpha, x, y), alphaThreshold);
+        int offset = y * alpha.Width + x;
+        byte sourceAlpha = ChokedHitTestAlpha(alpha, x, y);
+        VirtualGreenScreenSample[] samples =
+            Volatile.Read(ref hitTestGreenSamples);
+        byte keyed = VirtualGreenScreenMath.Apply(sourceAlpha, alpha.Cb[offset],
+            alpha.Cr[offset], alphaThreshold, fullOpacityThreshold, samples);
+        bool visible = keyed > 0;
+        int patch = Volatile.Read(ref smallPatchSize);
+        if (visible && patch > 0 && renderer != null)
+        {
+            int radius = Math.Max(1, (int)Math.Round(
+                patch * alpha.Width / (double)renderer.Width));
+            visible = OpaqueDiskSupport(alpha, x, y, radius, samples) >=
+                VirtualGreenScreenMath.SmallPatchMinimumDiskSupport;
+        }
+        int transparentRadius = Volatile.Read(ref minimumTransparentAreaRadius);
+        if (keyed == 0 && ApplyOpacityThresholds(sourceAlpha, alphaThreshold,
+                fullOpacityThreshold) > 0 && transparentRadius > 0 &&
+            renderer != null)
+        {
+            int radius = Math.Max(1, (int)Math.Round(
+                transparentRadius * alpha.Width / (double)renderer.Width));
+            if (RemovedDiskSupport(alpha, x, y, radius, samples) <
+                VirtualGreenScreenMath.MinimumTransparentAreaDiskSupport)
+                visible = true;
+        }
+        return visible;
+    }
+
+    int OpaqueDiskSupport(AlphaHitMap alpha, int x, int y, int radius,
+        ReadOnlySpan<VirtualGreenScreenSample> samples)
+    {
+        int support = 0;
+        foreach (PointF direction in VirtualGreenScreenMath.SmallPatchDiskOffsets)
+        {
+            int sx = Math.Clamp(x + (int)Math.Round(direction.X * radius),
+                0, alpha.Width - 1);
+            int sy = Math.Clamp(y + (int)Math.Round(direction.Y * radius),
+                0, alpha.Height - 1);
+            int offset = sy * alpha.Width + sx;
+            if (VirtualGreenScreenMath.Apply(alpha.Pixels[offset],
+                alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
+                fullOpacityThreshold, samples) > 0) support++;
+        }
+        return support;
+    }
+
+    int RemovedDiskSupport(AlphaHitMap alpha, int x, int y, int radius,
+        ReadOnlySpan<VirtualGreenScreenSample> samples)
+    {
+        int support = 0;
+        foreach (PointF direction in VirtualGreenScreenMath.SmallPatchDiskOffsets)
+        {
+            int sx = Math.Clamp(x + (int)Math.Round(direction.X * radius),
+                0, alpha.Width - 1);
+            int sy = Math.Clamp(y + (int)Math.Round(direction.Y * radius),
+                0, alpha.Height - 1);
+            int offset = sy * alpha.Width + sx;
+            byte source = ApplyOpacityThresholds(alpha.Pixels[offset],
+                alphaThreshold, fullOpacityThreshold);
+            byte keyed = VirtualGreenScreenMath.Apply(alpha.Pixels[offset],
+                alpha.Cb[offset], alpha.Cr[offset], alphaThreshold,
+                fullOpacityThreshold, samples);
+            if (source > 0 && keyed == 0) support++;
+        }
+        return support;
     }
 
     byte ChokedHitTestAlpha(AlphaHitMap alpha, int x, int y)
@@ -851,11 +952,18 @@ internal sealed class CustomPlayerForm : Form
         const string Shader = """
             struct O { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
             O VSMain(uint id:SV_VertexID) { O o; float2 uv=float2((id<<1)&2,id&2); o.uv=uv; o.p=float4(uv.x*2-1,1-uv.y*2,0,1); return o; }
-            Texture2D<float> Y:register(t0); Texture2D<float> U:register(t1); Texture2D<float> V:register(t2); Texture2D<float> A:register(t3); Texture2D<float4> T:register(t4);
+            Texture2D<float> Y:register(t0); Texture2D<float> U:register(t1); Texture2D<float> V:register(t2); Texture2D<float> A:register(t3); Texture2D<float4> T:register(t4); Texture2D<float4> K:register(t5);
             SamplerState S:register(s0);
+            static const float2 Disk[16]={float2(.1767767,0),float2(-.2257722,.2068258),float2(.0345581,-.3937712),float2(.2845712,.3711728),float2(-.5222232,-.0923739),float2(.4946954,-.3146847),float2(-.1654659,.6155250),float2(-.3155615,-.6075944),float2(.6846422,.2500302),float2(-.7122561,.2940090),float2(.3433545,-.7337286),float2(.2537302,.8089320),float2(-.7647459,-.4431859),float2(.8971340,-.1972324),float2(-.5475069,.7787722),float2(-.1264868,-.9760897)};
+            float KeyKeep(float2 uv,int count,int locked){float2 chroma=float2(U.Sample(S,uv),V.Sample(S,uv));float keep=1;float protection=0;[loop]for(int n=0;n<count&&n<64;n++){float4 k=K.Load(int3(n,0,0));float d=distance(chroma,k.xy);float keyed=k.w<=0?(d<=k.z?0:1):smoothstep(k.z,k.z+k.w,d);if(n<locked)protection=max(protection,1-keyed);else keep=min(keep,keyed);}return keep+(1-keep)*protection;}
+            float Supported(float2 uv,int count,int locked,float lower){float a=A.Sample(S,uv);if(a<=0||a<lower)return 0;a*=KeyKeep(uv,count,locked);return a>0&&a>=lower?1:0;}
+            float DiskSupport(float2 uv,float2 radius,int count,int locked,float lower){float support=0;[unroll]for(int n=0;n<16;n++)support+=Supported(uv+Disk[n]*radius,count,locked,lower);return support;}
+            float Removed(float2 uv,int count,int locked,float lower){float a=A.Sample(S,uv);if(a<=0||a<lower)return 0;float keyed=a*KeyKeep(uv,count,locked);return keyed<=0||keyed<lower?1:0;}
+            float RemovedDiskSupport(float2 uv,float2 radius,int count,int locked,float lower){float support=0;[unroll]for(int n=0;n<16;n++)support+=Removed(uv+Disk[n]*radius,count,locked,lower);return support;}
             float4 PSMain(O i):SV_TARGET { float y=1.16438356*(Y.Sample(S,i.uv)-16.0/255.0); float u=U.Sample(S,i.uv)-.5; float v=V.Sample(S,i.uv)-.5;
-              float3 c=float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;
-              if(r>0){uint aw,ah;A.GetDimensions(aw,ah);float2 d=r/float2(aw,ah);a=min(a,A.Sample(S,i.uv+float2(d.x,0)));a=min(a,A.Sample(S,i.uv-float2(d.x,0)));a=min(a,A.Sample(S,i.uv+float2(0,d.y)));a=min(a,A.Sample(S,i.uv-float2(0,d.y)));a=min(a,A.Sample(S,i.uv+d));a=min(a,A.Sample(S,i.uv-d));a=min(a,A.Sample(S,i.uv+float2(d.x,-d.y)));a=min(a,A.Sample(S,i.uv+float2(-d.x,d.y)));}
+              float3 c=float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;uint aw,ah;A.GetDimensions(aw,ah);
+              if(r>0){float2 d=r/float2(aw,ah);a=min(a,A.Sample(S,i.uv+float2(d.x,0)));a=min(a,A.Sample(S,i.uv-float2(d.x,0)));a=min(a,A.Sample(S,i.uv+float2(0,d.y)));a=min(a,A.Sample(S,i.uv-float2(0,d.y)));a=min(a,A.Sample(S,i.uv+d));a=min(a,A.Sample(S,i.uv-d));a=min(a,A.Sample(S,i.uv+float2(d.x,-d.y)));a=min(a,A.Sample(S,i.uv+float2(-d.x,d.y)));}
+              int count=(int)round(t.a*255.0);float4 spatial=T.Load(int3(1,0,0));int locked=(int)round(spatial.b*255.0);float baseAlpha=a;a*=KeyKeep(i.uv,count,locked);float keyedAlpha=a;float patch=round(spatial.r*255.0);if(patch>0&&a>0&&a>=t.r){float2 d=patch/float2(aw,ah);if(DiskSupport(i.uv,d,count,locked,t.r)<4)a=0;}float area=round(spatial.g*255.0);if(area>0&&baseAlpha>0&&baseAlpha>=t.r&&(keyedAlpha<=0||keyedAlpha<t.r)){float2 d=area/float2(aw,ah);if(RemovedDiskSupport(i.uv,d,count,locked,t.r)<8)a=baseAlpha;}
               a=a<t.r?0:a>=t.g?1:a; return float4(saturate(c)*a,a); }
             """;
         readonly FfmpegCpuDecoder rgb, alpha;
@@ -864,19 +972,24 @@ internal sealed class CustomPlayerForm : Form
         readonly object sync = new();
         ID3D11Device? device; ID3D11DeviceContext? context;
         IDXGIDevice? dxgiDevice; IDXGIFactory2? factory; IDXGISwapChain1? swap;
-        ID3D11Texture2D? back, yTex, uTex, vTex, aTex, thresholdTex;
+        ID3D11Texture2D? back, yTex, uTex, vTex, aTex, thresholdTex, keyTex;
         ID3D11RenderTargetView? target;
-        ID3D11ShaderResourceView? yView, uView, vView, aView, thresholdView;
+        ID3D11ShaderResourceView? yView, uView, vView, aView, thresholdView,
+            keyView;
         ID3D11SamplerState? sampler; ID3D11VertexShader? vs; ID3D11PixelShader? ps;
         IDCompositionDevice? composition; IDCompositionTarget? compositionTarget;
         IDCompositionVisual? visual;
         bool pending, playing, disposed, frameUploaded; long rgbTick, alphaTick;
-        int alphaThreshold, fullOpacityThreshold;
+        int alphaThreshold, fullOpacityThreshold, smallPatchSize,
+            minimumTransparentAreaRadius;
         float edgeChokePixels;
+        VirtualGreenScreenSample[] greenSamples;
+        VirtualGreenScreenSample[]? uploadedGreenSamples;
         int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1,
-            uploadedEdgeChokeQuarters = -1;
+            uploadedEdgeChokeQuarters = -1, uploadedSmallPatchSize = -1,
+            uploadedMinimumTransparentAreaRadius = -1;
         double clockSeconds, rate = 1;
-        readonly byte[] alphaRow;
+        readonly byte[] alphaRow, cbRow, crRow;
         readonly bool alpha16;
         internal int Width => rgb.Width; internal int Height => rgb.Height;
         internal double Duration { get; }
@@ -886,11 +999,17 @@ internal sealed class CustomPlayerForm : Form
 
         internal PairedRenderer(string foreground, string alphaPath,
             int alphaThreshold, int fullOpacityThreshold,
-            float edgeChokePixels)
+            float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen)
         {
             this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
             this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
             this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
+            greenSamples = VirtualGreenScreenMath.Samples(virtualGreenScreen);
+            smallPatchSize = VirtualGreenScreenMath.SmallPatchSize(
+                virtualGreenScreen);
+            minimumTransparentAreaRadius =
+                VirtualGreenScreenMath.MinimumTransparentAreaRadius(
+                    virtualGreenScreen);
             rgb = new FfmpegCpuDecoder(foreground);
             try { alpha = new FfmpegCpuDecoder(alphaPath); }
             catch { rgb.Dispose(); throw; }
@@ -901,6 +1020,8 @@ internal sealed class CustomPlayerForm : Form
             Duration = Math.Min(rgb.Duration, alpha.Duration);
             alpha16 = alpha.IsGray16;
             alphaRow = new byte[checked(Width * (alpha16 ? 2 : 1))];
+            cbRow = new byte[(Width + 1) / 2];
+            crRow = new byte[(Width + 1) / 2];
             audio = InternalAudioPlayer.TryOpen(foreground);
             device = D3D11.D3D11CreateDevice(DriverType.Hardware,
                 DeviceCreationFlags.BgraSupport, Vortice.Direct3D.FeatureLevel.Level_11_1,
@@ -917,13 +1038,17 @@ internal sealed class CustomPlayerForm : Form
                 scaling: Scaling.Stretch, swapEffect: SwapEffect.FlipSequential,
                 alphaMode: DxgiAlphaMode.Premultiplied));
             back = swap.GetBuffer<ID3D11Texture2D>(0); target = device!.CreateRenderTargetView(back);
+            PresentTransparentLocked();
             yTex = Texture(Width, Height); uTex = Texture((Width+1)/2, (Height+1)/2);
             vTex = Texture((Width+1)/2, (Height+1)/2); aTex = Texture(Width, Height,
                 alpha16 ? DxgiFormat.R16_UNorm : DxgiFormat.R8_UNorm);
-            thresholdTex = Texture(1, 1, DxgiFormat.R8G8B8A8_UNorm);
+            thresholdTex = Texture(2, 1, DxgiFormat.R8G8B8A8_UNorm);
+            keyTex = Texture(CustomVirtualGreenScreen.MaximumColors, 1,
+                DxgiFormat.R32G32B32A32_Float);
             yView=device.CreateShaderResourceView(yTex); uView=device.CreateShaderResourceView(uTex);
             vView=device.CreateShaderResourceView(vTex); aView=device.CreateShaderResourceView(aTex);
             thresholdView=device.CreateShaderResourceView(thresholdTex);
+            keyView=device.CreateShaderResourceView(keyTex);
             sampler=device.CreateSamplerState(SamplerDescription.LinearClamp);
             vs=device.CreateVertexShader(Compiler.Compile(Shader,"VSMain","CustomPlayer.hlsl","vs_5_0",ShaderFlags.OptimizationLevel3).Span);
             ps=device.CreatePixelShader(Compiler.Compile(Shader,"PSMain","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
@@ -945,6 +1070,15 @@ internal sealed class CustomPlayerForm : Form
             Volatile.Write(ref fullOpacityThreshold, Math.Clamp(value, 1, 255));
         internal void SetEdgeChoke(float pixels) =>
             Volatile.Write(ref edgeChokePixels, Math.Clamp(pixels, 0, 4));
+        internal void SetVirtualGreenScreen(CustomVirtualGreenScreen? settings)
+        {
+            Volatile.Write(ref greenSamples,
+                VirtualGreenScreenMath.Samples(settings));
+            Volatile.Write(ref smallPatchSize,
+                VirtualGreenScreenMath.SmallPatchSize(settings));
+            Volatile.Write(ref minimumTransparentAreaRadius,
+                VirtualGreenScreenMath.MinimumTransparentAreaRadius(settings));
+        }
         internal bool RefreshCurrentFrame()
         {
             lock (sync)
@@ -969,27 +1103,42 @@ internal sealed class CustomPlayerForm : Form
                 context!.UpdateSubresource(yTex!,0,null,yd,yp,0); context.UpdateSubresource(uTex!,0,null,ud,up,0); context.UpdateSubresource(vTex!,0,null,vd,vp,0); context.UpdateSubresource(aTex!,0,null,ad,ap,0);
                 frameUploaded=true;
                 DrawCurrentFrameLocked();
-                if(captureHitMap) alphaBytes=CreateHitMap(ad,ap);
+                if(captureHitMap) alphaBytes=CreateHitMap(ad,ap,ud,up,vd,vp);
                 pending=false; return true;
             }
         }
         unsafe void DrawCurrentFrameLocked()
         {
-            int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4); if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters){uint value=(uint)(lower|(upper<<8)|(chokeQuarters<<16));context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(&value),4,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;}
+            int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4), patch=Volatile.Read(ref smallPatchSize), area=Volatile.Read(ref minimumTransparentAreaRadius); VirtualGreenScreenSample[] samples=Volatile.Read(ref greenSamples); int locked=samples.Count(value=>value.Locked); bool greenChanged=!ReferenceEquals(samples,uploadedGreenSamples); if(greenChanged){float[] values=new float[CustomVirtualGreenScreen.MaximumColors*4];for(int index=0;index<samples.Length;index++){int offset=index*4;values[offset]=samples[index].Cb;values[offset+1]=samples[index].Cr;values[offset+2]=samples[index].Tolerance;values[offset+3]=samples[index].Feather;}fixed(float* data=values)context!.UpdateSubresource(keyTex!,0,null,new IntPtr(data),(uint)(CustomVirtualGreenScreen.MaximumColors*16),0);uploadedGreenSamples=samples;} if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters||patch!=uploadedSmallPatchSize||area!=uploadedMinimumTransparentAreaRadius||greenChanged){uint[] values=[(uint)(lower|(upper<<8)|(chokeQuarters<<16)|(samples.Length<<24)),(uint)(patch|(area<<8)|(locked<<16))];fixed(uint* data=values)context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(data),8,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;uploadedSmallPatchSize=patch;uploadedMinimumTransparentAreaRadius=area;}
             context!.OMSetRenderTargets(target!); context.RSSetViewport(new GpuViewport(0,0,back!.Description.Width,back.Description.Height)); context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
-            context.VSSetShader(vs); context.PSSetShader(ps); context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView); context.PSSetShaderResource(3,aView); context.PSSetShaderResource(4,thresholdView); context.PSSetSampler(0,sampler); context.Draw(3,0);
-            context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3); context.PSUnsetShaderResource(4); swap!.Present(1,PresentFlags.None);
+            context.VSSetShader(vs); context.PSSetShader(ps); context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView); context.PSSetShaderResource(3,aView); context.PSSetShaderResource(4,thresholdView); context.PSSetShaderResource(5,keyView); context.PSSetSampler(0,sampler); context.Draw(3,0);
+            context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3); context.PSUnsetShaderResource(4); context.PSUnsetShaderResource(5); swap!.Present(1,PresentFlags.None);
         }
-        AlphaHitMap CreateHitMap(IntPtr alphaPlane, uint pitch)
+        void PresentTransparentLocked()
+        {
+            context!.OMSetRenderTargets(target!);
+            context.ClearRenderTargetView(target!, new GpuColor(0, 0, 0, 0));
+            context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());
+            swap!.Present(0, PresentFlags.None);
+        }
+        AlphaHitMap CreateHitMap(IntPtr alphaPlane, uint pitch,
+            IntPtr cbPlane, uint cbPitch, IntPtr crPlane, uint crPitch)
         {
             Size size = HitMapSize(Width, Height, 512);
             byte[] pixels = GC.AllocateUninitializedArray<byte>(
                 checked(size.Width * size.Height));
+            byte[] cb = GC.AllocateUninitializedArray<byte>(pixels.Length);
+            byte[] cr = GC.AllocateUninitializedArray<byte>(pixels.Length);
             for (int y = 0; y < size.Height; y++)
             {
                 int sourceY = Math.Min(Height - 1, y * Height / size.Height);
                 Marshal.Copy(alphaPlane + sourceY * (int)pitch,
                     alphaRow, 0, alphaRow.Length);
+                int chromaY = sourceY / 2;
+                Marshal.Copy(cbPlane + chromaY * (int)cbPitch,
+                    cbRow, 0, cbRow.Length);
+                Marshal.Copy(crPlane + chromaY * (int)crPitch,
+                    crRow, 0, crRow.Length);
                 int destination = y * size.Width;
                 for (int x = 0; x < size.Width; x++)
                 {
@@ -998,9 +1147,11 @@ internal sealed class CustomPlayerForm : Form
                         ? Alpha16ToByte((ushort)(alphaRow[sourceX * 2] |
                             alphaRow[sourceX * 2 + 1] << 8))
                         : alphaRow[sourceX];
+                    cb[destination + x] = cbRow[sourceX / 2];
+                    cr[destination + x] = crRow[sourceX / 2];
                 }
             }
-            return new AlphaHitMap(pixels, size.Width, size.Height);
+            return new AlphaHitMap(pixels, cb, cr, size.Width, size.Height);
         }
         internal static byte Alpha16ToByte(ushort value) =>
             (byte)((value + 128u) / 257u);
@@ -1060,7 +1211,7 @@ internal sealed class CustomPlayerForm : Form
         }
         double TimeLocked()=>Math.Clamp(clockSeconds+(playing?clock.Elapsed.TotalSeconds*rate:0),0,Duration);
         void UpdateClock(){clockSeconds=TimeLocked();clock.Restart();if(!playing)clock.Stop();}
-        internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),DxgiFormat.B8G8R8A8_UNorm);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);}}
-        public void Dispose(){if(disposed)return;disposed=true;audio?.Dispose();rgb.Dispose();alpha.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();context?.Dispose();device?.Dispose();}
+        internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),DxgiFormat.B8G8R8A8_UNorm);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);if(frameUploaded)DrawCurrentFrameLocked();else PresentTransparentLocked();}}
+        public void Dispose(){if(disposed)return;disposed=true;audio?.Dispose();rgb.Dispose();alpha.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();context?.Dispose();device?.Dispose();}
     }
 }

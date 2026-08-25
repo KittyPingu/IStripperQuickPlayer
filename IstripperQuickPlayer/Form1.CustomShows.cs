@@ -38,6 +38,8 @@ public partial class Form1
         AccessibleName = "Custom player edge cleanup"
     };
     readonly ToolStripMenuItem editCustomShowMenu = new("Edit Custom Show Metadata...");
+    readonly ToolStripMenuItem virtualGreenScreenCustomShowMenu =
+        new("Virtual Green Screen...");
     readonly ToolStripMenuItem reprocessCustomShowMenu = new("Reprocess Custom Show...");
     readonly ToolStripMenuItem deleteCustomShowMenu = new("Delete Custom Show");
     readonly ContextMenuStrip customClipContextMenu = new();
@@ -45,6 +47,8 @@ public partial class Form1
         new("Trim Custom Clip...");
     readonly ToolStripMenuItem cleanCustomClipAlphaMenu =
         new("Automatically Stabilize Alpha...");
+    readonly ToolStripMenuItem virtualGreenScreenCustomClipMenu =
+        new("Virtual Green Screen...");
     readonly ToolStripMenuItem openCustomClipFolderMenu =
         new("Open Folder");
     readonly ToolStripMenuItem deleteCustomClipMenu =
@@ -147,17 +151,21 @@ public partial class Form1
 
         editCustomShowMenu.Click += (_, _) =>
             EditCustomShow(CurrentContextCustomShowId());
+        virtualGreenScreenCustomShowMenu.Click += (_, _) =>
+            EditVirtualGreenScreen(CurrentContextCustomShowId(), null);
         reprocessCustomShowMenu.Click += (_, _) =>
             EditCustomShow(CurrentContextCustomShowId(), reprocess: true);
         deleteCustomShowMenu.Click += (_, _) => DeleteCurrentCustomShow();
         menuCardList.Items.Add(new ToolStripSeparator());
         menuCardList.Items.Add(editCustomShowMenu);
+        menuCardList.Items.Add(virtualGreenScreenCustomShowMenu);
         menuCardList.Items.Add(reprocessCustomShowMenu);
         menuCardList.Items.Add(deleteCustomShowMenu);
         menuCardList.Opening += (_, _) =>
         {
             bool custom = CurrentContextCustomShowId() != null;
             editCustomShowMenu.Visible = custom;
+            virtualGreenScreenCustomShowMenu.Visible = custom;
             reprocessCustomShowMenu.Visible = custom;
             deleteCustomShowMenu.Visible = custom;
             deleteFromDiskToolStripMenuItem.Visible = !custom;
@@ -232,6 +240,8 @@ public partial class Form1
             PersistContextClipAlphaThreshold();
             CompareSelectedCustomClipAlpha();
         };
+        virtualGreenScreenCustomClipMenu.Click += (_, _) =>
+            EditSelectedClipVirtualGreenScreen();
         openCustomClipFolderMenu.Click += (_, _) => OpenSelectedCustomClipFolder();
         foreach (string hotness in CustomShowStore.HotnessOptions)
         {
@@ -260,6 +270,7 @@ public partial class Form1
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
             openCustomClipFolderMenu, cleanCustomClipAlphaMenu,
+            virtualGreenScreenCustomClipMenu,
             trimCustomClipMenu, deleteCustomClipMenu]);
         customClipContextMenu.Opening += (sender, eventArgs) =>
         {
@@ -286,6 +297,7 @@ public partial class Form1
             customClipTypesMenu.Visible = custom;
             openCustomClipFolderMenu.Visible = custom;
             cleanCustomClipAlphaMenu.Visible = custom;
+            virtualGreenScreenCustomClipMenu.Visible = custom;
             trimCustomClipMenu.Visible = custom;
             deleteCustomClipMenu.Visible = custom;
             eventArgs.Cancel = !custom;
@@ -308,6 +320,65 @@ public partial class Form1
         catch (Exception error)
         {
             MessageBox.Show(this, error.Message, "Automatic Alpha Stabilization",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    void EditSelectedClipVirtualGreenScreen()
+    {
+        PersistContextClipAlphaThreshold();
+        try
+        {
+            if (customClipAlphaCard?.customShowId == null ||
+                customClipAlphaCard.clips == null || customClipAlphaClip == null)
+                return;
+            CustomShowManifest show = new CustomShowStore(
+                customShowConfiguration.LibraryRoot).LoadManifest(
+                    customClipAlphaCard.customShowId);
+            int index = customClipAlphaCard.clips.IndexOf(customClipAlphaClip);
+            CustomShowClip[] included = show.Clips.Where(value =>
+                value.Included && value.Media != null).ToArray();
+            if (index < 0 || index >= included.Length)
+                throw new InvalidDataException(
+                    "The selected clip no longer matches the saved custom show.");
+            EditVirtualGreenScreen(show.Id, included[index].Id);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Virtual Green Screen",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    void EditVirtualGreenScreen(string? showId, string? clipId)
+    {
+        if (showId == null) return;
+        try
+        {
+            using VirtualGreenScreenEditorForm editor = new(
+                customShowConfiguration, showId, clipId);
+            if (editor.ShowDialog(this) != DialogResult.OK || !editor.Saved)
+                return;
+            CancelCustomPreload();
+            selectingClipForContextMenu = true;
+            try
+            {
+                ReloadCustomCards();
+                RebindCurrentCustomPlayback();
+                string cardTag = "custom:" + showId;
+                if (Datastore.findCardByTag(cardTag) != null)
+                    loadListClips(cardTag);
+            }
+            finally
+            {
+                selectingClipForContextMenu = false;
+            }
+            RebuildAutomaticQueue();
+            SetPlaybackStatus("Virtual green-screen settings saved in the custom show folder.");
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Virtual Green Screen",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -1305,7 +1376,9 @@ public partial class Form1
                 CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha), media,
                 included[index].AlphaThreshold,
                 customShowConfiguration.FullOpacityThreshold,
-                included[index].EdgeChokePixels);
+                included[index].EdgeChokePixels,
+                VirtualGreenScreenMath.Resolve(show.VirtualGreenScreen,
+                    included[index].VirtualGreenScreen));
             DialogResult result;
             try { result = trim.ShowDialog(this); }
             finally { await trim.ClosePreviewAsync(); }
@@ -1484,6 +1557,7 @@ public partial class Form1
         customPlayerClip = clip;
         customPlayer?.SetAlphaThreshold(clip.customAlphaThreshold);
         customPlayer?.SetEdgeChoke(clip.customEdgeChokePixels);
+        customPlayer?.SetVirtualGreenScreen(clip.customVirtualGreenScreen);
         loadingCustomAlphaThreshold = true;
         customAlphaThresholdInput.Value = clip.customAlphaThreshold;
         loadingCustomAlphaThreshold = false;
@@ -1564,7 +1638,8 @@ public partial class Form1
             startMs: clip.customStartMs,
             endMs: clip.customEndMs, initialBounds: initialBounds,
             preparedPlayback: preparedPlayback,
-            edgeChokePixels: clip.customEdgeChokePixels);
+            edgeChokePixels: clip.customEdgeChokePixels,
+            virtualGreenScreen: clip.customVirtualGreenScreen);
         player.HoldFinalFrameOnCompletion = true;
         player.SetLocked(playerlocked);
         player.SetClickThroughLocked(Properties.Settings.Default.ClickThroughLockedPlayer);
@@ -1702,6 +1777,7 @@ public partial class Form1
             next.customAlphaThreshold,
             customShowConfiguration.FullOpacityThreshold,
             next.customEdgeChokePixels,
+            next.customVirtualGreenScreen,
             next.customStartMs, customPreloadCancellation.Token);
     }
 

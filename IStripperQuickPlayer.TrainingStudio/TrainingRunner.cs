@@ -14,7 +14,7 @@ internal enum TrainingArchitecture
 internal sealed class TrainingRunner
 {
     const int TrainingRevision = 9;
-    const int V11TrainingRevision = 7;
+    const int V11TrainingRevision = 9;
     Process? process;
     internal event Action<string>? Message;
     internal event Action<string>? Progress;
@@ -33,7 +33,7 @@ internal sealed class TrainingRunner
         int revision = v11 ? V11TrainingRevision : yolo ? 2 : TrainingRevision;
         string architectureId = architecture switch
         {
-            TrainingArchitecture.DeepLabV11 => "deeplabv3-resnet50-v1.1",
+            TrainingArchitecture.DeepLabV11 => "deeplabv3-resnet50-v1.1-dildo-butt-plug",
             TrainingArchitecture.Yolo26Semantic => "yolo26s-sem",
             TrainingArchitecture.Yolo26Instance => "yolo26s-seg",
             _ => "rvm-conditioned-convnext-fpn-v2"

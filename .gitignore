@@ -379,6 +379,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/Form1.RestApi.cs
 !/IstripperQuickPlayer/Form1.DressingRooms.cs
 !/IstripperQuickPlayer/TemporalAlphaComparisonForm.cs
+!/IstripperQuickPlayer/VirtualGreenScreenEditorForm.cs
 !/IstripperQuickPlayer/DressingRoomStreamRelay.cs
 !/IstripperQuickPlayer/CustomShowQueue.cs
 !/IstripperQuickPlayer/CustomShowFailedCleanup.cs

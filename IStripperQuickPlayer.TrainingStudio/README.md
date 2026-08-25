@@ -39,6 +39,16 @@ The shared `prop_segmenter.py` helper is deployed beside the RVM worker under
 Training Studio is a local x64 WinForms companion for building and training the
 binary foreground-prop model used by compatible automatic RVM initializers.
 
+## DeepLab v1.1 Rev 9 specialized benchmark
+
+Rev 9 is a benchmark-only binary model for `dildo` and `butt-plug` pixels,
+explicitly warm-started from the best Rev 5 checkpoint. Other classified prop
+categories are hard background examples, while `unclassified` pixels are
+ignored by the loss and evaluation. The run uses target-category-balanced
+sampling and object-centred crops and reports per-category and per-state recall
+on validation, test, and the sealed holdout. Its package is never eligible for
+installation as the general foreground model.
+
 ## Workflow
 
 1. Open or create a dataset folder.

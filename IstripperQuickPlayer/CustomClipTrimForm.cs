@@ -9,6 +9,7 @@ internal sealed class CustomClipTrimForm : Form
     readonly int alphaThreshold;
     readonly int fullOpacityThreshold;
     readonly float edgeChokePixels;
+    readonly CustomVirtualGreenScreen virtualGreenScreen;
     readonly Controls.PlaybackSeekBar timeline = new()
     {
         Minimum = 0,
@@ -37,7 +38,8 @@ internal sealed class CustomClipTrimForm : Form
 
     internal CustomClipTrimForm(string title, string foregroundPath,
         string alphaPath, CustomClipMedia media, int alphaThreshold,
-        int fullOpacityThreshold, float edgeChokePixels)
+        int fullOpacityThreshold, float edgeChokePixels,
+        CustomVirtualGreenScreen? virtualGreenScreen = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
@@ -45,6 +47,8 @@ internal sealed class CustomClipTrimForm : Form
         this.alphaThreshold = alphaThreshold;
         this.fullOpacityThreshold = fullOpacityThreshold;
         this.edgeChokePixels = edgeChokePixels;
+        this.virtualGreenScreen = virtualGreenScreen?.Clone() ??
+            new CustomVirtualGreenScreen { Enabled = false };
         frameMs = CustomShowStore.TryFrameRate(media.FrameRate, out double fps)
             ? Math.Max(1, (long)Math.Ceiling(1000d / fps)) : 1;
         StartMs = media.PlaybackStartMs;
@@ -182,7 +186,8 @@ internal sealed class CustomClipTrimForm : Form
             alphaThreshold: alphaThreshold,
             fullOpacityThreshold: fullOpacityThreshold,
             suppressErrorDialog: true, startMs: 0, endMs: durationMs,
-            edgeChokePixels: edgeChokePixels);
+            edgeChokePixels: edgeChokePixels,
+            virtualGreenScreen: virtualGreenScreen);
         player.HoldFinalFrameOnCompletion = true;
         player.SetPaused(paused);
         player.SeekTo(positionMs / 1000d);

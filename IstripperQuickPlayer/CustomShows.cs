@@ -283,6 +283,7 @@ internal sealed class CustomShowManifest
     public CustomShowMedia Media { get; set; } = new();
     public CustomShowProcessing? Processing { get; set; }
     public CustomShowClipDetection? ClipDetection { get; set; }
+    public CustomVirtualGreenScreen? VirtualGreenScreen { get; set; }
 }
 
 internal sealed class CustomShowClipDetection
@@ -494,6 +495,161 @@ internal sealed class CustomShowClip
     public long? SourceStartMs { get; set; }
     public long? SourceEndMs { get; set; }
     public CustomClipMedia? Media { get; set; }
+    public CustomVirtualGreenScreen? VirtualGreenScreen { get; set; }
+}
+
+internal sealed class CustomVirtualGreenScreen
+{
+    internal const int MaximumColors = 64;
+    internal const int MaximumSmallPatchSize = 64;
+    public bool Enabled { get; set; } = true;
+    public int SmallPatchSize { get; set; }
+    public int MinimumTransparentAreaRadius { get; set; }
+    public CustomVirtualGreenScreenColor[] Colors { get; set; } = [];
+
+    internal CustomVirtualGreenScreen Clone() => new()
+    {
+        Enabled = Enabled,
+        SmallPatchSize = SmallPatchSize,
+        MinimumTransparentAreaRadius = MinimumTransparentAreaRadius,
+        Colors = Colors.Select(value => new CustomVirtualGreenScreenColor
+        {
+            Color = value.Color,
+            Tolerance = value.Tolerance,
+            Feather = value.Feather,
+            Locked = value.Locked
+        }).ToArray()
+    };
+}
+
+internal sealed class CustomVirtualGreenScreenColor
+{
+    public string Color { get; set; } = "#00FF00";
+    public int Tolerance { get; set; } = 18;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Feather { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Locked { get; set; }
+}
+
+internal readonly record struct VirtualGreenScreenSample(
+    float Cb, float Cr, float Tolerance, float Feather, bool Locked);
+
+internal static class VirtualGreenScreenMath
+{
+    internal const int SmallPatchMinimumDiskSupport = 4;
+    internal const int MinimumTransparentAreaDiskSupport = 8;
+    static readonly PointF[] smallPatchDiskOffsets =
+    [
+        new(.1767767f, 0), new(-.2257722f, .2068258f),
+        new(.0345581f, -.3937712f), new(.2845712f, .3711728f),
+        new(-.5222232f, -.0923739f), new(.4946954f, -.3146847f),
+        new(-.1654659f, .6155250f), new(-.3155615f, -.6075944f),
+        new(.6846422f, .2500302f), new(-.7122561f, .2940090f),
+        new(.3433545f, -.7337286f), new(.2537302f, .8089320f),
+        new(-.7647459f, -.4431859f), new(.8971340f, -.1972324f),
+        new(-.5475069f, .7787722f), new(-.1264868f, -.9760897f)
+    ];
+
+    internal static ReadOnlySpan<PointF> SmallPatchDiskOffsets =>
+        smallPatchDiskOffsets;
+
+    internal static CustomVirtualGreenScreen Resolve(
+        CustomVirtualGreenScreen? show, CustomVirtualGreenScreen? clip) =>
+        (clip ?? show)?.Clone() ?? new CustomVirtualGreenScreen { Enabled = false };
+
+    internal static int SmallPatchSize(CustomVirtualGreenScreen? settings) =>
+        settings?.Enabled == true ? Math.Clamp(settings.SmallPatchSize, 0,
+            CustomVirtualGreenScreen.MaximumSmallPatchSize) : 0;
+
+    internal static int MinimumTransparentAreaRadius(
+        CustomVirtualGreenScreen? settings) => settings?.Enabled == true
+            ? Math.Clamp(settings.MinimumTransparentAreaRadius, 0,
+                CustomVirtualGreenScreen.MaximumSmallPatchSize) : 0;
+
+    internal static VirtualGreenScreenSample[] Samples(
+        CustomVirtualGreenScreen? settings)
+    {
+        if (settings?.Enabled != true || settings.Colors.Length == 0) return [];
+        return settings.Colors.Take(CustomVirtualGreenScreen.MaximumColors)
+            .OrderByDescending(value => value.Locked)
+            .Select(value =>
+            {
+                Color color = ParseColor(value.Color);
+                float red = color.R, green = color.G, blue = color.B;
+                float cb = 128 + (-.114572f * red - .385428f * green + .5f * blue);
+                float cr = 128 + (.5f * red - .454153f * green - .045847f * blue);
+                float tolerance = Math.Clamp(value.Tolerance, 0, 100);
+                float feather = EffectiveFeather(value);
+                return new VirtualGreenScreenSample(
+                    Math.Clamp(cb, 0, 255) / 255f,
+                    Math.Clamp(cr, 0, 255) / 255f,
+                    tolerance / 255f, feather / 255f, value.Locked);
+            }).ToArray();
+    }
+
+    internal static int EffectiveFeather(CustomVirtualGreenScreenColor value) =>
+        value.Feather is int feather ? Math.Clamp(feather, 0, 100) :
+        Math.Max(3, (int)MathF.Ceiling(Math.Clamp(value.Tolerance, 0, 100) * .25f));
+
+    internal static float Keep(float cb, float cr,
+        ReadOnlySpan<VirtualGreenScreenSample> samples)
+    {
+        float keep = 1, protection = 0;
+        foreach (VirtualGreenScreenSample sample in samples)
+        {
+            float deltaCb = cb - sample.Cb, deltaCr = cr - sample.Cr;
+            float distance = MathF.Sqrt(deltaCb * deltaCb + deltaCr * deltaCr);
+            float value = SmoothStep(sample.Tolerance,
+                sample.Tolerance + sample.Feather, distance);
+            if (sample.Locked)
+                protection = Math.Max(protection, 1 - value);
+            else
+                keep = Math.Min(keep, value);
+        }
+        return keep + (1 - keep) * protection;
+    }
+
+    internal static byte Apply(byte alpha, byte cb, byte cr, int lower,
+        int upper, CustomVirtualGreenScreen? settings)
+        => Apply(alpha, cb, cr, lower, upper, Samples(settings));
+
+    internal static byte Apply(byte alpha, byte cb, byte cr, int lower,
+        int upper, ReadOnlySpan<VirtualGreenScreenSample> samples)
+    {
+        float keyed = alpha * Keep(cb / 255f, cr / 255f, samples);
+        return keyed < Math.Clamp(lower, 0, 255) ? (byte)0 :
+            keyed >= Math.Clamp(upper, 1, 255) ? (byte)255 :
+            (byte)Math.Clamp((int)MathF.Round(keyed), 0, 255);
+    }
+
+    internal static Color ParseColor(string value)
+    {
+        if (!IsColor(value)) throw new InvalidDataException(
+            "Virtual green-screen colours must use #RRGGBB.");
+        return Color.FromArgb(
+            int.Parse(value.AsSpan(1, 2), NumberStyles.HexNumber,
+                CultureInfo.InvariantCulture),
+            int.Parse(value.AsSpan(3, 2), NumberStyles.HexNumber,
+                CultureInfo.InvariantCulture),
+            int.Parse(value.AsSpan(5, 2), NumberStyles.HexNumber,
+                CultureInfo.InvariantCulture));
+    }
+
+    internal static string FormatColor(Color value) =>
+        $"#{value.R:X2}{value.G:X2}{value.B:X2}";
+
+    internal static bool IsColor(string? value) => value?.Length == 7 &&
+        value[0] == '#' && int.TryParse(value.AsSpan(1), NumberStyles.HexNumber,
+            CultureInfo.InvariantCulture, out _);
+
+    static float SmoothStep(float edge0, float edge1, float value)
+    {
+        if (edge1 <= edge0) return value <= edge0 ? 0 : 1;
+        float amount = Math.Clamp((value - edge0) / Math.Max(.000001f,
+            edge1 - edge0), 0, 1);
+        return amount * amount * (3 - 2 * amount);
+    }
 }
 
 internal sealed class CustomClipMedia
@@ -1014,11 +1170,13 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Cover font names are invalid.");
         ValidateMediaFields(show.Media.Width, show.Media.Height,
             show.Media.FrameRate, show.Media.DurationMs, "Show media");
+        ValidateVirtualGreenScreen(show.VirtualGreenScreen);
         ValidateClips(show.Clips, show.Media.DurationMs);
         ValidateClipDetection(show.ClipDetection);
         ValidateProcessing(show.Processing, show.Clips);
         foreach (CustomShowClip clip in show.Clips)
         {
+            ValidateVirtualGreenScreen(clip.VirtualGreenScreen);
             if (clip.Included && clip.Media == null)
                 throw new InvalidDataException("Every included clip needs processed media.");
             ValidateClipSource(clip, folder);
@@ -1336,6 +1494,32 @@ internal sealed class CustomShowStore
         return full;
     }
 
+    static void ValidateVirtualGreenScreen(CustomVirtualGreenScreen? settings)
+    {
+        if (settings == null) return;
+        if (settings.Colors == null ||
+            settings.Colors.Length > CustomVirtualGreenScreen.MaximumColors)
+            throw new InvalidDataException(
+                $"Virtual green screen supports no more than " +
+                $"{CustomVirtualGreenScreen.MaximumColors} colours.");
+        if (settings.SmallPatchSize is < 0 or >
+            CustomVirtualGreenScreen.MaximumSmallPatchSize)
+            throw new InvalidDataException(
+                $"Virtual green-screen small-patch size must be 0–" +
+                $"{CustomVirtualGreenScreen.MaximumSmallPatchSize} pixels.");
+        if (settings.MinimumTransparentAreaRadius is < 0 or >
+            CustomVirtualGreenScreen.MaximumSmallPatchSize)
+            throw new InvalidDataException(
+                $"Virtual green-screen minimum transparent-area radius must " +
+                $"be 0–{CustomVirtualGreenScreen.MaximumSmallPatchSize} pixels.");
+        foreach (CustomVirtualGreenScreenColor color in settings.Colors)
+            if (!VirtualGreenScreenMath.IsColor(color.Color) ||
+                color.Tolerance is < 0 or > 100 || color.Feather is < 0 or > 100)
+                throw new InvalidDataException(
+                    "Virtual green-screen colours require #RRGGBB and 0–100 " +
+                    "tolerance and feather values.");
+    }
+
     internal static string CleanedAlphaPath(string alphaPath)
     {
         string full = Path.GetFullPath(alphaPath);
@@ -1504,7 +1688,8 @@ internal sealed class CustomShowStore
                     size, index + 1, clip.Hotness, clip.ClipTypes,
                     clip.AlphaThreshold, clip.EdgeChokePixels,
                     media.PlaybackStartMs,
-                    PlaybackEnd(media));
+                    PlaybackEnd(media), VirtualGreenScreenMath.Resolve(
+                        show.VirtualGreenScreen, clip.VirtualGreenScreen));
             }).ToList();
         return card;
     }
@@ -1545,13 +1730,14 @@ internal sealed class CustomShowStore
     static ModelClip CreateClip(string name, string foreground, string alpha,
         long size, int number, string hotness, string[] types,
         int alphaThreshold, float edgeChokePixels, long startMs,
-        long endMs) => new()
+        long endMs, CustomVirtualGreenScreen virtualGreenScreen) => new()
     {
         clipName = name,
         customForegroundPath = foreground,
         customAlphaPath = alpha,
         customAlphaThreshold = alphaThreshold,
         customEdgeChokePixels = edgeChokePixels,
+        customVirtualGreenScreen = virtualGreenScreen,
         customStartMs = startMs,
         customEndMs = endMs,
         size = size,
@@ -1611,7 +1797,75 @@ internal sealed class CustomShowStore
             PropSegmenterCompatible("rvm-vitmatte-s", false, null) &&
             PropSegmenterCompatible("rvm-vitmatte-b", false, null) &&
             !PropSegmenterCompatible("quality", false, null) &&
+            VerifyVirtualGreenScreen() &&
             RejectsTraversal();
+    }
+
+    static bool VerifyVirtualGreenScreen()
+    {
+        CustomVirtualGreenScreen show = new()
+        {
+            SmallPatchSize = 12,
+            MinimumTransparentAreaRadius = 10,
+            Colors = [new() { Color = "#00FF00", Tolerance = 18, Feather = 5 }]
+        };
+        CustomVirtualGreenScreen disabled = new() { Enabled = false };
+        CustomVirtualGreenScreen replacement = new()
+        {
+            Colors = [new() { Color = "#0000FF", Tolerance = 10 }]
+        };
+        VirtualGreenScreenSample target = VirtualGreenScreenMath.Samples(show)[0];
+        byte cb = (byte)Math.Round(target.Cb * 255);
+        byte cr = (byte)Math.Round(target.Cr * 255);
+        float feathered = VirtualGreenScreenMath.Keep(
+            target.Cb + target.Tolerance + target.Feather / 2, target.Cr,
+            [target]);
+        CustomVirtualGreenScreen hardEdge = new()
+        {
+            Colors = [new() { Color = "#00FF00", Tolerance = 0, Feather = 0 }]
+        };
+        VirtualGreenScreenSample hardTarget =
+            VirtualGreenScreenMath.Samples(hardEdge)[0];
+        CustomVirtualGreenScreen protectedColor = new()
+        {
+            Colors =
+            [
+                new() { Color = "#00FF00", Tolerance = 18, Feather = 5 },
+                new() { Color = "#00FF00", Tolerance = 18, Feather = 5,
+                    Locked = true }
+            ]
+        };
+        bool excessivePaletteRejected = false;
+        try
+        {
+            ValidateVirtualGreenScreen(new CustomVirtualGreenScreen
+            {
+                Colors = Enumerable.Range(0,
+                    CustomVirtualGreenScreen.MaximumColors + 1)
+                    .Select(_ => new CustomVirtualGreenScreenColor()).ToArray()
+            });
+        }
+        catch (InvalidDataException) { excessivePaletteRejected = true; }
+        return VirtualGreenScreenMath.Resolve(show, null).Colors[0].Color ==
+                "#00FF00" &&
+            VirtualGreenScreenMath.SmallPatchSize(show) == 12 &&
+            VirtualGreenScreenMath.MinimumTransparentAreaRadius(show) == 10 &&
+            VirtualGreenScreenMath.SmallPatchSize(disabled) == 0 &&
+            VirtualGreenScreenMath.MinimumTransparentAreaRadius(disabled) == 0 &&
+            !VirtualGreenScreenMath.Resolve(show, disabled).Enabled &&
+            VirtualGreenScreenMath.Resolve(show, replacement).Colors[0].Color ==
+                "#0000FF" &&
+            VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200, show) == 0 &&
+            VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200,
+                protectedColor) == 255 &&
+            feathered is > 0 and < 1 && excessivePaletteRejected &&
+            VirtualGreenScreenMath.Keep(hardTarget.Cb, hardTarget.Cr,
+                [hardTarget]) == 0 &&
+            VirtualGreenScreenMath.Keep(hardTarget.Cb + 1f / 255,
+                hardTarget.Cr, [hardTarget]) == 1 &&
+            VirtualGreenScreenMath.Apply(128, 128, 128, 0, 200, show) == 128 &&
+            VirtualGreenScreenMath.Apply(255, 128, 128, 0, 200,
+                (CustomVirtualGreenScreen?)null) == 255;
     }
 
     static string FindPythonForVerification() =>
@@ -1664,6 +1918,13 @@ internal sealed class CustomShowStore
                     FrameRate = "10/1", DurationMs = 1000,
                     CoverModelFont = "Arial", CoverTitleFont = "Tahoma" },
                 Source = new() { Mode = "reference", Path = "test-source.mp4" },
+                VirtualGreenScreen = new()
+                {
+                    SmallPatchSize = 8,
+                    MinimumTransparentAreaRadius = 6,
+                    Colors = [new() { Color = "#00FF00", Tolerance = 18,
+                        Feather = 5, Locked = true }]
+                },
                 Clips =
                 [
                     new() { StartMs = 0, EndMs = 400, Hotness = "NoNudity",
@@ -1755,6 +2016,7 @@ internal sealed class CustomShowStore
                         Sam2MaskTracking = false
                     }).ToArray()
             };
+            show.Clips[2].VirtualGreenScreen = new() { Enabled = false };
             using (Bitmap cover = new(64, 96)) cover.Save(
                 Path.Combine(folder, "cover.jpg"), System.Drawing.Imaging.ImageFormat.Jpeg);
             store.SaveManifest(show);
@@ -1791,10 +2053,43 @@ internal sealed class CustomShowStore
                 roundTrip.Clips[0].Media?.PlaybackStartMs != 100 ||
                 roundTrip.Clips[0].Media?.PlaybackEndMs != 300 ||
                 roundTrip.Clips[0].EdgeChokePixels != 1.25f ||
+                roundTrip.VirtualGreenScreen?.Colors.Single().Color != "#00FF00" ||
+                roundTrip.VirtualGreenScreen.SmallPatchSize != 8 ||
+                roundTrip.VirtualGreenScreen.MinimumTransparentAreaRadius != 6 ||
+                roundTrip.VirtualGreenScreen.Colors[0].Tolerance != 18 ||
+                roundTrip.VirtualGreenScreen.Colors[0].Feather != 5 ||
+                !roundTrip.VirtualGreenScreen.Colors[0].Locked ||
+                roundTrip.Clips[0].VirtualGreenScreen != null ||
+                roundTrip.Clips[2].VirtualGreenScreen?.Enabled != false ||
                 !roundTrip.Clips[1].DetectionLabels.SequenceEqual(["Fade"]) ||
                 !roundTrip.Clips[2].DetectionLabels.Contains("Hard Cut"))
             {
                 Console.Error.WriteLine("Custom processing provenance round-trip failed.");
+                return false;
+            }
+            bool greenPreviewReady = false;
+            using (VirtualGreenScreenEditorForm greenEditor = new(
+                new CustomShowConfiguration { LibraryRoot = root }, show.Id))
+            using (System.Windows.Forms.Timer previewCheck = new()
+                { Interval = 100 })
+            {
+                int attempts = 0;
+                previewCheck.Tick += (_, _) =>
+                {
+                    greenPreviewReady = greenEditor.PreviewReady;
+                    if (greenPreviewReady || ++attempts >= 30)
+                    {
+                        previewCheck.Stop();
+                        greenEditor.Close();
+                    }
+                };
+                greenEditor.Shown += (_, _) => previewCheck.Start();
+                greenEditor.ShowDialog();
+            }
+            if (!greenPreviewReady)
+            {
+                Console.Error.WriteLine(
+                    "Virtual green-screen preview did not render a frame.");
                 return false;
             }
             using (CustomClipEditorForm editor = new(
@@ -1866,9 +2161,12 @@ internal sealed class CustomShowStore
                 loadedClips[0].customEndMs != 300 ||
                 loadedClips[0].customAlphaThreshold != 24 ||
                 loadedClips[0].customEdgeChokePixels != 1.25f ||
+                loadedClips[0].customVirtualGreenScreen.Colors.Single().Color !=
+                    "#00FF00" ||
                 !string.Equals(loadedClips[0].customAlphaPath,
                     cleanedAlphaProbe, StringComparison.OrdinalIgnoreCase) ||
                 loadedClips[1].customStartMs != 0 ||
+                loadedClips[1].customVirtualGreenScreen.Enabled ||
                 loadedClips[1].hotnessCode != HotnessCode.topless)
             {
                 Console.Error.WriteLine("Custom card check failed: " +

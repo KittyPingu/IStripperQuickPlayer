@@ -33,7 +33,7 @@ internal sealed class TrainingStudioForm : Form
     readonly ComboBox trainingArchitecture = new() { Width = 190,
         DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox minimumResolution = new() { Width = 105, DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly Label v2Training = new() { Text = "768px · warm-started · sealed benchmark",
+    readonly Label v2Training = new() { Text = "768px · Rev 9 dildo/butt-plug benchmark · Rev 5 warm start",
         AutoSize = true, Padding = new Padding(6, 7, 0, 0) };
     readonly Label queueStatus = new() { Text = "Queue: 0/10", AutoSize = true,
         Padding = new Padding(10, 8, 0, 0) };
@@ -109,7 +109,7 @@ internal sealed class TrainingStudioForm : Form
                 TrainingArchitecture.Yolo26Instance;
             v2Training.Text = selected switch
             {
-                TrainingArchitecture.DeepLabV11 => "768px · warm-started · sealed benchmark",
+                TrainingArchitecture.DeepLabV11 => "768px · Rev 9 dildo/butt-plug benchmark · Rev 5 warm start",
                 TrainingArchitecture.ConvNextV2 => "768px · conditioned crops",
                 _ => "1024px · benchmark only"
             };
