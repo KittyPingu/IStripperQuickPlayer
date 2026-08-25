@@ -44,6 +44,7 @@ namespace IStripperQuickPlayer
                     ("custom playback handoff", Form1.VerifyCustomPlaybackHandoff()),
                     ("cover crop", CustomShowEditorForm.VerifyCoverCrop()),
                     ("append custom-show clips", CustomShowEditorForm.VerifyAppendLayout()),
+                    ("metadata save routing", CustomShowEditorForm.VerifySaveRouting()),
                     ("cover text", CustomShowProcessor.VerifyCoverOverlay()),
                     ("IAFD link parsing", Form1.VerifyIafdLinkParsing()),
                     ("mask frame selection", CustomMaskEditorForm.VerifyFrameSelection()),

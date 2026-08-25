@@ -16,7 +16,7 @@ internal sealed class CustomShowEditorForm : Form
     readonly CustomShowStore store;
     readonly CustomShowConfiguration configuration;
     readonly string? showId;
-    readonly bool reprocess;
+    readonly bool reprocess, metadataOnly;
     readonly CustomShowQueueManager? queueManager;
     readonly string? queueJobId;
     readonly CustomShowQueueJob? queueDraft;
@@ -194,7 +194,7 @@ internal sealed class CustomShowEditorForm : Form
         autoAccept.Text =
             "Automatically accept result with alpha threshold " +
             configuration.DefaultAlphaThreshold;
-        bool metadataOnly = showId != null && !this.reprocess &&
+        metadataOnly = showId != null && !this.reprocess &&
             queueJobId == null;
         Text = showId == null ? "Create Custom Show" : this.reprocess
             ? "Reprocess Custom Show" : "Edit Custom Show Metadata";
@@ -404,7 +404,7 @@ internal sealed class CustomShowEditorForm : Form
         CancelButton = cancel;
         save.Click += (sender, e) =>
         {
-            if (SelectedPreset() == Sam2MattingSupport.Algorithm)
+            if (RoutesSaveToQueue(metadataOnly, SelectedPreset()))
                 QueueJob(sender, e);
             else
                 Save(sender, e);
@@ -621,7 +621,8 @@ internal sealed class CustomShowEditorForm : Form
         bool rvmSam2 = UsesSam2(selected) &&
             SelectedMaskEngine() == "rvm-sam2";
         bool propCompatible = selected is
-            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
+            "matanyone2" or "rvm-matanyone2" or
+            "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
             rvmSam2 || rvmSam2Matting;
         PropSegmenterPackage? selectedPropModel =
             SelectedPropSegmenterPackage();
@@ -635,7 +636,8 @@ internal sealed class CustomShowEditorForm : Form
         rvmMatAnyoneMaskRefresh.Enabled = selected == "rvm-matanyone2" && CanProcess;
         bool rvmVitMatte = selected is "rvm-vitmatte-s" or "rvm-vitmatte-b";
         propSegmenterEveryFrame.Enabled =
-            (rvmVitMatte || rvmMatAnyoneMaskRefresh.Enabled &&
+            (selected == "matanyone2" || rvmVitMatte ||
+                rvmMatAnyoneMaskRefresh.Enabled &&
                 rvmMatAnyoneMaskRefresh.Checked) &&
             selectedPropModel != null &&
             selectedPropModel.ManifestSchemaVersion != 2;
@@ -680,9 +682,9 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, propSegmenterModelRow,
                 propCompatible);
             SetRowVisible(processingTable, rvmPropEveryFrameRow,
-                selected == "rvm-matanyone2" || rvmVitMatte);
+                selected is "matanyone2" or "rvm-matanyone2" || rvmVitMatte);
             SetRowVisible(processingTable, debugPropContributionRow,
-                selected == "rvm-matanyone2" || rvmVitMatte);
+                selected is "matanyone2" or "rvm-matanyone2" || rvmVitMatte);
             SetRowVisible(processingTable, rvmMaskRefreshStrengthRow,
                 selected == "rvm-matanyone2");
             SetRowVisible(processingTable, matAnyoneMemoryRow, matAnyone);
@@ -1629,7 +1631,9 @@ internal sealed class CustomShowEditorForm : Form
                             ? rvmInitializerThreshold.Value : null,
                         RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
                             rvmMatAnyoneMaskRefresh.Checked,
-                        PropSegmenterEveryFrame = selectedPreset is
+                        PropSegmenterEveryFrame = selectedPreset == "matanyone2" &&
+                                propSegmenterEveryFrame.Checked ||
+                            selectedPreset is
                             "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
                                 propSegmenterEveryFrame.Checked ||
                             selectedPreset == "rvm-matanyone2" &&
@@ -1659,7 +1663,7 @@ internal sealed class CustomShowEditorForm : Form
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null
                     };
                     ApplyPropSegmenter(draftSetup.Processing,
-                        selectedPreset is "rvm-matanyone2" or
+                        selectedPreset is "matanyone2" or "rvm-matanyone2" or
                             "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
                         UsesSam2(selectedPreset) &&
                             selectedMaskEngine == "rvm-sam2");
@@ -1883,6 +1887,8 @@ internal sealed class CustomShowEditorForm : Form
                                     selectedPreset == "rvm-matanyone2" &&
                                     rvmMatAnyoneMaskRefresh.Checked,
                                  propSegmenterEveryFrame:
+                                    selectedPreset == "matanyone2" &&
+                                        propSegmenterEveryFrame.Checked ||
                                     selectedPreset is
                                         "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
                                             propSegmenterEveryFrame.Checked ||
@@ -1901,7 +1907,8 @@ internal sealed class CustomShowEditorForm : Form
                                  matAnyoneInteractiveCorrections:
                                     selectedPreset == "matanyone2",
                                  propSegmenterModelPath:
-                                    selectedPreset is "rvm-matanyone2" or
+                                    selectedPreset is "matanyone2" or
+                                        "rvm-matanyone2" or
                                         "rvm-vitmatte-s" or "rvm-vitmatte-b"
                                         ? SelectedPropSegmenterPackage()?.Folder
                                         : null);
@@ -2078,7 +2085,9 @@ internal sealed class CustomShowEditorForm : Form
                             ? rvmInitializerThreshold.Value : null,
                         RvmMatAnyoneMaskRefresh = selectedPreset == "rvm-matanyone2" &&
                             rvmMatAnyoneMaskRefresh.Checked,
-                        PropSegmenterEveryFrame = selectedPreset is
+                        PropSegmenterEveryFrame = selectedPreset == "matanyone2" &&
+                                propSegmenterEveryFrame.Checked ||
+                            selectedPreset is
                             "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
                                 propSegmenterEveryFrame.Checked ||
                             selectedPreset == "rvm-matanyone2" &&
@@ -2125,7 +2134,7 @@ internal sealed class CustomShowEditorForm : Form
                             })).ToArray()
                     };
                     ApplyPropSegmenter(show.Processing,
-                        selectedPreset is "rvm-matanyone2" or
+                        selectedPreset is "matanyone2" or "rvm-matanyone2" or
                             "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
                         UsesSam2(selectedPreset) &&
                             selectedMaskEngine == "rvm-sam2");
@@ -2389,7 +2398,9 @@ internal sealed class CustomShowEditorForm : Form
                     ? rvmInitializerThreshold.Value : null,
                 RvmMatAnyoneMaskRefresh = algorithm == "rvm-matanyone2" &&
                     rvmMatAnyoneMaskRefresh.Checked,
-                PropSegmenterEveryFrame = algorithm is
+                PropSegmenterEveryFrame = algorithm == "matanyone2" &&
+                        propSegmenterEveryFrame.Checked ||
+                    algorithm is
                     "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
                         propSegmenterEveryFrame.Checked ||
                     algorithm == "rvm-matanyone2" &&
@@ -2428,7 +2439,7 @@ internal sealed class CustomShowEditorForm : Form
                         ? "rvm-sam2" : SelectedMaskEngine())
             };
             ApplyPropSegmenter(processingOptions,
-                algorithm is "rvm-matanyone2" or
+                algorithm is "matanyone2" or "rvm-matanyone2" or
                     "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
                 algorithm == Sam2MattingSupport.Algorithm &&
                     promptMode == "rvm-initial-mask" ||
@@ -3619,6 +3630,14 @@ internal sealed class CustomShowEditorForm : Form
             appended[1].SourceStartMs == 400 && appended[1].SourceEndMs == 1_000 &&
             coverSource.Path == combined.Source.Path && coverPosition == 700;
     }
+
+    static bool RoutesSaveToQueue(bool metadataOnly, string algorithm) =>
+        !metadataOnly && algorithm == Sam2MattingSupport.Algorithm;
+
+    internal static bool VerifySaveRouting() =>
+        !RoutesSaveToQueue(true, Sam2MattingSupport.Algorithm) &&
+        RoutesSaveToQueue(false, Sam2MattingSupport.Algorithm) &&
+        !RoutesSaveToQueue(false, "quality");
 
     static TableLayoutPanel SectionTable()
     {

@@ -530,14 +530,12 @@ internal sealed class TemporalAlphaComparisonForm : Form
         int fullOpacityThreshold, bool showDecisions, int revision,
         CancellationToken token)
     {
-        Process? source = null, input = null;
+        Process? input = null;
         try
         {
             double seconds = startFrame / previewFps;
-            source = PreviewDecoder(foreground, seconds, "bgra", width, height,
-                previewFrameRate);
-            input = PreviewDecoder(alpha, seconds, "gray", width, height,
-                previewFrameRate);
+            input = PairedPreviewDecoder(foreground, alpha, seconds, width,
+                height, previewFrameRate);
             int pixels = width * height;
             int decisionPlaneBytes = (pixels + 7) / 8;
             int decisionFrameBytes = decisionPlaneBytes * 2;
@@ -564,9 +562,11 @@ internal sealed class TemporalAlphaComparisonForm : Form
                 byte[] decisionFlags = new byte[decisionFrameBytes];
                 if (!await ReadExactAsync(output, outputAlpha, token) ||
                     !await ReadExactAsync(decisions, decisionFlags, token) ||
-                    !await ReadExactAsync(source.StandardOutput.BaseStream, sourceBgra, token) ||
-                    !await ReadExactAsync(input.StandardOutput.BaseStream, inputAlpha, token))
+                    !await ReadExactAsync(input.StandardOutput.BaseStream,
+                        sourceBgra, token))
                     return;
+                for (int pixel = 0; pixel < pixels; pixel++)
+                    inputAlpha[pixel] = sourceBgra[pixel * 4 + 3];
                 byte[] inputComposite = Composite(sourceBgra, inputAlpha,
                     width, height, lowerAlphaThreshold, fullOpacityThreshold);
                 if (showDecisions)
@@ -595,7 +595,7 @@ internal sealed class TemporalAlphaComparisonForm : Form
         }
         finally
         {
-            foreach (Process? process in new[] { source, input })
+            foreach (Process? process in new[] { input })
                 if (process != null)
                 {
                     try { if (!process.HasExited) process.Kill(true); } catch { }
@@ -610,19 +610,27 @@ internal sealed class TemporalAlphaComparisonForm : Form
         }
     }
 
-    Process PreviewDecoder(string path, double seconds, string pixelFormat,
-        int width, int height, string previewFrameRate)
+    Process PairedPreviewDecoder(string foreground, string alpha,
+        double seconds, int width, int height, string previewFrameRate)
     {
         ProcessStartInfo start = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"))
         {
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = false
         };
-        foreach (string argument in new[] { "-v", "error", "-ss",
-            seconds.ToString("0.######", CultureInfo.InvariantCulture), "-i", path,
-            "-vf", $"fps={previewFrameRate},scale={width}:{height}:flags=area," +
-                $"format={pixelFormat}", "-f", "rawvideo", "-pix_fmt", pixelFormat,
-            "pipe:1" }) start.ArgumentList.Add(argument);
+        string seek = seconds.ToString("0.######", CultureInfo.InvariantCulture);
+        foreach (string argument in new[]
+        {
+            "-v", "error", "-ss", seek, "-i", foreground,
+            "-ss", seek, "-i", alpha, "-filter_complex",
+            $"[0:v]fps={previewFrameRate},scale={width}:{height}:flags=area," +
+                "setsar=1,setpts=PTS-STARTPTS[fg];" +
+            $"[1:v]fps={previewFrameRate},scale={width}:{height}:flags=area," +
+                "format=gray,setsar=1,setpts=PTS-STARTPTS[a];" +
+            "[fg][a]alphamerge=shortest=1:repeatlast=0,format=bgra[out]",
+            "-map", "[out]", "-an", "-f", "rawvideo", "-pix_fmt", "bgra",
+            "pipe:1"
+        }) start.ArgumentList.Add(argument);
         return Process.Start(start) ??
             throw new InvalidOperationException("FFmpeg preview decoding could not start.");
     }

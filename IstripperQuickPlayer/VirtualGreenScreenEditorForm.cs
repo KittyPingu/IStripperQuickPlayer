@@ -107,6 +107,7 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     bool lastTooltipOutput;
     int lastTooltipArgb;
     double fps = 25, playbackSpeed = 1;
+    string frameRate = "25/1";
     CustomShowClip currentClip;
     string foreground = "", alpha = "";
     long rangeStartMs, rangeEndMs;
@@ -385,6 +386,8 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         rangeEndMs = CustomShowStore.PlaybackEnd(media);
         fps = CustomShowStore.TryFrameRate(media.FrameRate, out double value)
             ? value : 25;
+        frameRate = CustomShowStore.TryFrameRate(media.FrameRate, out _)
+            ? media.FrameRate : "25/1";
         double scale = Math.Min(PaneMaximumWidth / (double)media.Width,
             PaneMaximumHeight / (double)media.Height);
         scale = Math.Min(1, scale);
@@ -950,9 +953,12 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         AddInput(start, atMs, foreground); AddInput(start, atMs, alpha);
         start.ArgumentList.Add("-filter_complex");
         start.ArgumentList.Add(
-            $"[0:v]scale={frameWidth}:{frameHeight}:flags=bilinear,setsar=1[fg];" +
-            $"[1:v]scale={frameWidth}:{frameHeight}:flags=bilinear," +
-            "format=gray,setsar=1[a];[fg][a]alphamerge,format=bgra[out]");
+            $"[0:v]fps={frameRate},scale={frameWidth}:{frameHeight}:" +
+            "flags=bilinear,setsar=1,setpts=PTS-STARTPTS[fg];" +
+            $"[1:v]fps={frameRate},scale={frameWidth}:{frameHeight}:" +
+            "flags=bilinear,format=gray,setsar=1,setpts=PTS-STARTPTS[a];" +
+            "[fg][a]alphamerge=shortest=1:repeatlast=0," +
+            "format=bgra[out]");
         start.ArgumentList.Add("-map"); start.ArgumentList.Add("[out]");
         if (oneFrame)
         {

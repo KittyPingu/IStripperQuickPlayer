@@ -1379,7 +1379,7 @@ def _process_once(args, compile_enabled):
             alpha_map.flush()
             del backward
 
-        if args.rvm_mask_refresh or v2_sparse_discovery:
+        if args.rvm_mask_refresh or args.prop_model is not None:
             emit("startup", progress_base,
                  "Loading RVM for persistent foreground refresh...")
             rvm_torch, rvm_refresh_model, rvm_device = load_rvm_model(
@@ -1388,7 +1388,7 @@ def _process_once(args, compile_enabled):
                 raise RuntimeError("RVM and MatAnyone must use the same processing device")
             if args.prop_model is not None:
                 emit("startup", progress_base,
-                     "Loading trained prop model for RVM refreshes...")
+                     "Loading trained prop model for MatAnyone refreshes...")
                 from prop_segmenter import load_package, predict_mask_tensor
                 prop_torch, prop_model, prop_device, prop_manifest = load_package(
                     args.prop_model, device)
@@ -1731,8 +1731,7 @@ def _process_once(args, compile_enabled):
         "alphaResize": "ffmpeg-bilinear",
         "selectedFrame": selected_index,
         "rvmMaskRefresh": args.rvm_mask_refresh,
-        "propMaskRefresh": (args.rvm_mask_refresh or v2_sparse_discovery) and
-            args.prop_model is not None,
+        "propMaskRefresh": args.prop_model is not None,
         "propEveryFrame": args.prop_every_frame and not v2_sparse_discovery,
         "debugPropContribution": args.debug_prop_contribution,
         "rvmRefreshStrength": args.rvm_refresh_strength,
@@ -1947,9 +1946,8 @@ def main():
             parser.error("--rvm-alpha-threshold must be between 0.10 and 0.90")
         if not .25 <= args.rvm_refresh_strength <= 1:
             parser.error("--rvm-refresh-strength must be between 0.25 and 1.00")
-        if args.prop_every_frame and (
-                not args.rvm_mask_refresh or args.prop_model is None):
-            parser.error("--prop-every-frame requires --rvm-mask-refresh and --prop-model")
+        if args.prop_every_frame and args.prop_model is None:
+            parser.error("--prop-every-frame requires --prop-model")
         if args.debug_prop_contribution and not args.prop_every_frame:
             parser.error("--debug-prop-contribution requires --prop-every-frame")
         if not valid_memory_configuration(args.max_mem_frames,

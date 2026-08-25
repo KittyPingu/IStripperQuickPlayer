@@ -17,7 +17,7 @@ PREVIEW_MAXIMUM = 768
 MODEL_DETAIL = 512
 CUT_MEAN_DIFFERENCE = 46.0
 ALPHA_VARIATION = 12
-ANALYSIS_CACHE_REVISION = 1
+ANALYSIS_CACHE_REVISION = 2
 
 
 def read_exact(stream, size):
@@ -56,6 +56,20 @@ def camera_cut(previous, current, cv2, np):
 def decoder(ffmpeg, source, filters, pixel_format):
     return subprocess.Popen([ffmpeg, "-v", "error", "-i", str(source),
         "-vf", filters, "-f", "rawvideo", "-pix_fmt", pixel_format, "pipe:1"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def paired_gray_alpha_decoder(ffmpeg, foreground, alpha_path, rate,
+                              width, height):
+    filters = (
+        f"[0:v]fps={rate},scale={width}:{height}:flags=area,format=gray,"
+        "setsar=1,setpts=PTS-STARTPTS[fg];"
+        f"[1:v]fps={rate},scale={width}:{height}:flags=area,format=gray,"
+        "setsar=1,setpts=PTS-STARTPTS[a];"
+        "[fg][a]alphamerge=shortest=1:repeatlast=0,format=ya8[out]")
+    return subprocess.Popen([ffmpeg, "-v", "error", "-i", str(foreground),
+        "-i", str(alpha_path), "-filter_complex", filters, "-map", "[out]",
+        "-an", "-f", "rawvideo", "-pix_fmt", "ya8", "pipe:1"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
@@ -260,35 +274,28 @@ def analyse_inputs(foreground, alpha_path, rate, total, preview_width,
                    preview_height, cache_path, ffmpeg, cv2, np):
     alpha = np.memmap(cache_path, mode="w+", dtype=np.uint8,
                       shape=(total, preview_height, preview_width))
-    gray_decode = decoder(ffmpeg, foreground,
-        f"fps={rate},scale={preview_width}:{preview_height}:flags=area,format=gray",
-        "gray")
-    alpha_decode = decoder(ffmpeg, alpha_path,
-        f"fps={rate},scale={preview_width}:{preview_height}:flags=area,format=gray",
-        "gray")
+    paired_decode = paired_gray_alpha_decoder(ffmpeg, foreground, alpha_path,
+        rate, preview_width, preview_height)
     cuts, previous, count = [0], None, 0
     try:
         while count < total:
-            gray_data = read_exact(gray_decode.stdout, preview_width * preview_height)
-            alpha_data = read_exact(alpha_decode.stdout, preview_width * preview_height)
-            if gray_data is None and alpha_data is None:
+            paired_data = read_exact(paired_decode.stdout,
+                preview_width * preview_height * 2)
+            if paired_data is None:
                 break
-            if gray_data is None or alpha_data is None:
-                raise RuntimeError("Foreground and alpha decoding ended on different frames")
-            gray = np.frombuffer(gray_data, np.uint8).reshape(
-                preview_height, preview_width)
-            alpha[count] = np.frombuffer(alpha_data, np.uint8).reshape(
-                preview_height, preview_width)
+            paired = np.frombuffer(paired_data, np.uint8).reshape(
+                preview_height, preview_width, 2)
+            gray = paired[:, :, 0]
+            alpha[count] = paired[:, :, 1]
             if previous is not None and camera_cut(previous, gray, cv2, np):
                 cuts.append(count)
             previous = gray.copy()
             count += 1
-        gray_decode.stdout.close(); alpha_decode.stdout.close()
-        gray_error = gray_decode.stderr.read().decode(errors="replace")
-        alpha_error = alpha_decode.stderr.read().decode(errors="replace")
-        if gray_decode.wait() or alpha_decode.wait():
-            raise RuntimeError(gray_error.strip() or alpha_error.strip() or
-                               "Input analysis decoder failed")
+        paired_decode.stdout.close()
+        paired_error = paired_decode.stderr.read().decode(errors="replace")
+        if paired_decode.wait():
+            raise RuntimeError(paired_error.strip() or
+                               "Paired input analysis decoder failed")
         if count not in (total, total - 1):
             raise RuntimeError(f"Input analysis decoded {count}/{total} frames")
         if count != total:
@@ -301,12 +308,11 @@ def analyse_inputs(foreground, alpha_path, rate, total, preview_width,
         cuts.append(count)
         return alpha, sorted(set(cuts)), count
     except BaseException:
-        for process in (gray_decode, alpha_decode):
-            try:
-                if process.poll() is None: process.kill()
-                process.wait()
-            except OSError:
-                pass
+        try:
+            if paired_decode.poll() is None: paired_decode.kill()
+            paired_decode.wait()
+        except OSError:
+            pass
         raise
 
 

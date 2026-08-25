@@ -631,12 +631,13 @@ internal static class CustomShowProcessor
         if (!File.Exists(worker))
             throw new FileNotFoundException("The processing worker is missing.", worker);
         bool propEveryFrameCompatible = preset is
-            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b";
+            "matanyone2" or "rvm-matanyone2" or
+            "rvm-vitmatte-s" or "rvm-vitmatte-b";
         if (propSegmenterEveryFrame &&
             (!propEveryFrameCompatible || propSegmenterModelPath == null ||
                 preset == "rvm-matanyone2" && !rvmMatAnyoneMaskRefresh))
             throw new InvalidOperationException(
-                "Per-frame prop segmentation requires a compatible RVM pipeline and an enabled trained prop model.");
+                "Per-frame prop segmentation requires a compatible pipeline and an enabled trained prop model.");
         if (debugPropContribution && !propSegmenterEveryFrame)
             throw new InvalidOperationException(
                 "Prop contribution diagnostics require per-frame prop segmentation.");
@@ -693,20 +694,22 @@ internal static class CustomShowProcessor
             if (preset == "rvm-matanyone2" && rvmMatAnyoneMaskRefresh)
             {
                 start.ArgumentList.Add("--rvm-mask-refresh");
-                if (propSegmenterEveryFrame)
-                    start.ArgumentList.Add("--prop-every-frame");
-                if (debugPropContribution)
-                    start.ArgumentList.Add("--debug-prop-contribution");
                 start.ArgumentList.Add("--rvm-refresh-strength");
                 start.ArgumentList.Add((Math.Clamp(
                     rvmMatAnyoneRefreshStrengthPercent, 25, 100) / 100d)
                     .ToString(CultureInfo.InvariantCulture));
             }
-            if (preset == "rvm-matanyone2" && propSegmenterModelPath != null &&
-                (automaticRvmInitializer || rvmMatAnyoneMaskRefresh))
+            bool usePropModel = propSegmenterModelPath != null &&
+                (preset == "matanyone2" || preset == "rvm-matanyone2" &&
+                    (automaticRvmInitializer || rvmMatAnyoneMaskRefresh));
+            if (usePropModel)
             {
                 start.ArgumentList.Add("--prop-model");
                 start.ArgumentList.Add(propSegmenterModelPath);
+                if (propSegmenterEveryFrame)
+                    start.ArgumentList.Add("--prop-every-frame");
+                if (debugPropContribution)
+                    start.ArgumentList.Add("--debug-prop-contribution");
             }
             start.ArgumentList.Add("--max-mem-frames");
             start.ArgumentList.Add(Math.Clamp(matAnyoneMaxMemoryFrames,

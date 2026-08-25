@@ -1536,13 +1536,14 @@ internal sealed class CustomShowStore
             throw new InvalidDataException(
                 "RVM mask refresh is only valid for RVM-MatAnyone processing.");
         bool propEveryFrameCompatible = processing.Algorithm is
-            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b";
+            "matanyone2" or "rvm-matanyone2" or
+            "rvm-vitmatte-s" or "rvm-vitmatte-b";
         if (processing.PropSegmenterEveryFrame &&
             (!hasProp || !propEveryFrameCompatible ||
                 processing.Algorithm == "rvm-matanyone2" &&
                     !processing.RvmMatAnyoneMaskRefresh))
             throw new InvalidDataException(
-                "Per-frame prop segmentation requires a compatible RVM pipeline and an enabled trained prop model.");
+                "Per-frame prop segmentation requires a compatible pipeline and an enabled trained prop model.");
         if (processing.DebugPropContribution &&
             !processing.PropSegmenterEveryFrame)
             throw new InvalidDataException(
@@ -1990,7 +1991,8 @@ internal sealed class CustomShowStore
 
     static bool PropSegmenterCompatible(string algorithm,
         bool sam2MattingRvmInitializer, string? maskEngine) =>
-        algorithm is "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
+        algorithm is "matanyone2" or "rvm-matanyone2" or
+            "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
         sam2MattingRvmInitializer || maskEngine == "rvm-sam2";
 
     internal static bool VerifyCoreLogic()
@@ -2009,7 +2011,7 @@ internal sealed class CustomShowStore
             PropSegmenterCompatible("vitmatte-s", false, "rvm-sam2") &&
             PropSegmenterCompatible("vitmatte-b", false, "rvm-sam2") &&
             PropSegmenterCompatible("sam2matting", true, null) &&
-            !PropSegmenterCompatible("matanyone2", false, null) &&
+            PropSegmenterCompatible("matanyone2", false, null) &&
             !PropSegmenterCompatible("quality", false, null) &&
             VerifyVirtualGreenScreen() &&
             RejectsTraversal();
