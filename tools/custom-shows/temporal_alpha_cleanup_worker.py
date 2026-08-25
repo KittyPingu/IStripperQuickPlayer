@@ -17,6 +17,7 @@ PREVIEW_MAXIMUM = 768
 MODEL_DETAIL = 512
 CUT_MEAN_DIFFERENCE = 46.0
 ALPHA_VARIATION = 12
+ANALYSIS_CACHE_REVISION = 1
 
 
 def read_exact(stream, size):
@@ -127,14 +128,22 @@ def component_match_score(component, observations, frame):
     return distance / motion_limit + size_change * .22
 
 
-def track_components(alpha, cuts, window, threshold, cv2, np):
+def detect_components(alpha, threshold, cv2, np):
+    return [frame_components(alpha[frame], threshold, cv2, np)[1]
+            for frame in range(alpha.shape[0])]
+
+
+def track_components(alpha, cuts, window, threshold, cv2, np,
+                     detected=None):
     by_frame = [[] for _ in range(alpha.shape[0])]
     tracks = {}
     next_track = 0
     for shot_start, shot_end in zip(cuts, cuts[1:]):
         active = set()
         for frame in range(shot_start, shot_end):
-            _, current = frame_components(alpha[frame], threshold, cv2, np)
+            source = detected[frame] if detected is not None else \
+                frame_components(alpha[frame], threshold, cv2, np)[1]
+            current = [dict(component) for component in source]
             candidates = []
             for component_index, component in enumerate(current):
                 for track_id in active:
@@ -301,6 +310,92 @@ def analyse_inputs(foreground, alpha_path, rate, total, preview_width,
         raise
 
 
+def source_stamp(path):
+    value = path.stat()
+    return {"path": str(path), "size": value.st_size,
+            "modifiedNs": value.st_mtime_ns}
+
+
+def analysis_identity(foreground, alpha_path, width, height, rate, total):
+    return {"revision": ANALYSIS_CACHE_REVISION,
+            "foreground": source_stamp(foreground),
+            "alpha": source_stamp(alpha_path), "width": width,
+            "height": height, "frameRate": rate, "expectedFrames": total}
+
+
+def write_json_atomic(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, separators=(",", ":")),
+                         encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def load_cached_analysis(folder, identity, preview_width, preview_height, np):
+    metadata_path = folder / "analysis.json"
+    raw_path = folder / "input-alpha.gray8"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        count = int(metadata["frames"])
+        cuts = [int(value) for value in metadata["cuts"]]
+        expected = count * preview_width * preview_height
+        if metadata.get("identity") != identity or count < 1 or \
+                cuts[0] != 0 or cuts[-1] != count or \
+                raw_path.stat().st_size != expected:
+            return None
+        return (np.memmap(raw_path, mode="r", dtype=np.uint8,
+                          shape=(count, preview_height, preview_width)),
+                cuts, count)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def cached_analysis(folder, identity, foreground, alpha_path, rate, total,
+                    preview_width, preview_height, ffmpeg, cv2, np):
+    cached = load_cached_analysis(folder, identity, preview_width,
+                                  preview_height, np)
+    if cached is not None:
+        emit("temporal-stabilization", 1,
+             "Reusing cached alpha analysis and camera cuts...")
+        return cached
+    folder.mkdir(parents=True, exist_ok=True)
+    staged = folder / "input-alpha.building"
+    staged.unlink(missing_ok=True)
+    try:
+        alpha, cuts, count = analyse_inputs(foreground, alpha_path, rate, total,
+            preview_width, preview_height, staged, ffmpeg, cv2, np)
+        alpha.flush()
+        del alpha
+        raw_path = folder / "input-alpha.gray8"
+        os.replace(staged, raw_path)
+        write_json_atomic(folder / "analysis.json",
+                          {"identity": identity, "frames": count,
+                           "cuts": cuts})
+        for old in folder.glob("components-*.json"):
+            old.unlink(missing_ok=True)
+        return (np.memmap(raw_path, mode="r", dtype=np.uint8,
+                          shape=(count, preview_height, preview_width)),
+                cuts, count)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def cached_components(folder, identity, alpha, threshold, cv2, np):
+    path = folder / f"components-{threshold}.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        frames = value["frames"]
+        if value.get("identity") == identity and len(frames) == alpha.shape[0]:
+            emit("temporal-stabilization", 2,
+                 "Reusing cached alpha component detections...")
+            return frames
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pass
+    frames = detect_components(alpha, threshold, cv2, np)
+    write_json_atomic(path, {"identity": identity, "frames": frames})
+    return frames
+
+
 def anchor_mask(alpha, frame, cuts, window, threshold, tracking_strength,
                 components, tracks, cv2, np):
     labels, _ = frame_components(alpha[frame], threshold, cv2, np)
@@ -350,16 +445,19 @@ def preview_metadata(folder, width, height, rate, total):
     os.replace(temporary, folder / "preview.json")
 
 
-def append_preview_frames(raw_path, model_size, original, start, end,
-                          preview_folder, cuts, window, threshold, strength,
-                          tracking_strength, components, tracks, cv2, np):
-    if preview_folder is None:
-        return
+def append_stabilized_frames(raw_path, weight_path, model_size, original,
+                             start, end, preview_folder, cuts, window,
+                             threshold, strength, tracking_strength,
+                             components, tracks, cv2, np):
     model_width, model_height = model_size
     model = np.memmap(raw_path, mode="r", dtype=np.uint8,
         shape=(original.shape[0], model_height, model_width))
-    with open(preview_folder / "output-alpha.gray8", "ab") as output, \
-            open(preview_folder / "decision-flags.bitplanes", "ab") as decisions:
+    weights = open(weight_path, "ab")
+    output = open(preview_folder / "output-alpha.gray8", "ab") \
+        if preview_folder is not None else None
+    decisions = open(preview_folder / "decision-flags.bitplanes", "ab") \
+        if preview_folder is not None else None
+    try:
         for frame in range(start, end):
             stabilized = model[frame]
             if stabilized.shape != original[frame].shape:
@@ -369,6 +467,11 @@ def append_preview_frames(raw_path, model_size, original, start, end,
             weight = instability_weight(original, frame, cuts, window,
                 threshold, strength, tracking_strength, components, tracks,
                 cv2, np)
+            compact_weight = np.rint(weight * 255).astype(np.uint8)
+            weights.write(memoryview(compact_weight).cast("B"))
+            if output is None or decisions is None:
+                continue
+            weight = compact_weight.astype(np.float32) / 255
             cleaned = blend(original[frame], stabilized, weight, np)
             difference = cleaned.astype(np.int16) - original[frame].astype(np.int16)
             output.write(memoryview(cleaned).cast("B"))
@@ -376,11 +479,17 @@ def append_preview_frames(raw_path, model_size, original, start, end,
                 (difference < -1).reshape(-1), bitorder="little")).cast("B"))
             decisions.write(memoryview(np.packbits(
                 (difference > 1).reshape(-1), bitorder="little")).cast("B"))
-        output.flush(); decisions.flush()
-    del model
+        weights.flush()
+        if output is not None: output.flush()
+        if decisions is not None: decisions.flush()
+    finally:
+        weights.close()
+        if output is not None: output.close()
+        if decisions is not None: decisions.close()
+        del model
 
 
-def run_model(args, source, runtime, model_output, raw_path, anchors,
+def run_model(args, source, runtime, model_output, raw_path, weight_path, anchors,
               first_anchor, fps, total, model_size, original, preview_folder,
               cuts, components, tracks, cv2, np):
     worker = Path(__file__).with_name("matanyone2_worker.py")
@@ -393,6 +502,7 @@ def run_model(args, source, runtime, model_output, raw_path, anchors,
         "--disable-previews", "--raw-alpha-output", str(raw_path)]
     process = subprocess.Popen(command, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, bufsize=1, env=os.environ.copy())
+    weight_path.unlink(missing_ok=True)
     preview_count = 0
     reported_percent = 0.0
     last_plain_message = ""
@@ -414,10 +524,11 @@ def run_model(args, source, runtime, model_output, raw_path, anchors,
             if match and raw_path.is_file():
                 available = min(total, int(match.group(1)))
                 if available > preview_count:
-                    append_preview_frames(raw_path, model_size, original,
-                        preview_count, available, preview_folder, cuts,
-                        args.window, args.alpha_threshold, args.strength / 100,
-                        args.tracking_strength / 100, components, tracks, cv2, np)
+                    append_stabilized_frames(raw_path, weight_path, model_size,
+                        original, preview_count, available, preview_folder,
+                        cuts, args.window, args.alpha_threshold,
+                        args.strength / 100, args.tracking_strength / 100,
+                        components, tracks, cv2, np)
                     preview_count = available
             reported_percent = max(reported_percent,
                 min(100.0, float(value.get("percent", 0))))
@@ -428,10 +539,10 @@ def run_model(args, source, runtime, model_output, raw_path, anchors,
             raise RuntimeError(last_plain_message or
                 f"MatAnyone 2 stabilization failed (exit code {code})")
         if preview_count < total:
-            append_preview_frames(raw_path, model_size, original, preview_count,
-                total, preview_folder, cuts, args.window, args.alpha_threshold,
-                args.strength / 100, args.tracking_strength / 100,
-                components, tracks, cv2, np)
+            append_stabilized_frames(raw_path, weight_path, model_size,
+                original, preview_count, total, preview_folder, cuts,
+                args.window, args.alpha_threshold, args.strength / 100,
+                args.tracking_strength / 100, components, tracks, cv2, np)
     except BaseException:
         if process.poll() is None:
             process.kill()
@@ -439,9 +550,13 @@ def run_model(args, source, runtime, model_output, raw_path, anchors,
         raise
 
 
-def encode_blended_output(args, original_path, model_path, destination,
-                          rate, width, height, original_preview, cuts,
-                          components, tracks, ffmpeg, cv2, np):
+def encode_blended_output(original_path, model_path, weight_path, destination,
+                          rate, width, height, original_preview, ffmpeg, cv2, np):
+    expected_weights = original_preview.size
+    if not weight_path.is_file() or weight_path.stat().st_size != expected_weights:
+        raise RuntimeError("The temporary instability-weight cache is incomplete")
+    weights = np.memmap(weight_path, mode="r", dtype=np.uint8,
+                        shape=original_preview.shape)
     original = decoder(ffmpeg, original_path, f"fps={rate},format=gray", "gray")
     model = decoder(ffmpeg, model_path, f"fps={rate},format=gray", "gray")
     temporary = destination.with_name(destination.stem + ".stabilizing.mkv")
@@ -456,9 +571,7 @@ def encode_blended_output(args, original_path, model_path, destination,
                 break
             source_alpha = np.frombuffer(source_data, np.uint8).reshape(height, width)
             model_alpha = np.frombuffer(model_data, np.uint8).reshape(height, width)
-            weight = instability_weight(original_preview, count, cuts,
-                args.window, args.alpha_threshold, args.strength / 100,
-                args.tracking_strength / 100, components, tracks, cv2, np)
+            weight = weights[count].astype(np.float32) / 255
             if weight.shape != source_alpha.shape:
                 weight = cv2.resize(weight, (width, height),
                                     interpolation=cv2.INTER_LINEAR)
@@ -489,6 +602,8 @@ def encode_blended_output(args, original_path, model_path, destination,
                 pass
         temporary.unlink(missing_ok=True)
         raise
+    finally:
+        del weights
 
 
 def process(args):
@@ -515,12 +630,23 @@ def process(args):
         temporary = Path(temporary_value)
         original_cache = temporary / "input-alpha.gray8"
         emit("temporal-stabilization", 0, "Analysing alpha stability and camera cuts...")
-        original, cuts, total = analyse_inputs(foreground, alpha_path, rate,
-            total, preview_width, preview_height, original_cache, ffmpeg, cv2, np)
+        identity = analysis_identity(foreground, alpha_path, preview_width,
+                                     preview_height, rate, total)
+        if args.analysis_cache:
+            original, cuts, total = cached_analysis(args.analysis_cache, identity,
+                foreground, alpha_path, rate, total, preview_width,
+                preview_height, ffmpeg, cv2, np)
+            detected = cached_components(args.analysis_cache, identity, original,
+                                         args.alpha_threshold, cv2, np)
+        else:
+            original, cuts, total = analyse_inputs(foreground, alpha_path, rate,
+                total, preview_width, preview_height, original_cache, ffmpeg,
+                cv2, np)
+            detected = None
         emit("temporal-stabilization", 2,
              "Tracking moving alpha components across camera shots...")
         components, tracks = track_components(original, cuts, args.window,
-                                               args.alpha_threshold, cv2, np)
+            args.alpha_threshold, cv2, np, detected)
         tracking_strength = args.tracking_strength / 100
         anchors = choose_anchors(original, cuts, args.window, tracking_strength,
                                  components, tracks)
@@ -535,15 +661,16 @@ def process(args):
                 open(args.preview_cache / name, "wb").close()
         model_output = temporary / "model-output"
         raw_path = temporary / "model-alpha.u8"
+        weight_path = temporary / "instability-weights.gray8"
         emit("temporal-stabilization", 4,
              f"Selected {len(anchors)} automatic memory anchors across "
              f"{len(cuts) - 1} camera shots")
         run_model(args, foreground, args.runtime, model_output, raw_path,
+            weight_path,
             anchor_folder, first_anchor, fps, total, (model_width, model_height),
             original, args.preview_cache, cuts, components, tracks, cv2, np)
-        encode_blended_output(args, alpha_path, model_output / "alpha.mkv",
-            destination, rate, width, height, original, cuts, components, tracks,
-            ffmpeg, cv2, np)
+        encode_blended_output(alpha_path, model_output / "alpha.mkv", weight_path,
+            destination, rate, width, height, original, ffmpeg, cv2, np)
         original.flush()
         del original
     emit("temporal-stabilization", 100,
@@ -598,6 +725,31 @@ def self_test():
     stabilized = np.array([[200, 0]], np.uint8)
     mixed = blend(original, stabilized, np.array([[.5, .25]], np.float32), np)
     assert tuple(mixed[0]) == (100, 150)
+    with tempfile.TemporaryDirectory(prefix="iqp-alpha-cache-test-") as folder_value:
+        folder = Path(folder_value)
+        identity = {"revision": ANALYSIS_CACHE_REVISION, "test": True}
+        raw = folder / "input-alpha.gray8"
+        raw.write_bytes(alpha.tobytes())
+        write_json_atomic(folder / "analysis.json",
+            {"identity": identity, "frames": alpha.shape[0], "cuts": cuts})
+        loaded = load_cached_analysis(folder, identity, 8, 8, np)
+        assert loaded is not None and loaded[1] == cuts and \
+            np.array_equal(loaded[0], alpha)
+        detected = cached_components(folder, identity, loaded[0], 120, cv2, np)
+        cached = cached_components(folder, identity, loaded[0], 120, cv2, np)
+        assert cached == detected and len(cached) == alpha.shape[0]
+        raw_model = folder / "model-alpha.u8"
+        raw_model.write_bytes(alpha.tobytes())
+        weight_cache = folder / "instability-weights.gray8"
+        append_stabilized_frames(raw_model, weight_cache, (8, 8), alpha,
+            0, alpha.shape[0], None, cuts, 4, 120, 1, 1,
+            components, tracks, cv2, np)
+        compact = np.fromfile(weight_cache, dtype=np.uint8).reshape(alpha.shape)
+        expected = np.rint(instability_weight(alpha, 4, cuts, 4, 120, 1,
+            1, components, tracks, cv2, np) * 255).astype(np.uint8)
+        assert weight_cache.stat().st_size == alpha.size and \
+            np.array_equal(compact[4], expected)
+        del loaded
     print("Automatic temporal alpha stabilization worker self-test passed")
 
 
@@ -608,6 +760,7 @@ def main():
     parser.add_argument("--alpha", type=Path)
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--preview-cache", type=Path)
+    parser.add_argument("--analysis-cache", type=Path)
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--window", type=int, default=3)
     parser.add_argument("--strength", type=int, default=100)
@@ -636,6 +789,7 @@ def main():
     args.alpha = args.alpha.resolve() if args.alpha else None
     args.destination = args.destination.resolve() if args.destination else None
     args.preview_cache = args.preview_cache.resolve() if args.preview_cache else None
+    args.analysis_cache = args.analysis_cache.resolve() if args.analysis_cache else None
     args.runtime = args.runtime.resolve()
     process(args)
 

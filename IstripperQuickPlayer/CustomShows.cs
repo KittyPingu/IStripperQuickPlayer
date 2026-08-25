@@ -64,6 +64,9 @@ internal sealed class CustomShowConfiguration
     public int LastRvmInitializerAlphaThresholdPercent { get; set; } = 40;
     public bool LastRvmMatAnyoneMaskRefresh { get; set; }
     public bool LastPropSegmenterEveryFrame { get; set; }
+    // null means a pre-dropdown configuration that should inherit the former
+    // global default once; an empty string explicitly means no prop model.
+    public string? LastPropSegmenterModelId { get; set; }
     public bool LastDebugPropContribution { get; set; }
     public int LastRvmMatAnyoneRefreshStrengthPercent { get; set; } = 100;
     public int MatAnyoneMemoryDefaultsVersion { get; set; } = 1;
@@ -160,6 +163,10 @@ internal sealed class CustomShowConfiguration
             if (configuration.ActivePropSegmenterModelId is string propModel &&
                 !PropSegmenterPackage.ValidModelId(propModel))
                 configuration.ActivePropSegmenterModelId = null;
+            if (!string.IsNullOrEmpty(configuration.LastPropSegmenterModelId) &&
+                !PropSegmenterPackage.ValidModelId(
+                    configuration.LastPropSegmenterModelId))
+                configuration.LastPropSegmenterModelId = "";
             if (configuration.MatAnyoneMemoryDefaultsVersion < 1)
             {
                 configuration.MatAnyoneMemoryDefaultsVersion = 1;
@@ -369,29 +376,13 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
     internal static bool ValidModelId(string value) => value.Length is > 0 and <= 120 &&
         value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
-    static string FriendlyName(JsonElement root, string architecture, string modelId)
+    static string PackageDisplayName(JsonElement root, string modelId)
     {
         if (root.TryGetProperty("displayName", out JsonElement configured) &&
             configured.ValueKind == JsonValueKind.String &&
             !string.IsNullOrWhiteSpace(configured.GetString()))
             return configured.GetString()!.Trim();
-        string family = architecture switch
-        {
-            "deeplabv3-resnet50-v1.1-dildo-butt-plug" => "Dildo + butt plug",
-            "deeplabv3-resnet50-binary-v1" => "General props",
-            "rvm-conditioned-convnext-fpn-v2" => "RVM-conditioned props",
-            _ => "Prop model"
-        };
-        string? revision = root.TryGetProperty("trainingRevision", out JsonElement value) &&
-            value.TryGetInt32(out int number) ? $"Rev {number}" : null;
-        string? created = root.TryGetProperty("createdUtc", out value) &&
-            value.ValueKind == JsonValueKind.String &&
-            DateTimeOffset.TryParse(value.GetString(), out DateTimeOffset timestamp)
-                ? timestamp.ToLocalTime().ToString(revision == null
-                    ? "d MMM yyyy HH:mm" : "d MMM yyyy") : null;
-        string detail = string.Join(" · ", new[] { revision, created }
-            .Where(item => !string.IsNullOrWhiteSpace(item))!);
-        return detail.Length == 0 ? $"{family} · {modelId}" : $"{family} · {detail}";
+        return modelId;
     }
 
     internal static IReadOnlyList<PropSegmenterPackage> Installed()
@@ -402,17 +393,6 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
             if (TryLoad(Path.GetFileName(folder), false, out PropSegmenterPackage? package))
                 result.Add(package);
         return result.OrderByDescending(value => value.ModelId).ToArray();
-    }
-
-    internal static PropSegmenterPackage? Active(CustomShowConfiguration configuration,
-        bool compatible)
-    {
-        if (!configuration.PropSegmenterEnabled || !compatible) return null;
-        if (configuration.ActivePropSegmenterModelId is not string id ||
-            !TryLoad(id, true, out PropSegmenterPackage? package))
-            throw new InvalidOperationException(
-                "The enabled prop-segmenter package is missing or invalid. Select an installed model in Custom Show Settings.");
-        return package;
     }
 
     internal static bool TryLoad(string id, bool verifyCheckpoint,
@@ -484,7 +464,7 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
                 File.ReadAllBytes(manifestPath))).ToLowerInvariant();
             package = new(id, folder, hash.ToLowerInvariant(), threshold, radius,
                 schemaVersion, architecture!, manifestHash, contract,
-                FriendlyName(root, architecture!, id)); return true;
+                PackageDisplayName(root, id)); return true;
         }
         catch { return false; }
     }
@@ -1884,6 +1864,10 @@ internal sealed class CustomShowStore
             PropSegmenterCompatible("rvm-matanyone2", false, null) &&
             PropSegmenterCompatible("rvm-vitmatte-s", false, null) &&
             PropSegmenterCompatible("rvm-vitmatte-b", false, null) &&
+            PropSegmenterCompatible("vitmatte-s", false, "rvm-sam2") &&
+            PropSegmenterCompatible("vitmatte-b", false, "rvm-sam2") &&
+            PropSegmenterCompatible("sam2matting", true, null) &&
+            !PropSegmenterCompatible("matanyone2", false, null) &&
             !PropSegmenterCompatible("quality", false, null) &&
             VerifyVirtualGreenScreen() &&
             RejectsTraversal();

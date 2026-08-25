@@ -5504,8 +5504,6 @@ namespace IStripperQuickPlayer
             }
             playbackTimelineTimer.Dispose();
             cardOverlayTimer.Dispose();
-            PersistContextClipAlphaThreshold();
-            customClipAlphaSaveTimer.Dispose();
             playbackLifetime.Cancel();
             UnregisterHotKeys();
             timerhook?.Dispose();
@@ -5707,8 +5705,6 @@ namespace IStripperQuickPlayer
             apiOnlyContextMenu = null;
             playbackTimelineTimer.Dispose();
             cardOverlayTimer.Dispose();
-            PersistContextClipAlphaThreshold();
-            customClipAlphaSaveTimer.Dispose();
             clipSelectionPlaybackTimer.Dispose();
             playQueueResizeTimer.Dispose();
         }

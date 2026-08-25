@@ -51,7 +51,8 @@ internal sealed class CustomShowEditorForm : Form
     readonly ComboBox coverTitleFont = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sam2MattingTracker = new()
-        { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
+        { DropDownStyle = ComboBoxStyle.DropDownList, Width = 620,
+          DropDownWidth = 620 };
     readonly TextBox foregroundConcepts = new()
     {
         Multiline = true, AcceptsReturn = true, Height = 96, Width = 620,
@@ -90,6 +91,8 @@ internal sealed class CustomShowEditorForm : Form
         Text = "Run the trained prop model on every frame",
         AutoSize = true
     };
+    readonly ComboBox propSegmenterModel = new()
+        { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420 };
     readonly CheckBox debugPropContribution = new()
     {
         Text = "Generate prop-contribution.mp4 for each processed clip",
@@ -149,7 +152,7 @@ internal sealed class CustomShowEditorForm : Form
     int sam2MattingTrackerRow, foregroundConceptsRow, sceneMaskSummaryRow,
         maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
         rvmThresholdRow, rvmMaskRefreshRow, rvmMaskRefreshStrengthRow,
-        rvmPropEveryFrameRow, debugPropContributionRow,
+        propSegmenterModelRow, rvmPropEveryFrameRow, debugPropContributionRow,
         matAnyoneMemoryRow, temporalAlphaCleanupRow, temporalAlphaCleanupControlsRow,
         batchSizeRow, autoAcceptRow, processingDetailsRow;
     int reprocessingRow = -1;
@@ -337,6 +340,14 @@ internal sealed class CustomShowEditorForm : Form
             rvmInitializerThresholdValue));
         rvmMaskRefreshRow = AddRow(processingTable, "RVM mask refresh",
             rvmMatAnyoneMaskRefresh);
+        propSegmenterModel.Items.Add(new PropSegmenterChoice(null,
+            "No prop model"));
+        foreach (PropSegmenterPackage package in PropSegmenterPackage.Installed())
+            propSegmenterModel.Items.Add(new PropSegmenterChoice(package,
+                package.DisplayName));
+        propSegmenterModel.SelectedIndex = 0;
+        propSegmenterModelRow = AddRow(processingTable, "Prop model",
+            propSegmenterModel);
         rvmPropEveryFrameRow = AddRow(processingTable,
             "Prop model injection", propSegmenterEveryFrame);
         debugPropContributionRow = AddRow(processingTable,
@@ -409,6 +420,8 @@ internal sealed class CustomShowEditorForm : Form
             rvmMatAnyoneRefreshStrengthValue.Text =
                 $"{rvmMatAnyoneRefreshStrength.Value}%";
         rvmMatAnyoneMaskRefresh.CheckedChanged += (_, _) =>
+            UpdateProcessingOptions();
+        propSegmenterModel.SelectedIndexChanged += (_, _) =>
             UpdateProcessingOptions();
         temporalAlphaCleanup.CheckedChanged += (_, _) =>
             UpdateProcessingOptions();
@@ -607,6 +620,13 @@ internal sealed class CustomShowEditorForm : Form
             CanProcess && sam2Model.Items.Count > 0;
         bool rvmSam2 = UsesSam2(selected) &&
             SelectedMaskEngine() == "rvm-sam2";
+        bool propCompatible = selected is
+            "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
+            rvmSam2 || rvmSam2Matting;
+        PropSegmenterPackage? selectedPropModel =
+            SelectedPropSegmenterPackage();
+        propSegmenterModel.Enabled = propCompatible && CanProcess &&
+            propSegmenterModel.Items.Count > 1;
         rvmInitializerThreshold.Enabled =
             (selected is ("rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b") || rvmSam2 ||
                 rvmSam2Matting) &&
@@ -617,10 +637,10 @@ internal sealed class CustomShowEditorForm : Form
         propSegmenterEveryFrame.Enabled =
             (rvmVitMatte || rvmMatAnyoneMaskRefresh.Enabled &&
                 rvmMatAnyoneMaskRefresh.Checked) &&
-            configuration.PropSegmenterEnabled &&
-            configuration.ActivePropSegmenterModelId != null;
-        if (!configuration.PropSegmenterEnabled ||
-            configuration.ActivePropSegmenterModelId == null)
+            selectedPropModel != null &&
+            selectedPropModel.ManifestSchemaVersion != 2;
+        if (selectedPropModel == null ||
+            selectedPropModel.ManifestSchemaVersion == 2)
             propSegmenterEveryFrame.Checked = false;
         debugPropContribution.Enabled = propSegmenterEveryFrame.Enabled &&
             propSegmenterEveryFrame.Checked;
@@ -657,6 +677,8 @@ internal sealed class CustomShowEditorForm : Form
                 rvmSam2Matting);
             SetRowVisible(processingTable, rvmMaskRefreshRow,
                 selected == "rvm-matanyone2");
+            SetRowVisible(processingTable, propSegmenterModelRow,
+                propCompatible);
             SetRowVisible(processingTable, rvmPropEveryFrameRow,
                 selected == "rvm-matanyone2" || rvmVitMatte);
             SetRowVisible(processingTable, debugPropContributionRow,
@@ -964,7 +986,8 @@ internal sealed class CustomShowEditorForm : Form
         if (reprocess && !keepMasks.Enabled)
             keepMasks.Text = "Keep existing masks (not retained for this show)";
         if (editingExisting && !reprocess)
-            preset.Enabled = maskEngine.Enabled = mattingDetail.Enabled =
+            preset.Enabled = maskEngine.Enabled = propSegmenterModel.Enabled =
+                mattingDetail.Enabled =
                 vitMatteInferenceDetail.Enabled =
                 sequenceChunk.Enabled = sam2Model.Enabled =
                 rvmInitializerThreshold.Enabled = rvmInitializerThresholdValue.Enabled =
@@ -1021,6 +1044,24 @@ internal sealed class CustomShowEditorForm : Form
     sealed record ReprocessClipChoice(string Id, string Label)
     {
         public override string ToString() => Label;
+    }
+
+    sealed record PropSegmenterChoice(PropSegmenterPackage? Package, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    PropSegmenterPackage? SelectedPropSegmenterPackage() =>
+        (propSegmenterModel.SelectedItem as PropSegmenterChoice)?.Package;
+
+    void SelectPropSegmenter(string? modelId)
+    {
+        PropSegmenterChoice? choice = propSegmenterModel.Items
+            .OfType<PropSegmenterChoice>().FirstOrDefault(value =>
+                modelId != null && value.Package?.ModelId == modelId) ??
+            propSegmenterModel.Items.OfType<PropSegmenterChoice>()
+                .First(value => value.Package == null);
+        propSegmenterModel.SelectedItem = choice;
     }
 
     void SelectProcessingOptions(CustomShowProcessing processing)
@@ -1101,6 +1142,7 @@ internal sealed class CustomShowEditorForm : Form
             (int)temporalAlphaCleanupAlphaThreshold.Minimum,
             (int)temporalAlphaCleanupAlphaThreshold.Maximum);
         autoAccept.Checked = processing.AutoAcceptedAlphaThreshold.HasValue;
+        SelectPropSegmenter(processing.PropSegmenterModelId);
     }
 
     static void SelectStartingWith(ComboBox combo, string prefix)
@@ -1184,6 +1226,10 @@ internal sealed class CustomShowEditorForm : Form
             (int)temporalAlphaCleanupAlphaThreshold.Minimum,
             (int)temporalAlphaCleanupAlphaThreshold.Maximum);
         autoAccept.Checked = configuration.LastAutoAcceptAlphaThreshold;
+        string? rememberedPropModel = configuration.LastPropSegmenterModelId;
+        if (rememberedPropModel == null && configuration.PropSegmenterEnabled)
+            rememberedPropModel = configuration.ActivePropSegmenterModelId;
+        SelectPropSegmenter(rememberedPropModel);
         UpdateProcessingOptions();
         SelectBatchSize(configuration.LastProcessingBatchSize);
     }
@@ -1203,6 +1249,8 @@ internal sealed class CustomShowEditorForm : Form
         configuration.LastRvmMatAnyoneMaskRefresh = rvmMatAnyoneMaskRefresh.Checked;
         configuration.LastPropSegmenterEveryFrame =
             propSegmenterEveryFrame.Checked;
+        configuration.LastPropSegmenterModelId =
+            SelectedPropSegmenterPackage()?.ModelId ?? "";
         configuration.LastDebugPropContribution = debugPropContribution.Checked;
         configuration.LastRvmMatAnyoneRefreshStrengthPercent =
             rvmMatAnyoneRefreshStrength.Value;
@@ -1296,7 +1344,12 @@ internal sealed class CustomShowEditorForm : Form
         string refresh = value.RvmMatAnyoneMaskRefresh
             ? $"; RVM mask refresh {value.RvmMatAnyoneRefreshStrengthPercent}%"
             : "";
-        string prop = value.PropSegmenterEveryFrame ? "; prop every frame" : "";
+        string prop = value.PropSegmenterModelId is string propModelId
+            ? "; prop model " + (PropSegmenterPackage.TryLoad(propModelId, false,
+                out PropSegmenterPackage? propPackage)
+                    ? propPackage!.DisplayName : propModelId) +
+                (value.PropSegmenterEveryFrame ? " (every frame)" : "")
+            : "";
         string propDebug = value.DebugPropContribution
             ? "; prop contribution video" : "";
         string memory = value.Algorithm is "matanyone2" or "rvm-matanyone2"
@@ -1669,7 +1722,8 @@ internal sealed class CustomShowEditorForm : Form
                                     await CustomShowProcessor.GenerateRvmInitialMaskAsync(
                                         configuration, input, draftInitialMask,
                                         clip.StartMs, rvmInitializerThreshold.Value,
-                                        progress, token);
+                                        progress, token,
+                                        SelectedPropSegmenterPackage()?.Folder);
                                     return new CustomShowProcessResult();
                                 }, "Create RVM Person Mask",
                                 processDescription:
@@ -1847,10 +1901,10 @@ internal sealed class CustomShowEditorForm : Form
                                  matAnyoneInteractiveCorrections:
                                     selectedPreset == "matanyone2",
                                  propSegmenterModelPath:
-                                    PropSegmenterPackage.Active(configuration,
-                                        selectedPreset is "rvm-matanyone2" or
-                                            "rvm-vitmatte-s" or
-                                            "rvm-vitmatte-b")?.Folder);
+                                    selectedPreset is "rvm-matanyone2" or
+                                        "rvm-vitmatte-s" or "rvm-vitmatte-b"
+                                        ? SelectedPropSegmenterPackage()?.Folder
+                                        : null);
                             if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
                                 !sam2Masks.ContainsKey(clip.Id))
                             {
@@ -2783,8 +2837,14 @@ internal sealed class CustomShowEditorForm : Form
 
     void ApplyPropSegmenter(CustomShowProcessing processing, bool compatible)
     {
-        PropSegmenterPackage? package = PropSegmenterPackage.Active(configuration, compatible);
+        PropSegmenterPackage? package = compatible
+            ? SelectedPropSegmenterPackage() : null;
         if (package == null) return;
+        if (!PropSegmenterPackage.TryLoad(package.ModelId, true,
+                out PropSegmenterPackage? verified))
+            throw new InvalidOperationException(
+                "The selected prop-model package is missing or invalid.");
+        package = verified!;
         if (package.ManifestSchemaVersion == 2 && processing.Algorithm is
                 "rvm-vitmatte-s" or "rvm-vitmatte-b")
             return;
@@ -4212,8 +4272,6 @@ internal sealed class CustomShowSettingsForm : Form
     readonly ComboBox rvmFastChunk = RvmChunkInput();
     readonly NumericUpDown rvmQualityCutoff = CompileCutoffInput();
     readonly NumericUpDown rvmFastCutoff = CompileCutoffInput();
-    readonly CheckBox propSegmenterEnabled = new() { Text = "Use a trained prop segmenter for compatible automatic RVM masks", AutoSize = true };
-    readonly ComboBox propSegmenterModel = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 420 };
     readonly ComboBox nvencPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 90 };
     readonly ComboBox cpuPriority = PriorityInput();
@@ -4283,6 +4341,7 @@ internal sealed class CustomShowSettingsForm : Form
             LastRvmMatAnyoneMaskRefresh = current.LastRvmMatAnyoneMaskRefresh,
             LastPropSegmenterEveryFrame =
                 current.LastPropSegmenterEveryFrame,
+            LastPropSegmenterModelId = current.LastPropSegmenterModelId,
             LastDebugPropContribution = current.LastDebugPropContribution,
             LastRvmMatAnyoneRefreshStrengthPercent =
                 current.LastRvmMatAnyoneRefreshStrengthPercent,
@@ -4376,11 +4435,6 @@ internal sealed class CustomShowSettingsForm : Form
         AddChoice(rvmTable, "Fast preferred chunk", rvmFastChunk);
         AddChoice(rvmTable, "Quality compile minimum", rvmQualityCutoff);
         AddChoice(rvmTable, "Fast compile minimum", rvmFastCutoff);
-        AddExplanation(rvmTable, "Prop augmentation",
-            "Training Studio models can add nearby prop pixels to compatible automatic RVM masks. " +
-            "This is opt-in and does not change RVM-only output or manual masks.");
-        AddWideControl(rvmTable, propSegmenterEnabled);
-        AddChoice(rvmTable, "Active prop model", propSegmenterModel);
         Button benchmarkRvm = new() { Text = "Benchmark RVM only...", AutoSize = true };
         Label rvmHelp = new() { AutoSize = true,
             Text = "Manual; tests Quality/Fast chunks, bounded pipeline, previews, and optional compilation." };
@@ -4461,18 +4515,6 @@ internal sealed class CustomShowSettingsForm : Form
         rvmFastChunk.SelectedItem = ClosestRvmChunk(Configuration.RvmFastPreferredChunk);
         rvmQualityCutoff.Value = ClampCompileCutoff(Configuration.RvmQualityCompileCutoffFrames);
         rvmFastCutoff.Value = ClampCompileCutoff(Configuration.RvmFastCompileCutoffFrames);
-        PropSegmenterPackage[] propPackages = [.. PropSegmenterPackage.Installed()];
-        propSegmenterModel.DisplayMember = nameof(PropSegmenterPackage.DisplayName);
-        propSegmenterModel.Items.AddRange(propPackages.Cast<object>().ToArray());
-        if (Configuration.ActivePropSegmenterModelId is string active &&
-            propPackages.FirstOrDefault(value => value.ModelId == active) is
-                PropSegmenterPackage selected)
-            propSegmenterModel.SelectedItem = selected;
-        else if (propSegmenterModel.Items.Count > 0) propSegmenterModel.SelectedIndex = 0;
-        propSegmenterEnabled.Checked = Configuration.PropSegmenterEnabled;
-        propSegmenterModel.Enabled = propSegmenterModel.Items.Count > 0 && propSegmenterEnabled.Checked;
-        propSegmenterEnabled.CheckedChanged += (_, _) =>
-            propSegmenterModel.Enabled = propSegmenterModel.Items.Count > 0 && propSegmenterEnabled.Checked;
         nvencPreset.SelectedItem = CustomShowProcessor.ValidNvencPreset(
             Configuration.RvmNvencPreset);
         cpuPriority.SelectedIndex = PriorityIndex(Configuration.ProcessingCpuPriority);
@@ -4772,12 +4814,6 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.RvmFastPreferredChunk = RvmChunkValue(rvmFastChunk);
             Configuration.RvmQualityCompileCutoffFrames = (int)rvmQualityCutoff.Value;
             Configuration.RvmFastCompileCutoffFrames = (int)rvmFastCutoff.Value;
-            if (propSegmenterEnabled.Checked && propSegmenterModel.SelectedItem == null)
-                throw new InvalidDataException(
-                    "Install a Training Studio model before enabling prop augmentation.");
-            Configuration.PropSegmenterEnabled = propSegmenterEnabled.Checked;
-            Configuration.ActivePropSegmenterModelId =
-                (propSegmenterModel.SelectedItem as PropSegmenterPackage)?.ModelId;
             Configuration.RvmNvencPreset = nvencPreset.SelectedItem?.ToString() ?? "p5";
             Configuration.ProcessingCpuPriority = PriorityValue(cpuPriority.SelectedIndex);
             Configuration.ProcessingGpuPriority = PriorityValue(gpuPriority.SelectedIndex);

@@ -920,7 +920,7 @@ internal static class CustomShowProcessor
         string logPath, IProgress<CustomShowProgress>? progress,
         CancellationToken cancellationToken, string? foregroundPath = null,
         string? alphaPath = null, string? destinationPath = null,
-        string? previewCache = null)
+        string? previewCache = null, string? analysisCache = null)
     {
         string python = File.Exists(configuration.PythonExecutable)
             ? configuration.PythonExecutable
@@ -971,6 +971,11 @@ internal static class CustomShowProcessor
         {
             start.ArgumentList.Add("--preview-cache");
             start.ArgumentList.Add(previewCache);
+        }
+        if (analysisCache != null)
+        {
+            start.ArgumentList.Add("--analysis-cache");
+            start.ArgumentList.Add(analysisCache);
         }
         start.Environment["IQP_FFMPEG"] = Path.Combine(
             AppContext.BaseDirectory, "ffmpeg.exe");
@@ -1040,9 +1045,11 @@ internal static class CustomShowProcessor
     internal static async Task GenerateRvmInitialMaskAsync(
         CustomShowConfiguration configuration, string source, string destination,
         long frameMs, int thresholdPercent,
-        IProgress<CustomShowProgress>? progress, CancellationToken token)
+        IProgress<CustomShowProgress>? progress, CancellationToken token,
+        string? propSegmenterModelPath = null)
         => await GenerateRvmInitialMasksAsync(configuration, source,
-            [new(destination, frameMs)], thresholdPercent, progress, token);
+            [new(destination, frameMs)], thresholdPercent, progress, token,
+            propSegmenterModelPath);
 
     internal static bool IsRvmInitialMaskInstalled(
         CustomShowConfiguration configuration)

@@ -388,7 +388,8 @@ internal sealed class TemporalAlphaComparisonForm : Form
                 trackingStrength.Value,
                 (int)alphaThreshold.Value,
                 Path.Combine(temporary, "processing.log"), updates, cancellation.Token,
-                foreground, alpha, output, PreviewFolder);
+                foreground, alpha, output, PreviewFolder,
+                Path.Combine(temporary, "analysis"));
             processingTask = task;
             _ = ObserveProcessingAsync(task, cancellation, output);
         }

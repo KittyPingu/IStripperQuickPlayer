@@ -55,31 +55,6 @@ public partial class Form1
         new("Delete Custom Clip...");
     readonly ToolStripMenuItem customClipHotnessMenu = new("Hotness");
     readonly ToolStripMenuItem customClipTypesMenu = new("Clip types");
-    readonly Controls.PlaybackSeekBar customClipAlphaSlider = new()
-    {
-        Minimum = 0, Maximum = 255, SmallChange = 1, LargeChange = 10,
-        Dock = DockStyle.Fill, Height = 32,
-        AccessibleName = "Custom clip minimum alpha"
-    };
-    readonly TextBox customClipAlphaText = new()
-    {
-        Width = 46, MaxLength = 3,
-        TextAlign = HorizontalAlignment.Right
-    };
-    readonly Controls.PlaybackSeekBar customClipEdgeChokeInput = new()
-    {
-        Minimum = 0, Maximum = 16, SmallChange = 1, LargeChange = 4,
-        Value = 4, Dock = DockStyle.Fill, Height = 32,
-        AccessibleName = "Custom clip edge cleanup"
-    };
-    readonly TextBox customClipEdgeChokeText = new()
-    {
-        Width = 46, MaxLength = 4,
-        TextAlign = HorizontalAlignment.Right
-    };
-    readonly System.Windows.Forms.Timer customClipAlphaSaveTimer = new()
-        { Interval = 250 };
-    ToolStripControlHost? customClipAlphaHost;
     ModelCard? customClipAlphaCard;
     ModelClip? customClipAlphaClip;
     CustomShowConfiguration customShowConfiguration = CustomShowConfiguration.Load();
@@ -90,9 +65,6 @@ public partial class Form1
     ModelClip? customPlayerClip;
     bool loadingCustomAlphaThreshold;
     bool loadingCustomEdgeChoke;
-    bool loadingCustomClipAlphaThreshold;
-    bool loadingCustomClipEdgeChoke;
-    bool customClipAlphaDirty;
     bool selectingClipForContextMenu;
     string customPlayerAnimationPath = "";
     string customPreloadedAnimationPath = "";
@@ -171,75 +143,12 @@ public partial class Form1
             deleteFromDiskToolStripMenuItem.Visible = !custom;
         };
 
-        TableLayoutPanel alphaPanel = new()
-        {
-            AutoSize = false, Size = new System.Drawing.Size(310, 102),
-            ColumnCount = 2, RowCount = 4, Padding = new Padding(6, 3, 6, 3)
-        };
-        alphaPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        alphaPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
-        Label alphaLabel = new()
-        {
-            Text = "Minimum alpha (0–255)", AutoSize = true,
-            Margin = new Padding(3, 2, 3, 0)
-        };
-        alphaPanel.Controls.Add(alphaLabel, 0, 0);
-        alphaPanel.SetColumnSpan(alphaLabel, 2);
-        alphaPanel.Controls.Add(customClipAlphaSlider, 0, 1);
-        alphaPanel.Controls.Add(customClipAlphaText, 1, 1);
-        Label edgeChokeLabel = new()
-        {
-            Text = "Edge cleanup (0–4 px)", AutoSize = true,
-            Margin = new Padding(3, 5, 3, 0)
-        };
-        alphaPanel.Controls.Add(edgeChokeLabel, 0, 2);
-        alphaPanel.SetColumnSpan(edgeChokeLabel, 2);
-        alphaPanel.Controls.Add(customClipEdgeChokeInput, 0, 3);
-        alphaPanel.Controls.Add(customClipEdgeChokeText, 1, 3);
-        customClipAlphaHost = new ToolStripControlHost(alphaPanel)
-        {
-            AutoSize = false, Size = alphaPanel.Size, Margin = Padding.Empty
-        };
-        customClipAlphaSlider.Scroll += (_, _) =>
-            ChangeContextClipAlphaThreshold(customClipAlphaSlider.Value);
-        customClipAlphaText.TextChanged += (_, _) =>
-        {
-            if (int.TryParse(customClipAlphaText.Text, out int value))
-                ChangeContextClipAlphaThreshold(value);
-        };
-        customClipAlphaText.Leave += (_, _) =>
-            customClipAlphaText.Text = customClipAlphaSlider.Value.ToString();
-        customClipEdgeChokeInput.Scroll += (_, _) =>
-            ChangeContextClipEdgeChoke(
-                EdgeCleanupPixels(customClipEdgeChokeInput.Value));
-        customClipEdgeChokeText.TextChanged += (_, _) =>
-        {
-            if (float.TryParse(customClipEdgeChokeText.Text, out float pixels))
-                ChangeContextClipEdgeChoke(pixels);
-        };
-        customClipEdgeChokeText.Leave += (_, _) =>
-            customClipEdgeChokeText.Text = EdgeCleanupText(
-                EdgeCleanupPixels(customClipEdgeChokeInput.Value));
-        customClipAlphaSaveTimer.Tick += (_, _) =>
-        {
-            customClipAlphaSaveTimer.Stop();
-            PersistContextClipAlphaThreshold();
-        };
         deleteCustomClipMenu.Click += async (_, _) =>
-        {
-            PersistContextClipAlphaThreshold();
             await DeleteSelectedCustomClipAsync();
-        };
         trimCustomClipMenu.Click += async (_, _) =>
-        {
-            PersistContextClipAlphaThreshold();
             await TrimSelectedCustomClipAsync();
-        };
         cleanCustomClipAlphaMenu.Click += (_, _) =>
-        {
-            PersistContextClipAlphaThreshold();
             CompareSelectedCustomClipAlpha();
-        };
         virtualGreenScreenCustomClipMenu.Click += (_, _) =>
             EditSelectedClipVirtualGreenScreen();
         openCustomClipFolderMenu.Click += (_, _) => OpenSelectedCustomClipFolder();
@@ -266,7 +175,6 @@ public partial class Form1
             customClipTypesMenu.DropDownItems.Add(item);
         }
         customClipContextMenu.Items.AddRange([
-            customClipAlphaHost, new ToolStripSeparator(),
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
             openCustomClipFolderMenu, cleanCustomClipAlphaMenu,
@@ -278,21 +186,7 @@ public partial class Form1
                 out ModelCard card, out ModelClip clip);
             customClipAlphaCard = custom ? card : null;
             customClipAlphaClip = custom ? clip : null;
-            loadingCustomClipAlphaThreshold = true;
-            customClipAlphaSlider.Value = custom
-                ? Math.Clamp(clip.customAlphaThreshold, 0, 255) : 0;
-            customClipAlphaText.Text = custom
-                ? customClipAlphaSlider.Value.ToString() : "";
-            loadingCustomClipAlphaThreshold = false;
-            loadingCustomClipEdgeChoke = true;
-            customClipEdgeChokeInput.Value = custom
-                ? EdgeCleanupStep(clip.customEdgeChokePixels) : 4;
-            customClipEdgeChokeText.Text = custom
-                ? EdgeCleanupText(clip.customEdgeChokePixels) : "";
-            loadingCustomClipEdgeChoke = false;
-            customClipAlphaDirty = false;
             RefreshContextClipClassificationChecks(custom ? clip : null);
-            customClipAlphaHost.Visible = custom;
             customClipHotnessMenu.Visible = custom;
             customClipTypesMenu.Visible = custom;
             openCustomClipFolderMenu.Visible = custom;
@@ -302,11 +196,8 @@ public partial class Form1
             deleteCustomClipMenu.Visible = custom;
             eventArgs.Cancel = !custom;
         };
-        customClipContextMenu.Closed += (_, _) =>
-            PersistContextClipAlphaThreshold();
         listClips.ContextMenuStrip = customClipContextMenu;
         listClips.MouseDown += listClips_MouseDownForCustomContext;
-        AppTheme.Apply(alphaPanel);
     }
 
     void CompareTemporalAlphaCleanup(string? showId = null, string? clipId = null)
@@ -326,7 +217,6 @@ public partial class Form1
 
     void EditSelectedClipVirtualGreenScreen()
     {
-        PersistContextClipAlphaThreshold();
         try
         {
             if (customClipAlphaCard?.customShowId == null ||
@@ -599,87 +489,6 @@ public partial class Form1
     static string EdgeCleanupText(float pixels) =>
         Math.Clamp(pixels, 0, 4).ToString("0.##");
 
-    void ChangeContextClipAlphaThreshold(int value)
-    {
-        if (loadingCustomClipAlphaThreshold || customClipAlphaCard == null ||
-            customClipAlphaClip == null) return;
-        value = Math.Clamp(value, 0, 255);
-        loadingCustomClipAlphaThreshold = true;
-        customClipAlphaSlider.Value = value;
-        customClipAlphaText.Text = value.ToString();
-        loadingCustomClipAlphaThreshold = false;
-        customClipAlphaClip.customAlphaThreshold = value;
-        customClipAlphaDirty = true;
-        customClipAlphaSaveTimer.Stop();
-        customClipAlphaSaveTimer.Start();
-
-        if (!string.Equals(customPlayerAnimationPath,
-                GetAnimationPath(customClipAlphaClip),
-                StringComparison.OrdinalIgnoreCase)) return;
-        customPlayer?.SetAlphaThreshold(value);
-        if (customPlayerClip != null)
-            customPlayerClip.customAlphaThreshold = value;
-        loadingCustomAlphaThreshold = true;
-        customAlphaThresholdInput.Value = value;
-        loadingCustomAlphaThreshold = false;
-    }
-
-    void PersistContextClipAlphaThreshold()
-    {
-        customClipAlphaSaveTimer.Stop();
-        if (!customClipAlphaDirty || customClipAlphaCard == null ||
-            customClipAlphaClip == null ||
-            customClipAlphaCard.customShowId == null) return;
-        customClipAlphaDirty = false;
-        try
-        {
-            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
-            CustomShowManifest show = store.LoadManifest(
-                customClipAlphaCard.customShowId);
-            int index = customClipAlphaCard.clips!.IndexOf(customClipAlphaClip);
-            CustomShowClip[] included = show.Clips.Where(value =>
-                value.Included).ToArray();
-            if (index < 0 || index >= included.Length)
-                throw new InvalidDataException(
-                    "The selected clip no longer matches the saved show.");
-            included[index].AlphaThreshold =
-                customClipAlphaClip.customAlphaThreshold;
-            included[index].EdgeChokePixels =
-                customClipAlphaClip.customEdgeChokePixels;
-            store.SaveManifest(show);
-        }
-        catch (Exception error)
-        {
-            SetPlaybackStatus("Could not save alpha threshold: " +
-                error.Message);
-        }
-    }
-
-    void ChangeContextClipEdgeChoke(float pixels)
-    {
-        if (loadingCustomClipEdgeChoke || customClipAlphaCard == null ||
-            customClipAlphaClip == null) return;
-        pixels = Math.Clamp(MathF.Round(pixels * 4) / 4, 0, 4);
-        loadingCustomClipEdgeChoke = true;
-        customClipEdgeChokeInput.Value = EdgeCleanupStep(pixels);
-        customClipEdgeChokeText.Text = EdgeCleanupText(pixels);
-        loadingCustomClipEdgeChoke = false;
-        customClipAlphaClip.customEdgeChokePixels = pixels;
-        customClipAlphaDirty = true;
-        customClipAlphaSaveTimer.Stop();
-        customClipAlphaSaveTimer.Start();
-
-        if (!string.Equals(customPlayerAnimationPath,
-                GetAnimationPath(customClipAlphaClip),
-                StringComparison.OrdinalIgnoreCase)) return;
-        customPlayer?.SetEdgeChoke(pixels);
-        if (customPlayerClip != null)
-            customPlayerClip.customEdgeChokePixels = pixels;
-        loadingCustomEdgeChoke = true;
-        customEdgeChokeInput.Value = EdgeCleanupStep(pixels);
-        loadingCustomEdgeChoke = false;
-    }
-
     void RefreshContextClipClassificationChecks(ModelClip? clip)
     {
         string hotness = clip?.hotnessCode switch
@@ -735,7 +544,6 @@ public partial class Form1
         string? hotness, string[]? clipTypes)
     {
         if (card.customShowId == null) return;
-        PersistContextClipAlphaThreshold();
         try
         {
             CustomShowStore store = new(customShowConfiguration.LibraryRoot);
