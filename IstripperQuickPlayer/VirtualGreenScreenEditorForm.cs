@@ -40,11 +40,17 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         ShowValueText = true, ShowTimeToolTip = true,
         AccessibleName = "Selected green-screen colour tolerance"
     };
-    readonly Controls.PlaybackSeekBar feather = new()
+    readonly Controls.PlaybackSeekBar keyFeather = new()
     {
         Minimum = 0, Maximum = 100, Value = 5, Width = ControlWidth, Height = 42,
         ShowValueText = true, ShowTimeToolTip = true,
-        AccessibleName = "Selected green-screen colour edge feather"
+        AccessibleName = "Transparency-key edge feather"
+    };
+    readonly Controls.PlaybackSeekBar lockedFeather = new()
+    {
+        Minimum = 0, Maximum = 100, Value = 5, Width = ControlWidth, Height = 42,
+        ShowValueText = true, ShowTimeToolTip = true,
+        AccessibleName = "Locked-colour edge feather"
     };
     readonly Controls.PlaybackSeekBar smallPatchSize = new()
     {
@@ -82,13 +88,13 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     CancellationTokenSource? decodeCancellation;
     byte[]? currentRaw;
     int frameWidth, frameHeight;
-    bool playing, loadingColorControls, loadingPatchSize,
+    bool playing, loadingColorControls, loadingRoleFeathers, loadingPatchSize,
         loadingMinimumTransparentArea, syncingColorSelection;
-    int lastKeyTolerance = 18, lastKeyFeather = 5,
-        lastLockTolerance = 18, lastLockFeather = 5;
+    int lastKeyTolerance = 18, lastLockTolerance = 18;
     CustomVirtualGreenScreenColor? replaceColor;
     Point lastTooltipPixel = new(-1, -1);
     bool lastTooltipOutput;
+    int lastTooltipArgb;
     double fps = 25, playbackSpeed = 1;
     CustomShowClip currentClip;
     string foreground = "", alpha = "";
@@ -128,12 +134,15 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             "Apply palette to whole show"]);
         clipMode.SelectedIndex = editedClip?.VirtualGreenScreen == null ? 0 :
             editedClip.VirtualGreenScreen.Enabled ? 1 : 2;
+        InitializeRoleDefaults(showSettings);
+        InitializeRoleDefaults(clipSettings);
         InitializeRoleDefaults(EffectiveSettings);
         showEnabled.Checked = showSettings.Enabled;
         speed.Items.AddRange(["0.25×", "0.5×", "1×", "2×"]);
         speed.SelectedIndex = 2;
         tolerance.ToolTipFormatter = value => $"Tolerance {value}";
-        feather.ToolTipFormatter = value => $"Edge feather {value}";
+        keyFeather.ToolTipFormatter = value => $"Key edge feather {value}";
+        lockedFeather.ToolTipFormatter = value => $"Locked edge feather {value}";
         smallPatchSize.ToolTipFormatter = value => value == 0
             ? "Small-patch removal off"
             : $"Sample within a {value} source-pixel radius";
@@ -191,10 +200,16 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             AutoSize = true,
             Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) });
         palette.Controls.Add(keyColors);
+        palette.Controls.Add(new Label { Text = "Transparency-key edge feather",
+            AutoSize = true, Margin = new Padding(3, 4, 3, 0) });
+        palette.Controls.Add(keyFeather);
         palette.Controls.Add(new Label { Text = "Locked colours", AutoSize = true,
             Margin = new Padding(3, 6, 3, 0),
             Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold) });
         palette.Controls.Add(lockedColors);
+        palette.Controls.Add(new Label { Text = "Locked-colour edge feather",
+            AutoSize = true, Margin = new Padding(3, 4, 3, 0) });
+        palette.Controls.Add(lockedFeather);
         palette.Controls.Add(new Label { Text = "Small-patch radius (source px)",
             AutoSize = true, Margin = new Padding(3, 10, 3, 0) });
         palette.Controls.Add(smallPatchSize);
@@ -207,9 +222,6 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         palette.Controls.Add(new Label { Text = "Selected colour tolerance",
             AutoSize = true, Margin = new Padding(3, 10, 3, 0) });
         palette.Controls.Add(tolerance);
-        palette.Controls.Add(new Label { Text = "Selected colour edge feather",
-            AutoSize = true, Margin = new Padding(3, 4, 3, 0) });
-        palette.Controls.Add(feather);
         FlowLayoutPanel paletteButtons = new()
             { AutoSize = true, WrapContents = true, Width = ControlWidth };
         paletteButtons.Controls.AddRange([repick, remove]);
@@ -252,11 +264,14 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             ColorSelectionChanged(keyColors, lockedColors);
         lockedColors.SelectedIndexChanged += (_, _) =>
             ColorSelectionChanged(lockedColors, keyColors);
+        keyColors.MouseDown += ColorListMouseDown;
+        lockedColors.MouseDown += ColorListMouseDown;
         smallPatchSize.Scroll += (_, _) => SmallPatchSizeChanged();
         minimumTransparentArea.Scroll += (_, _) =>
             MinimumTransparentAreaChanged();
         tolerance.Scroll += (_, _) => ToleranceChanged();
-        feather.Scroll += (_, _) => FeatherChanged();
+        keyFeather.Scroll += (_, _) => RoleFeatherChanged(false);
+        lockedFeather.Scroll += (_, _) => RoleFeatherChanged(true);
         repick.Click += (_, _) => BeginPick();
         remove.Click += (_, _) => RemoveSelected();
         preview.MouseClick += PreviewClicked;
@@ -385,7 +400,12 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         bool editable = EditableSettings != null;
         bool hasSelection = SelectedColor != null;
         repick.Enabled = remove.Enabled = editable && hasSelection;
-        tolerance.Enabled = feather.Enabled = editable && hasSelection;
+        tolerance.Enabled = editable && hasSelection;
+        loadingRoleFeathers = true;
+        keyFeather.Value = VirtualGreenScreenMath.EffectiveFeather(settings, false);
+        lockedFeather.Value = VirtualGreenScreenMath.EffectiveFeather(settings, true);
+        loadingRoleFeathers = false;
+        keyFeather.Enabled = lockedFeather.Enabled = editable;
         loadingPatchSize = true;
         smallPatchSize.Value = VirtualGreenScreenMath.SmallPatchSize(settings);
         loadingPatchSize = false;
@@ -407,17 +427,23 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         CustomVirtualGreenScreenColor item =
             (CustomVirtualGreenScreenColor)list.Items[e.Index];
         Color color = VirtualGreenScreenMath.ParseColor(item.Color);
-        Rectangle swatch = new(e.Bounds.Left + 4, e.Bounds.Top + 4, 38,
+        Rectangle number = new(e.Bounds.Left + 3, e.Bounds.Top, 32,
+            e.Bounds.Height);
+        Color textColor = item.Disabled ? SystemColors.GrayText : e.ForeColor;
+        TextRenderer.DrawText(e.Graphics, (e.Index + 1).ToString(), e.Font,
+            number, textColor, TextFormatFlags.VerticalCenter |
+                TextFormatFlags.Right);
+        Rectangle swatch = new(number.Right + 7, e.Bounds.Top + 4, 38,
             e.Bounds.Height - 8);
         using Brush brush = new SolidBrush(color);
         e.Graphics.FillRectangle(brush, swatch);
         e.Graphics.DrawRectangle(Pens.Gray, swatch);
         TextRenderer.DrawText(e.Graphics,
-            $"{item.Color}   Tolerance {item.Tolerance}   Feather " +
-                VirtualGreenScreenMath.EffectiveFeather(item), e.Font,
+            $"{item.Color}   Tolerance {item.Tolerance}" +
+                (item.Disabled ? "   DISABLED" : ""), e.Font,
             new Rectangle(swatch.Right + 8, e.Bounds.Top,
-                e.Bounds.Width - swatch.Width - 16, e.Bounds.Height),
-            e.ForeColor, TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+                e.Bounds.Right - swatch.Right - 12, e.Bounds.Height),
+            textColor, TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
         e.DrawFocusRectangle();
     }
 
@@ -427,20 +453,20 @@ internal sealed class VirtualGreenScreenEditorForm : Form
 
     void InitializeRoleDefaults(CustomVirtualGreenScreen settings)
     {
+        settings.KeyFeather ??=
+            VirtualGreenScreenMath.EffectiveFeather(settings, false);
+        settings.LockedFeather ??=
+            VirtualGreenScreenMath.EffectiveFeather(settings, true);
+        foreach (CustomVirtualGreenScreenColor color in settings.Colors)
+            color.Feather = null;
         CustomVirtualGreenScreenColor? key = settings.Colors.FirstOrDefault(
             color => !color.Locked);
         if (key != null)
-        {
             lastKeyTolerance = Math.Clamp(key.Tolerance, 0, 100);
-            lastKeyFeather = VirtualGreenScreenMath.EffectiveFeather(key);
-        }
         CustomVirtualGreenScreenColor? locked = settings.Colors.FirstOrDefault(
             color => color.Locked);
         if (locked != null)
-        {
             lastLockTolerance = Math.Clamp(locked.Tolerance, 0, 100);
-            lastLockFeather = VirtualGreenScreenMath.EffectiveFeather(locked);
-        }
     }
 
     void ColorSelectionChanged(ListBox source, ListBox other)
@@ -450,6 +476,23 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         other.ClearSelected();
         syncingColorSelection = false;
         LoadSelectedColorControls();
+    }
+
+    void ColorListMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Right || sender is not ListBox list) return;
+        int index = list.IndexFromPoint(e.Location);
+        if (index < 0 || index >= list.Items.Count) return;
+        CustomVirtualGreenScreenColor item =
+            (CustomVirtualGreenScreenColor)list.Items[index];
+        SelectColor(item);
+        item.Disabled = !item.Disabled;
+        Volatile.Write(ref renderSettings, EffectiveSettings.Clone());
+        list.Invalidate();
+        HideMatchToolTip();
+        status.Text = $"{(item.Locked ? "Locked" : "Key")} colour " +
+            $"#{index + 1} {(item.Disabled ? "disabled" : "enabled")}.";
+        RenderCurrentFrame();
     }
 
     void SelectColor(CustomVirtualGreenScreenColor? color)
@@ -472,21 +515,14 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         if (SelectedColor is CustomVirtualGreenScreenColor color)
         {
             tolerance.Value = Math.Clamp(color.Tolerance, 0, 100);
-            feather.Value = VirtualGreenScreenMath.EffectiveFeather(color);
             if (color.Locked)
-            {
                 lastLockTolerance = tolerance.Value;
-                lastLockFeather = feather.Value;
-            }
             else
-            {
                 lastKeyTolerance = tolerance.Value;
-                lastKeyFeather = feather.Value;
-            }
         }
         loadingColorControls = false;
         bool editable = EditableSettings != null && SelectedColor != null;
-        tolerance.Enabled = feather.Enabled = repick.Enabled = remove.Enabled = editable;
+        tolerance.Enabled = repick.Enabled = remove.Enabled = editable;
     }
 
     void ToleranceChanged()
@@ -501,15 +537,14 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         RenderCurrentFrame();
     }
 
-    void FeatherChanged()
+    void RoleFeatherChanged(bool locked)
     {
-        if (loadingColorControls || EditableSettings == null ||
-            SelectedColor is not CustomVirtualGreenScreenColor color) return;
-        color.Feather = feather.Value;
-        if (color.Locked) lastLockFeather = feather.Value;
-        else lastKeyFeather = feather.Value;
+        if (loadingRoleFeathers || EditableSettings is not
+            CustomVirtualGreenScreen settings) return;
+        if (locked) settings.LockedFeather = lockedFeather.Value;
+        else settings.KeyFeather = keyFeather.Value;
         Volatile.Write(ref renderSettings, EffectiveSettings.Clone());
-        keyColors.Invalidate(); lockedColors.Invalidate();
+        HideMatchToolTip();
         RenderCurrentFrame();
     }
 
@@ -592,7 +627,6 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             {
                 existing.Locked = locked;
                 existing.Tolerance = locked ? lastLockTolerance : lastKeyTolerance;
-                existing.Feather = locked ? lastLockFeather : lastKeyFeather;
                 status.Text = locked
                     ? value + " is now locked and cannot be keyed transparent."
                     : value + " is now a transparency key colour.";
@@ -609,17 +643,14 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         else if (settings.Colors.Length < CustomVirtualGreenScreen.MaximumColors)
         {
             int initialTolerance = locked ? lastLockTolerance : lastKeyTolerance;
-            int initialFeather = locked ? lastLockFeather : lastKeyFeather;
             CustomVirtualGreenScreenColor added = new()
-                { Color = value, Tolerance = initialTolerance,
-                    Feather = initialFeather, Locked = locked };
+                { Color = value, Tolerance = initialTolerance, Locked = locked };
             settings.Colors = [.. settings.Colors,
                 added];
             selectedAfter = added;
             status.Text = $"Added {value} as " +
                 (locked ? "locked" : "a transparency key") +
-                $" with tolerance {initialTolerance} and feather " +
-                $"{initialFeather}.";
+                $" with tolerance {initialTolerance}.";
         }
         else status.Text = $"The palette already contains the maximum of " +
             $"{CustomVirtualGreenScreen.MaximumColors} colours.";
@@ -627,6 +658,67 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         RefreshPalette();
         if (selectedAfter != null) SelectColor(selectedAfter);
         RenderCurrentFrame();
+    }
+
+    void PreviewMouseMoved(object? sender, MouseEventArgs e)
+    {
+        if (preview.ImagePoint(e.Location) is not PointF point)
+        {
+            HideMatchToolTip();
+            return;
+        }
+        int x = (int)point.X, y = (int)point.Y;
+        bool output = x >= frameWidth;
+        if (output) x -= frameWidth;
+        if (x < 0 || x >= frameWidth || y < 0 || y >= frameHeight)
+        {
+            HideMatchToolTip();
+            return;
+        }
+        byte[]? raw;
+        lock (frameSync) raw = currentRaw;
+        if (raw == null) return;
+        int offset = (y * frameWidth + x) * 4;
+        Color source = Color.FromArgb(raw[offset + 2], raw[offset + 1],
+            raw[offset]);
+        Point pixel = new(x, y);
+        if (pixel == lastTooltipPixel && output == lastTooltipOutput &&
+            source.ToArgb() == lastTooltipArgb) return;
+        lastTooltipPixel = pixel;
+        lastTooltipOutput = output;
+        lastTooltipArgb = source.ToArgb();
+        string text = $"{(output ? "Output" : "Input")} source " +
+            VirtualGreenScreenMath.FormatColor(source) + "\n" +
+            MatchSummary("Key", keyColors, source, EffectiveSettings) + "\n" +
+            MatchSummary("Locked", lockedColors, source, EffectiveSettings);
+        matchToolTip.Show(text, preview, e.X + 16, e.Y + 20, 10_000);
+    }
+
+    static string MatchSummary(string label, ListBox list, Color source,
+        CustomVirtualGreenScreen settings)
+    {
+        List<string> matches = [];
+        for (int index = 0; index < list.Items.Count; index++)
+        {
+            CustomVirtualGreenScreenColor item =
+                (CustomVirtualGreenScreenColor)list.Items[index];
+            float strength = VirtualGreenScreenMath.MatchStrength(source, item,
+                settings);
+            if (strength <= 0) continue;
+            int percent = Math.Clamp((int)Math.Round(strength * 100), 1, 100);
+            matches.Add(item.Disabled
+                ? $"#{index + 1} (disabled, {percent}%)"
+                : $"#{index + 1} ({percent}%)");
+        }
+        return $"{label} matches: " +
+            (matches.Count == 0 ? "none" : string.Join(", ", matches));
+    }
+
+    void HideMatchToolTip()
+    {
+        matchToolTip.Hide(preview);
+        lastTooltipPixel = new(-1, -1);
+        lastTooltipArgb = 0;
     }
 
     void RemoveSelected()
@@ -838,11 +930,10 @@ internal sealed class VirtualGreenScreenEditorForm : Form
             before[pixel] = Threshold(choked[pixel]);
             keyed[pixel] = Threshold((byte)Math.Clamp((int)Math.Round(
                 choked[pixel] * keep), 0, 255));
-            byte sourceSupport = Threshold(raw[source + 3]);
             support[pixel] = Threshold((byte)Math.Clamp((int)Math.Round(
                 raw[source + 3] * keep), 0, 255));
-            removed[pixel] = sourceSupport > 0 && support[pixel] == 0
-                ? (byte)1 : (byte)0;
+            removed[pixel] = VirtualGreenScreenMath.ReducesAlpha(
+                before[pixel], keyed[pixel]) ? (byte)1 : (byte)0;
         }
         int patchSize = VirtualGreenScreenMath.SmallPatchSize(
             Volatile.Read(ref renderSettings));
@@ -857,9 +948,12 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         for (int pixel = 0; pixel < pixels; pixel++)
         {
             byte after = RemoveSmallPatch(keyed, support, pixel, patchRadius);
-            if (areaRadius > 0 && before[pixel] > 0 && keyed[pixel] == 0 &&
-                DiskSupport(removed, pixel, areaRadius) <
-                    VirtualGreenScreenMath.MinimumTransparentAreaDiskSupport)
+            if (areaRadius > 0 && VirtualGreenScreenMath.ReducesAlpha(
+                    before[pixel], keyed[pixel]) &&
+                (ConnectedTransparentRays(removed, pixel, areaRadius) <
+                    VirtualGreenScreenMath.MinimumTransparentConnectedRays ||
+                 TransparentDiskSupport(removed, pixel, areaRadius) <
+                    VirtualGreenScreenMath.MinimumTransparentDiskSupport))
                 after = before[pixel];
             int source = pixel * 4;
             int x = pixel % frameWidth, y = pixel / frameWidth;
@@ -884,23 +978,79 @@ internal sealed class VirtualGreenScreenEditorForm : Form
                 0, frameHeight - 1);
             if (support[sy * frameWidth + sx] > 0) surviving++;
             if (surviving >= VirtualGreenScreenMath.SmallPatchMinimumDiskSupport)
-                return keyed[pixel];
+                break;
         }
-        return 0;
+        if (surviving < VirtualGreenScreenMath.SmallPatchMinimumDiskSupport)
+            return 0;
+        return ConnectedOpaqueRays(support, pixel, radius) >=
+            VirtualGreenScreenMath.SmallPatchMinimumConnectedRays
+            ? keyed[pixel] : (byte)0;
     }
 
-    int DiskSupport(byte[] values, int pixel, int radius)
+    int ConnectedOpaqueRays(byte[] support, int pixel, int radius)
     {
-        int x = pixel % frameWidth, y = pixel / frameWidth, surviving = 0;
+        int x = pixel % frameWidth, y = pixel / frameWidth, connectedRays = 0;
+        foreach (PointF direction in
+            VirtualGreenScreenMath.TransparentAreaDirections)
+        {
+            bool connected = true;
+            for (int step = 1;
+                step <= VirtualGreenScreenMath.TransparentAreaSamplesPerRay;
+                step++)
+            {
+                float distance = radius * step /
+                    (float)VirtualGreenScreenMath.TransparentAreaSamplesPerRay;
+                int sx = Math.Clamp(x +
+                    (int)Math.Round(direction.X * distance), 0, frameWidth - 1);
+                int sy = Math.Clamp(y +
+                    (int)Math.Round(direction.Y * distance), 0, frameHeight - 1);
+                if (support[sy * frameWidth + sx] != 0) continue;
+                connected = false;
+                break;
+            }
+            if (connected) connectedRays++;
+        }
+        return connectedRays;
+    }
+
+    int ConnectedTransparentRays(byte[] removed, int pixel, int radius)
+    {
+        int x = pixel % frameWidth, y = pixel / frameWidth, connectedRays = 0;
+        foreach (PointF direction in
+            VirtualGreenScreenMath.TransparentAreaDirections)
+        {
+            bool connected = true;
+            for (int step = 1;
+                step <= VirtualGreenScreenMath.TransparentAreaSamplesPerRay;
+                step++)
+            {
+                float distance = radius * step /
+                    (float)VirtualGreenScreenMath.TransparentAreaSamplesPerRay;
+                int sx = Math.Clamp(x +
+                    (int)Math.Round(direction.X * distance), 0, frameWidth - 1);
+                int sy = Math.Clamp(y +
+                    (int)Math.Round(direction.Y * distance), 0, frameHeight - 1);
+                if (removed[sy * frameWidth + sx] != 0) continue;
+                connected = false;
+                break;
+            }
+            if (connected) connectedRays++;
+        }
+        return connectedRays;
+    }
+
+    int TransparentDiskSupport(byte[] removed, int pixel, int radius)
+    {
+        int x = pixel % frameWidth, y = pixel / frameWidth, support = 0;
         foreach (PointF direction in VirtualGreenScreenMath.SmallPatchDiskOffsets)
         {
             int sx = Math.Clamp(x + (int)Math.Round(direction.X * radius),
                 0, frameWidth - 1);
             int sy = Math.Clamp(y + (int)Math.Round(direction.Y * radius),
                 0, frameHeight - 1);
-            if (values[sy * frameWidth + sx] > 0) surviving++;
+            if (removed[sy * frameWidth + sx] != 0) support++;
         }
-        return surviving;
+        return support;
     }
 
     byte Threshold(byte alphaValue) => alphaValue < currentClip.AlphaThreshold
@@ -954,11 +1104,14 @@ internal sealed class VirtualGreenScreenEditorForm : Form
                     SmallPatchSize = clipSettings.SmallPatchSize,
                     MinimumTransparentAreaRadius =
                         clipSettings.MinimumTransparentAreaRadius,
+                    KeyFeather = clipSettings.KeyFeather,
+                    LockedFeather = clipSettings.LockedFeather,
                     Colors = clipSettings.Colors.Select(value =>
                         new CustomVirtualGreenScreenColor
                         { Color = value.Color, Tolerance = value.Tolerance,
                             Feather = value.Feather,
-                            Locked = value.Locked }).ToArray()
+                            Locked = value.Locked,
+                            Disabled = value.Disabled }).ToArray()
                 }
             };
         }

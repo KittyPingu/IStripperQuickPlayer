@@ -360,7 +360,7 @@ internal sealed class CustomShowProcessing
 internal sealed record PropSegmenterPackage(string ModelId, string Folder,
     string CheckpointSha256, double ConfidenceThreshold, int ProximityRadiusAt512,
     int ManifestSchemaVersion, string Architecture, string ManifestSha256,
-    string PostprocessingContract)
+    string PostprocessingContract, string DisplayName)
 {
     internal static string ModelsRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -368,6 +368,31 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
 
     internal static bool ValidModelId(string value) => value.Length is > 0 and <= 120 &&
         value.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
+    static string FriendlyName(JsonElement root, string architecture, string modelId)
+    {
+        if (root.TryGetProperty("displayName", out JsonElement configured) &&
+            configured.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(configured.GetString()))
+            return configured.GetString()!.Trim();
+        string family = architecture switch
+        {
+            "deeplabv3-resnet50-v1.1-dildo-butt-plug" => "Dildo + butt plug",
+            "deeplabv3-resnet50-binary-v1" => "General props",
+            "rvm-conditioned-convnext-fpn-v2" => "RVM-conditioned props",
+            _ => "Prop model"
+        };
+        string? revision = root.TryGetProperty("trainingRevision", out JsonElement value) &&
+            value.TryGetInt32(out int number) ? $"Rev {number}" : null;
+        string? created = root.TryGetProperty("createdUtc", out value) &&
+            value.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(value.GetString(), out DateTimeOffset timestamp)
+                ? timestamp.ToLocalTime().ToString(revision == null
+                    ? "d MMM yyyy HH:mm" : "d MMM yyyy") : null;
+        string detail = string.Join(" · ", new[] { revision, created }
+            .Where(item => !string.IsNullOrWhiteSpace(item))!);
+        return detail.Length == 0 ? $"{family} · {modelId}" : $"{family} · {detail}";
+    }
 
     internal static IReadOnlyList<PropSegmenterPackage> Installed()
     {
@@ -406,7 +431,9 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
             int schemaVersion = root.GetProperty("schemaVersion").GetInt32();
             string? architecture = root.GetProperty("architecture").GetString();
             if (root.GetProperty("modelId").GetString() != id ||
-                !((schemaVersion == 1 && architecture == "deeplabv3-resnet50-binary-v1") ||
+                !((schemaVersion == 1 && architecture is
+                    "deeplabv3-resnet50-binary-v1" or
+                    "deeplabv3-resnet50-v1.1-dildo-butt-plug") ||
                   (schemaVersion == 2 && architecture == "rvm-conditioned-convnext-fpn-v2")))
                 return false;
             string hash = root.GetProperty("checkpointSha256").GetString()!;
@@ -456,7 +483,8 @@ internal sealed record PropSegmenterPackage(string ModelId, string Folder,
             string manifestHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 File.ReadAllBytes(manifestPath))).ToLowerInvariant();
             package = new(id, folder, hash.ToLowerInvariant(), threshold, radius,
-                schemaVersion, architecture!, manifestHash, contract); return true;
+                schemaVersion, architecture!, manifestHash, contract,
+                FriendlyName(root, architecture!, id)); return true;
         }
         catch { return false; }
     }
@@ -505,6 +533,10 @@ internal sealed class CustomVirtualGreenScreen
     public bool Enabled { get; set; } = true;
     public int SmallPatchSize { get; set; }
     public int MinimumTransparentAreaRadius { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? KeyFeather { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? LockedFeather { get; set; }
     public CustomVirtualGreenScreenColor[] Colors { get; set; } = [];
 
     internal CustomVirtualGreenScreen Clone() => new()
@@ -512,12 +544,15 @@ internal sealed class CustomVirtualGreenScreen
         Enabled = Enabled,
         SmallPatchSize = SmallPatchSize,
         MinimumTransparentAreaRadius = MinimumTransparentAreaRadius,
+        KeyFeather = KeyFeather,
+        LockedFeather = LockedFeather,
         Colors = Colors.Select(value => new CustomVirtualGreenScreenColor
         {
             Color = value.Color,
             Tolerance = value.Tolerance,
             Feather = value.Feather,
-            Locked = value.Locked
+            Locked = value.Locked,
+            Disabled = value.Disabled
         }).ToArray()
     };
 }
@@ -530,6 +565,8 @@ internal sealed class CustomVirtualGreenScreenColor
     public int? Feather { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Locked { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Disabled { get; set; }
 }
 
 internal readonly record struct VirtualGreenScreenSample(
@@ -538,7 +575,10 @@ internal readonly record struct VirtualGreenScreenSample(
 internal static class VirtualGreenScreenMath
 {
     internal const int SmallPatchMinimumDiskSupport = 4;
-    internal const int MinimumTransparentAreaDiskSupport = 8;
+    internal const int SmallPatchMinimumConnectedRays = 2;
+    internal const int MinimumTransparentDiskSupport = 8;
+    internal const int MinimumTransparentConnectedRays = 3;
+    internal const int TransparentAreaSamplesPerRay = 4;
     static readonly PointF[] smallPatchDiskOffsets =
     [
         new(.1767767f, 0), new(-.2257722f, .2068258f),
@@ -550,9 +590,18 @@ internal static class VirtualGreenScreenMath
         new(-.7647459f, -.4431859f), new(.8971340f, -.1972324f),
         new(-.5475069f, .7787722f), new(-.1264868f, -.9760897f)
     ];
+    static readonly PointF[] transparentAreaDirections =
+    [
+        new(1, 0), new(.7071068f, .7071068f), new(0, 1),
+        new(-.7071068f, .7071068f), new(-1, 0),
+        new(-.7071068f, -.7071068f), new(0, -1),
+        new(.7071068f, -.7071068f)
+    ];
 
     internal static ReadOnlySpan<PointF> SmallPatchDiskOffsets =>
         smallPatchDiskOffsets;
+    internal static ReadOnlySpan<PointF> TransparentAreaDirections =>
+        transparentAreaDirections;
 
     internal static CustomVirtualGreenScreen Resolve(
         CustomVirtualGreenScreen? show, CustomVirtualGreenScreen? clip) =>
@@ -571,26 +620,59 @@ internal static class VirtualGreenScreenMath
         CustomVirtualGreenScreen? settings)
     {
         if (settings?.Enabled != true || settings.Colors.Length == 0) return [];
+        float keyFeather = EffectiveFeather(settings, false);
+        float lockedFeather = EffectiveFeather(settings, true);
         return settings.Colors.Take(CustomVirtualGreenScreen.MaximumColors)
+            .Where(value => !value.Disabled)
             .OrderByDescending(value => value.Locked)
             .Select(value =>
             {
                 Color color = ParseColor(value.Color);
-                float red = color.R, green = color.G, blue = color.B;
-                float cb = 128 + (-.114572f * red - .385428f * green + .5f * blue);
-                float cr = 128 + (.5f * red - .454153f * green - .045847f * blue);
+                (float cb, float cr) = Chroma(color);
                 float tolerance = Math.Clamp(value.Tolerance, 0, 100);
-                float feather = EffectiveFeather(value);
+                float feather = value.Locked ? lockedFeather : keyFeather;
                 return new VirtualGreenScreenSample(
-                    Math.Clamp(cb, 0, 255) / 255f,
-                    Math.Clamp(cr, 0, 255) / 255f,
+                    cb, cr,
                     tolerance / 255f, feather / 255f, value.Locked);
             }).ToArray();
+    }
+
+    internal static (float Cb, float Cr) Chroma(Color color)
+    {
+        float red = color.R, green = color.G, blue = color.B;
+        float cb = 128 + (-.114572f * red - .385428f * green + .5f * blue);
+        float cr = 128 + (.5f * red - .454153f * green - .045847f * blue);
+        return (Math.Clamp(cb, 0, 255) / 255f,
+            Math.Clamp(cr, 0, 255) / 255f);
+    }
+
+    internal static float MatchStrength(Color source,
+        CustomVirtualGreenScreenColor target,
+        CustomVirtualGreenScreen settings)
+    {
+        (float sourceCb, float sourceCr) = Chroma(source);
+        (float targetCb, float targetCr) = Chroma(ParseColor(target.Color));
+        float deltaCb = sourceCb - targetCb, deltaCr = sourceCr - targetCr;
+        float distance = MathF.Sqrt(deltaCb * deltaCb + deltaCr * deltaCr);
+        float tolerance = Math.Clamp(target.Tolerance, 0, 100) / 255f;
+        float feather = EffectiveFeather(settings, target.Locked) / 255f;
+        return 1 - SmoothStep(tolerance, tolerance + feather, distance);
     }
 
     internal static int EffectiveFeather(CustomVirtualGreenScreenColor value) =>
         value.Feather is int feather ? Math.Clamp(feather, 0, 100) :
         Math.Max(3, (int)MathF.Ceiling(Math.Clamp(value.Tolerance, 0, 100) * .25f));
+
+    internal static int EffectiveFeather(CustomVirtualGreenScreen settings,
+        bool locked)
+    {
+        int? configured = locked ? settings.LockedFeather : settings.KeyFeather;
+        if (configured is int feather) return Math.Clamp(feather, 0, 100);
+        CustomVirtualGreenScreenColor? legacy = settings.Colors.FirstOrDefault(
+            value => value.Locked == locked && value.Feather.HasValue) ??
+            settings.Colors.FirstOrDefault(value => value.Locked == locked);
+        return legacy == null ? 5 : EffectiveFeather(legacy);
+    }
 
     internal static float Keep(float cb, float cr,
         ReadOnlySpan<VirtualGreenScreenSample> samples)
@@ -622,6 +704,8 @@ internal static class VirtualGreenScreenMath
             keyed >= Math.Clamp(upper, 1, 255) ? (byte)255 :
             (byte)Math.Clamp((int)MathF.Round(keyed), 0, 255);
     }
+
+    internal static bool ReducesAlpha(byte before, byte after) => after < before;
 
     internal static Color ParseColor(string value)
     {
@@ -1512,6 +1596,10 @@ internal sealed class CustomShowStore
             throw new InvalidDataException(
                 $"Virtual green-screen minimum transparent-area radius must " +
                 $"be 0–{CustomVirtualGreenScreen.MaximumSmallPatchSize} pixels.");
+        if (settings.KeyFeather is < 0 or > 100 ||
+            settings.LockedFeather is < 0 or > 100)
+            throw new InvalidDataException(
+                "Virtual green-screen key and locked feather values must be 0–100.");
         foreach (CustomVirtualGreenScreenColor color in settings.Colors)
             if (!VirtualGreenScreenMath.IsColor(color.Color) ||
                 color.Tolerance is < 0 or > 100 || color.Feather is < 0 or > 100)
@@ -1835,6 +1923,24 @@ internal sealed class CustomShowStore
                     Locked = true }
             ]
         };
+        CustomVirtualGreenScreen disabledColor = new()
+        {
+            Colors = [new() { Color = "#00FF00", Tolerance = 18,
+                Feather = 5, Disabled = true }]
+        };
+        CustomVirtualGreenScreen roleFeathers = new()
+        {
+            KeyFeather = 0,
+            LockedFeather = 20,
+            Colors =
+            [
+                new() { Color = "#00FF00", Tolerance = 18, Feather = 50 },
+                new() { Color = "#FF0000", Tolerance = 18, Feather = 50,
+                    Locked = true }
+            ]
+        };
+        VirtualGreenScreenSample[] roleSamples =
+            VirtualGreenScreenMath.Samples(roleFeathers);
         bool excessivePaletteRejected = false;
         try
         {
@@ -1858,7 +1964,15 @@ internal sealed class CustomShowStore
             VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200, show) == 0 &&
             VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200,
                 protectedColor) == 255 &&
+            VirtualGreenScreenMath.Apply(255, cb, cr, 0, 200,
+                disabledColor) == 255 &&
+            roleSamples.Length == 2 && roleSamples[0].Locked &&
+            Math.Abs(roleSamples[0].Feather - 20f / 255) < .0001f &&
+            !roleSamples[1].Locked && roleSamples[1].Feather == 0 &&
             feathered is > 0 and < 1 && excessivePaletteRejected &&
+            VirtualGreenScreenMath.ReducesAlpha(200, 199) &&
+            !VirtualGreenScreenMath.ReducesAlpha(200, 200) &&
+            !VirtualGreenScreenMath.ReducesAlpha(200, 201) &&
             VirtualGreenScreenMath.Keep(hardTarget.Cb, hardTarget.Cr,
                 [hardTarget]) == 0 &&
             VirtualGreenScreenMath.Keep(hardTarget.Cb + 1f / 255,
@@ -1922,6 +2036,8 @@ internal sealed class CustomShowStore
                 {
                     SmallPatchSize = 8,
                     MinimumTransparentAreaRadius = 6,
+                    KeyFeather = 7,
+                    LockedFeather = 11,
                     Colors = [new() { Color = "#00FF00", Tolerance = 18,
                         Feather = 5, Locked = true }]
                 },
@@ -2056,6 +2172,8 @@ internal sealed class CustomShowStore
                 roundTrip.VirtualGreenScreen?.Colors.Single().Color != "#00FF00" ||
                 roundTrip.VirtualGreenScreen.SmallPatchSize != 8 ||
                 roundTrip.VirtualGreenScreen.MinimumTransparentAreaRadius != 6 ||
+                roundTrip.VirtualGreenScreen.KeyFeather != 7 ||
+                roundTrip.VirtualGreenScreen.LockedFeather != 11 ||
                 roundTrip.VirtualGreenScreen.Colors[0].Tolerance != 18 ||
                 roundTrip.VirtualGreenScreen.Colors[0].Feather != 5 ||
                 !roundTrip.VirtualGreenScreen.Colors[0].Locked ||

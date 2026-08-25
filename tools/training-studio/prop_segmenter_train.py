@@ -1208,6 +1208,165 @@ def evaluate(torch, model, loader, device, thresholds=(.5,), root=None, samples=
     return result
 
 
+def association_sweep(torch, model, loader, device, root, samples, thresholds, radii,
+                      progress_callback=None):
+    """Evaluate threshold/radius pairs without rerunning inference for each pair."""
+    import cv2
+    import numpy as np
+    configurations = {(float(threshold), int(radius)): {
+        "exterior": [0, 0, 0, 0], "union": [0, 0, 0, 0], "available": 0,
+        "negativeFrames": 0, "negativeFramesWithRetained": 0,
+        "negativeFractions": []} for threshold in thresholds for radius in radii}
+    sample_lookup = {sample["id"]: sample for sample in samples}
+    model.eval()
+    bf16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] >= 8
+    with torch.inference_mode():
+        for batch_index, (images, targets, sample_ids) in enumerate(loader):
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=bf16):
+                probabilities = model(images.to(device))["out"].float().sigmoid().cpu().numpy()
+            targets_np = targets.numpy()
+            for index, sample_id in enumerate(sample_ids):
+                sample = sample_lookup.get(str(sample_id))
+                if not sample or not sample.get("rvmPersonMaskPath"): continue
+                try:
+                    person = load_evaluation_mask(root, sample["rvmPersonMaskPath"],
+                                                  images.shape[-1])
+                except (FileNotFoundError, OSError, ValueError):
+                    continue
+                target = targets_np[index, 0]
+                valid = target >= 0
+                truth = target >= .5
+                truth_pixels = int(truth.sum())
+                probability = probabilities[index, 0]
+                for threshold in thresholds:
+                    prediction = (probability >= threshold) & valid
+                    count, labels = cv2.connectedComponents(prediction.astype(np.uint8),
+                                                             connectivity=8)
+                    for base_radius in radii:
+                        radius = max(1, round(base_radius * min(prediction.shape) / 512))
+                        kernel = np.ones((radius * 2 + 1, radius * 2 + 1), dtype=np.uint8)
+                        near = cv2.dilate(person.astype(np.uint8), kernel) != 0
+                        retained_labels = np.unique(labels[near & prediction])
+                        keep = np.zeros(count, dtype=bool)
+                        keep[retained_labels[retained_labels > 0]] = True
+                        retained = keep[labels]
+                        exterior = retained & ~person & valid
+                        current = configurations[(float(threshold), int(base_radius))]
+                        add_confusion(current["exterior"],
+                                      confusion(exterior, truth & ~person, .5, valid))
+                        add_confusion(current["union"],
+                                      confusion(person | retained, person | truth, .5, valid))
+                        current["available"] += 1
+                        if truth_pixels == 0:
+                            harmful = int(exterior.sum())
+                            current["negativeFrames"] += 1
+                            current["negativeFramesWithRetained"] += int(harmful > 0)
+                            current["negativeFractions"].append(harmful / exterior.size)
+            if progress_callback is not None:
+                progress_callback(batch_index + 1, len(loader))
+    results = []
+    for (threshold, radius), current in configurations.items():
+        fractions = sorted(current["negativeFractions"])
+        percentile95 = fractions[min(len(fractions) - 1,
+            math.ceil(.95 * len(fractions)) - 1)] if fractions else 0.
+        exterior = scores(current["exterior"])
+        union = scores(current["union"])
+        fpr = current["negativeFramesWithRetained"] / max(1, current["negativeFrames"])
+        results.append({"threshold": threshold, "proximityRadiusAt512": radius,
+            "sampleCount": current["available"], "exteriorProp": exterior,
+            "finalForeground": union, "retainedNegativeFrameCount": current["negativeFrames"],
+            "retainedNegativeFrameFalsePositiveRate": fpr,
+            "retainedNegativeMeanFalsePositiveFraction":
+                sum(fractions) / max(1, len(fractions)),
+            "retainedNegativeP95FalsePositiveFraction": percentile95,
+            "retainedNegativeMaxFalsePositiveFraction": fractions[-1] if fractions else 0.})
+    return results
+
+
+def select_association_configuration(results):
+    eligible = [value for value in results
+                if value["retainedNegativeFrameFalsePositiveRate"] <=
+                RETAINED_NEGATIVE_FPR_CEILING]
+    pool = eligible or results
+    selected = max(pool, key=lambda value: (value["exteriorProp"]["dice"],
+        value["exteriorProp"]["recall"], value["finalForeground"]["dice"],
+        -value["threshold"], -value["proximityRadiusAt512"]))
+    return selected, bool(eligible)
+
+
+def retune_association(args):
+    import torch
+    from torch.utils.data import DataLoader
+    root, output = args.dataset.resolve(), args.output.resolve()
+    package = output / "package"
+    metrics_path, checkpoint = package / "metrics.json", package / "model.pth"
+    if not metrics_path.is_file() or not checkpoint.is_file():
+        raise RuntimeError("Association retuning requires a completed Rev 9 package")
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8-sig"))
+    if metrics.get("trainingRevision") != TRAINING_REVISION:
+        raise RuntimeError("Association retuning requires a matching Rev 9 package")
+    manifest = load_manifest(root)
+    available, sealed_sources = partition_samples(manifest, args.minimum_resolution)
+    leaked = {sample.get("sourceId") for name in ("train", "validation", "test")
+              for sample in available[name]} & sealed_sources
+    if leaked: raise RuntimeError("A sealed source leaked into association tuning")
+    for samples in available.values(): annotate_mask_statistics(root, samples, args.input_size)
+    classification = annotate_classifications(root, output, available, args.input_size)
+    target = materialize_specialized_targets(root, output, available, args.input_size)
+    classification["targetDefinition"] = target
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        memory = torch.cuda.get_device_properties(device).total_memory
+        base_batch = 4 if memory >= 20 * 1024 ** 3 else 2 if memory >= 12 * 1024 ** 3 else 1
+        batch = max(1, math.floor(base_batch * (512 / args.input_size) ** 2))
+    else: batch = 1
+    model = build_model(torch, pretrained=False).to(device)
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
+    thresholds = (.80, .825, .85, .875, .90, .925, .95)
+    radii = (16, 24, 32, 40, 48, 64, 80)
+    started = time.monotonic()
+    def progress(completed, total):
+        if not args.console_progress: return
+        fraction = completed / max(1, total); filled = min(30, int(fraction * 30))
+        elapsed = time.monotonic() - started
+        remaining = elapsed * (total - completed) / max(1, completed)
+        write_console_progress(f"Association validation  [{'=' * filled}{'-' * (30 - filled)}] "
+            f"{fraction:4.0%}  {completed}/{total}  ETA {format_duration(remaining)}")
+    validation_loader = DataLoader(PropDataset(root, available["validation"], False,
+        args.input_size), batch_size=batch, shuffle=False, num_workers=1)
+    grid = association_sweep(torch, model, validation_loader, device, root,
+        available["validation"], thresholds, radii, progress)
+    if args.console_progress: write_console_progress("Association validation complete", finish=True)
+    selected, ceiling_met = select_association_configuration(grid)
+    emit("association-selection", f"Selected threshold {selected['threshold']:.3f}, radius "
+         f"{selected['proximityRadiusAt512']} with validation exterior Dice "
+         f"{selected['exteriorProp']['dice']:.3f}", retainedNegativeCeilingMet=ceiling_met,
+         selected=selected)
+    final = {}
+    for split in ("test", "sealedHoldout"):
+        loader = DataLoader(PropDataset(root, available[split], False, args.input_size),
+                            batch_size=batch, shuffle=False, num_workers=1)
+        values = association_sweep(torch, model, loader, device, root, available[split],
+            (selected["threshold"],), (selected["proximityRadiusAt512"],))
+        final[split] = values[0]
+        emit("association-evaluation", f"Evaluated selected association on {split}",
+             split=split, metrics=values[0])
+    baseline = metrics.get("v1Baseline", {}).get("sealedHoldout", {}).get("rvmUnion", {})
+    result = {"schemaVersion": 1, "trainingRevision": TRAINING_REVISION,
+        "selectionSplit": "validation", "sealedUsedForSelection": False,
+        "retainedNegativeFalsePositiveCeiling": RETAINED_NEGATIVE_FPR_CEILING,
+        "grid": sorted(grid, key=lambda value: (value["threshold"],
+            value["proximityRadiusAt512"])), "selected": selected,
+        "retainedNegativeCeilingMetOnValidation": ceiling_met,
+        "test": final["test"], "sealedHoldout": final["sealedHoldout"],
+        "rev5SealedBaseline": baseline,
+        "createdUtc": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+    destination = output / "association-retune.json"
+    atomic_json(destination, result)
+    emit("complete", "Association retuning completed without retraining",
+         result=str(destination), selected=selected, sealedHoldout=final["sealedHoldout"])
+
+
 def save_error_review(torch, model, loader, device, threshold, destination, limit=50, samples=None):
     """Save diverse validation errors, deduplicated by source and ten-second window."""
     import numpy as np
@@ -1894,6 +2053,7 @@ def train(args):
              for path in package.rglob("*") if path.is_file() and path.name != "manifest.json"}
     atomic_json(package / "manifest.json", {
         "schemaVersion": 1, "modelId": model_id, "architecture": SPECIALIZED_ARCHITECTURE,
+        "displayName": f"Dildo + butt plug · Rev {TRAINING_REVISION}",
         "trainingRevision": TRAINING_REVISION,
         "category": "dildo_or_butt_plug", "inputSize": args.input_size,
         "mean": MEAN, "std": STD, "confidenceThreshold": threshold,
@@ -2148,6 +2308,22 @@ def self_test():
             {"name": "dirty", "selectionScore": .9, "validation": dirty},
             {"name": "clean", "selectionScore": .89, "validation": clean}])
         assert ceiling_met and selected["name"] == "clean"
+        association_options = [
+            {"threshold": .85, "proximityRadiusAt512": 24,
+             "exteriorProp": {"dice": .45, "recall": .40},
+             "finalForeground": {"dice": .99},
+             "retainedNegativeFrameFalsePositiveRate": .04},
+            {"threshold": .90, "proximityRadiusAt512": 40,
+             "exteriorProp": {"dice": .50, "recall": .45},
+             "finalForeground": {"dice": .991},
+             "retainedNegativeFrameFalsePositiveRate": .05},
+            {"threshold": .90, "proximityRadiusAt512": 64,
+             "exteriorProp": {"dice": .60, "recall": .60},
+             "finalForeground": {"dice": .992},
+             "retainedNegativeFrameFalsePositiveRate": .08}]
+        association_selected, association_ceiling = select_association_configuration(
+            association_options)
+        assert association_ceiling and association_selected["proximityRadiusAt512"] == 40
         baseline_promotion = {"rvmUnion": {"exteriorProp": {"recall": .30, "dice": .40},
             "finalForeground": {"dice": .99}, "retainedNegativeCoverage": 1.,
             "retainedNegativeFrameFalsePositiveRate": .04}}
@@ -2215,6 +2391,7 @@ def main():
                         default="compare")
     parser.add_argument("--regenerate-review", action="store_true")
     parser.add_argument("--audit-only", action="store_true")
+    parser.add_argument("--retune-association", action="store_true")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -2223,6 +2400,8 @@ def main():
         parser.error("--dataset and --output are required")
     if args.regenerate_review:
         regenerate_review(args); return
+    if args.retune_association:
+        retune_association(args); return
     train(args)
 
 

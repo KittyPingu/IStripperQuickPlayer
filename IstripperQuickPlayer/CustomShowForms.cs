@@ -4462,9 +4462,12 @@ internal sealed class CustomShowSettingsForm : Form
         rvmQualityCutoff.Value = ClampCompileCutoff(Configuration.RvmQualityCompileCutoffFrames);
         rvmFastCutoff.Value = ClampCompileCutoff(Configuration.RvmFastCompileCutoffFrames);
         PropSegmenterPackage[] propPackages = [.. PropSegmenterPackage.Installed()];
-        propSegmenterModel.Items.AddRange(propPackages.Select(value => value.ModelId).ToArray());
+        propSegmenterModel.DisplayMember = nameof(PropSegmenterPackage.DisplayName);
+        propSegmenterModel.Items.AddRange(propPackages.Cast<object>().ToArray());
         if (Configuration.ActivePropSegmenterModelId is string active &&
-            propSegmenterModel.Items.Contains(active)) propSegmenterModel.SelectedItem = active;
+            propPackages.FirstOrDefault(value => value.ModelId == active) is
+                PropSegmenterPackage selected)
+            propSegmenterModel.SelectedItem = selected;
         else if (propSegmenterModel.Items.Count > 0) propSegmenterModel.SelectedIndex = 0;
         propSegmenterEnabled.Checked = Configuration.PropSegmenterEnabled;
         propSegmenterModel.Enabled = propSegmenterModel.Items.Count > 0 && propSegmenterEnabled.Checked;
@@ -4774,7 +4777,7 @@ internal sealed class CustomShowSettingsForm : Form
                     "Install a Training Studio model before enabling prop augmentation.");
             Configuration.PropSegmenterEnabled = propSegmenterEnabled.Checked;
             Configuration.ActivePropSegmenterModelId =
-                propSegmenterModel.SelectedItem?.ToString();
+                (propSegmenterModel.SelectedItem as PropSegmenterPackage)?.ModelId;
             Configuration.RvmNvencPreset = nvencPreset.SelectedItem?.ToString() ?? "p5";
             Configuration.ProcessingCpuPriority = PriorityValue(cpuPriority.SelectedIndex);
             Configuration.ProcessingGpuPriority = PriorityValue(gpuPriority.SelectedIndex);

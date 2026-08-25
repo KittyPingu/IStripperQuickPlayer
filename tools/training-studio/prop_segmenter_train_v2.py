@@ -904,6 +904,7 @@ def train(args):
     files = {str(path.relative_to(package)).replace("\\", "/"): digest(path)
              for path in package.rglob("*") if path.is_file() and path.name != "manifest.json"}
     manifest_value = {"schemaVersion": 2, "modelId": model_id, "architecture": ARCHITECTURE,
+        "displayName": f"RVM-conditioned props · Rev {TRAINING_REVISION}",
         "trainingRevision": TRAINING_REVISION, "category": "foreground_prop", "inputSize": args.input_size,
         "confidenceThreshold": pixel, "proximityRadiusAt512": 64,
         "checkpointSha256": checkpoint_hash,

@@ -6,6 +6,7 @@ from collections import deque
 from pathlib import Path
 
 ARCHITECTURE = "deeplabv3-resnet50-binary-v1"
+ARCHITECTURE_DILDO_BUTT_PLUG = "deeplabv3-resnet50-v1.1-dildo-butt-plug"
 ARCHITECTURE_V2 = "rvm-conditioned-convnext-fpn-v2"
 INPUT_SIZE = 512
 MEAN = (0.485, 0.456, 0.406)
@@ -47,7 +48,9 @@ def load_package(package, device=None):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     schema = manifest.get("schemaVersion")
     architecture = manifest.get("architecture")
-    if (schema, architecture) not in ((1, ARCHITECTURE), (2, ARCHITECTURE_V2)):
+    if (schema, architecture) not in (
+            (1, ARCHITECTURE), (1, ARCHITECTURE_DILDO_BUTT_PLUG),
+            (2, ARCHITECTURE_V2)):
         raise RuntimeError("Prop-segmenter package contract is unsupported")
     actual = digest(checkpoint)
     if actual.lower() != str(manifest.get("checkpointSha256", "")).lower():
