@@ -27,7 +27,8 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         { DropDownStyle = ComboBoxStyle.DropDownList, Width = ControlWidth,
           DropDownWidth = ControlWidth };
     readonly DxgiMaskPreviewControl preview = new()
-        { Dock = DockStyle.Fill, AccessibleName = "Virtual green-screen comparison" };
+        { Dock = DockStyle.Fill, AccessibleName = "Virtual green-screen comparison",
+          ViewNavigationEnabled = true, SynchronizedHorizontalPanes = 2 };
     readonly ListBox keyColors = new()
         { Width = ControlWidth, Height = 220, DrawMode = DrawMode.OwnerDrawFixed,
           ItemHeight = 28, SelectionMode = SelectionMode.MultiExtended };
@@ -92,7 +93,8 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     readonly Label framePosition = new()
         { Text = "Frame 0 / 0", AutoSize = true, Padding = new Padding(12, 7, 0, 0) };
     readonly Label status = new()
-        { Text = "Left-click to key a colour; right-click to lock it.", AutoSize = true };
+        { Text = "Left-click to key; right-click to lock. Wheel zooms; " +
+            "middle-drag pans both previews; double-click resets.", AutoSize = true };
     readonly object frameSync = new();
     CancellationTokenSource? decodeCancellation;
     byte[]? currentRaw;
@@ -306,6 +308,9 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         remove.Click += (_, _) => RemoveSelected();
         preview.MouseClick += PreviewClicked;
         preview.MouseMove += PreviewMouseMoved;
+        preview.MouseEnter += (_, _) => preview.Focus();
+        preview.MouseWheel += (_, e) => preview.ZoomAt(e.Location, e.Delta);
+        preview.MouseDoubleClick += (_, _) => preview.ResetView();
         preview.MouseLeave += (_, _) => HideMatchToolTip();
         clipSelector.SelectedIndexChanged += (_, _) => SelectClip();
         clipMode.SelectedIndexChanged += (_, _) => ModeChanged();
