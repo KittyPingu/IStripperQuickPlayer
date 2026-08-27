@@ -28,7 +28,13 @@ internal static class NvidiaAiGreenScreen
         InferenceSize(1920, 1080, "720p") == (1280, 720) &&
         InferenceSize(3840, 2160, "540p") == (960, 540) &&
         InferenceSize(320, 180, "source") == (512, 288) &&
-        OpaqueFallback(4, 3).All(value => value == 255);
+        OpaqueFallback(4, 3).All(value => value == 255) &&
+        AcceptTemporalSelectorStatus(0) &&
+        AcceptTemporalSelectorStatus(-5) &&
+        !AcceptTemporalSelectorStatus(-2);
+
+    internal static bool AcceptTemporalSelectorStatus(int status) =>
+        status is 0 or -5;
 
     internal static byte[] OpaqueFallback(int width, int height)
     {
@@ -65,8 +71,13 @@ internal sealed class NvidiaAiGreenScreenSession : IDisposable
             Check(api.SetString(effect, "ModelDir", api.ModelDirectory),
                 "set Green Screen model directory");
             Check(api.SetU32(effect, "Mode", (uint)settings.Mode), "set mode");
-            Check(api.SetU32(effect, "Temporal", settings.Temporal ? 1u : 0u),
-                "set temporal filtering");
+            int temporalStatus = api.SetU32(effect, "Temporal",
+                settings.Temporal ? 1u : 0u);
+            // Green Screen 1.2 exposes this selector in its public header but
+            // returns NVCV_ERR_SELECTOR. Its state object remains the mechanism
+            // that enables temporal consistency, so retain that compatibility.
+            if (!NvidiaAiGreenScreen.AcceptTemporalSelectorStatus(temporalStatus))
+                Check(temporalStatus, "set temporal filtering");
             Check(api.SetU32(effect, "MaxInputWidth", (uint)width),
                 "set maximum input width");
             Check(api.SetU32(effect, "MaxInputHeight", (uint)height),
