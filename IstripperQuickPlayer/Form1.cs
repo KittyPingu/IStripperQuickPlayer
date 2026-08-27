@@ -1992,6 +1992,9 @@ namespace IStripperQuickPlayer
                 currentCards = currentCards.Where(c => c.exclusive != null && (bool)c.exclusive).ToList();
 
             currentCards = currentCards.Where(c => enabledcollections.Contains(c.collection)||c.collection == Enums.CollectionType.Undefined).ToList();
+            if (!filterSettings.NvidiaCustom)
+                currentCards = currentCards.Where(card =>
+                    !IsNvidiaCustomShow(card)).ToList();
 
             try
             {
@@ -2007,6 +2010,44 @@ namespace IStripperQuickPlayer
             ? card.gender ?? "Female"
             : card.collection is Enums.CollectionType.VirtuaGuy or
                 Enums.CollectionType.VGClassic ? "Male" : "Female";
+
+        internal static bool IsNvidiaCustomShow(ModelCard card) =>
+            card.IsCustom && card.clips?.Any(clip => string.Equals(
+                clip.customMediaMode, CustomClipMedia.NvidiaAigsMode,
+                StringComparison.Ordinal)) == true;
+
+        internal static bool VerifyNvidiaCardFiltering()
+        {
+            ModelCard paired = new()
+            {
+                collection = Enums.CollectionType.Custom,
+                clips = [new ModelClip
+                {
+                    customMediaMode = CustomClipMedia.PairedAlphaMode
+                }]
+            };
+            ModelCard nvidia = new()
+            {
+                collection = Enums.CollectionType.Custom,
+                clips = [new ModelClip
+                {
+                    customMediaMode = CustomClipMedia.NvidiaAigsMode
+                }]
+            };
+            ModelCard mixed = new()
+            {
+                collection = Enums.CollectionType.Custom,
+                clips = [new ModelClip
+                {
+                    customMediaMode = CustomClipMedia.PairedAlphaMode
+                }, new ModelClip
+                {
+                    customMediaMode = CustomClipMedia.NvidiaAigsMode
+                }]
+            };
+            return !IsNvidiaCustomShow(paired) &&
+                IsNvidiaCustomShow(nvidia) && IsNvidiaCustomShow(mixed);
+        }
 
         internal static bool MatchesMeasurement(
             decimal? value, decimal minimum, decimal maximum,

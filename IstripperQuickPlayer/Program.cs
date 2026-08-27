@@ -86,6 +86,7 @@ namespace IStripperQuickPlayer
                     ("NVIDIA inference and fallback", NvidiaAiGreenScreen.VerifyContracts()),
                     ("NVIDIA RGB-only encoding", CustomShowProcessor.VerifyRgbOnlyEncoding()),
                     ("NVIDIA setup contracts", NvidiaVfxSetup.VerifyContracts()),
+                    ("NVIDIA card filtering", Form1.VerifyNvidiaCardFiltering()),
                     ("card index refresh", Datastore.VerifyTagIndexReplacement()),
                     ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),
                     ("worker result contract", CustomShowProcessor.VerifyResultContract()),

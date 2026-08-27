@@ -54,6 +54,12 @@ namespace IStripperQuickPlayer
             Location = new Point(630, 748),
             Text = "Custom"
         };
+        readonly CheckBox chkNvidiaCustom = new()
+        {
+            AutoSize = true,
+            Name = "chkNvidiaCustom",
+            Text = "NVIDIA AI"
+        };
         internal Filter(FilterSettings filter, string filterName)
         {
             filterSettings = (FilterSettings)filter.Clone();
@@ -73,6 +79,8 @@ namespace IStripperQuickPlayer
             this.Controls.Add(rangeHips);
             this.Controls.Add(rangeAge);
             chkCustom.CheckedChanged += (_, e) => chk_CheckedChanged(chkCustom, e);
+            chkNvidiaCustom.CheckedChanged += (_, e) =>
+                chk_CheckedChanged(chkNvidiaCustom, e);
             AppTheme.Apply(this);
             isLoaded = true;
             if (string.IsNullOrEmpty(_filterName) || _filterName == "Default") button1.Enabled = false;
@@ -86,25 +94,26 @@ namespace IStripperQuickPlayer
             TableLayoutPanel choices = new()
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 5,
+                ColumnCount = 6,
                 RowCount = 2,
                 Padding = new Padding(8, 14, 8, 8)
             };
             for (int column = 0; column < choices.ColumnCount; column++)
-                choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+                choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,
+                    100f / choices.ColumnCount));
             choices.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             choices.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             CheckBox[] cardTypes =
             [
                 chkIStripperClassic, chkDeskBabes, chkVGClassic, chkIStripper,
                 chkIStripperXXX, chkNormal, chkSpecial, chkVirtuaGuy,
-                chkTradingCard, chkCustom
+                chkTradingCard, chkCustom, chkNvidiaCustom
             ];
             for (int index = 0; index < cardTypes.Length; index++)
             {
                 cardTypes[index].Location = Point.Empty;
                 cardTypes[index].Anchor = AnchorStyles.None;
-                choices.Controls.Add(cardTypes[index], index % 5, index / 5);
+                choices.Controls.Add(cardTypes[index], index % 6, index / 6);
             }
             cardTypeGroup.Controls.Add(choices);
             Controls.Add(cardTypeGroup);
@@ -239,6 +248,7 @@ namespace IStripperQuickPlayer
             chkVirtuaGuy.Checked = filterSettings.VirtuaGuy;
             chkTradingCard.Checked = filterSettings.TradingCard;
             chkCustom.Checked = filterSettings.Custom;
+            chkNvidiaCustom.Checked = filterSettings.NvidiaCustom;
             HashSet<string> selectedGenders = filterSettings.genders.Split(',',
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -378,6 +388,7 @@ namespace IStripperQuickPlayer
             filterSettings.VirtuaGuy = chkVirtuaGuy.Checked;
             filterSettings.TradingCard = chkTradingCard.Checked;
             filterSettings.Custom = chkCustom.Checked;
+            filterSettings.NvidiaCustom = chkNvidiaCustom.Checked;
             filterSettings.genders = string.Join(',',
                 customGenders.CheckedItems.Cast<object>().Select(value => value.ToString()));
 
