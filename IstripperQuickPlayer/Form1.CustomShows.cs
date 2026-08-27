@@ -114,6 +114,7 @@ public partial class Form1
             new CustomShowStore(customShowConfiguration.LibraryRoot),
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
+        customShowQueueManager.Changed += CustomShowQueueChanged;
         create.Click += (_, _) => EditCustomShow(null);
         createFromUrl.Click += (_, _) => CreateCustomShowFromUrl();
         folderImport.Click += (_, _) => ImportRealtimeFolder();
@@ -1062,6 +1063,48 @@ public partial class Form1
         }));
     }
 
+    void CustomShowQueueChanged(object? sender, EventArgs e)
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        if (InvokeRequired)
+        {
+            BeginInvoke((Action)(() => CustomShowQueueChanged(sender, e)));
+            return;
+        }
+        if (!CustomShowProcessingActive()) return;
+
+        if (!string.IsNullOrEmpty(customPreloadedAnimationPath) &&
+            IsRealtimeAnimation(customPreloadedAnimationPath))
+            CancelCustomPreload();
+        if (customPlayerClip?.customMediaMode != CustomClipMedia.RvmOnnxMode)
+            return;
+
+        StopCustomPlayback(restoreIstripper: true);
+        SetPlaybackStatus(
+            "Real-time custom playback paused while a custom show is processing.");
+    }
+
+    bool CustomShowProcessingActive() =>
+        customShowQueueManager?.HasActiveJob == true;
+
+    bool CustomClipAllowedDuringProcessing(ModelClip clip) =>
+        RealtimeClipAllowedDuringProcessing(CustomShowProcessingActive(),
+            clip.customMediaMode);
+
+    static bool RealtimeClipAllowedDuringProcessing(bool processing,
+        string? mediaMode) => !processing || mediaMode !=
+            CustomClipMedia.RvmOnnxMode;
+
+    static bool IsRealtimeAnimation(string animationPath)
+    {
+        ModelCard? card = Datastore.findCardByTag(
+            GetCardTagFromAnimationPath(animationPath));
+        return card?.clips?.FirstOrDefault(clip => string.Equals(
+                clip.clipName, animationPath,
+                StringComparison.OrdinalIgnoreCase))?.customMediaMode ==
+            CustomClipMedia.RvmOnnxMode;
+    }
+
     async Task PrepareCustomShowPublicationAsync(string? targetShowId)
     {
         if (string.IsNullOrWhiteSpace(targetShowId)) return;
@@ -1175,11 +1218,16 @@ public partial class Form1
         customShowConfiguration.Save();
         customShowQueueForm?.Dispose();
         customShowQueueForm = null;
-        customShowQueueManager?.Dispose();
+        if (customShowQueueManager != null)
+        {
+            customShowQueueManager.Changed -= CustomShowQueueChanged;
+            customShowQueueManager.Dispose();
+        }
         customShowQueueManager = new CustomShowQueueManager(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
+        customShowQueueManager.Changed += CustomShowQueueChanged;
         ReloadCustomCards();
     }
 
@@ -1656,6 +1704,12 @@ public partial class Form1
             CustomShowStore.PreferredAlphaPath(clip.customAlphaPath);
         bool rvmOnnx = clip?.customMediaMode == CustomClipMedia.RvmOnnxMode;
         bool realtime = rvmOnnx;
+        if (realtime && CustomShowProcessingActive())
+        {
+            SetPlaybackStatus(
+                "Real-time custom shows are unavailable while a custom show is processing.");
+            return false;
+        }
         if (clip?.customForegroundPath == null || !File.Exists(clip.customForegroundPath) ||
             !realtime && (playbackAlpha == null || !File.Exists(playbackAlpha)))
             return false;
@@ -1817,6 +1871,7 @@ public partial class Form1
             CustomShowStore.PreferredAlphaPath(next.customAlphaPath);
         bool rvmOnnx = next.customMediaMode == CustomClipMedia.RvmOnnxMode;
         bool realtime = rvmOnnx;
+        if (realtime && CustomShowProcessingActive()) return;
         if (next.customForegroundPath == null ||
             !File.Exists(next.customForegroundPath) ||
             !realtime && (playbackAlpha == null || !File.Exists(playbackAlpha))) return;
@@ -2023,7 +2078,13 @@ public partial class Form1
             !SuppressRepeatedClipSelection("Clip 1", "Clip 2",
                 "custom:show:clip2", "custom:other:clip2", false) &&
             SuppressRepeatedClipSelection("", "Clip 1",
-                "custom:show:clip1", "", true);
+                "custom:show:clip1", "", true) &&
+            !RealtimeClipAllowedDuringProcessing(true,
+                CustomClipMedia.RvmOnnxMode) &&
+            RealtimeClipAllowedDuringProcessing(true,
+                CustomClipMedia.PairedAlphaMode) &&
+            RealtimeClipAllowedDuringProcessing(false,
+                CustomClipMedia.RvmOnnxMode);
     }
 
     void RememberCustomPlayerBounds(CustomPlayerForm player)

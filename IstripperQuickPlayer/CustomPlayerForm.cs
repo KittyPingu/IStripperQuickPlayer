@@ -258,7 +258,14 @@ internal sealed class CustomPlayerForm : Form
             if (rangeStartSeconds >= RangeEndSeconds)
                 throw new InvalidDataException("The custom clip time range is invalid.");
             if (!rendererWasPrepared)
+            {
                 renderer.Seek(rangeStartSeconds);
+                // The first DirectML runs initialize the native GPU pipeline
+                // and its recurrent output buffers.  Do that before starting
+                // the media clock so playback never has to catch up after the
+                // expensive first frames.
+                await Task.Run(renderer.Prime, cancellation.Token);
+            }
             Invoke(() => ConfigureWindow(renderer.Width, renderer.Height));
             (IntPtr handle, int width, int height) window =
                 ((IntPtr, int, int))Invoke(() => (Handle, ClientSize.Width, ClientSize.Height));
@@ -1284,7 +1291,27 @@ internal sealed class CustomPlayerForm : Form
         internal void Play() { lock(sync) { if(playing)return; clock.Restart(); playing=true; audio?.Play(clockSeconds); } }
         internal void Pause() { lock(sync) { if(!playing)return; UpdateClock(); playing=false; audio?.Pause(); } }
         internal void Seek(double seconds) { lock(sync) { seconds=Math.Clamp(seconds,0,Duration); rgb.Seek(seconds); alpha?.Seek(seconds); rvmOnnx?.Reset(); rvmGpu?.Reset(); clockSeconds=seconds; clock.Restart(); if(!playing)clock.Stop(); pending=false; Ended=false; audio?.Seek(seconds,playing); } }
-        internal void Prime() { lock(sync) { if(!pending) DecodePair(); } }
+        internal void Prime()
+        {
+            lock (sync)
+            {
+                if (!pending && !DecodePair()) return;
+                if (alpha != null || rvmOnnx == null && rvmGpu == null) return;
+
+                GenerateRealtimeAlphaLocked();
+                // Temporal playback alternates between two recurrent output
+                // sets.  Warm both so allocating the second set cannot stall
+                // the first visible seconds of a clip.
+                if (activeRvmSettings?.Temporal == true &&
+                    (rvmOnnx != null || rvmGpu != null))
+                    GenerateRealtimeAlphaLocked();
+
+                // Warming must not leak the repeated first frame into the
+                // clip's temporal history.
+                rvmOnnx?.Reset();
+                rvmGpu?.Reset();
+            }
+        }
         internal void SetVolume(int percent)=>audio?.SetVolume(percent);
         internal void SetAlphaThreshold(int value) =>
             Volatile.Write(ref alphaThreshold, Math.Clamp(value, 0, 255));

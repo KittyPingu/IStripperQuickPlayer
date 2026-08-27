@@ -65,7 +65,16 @@ jobs:
           }
           "APP_VERSION=$version" >> $env:GITHUB_ENV
 
-      - name: Build native playback bridge
+      - name: Restore application dependencies
+        shell: pwsh
+        run: |
+          $project = "IstripperQuickPlayer\IstripperQuickPlayer.csproj"
+          dotnet restore $project --runtime win-x64
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Build native bridges
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -79,16 +88,28 @@ jobs:
           if ($LASTEXITCODE) {
             exit $LASTEXITCODE
           }
+          $nugetRoot = if ($env:NUGET_PACKAGES) {
+            $env:NUGET_PACKAGES
+          } else {
+            Join-Path $env:USERPROFILE ".nuget\packages"
+          }
+          $nugetRoot = [System.IO.Path]::GetFullPath($nugetRoot).TrimEnd('\') + '\'
+          & $msbuild native\IStripperRvmGpuBridge64\IStripperRvmGpuBridge64.vcxproj `
+            /p:Configuration=Release /p:Platform=x64 `
+            "/p:NuGetPackageRoot=$nugetRoot" /m
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          $rvmBridge = "IstripperQuickPlayer\dependencies\IStripperRvmGpuBridge64.dll"
+          if (-not (Test-Path $rvmBridge)) {
+            throw "The native RVM GPU bridge was not produced."
+          }
 
       - name: Publish self-contained application
         shell: pwsh
         run: |
           $project = "IstripperQuickPlayer\IstripperQuickPlayer.csproj"
           $publishDir = "$env:GITHUB_WORKSPACE\artifacts\publish"
-          dotnet restore $project --runtime win-x64
-          if ($LASTEXITCODE) {
-            exit $LASTEXITCODE
-          }
           dotnet publish $project --configuration Release --runtime win-x64 `
             --self-contained true --no-restore --output $publishDir `
             -p:Version=$env:APP_VERSION -p:DebugType=None -p:DebugSymbols=false

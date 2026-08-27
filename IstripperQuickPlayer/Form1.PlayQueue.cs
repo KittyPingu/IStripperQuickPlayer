@@ -2637,7 +2637,8 @@ namespace IStripperQuickPlayer
                 ModelClip? exact = card.clips.FirstOrDefault(clip =>
                     string.Equals(clip.clipName, entry.ClipName,
                         StringComparison.OrdinalIgnoreCase));
-                if (exact == null)
+                if (exact == null ||
+                    !CustomClipAllowedDuringProcessing(exact))
                     return false;
                 animationPath = GetAnimationPath(exact);
                 return !string.IsNullOrEmpty(animationPath);
@@ -2645,7 +2646,8 @@ namespace IStripperQuickPlayer
 
             List<ModelClip> clips = apiOnlyMode
                 ? card.clips.Where(clip =>
-                    !string.IsNullOrWhiteSpace(clip.clipName)).ToList()
+                    !string.IsNullOrWhiteSpace(clip.clipName) &&
+                    CustomClipAllowedDuringProcessing(clip)).ToList()
                 : FilterClipList(card.clips);
             if (clips.Count == 0)
                 return false;

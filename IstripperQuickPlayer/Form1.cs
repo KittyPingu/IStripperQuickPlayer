@@ -5163,7 +5163,8 @@ namespace IStripperQuickPlayer
 
         private List<ModelClip> FilterClipList(List<ModelClip> clips)
         {
-            var currentClips = clips;
+            var currentClips = clips.Where(
+                CustomClipAllowedDuringProcessing).ToList();
 
             string[] parts = txtClipType.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
             foreach (string p in parts)
