@@ -48,6 +48,41 @@ rejects the key, confirm that it is active and includes **NGC Catalog**. A 403 o
 404 while downloading the protected SDK usually means the signed-in account has
 not completed **Get Access**; complete access first, then generate a new key.
 
+### Import a folder as NVIDIA shows
+
+Choose **File > Custom Shows > Folder Import for NVIDIA...** and select a root
+folder. QuickPlayer scans its subfolders for MP4, MOV, MKV, AVI, and WebM files,
+then shows a review grid. Each included video becomes one custom show containing
+one full-length NVIDIA RGB clip. The NVIDIA SDK is not needed to scan or queue
+the shows.
+
+The grid shows each video's relative path, proposed model, editable show name,
+resolution, duration, and status. Select several rows to apply one model to the
+selection, or apply a model to every included row. **New model...** opens the
+normal model-profile editor. If the selected folder name matches an existing
+model name after spaces and punctuation are ignored, that model is assigned
+automatically; otherwise assign a model before adding the batch.
+
+Generated show names remove common dates, model/uploader names, Reddit and
+OnlyFans/Coomer source labels, post identifiers, resolution/codec labels, and
+sequence suffixes. Punctuation is converted to spaces and camel-case words are
+split. Repeated generated names receive numeric suffixes; manually entered names
+may still be the same. Release and show dates come from a leading `YYYY-MM-DD`
+filename date, otherwise the nearest `YYYY-MM` parent folder, otherwise the
+file's modified date.
+
+Videos already referenced by a published custom show or present anywhere in the
+queue are shown as excluded duplicates. Unreadable videos also remain visible
+but cannot be included. Set the shared NVIDIA mode, temporal filtering,
+inference resolution, hotness, and clip types above the grid, then choose **Add
+to Queue**. The whole valid batch is added together and the queue is opened but
+not started.
+
+Folder import does not copy the source immediately. Keep every source video at
+the same path and do not modify it until its queue job has completed; moving,
+deleting, or changing a source makes that job require attention. You can edit an
+individual imported job from the queue before running it.
+
 QuickPlayer can turn an ordinary video containing one or more people into a
 transparent show. Custom cards appear beside official iStripper cards and use
 the same search, filters, favourites, ratings, queues, history, hotkeys, and

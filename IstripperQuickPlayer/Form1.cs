@@ -286,22 +286,22 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.ToggleLockEnabled) this.BeginInvoke((Action)(() => { lockPlayerToolStripMenuItem.Checked = !lockPlayerToolStripMenuItem.Checked; setPlayerLocked(); }));
         }
 
-        private void actPause()
+        private async void actPause()
         {
             if (Properties.Settings.Default.PauseHotkeyEnabled)
-                cmdPlayPause.PerformClick();
+                await TogglePlaybackPauseAsync();
         }
 
-        private void actRewind()
+        private async void actRewind()
         {
             if (Properties.Settings.Default.RewindHotkeyEnabled)
-                cmdRewind.PerformClick();
+                await SeekPlaybackRelativeAsync(-0.1);
         }
 
-        private void actFastForward()
+        private async void actFastForward()
         {
             if (Properties.Settings.Default.FastForwardHotkeyEnabled)
-                cmdFastForward.PerformClick();
+                await SeekPlaybackRelativeAsync(0.1);
         }
 
         private async void actRestartClip()
@@ -3701,7 +3701,7 @@ namespace IStripperQuickPlayer
             RequirePlaybackResult("IStripperSetPlayRate", bits);
         }
 
-        private async void cmdPlayPause_Click(object sender, EventArgs e)
+        private async Task TogglePlaybackPauseAsync()
         {
             if (customPlayer != null)
             {
@@ -3732,17 +3732,25 @@ namespace IStripperQuickPlayer
             }, prepareFastDecode: false);
         }
 
-        private async void cmdRewind_Click(object sender, EventArgs e)
+        private async void cmdPlayPause_Click(object sender, EventArgs e) =>
+            await TogglePlaybackPauseAsync();
+
+        private async Task SeekPlaybackRelativeAsync(double fraction)
         {
-            if (customPlayer != null) { customPlayer.SeekBy(-customPlayer.DurationSeconds * .1); return; }
-            await RunPlaybackOperationAsync(token => SeekRelativeAsync(-0.1, token));
+            if (customPlayer != null)
+            {
+                customPlayer.SeekBy(customPlayer.DurationSeconds * fraction);
+                return;
+            }
+            await RunPlaybackOperationAsync(token =>
+                SeekRelativeAsync(fraction, token));
         }
 
+        private async void cmdRewind_Click(object sender, EventArgs e)
+            => await SeekPlaybackRelativeAsync(-0.1);
+
         private async void cmdFastForward_Click(object sender, EventArgs e)
-        {
-            if (customPlayer != null) { customPlayer.SeekBy(customPlayer.DurationSeconds * .1); return; }
-            await RunPlaybackOperationAsync(token => SeekRelativeAsync(0.1, token));
-        }
+            => await SeekPlaybackRelativeAsync(0.1);
 
         private async void cmbPlaybackSpeed_SelectedIndexChanged(object sender, EventArgs e)
         {

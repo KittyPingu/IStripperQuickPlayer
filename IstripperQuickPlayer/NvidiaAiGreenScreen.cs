@@ -65,6 +65,8 @@ internal sealed class NvidiaAiGreenScreenSession : IDisposable
             Check(api.SetString(effect, "ModelDir", api.ModelDirectory),
                 "set Green Screen model directory");
             Check(api.SetU32(effect, "Mode", (uint)settings.Mode), "set mode");
+            Check(api.SetU32(effect, "Temporal", settings.Temporal ? 1u : 0u),
+                "set temporal filtering");
             Check(api.SetU32(effect, "MaxInputWidth", (uint)width),
                 "set maximum input width");
             Check(api.SetU32(effect, "MaxInputHeight", (uint)height),

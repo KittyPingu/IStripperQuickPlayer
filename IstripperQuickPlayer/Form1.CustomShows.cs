@@ -98,6 +98,7 @@ public partial class Form1
         SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
+        ToolStripMenuItem folderImport = new("Folder Import for NVIDIA...");
         ToolStripMenuItem queues = new("Queues...");
         ToolStripMenuItem check = new("Check Custom Shows...");
         ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
@@ -112,6 +113,7 @@ public partial class Form1
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
         create.Click += (_, _) => EditCustomShow(null);
+        folderImport.Click += (_, _) => ImportNvidiaFolder();
         queues.Click += (_, _) => ShowCustomShowQueues();
         check.Click += async (_, _) => await CheckCustomShowsAsync(check);
         stabilize.Click += (_, _) => StabilizeVideo();
@@ -120,7 +122,7 @@ public partial class Form1
         compareTemporalAlpha.Click += (_, _) => CompareTemporalAlphaCleanup();
         settings.Click += (_, _) => ConfigureCustomShows();
         customShowsMenu.DropDownItems.AddRange(
-            [create, queues, check, new ToolStripSeparator(), stabilize,
+            [create, folderImport, queues, check, new ToolStripSeparator(), stabilize,
                 backgroundLock, removeWatermark, compareTemporalAlpha, settings]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
@@ -958,6 +960,28 @@ public partial class Form1
             customShowQueueForm.WindowState = FormWindowState.Normal;
         customShowQueueForm.BringToFront();
         customShowQueueForm.Activate();
+    }
+
+    void ImportNvidiaFolder()
+    {
+        if (customShowQueueManager == null) return;
+        using FolderBrowserDialog picker = new()
+        {
+            Description = "Select a folder containing videos to import as NVIDIA custom shows.",
+            ShowNewFolderButton = false
+        };
+        if (picker.ShowDialog(this) != DialogResult.OK ||
+            string.IsNullOrWhiteSpace(picker.SelectedPath))
+            return;
+
+        CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+        using NvidiaFolderImportForm form = new(store, customShowConfiguration,
+            customShowQueueManager, picker.SelectedPath);
+        if (form.ShowDialog(this) != DialogResult.OK) return;
+
+        SetPlaybackStatus($"Added {form.QueuedCount:N0} NVIDIA custom " +
+            $"show{(form.QueuedCount == 1 ? "" : "s")} to the queue.");
+        ShowCustomShowQueues();
     }
 
     void QueueShowPublished()

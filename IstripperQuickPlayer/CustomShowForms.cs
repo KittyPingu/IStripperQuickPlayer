@@ -1325,7 +1325,7 @@ internal sealed class CustomShowEditorForm : Form
         configuration.Save();
     }
 
-    static void AddIstripperModels(List<CustomPerformerProfile> target)
+    internal static void AddIstripperModels(List<CustomPerformerProfile> target)
     {
         HashSet<string> existingIds = target
             .Where(profile => !string.IsNullOrWhiteSpace(profile.IstripperModelId))
