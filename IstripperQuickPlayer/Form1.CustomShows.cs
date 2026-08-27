@@ -47,6 +47,8 @@ public partial class Form1
         new("Trim Custom Clip...");
     readonly ToolStripMenuItem cleanCustomClipAlphaMenu =
         new("Automatically Stabilize Alpha...");
+    readonly ToolStripMenuItem nvidiaForegroundSettingsMenu =
+        new("NVIDIA Foreground Settings...");
     readonly ToolStripMenuItem virtualGreenScreenCustomClipMenu =
         new("Virtual Green Screen...");
     readonly ToolStripMenuItem openCustomClipFolderMenu =
@@ -66,6 +68,7 @@ public partial class Form1
     bool loadingCustomAlphaThreshold;
     bool loadingCustomEdgeChoke;
     bool selectingClipForContextMenu;
+    static bool nvidiaPlaybackWarningShown;
     string customPlayerAnimationPath = "";
     string customPreloadedAnimationPath = "";
     Task<CustomPlayerForm.PreparedPlayback?>? customPreloadedPlayback;
@@ -149,6 +152,16 @@ public partial class Form1
             await TrimSelectedCustomClipAsync();
         cleanCustomClipAlphaMenu.Click += (_, _) =>
             CompareSelectedCustomClipAlpha();
+        nvidiaForegroundSettingsMenu.Click += async (_, _) =>
+        {
+            try { await EditSelectedNvidiaSettingsAsync(); }
+            catch (Exception error)
+            {
+                MessageBox.Show(this, error.Message,
+                    "NVIDIA Foreground Settings", MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        };
         virtualGreenScreenCustomClipMenu.Click += (_, _) =>
             EditSelectedClipVirtualGreenScreen();
         openCustomClipFolderMenu.Click += (_, _) => OpenSelectedCustomClipFolder();
@@ -178,6 +191,7 @@ public partial class Form1
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
             openCustomClipFolderMenu, cleanCustomClipAlphaMenu,
+            nvidiaForegroundSettingsMenu,
             virtualGreenScreenCustomClipMenu,
             trimCustomClipMenu, deleteCustomClipMenu]);
         customClipContextMenu.Opening += (sender, eventArgs) =>
@@ -190,7 +204,10 @@ public partial class Form1
             customClipHotnessMenu.Visible = custom;
             customClipTypesMenu.Visible = custom;
             openCustomClipFolderMenu.Visible = custom;
-            cleanCustomClipAlphaMenu.Visible = custom;
+            bool nvidia = custom && clip?.customMediaMode ==
+                CustomClipMedia.NvidiaAigsMode;
+            cleanCustomClipAlphaMenu.Visible = custom && !nvidia;
+            nvidiaForegroundSettingsMenu.Visible = nvidia;
             virtualGreenScreenCustomClipMenu.Visible = custom;
             trimCustomClipMenu.Visible = custom;
             deleteCustomClipMenu.Visible = custom;
@@ -198,6 +215,117 @@ public partial class Form1
         };
         listClips.ContextMenuStrip = customClipContextMenu;
         listClips.MouseDown += listClips_MouseDownForCustomContext;
+    }
+
+    async Task EditSelectedNvidiaSettingsAsync()
+    {
+        if (!TryGetSelectedCustomClip(out ModelCard card, out ModelClip modelClip) ||
+            card.customShowId == null || modelClip.customMediaMode !=
+                CustomClipMedia.NvidiaAigsMode)
+            return;
+        CustomNvidiaSettings current = modelClip.customNvidiaSettings?.Clone() ?? new();
+        using Form dialog = new()
+        {
+            Text = "NVIDIA Foreground Settings",
+            ClientSize = new System.Drawing.Size(590, 245),
+            MinimumSize = new System.Drawing.Size(520, 270),
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false,
+            MinimizeBox = false, AutoScaleMode = AutoScaleMode.Font
+        };
+        TableLayoutPanel layout = new()
+        {
+            Dock = DockStyle.Fill, Padding = new Padding(18, 16, 18, 14),
+            ColumnCount = 2, RowCount = 5
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        ComboBox mode = new() { Dock = DockStyle.Fill,
+            MinimumSize = new System.Drawing.Size(330, 0),
+            DropDownWidth = 330, DropDownStyle = ComboBoxStyle.DropDownList,
+            Margin = new Padding(12, 3, 0, 9) };
+        mode.Items.AddRange(["Quality — chairs foreground",
+            "Performance — chairs foreground", "Quality — chairs background",
+            "Performance — chairs background"]);
+        mode.SelectedIndex = Math.Clamp(current.Mode, 0, 3);
+        CheckBox temporal = new() { Dock = DockStyle.Fill,
+            Text = "Temporal filtering", Checked = current.Temporal,
+            AutoSize = true, Margin = new Padding(12, 5, 0, 10) };
+        ComboBox resolution = new() { Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Margin = new Padding(12, 3, 0, 9) };
+        resolution.Items.AddRange(["540p", "720p", "1080p", "Source"]);
+        resolution.SelectedIndex = current.InferenceResolution switch
+            { "540p" => 0, "1080p" => 2, "source" => 3, _ => 1 };
+        Button ok = new() { Text = "Apply", DialogResult = DialogResult.OK,
+            AutoSize = true, MinimumSize = new System.Drawing.Size(88, 0) };
+        Button cancel = new() { Text = "Cancel", DialogResult = DialogResult.Cancel,
+            AutoSize = true, MinimumSize = new System.Drawing.Size(88, 0) };
+        Label modeLabel = new() { Text = "SDK mode", AutoSize = true,
+            Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 12) };
+        Label filteringLabel = new() { Text = "Filtering", AutoSize = true,
+            Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 12) };
+        Label resolutionLabel = new() { Text = "Inference resolution",
+            AutoSize = true, Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 6, 0, 12) };
+        Label liveHint = new()
+        {
+            Text = "Changes apply to the playing clip without restarting it.",
+            AutoSize = true, Dock = DockStyle.Fill,
+            Margin = new Padding(0, 4, 0, 8)
+        };
+        FlowLayoutPanel buttons = new()
+        {
+            AutoSize = true, Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+            Margin = new Padding(0)
+        };
+        buttons.Controls.AddRange([cancel, ok]);
+        layout.Controls.Add(modeLabel, 0, 0);
+        layout.Controls.Add(mode, 1, 0);
+        layout.Controls.Add(filteringLabel, 0, 1);
+        layout.Controls.Add(temporal, 1, 1);
+        layout.Controls.Add(resolutionLabel, 0, 2);
+        layout.Controls.Add(resolution, 1, 2);
+        layout.Controls.Add(liveHint, 0, 3);
+        layout.SetColumnSpan(liveHint, 2);
+        layout.Controls.Add(buttons, 0, 4);
+        layout.SetColumnSpan(buttons, 2);
+        dialog.Controls.Add(layout);
+        dialog.AcceptButton = ok; dialog.CancelButton = cancel;
+        AppTheme.Apply(dialog);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        CustomNvidiaSettings next = new()
+        {
+            Mode = mode.SelectedIndex,
+            Temporal = temporal.Checked,
+            InferenceResolution = resolution.SelectedIndex switch
+                { 0 => "540p", 2 => "1080p", 3 => "source", _ => "720p" }
+        };
+        CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+        CustomShowManifest show = store.LoadManifest(card.customShowId);
+        CustomShowClip[] included = show.Clips.Where(value => value.Included).ToArray();
+        int index = card.clips!.IndexOf(modelClip);
+        if (index < 0 || index >= included.Length)
+            throw new InvalidDataException("The selected clip no longer matches the show.");
+        included[index].Nvidia = next.Clone();
+        store.SaveManifest(show);
+        modelClip.customNvidiaSettings = next.Clone();
+        string animation = GetAnimationPath(modelClip);
+        if (string.Equals(customPreloadedAnimationPath, animation,
+                StringComparison.OrdinalIgnoreCase))
+            CancelCustomPreload();
+        if (customPlayerClip == modelClip && customPlayer != null)
+        {
+            SetPlaybackStatus("Applying NVIDIA foreground settings...");
+            await customPlayer.SetNvidiaSettingsAsync(next);
+        }
+        SetPlaybackStatus("NVIDIA foreground settings saved.");
     }
 
     void CompareTemporalAlphaCleanup(string? showId = null, string? clipId = null)
@@ -969,48 +1097,51 @@ public partial class Form1
         using CustomShowSetupOptionsForm options = new();
         if (options.ShowDialog(owner) != DialogResult.OK) return null;
 
-        string script = Path.Combine(AppContext.BaseDirectory,
-            "custom-shows", "setup.ps1");
-        if (!File.Exists(script))
-        {
-            MessageBox.Show(owner, "The setup script is missing:\n" + script,
-                "Custom Shows", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return null;
-        }
-
         try
         {
-            using CustomShowSetupForm form = new(script,
-                options.InstallTransNetV2, options.InstallOmniShotCut,
-                options.InstallMatAnyone2, options.InstallViTMatte,
-                options.InstallProPainter, options.InstallEdgeTam,
-                options.InstallStabilo);
-            if (form.ShowDialog(owner) != DialogResult.OK) return null;
-            if (options.InstallSam2Matting)
+            if (options.InstallOfflineProcessing)
             {
-                string sam2MattingScript = Path.Combine(AppContext.BaseDirectory,
-                    "custom-shows", "setup-sam2matting.ps1");
-                if (!File.Exists(sam2MattingScript))
-                    throw new FileNotFoundException(
-                        "The SAM2Matting setup script is missing.", sam2MattingScript);
-                using CustomShowSam2MattingSetupForm sam2MattingSetup =
-                    new(sam2MattingScript);
-                if (sam2MattingSetup.ShowDialog(owner) != DialogResult.OK)
-                    return null;
-                customShowConfiguration.Sam2MattingPythonExecutable =
-                    CustomShowConfiguration.FindSam2MattingPythonExecutable();
+                string script = Path.Combine(AppContext.BaseDirectory,
+                    "custom-shows", "setup.ps1");
+                if (!File.Exists(script))
+                    throw new FileNotFoundException("The setup script is missing.", script);
+                using CustomShowSetupForm form = new(script,
+                    options.InstallTransNetV2, options.InstallOmniShotCut,
+                    options.InstallMatAnyone2, options.InstallViTMatte,
+                    options.InstallProPainter, options.InstallEdgeTam,
+                    options.InstallStabilo);
+                if (form.ShowDialog(owner) != DialogResult.OK) return null;
+                if (options.InstallSam2Matting)
+                {
+                    string sam2MattingScript = Path.Combine(AppContext.BaseDirectory,
+                        "custom-shows", "setup-sam2matting.ps1");
+                    if (!File.Exists(sam2MattingScript))
+                        throw new FileNotFoundException(
+                            "The SAM2Matting setup script is missing.", sam2MattingScript);
+                    using CustomShowSam2MattingSetupForm sam2MattingSetup =
+                        new(sam2MattingScript);
+                    if (sam2MattingSetup.ShowDialog(owner) != DialogResult.OK)
+                        return null;
+                    customShowConfiguration.Sam2MattingPythonExecutable =
+                        CustomShowConfiguration.FindSam2MattingPythonExecutable();
+                }
+                string python = CustomShowConfiguration.FindPythonExecutable();
+                if (!File.Exists(python) ||
+                    !python.Contains("rvm-runtime", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Setup completed but its Python environment was not found.");
+                customShowConfiguration.PythonExecutable = python;
             }
-            string python = CustomShowConfiguration.FindPythonExecutable();
-            if (!File.Exists(python) ||
-                !python.Contains("rvm-runtime", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException(
-                    "Setup completed but its Python environment was not found.");
-            customShowConfiguration.PythonExecutable = python;
+            if (options.InstallNvidiaAigs)
+            {
+                using NvidiaVfxSetupForm setup = new(customShowConfiguration);
+                if (setup.ShowDialog(owner) != DialogResult.OK) return null;
+            }
             customShowConfiguration.Save();
             MessageBox.Show(owner,
-                "Processing tools are installed and Python is now set to:\n" + python,
+                "The selected custom-show processing tools are installed.",
                 "Custom Shows", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return python;
+            return customShowConfiguration.PythonExecutable;
         }
         catch (Exception error)
         {
@@ -1181,12 +1312,16 @@ public partial class Form1
             using CustomClipTrimForm trim = new(
                 $"{card.outfit} (Clip {modelClip.clipNumber})",
                 CustomShowStore.ResolveRelative(folder, media.Foreground),
-                CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha), media,
+                media.Mode == CustomClipMedia.NvidiaAigsMode ? null :
+                    CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha!), media,
                 included[index].AlphaThreshold,
                 customShowConfiguration.FullOpacityThreshold,
                 included[index].EdgeChokePixels,
                 VirtualGreenScreenMath.Resolve(show.VirtualGreenScreen,
-                    included[index].VirtualGreenScreen));
+                    included[index].VirtualGreenScreen),
+                media.Mode == CustomClipMedia.NvidiaAigsMode
+                    ? customShowConfiguration.NvidiaVfxSdkRoot : null,
+                included[index].Nvidia);
             DialogResult result;
             try { result = trim.ShowDialog(this); }
             finally { await trim.ClosePreviewAsync(); }
@@ -1420,9 +1555,9 @@ public partial class Form1
             item.clipName, animationPath, StringComparison.OrdinalIgnoreCase));
         string? playbackAlpha = clip?.customAlphaPath == null ? null :
             CustomShowStore.PreferredAlphaPath(clip.customAlphaPath);
-        if (clip?.customForegroundPath == null || clip.customAlphaPath == null ||
-            playbackAlpha == null || !File.Exists(clip.customForegroundPath) ||
-            !File.Exists(playbackAlpha))
+        bool nvidia = clip?.customMediaMode == CustomClipMedia.NvidiaAigsMode;
+        if (clip?.customForegroundPath == null || !File.Exists(clip.customForegroundPath) ||
+            !nvidia && (playbackAlpha == null || !File.Exists(playbackAlpha)))
             return false;
         CustomPlayerForm? previous = customPlayer;
         LogCustomPlayerPosition($"start {animationPath}; previous=" +
@@ -1447,7 +1582,16 @@ public partial class Form1
             endMs: clip.customEndMs, initialBounds: initialBounds,
             preparedPlayback: preparedPlayback,
             edgeChokePixels: clip.customEdgeChokePixels,
-            virtualGreenScreen: clip.customVirtualGreenScreen);
+            virtualGreenScreen: clip.customVirtualGreenScreen,
+            nvidiaSdkRoot: nvidia ? customShowConfiguration.NvidiaVfxSdkRoot : null,
+            nvidiaSettings: nvidia ? clip.customNvidiaSettings ?? new() : null);
+        player.NvidiaFallback += reason => BeginInvoke(() =>
+        {
+            if (nvidiaPlaybackWarningShown) return;
+            nvidiaPlaybackWarningShown = true;
+            SetPlaybackStatus("NVIDIA AI Green Screen is unavailable; playing opaque RGB. " +
+                "Use Custom Shows > Settings > Install / Update Processing Tools. " + reason);
+        });
         player.HoldFinalFrameOnCompletion = true;
         player.SetLocked(playerlocked);
         player.SetClickThroughLocked(Properties.Settings.Default.ClickThroughLockedPlayer);
@@ -1569,10 +1713,10 @@ public partial class Form1
         if (next == null) return;
         string? playbackAlpha = next.customAlphaPath == null ? null :
             CustomShowStore.PreferredAlphaPath(next.customAlphaPath);
-        if (next.customForegroundPath == null || next.customAlphaPath == null ||
-            playbackAlpha == null ||
+        bool nvidia = next.customMediaMode == CustomClipMedia.NvidiaAigsMode;
+        if (next.customForegroundPath == null ||
             !File.Exists(next.customForegroundPath) ||
-            !File.Exists(playbackAlpha)) return;
+            !nvidia && (playbackAlpha == null || !File.Exists(playbackAlpha))) return;
         string path = GetAnimationPath(next);
         if (string.Equals(customPreloadedAnimationPath, path,
                 StringComparison.OrdinalIgnoreCase)) return;
@@ -1586,7 +1730,9 @@ public partial class Form1
             customShowConfiguration.FullOpacityThreshold,
             next.customEdgeChokePixels,
             next.customVirtualGreenScreen,
-            next.customStartMs, customPreloadCancellation.Token);
+            next.customStartMs, customPreloadCancellation.Token,
+            nvidia ? customShowConfiguration.NvidiaVfxSdkRoot : null,
+            nvidia ? next.customNvidiaSettings ?? new() : null);
     }
 
     Task<CustomPlayerForm.PreparedPlayback?>? TakeCustomPreload(

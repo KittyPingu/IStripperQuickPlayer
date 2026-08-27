@@ -258,6 +258,49 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
         codecContext->pix_fmt == AVPixelFormat.AV_PIX_FMT_GRAY16LE ||
         (AVPixelFormat)stream->codecpar->format == AVPixelFormat.AV_PIX_FMT_GRAY16LE;
 
+    internal void CopyBgr24(int targetWidth, int targetHeight, byte[] destination)
+    {
+        ValidateGpuFrame();
+        if (targetWidth <= 0 || targetHeight <= 0 ||
+            destination.Length < checked(targetWidth * targetHeight * 3))
+            throw new ArgumentException("The BGR destination buffer is invalid.");
+        byte* yPlane = frame->data[0];
+        byte* uPlane = frame->data[1];
+        byte* vPlane = frame->data[2];
+        int yStride = frame->linesize[0], uStride = frame->linesize[1],
+            vStride = frame->linesize[2];
+        bool full = FullRange, bt709 = Bt709;
+        for (int y = 0; y < targetHeight; y++)
+        {
+            int sourceY = Math.Min(Height - 1, y * Height / targetHeight);
+            for (int x = 0; x < targetWidth; x++)
+            {
+                int sourceX = Math.Min(Width - 1, x * Width / targetWidth);
+                float yy = yPlane[sourceY * yStride + sourceX];
+                float u = uPlane[sourceY / 2 * uStride + sourceX / 2] - 128;
+                float v = vPlane[sourceY / 2 * vStride + sourceX / 2] - 128;
+                yy = full ? yy : Math.Max(0, yy - 16) * (255f / 219);
+                float red, green, blue;
+                if (bt709)
+                {
+                    red = yy + 1.5748f * v;
+                    green = yy - .187324f * u - .468124f * v;
+                    blue = yy + 1.8556f * u;
+                }
+                else
+                {
+                    red = yy + 1.402f * v;
+                    green = yy - .344136f * u - .714136f * v;
+                    blue = yy + 1.772f * u;
+                }
+                int offset = (y * targetWidth + x) * 3;
+                destination[offset] = (byte)Math.Clamp((int)MathF.Round(blue), 0, 255);
+                destination[offset + 1] = (byte)Math.Clamp((int)MathF.Round(green), 0, 255);
+                destination[offset + 2] = (byte)Math.Clamp((int)MathF.Round(red), 0, 255);
+            }
+        }
+    }
+
     static void Check(int result, string operation)
     {
         if (result >= 0)

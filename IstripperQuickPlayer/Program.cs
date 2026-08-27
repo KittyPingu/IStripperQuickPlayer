@@ -34,6 +34,26 @@ namespace IStripperQuickPlayer
 
             ApplicationConfiguration.Initialize();
 
+            if (args.Length == 1 && args[0] == "--verify-nvidia-aigs")
+            {
+                try
+                {
+                    CustomShowConfiguration configuration =
+                        CustomShowConfiguration.Load();
+                    NvidiaVfxSetup.ValidateInstallation(
+                        configuration.NvidiaVfxSdkRoot);
+                    Console.WriteLine("NVIDIA AI Green Screen load/run succeeded.");
+                    Environment.ExitCode = 0;
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine("NVIDIA AI Green Screen diagnostic failed: " +
+                        error.Message);
+                    Environment.ExitCode = 1;
+                }
+                return;
+            }
+
             if (args.Length == 1 && args[0] == "--verify-custom-shows")
             {
                 (string Name, bool Passed)[] checks =
@@ -63,6 +83,9 @@ namespace IStripperQuickPlayer
                     ("temporal alpha threshold preview",
                         TemporalAlphaComparisonForm.VerifyThresholdPreview()),
                     ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),
+                    ("NVIDIA inference and fallback", NvidiaAiGreenScreen.VerifyContracts()),
+                    ("NVIDIA RGB-only encoding", CustomShowProcessor.VerifyRgbOnlyEncoding()),
+                    ("NVIDIA setup contracts", NvidiaVfxSetup.VerifyContracts()),
                     ("card index refresh", Datastore.VerifyTagIndexReplacement()),
                     ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),
                     ("worker result contract", CustomShowProcessor.VerifyResultContract()),
@@ -72,8 +95,7 @@ namespace IStripperQuickPlayer
                 ];
                 foreach ((string name, bool passed) in checks)
                     if (!passed) Console.Error.WriteLine($"Custom-show check failed: {name}");
-                Environment.ExitCode = checks.All(check => check.Passed) ? 0 : 1;
-                return;
+                Environment.Exit(checks.All(check => check.Passed) ? 0 : 1);
             }
 
             if (args.Length == 2 && args[0] == "--verify-card-overlay")
@@ -652,6 +674,7 @@ namespace IStripperQuickPlayer
             CustomShowEditorForm.QueueAction("rvm-vitmatte-b", true) == "Queue" &&
             CustomShowEditorForm.QueueAction("matanyone2", true) == "Mask and Queue" &&
             CustomShowEditorForm.QueueAction("sam2matting", false) == "Queue" &&
+            CustomShowEditorForm.QueueAction("nvidia-aigs", false) == "Queue" &&
             CustomShowEditorForm.QueueAction("quality", false) == null &&
             CustomShowEditorForm.QueueAction("vitmatte-s", true) == null &&
             CustomShowEditorForm.QueueAction("vitmatte-b", true) == null;

@@ -50,6 +50,13 @@ internal sealed class CustomShowEditorForm : Form
     readonly ComboBox coverModelFont = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox coverTitleFont = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox preset = new() { DropDownStyle = ComboBoxStyle.DropDownList };
+    readonly ComboBox nvidiaMode = new() { DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 340, DropDownWidth = 340 };
+    readonly Button openNvidiaSetup = new() { Text = "Open Setup", AutoSize = true };
+    readonly CheckBox nvidiaTemporal = new()
+        { Text = "Temporal filtering", AutoSize = true, Checked = true };
+    readonly ComboBox nvidiaInferenceResolution = new()
+        { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly ComboBox sam2MattingTracker = new()
         { DropDownStyle = ComboBoxStyle.DropDownList, Width = 620,
           DropDownWidth = 620 };
@@ -155,6 +162,7 @@ internal sealed class CustomShowEditorForm : Form
         propSegmenterModelRow, rvmPropEveryFrameRow, debugPropContributionRow,
         matAnyoneMemoryRow, temporalAlphaCleanupRow, temporalAlphaCleanupControlsRow,
         batchSizeRow, autoAcceptRow, processingDetailsRow;
+    int nvidiaModeRow, nvidiaTemporalRow, nvidiaInferenceResolutionRow;
     int reprocessingRow = -1;
     int reprocessClipsRow = -1;
     List<CustomPerformerProfile> profiles = [];
@@ -286,8 +294,24 @@ internal sealed class CustomShowEditorForm : Form
         if (metadataOnly || CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
             preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
         preset.Items.Add("SAM2Matting");
+        preset.Items.Add("NVIDIA AI Green Screen (real-time playback)");
         preset.SelectedIndex = 0;
         AddRow(processingTable, "Processing algorithm", preset);
+        nvidiaMode.Items.AddRange([
+            "Quality — chairs are foreground",
+            "Performance — chairs are foreground",
+            "Quality — chairs are background",
+            "Performance — chairs are background"]);
+        nvidiaMode.SelectedIndex = 0;
+        nvidiaModeRow = AddRow(processingTable, "NVIDIA mode",
+            Flow(nvidiaMode, openNvidiaSetup));
+        nvidiaTemporalRow = AddRow(processingTable, "NVIDIA filtering",
+            nvidiaTemporal);
+        nvidiaInferenceResolution.Items.AddRange([
+            "540p", "720p (recommended)", "1080p", "Source resolution"]);
+        nvidiaInferenceResolution.SelectedIndex = 1;
+        nvidiaInferenceResolutionRow = AddRow(processingTable,
+            "NVIDIA inference resolution", nvidiaInferenceResolution);
         sam2MattingTracker.Items.AddRange([
             "SAM2.1-T — fastest, interactive initial mask",
             "SAM2.1-B+ — higher-capacity, interactive initial mask",
@@ -461,6 +485,11 @@ internal sealed class CustomShowEditorForm : Form
         };
         foregroundConcepts.TextChanged += (_, _) => UpdateProcessingOptions();
         openSam2MattingSetup.Click += (_, _) => OpenSam2MattingSetup();
+        openNvidiaSetup.Click += (_, _) =>
+        {
+            using NvidiaVfxSetupForm setup = new(configuration);
+            setup.ShowDialog(this);
+        };
         autoAccept.CheckedChanged += (_, _) => UpdateProcessingOptions();
         newPerformer.Click += (_, _) => OpenPerformer(null);
         editPerformer.Click += (_, _) => OpenPerformer(selectedProfile);
@@ -605,6 +634,7 @@ internal sealed class CustomShowEditorForm : Form
         }
         bool rvm = selected is "quality" or "fast";
         bool sam2Matting = selected == Sam2MattingSupport.Algorithm;
+        bool nvidia = selected == CustomClipMedia.NvidiaAigsMode;
         string sam2MattingPromptMode = SelectedSam2MattingPromptMode();
         bool rvmSam2Matting = sam2Matting &&
             sam2MattingPromptMode == "rvm-initial-mask";
@@ -654,7 +684,7 @@ internal sealed class CustomShowEditorForm : Form
         bool matAnyone = selected is "matanyone2" or "rvm-matanyone2";
         matAnyoneMaxMemoryFrames.Enabled = matAnyoneUseLongTermMemory.Enabled =
             matAnyone && CanProcess;
-        temporalAlphaCleanup.Enabled = CanProcess;
+        temporalAlphaCleanup.Enabled = CanProcess && !nvidia;
         temporalAlphaCleanupWindow.Enabled =
             temporalAlphaCleanupStrength.Enabled =
             temporalAlphaCleanupStrengthValue.Enabled =
@@ -662,7 +692,7 @@ internal sealed class CustomShowEditorForm : Form
             temporalAlphaTrackingStrengthValue.Enabled =
             temporalAlphaCleanupAlphaThreshold.Enabled =
                 CanProcess && temporalAlphaCleanup.Checked;
-        autoAccept.Enabled = CanProcess;
+        autoAccept.Enabled = CanProcess && !nvidia;
         if (processingTable != null)
         {
             bool usesMasks = UsesSam2(selected);
@@ -688,9 +718,9 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, rvmMaskRefreshStrengthRow,
                 selected == "rvm-matanyone2");
             SetRowVisible(processingTable, matAnyoneMemoryRow, matAnyone);
-            SetRowVisible(processingTable, temporalAlphaCleanupRow, true);
+            SetRowVisible(processingTable, temporalAlphaCleanupRow, !nvidia);
             SetRowVisible(processingTable, temporalAlphaCleanupControlsRow,
-                temporalAlphaCleanup.Checked);
+                temporalAlphaCleanup.Checked && !nvidia);
             SetRowVisible(processingTable, batchSizeRow, rvm || usesMasks ||
                 selected is "rvm-vitmatte-s" or "rvm-vitmatte-b");
             SetRowVisible(processingTable, processingDetailsRow,
@@ -700,10 +730,14 @@ internal sealed class CustomShowEditorForm : Form
             SetRowVisible(processingTable, foregroundConceptsRow, false);
             SetRowVisible(processingTable, sceneMaskSummaryRow,
                 sam2Matting);
-            SetRowVisible(processingTable, autoAcceptRow, !sam2Matting);
+            SetRowVisible(processingTable, autoAcceptRow, !sam2Matting && !nvidia);
+            SetRowVisible(processingTable, nvidiaModeRow, nvidia);
+            SetRowVisible(processingTable, nvidiaTemporalRow, nvidia);
+            SetRowVisible(processingTable, nvidiaInferenceResolutionRow, nvidia);
             if (reprocessingRow >= 0)
                 SetRowVisible(processingTable, reprocessingRow, reprocess);
         }
+        keepMasks.Visible = !nvidia;
         bool sam2Installed = !sam2Matting || Sam2MattingSupport.IsInstalled(
             configuration, SelectedSam2MattingTracker());
         bool rvmInstalled = !rvmSam2Matting ||
@@ -728,6 +762,8 @@ internal sealed class CustomShowEditorForm : Form
                     ? (reprocess ? "Reprocess and Preview" :
                     Appending ? "Process and Add Clips" : "Process and Preview") :
                     "Mask Scenes and Process";
+            else if (nvidia)
+                save.Text = "Encode and Preview";
         }
     }
 
@@ -816,6 +852,8 @@ internal sealed class CustomShowEditorForm : Form
         if (selected.StartsWith("ViTMatte B", StringComparison.Ordinal)) return "vitmatte-b";
         if (selected.StartsWith("SAM2Matting", StringComparison.Ordinal))
             return Sam2MattingSupport.Algorithm;
+        if (selected.StartsWith("NVIDIA AI Green Screen", StringComparison.Ordinal))
+            return CustomClipMedia.NvidiaAigsMode;
         return "quality";
     }
 
@@ -823,7 +861,7 @@ internal sealed class CustomShowEditorForm : Form
         "vitmatte-s" or "vitmatte-b";
 
     internal static string? QueueAction(string algorithm, bool autoAccept) =>
-        algorithm == "sam2matting" ? "Queue" : !autoAccept ? null : algorithm switch
+        algorithm is "sam2matting" or "nvidia-aigs" ? "Queue" : !autoAccept ? null : algorithm switch
         {
             "quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" => "Queue",
             "matanyone2" => "Mask and Queue",
@@ -980,7 +1018,7 @@ internal sealed class CustomShowEditorForm : Form
         {
             processingDetails.Text = DescribeProcessing(processing);
             processingDetails.Visible = true;
-            SelectProcessingOptions(processing);
+            SelectProcessingOptions(processing, show.Clips);
         }
         keepClips.Visible = keepMasks.Visible = editingExisting && reprocess;
         keepMasks.Enabled = reprocess && RetainedMasksAvailable();
@@ -1002,7 +1040,8 @@ internal sealed class CustomShowEditorForm : Form
                 temporalAlphaTrackingStrength.Enabled =
                 temporalAlphaTrackingStrengthValue.Enabled =
                 temporalAlphaCleanupAlphaThreshold.Enabled =
-                autoAccept.Enabled = false;
+                autoAccept.Enabled = nvidiaMode.Enabled = nvidiaTemporal.Enabled =
+                nvidiaInferenceResolution.Enabled = openNvidiaSetup.Enabled = false;
         UpdateClipButton();
         UpdateReprocessClipSelectionAvailability();
     }
@@ -1066,7 +1105,8 @@ internal sealed class CustomShowEditorForm : Form
         propSegmenterModel.SelectedItem = choice;
     }
 
-    void SelectProcessingOptions(CustomShowProcessing processing)
+    void SelectProcessingOptions(CustomShowProcessing processing,
+        IReadOnlyList<CustomShowClip> processingClips)
     {
         string prefix = processing.Algorithm switch
         {
@@ -1076,6 +1116,7 @@ internal sealed class CustomShowEditorForm : Form
             "rvm-vitmatte-b" => "RVM-ViTMatte B",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B", "sam2matting" => "SAM2Matting",
+            "nvidia-aigs" => "NVIDIA AI Green Screen",
             _ => "RVM Quality"
         };
         SelectStartingWith(preset, prefix);
@@ -1145,6 +1186,16 @@ internal sealed class CustomShowEditorForm : Form
             (int)temporalAlphaCleanupAlphaThreshold.Maximum);
         autoAccept.Checked = processing.AutoAcceptedAlphaThreshold.HasValue;
         SelectPropSegmenter(processing.PropSegmenterModelId);
+        CustomNvidiaSettings? nvidia = processingClips.FirstOrDefault(value =>
+            value.Media?.Mode == CustomClipMedia.NvidiaAigsMode)?.Nvidia;
+        if (nvidia != null)
+        {
+            nvidiaMode.SelectedIndex = Math.Clamp(nvidia.Mode, 0, 3);
+            nvidiaTemporal.Checked = nvidia.Temporal;
+            nvidiaInferenceResolution.SelectedIndex =
+                nvidia.InferenceResolution switch
+                { "540p" => 0, "1080p" => 2, "source" => 3, _ => 1 };
+        }
     }
 
     static void SelectStartingWith(ComboBox combo, string prefix)
@@ -1168,6 +1219,7 @@ internal sealed class CustomShowEditorForm : Form
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
             "sam2matting" => "SAM2Matting",
+            "nvidia-aigs" => "NVIDIA AI Green Screen",
             _ => "RVM Quality"
         };
         SelectStartingWith(preset, prefix);
@@ -2236,7 +2288,8 @@ internal sealed class CustomShowEditorForm : Form
             string algorithm = SelectedPreset();
             string selectedSam2MattingPromptMode =
                 SelectedSam2MattingPromptMode();
-            if (algorithm != Sam2MattingSupport.Algorithm && !autoAccept.Checked)
+            if (algorithm is not (Sam2MattingSupport.Algorithm or
+                    CustomClipMedia.NvidiaAigsMode) && !autoAccept.Checked)
                 throw new InvalidDataException(
                     "Queued processing requires automatic acceptance at alpha threshold " +
                     configuration.DefaultAlphaThreshold + ".");
@@ -2285,6 +2338,27 @@ internal sealed class CustomShowEditorForm : Form
             ApplyFields(manifest, includeClipLayout: true);
             AdoptSelectedProfileGender(manifest.Gender);
             manifest.Clips = CloneQueueValue(showClips);
+            if (algorithm == CustomClipMedia.NvidiaAigsMode)
+            {
+                HashSet<string> selectedNvidiaClips = reprocess
+                    ? SelectedReprocessClipIds().ToHashSet(
+                        StringComparer.OrdinalIgnoreCase)
+                    : manifest.Clips.Select(value => value.Id).ToHashSet(
+                        StringComparer.OrdinalIgnoreCase);
+                foreach (CustomShowClip clip in manifest.Clips)
+                {
+                    if (!selectedNvidiaClips.Contains(clip.Id)) continue;
+                    clip.Nvidia = new CustomNvidiaSettings
+                    {
+                        Mode = Math.Max(0, nvidiaMode.SelectedIndex),
+                        Temporal = nvidiaTemporal.Checked,
+                        InferenceResolution = nvidiaInferenceResolution.SelectedIndex switch
+                        {
+                            0 => "540p", 2 => "1080p", 3 => "source", _ => "720p"
+                        }
+                    };
+                }
+            }
             manifest.ClipDetection = clipDetection;
             manifest.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
             CustomShowProcessingScene[] processingScenes = [];
@@ -2386,7 +2460,8 @@ internal sealed class CustomShowEditorForm : Form
                 ScenePlanVersion = algorithm == Sam2MattingSupport.Algorithm
                     ? Sam2MattingSupport.ScenePlanVersion : null,
                 Scenes = processingScenes,
-                MattingDetailPx = SelectedMattingResolution(),
+                MattingDetailPx = algorithm == CustomClipMedia.NvidiaAigsMode
+                    ? 0 : SelectedMattingResolution(),
                 VitMatteInferenceDetailPx = algorithm is
                     "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or "rvm-vitmatte-b"
                     ? SelectedVitMatteInferenceResolution() : null,
@@ -2415,7 +2490,9 @@ internal sealed class CustomShowEditorForm : Form
                 MatAnyoneUseLongTermMemory = algorithm is
                     "matanyone2" or "rvm-matanyone2" &&
                     matAnyoneUseLongTermMemory.Checked,
-                TemporalAlphaCleanup = temporalAlphaCleanup.Checked,
+                TemporalAlphaCleanup = !string.Equals(algorithm,
+                    CustomClipMedia.NvidiaAigsMode, StringComparison.Ordinal) &&
+                    temporalAlphaCleanup.Checked,
                 TemporalAlphaCleanupWindowFrames =
                     (int)temporalAlphaCleanupWindow.Value,
                 TemporalAlphaCleanupStrengthPercent =
@@ -2424,14 +2501,16 @@ internal sealed class CustomShowEditorForm : Form
                     temporalAlphaTrackingStrength.Value,
                 TemporalAlphaCleanupAlphaThreshold =
                     (int)temporalAlphaCleanupAlphaThreshold.Value,
-                AutoAcceptedAlphaThreshold = algorithm ==
-                    Sam2MattingSupport.Algorithm ? null :
+                AutoAcceptedAlphaThreshold = algorithm is
+                    (Sam2MattingSupport.Algorithm or CustomClipMedia.NvidiaAigsMode) ? null :
                         configuration.DefaultAlphaThreshold,
                 Sam2Model = algorithm == "matanyone2" ? SelectedSam2Model() : null,
                 ExecutionPolicy = algorithm == Sam2MattingSupport.Algorithm
-                    ? "eager" : "auto",
+                    ? "eager" : algorithm == CustomClipMedia.NvidiaAigsMode
+                        ? "realtime-playback" : "auto",
                 PrecisionPolicy = algorithm == Sam2MattingSupport.Algorithm
-                    ? "bf16-autocast" : "fp16-autocast-fp32-cpu-fallback",
+                    ? "bf16-autocast" : algorithm == CustomClipMedia.NvidiaAigsMode
+                        ? "sdk-managed" : "fp16-autocast-fp32-cpu-fallback",
                 RecurrentRefinementSteps = algorithm is "matanyone2" or
                     "rvm-matanyone2" ? 11 : 0,
                 ToolRevisions = ReadProcessingRevisions(algorithm,
@@ -2456,7 +2535,7 @@ internal sealed class CustomShowEditorForm : Form
             job.Status = CustomShowQueueStatus.Pending;
             job.Manifest = manifest;
             job.Performer = CloneQueueValue(selectedProfile);
-            job.Clips = CloneQueueValue(showClips);
+            job.Clips = CloneQueueValue(manifest.Clips);
             job.SourcePath = Path.GetFullPath(source.Text);
             job.RequestedOutputPath = Path.Combine(store.ShowsFolder,
                 operation == CustomShowQueueOperation.New ? manifest.Id : targetId!);
@@ -2470,9 +2549,14 @@ internal sealed class CustomShowEditorForm : Form
             job.ReprocessClipIds = operation == CustomShowQueueOperation.Reprocess
                 ? SelectedReprocessClipIds() : [];
             job.Percent = 0;
-            job.Message = promptMode == "rvm-initial-mask"
-                ? "Pending; RVM masks will be created when the job runs"
-                : "Pending";
+            job.Message = algorithm switch
+            {
+                CustomClipMedia.NvidiaAigsMode =>
+                    "Pending; RGB clips will be encoded when the job runs",
+                Sam2MattingSupport.Algorithm when promptMode == "rvm-initial-mask" =>
+                    "Pending; RVM masks will be created when the job runs",
+                _ => "Pending"
+            };
             job.Error = null;
             job.StartedUtc = null; job.CompletedUtc = null;
             job.PublishedShowId = null; job.ReadyToPublish = false;
@@ -2618,9 +2702,13 @@ internal sealed class CustomShowEditorForm : Form
                                         clip.Included).ToArray()) == DialogResult.OK,
                             token);
                         return new CustomShowProcessResult();
-                    }, "Processing SAM2Matting Show",
+                    }, algorithm == CustomClipMedia.NvidiaAigsMode
+                        ? "Encoding NVIDIA AI Green Screen Show"
+                        : "Processing SAM2Matting Show",
                     processDescription:
-                        "Processing the selected source now, then opening its alpha preview",
+                        algorithm == CustomClipMedia.NvidiaAigsMode
+                            ? "Encoding RGB clips, then opening the live NVIDIA preview"
+                            : "Processing the selected source now, then opening its alpha preview",
                     showPreviews: true);
                 if (processing.ShowDialog(this) != DialogResult.OK ||
                     publishedId == null)
@@ -3376,10 +3464,17 @@ internal sealed class CustomShowEditorForm : Form
         {
             using CustomShowDecisionForm review = new(
                 Path.Combine(staging, "processing.log"), true, clips);
+            review.NvidiaSetupRequested += () =>
+            {
+                using NvidiaVfxSetupForm setup = new(configuration);
+                if (setup.ShowDialog(review) == DialogResult.OK)
+                    review.RefreshPreview();
+            };
             review.PreviewChanged += (clip, threshold) =>
             {
                 if (previewClipId == clip.Id &&
-                    preview is { IsDisposed: false })
+                    preview is { IsDisposed: false } &&
+                    clip.Media?.Mode != CustomClipMedia.NvidiaAigsMode)
                 {
                     preview.SetAlphaThreshold(threshold);
                     return;
@@ -3388,12 +3483,19 @@ internal sealed class CustomShowEditorForm : Form
                 preview = new CustomPlayerForm(
                     CustomShowStore.ResolveRelative(
                         staging, clip.Media!.Foreground),
-                    CustomShowStore.ResolveRelative(
-                        staging, clip.Media.Alpha),
+                    clip.Media.Mode == CustomClipMedia.NvidiaAigsMode ? null :
+                        CustomShowStore.ResolveRelative(
+                            staging, clip.Media.Alpha!),
                     alphaThreshold: threshold,
                     fullOpacityThreshold:
-                        configuration.FullOpacityThreshold);
+                        configuration.FullOpacityThreshold,
+                    nvidiaSdkRoot: clip.Media.Mode ==
+                        CustomClipMedia.NvidiaAigsMode
+                            ? configuration.NvidiaVfxSdkRoot : null,
+                    nvidiaSettings: clip.Nvidia);
                 previews.Add(preview);
+                preview.NvidiaFallback += reason => BeginInvoke(() =>
+                    review.ShowNvidiaWarning(reason));
                 previewClipId = clip.Id;
                 preview.Show(this);
             };
@@ -3632,11 +3734,13 @@ internal sealed class CustomShowEditorForm : Form
     }
 
     static bool RoutesSaveToQueue(bool metadataOnly, string algorithm) =>
-        !metadataOnly && algorithm == Sam2MattingSupport.Algorithm;
+        !metadataOnly && algorithm is
+            (Sam2MattingSupport.Algorithm or CustomClipMedia.NvidiaAigsMode);
 
     internal static bool VerifySaveRouting() =>
         !RoutesSaveToQueue(true, Sam2MattingSupport.Algorithm) &&
         RoutesSaveToQueue(false, Sam2MattingSupport.Algorithm) &&
+        RoutesSaveToQueue(false, CustomClipMedia.NvidiaAigsMode) &&
         !RoutesSaveToQueue(false, "quality");
 
     static TableLayoutPanel SectionTable()
@@ -4017,25 +4121,29 @@ internal sealed class CustomShowDecisionForm : Form
           Width = 260, Height = 32, AccessibleName = "Alpha threshold" };
     readonly TextBox thresholdText = new()
         { Width = 48, MaxLength = 3, TextAlign = HorizontalAlignment.Right };
+    readonly ComboBox nvidiaMode = new() { DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 210 };
+    readonly CheckBox nvidiaTemporal = new() { Text = "Temporal", AutoSize = true };
+    readonly ComboBox nvidiaResolution = new()
+        { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
+    FlowLayoutPanel? tuning;
+    readonly Label message = new() { Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleCenter };
     bool loading;
     internal event Action<CustomShowClip, int>? PreviewChanged;
+    internal event Action? NvidiaSetupRequested;
 
     internal CustomShowDecisionForm(string logPath, bool allowAccept,
         IReadOnlyList<CustomShowClip>? clips = null)
     {
         this.clips = clips?.ToArray() ?? [];
         Text = allowAccept ? "Review Custom Show" : "Processing Failed";
-        ClientSize = new Size(860, allowAccept ? 180 : 130);
+        ClientSize = new Size(960, allowAccept ? 180 : 130);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = MinimizeBox = false;
-        Label message = new()
-        {
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Text = allowAccept
+        message.Text = allowAccept
                 ? "Tune pixels below the alpha threshold to transparent, then accept, retry, inspect the log, or discard."
-                : "Processing failed. Retry, inspect processing.log, or discard the staged show."
-        };
+                : "Processing failed. Retry, inspect processing.log, or discard the staged show.";
         FlowLayoutPanel buttons = new()
         {
             Dock = DockStyle.Bottom, AutoSize = true,
@@ -4051,6 +4159,13 @@ internal sealed class CustomShowDecisionForm : Form
             { UseShellExecute = true });
         };
         buttons.Controls.AddRange([discard, openLog, retry]);
+        if (allowAccept && this.clips.Any(value => value.Media?.Mode ==
+                CustomClipMedia.NvidiaAigsMode))
+        {
+            Button setupNvidia = new() { Text = "Setup NVIDIA...", AutoSize = true };
+            setupNvidia.Click += (_, _) => NvidiaSetupRequested?.Invoke();
+            buttons.Controls.Add(setupNvidia);
+        }
         if (allowAccept)
         {
             Button accept = new() { Text = "Accept", AutoSize = true, DialogResult = DialogResult.OK };
@@ -4062,7 +4177,7 @@ internal sealed class CustomShowDecisionForm : Form
         Controls.Add(buttons);
         if (allowAccept && this.clips.Length > 0)
         {
-            FlowLayoutPanel tuning = new()
+            tuning = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8),
                 FlowDirection = FlowDirection.LeftToRight
@@ -4076,6 +4191,12 @@ internal sealed class CustomShowDecisionForm : Form
                 threshold,
                 thresholdText
             ]);
+            nvidiaMode.Items.AddRange(["Quality / chairs FG",
+                "Performance / chairs FG", "Quality / chairs BG",
+                "Performance / chairs BG"]);
+            nvidiaResolution.Items.AddRange(["540p", "720p", "1080p", "Source"]);
+            tuning.Controls.AddRange([nvidiaMode, nvidiaTemporal,
+                nvidiaResolution]);
             Controls.Add(tuning);
             clip.SelectedIndexChanged += (_, _) => SelectClip();
             threshold.Scroll += (_, _) => ChangeThreshold(threshold.Value);
@@ -4086,6 +4207,9 @@ internal sealed class CustomShowDecisionForm : Form
             };
             thresholdText.Leave += (_, _) =>
                 thresholdText.Text = threshold.Value.ToString();
+            nvidiaMode.SelectedIndexChanged += (_, _) => ChangeNvidia();
+            nvidiaTemporal.CheckedChanged += (_, _) => ChangeNvidia();
+            nvidiaResolution.SelectedIndexChanged += (_, _) => ChangeNvidia();
             Shown += (_, _) => { if (clip.SelectedIndex < 0) clip.SelectedIndex = 0; };
         }
         AppTheme.Apply(this);
@@ -4095,8 +4219,21 @@ internal sealed class CustomShowDecisionForm : Form
     {
         if (clip.SelectedIndex < 0) return;
         loading = true;
-        threshold.Value = clips[clip.SelectedIndex].AlphaThreshold;
+        CustomShowClip selected = clips[clip.SelectedIndex];
+        threshold.Value = selected.AlphaThreshold;
         thresholdText.Text = threshold.Value.ToString();
+        bool isNvidia = selected.Media?.Mode == CustomClipMedia.NvidiaAigsMode;
+        threshold.Visible = thresholdText.Visible = !isNvidia;
+        nvidiaMode.Visible = nvidiaTemporal.Visible =
+            nvidiaResolution.Visible = isNvidia;
+        if (isNvidia)
+        {
+            CustomNvidiaSettings settings = selected.Nvidia ??= new();
+            nvidiaMode.SelectedIndex = Math.Clamp(settings.Mode, 0, 3);
+            nvidiaTemporal.Checked = settings.Temporal;
+            nvidiaResolution.SelectedIndex = settings.InferenceResolution switch
+                { "540p" => 0, "1080p" => 2, "source" => 3, _ => 1 };
+        }
         loading = false;
         PreviewChanged?.Invoke(clips[clip.SelectedIndex], threshold.Value);
     }
@@ -4111,6 +4248,31 @@ internal sealed class CustomShowDecisionForm : Form
         loading = false;
         CustomShowClip selected = clips[clip.SelectedIndex];
         selected.AlphaThreshold = value;
+        PreviewChanged?.Invoke(selected, selected.AlphaThreshold);
+    }
+
+    internal void ShowNvidiaWarning(string reason)
+    {
+        if (IsDisposed) return;
+        message.Text = "NVIDIA AI Green Screen is unavailable. Preview is opaque RGB; " +
+            "you may still accept it or use Open Setup in custom-show creation. " + reason;
+    }
+
+    internal void RefreshPreview() => SelectClip();
+
+    void ChangeNvidia()
+    {
+        if (loading || clip.SelectedIndex < 0 ||
+            clips[clip.SelectedIndex].Media?.Mode != CustomClipMedia.NvidiaAigsMode)
+            return;
+        CustomShowClip selected = clips[clip.SelectedIndex];
+        selected.Nvidia = new CustomNvidiaSettings
+        {
+            Mode = Math.Max(0, nvidiaMode.SelectedIndex),
+            Temporal = nvidiaTemporal.Checked,
+            InferenceResolution = nvidiaResolution.SelectedIndex switch
+                { 0 => "540p", 2 => "1080p", 3 => "source", _ => "720p" }
+        };
         PreviewChanged?.Invoke(selected, selected.AlphaThreshold);
     }
 
@@ -4321,6 +4483,8 @@ internal sealed class CustomShowSettingsForm : Form
         {
             LibraryRoot = current.LibraryRoot,
             PythonExecutable = current.PythonExecutable,
+            Sam2MattingPythonExecutable = current.Sam2MattingPythonExecutable,
+            NvidiaVfxSdkRoot = current.NvidiaVfxSdkRoot,
             SmallPlayerVolume = current.SmallPlayerVolume,
             LargePlayerVolume = current.LargePlayerVolume,
             DefaultAlphaThreshold = current.DefaultAlphaThreshold,
@@ -4350,6 +4514,7 @@ internal sealed class CustomShowSettingsForm : Form
             VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
             VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize,
             LastProcessingAlgorithm = current.LastProcessingAlgorithm,
+            LastSam2MattingTracker = current.LastSam2MattingTracker,
             LastMaskEngine = current.LastMaskEngine,
             LastSam2Model = current.LastSam2Model,
             LastMattingDetailPx = current.LastMattingDetailPx,
@@ -4558,6 +4723,10 @@ internal sealed class CustomShowSettingsForm : Form
         setup.Click += (_, _) =>
         {
             string? installedPython = installTools?.Invoke(this);
+            CustomShowConfiguration installed = CustomShowConfiguration.Load();
+            Configuration.NvidiaVfxSdkRoot = installed.NvidiaVfxSdkRoot;
+            Configuration.Sam2MattingPythonExecutable =
+                installed.Sam2MattingPythonExecutable;
             if (!string.IsNullOrWhiteSpace(installedPython))
             {
                 python.Text = installedPython;
@@ -5722,6 +5891,12 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
 
 internal sealed class CustomShowSetupOptionsForm : Form
 {
+    readonly CheckBox offline = new() { Text =
+        "Offline Python/RVM processing environment", AutoSize = true,
+        Checked = true };
+    readonly CheckBox nvidiaAigs = new() { Text =
+        "NVIDIA AI Green Screen SDK (real-time playback, NGC account required)",
+        AutoSize = true };
     readonly CheckBox sam2Matting = new() { Text =
         "SAM2Matting with SAM2.1-T and SAM2.1-B+ (~600 MB, NVIDIA CUDA required)",
         AutoSize = true, Checked = true };
@@ -5752,6 +5927,8 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallStabilo => stabilo.Checked;
     internal bool InstallProPainter => proPainter.Checked;
     internal bool InstallSam2Matting => sam2Matting.Checked;
+    internal bool InstallOfflineProcessing => offline.Checked;
+    internal bool InstallNvidiaAigs => nvidiaAigs.Checked;
 
     internal CustomShowSetupOptionsForm()
     {
@@ -5765,7 +5942,9 @@ internal sealed class CustomShowSetupOptionsForm : Form
         TableLayoutPanel layout = new() { Dock = DockStyle.Top, AutoSize = true,
             Padding = new Padding(16), ColumnCount = 1, RowCount = 16 };
         layout.Controls.Add(new Label { Text =
-            "Robust Video Matting is always installed. Select optional tools:", AutoSize = true });
+            "Select the processing environments and optional tools to install:", AutoSize = true });
+        layout.Controls.Add(offline);
+        layout.Controls.Add(nvidiaAigs);
         layout.Controls.Add(transNet);
         layout.Controls.Add(omniShotCut);
         layout.Controls.Add(matAnyone);
@@ -5836,7 +6015,8 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal static bool VerifyDefaults()
     {
         using CustomShowSetupOptionsForm form = new();
-        return form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
+        return form.InstallOfflineProcessing && !form.InstallNvidiaAigs &&
+            form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
             form.InstallSam2Matting &&
             !form.InstallViTMatte && !form.InstallEdgeTam &&
             !form.InstallStabilo && !form.InstallProPainter;

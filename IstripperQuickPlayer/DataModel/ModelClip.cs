@@ -19,6 +19,8 @@ namespace IStripperQuickPlayer
         internal int? clipNumber;
         internal string? customForegroundPath;
         internal string? customAlphaPath;
+        internal string customMediaMode = CustomClipMedia.PairedAlphaMode;
+        internal CustomNvidiaSettings? customNvidiaSettings;
         internal int customAlphaThreshold = CustomShowClip.DefaultAlphaThreshold;
         internal float customEdgeChokePixels = 1;
         internal CustomVirtualGreenScreen customVirtualGreenScreen =

@@ -3,7 +3,9 @@ namespace IStripperQuickPlayer;
 internal sealed class CustomClipTrimForm : Form
 {
     readonly string foregroundPath;
-    readonly string alphaPath;
+    readonly string? alphaPath;
+    readonly string? nvidiaSdkRoot;
+    readonly CustomNvidiaSettings? nvidiaSettings;
     readonly long durationMs;
     readonly long frameMs;
     readonly int alphaThreshold;
@@ -37,12 +39,16 @@ internal sealed class CustomClipTrimForm : Form
     internal long EndMs { get; private set; }
 
     internal CustomClipTrimForm(string title, string foregroundPath,
-        string alphaPath, CustomClipMedia media, int alphaThreshold,
+        string? alphaPath, CustomClipMedia media, int alphaThreshold,
         int fullOpacityThreshold, float edgeChokePixels,
-        CustomVirtualGreenScreen? virtualGreenScreen = null)
+        CustomVirtualGreenScreen? virtualGreenScreen = null,
+        string? nvidiaSdkRoot = null,
+        CustomNvidiaSettings? nvidiaSettings = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
+        this.nvidiaSdkRoot = nvidiaSdkRoot;
+        this.nvidiaSettings = nvidiaSettings?.Clone();
         durationMs = media.DurationMs;
         this.alphaThreshold = alphaThreshold;
         this.fullOpacityThreshold = fullOpacityThreshold;
@@ -187,7 +193,9 @@ internal sealed class CustomClipTrimForm : Form
             fullOpacityThreshold: fullOpacityThreshold,
             suppressErrorDialog: true, startMs: 0, endMs: durationMs,
             edgeChokePixels: edgeChokePixels,
-            virtualGreenScreen: virtualGreenScreen);
+            virtualGreenScreen: virtualGreenScreen,
+            nvidiaSdkRoot: nvidiaSdkRoot,
+            nvidiaSettings: nvidiaSettings);
         player.HoldFinalFrameOnCompletion = true;
         player.SetPaused(paused);
         player.SeekTo(positionMs / 1000d);

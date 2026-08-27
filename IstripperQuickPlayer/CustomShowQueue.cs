@@ -106,6 +106,13 @@ internal sealed class CustomShowQueueStore
                     : Path.Combine(shows.ShowsFolder, job.TargetShowId ?? job.Manifest.Id);
                 changed = true;
             }
+            if (job.Status == CustomShowQueueStatus.Pending &&
+                job.Manifest.Processing?.Algorithm == CustomClipMedia.NvidiaAigsMode &&
+                job.Message.Contains("RVM masks", StringComparison.OrdinalIgnoreCase))
+            {
+                job.Message = "Pending; RGB clips will be encoded when the job runs";
+                changed = true;
+            }
         }
         foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
             value.Status == CustomShowQueueStatus.Running))
@@ -1080,7 +1087,8 @@ internal static class CustomShowJobRunner
     {
         if (job.Manifest.Processing?.Algorithm is not
             ("quality" or "fast" or "rvm-matanyone2" or
-             "rvm-vitmatte-s" or "rvm-vitmatte-b" or "matanyone2" or "sam2matting"))
+             "rvm-vitmatte-s" or "rvm-vitmatte-b" or "matanyone2" or
+             "sam2matting" or "nvidia-aigs"))
             throw new CustomShowQueueAttentionException(
                 "This processing algorithm cannot run unattended.");
         bool installed = job.Manifest.Processing.Algorithm switch
@@ -1091,6 +1099,7 @@ internal static class CustomShowJobRunner
             "matanyone2" => CustomShowProcessor.IsMatAnyone2Installed(configuration),
             "sam2matting" => Sam2MattingSupport.IsInstalled(configuration,
                 job.Manifest.Processing.Tracker),
+            "nvidia-aigs" => true,
             _ => File.Exists(CustomShowProcessor.WorkerPath)
         };
         if (!installed)
@@ -1208,6 +1217,33 @@ internal static class CustomShowJobRunner
         CustomShowClip[] included = clips.Where(value => value.Included).ToArray();
         long total = included.Sum(value => Math.Max(1, value.EndMs - value.StartMs));
         bool cleanup = options.TemporalAlphaCleanup;
+        if (options.Algorithm == CustomClipMedia.NvidiaAigsMode)
+        {
+            CustomShowProcessResult? first = null;
+            long encoded = 0;
+            for (int index = 0; index < included.Length; index++)
+            {
+                CustomShowClip clip = included[index];
+                long before = encoded;
+                long duration = clip.EndMs - clip.StartMs;
+                CustomShowProcessResult result =
+                    await CustomShowProcessor.EncodeRgbOnlyAsync(configuration,
+                        job.SourcePath, Path.Combine(staging, "clips", clip.Id),
+                        clip.StartMs, clip.EndMs,
+                        new Progress<CustomShowProgress>(value => progress.Report(
+                            value with
+                            {
+                                Percent = CustomShowProcessingForm.AggregateClipPercent(
+                                    before, duration, total, value.Percent),
+                                Message = $"Clip {index + 1}/{included.Length}: {value.Message}"
+                            })), token);
+                SetMedia(clip, result, nvidia: true);
+                clip.Nvidia ??= new CustomNvidiaSettings();
+                encoded += duration;
+                first ??= result;
+            }
+            return first!;
+        }
         async Task CleanupAlpha(string output,
             IProgress<CustomShowProgress> cleanupProgress) =>
             await CustomShowProcessor.RunTemporalAlphaCleanupAsync(configuration,
@@ -1385,13 +1421,17 @@ internal static class CustomShowJobRunner
         }
     }
 
-    static void SetMedia(CustomShowClip clip, CustomShowProcessResult result)
+    static void SetMedia(CustomShowClip clip, CustomShowProcessResult result,
+        bool nvidia = false)
     {
         string relative = Path.Combine("clips", clip.Id);
         clip.Media = new()
         {
+            Mode = nvidia ? CustomClipMedia.NvidiaAigsMode :
+                CustomClipMedia.PairedAlphaMode,
             Foreground = Path.Combine(relative, "foreground.mp4").Replace('\\', '/'),
-            Alpha = Path.Combine(relative, "alpha.mkv").Replace('\\', '/'),
+            Alpha = nvidia ? null :
+                Path.Combine(relative, "alpha.mkv").Replace('\\', '/'),
             Width = result.Width, Height = result.Height,
             FrameRate = result.FrameRate, DurationMs = result.DurationMs
         };
@@ -1403,10 +1443,12 @@ internal static class CustomShowJobRunner
         long appendedOffset, int defaultAlphaThreshold)
     {
         if (job.Operation == CustomShowQueueOperation.Reprocess && previous != null &&
-            processedClips.Length < clips.Count(clip => clip.Included))
+            processedClips.Length < clips.Count(clip => clip.Included) &&
+            job.Manifest.Processing?.Algorithm != CustomClipMedia.NvidiaAigsMode)
             return Clone(previous);
         CustomShowProcessing value = Clone(job.Manifest.Processing!);
-        value.AutoAcceptedAlphaThreshold =
+        value.AutoAcceptedAlphaThreshold = value.Algorithm ==
+            CustomClipMedia.NvidiaAigsMode ? null :
             job.Manifest.Processing?.AutoAcceptedAlphaThreshold ??
                 defaultAlphaThreshold;
         value.ProcessedUtc = DateTime.UtcNow;
@@ -1575,9 +1617,23 @@ internal static class CustomShowJobRunner
             CustomShowQueueDocument document = new();
             CustomShowQueueJob pending = new()
             {
-                Message = "first", StartedUtc = DateTime.UtcNow,
+                Message = "Pending; RVM masks will be created when the job runs",
+                StartedUtc = DateTime.UtcNow,
                 CompletedUtc = DateTime.UtcNow
             };
+            pending.Manifest.Processing = new()
+            {
+                Algorithm = CustomClipMedia.NvidiaAigsMode,
+                ExecutionPolicy = "realtime-playback",
+                PrecisionPolicy = "sdk-managed"
+            };
+            pending.Clips = [new()
+            {
+                Nvidia = new CustomNvidiaSettings
+                {
+                    Mode = 3, Temporal = false, InferenceResolution = "1080p"
+                }
+            }];
             CustomShowQueueJob running = new()
             {
                 Status = CustomShowQueueStatus.Running, Percent = 67,
@@ -1612,6 +1668,12 @@ internal static class CustomShowJobRunner
             CustomShowQueueDocument loaded = storage.Load();
             if (loaded.Jobs.Count != 5 || loaded.Jobs[0].Id != pending.Id ||
                 loaded.Jobs[0].StartedUtc != null || loaded.Jobs[0].CompletedUtc != null ||
+                loaded.Jobs[0].Message !=
+                    "Pending; RGB clips will be encoded when the job runs" ||
+                loaded.Jobs[0].Manifest.Processing?.Algorithm != "nvidia-aigs" ||
+                loaded.Jobs[0].Clips.Single().Nvidia?.Mode != 3 ||
+                loaded.Jobs[0].Clips.Single().Nvidia?.Temporal != false ||
+                loaded.Jobs[0].Clips.Single().Nvidia?.InferenceResolution != "1080p" ||
                 loaded.Jobs[1].Status != CustomShowQueueStatus.Pending ||
                 loaded.Jobs[1].Percent != 0 || Directory.Exists(storage.Work(running.Id)) ||
                 loaded.Jobs[3].ReadyToPublish ||

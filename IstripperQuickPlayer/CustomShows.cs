@@ -25,6 +25,7 @@ internal sealed class CustomShowConfiguration
     public string PythonExecutable { get; set; } = FindPythonExecutable();
     public string Sam2MattingPythonExecutable { get; set; } =
         FindSam2MattingPythonExecutable();
+    public string NvidiaVfxSdkRoot { get; set; } = "";
     public int SmallPlayerVolume { get; set; } = 100;
     public int LargePlayerVolume { get; set; } = 100;
     public int DefaultAlphaThreshold { get; set; } =
@@ -138,7 +139,7 @@ internal sealed class CustomShowConfiguration
             if (configuration.LastProcessingAlgorithm is not
                 ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" or
                  "matanyone2" or "vitmatte-s" or "vitmatte-b" or
-                 "sam2matting"))
+                 "sam2matting" or "nvidia-aigs"))
                 configuration.LastProcessingAlgorithm = "quality";
             if (!Sam2MattingSupport.Trackers.Contains(
                     configuration.LastSam2MattingTracker))
@@ -503,7 +504,22 @@ internal sealed class CustomShowClip
     public long? SourceStartMs { get; set; }
     public long? SourceEndMs { get; set; }
     public CustomClipMedia? Media { get; set; }
+    public CustomNvidiaSettings? Nvidia { get; set; }
     public CustomVirtualGreenScreen? VirtualGreenScreen { get; set; }
+}
+
+internal sealed class CustomNvidiaSettings
+{
+    public int Mode { get; set; }
+    public bool Temporal { get; set; } = true;
+    public string InferenceResolution { get; set; } = "720p";
+
+    internal CustomNvidiaSettings Clone() => new()
+    {
+        Mode = Mode,
+        Temporal = Temporal,
+        InferenceResolution = InferenceResolution
+    };
 }
 
 internal sealed class CustomVirtualGreenScreen
@@ -855,8 +871,12 @@ internal static class VirtualGreenScreenMath
 
 internal sealed class CustomClipMedia
 {
+    public const string PairedAlphaMode = "paired-alpha";
+    public const string NvidiaAigsMode = "nvidia-aigs";
+    public string Mode { get; set; } = PairedAlphaMode;
     public string Foreground { get; set; } = "";
-    public string Alpha { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Alpha { get; set; }
     public int Width { get; set; }
     public int Height { get; set; }
     public string FrameRate { get; set; } = "";
@@ -915,6 +935,7 @@ internal sealed class CustomShowStore
     static readonly HashSet<string> ProcessingAlgorithms =
         ["quality", "fast", "matanyone2", "rvm-matanyone2",
          "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "rvm-vitmatte-b", "sam2matting",
+         "nvidia-aigs",
          // Retained only so already-published shows remain playable.
          "videomama"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
@@ -1247,7 +1268,8 @@ internal sealed class CustomShowStore
 
         string showFolder = Path.Combine(ShowsFolder, show.Id);
         string foreground = ResolveRelative(showFolder, clip.Media.Foreground);
-        string alpha = ResolveRelative(showFolder, clip.Media.Alpha);
+        string? alpha = clip.Media.Mode == CustomClipMedia.NvidiaAigsMode
+            ? null : ResolveRelative(showFolder, clip.Media.Alpha!);
         clip.Included = false;
         clip.Media = null;
         if (show.Processing != null)
@@ -1269,10 +1291,11 @@ internal sealed class CustomShowStore
     }
 
     static void DeleteClipMedia(string showFolder, string clipId,
-        string foreground, string alpha, bool recycle)
+        string foreground, string? alpha, bool recycle)
     {
         string? foregroundFolder = Path.GetDirectoryName(foreground);
-        string? alphaFolder = Path.GetDirectoryName(alpha);
+        string? alphaFolder = alpha == null ? foregroundFolder :
+            Path.GetDirectoryName(alpha);
         string clipsFolder = Path.GetFullPath(Path.Combine(showFolder, "clips"))
             .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (foregroundFolder != null && string.Equals(foregroundFolder,
@@ -1291,7 +1314,9 @@ internal sealed class CustomShowStore
             return;
         }
 
-        foreach (string path in new[] { foreground, alpha, CleanedAlphaPath(alpha) }
+        IEnumerable<string> paths = alpha == null ? [foreground] :
+            [foreground, alpha, CleanedAlphaPath(alpha)];
+        foreach (string path in paths
                      .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (!File.Exists(path)) continue;
@@ -1382,6 +1407,23 @@ internal sealed class CustomShowStore
                 throw new InvalidDataException("Every included clip needs processed media.");
             ValidateClipSource(clip, folder);
             if (clip.Media is not CustomClipMedia media) continue;
+            if (media.Mode is not (CustomClipMedia.PairedAlphaMode or
+                    CustomClipMedia.NvidiaAigsMode))
+                throw new InvalidDataException("Unknown custom clip media mode.");
+            bool nvidia = media.Mode == CustomClipMedia.NvidiaAigsMode;
+            if (nvidia != (clip.Nvidia != null))
+                throw new InvalidDataException(
+                    "NVIDIA settings are required only for NVIDIA AI Green Screen clips.");
+            if (nvidia)
+            {
+                if (!string.IsNullOrWhiteSpace(media.Alpha))
+                    throw new InvalidDataException(
+                        "NVIDIA AI Green Screen clip media must not contain an alpha file.");
+                ValidateNvidiaSettings(clip.Nvidia!);
+            }
+            else if (string.IsNullOrWhiteSpace(media.Alpha))
+                throw new InvalidDataException(
+                    "Paired-alpha clip media requires an alpha file.");
             ValidateMediaFields(media.Width, media.Height, media.FrameRate,
                 media.DurationMs, "Clip media");
             long playbackEnd = PlaybackEnd(media);
@@ -1391,7 +1433,7 @@ internal sealed class CustomShowStore
                     "Clip playback trim must be inside the processed media duration.");
         }
         IEnumerable<string> paths = show.Clips.Where(clip => clip.Included)
-            .SelectMany(clip => new[] { clip.Media!.Foreground, clip.Media.Alpha })
+            .SelectMany(clip => RequiredMediaPaths(clip.Media!))
             .Append(show.Media.Cover)
             .Concat(string.IsNullOrWhiteSpace(show.Media.CoverSource)
                 ? [] : [show.Media.CoverSource]);
@@ -1406,6 +1448,24 @@ internal sealed class CustomShowStore
             throw new FileNotFoundException("The copied source video is missing.");
         if (show.Source.Mode == "reference" && string.IsNullOrWhiteSpace(show.Source.Path))
             throw new InvalidDataException("The referenced source path is required.");
+    }
+
+    static IEnumerable<string> RequiredMediaPaths(CustomClipMedia media)
+    {
+        yield return media.Foreground;
+        if (media.Mode != CustomClipMedia.NvidiaAigsMode)
+            yield return media.Alpha!;
+    }
+
+    internal static void ValidateNvidiaSettings(CustomNvidiaSettings settings)
+    {
+        if (settings.Mode is < 0 or > 3)
+            throw new InvalidDataException(
+                "NVIDIA AI Green Screen mode must be 0–3.");
+        if (settings.InferenceResolution is not
+            ("540p" or "720p" or "1080p" or "source"))
+            throw new InvalidDataException(
+                "NVIDIA inference resolution must be 540p, 720p, 1080p, or source.");
     }
 
     static void ValidateClipDetection(CustomShowClipDetection? detection)
@@ -1437,6 +1497,7 @@ internal sealed class CustomShowStore
         if (!ProcessingAlgorithms.Contains(processing.Algorithm))
             throw new InvalidDataException("Unknown custom-show processing algorithm.");
         bool sam2Matting = processing.Algorithm == Sam2MattingSupport.Algorithm;
+        bool nvidiaAigs = processing.Algorithm == CustomClipMedia.NvidiaAigsMode;
         if (sam2Matting)
         {
             if (processing.Tracker == null ||
@@ -1589,8 +1650,11 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("A valid SAM2 model is required for this algorithm.");
         if (!needsSam2 && processing.Sam2Model != null)
             throw new InvalidDataException("SAM2 model metadata is not valid for this algorithm.");
-        if (processing.ExecutionPolicy != (sam2Matting ? "eager" : "auto") ||
-            string.IsNullOrWhiteSpace(processing.PrecisionPolicy))
+        string expectedExecutionPolicy = sam2Matting ? "eager" :
+            nvidiaAigs ? "realtime-playback" : "auto";
+        if (processing.ExecutionPolicy != expectedExecutionPolicy ||
+            string.IsNullOrWhiteSpace(processing.PrecisionPolicy) ||
+            nvidiaAigs && processing.PrecisionPolicy != "sdk-managed")
             throw new InvalidDataException("Invalid processing execution policy.");
         if (processing.EffectiveBatchSize is < 1 or > 24)
             throw new InvalidDataException("Invalid effective processing batch size.");
@@ -1599,7 +1663,7 @@ internal sealed class CustomShowStore
         if (processing.ResolvedExecutionMode is string mode &&
             mode is not ("eager" or "compiled" or "eager-fallback" or
                 "eager-oom-fallback" or "eager-bf16-sdpa" or
-                "eager-bf16-sdpa-bounded"))
+                "eager-bf16-sdpa-bounded" or "realtime-playback"))
             throw new InvalidDataException("Invalid resolved processing execution mode.");
         if (processing.Encoder is string encoder &&
             encoder is not ("h264_nvenc" or "libx264"))
@@ -1795,27 +1859,32 @@ internal sealed class CustomShowStore
     {
         foreach (CustomClipMedia media in show.Clips.Where(clip => clip.Included)
                      .Select(clip => clip.Media!))
-            ValidateMediaCompatibility(folder, media.Foreground, media.Alpha,
+            ValidateMediaCompatibility(folder, media,
                 media.Width, media.Height, media.FrameRate, media.DurationMs);
     }
 
-    static void ValidateMediaCompatibility(string folder, string foreground,
-        string alphaPath, int width, int height, string frameRate, long durationMs)
+    static void ValidateMediaCompatibility(string folder, CustomClipMedia media,
+        int width, int height, string frameRate, long durationMs)
     {
-        using FfmpegCpuDecoder rgb = new(ResolveRelative(folder, foreground));
-        using FfmpegCpuDecoder alpha = new(ResolveRelative(folder, alphaPath));
+        using FfmpegCpuDecoder rgb = new(ResolveRelative(folder, media.Foreground));
         TryFrameRate(frameRate, out double declaredRate);
-        if (rgb.Width != alpha.Width || rgb.Height != alpha.Height ||
-            rgb.Width != width || rgb.Height != height ||
-            Math.Abs(rgb.FrameDuration - alpha.FrameDuration) > .0005 ||
+        if (rgb.Width != width || rgb.Height != height ||
             Math.Abs(1 / rgb.FrameDuration - declaredRate) > .02 ||
-            Math.Abs(rgb.Duration - alpha.Duration) > Math.Max(.05, rgb.FrameDuration * 2) ||
             Math.Abs(rgb.Duration * 1000 - durationMs) > Math.Max(100, rgb.FrameDuration * 2000))
             throw new InvalidDataException(
-                "Foreground, alpha, and manifest media properties do not match.");
-        if (!rgb.DecodeNext(out long rgbTime) || !alpha.DecodeNext(out long alphaTime))
-            throw new InvalidDataException("Foreground or alpha contains no frames.");
+                "Foreground and manifest media properties do not match.");
+        if (!rgb.DecodeNext(out long rgbTime))
+            throw new InvalidDataException("Foreground contains no frames.");
         rgb.ValidateGpuFrame();
+        if (media.Mode == CustomClipMedia.NvidiaAigsMode)
+            return;
+        using FfmpegCpuDecoder alpha = new(ResolveRelative(folder, media.Alpha!));
+        if (rgb.Width != alpha.Width || rgb.Height != alpha.Height ||
+            Math.Abs(rgb.FrameDuration - alpha.FrameDuration) > .0005 ||
+            Math.Abs(rgb.Duration - alpha.Duration) > Math.Max(.05, rgb.FrameDuration * 2) ||
+            !alpha.DecodeNext(out long alphaTime))
+            throw new InvalidDataException(
+                "Foreground and alpha media properties do not match.");
         alpha.GrayPlane();
         if (Math.Abs(rgbTime - alphaTime) >
             Math.Max(10_000, (long)Math.Round(rgb.FrameDuration * 5_000_000)))
@@ -1837,7 +1906,8 @@ internal sealed class CustomShowStore
             : show.AgeAtReleaseOverride ?? 0;
         long mediaSize = playableMedia.Sum(media =>
             new FileInfo(ResolveRelative(folder, media.Foreground)).Length +
-            new FileInfo(ResolveRelative(folder, media.Alpha)).Length);
+            (media.Mode == CustomClipMedia.NvidiaAigsMode ? 0 :
+                new FileInfo(ResolveRelative(folder, media.Alpha!)).Length));
         long playableDuration = playableMedia.Sum(PlaybackDuration);
         ModelCard card = new()
         {
@@ -1890,9 +1960,10 @@ internal sealed class CustomShowStore
             {
                 CustomClipMedia media = clip.Media!;
                 string clipForeground = ResolveRelative(folder, media.Foreground);
-                string clipAlpha = ResolvePlaybackAlpha(folder, media.Alpha);
+                string? clipAlpha = media.Mode == CustomClipMedia.NvidiaAigsMode
+                    ? null : ResolvePlaybackAlpha(folder, media.Alpha!);
                 long size = checked(new FileInfo(clipForeground).Length +
-                    new FileInfo(clipAlpha).Length);
+                    (clipAlpha == null ? 0 : new FileInfo(clipAlpha).Length));
                 string clipName = playableMedia.Length == 1
                     ? card.name : $"{card.name}:{clip.Id}";
                 return CreateClip(clipName, clipForeground, clipAlpha,
@@ -1900,7 +1971,8 @@ internal sealed class CustomShowStore
                     clip.AlphaThreshold, clip.EdgeChokePixels,
                     media.PlaybackStartMs,
                     PlaybackEnd(media), VirtualGreenScreenMath.Resolve(
-                        show.VirtualGreenScreen, clip.VirtualGreenScreen));
+                        show.VirtualGreenScreen, clip.VirtualGreenScreen),
+                    media.Mode, clip.Nvidia);
             }).ToList();
         return card;
     }
@@ -1938,14 +2010,17 @@ internal sealed class CustomShowStore
                 StringComparison.OrdinalIgnoreCase));
     }
 
-    static ModelClip CreateClip(string name, string foreground, string alpha,
+    static ModelClip CreateClip(string name, string foreground, string? alpha,
         long size, int number, string hotness, string[] types,
         int alphaThreshold, float edgeChokePixels, long startMs,
-        long endMs, CustomVirtualGreenScreen virtualGreenScreen) => new()
+        long endMs, CustomVirtualGreenScreen virtualGreenScreen,
+        string mediaMode, CustomNvidiaSettings? nvidia) => new()
     {
         clipName = name,
         customForegroundPath = foreground,
         customAlphaPath = alpha,
+        customMediaMode = mediaMode,
+        customNvidiaSettings = nvidia?.Clone(),
         customAlphaThreshold = alphaThreshold,
         customEdgeChokePixels = edgeChokePixels,
         customVirtualGreenScreen = virtualGreenScreen,
@@ -2014,7 +2089,103 @@ internal sealed class CustomShowStore
             PropSegmenterCompatible("matanyone2", false, null) &&
             !PropSegmenterCompatible("quality", false, null) &&
             VerifyVirtualGreenScreen() &&
+            VerifyNvidiaManifestContracts() &&
             RejectsTraversal();
+    }
+
+    static bool VerifyNvidiaManifestContracts()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "iqp-nvidia-contract-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            using (Bitmap cover = new(8, 8)) cover.Save(Path.Combine(root,
+                "cover.jpg"), System.Drawing.Imaging.ImageFormat.Jpeg);
+            CustomClipMedia? legacy = JsonSerializer.Deserialize<CustomClipMedia>(
+                "{\"foreground\":\"foreground.mp4\",\"alpha\":\"alpha.mkv\"," +
+                "\"width\":64,\"height\":64,\"frameRate\":\"10/1\"," +
+                "\"durationMs\":500}", JsonOptions);
+            if (legacy?.Mode != CustomClipMedia.PairedAlphaMode)
+                return false;
+            CustomShowClip paired = new()
+            {
+                StartMs = 0, EndMs = 500,
+                Media = legacy
+            };
+            CustomShowClip nvidia = new()
+            {
+                StartMs = 500, EndMs = 1000,
+                Nvidia = new(),
+                Media = new()
+                {
+                    Mode = CustomClipMedia.NvidiaAigsMode,
+                    Foreground = "nvidia/foreground.mp4",
+                    Width = 64, Height = 64, FrameRate = "10/1",
+                    DurationMs = 500
+                }
+            };
+            Directory.CreateDirectory(Path.Combine(root, "nvidia"));
+            File.WriteAllBytes(Path.Combine(root, "foreground.mp4"), [1]);
+            File.WriteAllBytes(Path.Combine(root, "alpha.mkv"), [1]);
+            File.WriteAllBytes(Path.Combine(root, "nvidia", "foreground.mp4"),
+                [1, 2]);
+            CustomShowManifest show = new()
+            {
+                Title = "Mixed", PerformerId = Guid.NewGuid().ToString("N"),
+                Source = new() { Mode = "reference", Path = "source.mp4" },
+                Media = new() { Width = 64, Height = 64, FrameRate = "10/1",
+                    DurationMs = 1000 },
+                Clips = [paired, nvidia],
+                Processing = new()
+                {
+                    Algorithm = CustomClipMedia.NvidiaAigsMode,
+                    ExecutionPolicy = "realtime-playback",
+                    PrecisionPolicy = "sdk-managed",
+                    Clips = [new() { ClipId = paired.Id },
+                        new() { ClipId = nvidia.Id }]
+                }
+            };
+            ValidateManifest(show, root);
+            bool invalidModeRejected = Reject(() =>
+            {
+                nvidia.Nvidia!.Mode = 4;
+                ValidateManifest(show, root);
+            });
+            nvidia.Nvidia!.Mode = 0;
+            bool invalidResolutionRejected = Reject(() =>
+            {
+                nvidia.Nvidia!.InferenceResolution = "4k";
+                ValidateManifest(show, root);
+            });
+            nvidia.Nvidia!.InferenceResolution = "720p";
+            bool traversalRejected = Reject(() =>
+            {
+                string original = nvidia.Media!.Foreground;
+                nvidia.Media.Foreground = "../escape.mp4";
+                try { ValidateManifest(show, root); }
+                finally { nvidia.Media.Foreground = original; }
+            });
+            bool pairedWithoutAlphaRejected = Reject(() =>
+            {
+                string? original = paired.Media!.Alpha;
+                paired.Media.Alpha = null;
+                try { ValidateManifest(show, root); }
+                finally { paired.Media.Alpha = original; }
+            });
+            return invalidModeRejected && invalidResolutionRejected &&
+                traversalRejected && pairedWithoutAlphaRejected;
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        static bool Reject(Action action)
+        {
+            try { action(); return false; }
+            catch (InvalidDataException) { return true; }
+        }
     }
 
     static bool VerifyVirtualGreenScreen()
@@ -2348,7 +2519,11 @@ internal sealed class CustomShowStore
             }
             bool greenPreviewReady = false;
             using (VirtualGreenScreenEditorForm greenEditor = new(
-                new CustomShowConfiguration { LibraryRoot = root }, show.Id))
+                new CustomShowConfiguration { LibraryRoot = root }, show.Id)
+            {
+                Opacity = 0,
+                ShowInTaskbar = false
+            })
             using (System.Windows.Forms.Timer previewCheck = new()
                 { Interval = 100 })
             {

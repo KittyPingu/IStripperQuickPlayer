@@ -112,6 +112,7 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     string frameRate = "25/1";
     CustomShowClip currentClip;
     string foreground = "", alpha = "";
+    bool nvidiaOpaquePreview;
     long rangeStartMs, rangeEndMs;
 
     internal bool Saved { get; private set; }
@@ -386,7 +387,9 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         CustomClipMedia media = currentClip.Media!;
         string folder = Path.Combine(store.ShowsFolder, show.Id);
         foreground = CustomShowStore.ResolveRelative(folder, media.Foreground);
-        alpha = CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha);
+        nvidiaOpaquePreview = media.Mode == CustomClipMedia.NvidiaAigsMode;
+        alpha = nvidiaOpaquePreview ? "" :
+            CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha!);
         rangeStartMs = media.PlaybackStartMs;
         rangeEndMs = CustomShowStore.PlaybackEnd(media);
         fps = CustomShowStore.TryFrameRate(media.FrameRate, out double value)
@@ -955,7 +958,14 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         };
         start.ArgumentList.Add("-v"); start.ArgumentList.Add("error");
         start.ArgumentList.Add("-nostdin");
-        AddInput(start, atMs, foreground); AddInput(start, atMs, alpha);
+        AddInput(start, atMs, foreground);
+        if (nvidiaOpaquePreview)
+        {
+            start.ArgumentList.Add("-f"); start.ArgumentList.Add("lavfi");
+            start.ArgumentList.Add("-i"); start.ArgumentList.Add(
+                $"color=white:size={frameWidth}x{frameHeight}:rate={frameRate}");
+        }
+        else AddInput(start, atMs, alpha);
         start.ArgumentList.Add("-filter_complex");
         start.ArgumentList.Add(
             $"[0:v]fps={frameRate},scale={frameWidth}:{frameHeight}:" +

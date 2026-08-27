@@ -1,5 +1,53 @@
 # Creating Custom Shows
 
+## NVIDIA AI Green Screen
+
+`NVIDIA AI Green Screen (real-time playback)` creates RGB-only clips. It trims
+and encodes every included range to `foreground.mp4` using NVENC with a
+libx264 fallback; no alpha video is created. The NVIDIA mode, temporal
+filtering, and 540p/720p/1080p/source inference setting are saved per clip and
+can be changed from **NVIDIA Foreground Settings...**.
+
+QuickPlayer generates alpha with NVIDIA Video Effects SDK during playback and
+then applies its normal alpha thresholds, edge cleanup, hit testing,
+click-through, and virtual green-screen processing. Missing or failed SDK
+processing plays as opaque RGB and produces one setup warning per session.
+
+Install the optional SDK from **Custom Shows > Settings > Maintenance > Install
+/ Update Processing Tools**. NVIDIA-only setup does not require Python/RVM. It
+requires an NGC personal API key, NVIDIA terms acknowledgement, 64-bit Windows,
+a Turing-or-newer Tensor Core GPU, and driver 570.65+. QuickPlayer never saves
+or logs the key.
+
+### Get an NVIDIA NGC personal API key
+
+1. [Sign in to NVIDIA NGC](https://ngc.nvidia.com/signin), or create a free NGC
+   account if you do not already have one.
+2. While signed in, open the
+   [NVIDIA Video Effects SDK Core page](https://catalog.ngc.nvidia.com/orgs/nvidia/maxine/resources/vfx_sdk_core/-).
+   Choose **Get Access** and complete the NVIDIA Developer Program access or
+   subscription steps shown by NGC. Being able to view the catalogue page is not
+   sufficient; the account must have permission to download this protected SDK.
+3. Open [NGC Personal Keys](https://org.ngc.nvidia.com/setup/personal-keys) and
+   choose **Generate Personal Key**.
+4. Enter a recognisable key name and suitable expiration date. Under **Services
+   Included**, enable **NGC Catalog**. QuickPlayer does not need unrelated NGC
+   services.
+5. Generate the key and copy it immediately. NGC does not display the complete
+   key again after this screen. Do not put it in a command line, text file, show
+   manifest, or support log.
+6. In QuickPlayer, open **File > Custom Shows > Install / Update Processing
+   Tools...**, select **NVIDIA AI Green Screen**, open its setup, acknowledge the
+   linked NVIDIA SDK/model terms, paste the key into the password field, and
+   choose **Install**.
+
+QuickPlayer passes the key only in authenticated request headers and in the
+feature installer's temporary `NGC_CLI_API_KEY` environment variable. It clears
+the field and environment value after setup and does not save the key. If NGC
+rejects the key, confirm that it is active and includes **NGC Catalog**. A 403 or
+404 while downloading the protected SDK usually means the signed-in account has
+not completed **Get Access**; complete access first, then generate a new key.
+
 QuickPlayer can turn an ordinary video containing one or more people into a
 transparent show. Custom cards appear beside official iStripper cards and use
 the same search, filters, favourites, ratings, queues, history, hotkeys, and

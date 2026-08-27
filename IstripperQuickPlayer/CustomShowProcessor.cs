@@ -102,6 +102,154 @@ internal static class CustomShowProcessor
         catch { return null; }
     }
 
+    internal static async Task<CustomShowProcessResult> EncodeRgbOnlyAsync(
+        CustomShowConfiguration configuration, string source, string outputFolder,
+        long startMs, long endMs, IProgress<CustomShowProgress>? progress,
+        CancellationToken token)
+    {
+        if (endMs <= startMs)
+            throw new ArgumentOutOfRangeException(nameof(endMs));
+        Directory.CreateDirectory(outputFolder);
+        string destination = Path.Combine(outputFolder, "foreground.mp4");
+        long durationMs = endMs - startMs;
+        string preset = ValidNvencPreset(configuration.RvmNvencPreset);
+        string encoder = "h264_nvenc";
+        try
+        {
+            await EncodeRgbOnlyAttempt(source, destination, startMs, durationMs,
+                encoder, preset, progress, token);
+        }
+        catch (Exception) when (!token.IsCancellationRequested)
+        {
+            try { File.Delete(destination); } catch { }
+            encoder = "libx264";
+            preset = "medium";
+            progress?.Report(new CustomShowProgress("encoding", 0,
+                "NVENC unavailable; retrying with the CPU H.264 encoder"));
+            await EncodeRgbOnlyAttempt(source, destination, startMs, durationMs,
+                encoder, preset, progress, token);
+        }
+        using FfmpegCpuDecoder decoder = new(destination, fastDecode: false);
+        if (!decoder.DecodeNext(out _))
+            throw new InvalidDataException("The encoded NVIDIA clip has no video frames.");
+        decoder.ValidateGpuFrame();
+        return new CustomShowProcessResult
+        {
+            Width = decoder.Width,
+            Height = decoder.Height,
+            FrameRate = decoder.FrameRate,
+            DurationMs = Math.Max(1, (long)Math.Round(decoder.Duration * 1000)),
+            ForegroundCodec = "h264",
+            ForegroundMode = "source",
+            Encoder = encoder,
+            EncoderPreset = preset,
+            ExecutionMode = "realtime-playback"
+        };
+    }
+
+    internal static bool VerifyRgbOnlyEncoding()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "iqp-rgb-only-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            string source = Path.Combine(root, "source.mp4");
+            ProcessStartInfo create = new(Path.Combine(AppContext.BaseDirectory,
+                "ffmpeg.exe"))
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardError = true
+            };
+            foreach (string argument in new[] { "-y", "-v", "error", "-f",
+                "lavfi", "-i", "testsrc2=size=66x64:rate=10:duration=1.2",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+                "-map", "0:v", "-map", "1:a", "-c:v", "libx264",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", source })
+                create.ArgumentList.Add(argument);
+            using (Process process = Process.Start(create)!)
+            {
+                string error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                {
+                    Console.Error.WriteLine(error);
+                    return false;
+                }
+            }
+            string output = Path.Combine(root, "clip");
+            CustomShowProcessResult result = Task.Run(() =>
+                EncodeRgbOnlyAsync(new(), source, output, 200, 800, null,
+                    CancellationToken.None)).GetAwaiter().GetResult();
+            return result.Width == 66 && result.Height == 64 &&
+                result.DurationMs is >= 500 and <= 750 &&
+                File.Exists(Path.Combine(output, "foreground.mp4")) &&
+                !File.Exists(Path.Combine(output, "alpha.mkv")) &&
+                result.Encoder is "h264_nvenc" or "libx264";
+        }
+        catch (Exception error)
+        {
+            Console.Error.WriteLine("RGB-only encoding check failed: " + error);
+            return false;
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    static async Task EncodeRgbOnlyAttempt(string source, string destination,
+        long startMs, long durationMs, string encoder, string preset,
+        IProgress<CustomShowProgress>? progress, CancellationToken token)
+    {
+        ProcessStartInfo start = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"))
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        string Seconds(long value) => (value / 1000d).ToString("0.###",
+            CultureInfo.InvariantCulture);
+        foreach (string argument in new[]
+        {
+            "-y", "-v", "warning", "-ss", Seconds(startMs), "-accurate_seek",
+            "-i", source,
+            "-t", Seconds(durationMs), "-map", "0:v:0", "-map", "0:a?",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-c:v", encoder, "-preset", preset, "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-movflags", "+faststart", "-progress", "pipe:1",
+            "-nostats", destination
+        }) start.ArgumentList.Add(argument);
+        using Process process = Process.Start(start) ??
+            throw new InvalidOperationException("FFmpeg could not be started.");
+        await using ProcessCancellationScope cancellation = new(process, token);
+        StringBuilder errors = new();
+        Task stderr = Task.Run(async () =>
+        {
+            while (await process.StandardError.ReadLineAsync() is string line)
+                errors.AppendLine(line);
+        });
+        while (await process.StandardOutput.ReadLineAsync() is string line)
+        {
+            if (!line.StartsWith("out_time_ms=", StringComparison.Ordinal) ||
+                !long.TryParse(line.AsSpan("out_time_ms=".Length), out long microseconds))
+                continue;
+            double percent = Math.Clamp(microseconds / 1000d /
+                Math.Max(1, durationMs) * 100, 0, 100);
+            progress?.Report(new CustomShowProgress("encoding", percent,
+                $"Encoding RGB clip ({percent:0}%)"));
+        }
+        await process.WaitForExitAsync(CancellationToken.None);
+        await stderr;
+        token.ThrowIfCancellationRequested();
+        if (process.ExitCode != 0 || !File.Exists(destination))
+            throw new InvalidOperationException(
+                $"FFmpeg RGB encoding failed with {encoder}: {errors.ToString().Trim()}");
+        progress?.Report(new CustomShowProgress("encoding", 100,
+            "RGB clip encoded"));
+    }
+
     internal static int ViTMatteSafeBatch(NvidiaMemory memory, bool baseModel,
         int width, int height)
     {
