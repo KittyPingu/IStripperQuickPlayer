@@ -387,7 +387,7 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         CustomClipMedia media = currentClip.Media!;
         string folder = Path.Combine(store.ShowsFolder, show.Id);
         foreground = CustomShowStore.ResolveRelative(folder, media.Foreground);
-        nvidiaOpaquePreview = media.Mode == CustomClipMedia.NvidiaAigsMode;
+        nvidiaOpaquePreview = CustomClipMedia.IsRealtimeMode(media.Mode);
         alpha = nvidiaOpaquePreview ? "" :
             CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha!);
         rangeStartMs = media.PlaybackStartMs;

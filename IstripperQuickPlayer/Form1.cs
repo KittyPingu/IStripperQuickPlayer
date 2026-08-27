@@ -2468,7 +2468,15 @@ namespace IStripperQuickPlayer
         {
             if (selectingClipForContextMenu) return;
             if (listClips.SelectedItems.Count == 0) return;
-            if (lastchosen == listClips.SelectedItems[0].SubItems[1].Text || clickingNowPlaying)
+            string selectedName = listClips.SelectedItems[0].SubItems[1].Text;
+            ModelCard? selectedCard = Datastore.findCardByTag(clipListTag);
+            ModelClip? selectedClip = selectedCard?.clips?.FirstOrDefault(item =>
+                string.Equals(item.clipName, selectedName,
+                    StringComparison.OrdinalIgnoreCase));
+            string selectedPath = selectedClip == null ? "" :
+                GetAnimationPath(selectedClip);
+            if (SuppressRepeatedClipSelection(lastchosen, selectedName,
+                    selectedPath, GetCurrentAnimationPath(), clickingNowPlaying))
             {
                 clickingNowPlaying = false;
                 return;
@@ -2477,6 +2485,15 @@ namespace IStripperQuickPlayer
                 return;
             PlaySelectedClip();
         }
+
+        internal static bool SuppressRepeatedClipSelection(string lastChosen,
+            string selectedName, string selectedPath, string currentPath,
+            bool clickingNowPlaying) => clickingNowPlaying ||
+            string.Equals(lastChosen, selectedName,
+                StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrEmpty(selectedPath) &&
+            string.Equals(selectedPath, currentPath,
+                StringComparison.OrdinalIgnoreCase);
 
         private void PlaySelectedClip()
         {

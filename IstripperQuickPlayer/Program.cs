@@ -54,6 +54,50 @@ namespace IStripperQuickPlayer
                 return;
             }
 
+            if (args.Length == 1 && args[0] == "--verify-rvm-onnx")
+            {
+                try
+                {
+                    const int width = 1280;
+                    const int height = 720;
+                    foreach (string model in new[] { RvmOnnxSupport.MobileNetV3,
+                        RvmOnnxSupport.ResNet50 })
+                    foreach (string quality in new[] { "fast", "balanced",
+                        "quality", RvmOnnxSupport.FullResolution })
+                    {
+                        (int inferenceWidth, int inferenceHeight) =
+                            RvmOnnxSupport.InferenceSize(width, height, quality);
+                        using RvmOnnxSession session = new(
+                            RvmOnnxSupport.ModelPathFor(model),
+                            inferenceWidth, inferenceHeight, new CustomRvmOnnxSettings
+                            { Model = model, Quality = quality, Temporal = true });
+                        byte[] input = new byte[inferenceWidth * inferenceHeight * 3];
+                        byte[] alpha = new byte[inferenceWidth * inferenceHeight];
+                        session.Run(input, alpha);
+                        System.Diagnostics.Stopwatch timer =
+                            System.Diagnostics.Stopwatch.StartNew();
+                        const int frames = 6;
+                        for (int frame = 0; frame < frames; frame++)
+                            session.Run(input, alpha);
+                        timer.Stop();
+                        session.Reset();
+                        Console.WriteLine($"RVM ONNX DirectML {model} {quality}: " +
+                            $"{frames / timer.Elapsed.TotalSeconds:F1} fps at " +
+                            $"{width}x{height} ({inferenceWidth}x{inferenceHeight} " +
+                            "inference).");
+                    }
+                    Console.WriteLine("RVM ONNX DirectML load/run succeeded.");
+                    Environment.ExitCode = 0;
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine("RVM ONNX diagnostic failed: " +
+                        error.Message);
+                    Environment.ExitCode = 1;
+                }
+                return;
+            }
+
             if (args.Length == 1 && args[0] == "--verify-custom-shows")
             {
                 (string Name, bool Passed)[] checks =
@@ -84,8 +128,11 @@ namespace IStripperQuickPlayer
                         TemporalAlphaComparisonForm.VerifyThresholdPreview()),
                     ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),
                     ("NVIDIA inference and fallback", NvidiaAiGreenScreen.VerifyContracts()),
+                    ("RVM ONNX contracts", RvmOnnxSupport.VerifyContracts()),
+                    ("real-time RGB reprocess reuse",
+                        CustomShowJobRunner.VerifyRealtimeMediaReuse()),
                     ("NVIDIA RGB-only encoding", CustomShowProcessor.VerifyRgbOnlyEncoding()),
-                    ("NVIDIA folder import", NvidiaFolderImporter.VerifyContracts()),
+                    ("Real-time folder import", NvidiaFolderImporter.VerifyContracts()),
                     ("NVIDIA setup contracts", NvidiaVfxSetup.VerifyContracts()),
                     ("NVIDIA card filtering", Form1.VerifyNvidiaCardFiltering()),
                     ("card index refresh", Datastore.VerifyTagIndexReplacement()),
@@ -677,6 +724,7 @@ namespace IStripperQuickPlayer
             CustomShowEditorForm.QueueAction("matanyone2", true) == "Mask and Queue" &&
             CustomShowEditorForm.QueueAction("sam2matting", false) == "Queue" &&
             CustomShowEditorForm.QueueAction("nvidia-aigs", false) == "Queue" &&
+            CustomShowEditorForm.QueueAction("rvm-onnx", false) == "Queue" &&
             CustomShowEditorForm.QueueAction("quality", false) == null &&
             CustomShowEditorForm.QueueAction("vitmatte-s", true) == null &&
             CustomShowEditorForm.QueueAction("vitmatte-b", true) == null;

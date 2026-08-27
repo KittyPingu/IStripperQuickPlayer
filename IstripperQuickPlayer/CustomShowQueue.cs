@@ -107,7 +107,8 @@ internal sealed class CustomShowQueueStore
                 changed = true;
             }
             if (job.Status == CustomShowQueueStatus.Pending &&
-                job.Manifest.Processing?.Algorithm == CustomClipMedia.NvidiaAigsMode &&
+                CustomClipMedia.IsRealtimeMode(
+                    job.Manifest.Processing?.Algorithm) &&
                 job.Message.Contains("RVM masks", StringComparison.OrdinalIgnoreCase))
             {
                 job.Message = "Pending; RGB clips will be encoded when the job runs";
@@ -954,7 +955,8 @@ internal static class CustomShowJobRunner
         Dictionary<string, string> retainedMasks = [];
         if (job.Operation == CustomShowQueueOperation.Reprocess && job.KeepExistingMasks)
             LoadRetainedMasks(staging, clipsToProcess, initialMasks, retainedMasks);
-        CustomShowProcessResult result = await ProcessClips(job, clipsToProcess, staging,
+        CustomShowProcessResult result = await ProcessClips(job, clipsToProcess,
+            existing, staging,
             configuration, queue, log, initialMasks, retainedMasks,
             generatedMasks, progress, token, generatePreviews);
         if (generatedMasks.Count > 0 && job.Operation != CustomShowQueueOperation.Append)
@@ -1088,7 +1090,7 @@ internal static class CustomShowJobRunner
         if (job.Manifest.Processing?.Algorithm is not
             ("quality" or "fast" or "rvm-matanyone2" or
              "rvm-vitmatte-s" or "rvm-vitmatte-b" or "matanyone2" or
-             "sam2matting" or "nvidia-aigs"))
+             "sam2matting" or "nvidia-aigs" or "rvm-onnx"))
             throw new CustomShowQueueAttentionException(
                 "This processing algorithm cannot run unattended.");
         bool installed = job.Manifest.Processing.Algorithm switch
@@ -1100,6 +1102,7 @@ internal static class CustomShowJobRunner
             "sam2matting" => Sam2MattingSupport.IsInstalled(configuration,
                 job.Manifest.Processing.Tracker),
             "nvidia-aigs" => true,
+            "rvm-onnx" => true,
             _ => File.Exists(CustomShowProcessor.WorkerPath)
         };
         if (!installed)
@@ -1204,7 +1207,8 @@ internal static class CustomShowJobRunner
     }
 
     static async Task<CustomShowProcessResult> ProcessClips(CustomShowQueueJob job,
-        CustomShowClip[] clips, string staging, CustomShowConfiguration configuration,
+        CustomShowClip[] clips, CustomShowClip[] existing, string staging,
+        CustomShowConfiguration configuration,
         CustomShowQueueStore queue, string log,
         IReadOnlyDictionary<string, string> retainedInitialMasks,
         IReadOnlyDictionary<string, string> retainedTrackedMasks,
@@ -1217,32 +1221,55 @@ internal static class CustomShowJobRunner
         CustomShowClip[] included = clips.Where(value => value.Included).ToArray();
         long total = included.Sum(value => Math.Max(1, value.EndMs - value.StartMs));
         bool cleanup = options.TemporalAlphaCleanup;
-        if (options.Algorithm == CustomClipMedia.NvidiaAigsMode)
+        if (CustomClipMedia.IsRealtimeMode(options.Algorithm))
         {
             CustomShowProcessResult? first = null;
+            CustomShowProcessResult? firstEncoded = null;
             long encoded = 0;
             for (int index = 0; index < included.Length; index++)
             {
                 CustomShowClip clip = included[index];
                 long before = encoded;
                 long duration = clip.EndMs - clip.StartMs;
-                CustomShowProcessResult result =
-                    await CustomShowProcessor.EncodeRgbOnlyAsync(configuration,
-                        job.SourcePath, Path.Combine(staging, "clips", clip.Id),
-                        clip.StartMs, clip.EndMs,
-                        new Progress<CustomShowProgress>(value => progress.Report(
-                            value with
-                            {
-                                Percent = CustomShowProcessingForm.AggregateClipPercent(
-                                    before, duration, total, value.Percent),
-                                Message = $"Clip {index + 1}/{included.Length}: {value.Message}"
-                            })), token);
-                SetMedia(clip, result, nvidia: true);
-                clip.Nvidia ??= new CustomNvidiaSettings();
+                CustomShowProcessResult result;
+                if (job.Operation == CustomShowQueueOperation.Reprocess &&
+                    TryReuseRealtimeMedia(clip, existing, staging,
+                        options.Algorithm, out result))
+                {
+                    progress.Report(new CustomShowProgress("reusing-rgb",
+                        CustomShowProcessingForm.AggregateClipPercent(before,
+                            duration, total, 100),
+                        $"Clip {index + 1}/{included.Length}: Reusing existing RGB clip"));
+                }
+                else
+                {
+                    result = await CustomShowProcessor.EncodeRgbOnlyAsync(configuration,
+                            job.SourcePath, Path.Combine(staging, "clips", clip.Id),
+                            clip.StartMs, clip.EndMs,
+                            new Progress<CustomShowProgress>(value => progress.Report(
+                                value with
+                                {
+                                    Percent = CustomShowProcessingForm.AggregateClipPercent(
+                                        before, duration, total, value.Percent),
+                                    Message = $"Clip {index + 1}/{included.Length}: {value.Message}"
+                                })), token);
+                    SetMedia(clip, result, options.Algorithm);
+                    firstEncoded ??= result;
+                }
+                if (options.Algorithm == CustomClipMedia.NvidiaAigsMode)
+                {
+                    clip.Nvidia ??= new CustomNvidiaSettings();
+                    clip.RvmOnnx = null;
+                }
+                else
+                {
+                    clip.RvmOnnx ??= new CustomRvmOnnxSettings();
+                    clip.Nvidia = null;
+                }
                 encoded += duration;
                 first ??= result;
             }
-            return first!;
+            return firstEncoded ?? first!;
         }
         async Task CleanupAlpha(string output,
             IProgress<CustomShowProgress> cleanupProgress) =>
@@ -1422,19 +1449,104 @@ internal static class CustomShowJobRunner
     }
 
     static void SetMedia(CustomShowClip clip, CustomShowProcessResult result,
-        bool nvidia = false)
+        string mediaMode = CustomClipMedia.PairedAlphaMode)
     {
         string relative = Path.Combine("clips", clip.Id);
         clip.Media = new()
         {
-            Mode = nvidia ? CustomClipMedia.NvidiaAigsMode :
-                CustomClipMedia.PairedAlphaMode,
+            Mode = mediaMode,
             Foreground = Path.Combine(relative, "foreground.mp4").Replace('\\', '/'),
-            Alpha = nvidia ? null :
+            Alpha = CustomClipMedia.IsRealtimeMode(mediaMode) ? null :
                 Path.Combine(relative, "alpha.mkv").Replace('\\', '/'),
             Width = result.Width, Height = result.Height,
             FrameRate = result.FrameRate, DurationMs = result.DurationMs
         };
+    }
+
+    static bool TryReuseRealtimeMedia(CustomShowClip clip,
+        IEnumerable<CustomShowClip> existing, string staging, string mediaMode,
+        out CustomShowProcessResult result)
+    {
+        result = new();
+        CustomShowClip? previous = existing.FirstOrDefault(value =>
+            string.Equals(value.Id, clip.Id, StringComparison.OrdinalIgnoreCase));
+        if (previous?.Included != true || previous.Media is not CustomClipMedia old ||
+            previous.StartMs != clip.StartMs || previous.EndMs != clip.EndMs)
+            return false;
+        string foreground;
+        try { foreground = CustomShowStore.ResolveRelative(staging, old.Foreground); }
+        catch (InvalidDataException) { return false; }
+        if (!File.Exists(foreground)) return false;
+
+        if (!string.IsNullOrWhiteSpace(old.Alpha))
+        {
+            try
+            {
+                string alpha = CustomShowStore.ResolveRelative(staging, old.Alpha);
+                File.Delete(alpha);
+                string cleaned = CustomShowStore.CleanedAlphaPath(alpha);
+                if (!string.Equals(alpha, cleaned, StringComparison.OrdinalIgnoreCase))
+                    File.Delete(cleaned);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // An obsolete alpha file is harmless when it is no longer in the
+                // manifest. Leave it in staging rather than forcing an RGB re-encode.
+            }
+        }
+
+        CustomClipMedia reused = Clone(old);
+        reused.Mode = mediaMode;
+        reused.Alpha = null;
+        clip.Media = reused;
+        result = new CustomShowProcessResult
+        {
+            Width = reused.Width, Height = reused.Height,
+            FrameRate = reused.FrameRate, DurationMs = reused.DurationMs,
+            ForegroundCodec = "h264", ForegroundMode = "reused",
+            ExecutionMode = "metadata-only-reuse"
+        };
+        return true;
+    }
+
+    internal static bool VerifyRealtimeMediaReuse()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "iqp-realtime-reuse-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string clipId = Guid.NewGuid().ToString("N");
+            string folder = Path.Combine(root, "clips", clipId);
+            Directory.CreateDirectory(folder);
+            string foreground = Path.Combine(folder, "foreground.mp4");
+            string alpha = Path.Combine(folder, "alpha.mkv");
+            File.WriteAllBytes(foreground, [1, 2, 3, 4]);
+            File.WriteAllBytes(alpha, [5, 6]);
+            CustomShowClip old = new()
+            {
+                Id = clipId, StartMs = 0, EndMs = 1000,
+                Media = new CustomClipMedia
+                {
+                    Foreground = $"clips/{clipId}/foreground.mp4",
+                    Alpha = $"clips/{clipId}/alpha.mkv",
+                    Width = 720, Height = 1280, FrameRate = "30/1",
+                    DurationMs = 1000
+                }
+            };
+            CustomShowClip replacement = new()
+                { Id = clipId, StartMs = 0, EndMs = 1000 };
+            bool reused = TryReuseRealtimeMedia(replacement, [old], root,
+                CustomClipMedia.NvidiaAigsMode, out CustomShowProcessResult result);
+            return reused && replacement.Media?.Mode ==
+                    CustomClipMedia.NvidiaAigsMode &&
+                replacement.Media.Alpha == null && File.Exists(foreground) &&
+                File.ReadAllBytes(foreground).SequenceEqual(new byte[] { 1, 2, 3, 4 }) &&
+                !File.Exists(alpha) && result.ExecutionMode == "metadata-only-reuse" &&
+                !TryReuseRealtimeMedia(new CustomShowClip
+                    { Id = clipId, StartMs = 100, EndMs = 1000 }, [old], root,
+                    CustomClipMedia.RvmOnnxMode, out _);
+        }
+        finally { CustomShowQueueStore.TryDelete(root); }
     }
 
     static CustomShowProcessing Processing(CustomShowQueueJob job,
@@ -1444,11 +1556,12 @@ internal static class CustomShowJobRunner
     {
         if (job.Operation == CustomShowQueueOperation.Reprocess && previous != null &&
             processedClips.Length < clips.Count(clip => clip.Included) &&
-            job.Manifest.Processing?.Algorithm != CustomClipMedia.NvidiaAigsMode)
+            !CustomClipMedia.IsRealtimeMode(
+                job.Manifest.Processing?.Algorithm))
             return Clone(previous);
         CustomShowProcessing value = Clone(job.Manifest.Processing!);
-        value.AutoAcceptedAlphaThreshold = value.Algorithm ==
-            CustomClipMedia.NvidiaAigsMode ? null :
+        value.AutoAcceptedAlphaThreshold =
+            CustomClipMedia.IsRealtimeMode(value.Algorithm) ? null :
             job.Manifest.Processing?.AutoAcceptedAlphaThreshold ??
                 defaultAlphaThreshold;
         value.ProcessedUtc = DateTime.UtcNow;

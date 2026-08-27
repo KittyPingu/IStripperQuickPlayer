@@ -55,6 +55,9 @@ internal sealed class CustomShowConfiguration
     public int VitMatteSmallPreferredBatchSize { get; set; } = 2;
     public int VitMatteBasePreferredBatchSize { get; set; } = 1;
     public string LastProcessingAlgorithm { get; set; } = "quality";
+    public string LastRvmOnnxModel { get; set; } = "mobilenetv3";
+    public string LastRvmOnnxQuality { get; set; } = "balanced";
+    public bool LastRvmOnnxTemporal { get; set; } = true;
     public string LastSam2MattingTracker { get; set; } = "sam2.1-base-plus";
     public string LastMaskEngine { get; set; } = "sam2";
     public string LastSam2Model { get; set; } = "base-plus";
@@ -139,8 +142,15 @@ internal sealed class CustomShowConfiguration
             if (configuration.LastProcessingAlgorithm is not
                 ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" or
                  "matanyone2" or "vitmatte-s" or "vitmatte-b" or
-                 "sam2matting" or "nvidia-aigs"))
+                 "sam2matting" or "nvidia-aigs" or "rvm-onnx"))
                 configuration.LastProcessingAlgorithm = "quality";
+            if (configuration.LastRvmOnnxQuality is not
+                ("fast" or "balanced" or "quality" or
+                    RvmOnnxSupport.FullResolution))
+                configuration.LastRvmOnnxQuality = "balanced";
+            if (configuration.LastRvmOnnxModel is not
+                ("mobilenetv3" or "resnet50"))
+                configuration.LastRvmOnnxModel = "mobilenetv3";
             if (!Sam2MattingSupport.Trackers.Contains(
                     configuration.LastSam2MattingTracker))
                 configuration.LastSam2MattingTracker = "sam2.1-base-plus";
@@ -505,6 +515,7 @@ internal sealed class CustomShowClip
     public long? SourceEndMs { get; set; }
     public CustomClipMedia? Media { get; set; }
     public CustomNvidiaSettings? Nvidia { get; set; }
+    public CustomRvmOnnxSettings? RvmOnnx { get; set; }
     public CustomVirtualGreenScreen? VirtualGreenScreen { get; set; }
 }
 
@@ -519,6 +530,20 @@ internal sealed class CustomNvidiaSettings
         Mode = Mode,
         Temporal = Temporal,
         InferenceResolution = InferenceResolution
+    };
+}
+
+internal sealed class CustomRvmOnnxSettings
+{
+    public string Model { get; set; } = "mobilenetv3";
+    public string Quality { get; set; } = "balanced";
+    public bool Temporal { get; set; } = true;
+
+    internal CustomRvmOnnxSettings Clone() => new()
+    {
+        Model = Model,
+        Quality = Quality,
+        Temporal = Temporal
     };
 }
 
@@ -873,6 +898,9 @@ internal sealed class CustomClipMedia
 {
     public const string PairedAlphaMode = "paired-alpha";
     public const string NvidiaAigsMode = "nvidia-aigs";
+    public const string RvmOnnxMode = "rvm-onnx";
+    public static bool IsRealtimeMode(string? mode) =>
+        mode is NvidiaAigsMode or RvmOnnxMode;
     public string Mode { get; set; } = PairedAlphaMode;
     public string Foreground { get; set; } = "";
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -935,7 +963,7 @@ internal sealed class CustomShowStore
     static readonly HashSet<string> ProcessingAlgorithms =
         ["quality", "fast", "matanyone2", "rvm-matanyone2",
          "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "rvm-vitmatte-b", "sam2matting",
-         "nvidia-aigs",
+         "nvidia-aigs", "rvm-onnx",
          // Retained only so already-published shows remain playable.
          "videomama"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
@@ -1268,7 +1296,7 @@ internal sealed class CustomShowStore
 
         string showFolder = Path.Combine(ShowsFolder, show.Id);
         string foreground = ResolveRelative(showFolder, clip.Media.Foreground);
-        string? alpha = clip.Media.Mode == CustomClipMedia.NvidiaAigsMode
+        string? alpha = CustomClipMedia.IsRealtimeMode(clip.Media.Mode)
             ? null : ResolveRelative(showFolder, clip.Media.Alpha!);
         clip.Included = false;
         clip.Media = null;
@@ -1408,18 +1436,23 @@ internal sealed class CustomShowStore
             ValidateClipSource(clip, folder);
             if (clip.Media is not CustomClipMedia media) continue;
             if (media.Mode is not (CustomClipMedia.PairedAlphaMode or
-                    CustomClipMedia.NvidiaAigsMode))
+                    CustomClipMedia.NvidiaAigsMode or CustomClipMedia.RvmOnnxMode))
                 throw new InvalidDataException("Unknown custom clip media mode.");
             bool nvidia = media.Mode == CustomClipMedia.NvidiaAigsMode;
+            bool rvmOnnx = media.Mode == CustomClipMedia.RvmOnnxMode;
             if (nvidia != (clip.Nvidia != null))
                 throw new InvalidDataException(
                     "NVIDIA settings are required only for NVIDIA AI Green Screen clips.");
-            if (nvidia)
+            if (rvmOnnx != (clip.RvmOnnx != null))
+                throw new InvalidDataException(
+                    "RVM ONNX settings are required only for RVM ONNX clips.");
+            if (nvidia || rvmOnnx)
             {
                 if (!string.IsNullOrWhiteSpace(media.Alpha))
                     throw new InvalidDataException(
-                        "NVIDIA AI Green Screen clip media must not contain an alpha file.");
-                ValidateNvidiaSettings(clip.Nvidia!);
+                        "Real-time foreground clip media must not contain an alpha file.");
+                if (nvidia) ValidateNvidiaSettings(clip.Nvidia!);
+                else ValidateRvmOnnxSettings(clip.RvmOnnx!);
             }
             else if (string.IsNullOrWhiteSpace(media.Alpha))
                 throw new InvalidDataException(
@@ -1453,7 +1486,7 @@ internal sealed class CustomShowStore
     static IEnumerable<string> RequiredMediaPaths(CustomClipMedia media)
     {
         yield return media.Foreground;
-        if (media.Mode != CustomClipMedia.NvidiaAigsMode)
+        if (!CustomClipMedia.IsRealtimeMode(media.Mode))
             yield return media.Alpha!;
     }
 
@@ -1466,6 +1499,18 @@ internal sealed class CustomShowStore
             ("540p" or "720p" or "1080p" or "source"))
             throw new InvalidDataException(
                 "NVIDIA inference resolution must be 540p, 720p, 1080p, or source.");
+    }
+
+    internal static void ValidateRvmOnnxSettings(CustomRvmOnnxSettings settings)
+    {
+        if (settings.Model is not ("mobilenetv3" or "resnet50"))
+            throw new InvalidDataException(
+                "RVM ONNX model must be MobileNetV3 or ResNet50.");
+        if (settings.Quality is not ("fast" or "balanced" or "quality" or
+                RvmOnnxSupport.FullResolution))
+            throw new InvalidDataException(
+                "RVM ONNX quality must be fast, balanced, quality, or " +
+                "full-resolution refinement.");
     }
 
     static void ValidateClipDetection(CustomShowClipDetection? detection)
@@ -1498,6 +1543,7 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("Unknown custom-show processing algorithm.");
         bool sam2Matting = processing.Algorithm == Sam2MattingSupport.Algorithm;
         bool nvidiaAigs = processing.Algorithm == CustomClipMedia.NvidiaAigsMode;
+        bool rvmOnnx = processing.Algorithm == CustomClipMedia.RvmOnnxMode;
         if (sam2Matting)
         {
             if (processing.Tracker == null ||
@@ -1651,10 +1697,11 @@ internal sealed class CustomShowStore
         if (!needsSam2 && processing.Sam2Model != null)
             throw new InvalidDataException("SAM2 model metadata is not valid for this algorithm.");
         string expectedExecutionPolicy = sam2Matting ? "eager" :
-            nvidiaAigs ? "realtime-playback" : "auto";
+            nvidiaAigs || rvmOnnx ? "realtime-playback" : "auto";
         if (processing.ExecutionPolicy != expectedExecutionPolicy ||
             string.IsNullOrWhiteSpace(processing.PrecisionPolicy) ||
-            nvidiaAigs && processing.PrecisionPolicy != "sdk-managed")
+            nvidiaAigs && processing.PrecisionPolicy != "sdk-managed" ||
+            rvmOnnx && processing.PrecisionPolicy != "onnx-directml-fp32")
             throw new InvalidDataException("Invalid processing execution policy.");
         if (processing.EffectiveBatchSize is < 1 or > 24)
             throw new InvalidDataException("Invalid effective processing batch size.");
@@ -1663,7 +1710,8 @@ internal sealed class CustomShowStore
         if (processing.ResolvedExecutionMode is string mode &&
             mode is not ("eager" or "compiled" or "eager-fallback" or
                 "eager-oom-fallback" or "eager-bf16-sdpa" or
-                "eager-bf16-sdpa-bounded" or "realtime-playback"))
+                "eager-bf16-sdpa-bounded" or "realtime-playback" or
+                "metadata-only-reuse"))
             throw new InvalidDataException("Invalid resolved processing execution mode.");
         if (processing.Encoder is string encoder &&
             encoder is not ("h264_nvenc" or "libx264"))
@@ -1876,7 +1924,7 @@ internal sealed class CustomShowStore
         if (!rgb.DecodeNext(out long rgbTime))
             throw new InvalidDataException("Foreground contains no frames.");
         rgb.ValidateGpuFrame();
-        if (media.Mode == CustomClipMedia.NvidiaAigsMode)
+        if (CustomClipMedia.IsRealtimeMode(media.Mode))
             return;
         using FfmpegCpuDecoder alpha = new(ResolveRelative(folder, media.Alpha!));
         if (rgb.Width != alpha.Width || rgb.Height != alpha.Height ||
@@ -1906,7 +1954,7 @@ internal sealed class CustomShowStore
             : show.AgeAtReleaseOverride ?? 0;
         long mediaSize = playableMedia.Sum(media =>
             new FileInfo(ResolveRelative(folder, media.Foreground)).Length +
-            (media.Mode == CustomClipMedia.NvidiaAigsMode ? 0 :
+            (CustomClipMedia.IsRealtimeMode(media.Mode) ? 0 :
                 new FileInfo(ResolveRelative(folder, media.Alpha!)).Length));
         long playableDuration = playableMedia.Sum(PlaybackDuration);
         ModelCard card = new()
@@ -1960,7 +2008,7 @@ internal sealed class CustomShowStore
             {
                 CustomClipMedia media = clip.Media!;
                 string clipForeground = ResolveRelative(folder, media.Foreground);
-                string? clipAlpha = media.Mode == CustomClipMedia.NvidiaAigsMode
+                string? clipAlpha = CustomClipMedia.IsRealtimeMode(media.Mode)
                     ? null : ResolvePlaybackAlpha(folder, media.Alpha!);
                 long size = checked(new FileInfo(clipForeground).Length +
                     (clipAlpha == null ? 0 : new FileInfo(clipAlpha).Length));
@@ -1972,7 +2020,7 @@ internal sealed class CustomShowStore
                     media.PlaybackStartMs,
                     PlaybackEnd(media), VirtualGreenScreenMath.Resolve(
                         show.VirtualGreenScreen, clip.VirtualGreenScreen),
-                    media.Mode, clip.Nvidia);
+                    media.Mode, clip.Nvidia, clip.RvmOnnx);
             }).ToList();
         return card;
     }
@@ -2014,13 +2062,15 @@ internal sealed class CustomShowStore
         long size, int number, string hotness, string[] types,
         int alphaThreshold, float edgeChokePixels, long startMs,
         long endMs, CustomVirtualGreenScreen virtualGreenScreen,
-        string mediaMode, CustomNvidiaSettings? nvidia) => new()
+        string mediaMode, CustomNvidiaSettings? nvidia,
+        CustomRvmOnnxSettings? rvmOnnx) => new()
     {
         clipName = name,
         customForegroundPath = foreground,
         customAlphaPath = alpha,
         customMediaMode = mediaMode,
         customNvidiaSettings = nvidia?.Clone(),
+        customRvmOnnxSettings = rvmOnnx?.Clone(),
         customAlphaThreshold = alphaThreshold,
         customEdgeChokePixels = edgeChokePixels,
         customVirtualGreenScreen = virtualGreenScreen,
@@ -2125,25 +2175,42 @@ internal sealed class CustomShowStore
                     DurationMs = 500
                 }
             };
+            CustomShowClip rvmOnnx = new()
+            {
+                StartMs = 1000, EndMs = 1500,
+                RvmOnnx = new(),
+                Media = new()
+                {
+                    Mode = CustomClipMedia.RvmOnnxMode,
+                    Foreground = "rvm-onnx/foreground.mp4",
+                    Width = 64, Height = 64, FrameRate = "10/1",
+                    DurationMs = 500
+                }
+            };
             Directory.CreateDirectory(Path.Combine(root, "nvidia"));
+            Directory.CreateDirectory(Path.Combine(root, "rvm-onnx"));
             File.WriteAllBytes(Path.Combine(root, "foreground.mp4"), [1]);
             File.WriteAllBytes(Path.Combine(root, "alpha.mkv"), [1]);
             File.WriteAllBytes(Path.Combine(root, "nvidia", "foreground.mp4"),
                 [1, 2]);
+            File.WriteAllBytes(Path.Combine(root, "rvm-onnx", "foreground.mp4"),
+                [1, 2, 3]);
             CustomShowManifest show = new()
             {
                 Title = "Mixed", PerformerId = Guid.NewGuid().ToString("N"),
                 Source = new() { Mode = "reference", Path = "source.mp4" },
                 Media = new() { Width = 64, Height = 64, FrameRate = "10/1",
-                    DurationMs = 1000 },
-                Clips = [paired, nvidia],
+                    DurationMs = 1500 },
+                Clips = [paired, nvidia, rvmOnnx],
                 Processing = new()
                 {
                     Algorithm = CustomClipMedia.NvidiaAigsMode,
                     ExecutionPolicy = "realtime-playback",
                     PrecisionPolicy = "sdk-managed",
+                    ResolvedExecutionMode = "metadata-only-reuse",
                     Clips = [new() { ClipId = paired.Id },
-                        new() { ClipId = nvidia.Id }]
+                        new() { ClipId = nvidia.Id },
+                        new() { ClipId = rvmOnnx.Id }]
                 }
             };
             ValidateManifest(show, root);
@@ -2159,6 +2226,27 @@ internal sealed class CustomShowStore
                 ValidateManifest(show, root);
             });
             nvidia.Nvidia!.InferenceResolution = "720p";
+            bool invalidRvmQualityRejected = Reject(() =>
+            {
+                rvmOnnx.RvmOnnx!.Quality = "maximum";
+                ValidateManifest(show, root);
+            });
+            rvmOnnx.RvmOnnx!.Quality = "balanced";
+            bool invalidRvmModelRejected = Reject(() =>
+            {
+                rvmOnnx.RvmOnnx!.Model = "unknown";
+                ValidateManifest(show, root);
+            });
+            rvmOnnx.RvmOnnx!.Model = "mobilenetv3";
+            bool missingRvmModelDefaultsToMobileNet =
+                JsonSerializer.Deserialize<CustomRvmOnnxSettings>("{}",
+                    JsonOptions)?.Model == "mobilenetv3";
+            bool realtimeAlphaRejected = Reject(() =>
+            {
+                rvmOnnx.Media!.Alpha = "alpha.mkv";
+                try { ValidateManifest(show, root); }
+                finally { rvmOnnx.Media.Alpha = null; }
+            });
             bool traversalRejected = Reject(() =>
             {
                 string original = nvidia.Media!.Foreground;
@@ -2174,6 +2262,8 @@ internal sealed class CustomShowStore
                 finally { paired.Media.Alpha = original; }
             });
             return invalidModeRejected && invalidResolutionRejected &&
+                invalidRvmQualityRejected && invalidRvmModelRejected &&
+                missingRvmModelDefaultsToMobileNet && realtimeAlphaRejected &&
                 traversalRejected && pairedWithoutAlphaRejected;
         }
         finally

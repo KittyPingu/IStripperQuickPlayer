@@ -376,6 +376,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/DxgiMaskPreviewControl.cs
 !/IstripperQuickPlayer/NvidiaAiGreenScreen.cs
 !/IstripperQuickPlayer/NvidiaVfxSetup.cs
+!/IstripperQuickPlayer/RvmOnnx.cs
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/Form1.LibraryCleanup.cs
 !/IstripperQuickPlayer/Form1.RestApi.cs

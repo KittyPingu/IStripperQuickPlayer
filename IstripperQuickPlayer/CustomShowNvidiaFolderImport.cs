@@ -366,14 +366,22 @@ internal static partial class NvidiaFolderImporter
 
     internal static CustomShowQueueBatchEntry BuildEntry(
         NvidiaFolderImportItem item, CustomPerformerProfile performer,
-        CustomNvidiaSettings settings, string hotness, string[] clipTypes,
+        string renderer, CustomNvidiaSettings? nvidiaSettings,
+        CustomRvmOnnxSettings? rvmSettings, string hotness, string[] clipTypes,
         CustomShowConfiguration configuration, CustomShowStore store)
     {
         CustomShowStore.ValidateProfile(performer);
-        CustomShowStore.ValidateNvidiaSettings(settings);
+        if (renderer == CustomClipMedia.NvidiaAigsMode)
+            CustomShowStore.ValidateNvidiaSettings(nvidiaSettings ?? throw new(
+                "NVIDIA settings are required for NVIDIA real-time import."));
+        else if (renderer == CustomClipMedia.RvmOnnxMode)
+            CustomShowStore.ValidateRvmOnnxSettings(rvmSettings ?? throw new(
+                "RVM settings are required for RVM real-time import."));
+        else
+            throw new InvalidDataException("Select a real-time foreground renderer.");
         if (!item.CanInclude || item.DurationMs <= 0)
             throw new InvalidDataException(
-                "Only valid videos can be added to the NVIDIA folder import.");
+                "Only valid videos can be added to the real-time folder import.");
         if (string.IsNullOrWhiteSpace(item.Title))
             throw new InvalidDataException("Every included video requires a show name.");
         if (!CustomShowStore.HotnessOptions.Contains(hotness) ||
@@ -388,7 +396,10 @@ internal static partial class NvidiaFolderImporter
             Hotness = hotness,
             ClipTypes = [.. clipTypes],
             AlphaThreshold = configuration.DefaultAlphaThreshold,
-            Nvidia = settings.Clone()
+            Nvidia = renderer == CustomClipMedia.NvidiaAigsMode
+                ? nvidiaSettings!.Clone() : null,
+            RvmOnnx = renderer == CustomClipMedia.RvmOnnxMode
+                ? rvmSettings!.Clone() : null
         };
         CustomShowManifest manifest = new()
         {
@@ -408,10 +419,11 @@ internal static partial class NvidiaFolderImporter
             },
             Processing = new CustomShowProcessing
             {
-                Algorithm = CustomClipMedia.NvidiaAigsMode,
+                Algorithm = renderer,
                 MattingDetailPx = 0,
                 ExecutionPolicy = "realtime-playback",
-                PrecisionPolicy = "sdk-managed"
+                PrecisionPolicy = renderer == CustomClipMedia.NvidiaAigsMode
+                    ? "sdk-managed" : "onnx-directml-fp32"
             }
         };
         FileInfo source = new(item.SourcePath);
@@ -499,8 +511,12 @@ internal static partial class NvidiaFolderImporter
                 DurationMs = 12_345, Date = new DateOnly(2024, 11, 13),
                 CanInclude = true, Included = true
             };
-            CustomShowQueueBatchEntry entry = BuildEntry(item, profile, new(),
-                "NoNudity", ["Standing"], new(), new CustomShowStore(root));
+            CustomShowQueueBatchEntry entry = BuildEntry(item, profile,
+                CustomClipMedia.NvidiaAigsMode, new(), null, "NoNudity",
+                ["Standing"], new(), new CustomShowStore(root));
+            CustomShowQueueBatchEntry rvmEntry = BuildEntry(item, profile,
+                CustomClipMedia.RvmOnnxMode, null, new(), "NoNudity",
+                ["Standing"], new(), new CustomShowStore(root));
             CustomShowStore store = new(root);
             CustomShowQueueJob[] allStatuses = Enum.GetValues<
                     CustomShowQueueStatus>().Select((value, index) => new
@@ -523,12 +539,18 @@ internal static partial class NvidiaFolderImporter
                     "realtime-playback" &&
                 entry.Job.Manifest.Clips is [{ StartMs: 0, EndMs: 12_345,
                     Nvidia: not null }] &&
+                rvmEntry.Job.Manifest.Processing?.Algorithm ==
+                    CustomClipMedia.RvmOnnxMode &&
+                rvmEntry.Job.Manifest.Processing.PrecisionPolicy ==
+                    "onnx-directml-fp32" &&
+                rvmEntry.Job.Manifest.Clips is [{ Nvidia: null,
+                    RvmOnnx: not null }] &&
                 entry.Job.Manifest.Clips[0].Media == null &&
                 entry.Job.Manifest.ShowDate == new DateOnly(2024, 11, 13) &&
                 entry.Job.SourceLength == new FileInfo(nested).Length;
             if (!contract)
                 Console.Error.WriteLine(
-                    $"NVIDIA folder import contracts: discovery={discovery}, " +
+                    $"Real-time folder import contracts: discovery={discovery}, " +
                     $"naming={naming} [{nestedTitle}; {redditTitle}; " +
                     $"{emptyTitle}; {identifierTitle}], dates={dates}, " +
                     $"duplicates={duplicates}");
@@ -536,7 +558,7 @@ internal static partial class NvidiaFolderImporter
         }
         catch (Exception error)
         {
-            Console.Error.WriteLine("NVIDIA folder import check failed: " + error);
+            Console.Error.WriteLine("Real-time folder import check failed: " + error);
             return false;
         }
         finally
@@ -569,6 +591,10 @@ internal sealed class NvidiaFolderImportForm : Form
     {
         DropDownStyle = ComboBoxStyle.DropDownList, Width = 250
     };
+    readonly ComboBox renderer = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, Width = 225
+    };
     readonly ComboBox nvidiaMode = new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList, Width = 290,
@@ -581,6 +607,28 @@ internal sealed class NvidiaFolderImportForm : Form
     readonly ComboBox resolution = new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList, Width = 105
+    };
+    readonly ComboBox rvmModel = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, Width = 265,
+        DropDownWidth = 265
+    };
+    readonly ComboBox rvmQuality = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, Width = 320,
+        DropDownWidth = 430
+    };
+    readonly CheckBox rvmTemporal = new()
+    {
+        Text = "Temporal memory", Checked = true, AutoSize = true
+    };
+    readonly FlowLayoutPanel nvidiaOptions = new()
+    {
+        AutoSize = true, WrapContents = false, Margin = Padding.Empty
+    };
+    readonly FlowLayoutPanel rvmOptions = new()
+    {
+        AutoSize = true, WrapContents = false, Margin = Padding.Empty
     };
     readonly ComboBox hotness = new()
     {
@@ -637,7 +685,7 @@ internal sealed class NvidiaFolderImportForm : Form
         profiles = store.LoadPerformers().ToList();
         CustomShowEditorForm.AddIstripperModels(profiles);
         folder.Text = Path.GetFullPath(initialFolder);
-        Text = "Folder Import for NVIDIA";
+        Text = "Folder Import for Real-time";
         ClientSize = new Size(1210, 720);
         MinimumSize = new Size(900, 560);
         StartPosition = FormStartPosition.CenterParent;
@@ -677,6 +725,8 @@ internal sealed class NvidiaFolderImportForm : Form
             Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
             Margin = new Padding(0, 0, 0, 6)
         };
+        renderer.Items.AddRange(["NVIDIA AI Green Screen", "RVM ONNX"]);
+        renderer.SelectedIndex = 0;
         nvidiaMode.Items.AddRange(["Quality — chairs foreground",
             "Performance — chairs foreground", "Quality — chairs background",
             "Performance — chairs background"]);
@@ -685,9 +735,20 @@ internal sealed class NvidiaFolderImportForm : Form
         resolution.SelectedIndex = 1;
         hotness.Items.AddRange(CustomShowStore.HotnessOptions);
         hotness.SelectedItem = "NoNudity";
-        options.Controls.AddRange([LabelFor("NVIDIA mode"), nvidiaMode,
-            temporal, LabelFor("Inference"), resolution,
-            LabelFor("Hotness"), hotness]);
+        rvmModel.Items.AddRange(["MobileNetV3 — faster (recommended)",
+            "ResNet50 — larger, slightly higher quality"]);
+        rvmModel.SelectedIndex = 0;
+        rvmQuality.Items.AddRange(["Fast — 256px analysis",
+            "Balanced — 384px analysis", "Quality — 512px analysis",
+            "Full-res refine — source mask, 512px analysis"]);
+        rvmQuality.DropDownWidth = 465;
+        rvmQuality.SelectedIndex = 1;
+        nvidiaOptions.Controls.AddRange([LabelFor("NVIDIA mode"), nvidiaMode,
+            temporal, LabelFor("Inference"), resolution]);
+        rvmOptions.Controls.AddRange([LabelFor("RVM model"), rvmModel,
+            LabelFor("Quality"), rvmQuality, rvmTemporal]);
+        options.Controls.AddRange([LabelFor("Renderer"), renderer,
+            nvidiaOptions, rvmOptions, LabelFor("Hotness"), hotness]);
         layout.Controls.Add(options, 0, 1);
 
         GroupBox clipTypeGroup = new()
@@ -771,6 +832,8 @@ internal sealed class NvidiaFolderImportForm : Form
         CancelButton = cancel;
 
         RefreshModelChoices();
+        renderer.SelectedIndexChanged += (_, _) => UpdateRendererOptions();
+        UpdateRendererOptions();
         Shown += async (_, _) => await ScanAsync();
         FormClosing += (_, _) => scanCancellation?.Cancel();
         browse.Click += async (_, _) => await BrowseAsync();
@@ -865,7 +928,7 @@ internal sealed class NvidiaFolderImportForm : Form
     {
         using FolderBrowserDialog dialog = new()
         {
-            Description = "Select a folder to scan recursively for NVIDIA custom shows",
+            Description = "Select a folder to scan recursively for real-time custom shows",
             SelectedPath = folder.Text,
             ShowNewFolderButton = false
         };
@@ -1217,11 +1280,26 @@ internal sealed class NvidiaFolderImportForm : Form
                     0 => "540p", 2 => "1080p", 3 => "source", _ => "720p"
                 }
             };
+            CustomRvmOnnxSettings rvmSettings = new()
+            {
+                Model = rvmModel.SelectedIndex == 1 ? RvmOnnxSupport.ResNet50 :
+                    RvmOnnxSupport.MobileNetV3,
+                Quality = RvmOnnxSupport.QualityFromIndex(
+                    rvmQuality.SelectedIndex),
+                Temporal = rvmTemporal.Checked
+            };
+            string selectedRenderer = renderer.SelectedIndex == 1
+                ? CustomClipMedia.RvmOnnxMode : CustomClipMedia.NvidiaAigsMode;
             string selectedHotness = hotness.SelectedItem?.ToString() ??
                 "NoNudity";
             List<CustomShowQueueBatchEntry> entries = selected.Select(item =>
                 NvidiaFolderImporter.BuildEntry(item, byId[item.PerformerId],
-                    settings, selectedHotness, types, configuration, store))
+                    selectedRenderer,
+                    selectedRenderer == CustomClipMedia.NvidiaAigsMode
+                        ? settings : null,
+                    selectedRenderer == CustomClipMedia.RvmOnnxMode
+                        ? rvmSettings : null,
+                    selectedHotness, types, configuration, store))
                 .ToList();
             queueManager.AddBatch(entries);
             QueuedCount = entries.Count;
@@ -1233,5 +1311,12 @@ internal sealed class NvidiaFolderImportForm : Form
             MessageBox.Show(this, error.Message, Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    void UpdateRendererOptions()
+    {
+        bool nvidia = renderer.SelectedIndex != 1;
+        nvidiaOptions.Visible = nvidia;
+        rvmOptions.Visible = !nvidia;
     }
 }

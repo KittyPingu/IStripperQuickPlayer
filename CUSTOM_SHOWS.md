@@ -6,7 +6,7 @@
 and encodes every included range to `foreground.mp4` using NVENC with a
 libx264 fallback; no alpha video is created. The NVIDIA mode, temporal
 filtering, and 540p/720p/1080p/source inference setting are saved per clip and
-can be changed from **NVIDIA Foreground Settings...**.
+can be changed from **Real-time Foreground Settings...**.
 
 QuickPlayer generates alpha with NVIDIA Video Effects SDK during playback and
 then applies its normal alpha thresholds, edge cleanup, hit testing,
@@ -48,13 +48,71 @@ rejects the key, confirm that it is active and includes **NGC Catalog**. A 403 o
 404 while downloading the protected SDK usually means the signed-in account has
 not completed **Get Access**; complete access first, then generate a new key.
 
-### Import a folder as NVIDIA shows
+## RVM ONNX real-time playback
 
-Choose **File > Custom Shows > Folder Import for NVIDIA...** and select a root
+`RVM ONNX (real-time playback)` is an alternative that does not require the
+NVIDIA Video Effects SDK or an NGC key. Show creation trims and encodes RGB-only
+`foreground.mp4` clips; QuickPlayer runs Robust Video Matting through DirectML
+during playback and generates the alpha mask for each frame. The original
+full-resolution RGB remains the displayed image.
+
+Install the optional model from **Custom Shows > Settings > Maintenance >
+Install / Update Processing Tools**, or choose **Open Setup** beside the RVM
+ONNX controls while creating a show. Setup downloads the official MobileNetV3
+and ResNet50 FP32 ONNX models (about 117 MB total), verifies their fixed sizes
+and SHA-256 hashes, and performs a test load and inference with each. They are stored under
+`%LOCALAPPDATA%\IStripperQuickPlayer\rvm-onnx`; it is not included in the
+QuickPlayer application. The model and upstream implementation are provided by
+[Robust Video Matting under GPL-3.0](https://github.com/PeterL1n/RobustVideoMatting).
+
+Each clip saves these appearance/performance settings:
+
+- **MobileNetV3** is the recommended faster model. **ResNet50** is substantially
+  larger and slower, with the small quality improvement described by the RVM
+  project. Model selection is saved independently for each clip.
+- **Fast**, **Balanced**, and **Quality** change the internal RVM processing
+  resolution. Higher quality preserves more fine detail but requires more GPU
+  work.
+- **Full-resolution refinement** feeds RVM the complete source frame while
+  retaining 512-level internal analysis. Unlike **Quality**, which enlarges a
+  smaller generated mask for composition, this lets RVM's guided refinement
+  produce the matte at source resolution. It can improve fine hair and edge
+  detail, but transfers and refines substantially more pixels and may not keep
+  up in real time—particularly with ResNet50 or high-resolution sources.
+- **Temporal memory** carries RVM's recurrent state from one frame to the next,
+  reducing flicker and improving consistency. Disable it when you prefer every
+  frame to be segmented independently.
+
+During playback, right-click an RVM ONNX or NVIDIA clip and choose **Real-time
+Foreground Settings...**. You can freely switch the clip between NVIDIA and RVM
+and change the selected renderer's options. Changes are applied to the current
+frame without restarting the clip; temporal state is reset so subsequent frames
+use the new renderer cleanly. Seeking, restarting, and starting a new clip also
+reset that state. Existing alpha threshold, full-opacity threshold, edge
+cleanup, hit testing, click-through, and virtual green-screen controls are
+applied after either renderer.
+
+DirectML uses the available Windows graphics adapter and does not require CUDA.
+Performance depends on the source resolution and GPU; start with **Balanced**
+and use **Fast** if playback cannot keep up. If the model is missing or an
+inference error occurs, playback continues as opaque RGB and QuickPlayer shows
+one non-blocking setup warning for the session.
+
+Reprocessing an existing show to NVIDIA AI Green Screen or RVM ONNX reuses each
+unchanged clip's existing `foreground.mp4`; switching between the two real-time
+methods changes only the media mode and per-clip settings. QuickPlayer encodes
+again only when a selected clip's source range changed or its retained RGB file
+is missing.
+
+### Import a folder as real-time shows
+
+Choose **File > Custom Shows > Folder Import for Real-time...** and select a root
 folder. QuickPlayer scans its subfolders for MP4, MOV, MKV, AVI, and WebM files,
 then shows a review grid. Each included video becomes one custom show containing
-one full-length NVIDIA RGB clip. The NVIDIA SDK is not needed to scan or queue
-the shows.
+one full-length RGB clip. Choose either **NVIDIA AI Green Screen** or **RVM
+ONNX** at the top of the review window; the corresponding mode, model, quality,
+temporal, and inference controls appear for that renderer. Neither renderer nor
+its optional files need to be installed to scan or queue the shows.
 
 The grid shows each video's relative path, proposed model, editable show name,
 resolution, duration, and status. Select several rows to apply one model to the
@@ -73,10 +131,9 @@ file's modified date.
 
 Videos already referenced by a published custom show or present anywhere in the
 queue are shown as excluded duplicates. Unreadable videos also remain visible
-but cannot be included. Set the shared NVIDIA mode, temporal filtering,
-inference resolution, hotness, and clip types above the grid, then choose **Add
-to Queue**. The whole valid batch is added together and the queue is opened but
-not started.
+but cannot be included. Set the shared renderer and its options, hotness, and
+clip types above the grid, then choose **Add to Queue**. The whole valid batch
+is added together and the queue is opened but not started.
 
 Folder import does not copy the source immediately. Keep every source video at
 the same path and do not modify it until its queue job has completed; moving,
@@ -102,6 +159,8 @@ For most users, choose one of these methods:
 | **MatAnyone 2** | You want to choose the exact person or people and manually correct the initial mask before processing. | Scrub to a clear frame, create the mask, then use **Standard (512 px)** detail. |
 | **RVM-ViTMatte S** | You want a fully automatic RVM mask for every frame followed by softer ViTMatte edge refinement. | Keep the recommended ViTMatte-S batch; lower it if VRAM is tight. |
 | **SAM2Matting** | You want scene-aware SAM2.1 tracking with a separate initial mask for each detected scene. | Start with **RVM → SAM2.1-B+** for automatic person masks. |
+| **RVM ONNX (real-time playback)** | You want RGB-only clips and an alpha generated locally during playback without NVIDIA's SDK. | **Balanced** with temporal memory enabled. |
+| **NVIDIA AI Green Screen (real-time playback)** | You want RGB-only clips and have a supported NVIDIA Tensor Core GPU and VFX SDK access. | Quality, chairs foreground; 720p inference. |
 
 **RVM-MatAnyone is the recommended automatic starting point.** Use plain
 **MatAnyone 2** when subject selection matters, there are several people, or
@@ -295,6 +354,10 @@ previews; background queue jobs skip preview generation.
   ViTMatte.
 - **RVM Fast (MobileNetV3)** is lighter than RVM Quality and useful on slower
   hardware or for drafts.
+- **RVM ONNX (real-time playback)** uses the MobileNetV3 RVM model during
+  playback instead of baking an alpha video. It queues and encodes like NVIDIA
+  real-time shows, but runs through DirectML and requires only the downloaded
+  ONNX model.
 - **ViTMatte S** uses editable SAM2 or EdgeTAM masks and is the recommended
   ViTMatte model. Choose it when you want to correct tracking before edge
   refinement.

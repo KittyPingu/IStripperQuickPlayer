@@ -6,6 +6,8 @@ internal sealed class CustomClipTrimForm : Form
     readonly string? alphaPath;
     readonly string? nvidiaSdkRoot;
     readonly CustomNvidiaSettings? nvidiaSettings;
+    readonly string? rvmOnnxModelPath;
+    readonly CustomRvmOnnxSettings? rvmOnnxSettings;
     readonly long durationMs;
     readonly long frameMs;
     readonly int alphaThreshold;
@@ -43,12 +45,16 @@ internal sealed class CustomClipTrimForm : Form
         int fullOpacityThreshold, float edgeChokePixels,
         CustomVirtualGreenScreen? virtualGreenScreen = null,
         string? nvidiaSdkRoot = null,
-        CustomNvidiaSettings? nvidiaSettings = null)
+        CustomNvidiaSettings? nvidiaSettings = null,
+        string? rvmOnnxModelPath = null,
+        CustomRvmOnnxSettings? rvmOnnxSettings = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
         this.nvidiaSdkRoot = nvidiaSdkRoot;
         this.nvidiaSettings = nvidiaSettings?.Clone();
+        this.rvmOnnxModelPath = rvmOnnxModelPath;
+        this.rvmOnnxSettings = rvmOnnxSettings?.Clone();
         durationMs = media.DurationMs;
         this.alphaThreshold = alphaThreshold;
         this.fullOpacityThreshold = fullOpacityThreshold;
@@ -195,7 +201,9 @@ internal sealed class CustomClipTrimForm : Form
             edgeChokePixels: edgeChokePixels,
             virtualGreenScreen: virtualGreenScreen,
             nvidiaSdkRoot: nvidiaSdkRoot,
-            nvidiaSettings: nvidiaSettings);
+            nvidiaSettings: nvidiaSettings,
+            rvmOnnxModelPath: rvmOnnxModelPath,
+            rvmOnnxSettings: rvmOnnxSettings);
         player.HoldFinalFrameOnCompletion = true;
         player.SetPaused(paused);
         player.SeekTo(positionMs / 1000d);
