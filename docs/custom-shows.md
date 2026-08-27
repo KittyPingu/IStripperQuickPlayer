@@ -13,7 +13,31 @@ the existing Direct3D compositor while full-resolution RGB remains the rendered
 image. Load or run failure supplies constant alpha 255 without interrupting
 audio, transport, preload, or handoff.
 
-Custom shows are normal QuickPlayer library cards backed by a local foreground video and alpha video. They can be searched, sorted, filtered, rated, favourited, dragged, saved in manual queues, selected by automatic queues, and controlled through REST alongside iStripper cards. iStripper still plays official shows; QuickPlayer's transparent player is used only for IDs beginning `custom:`.
+Each real-time clip stores `rvmOnnx.model` (`mobilenetv3` or `resnet50`),
+`rvmOnnx.quality` (`fast`, `balanced`, `quality`, or `full-resolution`), and
+`rvmOnnx.temporal`. Fast, Balanced, and Quality target a 256, 384, or 512-pixel
+short edge. Full-resolution keeps the source dimensions while RVM's internal
+downsample ratio still targets 512 pixels. Temporal mode carries recurrent
+state between frames and resets on clip start, seek, restart, or a live setting
+change.
+
+The preferred playback path asks FFmpeg for a D3D12 hardware-decoded frame. The
+native `IStripperRvmGpuBridge64` shader converts and scales its YUV surface into
+a planar GPU tensor, ONNX Runtime DirectML binds input, recurrent state, and
+outputs on the same D3D12 device, and the alpha and full-resolution display
+textures are shared into the D3D11 compositor. Full-frame RGB does not cross
+the CPU boundary. Alpha readback is requested only when an alpha-aware
+mouse hit map is required. Hardware decode, adapter, or sharing failure falls
+back to software-decoded frames with the managed DirectML session; inference
+failure then falls back to opaque RGB for uninterrupted transport and audio.
+
+Custom shows are normal QuickPlayer library cards backed either by synchronized
+foreground/alpha videos or by an RGB-only RVM real-time clip. They can be
+searched, sorted, filtered, rated, favourited, dragged, saved in manual queues,
+selected by automatic queues, and controlled through REST alongside iStripper
+cards. The **Real-time** card filter independently includes or hides any custom
+show containing an RVM real-time clip. iStripper still plays official shows;
+QuickPlayer's transparent player is used only for IDs beginning `custom:`.
 
 The collapsed Metadata section can attach a local **Photo folder** containing
 JPG, JPEG, PNG, BMP, or GIF images. QuickPlayer scans the folder and its
@@ -58,7 +82,8 @@ primary reusable model profile. SAM2 correction clicks refine prompted masks.
 - Python 3.11–3.14. Setup prefers the newest compatible installed version.
 - An NVIDIA CUDA GPU supported by the CUDA 12.8 PyTorch wheels is strongly recommended. CPU/FP32 fallback is supported; an RTX 4080 is the reference configuration.
 - Git on `PATH` for the one-time setup.
-- Enough free space for the source, staging outputs, and H.264 foreground/alpha media.
+- Enough free space for the source, staging outputs, and H.264 foreground media
+  plus alpha media for non-real-time methods.
 
 QuickPlayer pins:
 
@@ -197,6 +222,39 @@ or during the job. MatAnyone 2 instead shows
 job is added. Open **Custom Shows → Queues...** to reorder, edit, delete, retry,
 run, pause, stop, and monitor jobs. The queue runs one show at a time and does not
 open the normal processing or result-review windows.
+
+RVM ONNX is always queueable without automatic acceptance or an installed ONNX
+model. Its queue job only trims/re-encodes RGB media; playback performs the
+matting later. Recursive **Folder Import for Real-time...** uses this path and
+adds one full-duration clip per included video without starting the queue.
+
+### Recursive real-time folder import
+
+The importer scans `.mp4`, `.mov`, `.mkv`, `.avi`, and `.webm` files below the
+selected root in deterministic path order. It does not traverse reparse points,
+continues past inaccessible directories, and probes resolution and duration in
+the background. Invalid files remain visible but disabled. A canonical case-
+insensitive source-path match against a published reference source or any queue
+entry is also visible but disabled as a duplicate.
+
+The review grid is sortable by its data columns. Individual include, model, and
+show-name cells are editable without losing the multi-row selection. The batch
+toolbar includes selection, include/exclude, and model-assignment actions, while
+**Apply model to all included** intentionally ignores selection. A normalized
+root-folder/model-name match supplies the initial model when possible.
+
+Default titles remove extensions, leading dates, uploader/source boilerplate,
+community and post identifiers, resolution/codec tokens, and trailing sequence
+markers before splitting camel case and punctuation. Empty or identifier-only
+names fall back to a dated parent folder and then **Imported Video**; generated
+duplicates receive numeric suffixes. Dates prefer a leading `YYYY-MM-DD`, then
+the nearest `YYYY-MM` parent, then the source modification time.
+
+Adding the batch validates that every included row has a title and model, then
+inserts all jobs through the atomic queue batch operation. Each job is an RVM
+ONNX show with one `0..duration` RGB-only clip and the selected shared RVM,
+hotness, and clip-type settings. The importer never copies the source, so it
+must remain unchanged at its recorded path until that job completes.
 
 RVM-MatAnyone requires the MatAnyone 2 installation. RVM-ViTMatte S requires the
 ViTMatte installation. All selected tools must validate before a job is queued,
@@ -972,7 +1030,15 @@ the library still presents one card for the show.
 
 Before custom playback, QuickPlayer pauses iStripper when its bridge is available and hides the iStripper movie window. It remains hidden across consecutive custom shows. QuickPlayer restores/resumes it on manual close, failure, shutdown, or before an official queued show.
 
-The transparent player keeps RGB and alpha decoders synchronized and rejects dimension, frame-rate, duration, timestamp, or end-of-stream mismatches. The GPU shader premultiplies RGB by alpha. Play/pause, timeline seek, restart, ±10%, 0.25–4× speed (audio muted outside 1×), volume, next, lock, alpha-aware hit testing, click-through, moving, mouse-wheel resizing, small/large mode, global hotkeys, panic, queues, taskbar actions, and REST use the existing QuickPlayer controls. Custom playback does not depend on iStripper account entitlement.
+For paired-alpha media, the transparent player keeps RGB and alpha decoders
+synchronized and rejects dimension, frame-rate, duration, timestamp, or end-of-
+stream mismatches. For RVM media, it generates alpha from each RGB frame and
+resets recurrent state after discontinuities. The GPU shader premultiplies RGB
+by the resulting alpha. Play/pause, timeline seek, restart, ±10%, 0.25–4× speed
+(audio muted outside 1×), volume, next, lock, alpha-aware hit testing, click-
+through, moving, mouse-wheel resizing, small/large mode, global hotkeys, panic,
+queues, taskbar actions, and REST use the existing QuickPlayer controls. Custom
+playback does not depend on iStripper account entitlement.
 
 ## Folder format and portability
 
@@ -991,7 +1057,7 @@ The transparent player keeps RGB and alpha decoders synchronized and rejects dim
     clips/
       <clip-id>/
         foreground.mp4
-        alpha.mkv
+        alpha.mkv           # paired-alpha methods only; omitted for RVM ONNX
         initial-mask.png     # retained prompt/initializer when applicable
         result.json
 ```
@@ -1002,6 +1068,9 @@ Every show has a `clips` array. Each entry contains a UUID `id`, contiguous sour
 `startMs`/`endMs`, `hotness`, `clipTypes`, and per-clip media metadata when
 included. Ranges start at zero and cover the complete source without gaps or
 overlaps. Skipped entries have no required media and never become playable clips.
+`media.mode` defaults to `paired-alpha`; `rvm-onnx` permits an omitted alpha and
+requires the clip's `rvmOnnx` settings. Media mode is authoritative, so a show
+may contain both paired-alpha and RVM clips after partial reprocessing.
 An optional `detectionLabels` array records the typed reason for each generated
 range. An optional root `clipDetection` object records the detector, pinned tool
 revision, overlap, transition-buffer duration, configured short-clip minimum, and whether a
@@ -1017,6 +1086,9 @@ installed processing tool's exact commit/model revision. It also records each
 included clip's initial-mask frame and whether SAM2 mask tracking was used.
 This provenance is read-only in **Edit Custom Show Metadata**. Older shows with
 no `processing` object remain valid; their original settings cannot be inferred.
+For RVM ONNX, the provenance algorithm is `rvm-onnx`, execution policy is
+`realtime-playback`, and precision policy is `onnx-directml-fp32`; the per-clip
+media mode remains authoritative in mixed shows.
 
 Tracked masks are retained losslessly in `IQPMASK1` archives. Each binary mask is
 packed to one bit per pixel and each 300-frame chunk is compressed with
@@ -1029,6 +1101,14 @@ afterward. The decoded masks are pixel-identical to the originals.
 To move a library, close QuickPlayer, copy the entire configured custom-library root, then select the new root in **Custom Shows → Settings**. Relative show media remains portable; referenced originals do not need to move unless you want to reprocess them.
 
 Custom media and profiles are intentionally not stored in `.iqpb` QuickPlayer backups. Back up the configured custom-library root separately.
+
+The optional machine diagnostic below verifies D3D12 hardware decoding,
+DirectML GPU inference, D3D11 texture sharing, and alpha readback against a real
+video. It is not part of the hardware-independent custom-show verifier:
+
+```powershell
+.\IStripperQuickPlayer.exe --verify-rvm-gpu 'C:\path\to\video.mp4'
+```
 
 Deleting a custom card moves only `shows/<show-id>` to the Windows Recycle Bin. A referenced original and the shared performer profile are not deleted.
 
@@ -1068,6 +1148,13 @@ the tensor-path number above remains useful when comparing devices in isolation.
 - **ViTMatte unavailable**: rerun setup with ViTMatte checked. S and B remain hidden until their models and SAM2 are installed.
 - **RVM commit validation failed**: rerun setup; `<runtime>\RVM_COMMIT` and the detached checkout must match the pinned commit.
 - **FFmpeg/libavcodec 62 missing**: repair the QuickPlayer FFmpeg 8 dependency bundle. Run **Validate setup** again.
+- **RVM ONNX model missing**: use **Install / Update Processing Tools** or
+  **Setup RVM ONNX...**. Existing RGB-only clips continue as opaque video until
+  the selected model validates.
+- **RVM GPU diagnostic fails**: hardware decode or Direct3D sharing may be
+  unavailable on that adapter/codec. Normal playback first tries the managed
+  DirectML fallback, so a failed zero-copy diagnostic does not by itself make
+  the show unplayable.
 - **Poor mask edges**: retry with Quality, use a higher-quality source, reduce motion blur, improve subject/background contrast, and avoid heavy source compression.
 - **Foreground/alpha mismatch**: reprocess the show. Do not independently transcode either published media file.
 - **No audio**: the source may have no supported audio stream. Audio is intentionally muted whenever speed is not exactly 1×.

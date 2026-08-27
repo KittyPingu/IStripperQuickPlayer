@@ -2,8 +2,8 @@
 
 ## RVM ONNX real-time playback
 
-`RVM ONNX (real-time playback)` does not require a vendor segmentation SDK or
-API key. Show creation trims and encodes RGB-only
+`RVM ONNX (real-time playback)` does not require Python, a vendor segmentation
+SDK, or an API key. Show creation trims and encodes RGB-only
 `foreground.mp4` clips; QuickPlayer runs Robust Video Matting through DirectML
 during playback and generates the alpha mask for each frame. The original
 full-resolution RGB remains the displayed image.
@@ -44,11 +44,14 @@ cleanup, hit testing, click-through, and virtual green-screen controls are
 applied after the generated matte.
 
 DirectML uses the available Windows graphics adapter and does not require CUDA.
-The playback pipeline converts decoded YUV directly into RVM's reusable planar
-input buffer, keeps its ONNX tensors and recurrent-state buffers pinned and
-reuses them between frames, and requests only the alpha output rather than the
-unused generated foreground. This reduces copying, allocation, and garbage
-collection during playback, including full-resolution refinement.
+On supported systems, FFmpeg hardware-decodes directly to a Direct3D 12 video
+surface. A GPU shader converts and resizes that surface into RVM's planar input,
+DirectML keeps inference and recurrent-state tensors on the same GPU, and the
+resulting alpha texture is shared directly with the Direct3D 11 compositor.
+No RGB frame crosses the CPU boundary in this path; alpha is read back only
+when QuickPlayer needs an alpha-aware mouse hit map. If hardware decoding or GPU
+sharing is unavailable, QuickPlayer falls back to its software-decoded DirectML
+path.
 Performance depends on the source resolution and GPU; start with **Balanced**
 and use **Fast** if playback cannot keep up. If the model is missing or an
 inference error occurs, playback continues as opaque RGB and QuickPlayer shows
@@ -71,12 +74,15 @@ one full-length RGB clip. Choose the RVM model, quality, and temporal settings a
 the top of the review window. The optional model files do not need to be
 installed to scan or queue the shows.
 
-The grid shows each video's relative path, proposed model, editable show name,
-resolution, duration, and status. Select several rows to apply one model to the
-selection, or apply a model to every included row. **New model...** opens the
-normal model-profile editor. If the selected folder name matches an existing
-model name after spaces and punctuation are ignored, that model is assigned
-automatically; otherwise assign a model before adding the batch.
+The sortable grid shows each video's relative path, proposed model, editable
+show name, resolution, duration, and status. Individual include checkboxes,
+model cells, and show names remain editable. Use the explicit batch toolbar to
+select rows, include or exclude the selection, and apply one model to selected
+rows; **Apply model to all included** handles the complete batch. **New
+model...** opens the normal model-profile editor. If the selected folder name
+matches an existing model name after spaces and punctuation are ignored, that
+model is assigned automatically; otherwise assign a model before adding the
+batch.
 
 Generated show names remove common dates, model/uploader names, Reddit and
 OnlyFans/Coomer source labels, post identifiers, resolution/codec labels, and
@@ -367,6 +373,11 @@ previews, and opens a final review where each clip's minimum alpha can be tuned.
 New clips use alpha threshold 25. Choose **Accept** to publish atomically;
 cancelling or failing never publishes a partial card.
 
+For RVM ONNX, the immediate action is **Encode and Preview** because creation
+only splits and encodes RGB clips. **Queue** is available without automatic
+acceptance and without an installed ONNX model; the model is required only when
+the resulting show is played.
+
 Enable **Automatically accept result with alpha threshold 25** for a fire-and-
 forget run. The number is an alpha cutoff on the 0-255 scale, not 25% of the
 image. With automatic acceptance enabled:
@@ -465,8 +476,9 @@ custom show.
 - Keep referenced source videos at their recorded paths for reprocessing.
 - Use **Open Log** for worker, FFmpeg, model, or media mismatch diagnostics.
 - Do not delete active staging, queue, or mask-draft folders while work is open.
-- Foreground and alpha media are a synchronized pair; do not transcode one
-  independently.
+- For paired-alpha shows, foreground and alpha media are synchronized; do not
+  transcode one independently. RVM ONNX real-time clips intentionally contain
+  only `foreground.mp4` and must not be given a separate alpha file.
 
 Only process videos you have permission to use. Review the individual model
 licences before commercial use. See the [technical reference](docs/custom-shows.md)

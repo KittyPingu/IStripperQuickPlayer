@@ -28,6 +28,8 @@ or include shows.
 - Show the static and animated card overlays available to your iStripper
   account.
 - Save and reload detailed card filters.
+- Hide or include RVM real-time custom shows independently with the
+  **Real-time** card filter.
 - Optionally restrict automatic playback to the cards and clips remaining
   after your filters are applied.
 - Reload the library after buying or downloading new cards.
@@ -253,14 +255,21 @@ work while another application has focus.
 ## Custom shows
 
 QuickPlayer can convert an ordinary video into a transparent, first-class
-library card with its own metadata, clips, RGB/alpha media, and queue behavior.
-Processing can use RVM or optional mask-guided tools, with interactive clip
-boundaries, per-clip metadata, SAM2 correction, and post-processing alpha tuning.
+library card with its own metadata, clips, and queue behavior. Conventional
+methods publish synchronized RGB/alpha media; **RVM ONNX real-time playback**
+stores RGB-only clips and generates their matte during playback through
+DirectML. Processing also supports interactive clip boundaries, per-clip
+metadata, mask-guided tools, SAM2 correction, and post-processing alpha tuning.
+
+**Folder Import for Real-time** recursively scans a folder, lets you review and
+edit one proposed show per video, and adds the selected RVM jobs to the custom
+show queue. The RVM model does not need to be installed until playback.
 
 Start with the dedicated [Creating Custom Shows guide](CUSTOM_SHOWS.md). It
-covers setup choices, model profiles, automatic scene detection and skipped
-transition buffers, matting methods, mask correction, performance tuning,
-review, playback, storage, backup, and troubleshooting. The
+covers setup choices, model profiles, recursive folder import, automatic scene
+detection and skipped transition buffers, offline and real-time matting, mask
+correction, performance tuning, review, playback, storage, backup, and
+troubleshooting. The
 [technical reference](docs/custom-shows.md) contains exact commands, pinned
 versions, schemas, licences, and diagnostics.
 
