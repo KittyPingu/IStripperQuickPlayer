@@ -1177,7 +1177,8 @@ internal sealed class CustomPlayerForm : Form
                 else
                     (alphaWidth, alphaHeight) = RvmOnnxSupport.InferenceSize(
                         rgb.Width, rgb.Height, rvmOnnxSettings!.Quality);
-                nvidiaBgr = new byte[checked(alphaWidth * alphaHeight * 3)];
+                nvidiaBgr = nvidiaSettings != null
+                    ? new byte[checked(alphaWidth * alphaHeight * 3)] : null;
                 nvidiaAlpha = NvidiaAiGreenScreen.OpaqueFallback(alphaWidth,
                     alphaHeight);
                 try
@@ -1368,7 +1369,6 @@ internal sealed class CustomPlayerForm : Form
                     "RVM ONNX settings cannot be applied to paired-alpha playback.");
             (int width, int height) = RvmOnnxSupport.InferenceSize(
                 Width, Height, settings.Quality);
-            byte[] bgr = new byte[checked(width * height * 3)];
             byte[] mask = NvidiaAiGreenScreen.OpaqueFallback(width, height);
             RvmOnnxSession? replacement = null;
             Exception? failure = null;
@@ -1390,7 +1390,7 @@ internal sealed class CustomPlayerForm : Form
                 NvidiaAiGreenScreenSession? previousNvidia = nvidia;
                 rvmOnnx = replacement;
                 nvidia = null;
-                nvidiaBgr = bgr;
+                nvidiaBgr = null;
                 nvidiaAlpha = mask;
                 alphaWidth = width;
                 alphaHeight = height;
@@ -1484,9 +1484,12 @@ internal sealed class CustomPlayerForm : Form
             try
             {
                 if (nvidia == null && rvmOnnx == null) return;
-                rgb.CopyBgr24(alphaWidth, alphaHeight, nvidiaBgr!);
-                if (nvidia != null) nvidia.Run(nvidiaBgr!, nvidiaAlpha!);
-                else rvmOnnx!.Run(nvidiaBgr!, nvidiaAlpha!);
+                if (nvidia != null)
+                {
+                    rgb.CopyBgr24(alphaWidth, alphaHeight, nvidiaBgr!);
+                    nvidia.Run(nvidiaBgr!, nvidiaAlpha!);
+                }
+                else rvmOnnx!.Run(rgb, nvidiaAlpha!);
             }
             catch (Exception error)
             {

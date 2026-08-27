@@ -54,7 +54,7 @@ namespace IStripperQuickPlayer
                 return;
             }
 
-            if (args.Length == 1 && args[0] == "--verify-rvm-onnx")
+            if (args.Length is 1 or 2 && args[0] == "--verify-rvm-onnx")
             {
                 try
                 {
@@ -85,6 +85,48 @@ namespace IStripperQuickPlayer
                             $"{frames / timer.Elapsed.TotalSeconds:F1} fps at " +
                             $"{width}x{height} ({inferenceWidth}x{inferenceHeight} " +
                             "inference).");
+                    }
+                    if (args.Length == 2)
+                    {
+                        using FfmpegCpuDecoder decoder = new(args[1]);
+                        if (!decoder.DecodeNext(out _))
+                            throw new InvalidDataException(
+                                "The RVM video diagnostic could not decode a frame.");
+                        (int frameWidth, int frameHeight) =
+                            RvmOnnxSupport.InferenceSize(decoder.Width,
+                                decoder.Height, RvmOnnxSupport.FullResolution);
+                        int pixels = checked(frameWidth * frameHeight);
+                        byte[] bgr = new byte[checked(pixels * 3)];
+                        float[] planar = new float[checked(pixels * 3)];
+                        decoder.CopyBgr24(frameWidth, frameHeight, bgr);
+                        decoder.CopyRgbPlanarFloat(frameWidth, frameHeight,
+                            planar);
+                        for (int pixel = 0; pixel < pixels; pixel++)
+                        {
+                            if (Math.Abs(planar[pixel] -
+                                    bgr[pixel * 3 + 2] / 255f) > .004f ||
+                                Math.Abs(planar[pixels + pixel] -
+                                    bgr[pixel * 3 + 1] / 255f) > .004f ||
+                                Math.Abs(planar[pixels * 2 + pixel] -
+                                    bgr[pixel * 3] / 255f) > .004f)
+                                throw new InvalidDataException(
+                                    "Direct planar RGB conversion disagrees " +
+                                    "with the reference BGR conversion.");
+                        }
+                        CustomRvmOnnxSettings videoSettings = new()
+                        {
+                            Model = RvmOnnxSupport.MobileNetV3,
+                            Quality = RvmOnnxSupport.FullResolution,
+                            Temporal = true
+                        };
+                        using RvmOnnxSession videoSession = new(
+                            RvmOnnxSupport.ModelPathFor(videoSettings.Model),
+                            frameWidth, frameHeight, videoSettings);
+                        byte[] videoAlpha = new byte[pixels];
+                        videoSession.Run(decoder, videoAlpha);
+                        videoSession.Run(decoder, videoAlpha);
+                        Console.WriteLine("RVM direct decoded-frame pipeline " +
+                            $"succeeded at {frameWidth}x{frameHeight}.");
                     }
                     Console.WriteLine("RVM ONNX DirectML load/run succeeded.");
                     Environment.ExitCode = 0;

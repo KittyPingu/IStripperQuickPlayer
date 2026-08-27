@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace IStripperQuickPlayer;
 
@@ -162,11 +161,28 @@ internal static class RvmOnnxSupport
 
 internal sealed class RvmOnnxSession : IDisposable
 {
+    static readonly string[] InputNames =
+        ["src", "r1i", "r2i", "r3i", "r4i", "downsample_ratio"];
+    static readonly string[] OutputNames =
+        ["pha", "r1o", "r2o", "r3o", "r4o"];
     readonly InferenceSession session;
     readonly float downsampleRatio;
     readonly bool temporal;
     readonly float[] source;
-    TensorState[] states = CreateInitialStates();
+    readonly float[] ratio;
+    readonly RunOptions runOptions = new();
+    readonly OrtValue sourceValue;
+    readonly OrtValue ratioValue;
+    readonly OrtValue[] initialStateValues;
+    readonly OrtValue[] inputValues = new OrtValue[6];
+    readonly OrtValue[] outputValues = new OrtValue[5];
+    float[]? matte;
+    OrtValue? matteValue;
+    OrtValue[]? stateAValues;
+    OrtValue[]? stateBValues;
+    bool stateBuffersReady;
+    bool hasCurrentState;
+    bool currentStateIsA;
     bool disposed;
 
     internal int Width { get; }
@@ -185,6 +201,7 @@ internal sealed class RvmOnnxSession : IDisposable
             settings.Quality);
         temporal = settings.Temporal;
         source = GC.AllocateUninitializedArray<float>(checked(width * height * 3));
+        ratio = [downsampleRatio];
         SessionOptions options = new()
         {
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
@@ -202,6 +219,30 @@ internal sealed class RvmOnnxSession : IDisposable
             throw;
         }
         options.Dispose();
+        OrtValue? preparedSource = null;
+        OrtValue? preparedRatio = null;
+        List<OrtValue> preparedInitialStates = [];
+        try
+        {
+            preparedSource = OrtValue.CreateTensorValueFromMemory(source,
+                [1, 3, Height, Width]);
+            preparedRatio = OrtValue.CreateTensorValueFromMemory(ratio, [1]);
+            for (int index = 0; index < 4; index++)
+                preparedInitialStates.Add(OrtValue.CreateTensorValueFromMemory(
+                    new float[1], [1, 1, 1, 1]));
+            sourceValue = preparedSource;
+            ratioValue = preparedRatio;
+            initialStateValues = preparedInitialStates.ToArray();
+        }
+        catch
+        {
+            preparedSource?.Dispose();
+            preparedRatio?.Dispose();
+            foreach (OrtValue value in preparedInitialStates) value.Dispose();
+            session.Dispose();
+            runOptions.Dispose();
+            throw;
+        }
     }
 
     internal void Run(byte[] bgr, byte[] alpha)
@@ -218,57 +259,130 @@ internal sealed class RvmOnnxSession : IDisposable
             source[pixels + index] = bgr[bgrOffset + 1] / 255f;
             source[pixels * 2 + index] = bgr[bgrOffset] / 255f;
         }
-        DenseTensor<float> src = new(source, [1, 3, Height, Width]);
-        DenseTensor<float> ratio = new(new float[] { downsampleRatio },
-            new int[] { 1 });
-        List<NamedOnnxValue> inputs =
-        [
-            NamedOnnxValue.CreateFromTensor("src", src),
-            NamedOnnxValue.CreateFromTensor("r1i", states[0].Tensor()),
-            NamedOnnxValue.CreateFromTensor("r2i", states[1].Tensor()),
-            NamedOnnxValue.CreateFromTensor("r3i", states[2].Tensor()),
-            NamedOnnxValue.CreateFromTensor("r4i", states[3].Tensor()),
-            NamedOnnxValue.CreateFromTensor("downsample_ratio", ratio)
-        ];
-        using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results =
-            session.Run(inputs);
-        Tensor<float> matte = results.First(value => value.Name == "pha")
-            .AsTensor<float>();
+        RunPrepared(alpha);
+    }
+
+    internal void Run(FfmpegCpuDecoder frame, byte[] alpha)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (alpha.Length < checked(Width * Height))
+            throw new ArgumentException("The RVM alpha buffer is too small.");
+        if (!temporal) Reset();
+        frame.CopyRgbPlanarFloat(Width, Height, source);
+        RunPrepared(alpha);
+    }
+
+    void RunPrepared(byte[] alpha)
+    {
+        int pixels = checked(Width * Height);
+        if (!stateBuffersReady)
+        {
+            inputValues[0] = sourceValue;
+            for (int index = 0; index < 4; index++)
+                inputValues[index + 1] = initialStateValues[index];
+            inputValues[5] = ratioValue;
+            using IDisposableReadOnlyCollection<OrtValue> results = session.Run(
+                runOptions, InputNames, inputValues, OutputNames);
+            OrtValue[] first = results.ToArray();
+            if (first.Length != OutputNames.Length)
+                throw new InvalidDataException(
+                    "RVM returned an unexpected number of outputs.");
+            CopyAlpha(first[0].GetTensorDataAsSpan<float>(), alpha, pixels);
+            InitializeStateBuffers(first);
+            hasCurrentState = temporal;
+            currentStateIsA = true;
+            return;
+        }
+
+        OrtValue[] inputStates = hasCurrentState
+            ? currentStateIsA ? stateAValues! : stateBValues!
+            : initialStateValues;
+        OrtValue[] outputStates = !hasCurrentState || !currentStateIsA
+            ? stateAValues! : stateBValues!;
+        inputValues[0] = sourceValue;
+        for (int index = 0; index < 4; index++)
+        {
+            inputValues[index + 1] = inputStates[index];
+            outputValues[index + 1] = outputStates[index];
+        }
+        inputValues[5] = ratioValue;
+        outputValues[0] = matteValue!;
+        session.Run(runOptions, InputNames, inputValues, OutputNames,
+            outputValues);
+        CopyAlpha(matte!, alpha, pixels);
+        if (temporal)
+        {
+            hasCurrentState = true;
+            currentStateIsA = ReferenceEquals(outputStates, stateAValues);
+        }
+    }
+
+    void InitializeStateBuffers(OrtValue[] first)
+    {
+        int pixels = checked(Width * Height);
+        matte = GC.AllocateUninitializedArray<float>(pixels);
+        matteValue = OrtValue.CreateTensorValueFromMemory(matte,
+            [1, 1, Height, Width]);
+        stateAValues = new OrtValue[4];
+        stateBValues = new OrtValue[4];
+        try
+        {
+            for (int index = 0; index < 4; index++)
+            {
+                OrtValue result = first[index + 1];
+                OrtTensorTypeAndShapeInfo info = result.GetTensorTypeAndShape();
+                long[] shape = info.Shape;
+                float[] stateA = result.GetTensorDataAsSpan<float>().ToArray();
+                float[] stateB =
+                    GC.AllocateUninitializedArray<float>(stateA.Length);
+                stateAValues[index] = OrtValue.CreateTensorValueFromMemory(
+                    stateA, shape);
+                stateBValues[index] = OrtValue.CreateTensorValueFromMemory(
+                    stateB, shape);
+            }
+            stateBuffersReady = true;
+        }
+        catch
+        {
+            DisposeValues(stateAValues);
+            DisposeValues(stateBValues);
+            matteValue?.Dispose();
+            matteValue = null;
+            throw;
+        }
+    }
+
+    static void CopyAlpha(ReadOnlySpan<float> matte, byte[] alpha, int pixels)
+    {
         if (matte.Length != pixels)
-            throw new InvalidDataException("RVM returned an unexpected alpha-mask size.");
+            throw new InvalidDataException(
+                "RVM returned an unexpected alpha-mask size.");
         int output = 0;
         foreach (float value in matte)
-            alpha[output++] = (byte)Math.Clamp((int)Math.Round(value * 255), 0, 255);
-        states = [State(results, "r1o"), State(results, "r2o"),
-            State(results, "r3o"), State(results, "r4o")];
+            alpha[output++] = (byte)Math.Clamp(
+                (int)(value * 255f + .5f), 0, 255);
     }
 
-    static TensorState State(
-        IEnumerable<DisposableNamedOnnxValue> results, string name)
-    {
-        Tensor<float> tensor = results.First(value => value.Name == name)
-            .AsTensor<float>();
-        return new(tensor.ToArray(), tensor.Dimensions.ToArray());
-    }
-
-    internal void Reset() => states = CreateInitialStates();
-
-    static TensorState[] CreateInitialStates() =>
-    [
-        new([0], [1, 1, 1, 1]), new([0], [1, 1, 1, 1]),
-        new([0], [1, 1, 1, 1]), new([0], [1, 1, 1, 1])
-    ];
+    internal void Reset() => hasCurrentState = false;
 
     public void Dispose()
     {
         if (disposed) return;
         disposed = true;
+        DisposeValues(stateAValues);
+        DisposeValues(stateBValues);
+        DisposeValues(initialStateValues);
+        matteValue?.Dispose();
+        sourceValue.Dispose();
+        ratioValue.Dispose();
+        runOptions.Dispose();
         session.Dispose();
     }
 
-    readonly record struct TensorState(float[] Values, int[] Dimensions)
+    static void DisposeValues(OrtValue[]? values)
     {
-        internal DenseTensor<float> Tensor() => new(Values, Dimensions);
+        if (values == null) return;
+        foreach (OrtValue? value in values) value?.Dispose();
     }
 }
 

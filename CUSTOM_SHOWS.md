@@ -93,6 +93,11 @@ cleanup, hit testing, click-through, and virtual green-screen controls are
 applied after either renderer.
 
 DirectML uses the available Windows graphics adapter and does not require CUDA.
+The playback pipeline converts decoded YUV directly into RVM's reusable planar
+input buffer, keeps its ONNX tensors and recurrent-state buffers pinned and
+reuses them between frames, and requests only the alpha output rather than the
+unused generated foreground. This reduces copying, allocation, and garbage
+collection during playback, including full-resolution refinement.
 Performance depends on the source resolution and GPU; start with **Balanced**
 and use **Fast** if playback cannot keep up. If the model is missing or an
 inference error occurs, playback continues as opaque RGB and QuickPlayer shows
