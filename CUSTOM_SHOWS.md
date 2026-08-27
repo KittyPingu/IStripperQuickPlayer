@@ -17,6 +17,14 @@ and SHA-256 hashes, and performs a test load and inference with each. They are s
 QuickPlayer application. The model and upstream implementation are provided by
 [Robust Video Matting under GPL-3.0](https://github.com/PeterL1n/RobustVideoMatting).
 
+NVIDIA AI Green Screen is no longer a playback option. QuickPlayer
+automatically opens older `nvidia-aigs` manifests and queued jobs as RVM ONNX
+clips using MobileNetV3, Balanced quality, and temporal memory. Their existing
+RGB video is retained, so this migration does not re-encode the clip. The
+NVIDIA Video Effects SDK, NGC API key, and NVIDIA foreground settings are not
+needed. CUDA may still be used by some optional offline processing tools; that
+is separate from real-time RVM playback.
+
 Each clip saves these appearance/performance settings:
 
 - **MobileNetV3** is the recommended faster model. **ResNet50** is substantially
@@ -61,9 +69,70 @@ The card filter includes a separate **Real-time** checkbox. Clear it to hide
 custom shows containing RVM real-time clips while leaving ordinary custom shows
 visible; the main **Custom** checkbox still controls all custom shows.
 
+The filter is based on the clips in each show, not the algorithm that originally
+created it. Mixed shows therefore remain visible when **Real-time** is enabled
+and are hidden when it is disabled if any playable clip uses RVM ONNX.
+
 Reprocessing an existing show to RVM ONNX reuses each unchanged clip's existing
 `foreground.mp4`. QuickPlayer encodes again only when a selected clip's source
 range changed or its retained RGB file is missing.
+
+### Create a real-time show from a URL
+
+Choose **File > Custom Shows > Create Real-time Show from URL...** and paste an
+HTTP or HTTPS page containing a video, or a direct video URL. QuickPlayer uses
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) to resolve and download one video;
+playlists are deliberately disabled. The same setup also installs the managed
+Deno runtime that current yt-dlp versions use for YouTube's JavaScript
+challenges. If either tool is missing, the URL window can install it before
+downloading. Setup is also available as the optional
+**URL video downloader** entry under **Install / Update Processing Tools...**.
+
+For a public page, leave **Authentication** set to **None**. If a site requires
+the account already signed into Chrome, Edge, Firefox, or Brave, select that
+browser so yt-dlp can use its local cookie store. On Windows, fully close
+Chrome, Edge, or Brave first, including background processes; Chromium locks
+its cookie database while it is running. Newer Chromium cookie encryption can
+also prevent yt-dlp from decrypting the database even after the browser closes.
+If that happens, retry with **None** for a public page, use a signed-in Firefox
+profile, or use the cookie-file option below.
+
+If browser extraction remains unavailable, select **Cookie file (Netscape
+format)** and browse to a `cookies.txt` export. For age-restricted YouTube
+videos, follow yt-dlp's [YouTube cookie instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies): sign in through a private/incognito
+window, visit `https://www.youtube.com/robots.txt` in that same tab, export the
+YouTube cookies using a conforming local cookie exporter, then close the private
+window. The file's first line must be `# HTTP Cookie File` or
+`# Netscape HTTP Cookie File`. Treat this file like a password. QuickPlayer
+passes a temporary copy to yt-dlp, deletes it after the attempt, and never puts
+it in the queue or published show; it does not store or log cookie values.
+YouTube warns that using an account through yt-dlp can put that account at risk,
+so use authentication only when needed. Some protected sites may still reject
+downloads, and DRM-protected streams are not supported.
+
+After downloading, QuickPlayer opens the normal custom-show editor with the
+page title filled in and **RVM ONNX (real-time playback)** selected. Choose a
+model profile, adjust the title, clips, metadata, RVM model, quality, and
+temporal memory, then use **Encode and Preview** or **Queue** as usual. This
+workflow creates a new show; it cannot append directly to an existing show.
+
+The temporary download is deleted when the editor closes. Before that happens,
+queueing copies the complete source into the queue job. Publication then keeps
+a source copy inside the finished show as well as its encoded RGB clips, so the
+remote page does not need to remain available and the show can be reprocessed
+later. Deleting the custom show removes that retained source with the rest of
+the show. Allow enough storage for the downloaded source and encoded clips.
+
+Only download and process videos you have permission to use, and follow the
+site's terms. A failed extraction normally means the page is unsupported,
+requires a login/cookies, has changed, or uses DRM; the error output in the URL
+window contains yt-dlp's explanation. If a site's dedicated extractor reports
+that it found no video formats, QuickPlayer automatically retries once with
+yt-dlp's generic page extractor. That fallback may expose fewer quality choices
+than a working dedicated extractor. XVideos is handled more specifically: when
+its current extractor misses the site's player data, QuickPlayer resolves the
+player's signed adaptive HLS manifest and gives that back to yt-dlp, which then
+selects the best available rendition instead of the generic 360p metadata URL.
 
 ### Import a folder as real-time shows
 
@@ -167,6 +236,10 @@ Choose **File > Custom Shows > Install / Update Processing Tools...**.
   mask editor. This is selected by default.
 - Select **ViTMatte S + B** to install ViTMatte and the SAM2 components used by
   its editable workflow. The same install also enables **RVM-ViTMatte S**.
+- Select **URL video downloader** to install or update the official standalone
+  Windows yt-dlp executable and its recommended Deno JavaScript runtime. Setup
+  verifies both official downloads with SHA-256, test-runs them, and only then
+  replaces each previous working copy. It does not install Python.
 - RVM is part of the core processing setup and is used by RVM Quality, RVM Fast,
   RVM-MatAnyone, and RVM-ViTMatte S.
 - **SAM2Matting** has a separate setup button beside its backbone selector. It

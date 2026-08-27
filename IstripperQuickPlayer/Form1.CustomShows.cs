@@ -98,6 +98,8 @@ public partial class Form1
         SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
         ToolStripMenuItem create = new("Create Show...");
+        ToolStripMenuItem createFromUrl = new(
+            "Create Real-time Show from URL...");
         ToolStripMenuItem folderImport = new("Folder Import for Real-time...");
         ToolStripMenuItem queues = new("Queues...");
         ToolStripMenuItem check = new("Check Custom Shows...");
@@ -113,6 +115,7 @@ public partial class Form1
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
         create.Click += (_, _) => EditCustomShow(null);
+        createFromUrl.Click += (_, _) => CreateCustomShowFromUrl();
         folderImport.Click += (_, _) => ImportRealtimeFolder();
         queues.Click += (_, _) => ShowCustomShowQueues();
         check.Click += async (_, _) => await CheckCustomShowsAsync(check);
@@ -122,7 +125,8 @@ public partial class Form1
         compareTemporalAlpha.Click += (_, _) => CompareTemporalAlphaCleanup();
         settings.Click += (_, _) => ConfigureCustomShows();
         customShowsMenu.DropDownItems.AddRange(
-            [create, folderImport, queues, check, new ToolStripSeparator(), stabilize,
+            [create, createFromUrl, folderImport, queues, check,
+                new ToolStripSeparator(), stabilize,
                 backgroundLock, removeWatermark, compareTemporalAlpha, settings]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
 
@@ -843,11 +847,18 @@ public partial class Form1
         return Datastore.findCardByTag(tag)?.customShowId;
     }
 
-    void EditCustomShow(string? showId, bool reprocess = false)
+    bool EditCustomShow(string? showId, bool reprocess = false,
+        string? initialSourcePath = null, string? initialTitle = null,
+        string? initialSourceUrl = null, bool retainInitialSource = false,
+        bool forceRvmOnnx = false)
     {
         using CustomShowEditorForm form = new(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
-            customShowConfiguration, showId, reprocess, customShowQueueManager);
+            customShowConfiguration, showId, reprocess, customShowQueueManager,
+            initialSourcePath: initialSourcePath, initialTitle: initialTitle,
+            initialSourceUrl: initialSourceUrl,
+            retainInitialSource: retainInitialSource,
+            forceRvmOnnx: forceRvmOnnx);
         DialogResult result = form.ShowDialog(this);
         if (result == DialogResult.OK || form.SavedShowId != null)
         {
@@ -873,6 +884,27 @@ public partial class Form1
                 ReloadCustomCards();
                 RebindCurrentCustomPlayback();
             }
+        }
+        return result == DialogResult.OK || form.SavedShowId != null;
+    }
+
+    void CreateCustomShowFromUrl()
+    {
+        CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+        using CustomShowUrlImportForm downloader = new(store);
+        if (downloader.ShowDialog(this) != DialogResult.OK ||
+            downloader.Result is not CustomShowUrlDownload download)
+            return;
+        try
+        {
+            EditCustomShow(null, initialSourcePath: download.VideoPath,
+                initialTitle: download.Title,
+                initialSourceUrl: download.SourceUrl,
+                retainInitialSource: true, forceRvmOnnx: true);
+        }
+        finally
+        {
+            YtDlpSupport.DeleteWorkingFolder(store, download.WorkingFolder);
         }
     }
 
@@ -1195,6 +1227,11 @@ public partial class Form1
             if (options.InstallRvmOnnx)
             {
                 using RvmOnnxSetupForm setup = new();
+                if (setup.ShowDialog(owner) != DialogResult.OK) return null;
+            }
+            if (options.InstallYtDlp)
+            {
+                using YtDlpSetupForm setup = new();
                 if (setup.ShowDialog(owner) != DialogResult.OK) return null;
             }
             customShowConfiguration.Save();

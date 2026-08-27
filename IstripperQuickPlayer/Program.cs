@@ -34,6 +34,96 @@ namespace IStripperQuickPlayer
 
             ApplicationConfiguration.Initialize();
 
+            if (args.Length is 1 or 2 &&
+                args[0] == "--verify-url-downloader")
+            {
+                string testRoot = Path.Combine(Path.GetTempPath(),
+                    "iqp-url-diagnostic-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    YtDlpSupport.InstallAsync(null, CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                    if (args.Length == 2)
+                    {
+                        CustomShowStore store = new(testRoot);
+                        CustomShowUrlDownload download = YtDlpSupport.DownloadAsync(
+                            store, args[1], null, null,
+                            CancellationToken.None).GetAwaiter().GetResult();
+                        int width;
+                        int height;
+                        long durationMs;
+                        using (FfmpegCpuDecoder decoder = new(download.VideoPath,
+                            fastDecode: true))
+                        {
+                            width = decoder.Width;
+                            height = decoder.Height;
+                            durationMs = checked((long)Math.Round(
+                                decoder.Duration * 1000));
+                        }
+                        CustomShowConfiguration configuration = new()
+                            { LibraryRoot = testRoot };
+                        CustomPerformerProfile performer = new()
+                            { ModelName = "URL Diagnostic", Gender = "Female" };
+                        RealtimeFolderImportItem item = new()
+                        {
+                            SourcePath = download.VideoPath,
+                            Video = Path.GetFileName(download.VideoPath),
+                            Title = download.Title,
+                            PerformerId = performer.Id,
+                            Width = width,
+                            Height = height,
+                            DurationMs = durationMs,
+                            Date = DateOnly.FromDateTime(DateTime.Today),
+                            CanInclude = true,
+                            Included = true
+                        };
+                        CustomShowQueueJob job = RealtimeFolderImporter.BuildEntry(
+                            item, performer, new CustomRvmOnnxSettings(),
+                            "NoNudity", ["Standing"], configuration, store).Job;
+                        job.RetainSourceInShow = true;
+                        job.SourceUrl = download.SourceUrl;
+                        job.Manifest.Source.Url = download.SourceUrl;
+                        using CustomShowQueueManager manager = new(store,
+                            configuration, () => { });
+                        string queuedId = manager.AddOrUpdate(job, null, null,
+                            new Dictionary<string, string>());
+                        YtDlpSupport.DeleteWorkingFolder(store,
+                            download.WorkingFolder);
+                        string publishedId = manager.RunNowAsync(queuedId,
+                            new Progress<CustomShowProgress>(),
+                            (_, _) => Task.FromResult(true),
+                            CancellationToken.None).GetAwaiter().GetResult();
+                        CustomShowManifest published = store.LoadManifest(
+                            publishedId);
+                        if (published.Source.Mode != "copy" ||
+                            published.Source.Url != download.SourceUrl ||
+                            !File.Exists(CustomShowStore.ResolveRelative(
+                                Path.Combine(store.ShowsFolder, published.Id),
+                                published.Source.Path)) ||
+                            published.Clips.Single().Media?.Mode !=
+                                CustomClipMedia.RvmOnnxMode)
+                            throw new InvalidDataException(
+                                "The downloaded URL show did not publish with " +
+                                "retained RGB source media.");
+                        Console.WriteLine("URL download, RGB encode, retained-source " +
+                            "publication, and manifest validation succeeded.");
+                    }
+                    Console.WriteLine("yt-dlp and Deno setup validation succeeded.");
+                    Environment.ExitCode = 0;
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine("URL downloader diagnostic failed: " +
+                        error.Message);
+                    Environment.ExitCode = 1;
+                }
+                finally
+                {
+                    CustomShowQueueStore.TryDelete(testRoot);
+                }
+                return;
+            }
+
             if (args.Length is 1 or 2 && args[0] == "--verify-rvm-onnx")
             {
                 try
@@ -194,6 +284,7 @@ namespace IStripperQuickPlayer
                         TemporalAlphaComparisonForm.VerifyThresholdPreview()),
                     ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),
                     ("RVM ONNX contracts", RvmOnnxSupport.VerifyContracts()),
+                    ("URL downloader contracts", YtDlpSupport.VerifyContracts()),
                     ("real-time RGB reprocess reuse",
                         CustomShowJobRunner.VerifyRealtimeMediaReuse()),
                     ("real-time RGB-only encoding", CustomShowProcessor.VerifyRgbOnlyEncoding()),

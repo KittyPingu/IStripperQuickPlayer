@@ -384,6 +384,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/DressingRoomStreamRelay.cs
 !/IstripperQuickPlayer/CustomShowQueue.cs
 !/IstripperQuickPlayer/CustomShowRealtimeFolderImport.cs
+!/IstripperQuickPlayer/CustomShowUrlImport.cs
 !/IstripperQuickPlayer/CustomShowFailedCleanup.cs
 !/IstripperQuickPlayer/CustomShowCheckForm.cs
 !/IstripperQuickPlayer/Sam2MattingSupport.cs

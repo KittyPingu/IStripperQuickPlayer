@@ -39,6 +39,27 @@ cards. The **Real-time** card filter independently includes or hides any custom
 show containing an RVM real-time clip. iStripper still plays official shows;
 QuickPlayer's transparent player is used only for IDs beginning `custom:`.
 
+### Retired NVIDIA renderer migration
+
+The NVIDIA Video Effects SDK renderer is retired. Manifest and queue loading
+migrates its former `nvidia-aigs` identifiers in memory before strict
+deserialization:
+
+- `processing.algorithm` becomes `rvm-onnx` and `precisionPolicy` becomes
+  `onnx-directml-fp32`.
+- `media.mode` becomes `rvm-onnx`.
+- Missing per-clip settings are created as MobileNetV3, `balanced`, with
+  temporal memory enabled.
+- The retired `nvidia` settings object is removed.
+
+The RGB-only foreground media is already suitable for RVM playback, so loading
+or reprocessing a migrated show does not require a conversion encode unless its
+source range changed or its media is missing. The retired SDK root setting is
+ignored and removed from loaded configuration. No proprietary NVIDIA SDK DLL,
+feature package, model, NGC login, or API key participates in playback or setup.
+References to NVIDIA elsewhere in this document concern CUDA acceleration for
+optional offline Python tools, not NVIDIA AI Green Screen.
+
 The collapsed Metadata section can attach a local **Photo folder** containing
 JPG, JPEG, PNG, BMP, or GIF images. QuickPlayer scans the folder and its
 subfolders for the card's Photos viewer, and makes landscape images available
@@ -256,15 +277,80 @@ ONNX show with one `0..duration` RGB-only clip and the selected shared RVM,
 hotness, and clip-type settings. The importer never copies the source, so it
 must remain unchanged at its recorded path until that job completes.
 
+### URL import with yt-dlp
+
+**Create Real-time Show from URL...** accepts only normalized `http` and
+`https` URLs without embedded credentials. It invokes the official standalone
+Windows `yt-dlp.exe` through `ProcessStartInfo.ArgumentList`; the URL is never
+concatenated into a shell command. Downloads use `--no-playlist`, write an info
+JSON sidecar, ask the bundled FFmpeg to merge the best available video and
+audio, and accept either an optional `--cookies-from-browser` value for Chrome,
+Edge, Firefox, or Brave or `--cookies` with a transient copy of a user-selected
+Netscape cookie file. The transient file is outside the job/download directory,
+is deleted after the attempt, and is never persisted in queue or show data.
+Known Chromium cookie-database lock failures are replaced with an actionable
+close-browser-or-use-cookie-file message. DPAPI decryption failures are mapped
+to public/no-cookie, Firefox, and Netscape-cookie-file alternatives; QuickPlayer
+does not attempt to bypass Chromium's cookie protection.
+
+When the first yt-dlp attempt fails specifically with `No video formats found`,
+the importer retries the same URL and authentication once with
+`--force-generic-extractor`. Other failures are not retried. This delegates HTML
+media discovery to yt-dlp rather than adding site-specific extraction code; the
+generic result may offer a lower-quality media URL than the site's dedicated
+extractor normally would.
+
+Before that generic retry, an XVideos URL gets one domain-scoped adaptive-stream
+attempt. QuickPlayer reads the page's encoded video ID, HLS CDN ID, and
+`X-View-Data` value, requests the site's `html5player/getvideo` endpoint with
+the original page as referrer, and accepts only an HTTPS HLS URL below an
+`xvideos-cdn.com` host. The signed manifest is passed back to yt-dlp with the
+original referrer, so its ordinary format selector chooses the highest available
+variant. Failure at any stage falls through to the generic page retry. The
+short-lived CDN URL is not stored as show provenance; the original page URL is.
+
+The managed executable is stored at
+`%LOCALAPPDATA%\IStripperQuickPlayer\yt-dlp\yt-dlp.exe`. The managed Deno
+runtime is stored beside it as `deno.exe`, and each download explicitly passes
+`--js-runtimes deno:<managed-path>`. The official standalone yt-dlp executable
+already contains its EJS challenge scripts. Setup downloads
+`yt-dlp.exe` and `SHA2-256SUMS` from the latest official GitHub release, matches
+the executable's SHA-256 entry, runs `--version`, and atomically replaces the
+working executable only after validation. It also downloads Deno's official
+x64 Windows archive and its per-asset SHA-256 file, verifies and extracts the
+archive, requires Deno 2.3.0 or newer, runs `deno --version`, and replaces the
+working runtime only after validation. The URL importer can run this setup
+directly; **Install / Update Processing Tools...** also offers it independently
+of the Python processing environment and RVM ONNX model setup. The standalone
+executable's bundled dependency licensing is described in the
+[yt-dlp documentation](https://github.com/yt-dlp/yt-dlp#license).
+
+Each attempt downloads below `<library>/.url-downloads/<uuid>` and probes the
+result with QuickPlayer's FFmpeg decoder before opening the editor. Stale
+temporary attempts older than one day are removed. A successful editor is
+forced to `rvm-onnx`; its title defaults to yt-dlp's page metadata, while all
+normal model-profile, clip, metadata, and RVM controls remain available.
+
+URL jobs set `RetainSourceInShow`, save the canonical page URL as provenance,
+and synchronously copy the download to `queue/jobs/<job-id>/source.<ext>` when
+the job is committed. Only then may the importer delete its temporary folder.
+The queue fingerprints and validates that owned source exactly like an external
+source. Before publication it copies the file to `shows/<show-id>/source.<ext>`
+and writes `source.mode: "copy"`; deleting the show therefore deletes the
+retained source too. URL import is limited to new shows so an appended show's
+source ownership cannot become ambiguous.
+
 RVM-MatAnyone requires the MatAnyone 2 installation. RVM-ViTMatte S requires the
 ViTMatte installation. All selected tools must validate before a job is queued,
 and the referenced source must remain at the same path until processing finishes.
 The manually corrected ViTMatte workflow is interactive and is not currently
 eligible for the automatic queue.
 
-Queue state and job-owned covers/masks are stored under `<custom-library>\queue`.
-Source videos remain referenced and are checked for size/timestamp changes before
-processing. Append and reprocess jobs also verify that their target `show.json`
+Queue state and job-owned covers, masks, and retained URL downloads are stored
+under `<custom-library>\queue`. Normal source videos remain referenced; URL
+imports are copied into their job before the temporary download is removed.
+Both are checked for size/timestamp changes before processing. Append and
+reprocess jobs also verify that their target `show.json`
 has not changed. Conflicts are marked **Needs attention** rather than overwriting
 newer data. Completed entries remain as history until deleted; deleting history
 never deletes the published show. **Remove Completed** clears all successful
@@ -1048,6 +1134,7 @@ playback does not depend on iStripper account entitlement.
   shows/<show-id>/
     show.json
     cover.jpg
+    source.mp4               # retained URL source; extension may differ
     processing.log
     masks/                  # retained reprocessing inputs, when available
       retained-masks.json
@@ -1062,7 +1149,13 @@ playback does not depend on iStripper account entitlement.
         result.json
 ```
 
-IDs are lowercase 32-character UUIDs. `show.json` uses schema version 2. Media paths are relative to the show folder and may not escape it. Referenced original source paths may be absolute because they are not playback media. Invalid/duplicate profiles or shows are skipped and recorded in the model reload diagnostic without blocking valid shows. Version 1 shared-media shows must be reprocessed.
+IDs are lowercase 32-character UUIDs. `show.json` uses schema version 3. Media
+paths are relative to the show folder and may not escape it. Referenced original
+source paths may be absolute because they are not playback media. URL imports
+instead use a relative `source.mode: "copy"` path and may include the normalized
+page address in optional `source.url` provenance. Invalid/duplicate profiles or
+shows are skipped and recorded in the model reload diagnostic without blocking
+valid shows. Older shared-media shows must be reprocessed.
 
 Every show has a `clips` array. Each entry contains a UUID `id`, contiguous source
 `startMs`/`endMs`, `hotness`, `clipTypes`, and per-clip media metadata when
@@ -1071,6 +1164,8 @@ overlaps. Skipped entries have no required media and never become playable clips
 `media.mode` defaults to `paired-alpha`; `rvm-onnx` permits an omitted alpha and
 requires the clip's `rvmOnnx` settings. Media mode is authoritative, so a show
 may contain both paired-alpha and RVM clips after partial reprocessing.
+Legacy `nvidia-aigs` values are normalized to `rvm-onnx` during JSON loading and
+must not be emitted by newly written manifests or queue jobs.
 An optional `detectionLabels` array records the typed reason for each generated
 range. An optional root `clipDetection` object records the detector, pinned tool
 revision, overlap, transition-buffer duration, configured short-clip minimum, and whether a
@@ -1108,6 +1203,16 @@ video. It is not part of the hardware-independent custom-show verifier:
 
 ```powershell
 .\IStripperQuickPlayer.exe --verify-rvm-gpu 'C:\path\to\video.mp4'
+```
+
+The URL diagnostic installs or validates the managed yt-dlp executable. With an
+optional URL it also downloads one video, queues and encodes it as RVM RGB
+media, publishes it into a temporary library with its retained source, validates
+the manifest, and removes the temporary library:
+
+```powershell
+.\IStripperQuickPlayer.exe --verify-url-downloader
+.\IStripperQuickPlayer.exe --verify-url-downloader 'https://example.com/video-page'
 ```
 
 Deleting a custom card moves only `shows/<show-id>` to the Windows Recycle Bin. A referenced original and the shared performer profile are not deleted.

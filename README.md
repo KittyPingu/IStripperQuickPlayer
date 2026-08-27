@@ -261,12 +261,30 @@ stores RGB-only clips and generates their matte during playback through
 DirectML. Processing also supports interactive clip boundaries, per-clip
 metadata, mask-guided tools, SAM2 correction, and post-processing alpha tuning.
 
+RVM ONNX is the only real-time foreground renderer. Legacy NVIDIA AI Green
+Screen shows and queue jobs are migrated automatically to RVM ONNX without
+re-encoding their existing RGB clips; no NVIDIA Video Effects SDK or NGC API
+key is required. NVIDIA CUDA remains useful for several optional offline
+processing tools and is unrelated to this real-time playback path.
+
 **Folder Import for Real-time** recursively scans a folder, lets you review and
 edit one proposed show per video, and adds the selected RVM jobs to the custom
-show queue. The RVM model does not need to be installed until playback.
+show queue. The RVM model does not need to be installed until playback. The
+separate **Real-time** card filter can include or hide shows containing these
+clips without changing the main **Custom** filter.
+
+**Create Real-time Show from URL** accepts a video page or direct HTTP/HTTPS
+video URL, downloads one item with the optional yt-dlp tool, and opens the
+normal editor with RVM ONNX selected. Queueing retains the download and the
+published show owns a source copy, so playback and later reprocessing do not
+depend on the page remaining online. Public pages need no browser access;
+Chrome, Edge, Firefox, and Brave cookie-store integration and a transient
+Netscape `cookies.txt` fallback are available for authenticated pages. The
+managed URL-downloader setup also installs Deno for current YouTube JavaScript
+challenges. Close Chromium browsers before reading their cookie stores.
 
 Start with the dedicated [Creating Custom Shows guide](CUSTOM_SHOWS.md). It
-covers setup choices, model profiles, recursive folder import, automatic scene
+covers setup choices, model profiles, URL and recursive folder import, automatic scene
 detection and skipped transition buffers, offline and real-time matting, mask
 correction, performance tuning, review, playback, storage, backup, and
 troubleshooting. The

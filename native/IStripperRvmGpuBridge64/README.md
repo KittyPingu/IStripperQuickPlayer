@@ -1,7 +1,9 @@
 # RVM GPU bridge
 
 `IStripperRvmGpuBridge64` is QuickPlayer's native zero-copy playback path for
-RVM ONNX custom shows. It has no proprietary segmentation-SDK dependency.
+RVM ONNX custom shows. It has no proprietary segmentation-SDK dependency and
+does not load NVIDIA Video Effects SDK libraries. DirectML selects a compatible
+Windows graphics adapter; the bridge is not tied to NVIDIA hardware.
 
 For each frame, FFmpeg supplies a hardware-decoded D3D12 YUV texture and its
 decode fence. The bridge waits on that fence, converts and resizes YUV to the
@@ -14,6 +16,10 @@ The managed player treats this bridge as an optimization. Unsupported hardware
 decoding, mismatched adapters, initialization errors, or sharing failures fall
 back to the managed software-decoded DirectML path. If inference itself remains
 unavailable, playback continues with opaque alpha.
+
+Legacy `nvidia-aigs` manifests are converted by the managed manifest loader
+before playback reaches this bridge. The bridge therefore supports only the
+current `rvm-onnx` contract.
 
 The project is built as part of the x64 Release solution and the application
 project copies `IStripperRvmGpuBridge64.dll` into build and publish outputs. Use

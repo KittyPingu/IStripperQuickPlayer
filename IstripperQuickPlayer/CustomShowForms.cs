@@ -22,8 +22,14 @@ internal sealed class CustomShowEditorForm : Form
     readonly CustomShowQueueJob? queueDraft;
     readonly string? queueDraftAssetOwnerId;
     readonly CustomShowIncompleteSetupEntry? restoredSetup;
+    readonly string? initialSourcePath;
+    readonly string? initialTitle;
+    readonly string? initialSourceUrl;
+    readonly bool retainInitialSource;
+    readonly bool forceRvmOnnx;
     string? appendShowId;
     readonly TextBox source = new();
+    readonly Button sourceBrowse;
     readonly Button addToExisting = new() { Text = "Add To Existing Show", AutoSize = true };
     readonly TextBox title = new();
     readonly ComboBox performer = new() { DropDownStyle = ComboBoxStyle.DropDown,
@@ -190,7 +196,10 @@ internal sealed class CustomShowEditorForm : Form
         CustomShowQueueManager? queueManager = null, string? queueJobId = null,
         CustomShowIncompleteSetupEntry? restoredSetup = null,
         CustomShowQueueJob? queueDraft = null,
-        string? queueDraftAssetOwnerId = null)
+        string? queueDraftAssetOwnerId = null,
+        string? initialSourcePath = null, string? initialTitle = null,
+        string? initialSourceUrl = null, bool retainInitialSource = false,
+        bool forceRvmOnnx = false)
     {
         this.store = store;
         this.configuration = configuration;
@@ -201,6 +210,11 @@ internal sealed class CustomShowEditorForm : Form
         this.queueDraft = queueDraft;
         this.queueDraftAssetOwnerId = queueDraftAssetOwnerId;
         this.restoredSetup = restoredSetup;
+        this.initialSourcePath = initialSourcePath;
+        this.initialTitle = initialTitle;
+        this.initialSourceUrl = initialSourceUrl;
+        this.retainInitialSource = retainInitialSource;
+        this.forceRvmOnnx = forceRvmOnnx;
         autoAccept.Text =
             "Automatically accept result with alpha threshold " +
             configuration.DefaultAlphaThreshold;
@@ -234,7 +248,7 @@ internal sealed class CustomShowEditorForm : Form
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         scrollHost.Controls.Add(root);
         TableLayoutPanel basic = SectionTable();
-        AddFileRow(basic, "Source video", source,
+        sourceBrowse = AddFileRow(basic, "Source video", source,
             "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*");
         source.TextChanged += (_, _) =>
         {
@@ -244,7 +258,8 @@ internal sealed class CustomShowEditorForm : Form
             clipEditorConfirmedThisSession = false;
             UpdateClipButton();
         };
-        if (showId == null) AddRow(basic, "", addToExisting);
+        if (showId == null && !retainInitialSource)
+            AddRow(basic, "", addToExisting);
         AddRow(basic, "Show title", title);
         AddRow(basic, "Model profile", performer,
             FlowVertical(newPerformer, editPerformer));
@@ -522,6 +537,7 @@ internal sealed class CustomShowEditorForm : Form
         if (showId == null && queueJobId == null && queueDraft == null &&
             restoredSetup == null)
             RestoreProcessingOptions();
+        ApplyInitialSource();
         FormClosing += (_, _) =>
         {
             if (showId == null) RememberProcessingOptions();
@@ -530,6 +546,25 @@ internal sealed class CustomShowEditorForm : Form
         AppTheme.Apply(this);
         coverTitleColor.BackColor = selectedCoverColor;
         UpdateColorButton();
+    }
+
+    void ApplyInitialSource()
+    {
+        if (showId != null || queueJobId != null || queueDraft != null ||
+            restoredSetup != null || string.IsNullOrWhiteSpace(initialSourcePath))
+            return;
+        source.Text = Path.GetFullPath(initialSourcePath);
+        source.ReadOnly = retainInitialSource;
+        sourceBrowse.Enabled = !retainInitialSource;
+        if (!string.IsNullOrWhiteSpace(initialTitle))
+            title.Text = initialTitle.Trim();
+        if (forceRvmOnnx)
+        {
+            SelectStartingWith(preset, "RVM ONNX");
+            preset.Enabled = false;
+            Text = "Create Real-time Custom Show from URL";
+        }
+        UpdateProcessingOptions();
     }
 
     void ChooseCoverTitleColor(object? sender, EventArgs e)
@@ -2316,6 +2351,10 @@ internal sealed class CustomShowEditorForm : Form
             CustomShowStore.ValidateProfile(selectedProfile);
             if (!File.Exists(source.Text))
                 throw new FileNotFoundException("Select a source video.", source.Text);
+            if (retainInitialSource && initialSourcePath != null &&
+                !SamePath(source.Text, initialSourcePath))
+                throw new InvalidDataException(
+                    "The downloaded URL source cannot be replaced in this workflow.");
             if (algorithm == Sam2MattingSupport.Algorithm &&
                 !Sam2MattingSupport.IsInstalled(configuration,
                     SelectedSam2MattingTracker()))
@@ -2351,8 +2390,18 @@ internal sealed class CustomShowEditorForm : Form
             string? targetId = existing?.TargetShowId ??
                 (operation == CustomShowQueueOperation.Append ? appendShowId :
                     operation == CustomShowQueueOperation.Reprocess ? showId : null);
+            bool retainSource = retainInitialSource ||
+                existing?.RetainSourceInShow == true;
+            if (retainSource && operation != CustomShowQueueOperation.New)
+                throw new InvalidDataException(
+                    "Downloaded URL sources can only create new custom shows.");
             CustomShowManifest manifest = operation == CustomShowQueueOperation.New
                 ? existing?.Manifest ?? new() : store.LoadManifest(targetId!);
+            string? sourceUrl = initialSourceUrl ?? existing?.SourceUrl ??
+                existing?.Manifest.Source.Url ?? manifest.Source.Url;
+            if (initialSourceUrl == null && existing?.RetainSourceInShow == true &&
+                !SamePath(source.Text, existing.SourcePath))
+                sourceUrl = null;
             ApplyFields(manifest, includeClipLayout: true);
             AdoptSelectedProfileGender(manifest.Gender);
             manifest.Clips = CloneQueueValue(showClips);
@@ -2395,7 +2444,11 @@ internal sealed class CustomShowEditorForm : Form
                     }
             }
             manifest.ClipDetection = clipDetection;
-            manifest.Source = new() { Mode = "reference", Path = Path.GetFullPath(source.Text) };
+            manifest.Source = new()
+            {
+                Mode = "reference", Path = Path.GetFullPath(source.Text),
+                Url = sourceUrl
+            };
             CustomShowProcessingScene[] processingScenes = [];
             string tracker = SelectedSam2MattingTracker();
             string promptMode = selectedSam2MattingPromptMode;
@@ -2572,6 +2625,8 @@ internal sealed class CustomShowEditorForm : Form
             job.Performer = CloneQueueValue(selectedProfile);
             job.Clips = CloneQueueValue(manifest.Clips);
             job.SourcePath = Path.GetFullPath(source.Text);
+            job.RetainSourceInShow = retainSource;
+            job.SourceUrl = sourceUrl;
             job.RequestedOutputPath = Path.Combine(store.ShowsFolder,
                 operation == CustomShowQueueOperation.New ? manifest.Id : targetId!);
             job.SourceLength = sourceInfo.Length;
@@ -3601,7 +3656,10 @@ internal sealed class CustomShowEditorForm : Form
             AlphaThreshold = clip.AlphaThreshold,
             EdgeChokePixels = clip.EdgeChokePixels,
             DetectionLabels = [.. clip.DetectionLabels],
-            Source = new CustomShowSource { Mode = source.Mode, Path = source.Path },
+            Source = new CustomShowSource
+            {
+                Mode = source.Mode, Path = source.Path, Url = source.Url
+            },
             SourceStartMs = clip.StartMs,
             SourceEndMs = clip.EndMs,
             Media = clip.Media
@@ -3877,7 +3935,8 @@ internal sealed class CustomShowEditorForm : Form
         table.RowStyles[row].Height = 0;
     }
 
-    static void AddFileRow(TableLayoutPanel table, string label, TextBox box, string filter)
+    static Button AddFileRow(TableLayoutPanel table, string label, TextBox box,
+        string filter)
     {
         Button browse = new() { Text = "Browse...", AutoSize = true };
         browse.Click += (_, _) =>
@@ -3886,6 +3945,7 @@ internal sealed class CustomShowEditorForm : Form
             if (dialog.ShowDialog(table.FindForm()) == DialogResult.OK) box.Text = dialog.FileName;
         };
         AddRow(table, label, box, browse);
+        return browse;
     }
 
     static void AddFolderRow(TableLayoutPanel table, string label, TextBox box)
@@ -5945,6 +6005,8 @@ internal sealed class CustomShowSetupOptionsForm : Form
         Checked = true };
     readonly CheckBox rvmOnnx = new() { Text =
         "RVM ONNX MobileNetV3 + ResNet50 models (~117 MB, DirectML)", AutoSize = true };
+    readonly CheckBox ytDlp = new() { Text =
+        "URL video downloader (official yt-dlp Windows executable)", AutoSize = true };
     readonly CheckBox sam2Matting = new() { Text =
         "SAM2Matting with SAM2.1-T and SAM2.1-B+ (~600 MB, NVIDIA CUDA required)",
         AutoSize = true, Checked = true };
@@ -5977,6 +6039,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallSam2Matting => sam2Matting.Checked;
     internal bool InstallOfflineProcessing => offline.Checked;
     internal bool InstallRvmOnnx => rvmOnnx.Checked;
+    internal bool InstallYtDlp => ytDlp.Checked;
 
     internal CustomShowSetupOptionsForm()
     {
@@ -5993,6 +6056,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
             "Select the processing environments and optional tools to install:", AutoSize = true });
         layout.Controls.Add(offline);
         layout.Controls.Add(rvmOnnx);
+        layout.Controls.Add(ytDlp);
         layout.Controls.Add(transNet);
         layout.Controls.Add(omniShotCut);
         layout.Controls.Add(matAnyone);
@@ -6005,6 +6069,15 @@ internal sealed class CustomShowSetupOptionsForm : Form
             "SAM2Matting, MatAnyone 2, and ProPainter are non-commercial; " +
             "ViTMatte, SAM2, EdgeTAM, and Stabilo permit commercial use.",
             AutoSize = true, MaximumSize = new Size(810, 0) });
+        LinkLabel ytDlpLicence = new()
+        {
+            Text = "Read the yt-dlp executable licence information",
+            AutoSize = true
+        };
+        ytDlpLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
+            "https://github.com/yt-dlp/yt-dlp#license")
+            { UseShellExecute = true });
+        layout.Controls.Add(ytDlpLicence);
         LinkLabel omniLicence = new() { Text = "Read the OmniShotCut MIT licence", AutoSize = true };
         omniLicence.LinkClicked += (_, _) => Process.Start(new ProcessStartInfo(
             "https://github.com/UVA-Computer-Vision-Lab/OmniShotCut/blob/23ad6fb41b296fb9258b0e7825125a914573b906/LICENSE") { UseShellExecute = true });
@@ -6054,7 +6127,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
         AcceptButton = (Button)buttons.Controls[0];
         CancelButton = (Button)buttons.Controls[1];
         AppTheme.Apply(this);
-        omniLicence.LinkColor = matAnyoneLicence.LinkColor =
+        ytDlpLicence.LinkColor = omniLicence.LinkColor = matAnyoneLicence.LinkColor =
             sam2MattingLicenceLink.LinkColor = vitMatteLicence.LinkColor = edgeTamLicence.LinkColor = stabiloLicence.LinkColor =
             proPainterLicence.LinkColor =
             Properties.Settings.Default.DarkMode ? Color.LightSkyBlue : Color.Blue;
@@ -6064,6 +6137,7 @@ internal sealed class CustomShowSetupOptionsForm : Form
     {
         using CustomShowSetupOptionsForm form = new();
         return form.InstallOfflineProcessing && !form.InstallRvmOnnx &&
+            !form.InstallYtDlp &&
             form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
             form.InstallSam2Matting &&
             !form.InstallViTMatte && !form.InstallEdgeTam &&

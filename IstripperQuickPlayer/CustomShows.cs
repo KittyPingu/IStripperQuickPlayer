@@ -907,6 +907,8 @@ internal sealed class CustomShowSource
 {
     public string Mode { get; set; } = "reference";
     public string Path { get; set; } = "";
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Url { get; set; }
 }
 
 internal sealed class CustomShowMedia
@@ -1515,6 +1517,15 @@ internal sealed class CustomShowStore
             throw new FileNotFoundException("The copied source video is missing.");
         if (show.Source.Mode == "reference" && string.IsNullOrWhiteSpace(show.Source.Path))
             throw new InvalidDataException("The referenced source path is required.");
+        ValidateSourceUrl(show.Source);
+    }
+
+    static void ValidateSourceUrl(CustomShowSource source)
+    {
+        if (source.Url == null) return;
+        if (!YtDlpSupport.TryNormalizeUrl(source.Url, out _))
+            throw new InvalidDataException(
+                "Source URL must be an HTTP or HTTPS URL without embedded credentials.");
     }
 
     static IEnumerable<string> RequiredMediaPaths(CustomClipMedia media)
@@ -2069,6 +2080,7 @@ internal sealed class CustomShowStore
         if (clip.Source.Mode == "copy" &&
             !File.Exists(ResolveRelative(folder, clip.Source.Path)))
             throw new FileNotFoundException("The copied clip source video is missing.");
+        ValidateSourceUrl(clip.Source);
     }
 
     static ModelCard? FindIstripperModel(string? modelId)

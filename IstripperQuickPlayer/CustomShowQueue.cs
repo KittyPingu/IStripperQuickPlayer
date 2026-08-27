@@ -25,6 +25,9 @@ internal sealed class CustomShowQueueJob
     public CustomPerformerProfile Performer { get; set; } = new();
     public CustomShowClip[] Clips { get; set; } = [];
     public string SourcePath { get; set; } = "";
+    public bool RetainSourceInShow { get; set; }
+    public string? SourceUrl { get; set; }
+    public string? SourceAsset { get; set; }
     public string RequestedOutputPath { get; set; } = "";
     public long SourceLength { get; set; }
     public long SourceLastWriteUtcTicks { get; set; }
@@ -270,19 +273,23 @@ internal sealed class CustomShowQueueManager : IDisposable
         lock (gate)
         {
             PrepareTargetDependencyLocked(job, existingId);
+            int existingIndex = -1;
             if (existingId != null)
             {
-                int index = document.Jobs.FindIndex(value => value.Id == existingId);
-                if (index < 0) throw new InvalidOperationException("The queue job no longer exists.");
-                if (document.Jobs[index].Status == CustomShowQueueStatus.Running)
+                existingIndex = document.Jobs.FindIndex(value =>
+                    value.Id == existingId);
+                if (existingIndex < 0)
+                    throw new InvalidOperationException(
+                        "The queue job no longer exists.");
+                if (document.Jobs[existingIndex].Status ==
+                    CustomShowQueueStatus.Running)
                     throw new InvalidOperationException("A running job cannot be edited.");
                 job.Id = existingId;
-                job.CreatedUtc = document.Jobs[index].CreatedUtc;
-                document.Jobs[index] = job;
+                job.CreatedUtc = document.Jobs[existingIndex].CreatedUtc;
             }
-            else document.Jobs.Add(job);
             string assets = storage.Assets(job.Id);
             Directory.CreateDirectory(assets);
+            CaptureRetainedSource(job, assets);
             if (!string.IsNullOrWhiteSpace(coverSource))
             {
                 string destination = Path.Combine(assets, "cover" + Path.GetExtension(coverSource));
@@ -324,10 +331,58 @@ internal sealed class CustomShowQueueManager : IDisposable
                         .Replace('\\', '/');
                 }
             }
+            if (existingIndex >= 0) document.Jobs[existingIndex] = job;
+            else document.Jobs.Add(job);
             SaveLocked();
         }
         OnChanged();
         return job.Id;
+    }
+
+    static void CaptureRetainedSource(CustomShowQueueJob job, string assets)
+    {
+        if (!job.RetainSourceInShow)
+        {
+            job.SourceAsset = null;
+            return;
+        }
+        if (job.Operation != CustomShowQueueOperation.New)
+            throw new InvalidDataException(
+                "A retained URL source is valid only for a new custom show.");
+        if (!File.Exists(job.SourcePath))
+            throw new FileNotFoundException(
+                "The downloaded URL source is missing.", job.SourcePath);
+        string extension = Path.GetExtension(job.SourcePath);
+        if (!RealtimeFolderImporter.SupportedExtensions.Contains(extension))
+            throw new InvalidDataException(
+                "The downloaded URL source is not a supported video type.");
+        string destination = Path.Combine(assets,
+            "source" + extension.ToLowerInvariant());
+        if (!string.Equals(Path.GetFullPath(job.SourcePath),
+                Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase))
+        {
+            string temporary = destination + "." +
+                Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.Copy(job.SourcePath, temporary, true);
+                File.Move(temporary, destination, true);
+            }
+            finally
+            {
+                try { File.Delete(temporary); } catch { }
+            }
+        }
+        job.SourcePath = destination;
+        job.SourceAsset = Path.GetRelativePath(assets, destination)
+            .Replace('\\', '/');
+        FileInfo source = new(destination);
+        job.SourceLength = source.Length;
+        job.SourceLastWriteUtcTicks = source.LastWriteTimeUtc.Ticks;
+        job.Manifest.Source = new CustomShowSource
+        {
+            Mode = "reference", Path = destination, Url = job.SourceUrl
+        };
     }
 
     internal string[] AddBatch(IReadOnlyList<CustomShowQueueBatchEntry> entries)
@@ -997,13 +1052,17 @@ internal static class CustomShowJobRunner
         if (job.Operation == CustomShowQueueOperation.Append)
         {
             show.Clips = [.. existing, .. OffsetClips(clips, offset,
-                new CustomShowSource { Mode = "reference", Path = job.SourcePath })];
+                new CustomShowSource
+                {
+                    Mode = "reference", Path = job.SourcePath,
+                    Url = job.SourceUrl
+                })];
             show.Media.DurationMs = checked(offset + duration);
             show.ClipDetection = null;
         }
         else
         {
-            show.Source = new() { Mode = "reference", Path = job.SourcePath };
+            ApplyPublishedSource(job, show, staging);
             show.Clips = clips;
             show.Media.Width = result.Width;
             show.Media.Height = result.Height;
@@ -1025,6 +1084,41 @@ internal static class CustomShowJobRunner
         await PublishAsync(job, show, staging, store, progress,
             preparePublication, token);
         return show.Id;
+    }
+
+    static void ApplyPublishedSource(CustomShowQueueJob job,
+        CustomShowManifest show, string staging)
+    {
+        if (job.Operation != CustomShowQueueOperation.Reprocess ||
+            show.Source.Mode != "copy")
+            show.Source = PublishedSource(job, staging);
+        else if (job.SourceUrl != null)
+            show.Source.Url = job.SourceUrl;
+    }
+
+    static CustomShowSource PublishedSource(CustomShowQueueJob job,
+        string staging)
+    {
+        if (!job.RetainSourceInShow)
+            return new CustomShowSource
+            {
+                Mode = "reference", Path = job.SourcePath,
+                Url = job.SourceUrl
+            };
+        string extension = Path.GetExtension(job.SourcePath).ToLowerInvariant();
+        if (!RealtimeFolderImporter.SupportedExtensions.Contains(extension))
+            throw new InvalidDataException(
+                "The retained URL source has an unsupported video type.");
+        string destination = Path.Combine(staging, "source" + extension);
+        if (!string.Equals(Path.GetFullPath(job.SourcePath),
+                Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase))
+            File.Copy(job.SourcePath, destination, true);
+        return new CustomShowSource
+        {
+            Mode = "copy",
+            Path = Path.GetRelativePath(staging, destination).Replace('\\', '/'),
+            Url = job.SourceUrl
+        };
     }
 
     static void ResolvePerformer(CustomShowQueueJob job, CustomShowStore store)
@@ -1118,6 +1212,33 @@ internal static class CustomShowJobRunner
             !CustomShowProcessor.IsRvmInitialMaskInstalled(configuration))
             throw new CustomShowQueueAttentionException(
                 "Setup required: install or repair the Robust Video Matting processing tools.");
+        if (job.SourceUrl != null &&
+            !YtDlpSupport.TryNormalizeUrl(job.SourceUrl, out _))
+            throw new CustomShowQueueAttentionException(
+                "The queued source URL is invalid.");
+        if (job.RetainSourceInShow)
+        {
+            if (job.Operation != CustomShowQueueOperation.New ||
+                string.IsNullOrWhiteSpace(job.SourceAsset))
+                throw new CustomShowQueueAttentionException(
+                    "The retained URL source metadata is invalid.");
+            string retained;
+            try
+            {
+                retained = CustomShowStore.ResolveRelative(queue.Assets(job.Id),
+                    job.SourceAsset);
+            }
+            catch (InvalidDataException)
+            {
+                throw new CustomShowQueueAttentionException(
+                    "The retained URL source path is invalid.");
+            }
+            if (!string.Equals(Path.GetFullPath(retained),
+                    Path.GetFullPath(job.SourcePath),
+                    StringComparison.OrdinalIgnoreCase) || !File.Exists(retained))
+                throw new CustomShowQueueAttentionException(
+                    "The retained URL source is missing from the queue job.");
+        }
         if (!File.Exists(job.SourcePath))
             throw new CustomShowQueueAttentionException("The source video no longer exists.");
         if (job.Clips.Length == 0 || !job.Clips.Any(clip => clip.Included) ||
@@ -1531,11 +1652,30 @@ internal static class CustomShowJobRunner
                 { Id = clipId, StartMs = 0, EndMs = 1000 };
             bool reused = TryReuseRealtimeMedia(replacement, [old], root,
                 CustomClipMedia.RvmOnnxMode, out CustomShowProcessResult result);
+            CustomShowManifest retainedSourceShow = new()
+            {
+                Source = new CustomShowSource
+                {
+                    Mode = "copy", Path = "source.mp4",
+                    Url = "https://example.com/original"
+                }
+            };
+            CustomShowQueueJob reprocess = new()
+            {
+                Operation = CustomShowQueueOperation.Reprocess,
+                SourcePath = Path.Combine(root, "source.mp4"),
+                SourceUrl = "https://example.com/original"
+            };
+            File.WriteAllBytes(reprocess.SourcePath, [7, 8, 9]);
+            ApplyPublishedSource(reprocess, retainedSourceShow, root);
             return reused && replacement.Media?.Mode ==
                     CustomClipMedia.RvmOnnxMode &&
                 replacement.Media.Alpha == null && File.Exists(foreground) &&
                 File.ReadAllBytes(foreground).SequenceEqual(new byte[] { 1, 2, 3, 4 }) &&
                 !File.Exists(alpha) && result.ExecutionMode == "metadata-only-reuse" &&
+                retainedSourceShow.Source.Mode == "copy" &&
+                retainedSourceShow.Source.Path == "source.mp4" &&
+                retainedSourceShow.Source.Url == reprocess.SourceUrl &&
                 !TryReuseRealtimeMedia(new CustomShowClip
                     { Id = clipId, StartMs = 100, EndMs = 1000 }, [old], root,
                     CustomClipMedia.RvmOnnxMode, out _);
@@ -1812,6 +1952,48 @@ internal static class CustomShowJobRunner
                 manager.Find(failedHistory.Id) == null ||
                 Directory.Exists(storage.Assets(completedHistory.Id)) ||
                 !Directory.Exists(published)) return false;
+
+            string downloaded = Path.Combine(root, "downloaded.mp4");
+            byte[] downloadedBytes = [0, 1, 2, 3, 4, 5, 6, 7];
+            File.WriteAllBytes(downloaded, downloadedBytes);
+            FileInfo downloadedInfo = new(downloaded);
+            CustomShowQueueJob retained = new()
+            {
+                Operation = CustomShowQueueOperation.New,
+                SourcePath = downloaded,
+                SourceLength = downloadedInfo.Length,
+                SourceLastWriteUtcTicks = downloadedInfo.LastWriteTimeUtc.Ticks,
+                RetainSourceInShow = true,
+                SourceUrl = "https://example.com/watch?v=retained"
+            };
+            retained.Manifest.Source = new CustomShowSource
+            {
+                Mode = "reference", Path = downloaded,
+                Url = retained.SourceUrl
+            };
+            manager.AddOrUpdate(retained, null, null,
+                new Dictionary<string, string>());
+            CustomShowQueueJob? captured = manager.Find(retained.Id);
+            if (captured == null || captured.SourceAsset != "source.mp4" ||
+                !captured.SourcePath.StartsWith(storage.Assets(retained.Id) +
+                    Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !File.ReadAllBytes(captured.SourcePath)
+                    .SequenceEqual(downloadedBytes) ||
+                captured.Manifest.Source.Url != retained.SourceUrl)
+                return false;
+            string retainedStaging = Path.Combine(root, "retained-staging");
+            Directory.CreateDirectory(retainedStaging);
+            CustomShowSource publishedSource = PublishedSource(captured,
+                retainedStaging);
+            if (publishedSource.Mode != "copy" ||
+                publishedSource.Path != "source.mp4" ||
+                publishedSource.Url != retained.SourceUrl ||
+                !File.ReadAllBytes(Path.Combine(retainedStaging, "source.mp4"))
+                    .SequenceEqual(downloadedBytes))
+                return false;
+            manager.Delete(retained.Id);
+
             CustomShowQueueJob firstTarget = new() { TargetShowId = "target" };
             manager.AddOrUpdate(firstTarget, null, null,
                 new Dictionary<string, string>());
