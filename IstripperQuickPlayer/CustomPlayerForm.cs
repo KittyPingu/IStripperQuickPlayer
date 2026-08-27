@@ -49,8 +49,6 @@ internal sealed class CustomPlayerForm : Form
     static IntPtr globalWheelHook;
     readonly string foregroundPath;
     readonly string? alphaPath;
-    readonly string? nvidiaSdkRoot;
-    CustomNvidiaSettings? nvidiaSettings;
     readonly string? rvmOnnxModelPath;
     CustomRvmOnnxSettings? rvmOnnxSettings;
     readonly bool suppressErrorDialog;
@@ -98,7 +96,6 @@ internal sealed class CustomPlayerForm : Form
     internal event EventHandler? PreloadRequested;
     internal event Action<int>? VolumeChanged;
     internal event Action<int>? SizePercentChanged;
-    internal event Action<string>? NvidiaFallback;
     internal event Action<string>? RvmOnnxFallback;
     internal bool HoldFinalFrameOnCompletion;
 
@@ -127,6 +124,8 @@ internal sealed class CustomPlayerForm : Form
     static extern bool ScreenToClient(IntPtr window, ref Point point);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr GetModuleHandle(string? moduleName);
+    [DllImport("kernel32.dll")]
+    static extern bool CloseHandle(IntPtr handle);
 
     internal CustomPlayerForm(string foregroundPath, string? alphaPath,
         int playerSizePercent = 40, int volumePercent = 100,
@@ -137,15 +136,11 @@ internal sealed class CustomPlayerForm : Form
         Task<PreparedPlayback?>? preparedPlayback = null,
         float edgeChokePixels = 1,
         CustomVirtualGreenScreen? virtualGreenScreen = null,
-        string? nvidiaSdkRoot = null,
-        CustomNvidiaSettings? nvidiaSettings = null,
         string? rvmOnnxModelPath = null,
         CustomRvmOnnxSettings? rvmOnnxSettings = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
-        this.nvidiaSdkRoot = nvidiaSdkRoot;
-        this.nvidiaSettings = nvidiaSettings?.Clone();
         this.rvmOnnxModelPath = rvmOnnxModelPath;
         this.rvmOnnxSettings = rvmOnnxSettings?.Clone();
         this.suppressErrorDialog = suppressErrorDialog;
@@ -251,8 +246,7 @@ internal sealed class CustomPlayerForm : Form
             renderer ??= await Task.Run(() => new PairedRenderer(
                 foregroundPath, alphaPath, alphaThreshold,
                 fullOpacityThreshold, edgeChokePixels,
-                virtualGreenScreen, nvidiaSdkRoot,
-                Volatile.Read(ref nvidiaSettings), rvmOnnxModelPath,
+                virtualGreenScreen, rvmOnnxModelPath,
                 Volatile.Read(ref rvmOnnxSettings)),
                 cancellation.Token);
             prepared?.Dispose();
@@ -271,17 +265,10 @@ internal sealed class CustomPlayerForm : Form
             renderer.AttachWindow(window.handle, window.width, window.height);
             renderer.Play();
             bool firstFramePresented = false;
-            bool nvidiaFallbackReported = false;
             bool rvmFallbackReported = false;
             bool refreshPausedFrame = true;
             while (!renderer.Ended && renderer.CurrentTime < RangeEndSeconds)
             {
-                if (!nvidiaFallbackReported &&
-                    renderer.NvidiaFallbackReason is string fallback)
-                {
-                    nvidiaFallbackReported = true;
-                    BeginInvoke(() => NvidiaFallback?.Invoke(fallback));
-                }
                 if (!rvmFallbackReported &&
                     renderer.RvmOnnxFallbackReason is string rvmFallback)
                 {
@@ -479,23 +466,11 @@ internal sealed class CustomPlayerForm : Form
         QueuePointerTransparencyRefresh();
     }
 
-    internal Task SetNvidiaSettingsAsync(CustomNvidiaSettings settings)
-    {
-        CustomShowStore.ValidateNvidiaSettings(settings);
-        CustomNvidiaSettings next = settings.Clone();
-        Volatile.Write(ref nvidiaSettings, next);
-        Volatile.Write(ref rvmOnnxSettings, null);
-        PairedRenderer? current = renderer;
-        return current == null ? Task.CompletedTask :
-            Task.Run(() => current.SetNvidiaSettings(next));
-    }
-
     internal Task SetRvmOnnxSettingsAsync(CustomRvmOnnxSettings settings)
     {
         CustomShowStore.ValidateRvmOnnxSettings(settings);
         CustomRvmOnnxSettings next = settings.Clone();
         Volatile.Write(ref rvmOnnxSettings, next);
-        Volatile.Write(ref nvidiaSettings, null);
         PairedRenderer? current = renderer;
         return current == null ? Task.CompletedTask :
             Task.Run(() => current.SetRvmOnnxSettings(next));
@@ -541,15 +516,13 @@ internal sealed class CustomPlayerForm : Form
         string? alphaPath, int alphaThreshold, int fullOpacityThreshold,
         float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen,
         long startMs,
-        CancellationToken cancellationToken, string? nvidiaSdkRoot = null,
-        CustomNvidiaSettings? nvidiaSettings = null,
+        CancellationToken cancellationToken,
         string? rvmOnnxModelPath = null,
         CustomRvmOnnxSettings? rvmOnnxSettings = null) => Task.Run(() =>
         {
             PairedRenderer renderer = new(foregroundPath, alphaPath,
                 alphaThreshold, fullOpacityThreshold, edgeChokePixels,
-                virtualGreenScreen, nvidiaSdkRoot, nvidiaSettings,
-                rvmOnnxModelPath, rvmOnnxSettings);
+                virtualGreenScreen, rvmOnnxModelPath, rvmOnnxSettings);
             try
             {
                 renderer.Seek(Math.Max(0, startMs / 1000d));
@@ -1079,13 +1052,15 @@ internal sealed class CustomPlayerForm : Form
         const string Shader = """
             struct O { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
             O VSMain(uint id:SV_VertexID) { O o; float2 uv=float2((id<<1)&2,id&2); o.uv=uv; o.p=float4(uv.x*2-1,1-uv.y*2,0,1); return o; }
-            Texture2D<float> Y:register(t0); Texture2D<float> U:register(t1); Texture2D<float> V:register(t2); Texture2D<float> A:register(t3); Texture2D<float4> T:register(t4); Texture2D<float4> K:register(t5); Texture2D<float> M:register(t6);
+            Texture2D<float4> Y:register(t0); Texture2D<float2> U:register(t1); Texture2D<float2> V:register(t2); Texture2D<float> A:register(t3); Texture2D<float4> T:register(t4); Texture2D<float4> K:register(t5); Texture2D<float> M:register(t6);
             SamplerState S:register(s0);
             static const float2 Disk[16]={float2(.1767767,0),float2(-.2257722,.2068258),float2(.0345581,-.3937712),float2(.2845712,.3711728),float2(-.5222232,-.0923739),float2(.4946954,-.3146847),float2(-.1654659,.6155250),float2(-.3155615,-.6075944),float2(.6846422,.2500302),float2(-.7122561,.2940090),float2(.3433545,-.7337286),float2(.2537302,.8089320),float2(-.7647459,-.4431859),float2(.8971340,-.1972324),float2(-.5475069,.7787722),float2(-.1264868,-.9760897)};
             static const float2 Rays[8]={float2(1,0),float2(.7071068,.7071068),float2(0,1),float2(-.7071068,.7071068),float2(-1,0),float2(-.7071068,-.7071068),float2(0,-1),float2(.7071068,-.7071068)};
             float LinearChannel(float c){return c<=.04045?c/12.92:pow((c+.055)/1.055,2.4);}
-            float3 RgbAt(float2 uv){float y=1.16438356*(Y.Sample(S,uv)-16.0/255.0);float u=U.Sample(S,uv)-.5;float v=V.Sample(S,uv)-.5;return saturate(float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u));}
-            float3 DomainAt(float2 uv,int domain){if(domain==0)return float3(U.Sample(S,uv),V.Sample(S,uv),0);float3 c=RgbAt(uv);if(domain==1)return c;if(domain==2){float maximum=max(c.r,max(c.g,c.b));float minimum=min(c.r,min(c.g,c.b));float delta=maximum-minimum;float hue=0;if(delta>.000001){hue=maximum==c.r?(c.g-c.b)/delta:maximum==c.g?2+(c.b-c.r)/delta:4+(c.r-c.g)/delta;hue=frac(hue/6+1);}float saturation=maximum<=0?0:delta/maximum;float angle=hue*6.283185307;return float3(.5+cos(angle)*saturation*.5,.5+sin(angle)*saturation*.5,maximum);}c=float3(LinearChannel(c.r),LinearChannel(c.g),LinearChannel(c.b));float l=pow(max(0,.4122214708*c.r+.5363325363*c.g+.0514459929*c.b),1.0/3.0);float m=pow(max(0,.2119034982*c.r+.6806995451*c.g+.1073969566*c.b),1.0/3.0);float s=pow(max(0,.0883024619*c.r+.2817188376*c.g+.6299787005*c.b),1.0/3.0);return float3(.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s+.5,.0259040371*l+.7827717662*m-.808675766*s+.5);}
+            int InputMode(){return (int)round(T.Load(int3(0,0,0)).a*255.0);}
+            float2 ChromaAt(float2 uv){if(InputMode()==2){float3 c=Y.Sample(S,uv).rgb;float l=.2126*c.r+.7152*c.g+.0722*c.b;return float2(.5+(c.b-l)*.5389,.5+(c.r-l)*.6350);}float2 first=U.Sample(S,uv);return float2(first.r,InputMode()==1?first.g:V.Sample(S,uv).r);}
+            float3 RgbAt(float2 uv){if(InputMode()==2)return Y.Sample(S,uv).rgb;float y=1.16438356*(Y.Sample(S,uv).r-16.0/255.0);float2 chroma=ChromaAt(uv)-.5;return saturate(float3(y+1.79274107*chroma.y,y-.21324861*chroma.x-.53290933*chroma.y,y+2.11240179*chroma.x));}
+            float3 DomainAt(float2 uv,int domain){float2 chroma=ChromaAt(uv);if(domain==0)return float3(chroma,0);float3 c=RgbAt(uv);if(domain==1)return c;if(domain==2){float maximum=max(c.r,max(c.g,c.b));float minimum=min(c.r,min(c.g,c.b));float delta=maximum-minimum;float hue=0;if(delta>.000001){hue=maximum==c.r?(c.g-c.b)/delta:maximum==c.g?2+(c.b-c.r)/delta:4+(c.r-c.g)/delta;hue=frac(hue/6+1);}float saturation=maximum<=0?0:delta/maximum;float angle=hue*6.283185307;return float3(.5+cos(angle)*saturation*.5,.5+sin(angle)*saturation*.5,maximum);}c=float3(LinearChannel(c.r),LinearChannel(c.g),LinearChannel(c.b));float l=pow(max(0,.4122214708*c.r+.5363325363*c.g+.0514459929*c.b),1.0/3.0);float m=pow(max(0,.2119034982*c.r+.6806995451*c.g+.1073969566*c.b),1.0/3.0);float s=pow(max(0,.0883024619*c.r+.2817188376*c.g+.6299787005*c.b),1.0/3.0);return float3(.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s+.5,.0259040371*l+.7827717662*m-.808675766*s+.5);}
             float PaletteKeep(float2 uv,int domain,float threshold){float3 source=DomainAt(uv,domain);float keyStrength=0;float lockedStrength=0;uint width,height;K.GetDimensions(width,height);int capacity=(int)width/2;[loop]for(int n=0;n<capacity;n++){float4 meta=K.Load(int3(n+capacity,0,0));if(meta.y<.5)continue;float4 k=K.Load(int3(n,0,0));float d=distance(source,k.xyz);float keep=meta.x<=0?(d<=k.w?0:1):smoothstep(k.w,k.w+meta.x,d);float strength=1-keep;if(meta.z>.5)lockedStrength=max(lockedStrength,strength);else keyStrength=max(keyStrength,strength);}return keyStrength-lockedStrength>threshold?0:1;}
             float MatteMain(O i):SV_TARGET{float4 spatial=T.Load(int3(1,0,0));int domain=(int)round(spatial.a*255.0);return PaletteKeep(i.uv,domain,spatial.b);}
             float Supported(float2 uv,float lower){float a=A.Sample(S,uv);if(a<=0||a<lower)return 0;a*=M.Sample(S,uv);return a>0&&a>=lower?1:0;}
@@ -1095,21 +1070,20 @@ internal sealed class CustomPlayerForm : Form
             float Removed(float2 uv,float lower,float upper){float a=A.Sample(S,uv);float before=OutputAlpha(a,lower,upper);float after=OutputAlpha(a*M.Sample(S,uv),lower,upper);return after<before?1:0;}
             float RemovedDiskSupport(float2 uv,float2 radius,float lower,float upper){float support=0;[unroll]for(int n=0;n<16;n++)support+=Removed(uv+Disk[n]*radius,lower,upper);return support;}
             float ConnectedRemovedRays(float2 uv,float2 radius,float lower,float upper){float rays=0;[unroll]for(int n=0;n<8;n++){float connected=1;[unroll]for(int step=1;step<=4;step++)connected*=Removed(uv+Rays[n]*radius*(step*.25),lower,upper);rays+=connected;}return rays;}
-            float4 PSMain(O i):SV_TARGET { float y=1.16438356*(Y.Sample(S,i.uv)-16.0/255.0); float u=U.Sample(S,i.uv)-.5; float v=V.Sample(S,i.uv)-.5;
-              float3 c=float3(y+1.79274107*v,y-.21324861*u-.53290933*v,y+2.11240179*u); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;uint aw,ah;A.GetDimensions(aw,ah);
+            float4 PSMain(O i):SV_TARGET { float3 c=RgbAt(i.uv); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;uint aw,ah;A.GetDimensions(aw,ah);
               if(r>0){float2 d=r/float2(aw,ah);a=min(a,A.Sample(S,i.uv+float2(d.x,0)));a=min(a,A.Sample(S,i.uv-float2(d.x,0)));a=min(a,A.Sample(S,i.uv+float2(0,d.y)));a=min(a,A.Sample(S,i.uv-float2(0,d.y)));a=min(a,A.Sample(S,i.uv+d));a=min(a,A.Sample(S,i.uv-d));a=min(a,A.Sample(S,i.uv+float2(d.x,-d.y)));a=min(a,A.Sample(S,i.uv+float2(-d.x,d.y)));}
               float4 spatial=T.Load(int3(1,0,0));float baseAlpha=a;a*=M.Sample(S,i.uv);float keyedAlpha=a;float patch=round(spatial.r*255.0);if(patch>0&&a>0&&a>=t.r){float2 d=patch/float2(aw,ah);if(DiskSupport(i.uv,d,t.r)<4||ConnectedSupportedRays(i.uv,d,t.r)<2)a=0;}float area=round(spatial.g*255.0);if(area>0&&OutputAlpha(keyedAlpha,t.r,t.g)<OutputAlpha(baseAlpha,t.r,t.g)){float2 d=area/float2(aw,ah);if(ConnectedRemovedRays(i.uv,d,t.r,t.g)<3||RemovedDiskSupport(i.uv,d,t.r,t.g)<8)a=baseAlpha;}
               a=a<t.r?0:a>=t.g?1:a; return float4(saturate(c)*a,a); }
             """;
-        readonly FfmpegCpuDecoder rgb;
+        readonly string foregroundPath;
+        FfmpegCpuDecoder rgb;
         readonly FfmpegCpuDecoder? alpha;
-        NvidiaAiGreenScreenSession? nvidia;
         RvmOnnxSession? rvmOnnx;
-        byte[]? nvidiaBgr, nvidiaAlpha;
+        RvmGpuSession? rvmGpu;
+        CustomRvmOnnxSettings? activeRvmSettings;
+        byte[]? realtimeAlpha;
         int alphaWidth, alphaHeight;
-        readonly string? nvidiaSdkRoot;
         readonly string? rvmOnnxModelPath;
-        internal string? NvidiaFallbackReason { get; private set; }
         internal string? RvmOnnxFallbackReason { get; private set; }
         readonly InternalAudioPlayer? audio;
         readonly Stopwatch clock = new();
@@ -1123,6 +1097,14 @@ internal sealed class CustomPlayerForm : Form
             keyView, matteView;
         ID3D11SamplerState? sampler; ID3D11VertexShader? vs;
         ID3D11PixelShader? ps, mattePs;
+        ID3D11Device1? device1;
+        ID3D11Device3? device3;
+        HardwareViews? activeHardwareViews;
+        HardwareViews? gpuDisplayViews;
+        ID3D11Texture2D? gpuAlphaTexture;
+        ID3D11ShaderResourceView? gpuAlphaView;
+        IDXGIKeyedMutex? gpuAlphaMutex;
+        bool hardwareVideoFrame;
         IDCompositionDevice? composition; IDCompositionTarget? compositionTarget;
         IDCompositionVisual? visual;
         bool pending, playing, disposed, frameUploaded; long rgbTick, alphaTick;
@@ -1134,11 +1116,29 @@ internal sealed class CustomPlayerForm : Form
         int keyTextureCapacity = 1;
         int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1,
             uploadedEdgeChokeQuarters = -1, uploadedSmallPatchSize = -1,
-            uploadedMinimumTransparentAreaRadius = -1, uploadedGreenDomain = -1;
+            uploadedMinimumTransparentAreaRadius = -1, uploadedGreenDomain = -1,
+            uploadedHardwareVideo = -1;
         double clockSeconds, rate = 1;
         byte[] alphaRow;
         readonly byte[] yRow, cbRow, crRow;
         readonly bool alpha16;
+
+        sealed class HardwareViews : IDisposable
+        {
+            internal readonly ID3D11Texture2D Texture;
+            internal readonly ID3D11ShaderResourceView Y;
+            internal readonly ID3D11ShaderResourceView UV;
+            internal readonly IDXGIKeyedMutex KeyedMutex;
+            internal HardwareViews(ID3D11Texture2D texture,
+                ID3D11ShaderResourceView y, ID3D11ShaderResourceView uv)
+            {
+                Texture = texture;
+                Y = y;
+                UV = uv;
+                KeyedMutex = texture.QueryInterface<IDXGIKeyedMutex>();
+            }
+            public void Dispose() { KeyedMutex.Dispose(); UV.Dispose(); Y.Dispose(); Texture.Dispose(); }
+        }
         internal int Width => rgb.Width; internal int Height => rgb.Height;
         internal double Duration { get; }
         internal bool Ended { get; private set; }
@@ -1148,16 +1148,11 @@ internal sealed class CustomPlayerForm : Form
         internal PairedRenderer(string foreground, string? alphaPath,
             int alphaThreshold, int fullOpacityThreshold,
             float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen,
-            string? nvidiaSdkRoot = null,
-            CustomNvidiaSettings? nvidiaSettings = null,
             string? rvmOnnxModelPath = null,
             CustomRvmOnnxSettings? rvmOnnxSettings = null)
         {
-            this.nvidiaSdkRoot = nvidiaSdkRoot;
+            foregroundPath = foreground;
             this.rvmOnnxModelPath = rvmOnnxModelPath;
-            if (nvidiaSettings != null && rvmOnnxSettings != null)
-                throw new InvalidDataException(
-                    "Only one real-time foreground renderer may be selected.");
             this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
             this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
             this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
@@ -1168,33 +1163,44 @@ internal sealed class CustomPlayerForm : Form
             minimumTransparentAreaRadius =
                 VirtualGreenScreenMath.MinimumTransparentAreaRadius(
                     virtualGreenScreen);
-            rgb = new FfmpegCpuDecoder(foreground);
-            if (nvidiaSettings != null || rvmOnnxSettings != null)
+            FfmpegCpuDecoder? preparedRgb = null;
+            if (rvmOnnxSettings != null)
             {
-                if (nvidiaSettings != null)
-                    (alphaWidth, alphaHeight) = NvidiaAiGreenScreen.InferenceSize(
-                        rgb.Width, rgb.Height, nvidiaSettings.InferenceResolution);
-                else
-                    (alphaWidth, alphaHeight) = RvmOnnxSupport.InferenceSize(
-                        rgb.Width, rgb.Height, rvmOnnxSettings!.Quality);
-                nvidiaBgr = nvidiaSettings != null
-                    ? new byte[checked(alphaWidth * alphaHeight * 3)] : null;
-                nvidiaAlpha = NvidiaAiGreenScreen.OpaqueFallback(alphaWidth,
-                    alphaHeight);
                 try
                 {
-                    if (nvidiaSettings != null)
-                        nvidia = new NvidiaAiGreenScreenSession(nvidiaSdkRoot ?? "",
-                            alphaWidth, alphaHeight, nvidiaSettings);
-                    else
+                    preparedRgb = new FfmpegCpuDecoder(foreground,
+                        d3d12Hardware: true);
+                    (int gpuWidth, int gpuHeight) = RvmOnnxSupport.InferenceSize(
+                        preparedRgb.Width, preparedRgb.Height,
+                        rvmOnnxSettings.Quality);
+                    rvmGpu = new RvmGpuSession(rvmOnnxModelPath ?? "",
+                        gpuWidth, gpuHeight, rvmOnnxSettings);
+                }
+                catch
+                {
+                    preparedRgb?.Dispose();
+                    preparedRgb = null;
+                    rvmGpu?.Dispose();
+                    rvmGpu = null;
+                }
+                activeRvmSettings = rvmOnnxSettings.Clone();
+            }
+            rgb = preparedRgb ?? new FfmpegCpuDecoder(foreground);
+            if (rvmOnnxSettings != null)
+            {
+                (alphaWidth, alphaHeight) = RvmOnnxSupport.InferenceSize(
+                    rgb.Width, rgb.Height, rvmOnnxSettings.Quality);
+                realtimeAlpha = new byte[checked(alphaWidth * alphaHeight)];
+                Array.Fill(realtimeAlpha, (byte)255);
+                try
+                {
+                    if (rvmGpu == null)
                         rvmOnnx = new RvmOnnxSession(rvmOnnxModelPath ?? "",
-                            alphaWidth, alphaHeight, rvmOnnxSettings!);
+                            alphaWidth, alphaHeight, rvmOnnxSettings);
                 }
                 catch (Exception error)
                 {
-                    if (nvidiaSettings != null)
-                        NvidiaFallbackReason = error.Message;
-                    else RvmOnnxFallbackReason = error.Message;
+                    RvmOnnxFallbackReason = error.Message;
                 }
                 Duration = rgb.Duration;
                 alpha16 = false;
@@ -1225,6 +1231,8 @@ internal sealed class CustomPlayerForm : Form
                 DeviceCreationFlags.BgraSupport, Vortice.Direct3D.FeatureLevel.Level_11_1,
                 Vortice.Direct3D.FeatureLevel.Level_11_0);
             context = device.ImmediateContext; dxgiDevice = device.QueryInterface<IDXGIDevice>();
+            device1 = device.QueryInterface<ID3D11Device1>();
+            device3 = device.QueryInterface<ID3D11Device3>();
             factory = DXGI.CreateDXGIFactory2<IDXGIFactory2>(false);
         }
 
@@ -1275,7 +1283,7 @@ internal sealed class CustomPlayerForm : Form
             });
         internal void Play() { lock(sync) { if(playing)return; clock.Restart(); playing=true; audio?.Play(clockSeconds); } }
         internal void Pause() { lock(sync) { if(!playing)return; UpdateClock(); playing=false; audio?.Pause(); } }
-        internal void Seek(double seconds) { lock(sync) { seconds=Math.Clamp(seconds,0,Duration); rgb.Seek(seconds); alpha?.Seek(seconds); nvidia?.Reset(); rvmOnnx?.Reset(); clockSeconds=seconds; clock.Restart(); if(!playing)clock.Stop(); pending=false; Ended=false; audio?.Seek(seconds,playing); } }
+        internal void Seek(double seconds) { lock(sync) { seconds=Math.Clamp(seconds,0,Duration); rgb.Seek(seconds); alpha?.Seek(seconds); rvmOnnx?.Reset(); rvmGpu?.Reset(); clockSeconds=seconds; clock.Restart(); if(!playing)clock.Stop(); pending=false; Ended=false; audio?.Seek(seconds,playing); } }
         internal void Prime() { lock(sync) { if(!pending) DecodePair(); } }
         internal void SetVolume(int percent)=>audio?.SetVolume(percent);
         internal void SetAlphaThreshold(int value) =>
@@ -1295,72 +1303,6 @@ internal sealed class CustomPlayerForm : Form
             Volatile.Write(ref minimumTransparentAreaRadius,
                 VirtualGreenScreenMath.MinimumTransparentAreaRadius(settings));
         }
-        internal void SetNvidiaSettings(CustomNvidiaSettings settings)
-        {
-            CustomShowStore.ValidateNvidiaSettings(settings);
-            if (alpha != null)
-                throw new InvalidOperationException(
-                    "NVIDIA settings cannot be applied to paired-alpha playback.");
-
-            (int width, int height) = NvidiaAiGreenScreen.InferenceSize(
-                Width, Height, settings.InferenceResolution);
-            byte[] bgr = new byte[checked(width * height * 3)];
-            byte[] mask = NvidiaAiGreenScreen.OpaqueFallback(width, height);
-            NvidiaAiGreenScreenSession? replacement = null;
-            Exception? failure = null;
-            try
-            {
-                replacement = new NvidiaAiGreenScreenSession(
-                    nvidiaSdkRoot ?? "", width, height, settings);
-            }
-            catch (Exception error)
-            {
-                failure = error;
-            }
-
-            lock (sync)
-            {
-                if (disposed)
-                {
-                    replacement?.Dispose();
-                    return;
-                }
-                NvidiaAiGreenScreenSession? previous = nvidia;
-                RvmOnnxSession? previousRvm = rvmOnnx;
-                nvidia = replacement;
-                rvmOnnx = null;
-                nvidiaBgr = bgr;
-                nvidiaAlpha = mask;
-                alphaWidth = width;
-                alphaHeight = height;
-                alphaRow = new byte[checked(width * (alpha16 ? 2 : 1))];
-                NvidiaFallbackReason = failure?.Message;
-                RvmOnnxFallbackReason = null;
-                if (device != null)
-                {
-                    context?.PSUnsetShaderResource(3);
-                    aView?.Dispose();
-                    aTex?.Dispose();
-                    aTex = Texture(alphaWidth, alphaHeight,
-                        alpha16 ? DxgiFormat.R16_UNorm : DxgiFormat.R8_UNorm);
-                    aView = device.CreateShaderResourceView(aTex);
-                }
-                if (frameUploaded && aTex != null)
-                {
-                    GenerateNvidiaAlphaLocked();
-                    unsafe
-                    {
-                        fixed (byte* alphaPixels = nvidiaAlpha!)
-                            context!.UpdateSubresource(aTex, 0, null,
-                                new IntPtr(alphaPixels), (uint)alphaWidth, 0);
-                    }
-                    DrawCurrentFrameLocked();
-                }
-                previous?.Dispose();
-                previousRvm?.Dispose();
-            }
-        }
-
         internal void SetRvmOnnxSettings(CustomRvmOnnxSettings settings)
         {
             CustomShowStore.ValidateRvmOnnxSettings(settings);
@@ -1369,34 +1311,67 @@ internal sealed class CustomPlayerForm : Form
                     "RVM ONNX settings cannot be applied to paired-alpha playback.");
             (int width, int height) = RvmOnnxSupport.InferenceSize(
                 Width, Height, settings.Quality);
-            byte[] mask = NvidiaAiGreenScreen.OpaqueFallback(width, height);
+            byte[] mask = new byte[checked(width * height)];
+            Array.Fill(mask, (byte)255);
             RvmOnnxSession? replacement = null;
+            RvmGpuSession? replacementGpu = null;
+            FfmpegCpuDecoder? replacementDecoder = null;
             Exception? failure = null;
             try
             {
-                replacement = new RvmOnnxSession(
-                    RvmOnnxSupport.ModelPathFor(settings.Model),
-                    width, height, settings);
+                replacementDecoder = new FfmpegCpuDecoder(foregroundPath,
+                    d3d12Hardware: true);
+                replacementDecoder.Seek(CurrentTime);
+                if (!replacementDecoder.DecodeNext(out _))
+                    throw new InvalidDataException(
+                        "Could not restore the current hardware-decoded frame.");
+                replacementGpu = new RvmGpuSession(
+                    RvmOnnxSupport.ModelPathFor(settings.Model), width, height,
+                    settings);
             }
-            catch (Exception error) { failure = error; }
+            catch (Exception gpuError)
+            {
+                replacementGpu?.Dispose();
+                replacementGpu = null;
+                replacementDecoder?.Dispose();
+                replacementDecoder = null;
+                try
+                {
+                    replacement = new RvmOnnxSession(
+                        RvmOnnxSupport.ModelPathFor(settings.Model),
+                        width, height, settings);
+                }
+                catch (Exception error) { failure = new AggregateException(
+                    gpuError.Message, error); }
+            }
             lock (sync)
             {
                 if (disposed)
                 {
                     replacement?.Dispose();
+                    replacementGpu?.Dispose();
+                    replacementDecoder?.Dispose();
                     return;
                 }
                 RvmOnnxSession? previous = rvmOnnx;
-                NvidiaAiGreenScreenSession? previousNvidia = nvidia;
+                RvmGpuSession? previousGpu = rvmGpu;
+                FfmpegCpuDecoder? previousDecoder = null;
+                if (replacementDecoder != null)
+                {
+                    previousDecoder = rgb;
+                    rgb = replacementDecoder;
+                    replacementDecoder = null;
+                    hardwareVideoFrame = true;
+                }
+                DisposeGpuSharedViews();
                 rvmOnnx = replacement;
-                nvidia = null;
-                nvidiaBgr = null;
-                nvidiaAlpha = mask;
+                rvmGpu = replacementGpu;
+                activeRvmSettings = settings.Clone();
+                realtimeAlpha = mask;
                 alphaWidth = width;
                 alphaHeight = height;
                 alphaRow = new byte[checked(width * (alpha16 ? 2 : 1))];
                 RvmOnnxFallbackReason = failure?.Message;
-                NvidiaFallbackReason = null;
                 if (device != null)
                 {
                     context?.PSUnsetShaderResource(3);
@@ -1408,18 +1383,21 @@ internal sealed class CustomPlayerForm : Form
                 }
                 if (frameUploaded && aTex != null)
                 {
-                    GenerateNvidiaAlphaLocked();
+                    GenerateRealtimeAlphaLocked();
+                    if (rgb.IsHardwareDecoded) PrepareGpuDisplayFrame();
                     unsafe
                     {
-                        fixed (byte* alphaPixels = nvidiaAlpha!)
+                        fixed (byte* alphaPixels = realtimeAlpha!)
                             context!.UpdateSubresource(aTex, 0, null,
                                 new IntPtr(alphaPixels), (uint)alphaWidth, 0);
                     }
                     DrawCurrentFrameLocked();
                 }
                 previous?.Dispose();
-                previousNvidia?.Dispose();
+                previousGpu?.Dispose();
+                previousDecoder?.Dispose();
             }
+            replacementDecoder?.Dispose();
         }
         void EnsureKeyTextureCapacity(int count)
         {
@@ -1450,66 +1428,195 @@ internal sealed class CustomPlayerForm : Form
                 if(!pending && !DecodePair()) return false;
                 long now=(long)Math.Round(TimeLocked()*10_000_000);
                 long frame=(long)Math.Round(rgb.FrameDuration*10_000_000);
-                while(rgbTick+frame<now) { if(alpha==null)GenerateNvidiaAlphaLocked(); pending=false; if(!DecodePair())return false; }
+                while(rgbTick+frame<now) { if(alpha==null)GenerateRealtimeAlphaLocked(); pending=false; if(!DecodePair())return false; }
                 if(rgbTick>now+10_000)return false;
                 if(alpha != null && Math.Abs(rgbTick-alphaTick)>Math.Max(10_000,frame/2)) throw new InvalidDataException("Foreground and alpha timestamps do not match.");
-                rgb.ValidateGpuFrame(); (IntPtr yd,uint yp)=rgb.Plane(0); (IntPtr ud,uint up)=rgb.Plane(1); (IntPtr vd,uint vp)=rgb.Plane(2);
-                context!.UpdateSubresource(yTex!,0,null,yd,yp,0); context.UpdateSubresource(uTex!,0,null,ud,up,0); context.UpdateSubresource(vTex!,0,null,vd,vp,0);
-                if (alpha != null)
+                IntPtr yd=IntPtr.Zero,ud=IntPtr.Zero,vd=IntPtr.Zero;
+                uint yp=0,up=0,vp=0;
+                if (rgb.IsHardwareDecoded)
                 {
-                    (IntPtr ad,uint ap)=alpha.GrayPlane();
-                    context.UpdateSubresource(aTex!,0,null,ad,ap,0);
-                    frameUploaded=true; DrawCurrentFrameLocked();
-                    if(captureHitMap) alphaBytes=CreateHitMap(ad,ap,alphaWidth,
-                        alphaHeight,yd,yp,ud,up,vd,vp);
+                    hardwareVideoFrame = true;
                 }
                 else
                 {
-                    GenerateNvidiaAlphaLocked();
-                    fixed(byte* ad=nvidiaAlpha!)
+                    rgb.ValidateGpuFrame(); (yd,yp)=rgb.Plane(0); (ud,up)=rgb.Plane(1); (vd,vp)=rgb.Plane(2);
+                    context!.UpdateSubresource(yTex!,0,null,yd,yp,0); context.UpdateSubresource(uTex!,0,null,ud,up,0); context.UpdateSubresource(vTex!,0,null,vd,vp,0);
+                    hardwareVideoFrame=false; activeHardwareViews=null;
+                }
+                if (alpha != null)
+                {
+                    (IntPtr ad,uint ap)=alpha.GrayPlane();
+                    context!.UpdateSubresource(aTex!,0,null,ad,ap,0);
+                    frameUploaded=true; DrawCurrentFrameLocked();
+                    if(captureHitMap) alphaBytes=rgb.IsHardwareDecoded
+                        ? CreateHitMap(ad,ap,alphaWidth,alphaHeight)
+                        : CreateHitMap(ad,ap,alphaWidth,
+                            alphaHeight,yd,yp,ud,up,vd,vp);
+                }
+                else
+                {
+                    GenerateRealtimeAlphaLocked(captureHitMap);
+                    if (rgb.IsHardwareDecoded)
+                    {
+                        try { PrepareGpuDisplayFrame(); }
+                        catch (Exception error)
+                        {
+                            RvmOnnxFallbackReason ??= error.Message;
+                            if (!TryFallbackRvmToCpuLocked()) throw;
+                            rvmOnnx!.Run(rgb, realtimeAlpha!);
+                        }
+                    }
+                    if (!rgb.IsHardwareDecoded && yd == IntPtr.Zero)
+                    {
+                        rgb.ValidateGpuFrame(); (yd,yp)=rgb.Plane(0);
+                        (ud,up)=rgb.Plane(1); (vd,vp)=rgb.Plane(2);
+                        context!.UpdateSubresource(yTex!,0,null,yd,yp,0);
+                        context.UpdateSubresource(uTex!,0,null,ud,up,0);
+                        context.UpdateSubresource(vTex!,0,null,vd,vp,0);
+                    }
+                    fixed(byte* ad=realtimeAlpha!)
                     {
                         IntPtr alphaPointer=new(ad);
-                        context.UpdateSubresource(aTex!,0,null,alphaPointer,
-                            (uint)alphaWidth,0);
+                        if (!rgb.IsHardwareDecoded)
+                            context!.UpdateSubresource(aTex!,0,null,alphaPointer,
+                                (uint)alphaWidth,0);
                         frameUploaded=true; DrawCurrentFrameLocked();
-                        if(captureHitMap) alphaBytes=CreateHitMap(alphaPointer,
-                            (uint)alphaWidth,alphaWidth,alphaHeight,yd,yp,ud,up,vd,vp);
+                        if(captureHitMap) alphaBytes=rgb.IsHardwareDecoded
+                            ? CreateHitMap(alphaPointer,(uint)alphaWidth,
+                                alphaWidth,alphaHeight)
+                            : CreateHitMap(alphaPointer,
+                                (uint)alphaWidth,alphaWidth,alphaHeight,yd,yp,ud,up,vd,vp);
                     }
                 }
                 pending=false; return true;
             }
         }
-        void GenerateNvidiaAlphaLocked()
+        void GenerateRealtimeAlphaLocked(bool readback = false)
         {
             try
             {
-                if (nvidia == null && rvmOnnx == null) return;
-                if (nvidia != null)
-                {
-                    rgb.CopyBgr24(alphaWidth, alphaHeight, nvidiaBgr!);
-                    nvidia.Run(nvidiaBgr!, nvidiaAlpha!);
-                }
-                else rvmOnnx!.Run(rgb, nvidiaAlpha!);
+                if (rvmOnnx == null && rvmGpu == null) return;
+                if (rvmGpu != null) rvmGpu.Run(rgb, realtimeAlpha!, readback);
+                else rvmOnnx!.Run(rgb, realtimeAlpha!);
             }
             catch (Exception error)
             {
-                if (nvidia != null) NvidiaFallbackReason ??= error.Message;
-                else RvmOnnxFallbackReason ??= error.Message;
-                nvidia?.Dispose(); nvidia = null;
+                RvmOnnxFallbackReason ??= error.Message;
                 rvmOnnx?.Dispose(); rvmOnnx = null;
-                Array.Fill(nvidiaAlpha!, (byte)255);
+                if (rvmGpu != null && TryFallbackRvmToCpuLocked())
+                {
+                    try { rvmOnnx!.Run(rgb, realtimeAlpha!); return; }
+                    catch { rvmOnnx?.Dispose(); rvmOnnx = null; }
+                }
+                rvmGpu?.Dispose(); rvmGpu = null;
+                Array.Fill(realtimeAlpha!, (byte)255);
             }
+        }
+
+        bool TryFallbackRvmToCpuLocked()
+        {
+            if (activeRvmSettings == null) return false;
+            try
+            {
+                FfmpegCpuDecoder software = new(foregroundPath);
+                software.Seek(Math.Max(0, rgbTick / 10_000_000d));
+                if (!software.DecodeNext(out rgbTick))
+                {
+                    software.Dispose();
+                    return false;
+                }
+                RvmOnnxSession replacement = new(
+                    RvmOnnxSupport.ModelPathFor(activeRvmSettings.Model),
+                    alphaWidth, alphaHeight, activeRvmSettings);
+                FfmpegCpuDecoder old = rgb;
+                rgb = software;
+                DisposeGpuSharedViews();
+                rvmGpu?.Dispose();
+                rvmGpu = null;
+                rvmOnnx = replacement;
+                hardwareVideoFrame = false;
+                activeHardwareViews = null;
+                old.Dispose();
+                return true;
+            }
+            catch { return false; }
+        }
+
+        void PrepareGpuDisplayFrame()
+        {
+            if (gpuDisplayViews == null)
+            {
+                IntPtr shared = rvmGpu!.CreateDisplaySharedHandle();
+                try
+                {
+                    ID3D11Texture2D texture =
+                        device1!.OpenSharedResource1<ID3D11Texture2D>(shared);
+                    ID3D11ShaderResourceView y = device3!.CreateShaderResourceView1(
+                        texture, new ShaderResourceViewDescription1(texture,
+                            ShaderResourceViewDimension.Texture2D,
+                            DxgiFormat.R8G8B8A8_UNorm, 0, 1, 0, 1, 0));
+                    ID3D11ShaderResourceView uv = device3.CreateShaderResourceView1(
+                        texture, new ShaderResourceViewDescription1(texture,
+                            ShaderResourceViewDimension.Texture2D,
+                            DxgiFormat.R8G8B8A8_UNorm, 0, 1, 0, 1, 0));
+                    gpuDisplayViews = new HardwareViews(texture, y, uv);
+                }
+                finally { CloseHandle(shared); }
+                IntPtr alphaShared = rvmGpu.CreateAlphaSharedHandle();
+                try
+                {
+                    gpuAlphaTexture =
+                        device1!.OpenSharedResource1<ID3D11Texture2D>(alphaShared);
+                    gpuAlphaView = device3!.CreateShaderResourceView1(
+                        gpuAlphaTexture, new ShaderResourceViewDescription1(
+                            gpuAlphaTexture, ShaderResourceViewDimension.Texture2D,
+                            DxgiFormat.R8_UNorm, 0, 1, 0, 1, 0));
+                    gpuAlphaMutex =
+                        gpuAlphaTexture.QueryInterface<IDXGIKeyedMutex>();
+                }
+                catch
+                {
+                    DisposeGpuSharedViews();
+                    throw;
+                }
+                finally { CloseHandle(alphaShared); }
+            }
+            activeHardwareViews = gpuDisplayViews;
+            hardwareVideoFrame = true;
+        }
+
+        void DisposeGpuSharedViews()
+        {
+            activeHardwareViews = null;
+            gpuAlphaMutex?.Dispose();
+            gpuAlphaMutex = null;
+            gpuAlphaView?.Dispose();
+            gpuAlphaView = null;
+            gpuAlphaTexture?.Dispose();
+            gpuAlphaTexture = null;
+            gpuDisplayViews?.Dispose();
+            gpuDisplayViews = null;
         }
         unsafe void DrawCurrentFrameLocked()
         {
-            float maskScale=alpha==null?alphaWidth/(float)Width:1;int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4*maskScale), patch=(int)Math.Round(Volatile.Read(ref smallPatchSize)*maskScale), area=(int)Math.Round(Volatile.Read(ref minimumTransparentAreaRadius)*maskScale), domain=Volatile.Read(ref greenDomain); VirtualGreenScreenSample[] samples=Volatile.Read(ref greenSamples); int competition=samples.Length==0?0:(int)Math.Round(samples[0].KeyOverLockedThreshold*255); EnsureKeyTextureCapacity(samples.Length); bool greenChanged=!ReferenceEquals(samples,uploadedGreenSamples); if(greenChanged){float[] values=new float[keyTextureCapacity*8];for(int index=0;index<samples.Length;index++){int offset=index*4;values[offset]=samples[index].X;values[offset+1]=samples[index].Y;values[offset+2]=samples[index].Z;values[offset+3]=samples[index].Tolerance;int metadata=(index+keyTextureCapacity)*4;values[metadata]=samples[index].Feather;values[metadata+1]=1;values[metadata+2]=samples[index].Locked?1:0;}fixed(float* data=values)context!.UpdateSubresource(keyTex!,0,null,new IntPtr(data),(uint)(keyTextureCapacity*32),0);uploadedGreenSamples=samples;} if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters||patch!=uploadedSmallPatchSize||area!=uploadedMinimumTransparentAreaRadius||domain!=uploadedGreenDomain||greenChanged){uint[] values=[(uint)(lower|(upper<<8)|(chokeQuarters<<16)),(uint)(patch|(area<<8)|(competition<<16)|(domain<<24))];fixed(uint* data=values)context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(data),8,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;uploadedSmallPatchSize=patch;uploadedMinimumTransparentAreaRadius=area;uploadedGreenDomain=domain;}
+            float maskScale=alpha==null?alphaWidth/(float)Width:1;int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4*maskScale), patch=(int)Math.Round(Volatile.Read(ref smallPatchSize)*maskScale), area=(int)Math.Round(Volatile.Read(ref minimumTransparentAreaRadius)*maskScale), domain=Volatile.Read(ref greenDomain), hardware=hardwareVideoFrame?2:0; VirtualGreenScreenSample[] samples=Volatile.Read(ref greenSamples); int competition=samples.Length==0?0:(int)Math.Round(samples[0].KeyOverLockedThreshold*255); EnsureKeyTextureCapacity(samples.Length); bool greenChanged=!ReferenceEquals(samples,uploadedGreenSamples); if(greenChanged){float[] values=new float[keyTextureCapacity*8];for(int index=0;index<samples.Length;index++){int offset=index*4;values[offset]=samples[index].X;values[offset+1]=samples[index].Y;values[offset+2]=samples[index].Z;values[offset+3]=samples[index].Tolerance;int metadata=(index+keyTextureCapacity)*4;values[metadata]=samples[index].Feather;values[metadata+1]=1;values[metadata+2]=samples[index].Locked?1:0;}fixed(float* data=values)context!.UpdateSubresource(keyTex!,0,null,new IntPtr(data),(uint)(keyTextureCapacity*32),0);uploadedGreenSamples=samples;} if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters||patch!=uploadedSmallPatchSize||area!=uploadedMinimumTransparentAreaRadius||domain!=uploadedGreenDomain||hardware!=uploadedHardwareVideo||greenChanged){uint[] values=[(uint)(lower|(upper<<8)|(chokeQuarters<<16)|(hardware<<24)),(uint)(patch|(area<<8)|(competition<<16)|(domain<<24))];fixed(uint* data=values)context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(data),8,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;uploadedSmallPatchSize=patch;uploadedMinimumTransparentAreaRadius=area;uploadedGreenDomain=domain;uploadedHardwareVideo=hardware;}
+            ID3D11ShaderResourceView drawY=activeHardwareViews?.Y??yView!;
+            ID3D11ShaderResourceView drawU=activeHardwareViews?.UV??uView!;
+            ID3D11ShaderResourceView drawV=activeHardwareViews?.UV??vView!;
+            ID3D11ShaderResourceView drawA=gpuAlphaView??aView!;
+            IDXGIKeyedMutex? keyedMutex=activeHardwareViews?.KeyedMutex;
+            bool displayLocked=false, alphaLocked=false;
+            try
+            {
+            if(keyedMutex!=null){keyedMutex.AcquireSync(0,-1);displayLocked=true;}
+            if(gpuAlphaMutex!=null){gpuAlphaMutex.AcquireSync(0,-1);alphaLocked=true;}
             context!.PSUnsetShaderResource(6);
             context.OMSetRenderTargets(matteTarget!);
             context.RSSetViewport(new GpuViewport(0, 0,
                 matteTex!.Description.Width, matteTex.Description.Height));
             context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
             context.VSSetShader(vs); context.PSSetShader(mattePs);
-            context.PSSetShaderResource(0,yView); context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView);
+            context.PSSetShaderResource(0,drawY); context.PSSetShaderResource(1,drawU); context.PSSetShaderResource(2,drawV);
             context.PSSetShaderResource(4,thresholdView); context.PSSetShaderResource(5,keyView);
             context.PSSetSampler(0,sampler); context.Draw(3,0);
             context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1); context.PSUnsetShaderResource(2);
@@ -1517,15 +1624,21 @@ internal sealed class CustomPlayerForm : Form
 
             context.OMSetRenderTargets(target!);
             context.RSSetViewport(new GpuViewport(0,0,back!.Description.Width,back.Description.Height));
-            context.PSSetShader(ps); context.PSSetShaderResource(0,yView);
-            context.PSSetShaderResource(1,uView); context.PSSetShaderResource(2,vView);
-            context.PSSetShaderResource(3,aView); context.PSSetShaderResource(4,thresholdView);
+            context.PSSetShader(ps); context.PSSetShaderResource(0,drawY);
+            context.PSSetShaderResource(1,drawU); context.PSSetShaderResource(2,drawV);
+            context.PSSetShaderResource(3,drawA); context.PSSetShaderResource(4,thresholdView);
             context.PSSetShaderResource(5,keyView); context.PSSetShaderResource(6,matteView);
             context.Draw(3,0);
             context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1);
             context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3);
             context.PSUnsetShaderResource(4); context.PSUnsetShaderResource(5);
             context.PSUnsetShaderResource(6); swap!.Present(1,PresentFlags.None);
+            }
+            finally
+            {
+                if(alphaLocked)gpuAlphaMutex!.ReleaseSync(0);
+                if(displayLocked)keyedMutex!.ReleaseSync(0);
+            }
         }
         void PresentTransparentLocked()
         {
@@ -1576,6 +1689,35 @@ internal sealed class CustomPlayerForm : Form
             return new AlphaHitMap(pixels, yValues, cb, cr,
                 size.Width, size.Height);
         }
+        AlphaHitMap CreateHitMap(IntPtr alphaPlane, uint pitch,
+            int maskWidth, int maskHeight)
+        {
+            Size size = HitMapSize(Width, Height, 512);
+            byte[] pixels = GC.AllocateUninitializedArray<byte>(
+                checked(size.Width * size.Height));
+            byte[] yValues = new byte[pixels.Length];
+            byte[] cb = new byte[pixels.Length];
+            byte[] cr = new byte[pixels.Length];
+            Array.Fill(yValues, (byte)128);
+            Array.Fill(cb, (byte)128);
+            Array.Fill(cr, (byte)128);
+            for (int y = 0; y < size.Height; y++)
+            {
+                int maskY = Math.Min(maskHeight - 1,
+                    y * maskHeight / size.Height);
+                Marshal.Copy(alphaPlane + maskY * (int)pitch,
+                    alphaRow, 0, alphaRow.Length);
+                int destination = y * size.Width;
+                for (int x = 0; x < size.Width; x++)
+                {
+                    int maskX = Math.Min(maskWidth - 1,
+                        x * maskWidth / size.Width);
+                    pixels[destination + x] = alphaRow[maskX];
+                }
+            }
+            return new AlphaHitMap(pixels, yValues, cb, cr,
+                size.Width, size.Height);
+        }
         internal static byte Alpha16ToByte(ushort value) =>
             (byte)((value + 128u) / 257u);
         internal static bool VerifyShader()
@@ -1598,7 +1740,15 @@ internal sealed class CustomPlayerForm : Form
         {
             if (alpha == null)
             {
-                bool decoded = rgb.DecodeNext(out rgbTick);
+                bool decoded;
+                try { decoded = rgb.DecodeNext(out rgbTick); }
+                catch (Exception error) when (rgb.IsHardwareDecoded &&
+                    rvmGpu != null)
+                {
+                    RvmOnnxFallbackReason ??= error.Message;
+                    if (!TryFallbackRvmToCpuLocked()) throw;
+                    decoded = true;
+                }
                 alphaTick = rgbTick;
                 pending = decoded;
                 Ended = !decoded;
@@ -1645,6 +1795,6 @@ internal sealed class CustomPlayerForm : Form
         double TimeLocked()=>Math.Clamp(clockSeconds+(playing?clock.Elapsed.TotalSeconds*rate:0),0,Duration);
         void UpdateClock(){clockSeconds=TimeLocked();clock.Restart();if(!playing)clock.Stop();}
         internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),DxgiFormat.B8G8R8A8_UNorm);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);if(frameUploaded)DrawCurrentFrameLocked();else PresentTransparentLocked();}}
-        public void Dispose(){lock(sync){if(disposed)return;disposed=true;audio?.Dispose();nvidia?.Dispose();rvmOnnx?.Dispose();rgb.Dispose();alpha?.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();mattePs?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();matteView?.Dispose();matteTarget?.Dispose();matteTex?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();context?.Dispose();device?.Dispose();}}
+        public void Dispose(){lock(sync){if(disposed)return;disposed=true;audio?.Dispose();rvmOnnx?.Dispose();DisposeGpuSharedViews();rvmGpu?.Dispose();rgb.Dispose();alpha?.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();mattePs?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();matteView?.Dispose();matteTarget?.Dispose();matteTex?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();device3?.Dispose();device1?.Dispose();context?.Dispose();device?.Dispose();}}
     }
 }

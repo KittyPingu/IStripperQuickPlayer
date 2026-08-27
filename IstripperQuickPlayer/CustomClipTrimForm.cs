@@ -4,8 +4,6 @@ internal sealed class CustomClipTrimForm : Form
 {
     readonly string foregroundPath;
     readonly string? alphaPath;
-    readonly string? nvidiaSdkRoot;
-    readonly CustomNvidiaSettings? nvidiaSettings;
     readonly string? rvmOnnxModelPath;
     readonly CustomRvmOnnxSettings? rvmOnnxSettings;
     readonly long durationMs;
@@ -44,15 +42,11 @@ internal sealed class CustomClipTrimForm : Form
         string? alphaPath, CustomClipMedia media, int alphaThreshold,
         int fullOpacityThreshold, float edgeChokePixels,
         CustomVirtualGreenScreen? virtualGreenScreen = null,
-        string? nvidiaSdkRoot = null,
-        CustomNvidiaSettings? nvidiaSettings = null,
         string? rvmOnnxModelPath = null,
         CustomRvmOnnxSettings? rvmOnnxSettings = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
-        this.nvidiaSdkRoot = nvidiaSdkRoot;
-        this.nvidiaSettings = nvidiaSettings?.Clone();
         this.rvmOnnxModelPath = rvmOnnxModelPath;
         this.rvmOnnxSettings = rvmOnnxSettings?.Clone();
         durationMs = media.DurationMs;
@@ -200,8 +194,6 @@ internal sealed class CustomClipTrimForm : Form
             suppressErrorDialog: true, startMs: 0, endMs: durationMs,
             edgeChokePixels: edgeChokePixels,
             virtualGreenScreen: virtualGreenScreen,
-            nvidiaSdkRoot: nvidiaSdkRoot,
-            nvidiaSettings: nvidiaSettings,
             rvmOnnxModelPath: rvmOnnxModelPath,
             rvmOnnxSettings: rvmOnnxSettings);
         player.HoldFinalFrameOnCompletion = true;

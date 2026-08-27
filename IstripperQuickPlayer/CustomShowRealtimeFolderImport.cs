@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace IStripperQuickPlayer;
 
-internal sealed class NvidiaFolderImportItem
+internal sealed class RealtimeFolderImportItem
 {
     public string SourcePath { get; init; } = "";
     public string Video { get; init; } = "";
@@ -19,17 +19,17 @@ internal sealed class NvidiaFolderImportItem
     public bool Included { get; set; }
     public string Status { get; init; } = "Ready";
     public string Resolution => Width > 0 && Height > 0 ? $"{Width} × {Height}" : "—";
-    public string Length => NvidiaFolderImporter.DurationText(DurationMs);
+    public string Length => RealtimeFolderImporter.DurationText(DurationMs);
 }
 
-internal sealed record NvidiaFolderImportProgress(int Completed, int Total,
+internal sealed record RealtimeFolderImportProgress(int Completed, int Total,
     string Message);
 
-internal sealed record NvidiaFolderScanResult(
-    IReadOnlyList<NvidiaFolderImportItem> Items,
+internal sealed record RealtimeFolderScanResult(
+    IReadOnlyList<RealtimeFolderImportItem> Items,
     IReadOnlyList<string> Warnings);
 
-internal static partial class NvidiaFolderImporter
+internal static partial class RealtimeFolderImporter
 {
     internal static readonly HashSet<string> SupportedExtensions = new(
         [".mp4", ".mov", ".mkv", ".avi", ".webm"],
@@ -75,23 +75,23 @@ internal static partial class NvidiaFolderImporter
         RegexOptions.CultureInvariant)]
     private static partial Regex MonthFolder();
 
-    internal static NvidiaFolderScanResult Scan(string root,
+    internal static RealtimeFolderScanResult Scan(string root,
         IReadOnlySet<string> catalogSources,
         IReadOnlySet<string> queuedSources,
-        IProgress<NvidiaFolderImportProgress>? progress,
+        IProgress<RealtimeFolderImportProgress>? progress,
         CancellationToken token)
     {
         root = Path.GetFullPath(root);
         List<string> warnings = [];
         string[] videos = EnumerateVideoFiles(root, warnings, token).ToArray();
-        List<NvidiaFolderImportItem> items = [];
+        List<RealtimeFolderImportItem> items = [];
         Dictionary<string, int> titles = new(StringComparer.CurrentCultureIgnoreCase);
         string rootName = new DirectoryInfo(root).Name;
         for (int index = 0; index < videos.Length; index++)
         {
             token.ThrowIfCancellationRequested();
             string video = videos[index];
-            progress?.Report(new NvidiaFolderImportProgress(index, videos.Length,
+            progress?.Report(new RealtimeFolderImportProgress(index, videos.Length,
                 $"Reading {Path.GetFileName(video)}"));
             FileInfo info = new(video);
             DateOnly date = InferDate(video, root,
@@ -118,7 +118,7 @@ internal static partial class NvidiaFolderImporter
                 error = SingleLine(failure.Message);
             }
             bool valid = error == null && !inCatalog && !inQueue;
-            items.Add(new NvidiaFolderImportItem
+            items.Add(new RealtimeFolderImportItem
             {
                 SourcePath = video,
                 Video = Path.GetRelativePath(root, video),
@@ -134,9 +134,9 @@ internal static partial class NvidiaFolderImporter
                     ? "Already in custom-show queue" : "Ready"
             });
         }
-        progress?.Report(new NvidiaFolderImportProgress(videos.Length,
+        progress?.Report(new RealtimeFolderImportProgress(videos.Length,
             videos.Length, $"Found {videos.Length:N0} videos"));
-        return new NvidiaFolderScanResult(items, warnings);
+        return new RealtimeFolderScanResult(items, warnings);
     }
 
     internal static IEnumerable<string> EnumerateVideoFiles(string root,
@@ -365,20 +365,12 @@ internal static partial class NvidiaFolderImporter
     }
 
     internal static CustomShowQueueBatchEntry BuildEntry(
-        NvidiaFolderImportItem item, CustomPerformerProfile performer,
-        string renderer, CustomNvidiaSettings? nvidiaSettings,
-        CustomRvmOnnxSettings? rvmSettings, string hotness, string[] clipTypes,
+        RealtimeFolderImportItem item, CustomPerformerProfile performer,
+        CustomRvmOnnxSettings rvmSettings, string hotness, string[] clipTypes,
         CustomShowConfiguration configuration, CustomShowStore store)
     {
         CustomShowStore.ValidateProfile(performer);
-        if (renderer == CustomClipMedia.NvidiaAigsMode)
-            CustomShowStore.ValidateNvidiaSettings(nvidiaSettings ?? throw new(
-                "NVIDIA settings are required for NVIDIA real-time import."));
-        else if (renderer == CustomClipMedia.RvmOnnxMode)
-            CustomShowStore.ValidateRvmOnnxSettings(rvmSettings ?? throw new(
-                "RVM settings are required for RVM real-time import."));
-        else
-            throw new InvalidDataException("Select a real-time foreground renderer.");
+        CustomShowStore.ValidateRvmOnnxSettings(rvmSettings);
         if (!item.CanInclude || item.DurationMs <= 0)
             throw new InvalidDataException(
                 "Only valid videos can be added to the real-time folder import.");
@@ -396,10 +388,7 @@ internal static partial class NvidiaFolderImporter
             Hotness = hotness,
             ClipTypes = [.. clipTypes],
             AlphaThreshold = configuration.DefaultAlphaThreshold,
-            Nvidia = renderer == CustomClipMedia.NvidiaAigsMode
-                ? nvidiaSettings!.Clone() : null,
-            RvmOnnx = renderer == CustomClipMedia.RvmOnnxMode
-                ? rvmSettings!.Clone() : null
+            RvmOnnx = rvmSettings.Clone()
         };
         CustomShowManifest manifest = new()
         {
@@ -419,11 +408,10 @@ internal static partial class NvidiaFolderImporter
             },
             Processing = new CustomShowProcessing
             {
-                Algorithm = renderer,
+                Algorithm = CustomClipMedia.RvmOnnxMode,
                 MattingDetailPx = 0,
                 ExecutionPolicy = "realtime-playback",
-                PrecisionPolicy = renderer == CustomClipMedia.NvidiaAigsMode
-                    ? "sdk-managed" : "onnx-directml-fp32"
+                PrecisionPolicy = "onnx-directml-fp32"
             }
         };
         FileInfo source = new(item.SourcePath);
@@ -471,7 +459,7 @@ internal static partial class NvidiaFolderImporter
     internal static bool VerifyContracts()
     {
         string root = Path.Combine(Path.GetTempPath(),
-            "iqp-nvidia-folder-import-" + Guid.NewGuid().ToString("N"));
+            "iqp-realtime-folder-import-" + Guid.NewGuid().ToString("N"));
         try
         {
             string month = Path.Combine(root, "2025-05");
@@ -504,7 +492,7 @@ internal static partial class NvidiaFolderImporter
                     new DateOnly(2020, 1, 2)) == new DateOnly(2025, 5, 1) &&
                 MatchRootProfile(Path.Combine(root, "Charlotte40404"),
                     [profile]) == profile;
-            NvidiaFolderImportItem item = new()
+            RealtimeFolderImportItem item = new()
             {
                 SourcePath = nested, Video = Path.GetFileName(nested),
                 Title = "Fun Fact", Width = 1920, Height = 1080,
@@ -512,10 +500,7 @@ internal static partial class NvidiaFolderImporter
                 CanInclude = true, Included = true
             };
             CustomShowQueueBatchEntry entry = BuildEntry(item, profile,
-                CustomClipMedia.NvidiaAigsMode, new(), null, "NoNudity",
-                ["Standing"], new(), new CustomShowStore(root));
-            CustomShowQueueBatchEntry rvmEntry = BuildEntry(item, profile,
-                CustomClipMedia.RvmOnnxMode, null, new(), "NoNudity",
+                new(), "NoNudity",
                 ["Standing"], new(), new CustomShowStore(root));
             CustomShowStore store = new(root);
             CustomShowQueueJob[] allStatuses = Enum.GetValues<
@@ -534,17 +519,13 @@ internal static partial class NvidiaFolderImporter
             bool contract = discovery &&
                 naming && dates && duplicates &&
                 entry.Job.Manifest.Processing?.Algorithm ==
-                    CustomClipMedia.NvidiaAigsMode &&
+                    CustomClipMedia.RvmOnnxMode &&
                 entry.Job.Manifest.Processing.ExecutionPolicy ==
                     "realtime-playback" &&
                 entry.Job.Manifest.Clips is [{ StartMs: 0, EndMs: 12_345,
-                    Nvidia: not null }] &&
-                rvmEntry.Job.Manifest.Processing?.Algorithm ==
-                    CustomClipMedia.RvmOnnxMode &&
-                rvmEntry.Job.Manifest.Processing.PrecisionPolicy ==
-                    "onnx-directml-fp32" &&
-                rvmEntry.Job.Manifest.Clips is [{ Nvidia: null,
                     RvmOnnx: not null }] &&
+                entry.Job.Manifest.Processing.PrecisionPolicy ==
+                    "onnx-directml-fp32" &&
                 entry.Job.Manifest.Clips[0].Media == null &&
                 entry.Job.Manifest.ShowDate == new DateOnly(2024, 11, 13) &&
                 entry.Job.SourceLength == new FileInfo(nested).Length;
@@ -568,7 +549,7 @@ internal static partial class NvidiaFolderImporter
     }
 }
 
-internal sealed class NvidiaFolderImportForm : Form
+internal sealed class RealtimeFolderImportForm : Form
 {
     sealed record ModelChoice(string Id, string Name);
 
@@ -591,23 +572,6 @@ internal sealed class NvidiaFolderImportForm : Form
     {
         DropDownStyle = ComboBoxStyle.DropDownList, Width = 250
     };
-    readonly ComboBox renderer = new()
-    {
-        DropDownStyle = ComboBoxStyle.DropDownList, Width = 225
-    };
-    readonly ComboBox nvidiaMode = new()
-    {
-        DropDownStyle = ComboBoxStyle.DropDownList, Width = 290,
-        DropDownWidth = 290
-    };
-    readonly CheckBox temporal = new()
-    {
-        Text = "Temporal filtering", Checked = true, AutoSize = true
-    };
-    readonly ComboBox resolution = new()
-    {
-        DropDownStyle = ComboBoxStyle.DropDownList, Width = 105
-    };
     readonly ComboBox rvmModel = new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList, Width = 265,
@@ -621,10 +585,6 @@ internal sealed class NvidiaFolderImportForm : Form
     readonly CheckBox rvmTemporal = new()
     {
         Text = "Temporal memory", Checked = true, AutoSize = true
-    };
-    readonly FlowLayoutPanel nvidiaOptions = new()
-    {
-        AutoSize = true, WrapContents = false, Margin = Padding.Empty
     };
     readonly FlowLayoutPanel rvmOptions = new()
     {
@@ -666,7 +626,7 @@ internal sealed class NvidiaFolderImportForm : Form
     {
         Text = "Clear selection", AutoSize = true, Enabled = false
     };
-    readonly BindingList<NvidiaFolderImportItem> items = [];
+    readonly BindingList<RealtimeFolderImportItem> items = [];
     readonly List<CustomPerformerProfile> profiles;
     DataGridViewComboBoxColumn modelColumn = null!;
     CancellationTokenSource? scanCancellation;
@@ -675,7 +635,7 @@ internal sealed class NvidiaFolderImportForm : Form
     bool scanning;
     internal int QueuedCount { get; private set; }
 
-    internal NvidiaFolderImportForm(CustomShowStore store,
+    internal RealtimeFolderImportForm(CustomShowStore store,
         CustomShowConfiguration configuration,
         CustomShowQueueManager queueManager, string initialFolder)
     {
@@ -725,14 +685,6 @@ internal sealed class NvidiaFolderImportForm : Form
             Dock = DockStyle.Fill, AutoSize = true, WrapContents = true,
             Margin = new Padding(0, 0, 0, 6)
         };
-        renderer.Items.AddRange(["NVIDIA AI Green Screen", "RVM ONNX"]);
-        renderer.SelectedIndex = 0;
-        nvidiaMode.Items.AddRange(["Quality — chairs foreground",
-            "Performance — chairs foreground", "Quality — chairs background",
-            "Performance — chairs background"]);
-        nvidiaMode.SelectedIndex = 0;
-        resolution.Items.AddRange(["540p", "720p", "1080p", "Source"]);
-        resolution.SelectedIndex = 1;
         hotness.Items.AddRange(CustomShowStore.HotnessOptions);
         hotness.SelectedItem = "NoNudity";
         rvmModel.Items.AddRange(["MobileNetV3 — faster (recommended)",
@@ -743,12 +695,9 @@ internal sealed class NvidiaFolderImportForm : Form
             "Full-res refine — source mask, 512px analysis"]);
         rvmQuality.DropDownWidth = 465;
         rvmQuality.SelectedIndex = 1;
-        nvidiaOptions.Controls.AddRange([LabelFor("NVIDIA mode"), nvidiaMode,
-            temporal, LabelFor("Inference"), resolution]);
         rvmOptions.Controls.AddRange([LabelFor("RVM model"), rvmModel,
             LabelFor("Quality"), rvmQuality, rvmTemporal]);
-        options.Controls.AddRange([LabelFor("Renderer"), renderer,
-            nvidiaOptions, rvmOptions, LabelFor("Hotness"), hotness]);
+        options.Controls.AddRange([rvmOptions, LabelFor("Hotness"), hotness]);
         layout.Controls.Add(options, 0, 1);
 
         GroupBox clipTypeGroup = new()
@@ -832,8 +781,6 @@ internal sealed class NvidiaFolderImportForm : Form
         CancelButton = cancel;
 
         RefreshModelChoices();
-        renderer.SelectedIndexChanged += (_, _) => UpdateRendererOptions();
-        UpdateRendererOptions();
         Shown += async (_, _) => await ScanAsync();
         FormClosing += (_, _) => scanCancellation?.Cancel();
         browse.Click += async (_, _) => await BrowseAsync();
@@ -857,7 +804,7 @@ internal sealed class NvidiaFolderImportForm : Form
         grid.CellBeginEdit += (_, e) =>
         {
             if (e.RowIndex >= 0 && grid.Rows[e.RowIndex].DataBoundItem is
-                NvidiaFolderImportItem item && item.CanInclude) return;
+                RealtimeFolderImportItem item && item.CanInclude) return;
             e.Cancel = true;
         };
         grid.DataBindingComplete += (_, _) => StyleRows();
@@ -875,19 +822,19 @@ internal sealed class NvidiaFolderImportForm : Form
     {
         grid.Columns.Add(new DataGridViewCheckBoxColumn
         {
-            DataPropertyName = nameof(NvidiaFolderImportItem.Included),
+            DataPropertyName = nameof(RealtimeFolderImportItem.Included),
             HeaderText = "☐ Include", Width = 82,
             ToolTipText = "Click to include or exclude every eligible row"
         });
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
-            DataPropertyName = nameof(NvidiaFolderImportItem.Video),
+            DataPropertyName = nameof(RealtimeFolderImportItem.Video),
             HeaderText = "Video", ReadOnly = true,
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 34
         });
         modelColumn = new DataGridViewComboBoxColumn
         {
-            DataPropertyName = nameof(NvidiaFolderImportItem.PerformerId),
+            DataPropertyName = nameof(RealtimeFolderImportItem.PerformerId),
             HeaderText = "Model", DisplayMember = nameof(ModelChoice.Name),
             ValueMember = nameof(ModelChoice.Id), Width = 180,
             DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton
@@ -895,23 +842,23 @@ internal sealed class NvidiaFolderImportForm : Form
         grid.Columns.Add(modelColumn);
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
-            DataPropertyName = nameof(NvidiaFolderImportItem.Title),
+            DataPropertyName = nameof(RealtimeFolderImportItem.Title),
             HeaderText = "Show name",
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 34
         });
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
-            DataPropertyName = nameof(NvidiaFolderImportItem.Resolution),
+            DataPropertyName = nameof(RealtimeFolderImportItem.Resolution),
             HeaderText = "Resolution", ReadOnly = true, Width = 105
         });
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
-            DataPropertyName = nameof(NvidiaFolderImportItem.Length),
+            DataPropertyName = nameof(RealtimeFolderImportItem.Length),
             HeaderText = "Length", ReadOnly = true, Width = 78
         });
         grid.Columns.Add(new DataGridViewTextBoxColumn
         {
-            DataPropertyName = nameof(NvidiaFolderImportItem.Status),
+            DataPropertyName = nameof(RealtimeFolderImportItem.Status),
             HeaderText = "Status", ReadOnly = true,
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 23
         });
@@ -954,21 +901,21 @@ internal sealed class NvidiaFolderImportForm : Form
         {
             (HashSet<string> Catalog, HashSet<string> Queue) existing =
                 await Task.Run(() => (
-                    NvidiaFolderImporter.ExistingCatalogSourcePaths(store),
-                    NvidiaFolderImporter.ExistingQueueSourcePaths(
+                    RealtimeFolderImporter.ExistingCatalogSourcePaths(store),
+                    RealtimeFolderImporter.ExistingQueueSourcePaths(
                         queueManager.Jobs)), token);
-            Progress<NvidiaFolderImportProgress> scanProgress = new(value =>
+            Progress<RealtimeFolderImportProgress> scanProgress = new(value =>
             {
                 status.Text = value.Message;
                 progress.Maximum = Math.Max(1, value.Total);
                 progress.Value = Math.Clamp(value.Completed, 0, progress.Maximum);
             });
-            NvidiaFolderScanResult result = await Task.Run(() =>
-                NvidiaFolderImporter.Scan(folder.Text, existing.Catalog,
+            RealtimeFolderScanResult result = await Task.Run(() =>
+                RealtimeFolderImporter.Scan(folder.Text, existing.Catalog,
                     existing.Queue, scanProgress, token), token);
             CustomPerformerProfile? match =
-                NvidiaFolderImporter.MatchRootProfile(folder.Text, profiles);
-            foreach (NvidiaFolderImportItem item in result.Items)
+                RealtimeFolderImporter.MatchRootProfile(folder.Text, profiles);
+            foreach (RealtimeFolderImportItem item in result.Items)
             {
                 if (match != null) item.PerformerId = match.Id;
                 items.Add(item);
@@ -1019,10 +966,10 @@ internal sealed class NvidiaFolderImportForm : Form
 
     void ApplyModel(bool selectedOnly)
     {
-        NvidiaFolderImportItem[] targets = selectedOnly
+        RealtimeFolderImportItem[] targets = selectedOnly
             ? grid.SelectedRows.Cast<DataGridViewRow>()
                 .Select(row => row.DataBoundItem)
-                .OfType<NvidiaFolderImportItem>()
+                .OfType<RealtimeFolderImportItem>()
                 .Where(item => item.CanInclude).ToArray()
             : items.Where(item => item.CanInclude && item.Included).ToArray();
         if (targets.Length == 0)
@@ -1040,7 +987,7 @@ internal sealed class NvidiaFolderImportForm : Form
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        foreach (NvidiaFolderImportItem item in targets)
+        foreach (RealtimeFolderImportItem item in targets)
             item.PerformerId = id;
         grid.Refresh();
         UpdateImportState();
@@ -1066,7 +1013,7 @@ internal sealed class NvidiaFolderImportForm : Form
     void SetIncluded(bool included)
     {
         grid.EndEdit();
-        foreach (NvidiaFolderImportItem item in items)
+        foreach (RealtimeFolderImportItem item in items)
             if (item.CanInclude) item.Included = included;
         grid.Refresh();
         UpdateImportState();
@@ -1075,9 +1022,9 @@ internal sealed class NvidiaFolderImportForm : Form
     void SetSelectedIncluded(bool included)
     {
         grid.EndEdit();
-        foreach (NvidiaFolderImportItem item in grid.SelectedRows
+        foreach (RealtimeFolderImportItem item in grid.SelectedRows
             .Cast<DataGridViewRow>().Select(row => row.DataBoundItem)
-            .OfType<NvidiaFolderImportItem>())
+            .OfType<RealtimeFolderImportItem>())
             if (item.CanInclude) item.Included = included;
         grid.Refresh();
         UpdateImportState();
@@ -1089,7 +1036,7 @@ internal sealed class NvidiaFolderImportForm : Form
         if (e.ColumnIndex < 0) return;
         DataGridViewColumn column = grid.Columns[e.ColumnIndex];
         string property = column.DataPropertyName;
-        if (property == nameof(NvidiaFolderImportItem.Included))
+        if (property == nameof(RealtimeFolderImportItem.Included))
         {
             bool include = items.Any(item => item.CanInclude && !item.Included);
             SetIncluded(include);
@@ -1107,11 +1054,11 @@ internal sealed class NvidiaFolderImportForm : Form
     void SortItems(DataGridViewColumn column)
     {
         grid.EndEdit();
-        HashSet<NvidiaFolderImportItem> selected = grid.SelectedRows
+        HashSet<RealtimeFolderImportItem> selected = grid.SelectedRows
             .Cast<DataGridViewRow>().Select(row => row.DataBoundItem)
-            .OfType<NvidiaFolderImportItem>().ToHashSet();
-        NvidiaFolderImportItem? current = grid.CurrentRow?.DataBoundItem as
-            NvidiaFolderImportItem;
+            .OfType<RealtimeFolderImportItem>().ToHashSet();
+        RealtimeFolderImportItem? current = grid.CurrentRow?.DataBoundItem as
+            RealtimeFolderImportItem;
         int currentColumn = grid.CurrentCell?.ColumnIndex ?? 0;
         Dictionary<string, string> modelNames = profiles
             .GroupBy(profile => profile.Id, StringComparer.OrdinalIgnoreCase)
@@ -1119,23 +1066,23 @@ internal sealed class NvidiaFolderImportForm : Form
                 group => group.First().DisplayName,
                 StringComparer.OrdinalIgnoreCase);
         StringComparer textComparer = StringComparer.CurrentCultureIgnoreCase;
-        int Compare(NvidiaFolderImportItem left, NvidiaFolderImportItem right)
+        int Compare(RealtimeFolderImportItem left, RealtimeFolderImportItem right)
         {
             int result = column.DataPropertyName switch
             {
-                nameof(NvidiaFolderImportItem.Video) =>
+                nameof(RealtimeFolderImportItem.Video) =>
                     textComparer.Compare(left.Video, right.Video),
-                nameof(NvidiaFolderImportItem.PerformerId) =>
+                nameof(RealtimeFolderImportItem.PerformerId) =>
                     textComparer.Compare(
                         modelNames.GetValueOrDefault(left.PerformerId, ""),
                         modelNames.GetValueOrDefault(right.PerformerId, "")),
-                nameof(NvidiaFolderImportItem.Title) =>
+                nameof(RealtimeFolderImportItem.Title) =>
                     textComparer.Compare(left.Title, right.Title),
-                nameof(NvidiaFolderImportItem.Resolution) => CompareResolution(
+                nameof(RealtimeFolderImportItem.Resolution) => CompareResolution(
                     left, right),
-                nameof(NvidiaFolderImportItem.Length) =>
+                nameof(RealtimeFolderImportItem.Length) =>
                     left.DurationMs.CompareTo(right.DurationMs),
-                nameof(NvidiaFolderImportItem.Status) =>
+                nameof(RealtimeFolderImportItem.Status) =>
                     textComparer.Compare(left.Status, right.Status),
                 _ => 0
             };
@@ -1144,13 +1091,13 @@ internal sealed class NvidiaFolderImportForm : Form
             int sign = Math.Sign(result);
             return sortDirection == ListSortDirection.Descending ? -sign : sign;
         }
-        List<NvidiaFolderImportItem> sorted = [.. items];
+        List<RealtimeFolderImportItem> sorted = [.. items];
         sorted.Sort(Compare);
         items.RaiseListChangedEvents = false;
         try
         {
             items.Clear();
-            foreach (NvidiaFolderImportItem item in sorted) items.Add(item);
+            foreach (RealtimeFolderImportItem item in sorted) items.Add(item);
         }
         finally
         {
@@ -1166,7 +1113,7 @@ internal sealed class NvidiaFolderImportForm : Form
         DataGridViewRow? currentRow = null;
         foreach (DataGridViewRow row in grid.Rows)
         {
-            if (row.DataBoundItem is not NvidiaFolderImportItem item) continue;
+            if (row.DataBoundItem is not RealtimeFolderImportItem item) continue;
             if (ReferenceEquals(item, current)) currentRow = row;
         }
         if (currentRow != null)
@@ -1174,14 +1121,14 @@ internal sealed class NvidiaFolderImportForm : Form
                 grid.Columns.Count - 1)];
         grid.ClearSelection();
         foreach (DataGridViewRow row in grid.Rows)
-            if (row.DataBoundItem is NvidiaFolderImportItem item)
+            if (row.DataBoundItem is RealtimeFolderImportItem item)
                 row.Selected = selected.Contains(item);
         StyleRows();
         UpdateSelectionState();
     }
 
-    static int CompareResolution(NvidiaFolderImportItem left,
-        NvidiaFolderImportItem right)
+    static int CompareResolution(RealtimeFolderImportItem left,
+        RealtimeFolderImportItem right)
     {
         long leftPixels = (long)left.Width * left.Height;
         long rightPixels = (long)right.Width * right.Height;
@@ -1196,7 +1143,7 @@ internal sealed class NvidiaFolderImportForm : Form
         int selected = grid.SelectedRows.Count;
         int editable = grid.SelectedRows.Cast<DataGridViewRow>()
             .Select(row => row.DataBoundItem)
-            .OfType<NvidiaFolderImportItem>().Count(item => item.CanInclude);
+            .OfType<RealtimeFolderImportItem>().Count(item => item.CanInclude);
         selectionSummary.Text = selected == editable
             ? $"{selected:N0} selected"
             : $"{selected:N0} selected ({editable:N0} editable)";
@@ -1211,7 +1158,7 @@ internal sealed class NvidiaFolderImportForm : Form
     {
         foreach (DataGridViewRow row in grid.Rows)
         {
-            if (row.DataBoundItem is not NvidiaFolderImportItem item) continue;
+            if (row.DataBoundItem is not RealtimeFolderImportItem item) continue;
             row.ReadOnly = !item.CanInclude;
             row.DefaultCellStyle.ForeColor = item.CanInclude
                 ? grid.DefaultCellStyle.ForeColor : SystemColors.GrayText;
@@ -1225,7 +1172,7 @@ internal sealed class NvidiaFolderImportForm : Form
         if (scanning) return;
         grid.EndEdit();
         int eligibleCount = items.Count(item => item.CanInclude);
-        NvidiaFolderImportItem[] included = items.Where(item =>
+        RealtimeFolderImportItem[] included = items.Where(item =>
             item.CanInclude && item.Included).ToArray();
         if (grid.Columns.Count > 0)
             grid.Columns[0].HeaderText = included.Length == 0 ? "☐ Include" :
@@ -1241,7 +1188,7 @@ internal sealed class NvidiaFolderImportForm : Form
         grid.EndEdit();
         try
         {
-            NvidiaFolderImportItem[] selected = items.Where(item =>
+            RealtimeFolderImportItem[] selected = items.Where(item =>
                 item.CanInclude && item.Included).ToArray();
             if (selected.Length == 0)
                 throw new InvalidDataException(
@@ -1257,10 +1204,10 @@ internal sealed class NvidiaFolderImportForm : Form
                     !byId.ContainsKey(item.PerformerId)))
                 throw new InvalidDataException(
                     "Assign a model to every included video.");
-            HashSet<string> existing = NvidiaFolderImporter.ExistingSourcePaths(
+            HashSet<string> existing = RealtimeFolderImporter.ExistingSourcePaths(
                 store, queueManager.Jobs);
-            NvidiaFolderImportItem? duplicate = selected.FirstOrDefault(item =>
-                existing.Contains(NvidiaFolderImporter.CanonicalPath(
+            RealtimeFolderImportItem? duplicate = selected.FirstOrDefault(item =>
+                existing.Contains(RealtimeFolderImporter.CanonicalPath(
                     item.SourcePath)));
             if (duplicate != null)
                 throw new InvalidDataException(
@@ -1271,15 +1218,6 @@ internal sealed class NvidiaFolderImportForm : Form
             if (types.Length == 0)
                 throw new InvalidDataException(
                     "Select at least one clip type.");
-            CustomNvidiaSettings settings = new()
-            {
-                Mode = Math.Max(0, nvidiaMode.SelectedIndex),
-                Temporal = temporal.Checked,
-                InferenceResolution = resolution.SelectedIndex switch
-                {
-                    0 => "540p", 2 => "1080p", 3 => "source", _ => "720p"
-                }
-            };
             CustomRvmOnnxSettings rvmSettings = new()
             {
                 Model = rvmModel.SelectedIndex == 1 ? RvmOnnxSupport.ResNet50 :
@@ -1288,18 +1226,11 @@ internal sealed class NvidiaFolderImportForm : Form
                     rvmQuality.SelectedIndex),
                 Temporal = rvmTemporal.Checked
             };
-            string selectedRenderer = renderer.SelectedIndex == 1
-                ? CustomClipMedia.RvmOnnxMode : CustomClipMedia.NvidiaAigsMode;
             string selectedHotness = hotness.SelectedItem?.ToString() ??
                 "NoNudity";
             List<CustomShowQueueBatchEntry> entries = selected.Select(item =>
-                NvidiaFolderImporter.BuildEntry(item, byId[item.PerformerId],
-                    selectedRenderer,
-                    selectedRenderer == CustomClipMedia.NvidiaAigsMode
-                        ? settings : null,
-                    selectedRenderer == CustomClipMedia.RvmOnnxMode
-                        ? rvmSettings : null,
-                    selectedHotness, types, configuration, store))
+                RealtimeFolderImporter.BuildEntry(item, byId[item.PerformerId],
+                    rvmSettings, selectedHotness, types, configuration, store))
                 .ToList();
             queueManager.AddBatch(entries);
             QueuedCount = entries.Count;
@@ -1313,10 +1244,6 @@ internal sealed class NvidiaFolderImportForm : Form
         }
     }
 
-    void UpdateRendererOptions()
-    {
-        bool nvidia = renderer.SelectedIndex != 1;
-        nvidiaOptions.Visible = nvidia;
-        rvmOptions.Visible = !nvidia;
-    }
 }
+
+

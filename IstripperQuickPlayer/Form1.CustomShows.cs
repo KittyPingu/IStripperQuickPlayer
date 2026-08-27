@@ -47,7 +47,7 @@ public partial class Form1
         new("Trim Custom Clip...");
     readonly ToolStripMenuItem cleanCustomClipAlphaMenu =
         new("Automatically Stabilize Alpha...");
-    readonly ToolStripMenuItem nvidiaForegroundSettingsMenu =
+    readonly ToolStripMenuItem realtimeForegroundSettingsMenu =
         new("Real-time Foreground Settings...");
     readonly ToolStripMenuItem virtualGreenScreenCustomClipMenu =
         new("Virtual Green Screen...");
@@ -68,7 +68,6 @@ public partial class Form1
     bool loadingCustomAlphaThreshold;
     bool loadingCustomEdgeChoke;
     bool selectingClipForContextMenu;
-    static bool nvidiaPlaybackWarningShown;
     static bool rvmOnnxPlaybackWarningShown;
     string customPlayerAnimationPath = "";
     string customPreloadedAnimationPath = "";
@@ -114,7 +113,7 @@ public partial class Form1
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
         create.Click += (_, _) => EditCustomShow(null);
-        folderImport.Click += (_, _) => ImportNvidiaFolder();
+        folderImport.Click += (_, _) => ImportRealtimeFolder();
         queues.Click += (_, _) => ShowCustomShowQueues();
         check.Click += async (_, _) => await CheckCustomShowsAsync(check);
         stabilize.Click += (_, _) => StabilizeVideo();
@@ -155,7 +154,7 @@ public partial class Form1
             await TrimSelectedCustomClipAsync();
         cleanCustomClipAlphaMenu.Click += (_, _) =>
             CompareSelectedCustomClipAlpha();
-        nvidiaForegroundSettingsMenu.Click += async (_, _) =>
+        realtimeForegroundSettingsMenu.Click += async (_, _) =>
         {
             try { await EditSelectedRealtimeForegroundSettingsAsync(); }
             catch (Exception error)
@@ -194,7 +193,7 @@ public partial class Form1
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
             openCustomClipFolderMenu, cleanCustomClipAlphaMenu,
-            nvidiaForegroundSettingsMenu,
+            realtimeForegroundSettingsMenu,
             virtualGreenScreenCustomClipMenu,
             trimCustomClipMenu, deleteCustomClipMenu]);
         customClipContextMenu.Opening += (sender, eventArgs) =>
@@ -207,12 +206,10 @@ public partial class Form1
             customClipHotnessMenu.Visible = custom;
             customClipTypesMenu.Visible = custom;
             openCustomClipFolderMenu.Visible = custom;
-            bool nvidia = custom && clip?.customMediaMode ==
-                CustomClipMedia.NvidiaAigsMode;
             bool rvmOnnx = custom && clip?.customMediaMode ==
                 CustomClipMedia.RvmOnnxMode;
-            cleanCustomClipAlphaMenu.Visible = custom && !nvidia && !rvmOnnx;
-            nvidiaForegroundSettingsMenu.Visible = nvidia || rvmOnnx;
+            cleanCustomClipAlphaMenu.Visible = custom && !rvmOnnx;
+            realtimeForegroundSettingsMenu.Visible = rvmOnnx;
             virtualGreenScreenCustomClipMenu.Visible = custom;
             trimCustomClipMenu.Visible = custom;
             deleteCustomClipMenu.Visible = custom;
@@ -225,13 +222,9 @@ public partial class Form1
     async Task EditSelectedRealtimeForegroundSettingsAsync()
     {
         if (!TryGetSelectedCustomClip(out ModelCard card, out ModelClip modelClip) ||
-            card.customShowId == null || modelClip.customMediaMode is not
-                (CustomClipMedia.NvidiaAigsMode or CustomClipMedia.RvmOnnxMode))
+            card.customShowId == null || modelClip.customMediaMode !=
+                CustomClipMedia.RvmOnnxMode)
             return;
-        bool currentlyNvidia = modelClip.customMediaMode ==
-            CustomClipMedia.NvidiaAigsMode;
-        CustomNvidiaSettings currentNvidia =
-            modelClip.customNvidiaSettings?.Clone() ?? new();
         CustomRvmOnnxSettings currentRvm =
             modelClip.customRvmOnnxSettings?.Clone() ?? new();
         using Form dialog = new()
@@ -248,36 +241,6 @@ public partial class Form1
             Dock = DockStyle.Fill, Padding = new Padding(18, 16, 18, 14),
             FlowDirection = FlowDirection.TopDown, WrapContents = false
         };
-        TableLayoutPanel rendererRow = SettingsRow("Renderer", out ComboBox renderer);
-        renderer.Items.AddRange(["NVIDIA AI Green Screen", "RVM ONNX"]);
-        renderer.SelectedIndex = currentlyNvidia ? 0 : 1;
-
-        GroupBox nvidiaGroup = new()
-        {
-            Text = "NVIDIA AI Green Screen", AutoSize = false,
-            Size = new System.Drawing.Size(600, 175),
-            Padding = new Padding(10, 5, 10, 8)
-        };
-        TableLayoutPanel nvidiaLayout = SettingsTable(3);
-        ComboBox nvidiaMode = SettingsCombo();
-        nvidiaMode.Items.AddRange(["Quality — chairs foreground",
-            "Performance — chairs foreground", "Quality — chairs background",
-            "Performance — chairs background"]);
-        nvidiaMode.SelectedIndex = Math.Clamp(currentNvidia.Mode, 0, 3);
-        CheckBox nvidiaTemporal = new()
-        {
-            Text = "Temporal filtering", Checked = currentNvidia.Temporal,
-            AutoSize = true, Margin = new Padding(12, 5, 0, 8)
-        };
-        ComboBox nvidiaResolution = SettingsCombo();
-        nvidiaResolution.Items.AddRange(["540p", "720p", "1080p", "Source"]);
-        nvidiaResolution.SelectedIndex = currentNvidia.InferenceResolution switch
-            { "540p" => 0, "1080p" => 2, "source" => 3, _ => 1 };
-        AddSetting(nvidiaLayout, 0, "SDK mode", nvidiaMode);
-        AddSetting(nvidiaLayout, 1, "Filtering", nvidiaTemporal);
-        AddSetting(nvidiaLayout, 2, "Inference resolution", nvidiaResolution);
-        nvidiaGroup.Controls.Add(nvidiaLayout);
-
         GroupBox rvmGroup = new()
         {
             Text = "RVM ONNX", AutoSize = false,
@@ -309,7 +272,7 @@ public partial class Form1
 
         Label hint = new()
         {
-            Text = "Renderer and setting changes apply to the current frame " +
+            Text = "Setting changes apply to the current frame " +
                 "without restarting the clip.",
             AutoSize = true, Width = 600, Margin = new Padding(0, 6, 0, 7)
         };
@@ -324,25 +287,10 @@ public partial class Form1
             Width = 600
         };
         buttons.Controls.AddRange([cancel, apply]);
-        void ShowRendererOptions()
-        {
-            nvidiaGroup.Visible = renderer.SelectedIndex == 0;
-            rvmGroup.Visible = renderer.SelectedIndex == 1;
-        }
-        renderer.SelectedIndexChanged += (_, _) => ShowRendererOptions();
-        layout.Controls.AddRange([rendererRow, nvidiaGroup, rvmGroup, hint, buttons]);
-        ShowRendererOptions();
+        layout.Controls.AddRange([rvmGroup, hint, buttons]);
         dialog.Controls.Add(layout); dialog.AcceptButton = apply;
         dialog.CancelButton = cancel; AppTheme.Apply(dialog);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        bool useNvidia = renderer.SelectedIndex == 0;
-        CustomNvidiaSettings nextNvidia = new()
-        {
-            Mode = nvidiaMode.SelectedIndex,
-            Temporal = nvidiaTemporal.Checked,
-            InferenceResolution = nvidiaResolution.SelectedIndex switch
-                { 0 => "540p", 2 => "1080p", 3 => "source", _ => "720p" }
-        };
         CustomRvmOnnxSettings nextRvm = new()
         {
             Model = rvmModel.SelectedIndex == 1 ? RvmOnnxSupport.ResNet50 :
@@ -361,14 +309,11 @@ public partial class Form1
         CustomShowClip savedClip = included[index];
         if (savedClip.Media == null)
             throw new InvalidDataException("The selected clip has no published media.");
-        savedClip.Media.Mode = useNvidia ? CustomClipMedia.NvidiaAigsMode :
-            CustomClipMedia.RvmOnnxMode;
+        savedClip.Media.Mode = CustomClipMedia.RvmOnnxMode;
         savedClip.Media.Alpha = null;
-        savedClip.Nvidia = useNvidia ? nextNvidia.Clone() : null;
-        savedClip.RvmOnnx = useNvidia ? null : nextRvm.Clone();
+        savedClip.RvmOnnx = nextRvm.Clone();
         store.SaveManifest(show);
         modelClip.customMediaMode = savedClip.Media.Mode;
-        modelClip.customNvidiaSettings = savedClip.Nvidia?.Clone();
         modelClip.customRvmOnnxSettings = savedClip.RvmOnnx?.Clone();
         string animation = GetAnimationPath(modelClip);
         if (string.Equals(customPreloadedAnimationPath, animation,
@@ -376,14 +321,10 @@ public partial class Form1
             CancelCustomPreload();
         if (customPlayerClip == modelClip && customPlayer != null)
         {
-            SetPlaybackStatus("Switching real-time foreground renderer...");
-            if (useNvidia)
-                await customPlayer.SetNvidiaSettingsAsync(nextNvidia);
-            else
-                await customPlayer.SetRvmOnnxSettingsAsync(nextRvm);
+            SetPlaybackStatus("Updating RVM ONNX foreground settings...");
+            await customPlayer.SetRvmOnnxSettingsAsync(nextRvm);
         }
-        SetPlaybackStatus($"{(useNvidia ? "NVIDIA" : "RVM ONNX")} foreground " +
-            "settings saved.");
+        SetPlaybackStatus("RVM ONNX foreground settings saved.");
     }
 
     static TableLayoutPanel SettingsTable(int rows)
@@ -1057,7 +998,7 @@ public partial class Form1
         customShowQueueForm.Activate();
     }
 
-    void ImportNvidiaFolder()
+    void ImportRealtimeFolder()
     {
         if (customShowQueueManager == null) return;
         using FolderBrowserDialog picker = new()
@@ -1070,7 +1011,7 @@ public partial class Form1
             return;
 
         CustomShowStore store = new(customShowConfiguration.LibraryRoot);
-        using NvidiaFolderImportForm form = new(store, customShowConfiguration,
+        using RealtimeFolderImportForm form = new(store, customShowConfiguration,
             customShowQueueManager, picker.SelectedPath);
         if (form.ShowDialog(this) != DialogResult.OK) return;
 
@@ -1250,11 +1191,6 @@ public partial class Form1
                     throw new InvalidOperationException(
                         "Setup completed but its Python environment was not found.");
                 customShowConfiguration.PythonExecutable = python;
-            }
-            if (options.InstallNvidiaAigs)
-            {
-                using NvidiaVfxSetupForm setup = new(customShowConfiguration);
-                if (setup.ShowDialog(owner) != DialogResult.OK) return null;
             }
             if (options.InstallRvmOnnx)
             {
@@ -1443,9 +1379,6 @@ public partial class Form1
                 included[index].EdgeChokePixels,
                 VirtualGreenScreenMath.Resolve(show.VirtualGreenScreen,
                     included[index].VirtualGreenScreen),
-                media.Mode == CustomClipMedia.NvidiaAigsMode
-                    ? customShowConfiguration.NvidiaVfxSdkRoot : null,
-                included[index].Nvidia,
                 media.Mode == CustomClipMedia.RvmOnnxMode
                     ? RvmOnnxSupport.ModelPathFor(
                         included[index].RvmOnnx?.Model ??
@@ -1684,9 +1617,8 @@ public partial class Form1
             item.clipName, animationPath, StringComparison.OrdinalIgnoreCase));
         string? playbackAlpha = clip?.customAlphaPath == null ? null :
             CustomShowStore.PreferredAlphaPath(clip.customAlphaPath);
-        bool nvidia = clip?.customMediaMode == CustomClipMedia.NvidiaAigsMode;
         bool rvmOnnx = clip?.customMediaMode == CustomClipMedia.RvmOnnxMode;
-        bool realtime = nvidia || rvmOnnx;
+        bool realtime = rvmOnnx;
         if (clip?.customForegroundPath == null || !File.Exists(clip.customForegroundPath) ||
             !realtime && (playbackAlpha == null || !File.Exists(playbackAlpha)))
             return false;
@@ -1714,20 +1646,10 @@ public partial class Form1
             preparedPlayback: preparedPlayback,
             edgeChokePixels: clip.customEdgeChokePixels,
             virtualGreenScreen: clip.customVirtualGreenScreen,
-            nvidiaSdkRoot: realtime
-                ? customShowConfiguration.NvidiaVfxSdkRoot : null,
-            nvidiaSettings: nvidia ? clip.customNvidiaSettings ?? new() : null,
             rvmOnnxModelPath: rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 clip.customRvmOnnxSettings?.Model ??
                     RvmOnnxSupport.MobileNetV3) : null,
             rvmOnnxSettings: rvmOnnx ? clip.customRvmOnnxSettings ?? new() : null);
-        player.NvidiaFallback += reason => BeginInvoke(() =>
-        {
-            if (nvidiaPlaybackWarningShown) return;
-            nvidiaPlaybackWarningShown = true;
-            SetPlaybackStatus("NVIDIA AI Green Screen is unavailable; playing opaque RGB. " +
-                "Use Custom Shows > Settings > Install / Update Processing Tools. " + reason);
-        });
         player.RvmOnnxFallback += reason => BeginInvoke(() =>
         {
             if (rvmOnnxPlaybackWarningShown) return;
@@ -1856,9 +1778,8 @@ public partial class Form1
         if (next == null) return;
         string? playbackAlpha = next.customAlphaPath == null ? null :
             CustomShowStore.PreferredAlphaPath(next.customAlphaPath);
-        bool nvidia = next.customMediaMode == CustomClipMedia.NvidiaAigsMode;
         bool rvmOnnx = next.customMediaMode == CustomClipMedia.RvmOnnxMode;
-        bool realtime = nvidia || rvmOnnx;
+        bool realtime = rvmOnnx;
         if (next.customForegroundPath == null ||
             !File.Exists(next.customForegroundPath) ||
             !realtime && (playbackAlpha == null || !File.Exists(playbackAlpha))) return;
@@ -1876,8 +1797,6 @@ public partial class Form1
             next.customEdgeChokePixels,
             next.customVirtualGreenScreen,
             next.customStartMs, customPreloadCancellation.Token,
-            realtime ? customShowConfiguration.NvidiaVfxSdkRoot : null,
-            nvidia ? next.customNvidiaSettings ?? new() : null,
             rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 next.customRvmOnnxSettings?.Model ??
                     RvmOnnxSupport.MobileNetV3) : null,

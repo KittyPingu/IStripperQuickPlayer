@@ -131,7 +131,7 @@ internal static class CustomShowProcessor
         }
         using FfmpegCpuDecoder decoder = new(destination, fastDecode: false);
         if (!decoder.DecodeNext(out _))
-            throw new InvalidDataException("The encoded NVIDIA clip has no video frames.");
+            throw new InvalidDataException("The encoded real-time clip has no video frames.");
         decoder.ValidateGpuFrame();
         return new CustomShowProcessResult
         {

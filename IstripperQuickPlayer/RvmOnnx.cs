@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Text;
+using System.Runtime.InteropServices;
 using Microsoft.ML.OnnxRuntime;
 
 namespace IStripperQuickPlayer;
@@ -383,6 +385,124 @@ internal sealed class RvmOnnxSession : IDisposable
     {
         if (values == null) return;
         foreach (OrtValue? value in values) value?.Dispose();
+    }
+}
+
+internal sealed class RvmGpuSession : IDisposable
+{
+    const string Bridge = "IStripperRvmGpuBridge64.dll";
+    IntPtr handle;
+
+    [DllImport(Bridge, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+    static extern int RvmGpu_Create(string modelPath, int width, int height,
+        float downsampleRatio, int temporal, out IntPtr handle,
+        StringBuilder error, int errorCharacters);
+
+    [DllImport(Bridge, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+    static extern int RvmGpu_Run(IntPtr handle, IntPtr texture,
+        uint subresource, IntPtr fence, ulong fenceValue, int fullRange,
+        int bt709, int p010, byte[] alpha, int alphaLength,
+        int readback,
+        StringBuilder error, int errorCharacters);
+
+    [DllImport(Bridge, CallingConvention = CallingConvention.Cdecl)]
+    static extern void RvmGpu_Reset(IntPtr handle);
+
+    [DllImport(Bridge, CallingConvention = CallingConvention.Cdecl)]
+    static extern void RvmGpu_Destroy(IntPtr handle);
+
+    [DllImport(Bridge, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+    static extern int RvmGpu_CreateDisplaySharedHandle(IntPtr handle,
+        out IntPtr sharedHandle, StringBuilder error, int errorCharacters);
+
+    [DllImport(Bridge, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+    static extern int RvmGpu_CreateAlphaSharedHandle(IntPtr handle,
+        out IntPtr sharedHandle, StringBuilder error, int errorCharacters);
+
+    [DllImport(Bridge, CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+    static extern int RvmGpu_VerifyD3D11Sharing(IntPtr handle,
+        StringBuilder error, int errorCharacters);
+
+    internal RvmGpuSession(string modelPath, int width, int height,
+        CustomRvmOnnxSettings settings)
+    {
+        CustomShowStore.ValidateRvmOnnxSettings(settings);
+        if (!RvmOnnxSupport.VerifyModel(modelPath, settings.Model))
+            throw new FileNotFoundException(
+                "The verified RVM ONNX real-time model is not installed.", modelPath);
+        StringBuilder error = new(1024);
+        int status = RvmGpu_Create(modelPath, width, height,
+            RvmOnnxSupport.DownsampleRatio(width, height, settings.Quality),
+            settings.Temporal ? 1 : 0, out handle, error, error.Capacity);
+        if (status != 0 || handle == IntPtr.Zero)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(
+                error.ToString()) ? "The GPU RVM bridge could not initialize." :
+                error.ToString());
+    }
+
+    internal void Run(FfmpegCpuDecoder decoder, byte[] alpha,
+        bool readback = false)
+    {
+        ObjectDisposedException.ThrowIf(handle == IntPtr.Zero, this);
+        FfmpegCpuDecoder.HardwareFrame frame = decoder.GetHardwareFrame();
+        StringBuilder error = new(1024);
+        int status = RvmGpu_Run(handle, frame.Texture,
+            checked((uint)frame.SubresourceIndex), frame.Fence,
+            frame.FenceValue, frame.FullRange ? 1 : 0, frame.Bt709 ? 1 : 0,
+            frame.P010 ? 1 : 0, alpha, alpha.Length, readback ? 1 : 0,
+            error, error.Capacity);
+        if (status != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(
+                error.ToString()) ? "DirectML could not process the GPU video frame." :
+                error.ToString());
+    }
+
+    internal void VerifyD3D11Sharing()
+    {
+        ObjectDisposedException.ThrowIf(handle == IntPtr.Zero, this);
+        StringBuilder error = new(1024);
+        int status = RvmGpu_VerifyD3D11Sharing(handle, error, error.Capacity);
+        if (status != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(
+                error.ToString()) ? "D3D11 could not share the decoded frame." :
+                error.ToString());
+    }
+
+    internal IntPtr CreateDisplaySharedHandle()
+    {
+        ObjectDisposedException.ThrowIf(handle == IntPtr.Zero, this);
+        StringBuilder error = new(1024);
+        int status = RvmGpu_CreateDisplaySharedHandle(handle,
+            out IntPtr shared, error, error.Capacity);
+        if (status != 0 || shared == IntPtr.Zero)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(
+                error.ToString()) ? "The GPU display surface could not be shared." :
+                error.ToString());
+        return shared;
+    }
+
+    internal IntPtr CreateAlphaSharedHandle()
+    {
+        ObjectDisposedException.ThrowIf(handle == IntPtr.Zero, this);
+        StringBuilder error = new(1024);
+        int status = RvmGpu_CreateAlphaSharedHandle(handle,
+            out IntPtr shared, error, error.Capacity);
+        if (status != 0 || shared == IntPtr.Zero)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(
+                error.ToString()) ? "The GPU alpha surface could not be shared." :
+                error.ToString());
+        return shared;
+    }
+
+    internal void Reset()
+    {
+        if (handle != IntPtr.Zero) RvmGpu_Reset(handle);
+    }
+
+    public void Dispose()
+    {
+        IntPtr released = Interlocked.Exchange(ref handle, IntPtr.Zero);
+        if (released != IntPtr.Zero) RvmGpu_Destroy(released);
     }
 }
 

@@ -112,7 +112,7 @@ internal sealed class VirtualGreenScreenEditorForm : Form
     string frameRate = "25/1";
     CustomShowClip currentClip;
     string foreground = "", alpha = "";
-    bool nvidiaOpaquePreview;
+    bool realtimeOpaquePreview;
     long rangeStartMs, rangeEndMs;
 
     internal bool Saved { get; private set; }
@@ -387,8 +387,8 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         CustomClipMedia media = currentClip.Media!;
         string folder = Path.Combine(store.ShowsFolder, show.Id);
         foreground = CustomShowStore.ResolveRelative(folder, media.Foreground);
-        nvidiaOpaquePreview = CustomClipMedia.IsRealtimeMode(media.Mode);
-        alpha = nvidiaOpaquePreview ? "" :
+        realtimeOpaquePreview = CustomClipMedia.IsRealtimeMode(media.Mode);
+        alpha = realtimeOpaquePreview ? "" :
             CustomShowStore.ResolvePlaybackAlpha(folder, media.Alpha!);
         rangeStartMs = media.PlaybackStartMs;
         rangeEndMs = CustomShowStore.PlaybackEnd(media);
@@ -959,7 +959,7 @@ internal sealed class VirtualGreenScreenEditorForm : Form
         start.ArgumentList.Add("-v"); start.ArgumentList.Add("error");
         start.ArgumentList.Add("-nostdin");
         AddInput(start, atMs, foreground);
-        if (nvidiaOpaquePreview)
+        if (realtimeOpaquePreview)
         {
             start.ArgumentList.Add("-f"); start.ArgumentList.Add("lavfi");
             start.ArgumentList.Add("-i"); start.ArgumentList.Add(

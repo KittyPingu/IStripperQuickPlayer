@@ -374,8 +374,6 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/OverlayDefaultsForm.cs
 !/IstripperQuickPlayer/DirectCompositionCardOverlayControl.cs
 !/IstripperQuickPlayer/DxgiMaskPreviewControl.cs
-!/IstripperQuickPlayer/NvidiaAiGreenScreen.cs
-!/IstripperQuickPlayer/NvidiaVfxSetup.cs
 !/IstripperQuickPlayer/RvmOnnx.cs
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/Form1.LibraryCleanup.cs
@@ -385,7 +383,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/VirtualGreenScreenEditorForm.cs
 !/IstripperQuickPlayer/DressingRoomStreamRelay.cs
 !/IstripperQuickPlayer/CustomShowQueue.cs
-!/IstripperQuickPlayer/CustomShowNvidiaFolderImport.cs
+!/IstripperQuickPlayer/CustomShowRealtimeFolderImport.cs
 !/IstripperQuickPlayer/CustomShowFailedCleanup.cs
 !/IstripperQuickPlayer/CustomShowCheckForm.cs
 !/IstripperQuickPlayer/Sam2MattingSupport.cs

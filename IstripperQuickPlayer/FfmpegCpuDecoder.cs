@@ -1,9 +1,25 @@
 using FFmpeg.AutoGen;
+using System.Runtime.InteropServices;
 
 namespace IStripperQuickPlayer;
 
 internal sealed unsafe class FfmpegCpuDecoder : IDisposable
 {
+    [StructLayout(LayoutKind.Sequential)]
+    struct D3D12Frame
+    {
+        internal IntPtr Texture;
+        internal int SubresourceIndex;
+        internal int Padding;
+        internal IntPtr Fence;
+        internal IntPtr Event;
+        internal ulong FenceValue;
+    }
+
+    internal readonly record struct HardwareFrame(IntPtr Texture,
+        int SubresourceIndex, IntPtr Fence, ulong FenceValue,
+        bool FullRange, bool Bt709, bool P010);
+
     internal static bool VerifyRuntime()
     {
         ffmpeg.RootPath = AppContext.BaseDirectory;
@@ -15,6 +31,8 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
     readonly AVStream* stream;
     readonly AVFrame* frame;
     readonly AVPacket* packet;
+    readonly AVBufferRef* hardwareDevice;
+    readonly AVCodecContext_get_format? hardwareFormatSelector;
     readonly int streamIndex;
     readonly double timeBase;
     readonly double timestampOrigin;
@@ -30,8 +48,8 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
     internal string FrameRate { get; }
     internal bool Ended { get; private set; }
 
-    internal FfmpegCpuDecoder(
-        string path, bool fastDecode = true)
+    internal FfmpegCpuDecoder(string path, bool fastDecode = true,
+        bool d3d12Hardware = false)
     {
         ffmpeg.RootPath = AppContext.BaseDirectory;
         uint codecVersion = ffmpeg.avcodec_version();
@@ -45,6 +63,8 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
         AVCodecContext* openedCodec = null;
         AVFrame* openedFrame = null;
         AVPacket* openedPacket = null;
+        AVBufferRef* openedHardwareDevice = null;
+        AVCodecContext_get_format? openedFormatSelector = null;
         try
         {
             Check(ffmpeg.avformat_open_input(
@@ -73,6 +93,19 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
             openedCodec->thread_count = 0;
             if (fastDecode)
                 openedCodec->flags2 |= ffmpeg.AV_CODEC_FLAG2_FAST;
+            if (d3d12Hardware)
+            {
+                Check(ffmpeg.av_hwdevice_ctx_create(&openedHardwareDevice,
+                    AVHWDeviceType.AV_HWDEVICE_TYPE_D3D12VA, null, null, 0),
+                    "create the Direct3D 12 video decoder");
+                openedCodec->hw_device_ctx =
+                    ffmpeg.av_buffer_ref(openedHardwareDevice);
+                if (openedCodec->hw_device_ctx == null)
+                    throw new OutOfMemoryException(
+                        "Could not retain the Direct3D 12 decoder device.");
+                openedFormatSelector = SelectD3D12Format;
+                openedCodec->get_format = openedFormatSelector;
+            }
             Check(ffmpeg.avcodec_open2(
                 openedCodec, codec, null), "open video decoder");
 
@@ -86,6 +119,8 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
             codecContext = openedCodec;
             frame = openedFrame;
             packet = openedPacket;
+            hardwareDevice = openedHardwareDevice;
+            hardwareFormatSelector = openedFormatSelector;
             Width = openedCodec->width;
             Height = openedCodec->height;
             if (Width <= 0 || Height <= 0)
@@ -122,6 +157,8 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
                 ffmpeg.av_frame_free(&openedFrame);
             if (openedCodec != null)
                 ffmpeg.avcodec_free_context(&openedCodec);
+            if (openedHardwareDevice != null)
+                ffmpeg.av_buffer_unref(&openedHardwareDevice);
             if (openedFormat != null)
                 ffmpeg.avformat_close_input(&openedFormat);
             throw;
@@ -206,6 +243,40 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
 
     internal AVPixelFormat PixelFormat =>
         (AVPixelFormat)frame->format;
+
+    internal bool IsHardwareDecoded => hardwareDevice != null;
+
+    static AVPixelFormat SelectD3D12Format(AVCodecContext* _,
+        AVPixelFormat* formats)
+    {
+        if (formats == null)
+            return AVPixelFormat.AV_PIX_FMT_NONE;
+        for (AVPixelFormat* value = formats;
+             *value != AVPixelFormat.AV_PIX_FMT_NONE; value++)
+            if (*value == AVPixelFormat.AV_PIX_FMT_D3D12)
+                return *value;
+        return AVPixelFormat.AV_PIX_FMT_NONE;
+    }
+
+    internal HardwareFrame GetHardwareFrame()
+    {
+        if (!IsHardwareDecoded || PixelFormat != AVPixelFormat.AV_PIX_FMT_D3D12 ||
+            frame->data[0] == null)
+            throw new InvalidOperationException(
+                "The current FFmpeg frame is not a Direct3D 12 surface.");
+        D3D12Frame* surface = (D3D12Frame*)frame->data[0];
+        if (surface->Texture == IntPtr.Zero || surface->Fence == IntPtr.Zero)
+            throw new InvalidDataException(
+                "FFmpeg returned an invalid Direct3D 12 video surface.");
+        AVHWFramesContext* frames = frame->hw_frames_ctx == null
+            ? null : (AVHWFramesContext*)frame->hw_frames_ctx->data;
+        AVPixelFormat softwareFormat = frames == null
+            ? codecContext->sw_pix_fmt : frames->sw_format;
+        return new HardwareFrame(surface->Texture,
+            surface->SubresourceIndex, surface->Fence, surface->FenceValue,
+            FullRange, Bt709,
+            softwareFormat == AVPixelFormat.AV_PIX_FMT_P010LE);
+    }
 
     internal bool FullRange =>
         frame->color_range == AVColorRange.AVCOL_RANGE_JPEG ||
@@ -372,6 +443,7 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
         AVFrame* releasedFrame = frame;
         AVCodecContext* releasedCodec = codecContext;
         AVFormatContext* releasedFormat = formatContext;
+        AVBufferRef* releasedHardwareDevice = hardwareDevice;
         if (releasedPacket != null)
             ffmpeg.av_packet_free(&releasedPacket);
         if (releasedFrame != null)
@@ -380,5 +452,8 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
             ffmpeg.avcodec_free_context(&releasedCodec);
         if (releasedFormat != null)
             ffmpeg.avformat_close_input(&releasedFormat);
+        if (releasedHardwareDevice != null)
+            ffmpeg.av_buffer_unref(&releasedHardwareDevice);
+        GC.KeepAlive(hardwareFormatSelector);
     }
 }

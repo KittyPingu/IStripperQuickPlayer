@@ -28,7 +28,7 @@ namespace IStripperQuickPlayer.DataModel
         internal bool VirtuaGuy = true;
         internal bool TradingCard = true;
         internal bool Custom = true;
-        internal bool NvidiaCustom = true;
+        internal bool RealtimeCustom = true;
         internal string genders =
             "Male,Female,Transgender,Femboy,Sissy,Non-Binary";
         internal decimal minMyRating=0;
@@ -42,7 +42,7 @@ namespace IStripperQuickPlayer.DataModel
             maxWaist = 99;
             maxHips = 99;
             Custom = true;
-            NvidiaCustom = true;
+            RealtimeCustom = true;
             genders = "Male,Female,Transgender,Femboy,Sissy,Non-Binary";
         }
 
@@ -79,7 +79,7 @@ namespace IStripperQuickPlayer.DataModel
             VirtuaGuy == other.VirtuaGuy &&
             TradingCard == other.TradingCard &&
             Custom == other.Custom &&
-            NvidiaCustom == other.NvidiaCustom &&
+            RealtimeCustom == other.RealtimeCustom &&
             string.Equals(genders, other.genders,
                 StringComparison.Ordinal);
     }

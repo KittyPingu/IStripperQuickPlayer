@@ -54,11 +54,11 @@ namespace IStripperQuickPlayer
             Location = new Point(630, 748),
             Text = "Custom"
         };
-        readonly CheckBox chkNvidiaCustom = new()
+        readonly CheckBox chkRealtimeCustom = new()
         {
             AutoSize = true,
-            Name = "chkNvidiaCustom",
-            Text = "NVIDIA AI"
+            Name = "chkRealtimeCustom",
+            Text = "Real-time"
         };
         internal Filter(FilterSettings filter, string filterName)
         {
@@ -79,8 +79,8 @@ namespace IStripperQuickPlayer
             this.Controls.Add(rangeHips);
             this.Controls.Add(rangeAge);
             chkCustom.CheckedChanged += (_, e) => chk_CheckedChanged(chkCustom, e);
-            chkNvidiaCustom.CheckedChanged += (_, e) =>
-                chk_CheckedChanged(chkNvidiaCustom, e);
+            chkRealtimeCustom.CheckedChanged += (_, e) =>
+                chk_CheckedChanged(chkRealtimeCustom, e);
             AppTheme.Apply(this);
             isLoaded = true;
             if (string.IsNullOrEmpty(_filterName) || _filterName == "Default") button1.Enabled = false;
@@ -107,7 +107,7 @@ namespace IStripperQuickPlayer
             [
                 chkIStripperClassic, chkDeskBabes, chkVGClassic, chkIStripper,
                 chkIStripperXXX, chkNormal, chkSpecial, chkVirtuaGuy,
-                chkTradingCard, chkCustom, chkNvidiaCustom
+                chkTradingCard, chkCustom, chkRealtimeCustom
             ];
             for (int index = 0; index < cardTypes.Length; index++)
             {
@@ -248,7 +248,7 @@ namespace IStripperQuickPlayer
             chkVirtuaGuy.Checked = filterSettings.VirtuaGuy;
             chkTradingCard.Checked = filterSettings.TradingCard;
             chkCustom.Checked = filterSettings.Custom;
-            chkNvidiaCustom.Checked = filterSettings.NvidiaCustom;
+            chkRealtimeCustom.Checked = filterSettings.RealtimeCustom;
             HashSet<string> selectedGenders = filterSettings.genders.Split(',',
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -388,7 +388,7 @@ namespace IStripperQuickPlayer
             filterSettings.VirtuaGuy = chkVirtuaGuy.Checked;
             filterSettings.TradingCard = chkTradingCard.Checked;
             filterSettings.Custom = chkCustom.Checked;
-            filterSettings.NvidiaCustom = chkNvidiaCustom.Checked;
+            filterSettings.RealtimeCustom = chkRealtimeCustom.Checked;
             filterSettings.genders = string.Join(',',
                 customGenders.CheckedItems.Cast<object>().Select(value => value.ToString()));
 

@@ -1,25 +1,17 @@
 # Custom shows
 
-## Real-time NVIDIA segmentation
+## Real-time RVM segmentation
 
-The `nvidia-aigs` processing method only splits/re-encodes full-colour H.264/AAC
-clips and is queueable without an installed SDK. Its clip media has
-`mode: "nvidia-aigs"`, omits `alpha`, and carries per-clip NVIDIA mode,
-temporal filtering, and inference resolution. Missing media mode remains the
-schema-compatible `paired-alpha` default, and mixed-media shows are valid.
+The `rvm-onnx` processing method only splits/re-encodes full-colour H.264/AAC
+clips and is queueable without an installed model. Its clip media has
+`mode: "rvm-onnx"`, omits `alpha`, and carries per-clip RVM model, quality, and
+temporal-memory settings. Missing media mode remains the schema-compatible
+`paired-alpha` default, and mixed-media shows are valid.
 
-Playback dynamically loads NVIDIA Video Effects SDK from the configured Local
-AppData installation. The SDK's 8-bit mask feeds the existing Direct3D
-compositor while full-resolution RGB remains the rendered image. Load or run
-failure supplies constant alpha 255 without interrupting audio, transport,
-preload, or handoff.
-
-The optional NGC installer resolves the latest Windows Core package, installs
-`nvvfxgreenscreen`, validates Windows x64, Tensor Core generation, driver
-570.65+, native exports, feature files/models, and an effect load, then switches
-the configured SDK root. The key is used only in an authenticated HTTP header
-and transient `NGC_CLI_API_KEY`; proprietary SDK binaries are not published
-with QuickPlayer.
+Playback runs Robust Video Matting through DirectML. Its generated mask feeds
+the existing Direct3D compositor while full-resolution RGB remains the rendered
+image. Load or run failure supplies constant alpha 255 without interrupting
+audio, transport, preload, or handoff.
 
 Custom shows are normal QuickPlayer library cards backed by a local foreground video and alpha video. They can be searched, sorted, filtered, rated, favourited, dragged, saved in manual queues, selected by automatic queues, and controlled through REST alongside iStripper cards. iStripper still plays official shows; QuickPlayer's transparent player is used only for IDs beginning `custom:`.
 

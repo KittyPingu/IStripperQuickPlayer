@@ -3,6 +3,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace IStripperQuickPlayer;
 
@@ -72,10 +73,13 @@ internal sealed class CustomShowQueueStore
         Directory.CreateDirectory(Root);
         if (!File.Exists(FilePath)) return new();
         CustomShowQueueDocument document;
+        bool migrated;
         try
         {
-            document = JsonSerializer.Deserialize<CustomShowQueueDocument>(
-                File.ReadAllText(FilePath), CustomShowStore.JsonOptions) ?? new();
+            JsonNode? json = JsonNode.Parse(File.ReadAllText(FilePath));
+            migrated = CustomShowStore.MigrateRetiredRealtimeRenderer(json);
+            document = json?.Deserialize<CustomShowQueueDocument>(
+                CustomShowStore.JsonOptions) ?? new();
         }
         catch (Exception error) when (error is JsonException or IOException)
         {
@@ -85,7 +89,7 @@ internal sealed class CustomShowQueueStore
         }
         if (document.SchemaVersion is not (1 or 2))
             throw new InvalidDataException("Unsupported custom-show queue version.");
-        bool changed = document.SchemaVersion == 1;
+        bool changed = migrated || document.SchemaVersion == 1;
         if (changed) document.SchemaVersion = 2;
         foreach (CustomShowQueueJob job in document.Jobs)
         {
@@ -1090,7 +1094,7 @@ internal static class CustomShowJobRunner
         if (job.Manifest.Processing?.Algorithm is not
             ("quality" or "fast" or "rvm-matanyone2" or
              "rvm-vitmatte-s" or "rvm-vitmatte-b" or "matanyone2" or
-             "sam2matting" or "nvidia-aigs" or "rvm-onnx"))
+             "sam2matting" or "rvm-onnx"))
             throw new CustomShowQueueAttentionException(
                 "This processing algorithm cannot run unattended.");
         bool installed = job.Manifest.Processing.Algorithm switch
@@ -1101,7 +1105,6 @@ internal static class CustomShowJobRunner
             "matanyone2" => CustomShowProcessor.IsMatAnyone2Installed(configuration),
             "sam2matting" => Sam2MattingSupport.IsInstalled(configuration,
                 job.Manifest.Processing.Tracker),
-            "nvidia-aigs" => true,
             "rvm-onnx" => true,
             _ => File.Exists(CustomShowProcessor.WorkerPath)
         };
@@ -1256,16 +1259,7 @@ internal static class CustomShowJobRunner
                     SetMedia(clip, result, options.Algorithm);
                     firstEncoded ??= result;
                 }
-                if (options.Algorithm == CustomClipMedia.NvidiaAigsMode)
-                {
-                    clip.Nvidia ??= new CustomNvidiaSettings();
-                    clip.RvmOnnx = null;
-                }
-                else
-                {
-                    clip.RvmOnnx ??= new CustomRvmOnnxSettings();
-                    clip.Nvidia = null;
-                }
+                clip.RvmOnnx ??= new CustomRvmOnnxSettings();
                 encoded += duration;
                 first ??= result;
             }
@@ -1536,9 +1530,9 @@ internal static class CustomShowJobRunner
             CustomShowClip replacement = new()
                 { Id = clipId, StartMs = 0, EndMs = 1000 };
             bool reused = TryReuseRealtimeMedia(replacement, [old], root,
-                CustomClipMedia.NvidiaAigsMode, out CustomShowProcessResult result);
+                CustomClipMedia.RvmOnnxMode, out CustomShowProcessResult result);
             return reused && replacement.Media?.Mode ==
-                    CustomClipMedia.NvidiaAigsMode &&
+                    CustomClipMedia.RvmOnnxMode &&
                 replacement.Media.Alpha == null && File.Exists(foreground) &&
                 File.ReadAllBytes(foreground).SequenceEqual(new byte[] { 1, 2, 3, 4 }) &&
                 !File.Exists(alpha) && result.ExecutionMode == "metadata-only-reuse" &&
@@ -1736,16 +1730,14 @@ internal static class CustomShowJobRunner
             };
             pending.Manifest.Processing = new()
             {
-                Algorithm = CustomClipMedia.NvidiaAigsMode,
+                Algorithm = CustomClipMedia.RvmOnnxMode,
                 ExecutionPolicy = "realtime-playback",
-                PrecisionPolicy = "sdk-managed"
+                PrecisionPolicy = "onnx-directml-fp32"
             };
             pending.Clips = [new()
             {
-                Nvidia = new CustomNvidiaSettings
-                {
-                    Mode = 3, Temporal = false, InferenceResolution = "1080p"
-                }
+                RvmOnnx = new CustomRvmOnnxSettings
+                    { Model = "resnet50", Quality = "quality", Temporal = false }
             }];
             CustomShowQueueJob running = new()
             {
@@ -1783,10 +1775,10 @@ internal static class CustomShowJobRunner
                 loaded.Jobs[0].StartedUtc != null || loaded.Jobs[0].CompletedUtc != null ||
                 loaded.Jobs[0].Message !=
                     "Pending; RGB clips will be encoded when the job runs" ||
-                loaded.Jobs[0].Manifest.Processing?.Algorithm != "nvidia-aigs" ||
-                loaded.Jobs[0].Clips.Single().Nvidia?.Mode != 3 ||
-                loaded.Jobs[0].Clips.Single().Nvidia?.Temporal != false ||
-                loaded.Jobs[0].Clips.Single().Nvidia?.InferenceResolution != "1080p" ||
+                loaded.Jobs[0].Manifest.Processing?.Algorithm != "rvm-onnx" ||
+                loaded.Jobs[0].Clips.Single().RvmOnnx?.Model != "resnet50" ||
+                loaded.Jobs[0].Clips.Single().RvmOnnx?.Temporal != false ||
+                loaded.Jobs[0].Clips.Single().RvmOnnx?.Quality != "quality" ||
                 loaded.Jobs[1].Status != CustomShowQueueStatus.Pending ||
                 loaded.Jobs[1].Percent != 0 || Directory.Exists(storage.Work(running.Id)) ||
                 loaded.Jobs[3].ReadyToPublish ||

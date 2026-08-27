@@ -144,6 +144,11 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Link>%(Filename)%(Extension)</Link>
     </Content>
+    <Content Include="dependencies\IStripperRvmGpuBridge64.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>%(Filename)%(Extension)</Link>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\.editorconfig" Link=".editorconfig" />
@@ -184,6 +189,9 @@
 
   <ItemGroup Condition="'$(MSBuildRuntimeType)' != 'Core'">
     <ProjectReference Include="..\native\IStripperPlaybackBridge64\IStripperPlaybackBridge64.vcxproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\native\IStripperRvmGpuBridge64\IStripperRvmGpuBridge64.vcxproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>

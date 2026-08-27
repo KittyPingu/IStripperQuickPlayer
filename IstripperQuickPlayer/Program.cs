@@ -34,26 +34,6 @@ namespace IStripperQuickPlayer
 
             ApplicationConfiguration.Initialize();
 
-            if (args.Length == 1 && args[0] == "--verify-nvidia-aigs")
-            {
-                try
-                {
-                    CustomShowConfiguration configuration =
-                        CustomShowConfiguration.Load();
-                    NvidiaVfxSetup.ValidateInstallation(
-                        configuration.NvidiaVfxSdkRoot);
-                    Console.WriteLine("NVIDIA AI Green Screen load/run succeeded.");
-                    Environment.ExitCode = 0;
-                }
-                catch (Exception error)
-                {
-                    Console.Error.WriteLine("NVIDIA AI Green Screen diagnostic failed: " +
-                        error.Message);
-                    Environment.ExitCode = 1;
-                }
-                return;
-            }
-
             if (args.Length is 1 or 2 && args[0] == "--verify-rvm-onnx")
             {
                 try
@@ -140,12 +120,56 @@ namespace IStripperQuickPlayer
                 return;
             }
 
+            if (args.Length == 2 && args[0] == "--verify-rvm-gpu")
+            {
+                try
+                {
+                    using FfmpegCpuDecoder decoder = new(args[1],
+                        d3d12Hardware: true);
+                    CustomRvmOnnxSettings settings = new()
+                    {
+                        Model = RvmOnnxSupport.MobileNetV3,
+                        Quality = "balanced",
+                        Temporal = true
+                    };
+                    (int width, int height) = RvmOnnxSupport.InferenceSize(
+                        decoder.Width, decoder.Height, settings.Quality);
+                    using RvmGpuSession session = new(
+                        RvmOnnxSupport.ModelPathFor(settings.Model), width,
+                        height, settings);
+                    byte[] alpha = new byte[checked(width * height)];
+                    for (int index = 0; index < 2; index++)
+                    {
+                        if (!decoder.DecodeNext(out _))
+                            throw new InvalidDataException(
+                                "The GPU RVM diagnostic could not decode a frame.");
+                        session.Run(decoder, alpha, readback: true);
+                        if (index == 0) session.VerifyD3D11Sharing();
+                    }
+                    if (alpha.All(value => value == 0))
+                        throw new InvalidDataException(
+                            "The GPU RVM diagnostic returned an empty mask.");
+                    Console.WriteLine("RVM D3D12 zero-copy decode and DirectML " +
+                        $"inference succeeded at {decoder.Width}x{decoder.Height} " +
+                        $"({width}x{height} inference).");
+                    Environment.ExitCode = 0;
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine("RVM GPU diagnostic failed: " +
+                        error.Message);
+                    Environment.ExitCode = 1;
+                }
+                return;
+            }
+
             if (args.Length == 1 && args[0] == "--verify-custom-shows")
             {
                 (string Name, bool Passed)[] checks =
                 [
                     ("core", CustomShowStore.VerifyCoreLogic()),
                     ("integration", CustomShowStore.VerifyIntegration()),
+                    ("real-time card filtering", Form1.VerifyRealtimeCardFiltering()),
                     ("hit testing", CustomPlayerForm.VerifyHitTesting()),
                     ("custom playback handoff", Form1.VerifyCustomPlaybackHandoff()),
                     ("cover crop", CustomShowEditorForm.VerifyCoverCrop()),
@@ -169,14 +193,11 @@ namespace IStripperQuickPlayer
                     ("temporal alpha threshold preview",
                         TemporalAlphaComparisonForm.VerifyThresholdPreview()),
                     ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),
-                    ("NVIDIA inference and fallback", NvidiaAiGreenScreen.VerifyContracts()),
                     ("RVM ONNX contracts", RvmOnnxSupport.VerifyContracts()),
                     ("real-time RGB reprocess reuse",
                         CustomShowJobRunner.VerifyRealtimeMediaReuse()),
-                    ("NVIDIA RGB-only encoding", CustomShowProcessor.VerifyRgbOnlyEncoding()),
-                    ("Real-time folder import", NvidiaFolderImporter.VerifyContracts()),
-                    ("NVIDIA setup contracts", NvidiaVfxSetup.VerifyContracts()),
-                    ("NVIDIA card filtering", Form1.VerifyNvidiaCardFiltering()),
+                    ("real-time RGB-only encoding", CustomShowProcessor.VerifyRgbOnlyEncoding()),
+                    ("Real-time folder import", RealtimeFolderImporter.VerifyContracts()),
                     ("card index refresh", Datastore.VerifyTagIndexReplacement()),
                     ("optional tool detection", CustomShowProcessor.VerifyOptionalToolDetection()),
                     ("worker result contract", CustomShowProcessor.VerifyResultContract()),
@@ -765,7 +786,6 @@ namespace IStripperQuickPlayer
             CustomShowEditorForm.QueueAction("rvm-vitmatte-b", true) == "Queue" &&
             CustomShowEditorForm.QueueAction("matanyone2", true) == "Mask and Queue" &&
             CustomShowEditorForm.QueueAction("sam2matting", false) == "Queue" &&
-            CustomShowEditorForm.QueueAction("nvidia-aigs", false) == "Queue" &&
             CustomShowEditorForm.QueueAction("rvm-onnx", false) == "Queue" &&
             CustomShowEditorForm.QueueAction("quality", false) == null &&
             CustomShowEditorForm.QueueAction("vitmatte-s", true) == null &&
@@ -848,6 +868,8 @@ namespace IStripperQuickPlayer
                 ["chkSpecial"] = "Include special-edition cards.",
                 ["chkVirtuaGuy"] = "Include VirtuaGuy cards.",
                 ["chkTradingCard"] = "Include Trading Card collection cards.",
+                ["chkRealtimeCustom"] =
+                    "Include custom shows whose foreground is generated during playback.",
 
                 ["chkNextClip"] = "Enable the global Next clip hotkey.",
                 ["chkNextCard"] = "Enable the global Next card hotkey.",
