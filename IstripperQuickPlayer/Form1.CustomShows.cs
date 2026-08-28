@@ -2133,7 +2133,10 @@ public partial class Form1
             RealtimeClipAllowedDuringProcessing(true,
                 CustomClipMedia.PairedAlphaMode) &&
             RealtimeClipAllowedDuringProcessing(false,
-                CustomClipMedia.RvmOnnxMode);
+                CustomClipMedia.RvmOnnxMode) &&
+            !ClipSelectionWasHandled(false, false) &&
+            ClipSelectionWasHandled(true, false) &&
+            ClipSelectionWasHandled(false, true);
     }
 
     void RememberCustomPlayerBounds(CustomPlayerForm player)

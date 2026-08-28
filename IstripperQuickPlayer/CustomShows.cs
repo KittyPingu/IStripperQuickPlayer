@@ -949,6 +949,10 @@ internal sealed class CustomShowStore
         ["Public", "NoNudity", "Topless", "Nudity", "FullNudity", "XXX"];
     static readonly HashSet<string> HotnessValues = [.. HotnessOptions];
     internal static readonly string[] GenderValues =
+        ["Male", "Female", "Transgender"];
+    // Continue accepting retired values when loading existing manifests and
+    // profiles, but do not expose them when creating or editing content.
+    static readonly HashSet<string> ManifestGenderValues =
         ["Male", "Female", "Transgender", "Femboy", "Sissy", "Non-Binary"];
     internal static readonly string[] ClipTypeOptions =
         ["Standing", "Table", "Behind Table", "Swing", "Cage", "Pole",
@@ -1424,7 +1428,7 @@ internal sealed class CustomShowStore
         ValidateId(profile.Id, "performer");
         if (string.IsNullOrWhiteSpace(profile.ModelName)) throw new InvalidDataException("Model name is required.");
         if (!string.IsNullOrWhiteSpace(profile.Gender) &&
-            !GenderValues.Contains(profile.Gender))
+            !ManifestGenderValues.Contains(profile.Gender))
             throw new InvalidDataException("Unknown model gender value.");
         ValidateMeasurement(profile.HeightCm, 80, 250, "height");
         ValidateMeasurement(profile.BustCm, 30, 250, "bust");
@@ -1449,7 +1453,7 @@ internal sealed class CustomShowStore
             throw new InvalidDataException("createdUtc must be an ISO-8601 UTC value.");
         if (show.OfficialRating is < 0 or > 5) throw new InvalidDataException("Official rating must be 0–5.");
         if (show.AgeAtReleaseOverride is < 18 or > 120) throw new InvalidDataException("Age at release must be 18–120.");
-        if (!GenderValues.Contains(show.Gender))
+        if (!ManifestGenderValues.Contains(show.Gender))
             throw new InvalidDataException("Unknown gender value.");
         if (!HotnessValues.Contains(show.Hotness)) throw new InvalidDataException("Unknown hotness value.");
         if (show.PerformerCount < 1) throw new InvalidDataException("Performer count must be at least one.");
@@ -2165,6 +2169,10 @@ internal sealed class CustomShowStore
     {
         return AgeAt(new DateOnly(2000, 8, 8), new DateOnly(2026, 8, 7)) == 25 &&
             AgeAt(new DateOnly(2000, 8, 7), new DateOnly(2026, 8, 7)) == 26 &&
+            GenderValues.SequenceEqual(["Male", "Female", "Transgender"]) &&
+            ManifestGenderValues.Contains("Femboy") &&
+            ManifestGenderValues.Contains("Sissy") &&
+            ManifestGenderValues.Contains("Non-Binary") &&
             CmToInches(91.44m) == 36m && CmToLegacyHeight(170m) == "5.7" &&
             TryFrameRate("30000/1001", out double rate) && rate > 29.9 && rate < 30 &&
             (FindPythonForVerification() is string python &&

@@ -1983,8 +1983,11 @@ namespace IStripperQuickPlayer
             HashSet<string> selectedGenders = filterSettings.genders.Split(',',
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            currentCards = currentCards.Where(card => selectedGenders.Contains(
-                CardGender(card))).ToList();
+            bool allGendersSelected = CustomShowStore.GenderValues.All(
+                selectedGenders.Contains);
+            if (!allGendersSelected)
+                currentCards = currentCards.Where(card => selectedGenders.Contains(
+                    CardGender(card))).ToList();
 
             if (filterSettings.Normal && !filterSettings.Special)
                 currentCards = currentCards.Where(c => c.exclusive != null && !(bool)c.exclusive).ToList();
@@ -2356,6 +2359,12 @@ namespace IStripperQuickPlayer
             string cardTag = tag.ToString() ?? "";
             ModelCard? card = Datastore.findCardByTag(cardTag);
             if (card == null) return;
+            // Items are about to be replaced with new ModelClip instances. A
+            // remembered selection from the old list must not suppress the first
+            // click on a newly published or reprocessed one-clip show.
+            clipSelectionPlaybackTimer.Stop();
+            clipSelectionPlaybackPending = false;
+            lastchosen = "";
             clipListTag = cardTag;
             lblClipListTitle.Text =
                 $"Model: {card.modelName}   Show: {card.outfit}";
@@ -2488,15 +2497,22 @@ namespace IStripperQuickPlayer
             ModelClip? clip = card?.clips?.FirstOrDefault(item =>
                 string.Equals(item.clipName, r, StringComparison.OrdinalIgnoreCase));
             string full = clip == null ? "" : GetAnimationPath(clip);
-            if (!string.IsNullOrEmpty(full) &&
-                !string.Equals(GetCurrentAnimationPath(), full,
-                    StringComparison.OrdinalIgnoreCase))
+            bool alreadyPlaying = !string.IsNullOrEmpty(full) && string.Equals(
+                GetCurrentAnimationPath(), full, StringComparison.OrdinalIgnoreCase);
+            bool started = false;
+            if (!string.IsNullOrEmpty(full) && !alreadyPlaying)
             {
                 StartUnqueuedCardSession(full, sequential: true);
-                RequestAnimationPlayback(full);
+                started = RequestAnimationPlayback(full);
+                if (!started) ClearUnqueuedCardSession();
             }
-            lastchosen = r;
+            // A rejected request (for example during the final publication-state
+            // transition) must remain immediately retryable.
+            lastchosen = ClipSelectionWasHandled(alreadyPlaying, started) ? r : "";
         }
+
+        private static bool ClipSelectionWasHandled(bool alreadyPlaying,
+            bool requestSucceeded) => alreadyPlaying || requestSucceeded;
 
 
         private async void Form1_Load(object? sender, EventArgs e) =>

@@ -1059,8 +1059,9 @@ date, optional age-at-release override, gender, hotness, number of performers,
 and one or more clip types. The title is displayed through the existing `outfit`
 field and the profile name through `modelName`. Personal rating and favourite
 remain separate QuickPlayer user data. The Gender filter supports Male, Female,
-Transgender, Femboy, Sissy, and Non-Binary. Official iStripper cards are treated
-as Female for filtering, except VirtuaGuy cards, which are treated as Male.
+and Transgender. Official iStripper cards are treated as Female for filtering,
+except VirtuaGuy cards, which are treated as Male. Retired gender values in
+existing custom-show files remain readable but are not offered for new content.
 
 Right-click a custom card and choose **Edit Custom Show Metadata…**. Official iStripper metadata remains read-only.
 Changing ordinary metadata preserves the existing cover. An automatic cover is

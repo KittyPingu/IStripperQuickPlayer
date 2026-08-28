@@ -1210,6 +1210,17 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         0 => 256, 1 => 384, 3 => 768, 4 => 1024, 5 => 0, _ => 512
     };
 
+    static int MattingDetailIndex(int resolution) => resolution switch
+    {
+        256 => 0, 384 => 1, 768 => 3, 1024 => 4, 0 => 5, _ => 2
+    };
+
+    static int ReprocessMattingDetail(CustomShowProcessing processing,
+        CustomShowConfiguration configuration) =>
+        CustomClipMedia.IsRealtimeMode(processing.Algorithm)
+            ? configuration.LastMattingDetailPx
+            : processing.MattingDetailPx;
+
     int SelectedVitMatteInferenceResolution() => vitMatteInferenceDetail.SelectedIndex switch
     {
         0 => 512, 1 => 768, 3 => 0, _ => 1024
@@ -1526,6 +1537,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     void SelectProcessingOptions(CustomShowProcessing processing,
         IReadOnlyList<CustomShowClip> processingClips)
     {
+        bool realtimeSource = CustomClipMedia.IsRealtimeMode(processing.Algorithm);
         string prefix = processing.Algorithm switch
         {
             "fast" => "RVM Fast", "matanyone2" => "MatAnyone",
@@ -1543,72 +1555,100 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         rvmOnnxModel.SelectedIndex = configuration.LastRvmOnnxModel ==
             RvmOnnxSupport.ResNet50 ? 1 : 0;
         rvmOnnxTemporal.Checked = configuration.LastRvmOnnxTemporal;
-        sam2MattingTracker.SelectedIndex = processing.Tracker switch
-        {
-            "sam2.1-tiny" when processing.PromptMode == "rvm-initial-mask" => 2,
-            "sam2.1-base-plus" when processing.PromptMode == "rvm-initial-mask" => 3,
-            "sam2.1-tiny" => 0, "sam2.1-base-plus" => 1,
-            // Retired/unknown trackers reopen on the automatic Base+ path.
-            _ => 3
-        };
+        sam2MattingTracker.SelectedIndex = realtimeSource
+            ? configuration.LastSam2MattingTracker == "sam2.1-tiny" ? 2 : 3
+            : processing.Tracker switch
+            {
+                "sam2.1-tiny" when processing.PromptMode == "rvm-initial-mask" => 2,
+                "sam2.1-base-plus" when processing.PromptMode == "rvm-initial-mask" => 3,
+                "sam2.1-tiny" => 0, "sam2.1-base-plus" => 1,
+                // Retired/unknown trackers reopen on the automatic Base+ path.
+                _ => 3
+            };
         if (processing.Algorithm == "sam2matting")
             foregroundConcepts.Text = string.Join(Environment.NewLine,
                 processing.ForegroundConcepts);
-        SelectStartingWith(maskEngine, processing.MaskEngine switch
+        string? selectedMaskEngine = realtimeSource
+            ? configuration.LastMaskEngine : processing.MaskEngine;
+        SelectStartingWith(maskEngine, selectedMaskEngine switch
         {
             "sam2" => "SAM2", "rvm-sam2" => "RVM → SAM2",
             "edgetam" => "EdgeTAM", _ => "RVM"
         });
-        SelectStartingWith(sam2Model, processing.Sam2Model switch
+        string? selectedSam2Model = realtimeSource
+            ? configuration.LastSam2Model : processing.Sam2Model;
+        SelectStartingWith(sam2Model, selectedSam2Model switch
         {
             "small" => "Small", "tiny" => "Tiny", _ => "Base+"
         });
-        mattingDetail.SelectedIndex = processing.MattingDetailPx switch
-        {
-            256 => 0, 384 => 1, 768 => 3, 1024 => 4, 0 => 5, _ => 2
-        };
+        // Real-time processing records zero here because it never performs
+        // offline matting. Zero means "Full resolution" to MatAnyone, though,
+        // so do not inherit that placeholder when changing renderer during
+        // reprocessing. Start from the user's remembered offline preference.
+        mattingDetail.SelectedIndex = MattingDetailIndex(
+            ReprocessMattingDetail(processing, configuration));
         vitMatteInferenceDetail.SelectedIndex =
-            (processing.VitMatteInferenceDetailPx ?? 1024) switch
+            (realtimeSource ? configuration.LastVitMatteInferenceDetailPx :
+                processing.VitMatteInferenceDetailPx ?? 1024) switch
             {
                 512 => 0, 768 => 1, 0 => 3, _ => 2
             };
-        SelectBatchSize(processing.BatchSize);
+        SelectBatchSize(realtimeSource ? configuration.LastProcessingBatchSize :
+            processing.BatchSize);
         rvmInitializerThreshold.Value = Math.Clamp(
-            processing.RvmInitializerAlphaThresholdPercent ?? 40,
+            realtimeSource ? configuration.LastRvmInitializerAlphaThresholdPercent :
+                processing.RvmInitializerAlphaThresholdPercent ?? 40,
             rvmInitializerThreshold.Minimum, rvmInitializerThreshold.Maximum);
-        rvmMatAnyoneMaskRefresh.Checked = processing.RvmMatAnyoneMaskRefresh;
-        propSegmenterEveryFrame.Checked =
-            processing.PropSegmenterEveryFrame;
-        debugPropContribution.Checked = processing.DebugPropContribution;
+        SelectPropSegmenter(realtimeSource ? RememberedPropSegmenterModelId() :
+            processing.PropSegmenterModelId);
+        rvmMatAnyoneMaskRefresh.Checked = realtimeSource
+            ? configuration.LastRvmMatAnyoneMaskRefresh
+            : processing.RvmMatAnyoneMaskRefresh;
+        propSegmenterEveryFrame.Checked = realtimeSource
+            ? configuration.LastPropSegmenterEveryFrame
+            : processing.PropSegmenterEveryFrame;
+        debugPropContribution.Checked = realtimeSource
+            ? configuration.LastDebugPropContribution
+            : processing.DebugPropContribution;
         rvmMatAnyoneRefreshStrength.Value = Math.Clamp(
-            processing.RvmMatAnyoneRefreshStrengthPercent,
+            realtimeSource ? configuration.LastRvmMatAnyoneRefreshStrengthPercent :
+                processing.RvmMatAnyoneRefreshStrengthPercent,
             rvmMatAnyoneRefreshStrength.Minimum,
             rvmMatAnyoneRefreshStrength.Maximum);
-        matAnyoneUseLongTermMemory.Checked =
-            processing.MatAnyoneUseLongTermMemory;
+        matAnyoneUseLongTermMemory.Checked = realtimeSource
+            ? configuration.LastMatAnyoneUseLongTermMemory
+            : processing.MatAnyoneUseLongTermMemory;
         matAnyoneMaxMemoryFrames.Value = Math.Clamp(
-            processing.MatAnyoneMaxMemoryFrames,
+            realtimeSource ? configuration.LastMatAnyoneMaxMemoryFrames :
+                processing.MatAnyoneMaxMemoryFrames,
             (int)matAnyoneMaxMemoryFrames.Minimum,
             (int)matAnyoneMaxMemoryFrames.Maximum);
-        temporalAlphaCleanup.Checked = processing.TemporalAlphaCleanup;
+        temporalAlphaCleanup.Checked = realtimeSource
+            ? configuration.LastTemporalAlphaCleanup
+            : processing.TemporalAlphaCleanup;
         temporalAlphaCleanupWindow.Value = Math.Clamp(
-            processing.TemporalAlphaCleanupWindowFrames,
+            realtimeSource ? configuration.LastTemporalAlphaCleanupWindowFrames :
+                processing.TemporalAlphaCleanupWindowFrames,
             (int)temporalAlphaCleanupWindow.Minimum,
             (int)temporalAlphaCleanupWindow.Maximum);
         temporalAlphaCleanupStrength.Value = Math.Clamp(
-            processing.TemporalAlphaCleanupStrengthPercent,
+            realtimeSource ? configuration.LastTemporalAlphaCleanupStrengthPercent :
+                processing.TemporalAlphaCleanupStrengthPercent,
             temporalAlphaCleanupStrength.Minimum,
             temporalAlphaCleanupStrength.Maximum);
         temporalAlphaTrackingStrength.Value = Math.Clamp(
-            processing.TemporalAlphaTrackingStrengthPercent,
+            realtimeSource ? configuration.LastTemporalAlphaTrackingStrengthPercent :
+                processing.TemporalAlphaTrackingStrengthPercent,
             temporalAlphaTrackingStrength.Minimum,
             temporalAlphaTrackingStrength.Maximum);
         temporalAlphaCleanupAlphaThreshold.Value = Math.Clamp(
-            processing.TemporalAlphaCleanupAlphaThreshold,
+            realtimeSource ? configuration.LastTemporalAlphaCleanupAlphaThreshold :
+                processing.TemporalAlphaCleanupAlphaThreshold,
             (int)temporalAlphaCleanupAlphaThreshold.Minimum,
             (int)temporalAlphaCleanupAlphaThreshold.Maximum);
-        autoAccept.Checked = processing.AutoAcceptedAlphaThreshold.HasValue;
-        SelectPropSegmenter(processing.PropSegmenterModelId);
+        autoAccept.Checked = realtimeSource
+            ? configuration.LastAutoAcceptAlphaThreshold
+            : processing.AutoAcceptedAlphaThreshold.HasValue;
         CustomRvmOnnxSettings? rvmOnnx = processingClips.FirstOrDefault(value =>
             value.Media?.Mode == CustomClipMedia.RvmOnnxMode)?.RvmOnnx;
         if (rvmOnnx != null)
@@ -1628,6 +1668,13 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                 prefix, StringComparison.Ordinal)).index;
         if (index >= 0 && index < combo.Items.Count && combo.Items[index]!.ToString()!
             .StartsWith(prefix, StringComparison.Ordinal)) combo.SelectedIndex = index;
+    }
+
+    string? RememberedPropSegmenterModelId()
+    {
+        string? remembered = configuration.LastPropSegmenterModelId;
+        return remembered == null && configuration.PropSegmenterEnabled
+            ? configuration.ActivePropSegmenterModelId : remembered;
     }
 
     void RestoreProcessingOptions()
@@ -1660,10 +1707,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         {
             "small" => "Small", "tiny" => "Tiny", _ => "Base+"
         });
-        mattingDetail.SelectedIndex = configuration.LastMattingDetailPx switch
-        {
-            256 => 0, 384 => 1, 768 => 3, 1024 => 4, 0 => 5, _ => 2
-        };
+        mattingDetail.SelectedIndex = MattingDetailIndex(
+            configuration.LastMattingDetailPx);
         vitMatteInferenceDetail.SelectedIndex =
             configuration.LastVitMatteInferenceDetailPx switch
             {
@@ -1705,10 +1750,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             (int)temporalAlphaCleanupAlphaThreshold.Minimum,
             (int)temporalAlphaCleanupAlphaThreshold.Maximum);
         autoAccept.Checked = configuration.LastAutoAcceptAlphaThreshold;
-        string? rememberedPropModel = configuration.LastPropSegmenterModelId;
-        if (rememberedPropModel == null && configuration.PropSegmenterEnabled)
-            rememberedPropModel = configuration.ActivePropSegmenterModelId;
-        SelectPropSegmenter(rememberedPropModel);
+        SelectPropSegmenter(RememberedPropSegmenterModelId());
         UpdateProcessingOptions();
         SelectBatchSize(configuration.LastProcessingBatchSize);
     }
@@ -4371,6 +4413,29 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         RoutesSaveToQueue(false, Sam2MattingSupport.Algorithm) &&
         RoutesSaveToQueue(false, CustomClipMedia.RvmOnnxMode) &&
         !RoutesSaveToQueue(false, "quality");
+
+    internal static bool VerifyReprocessMattingDetailDefaults()
+    {
+        CustomShowConfiguration configuration = new()
+        {
+            LastMattingDetailPx = 512
+        };
+        return ReprocessMattingDetail(new CustomShowProcessing
+            {
+                Algorithm = CustomClipMedia.RvmOnnxMode,
+                MattingDetailPx = 0
+            }, configuration) == 512 &&
+            ReprocessMattingDetail(new CustomShowProcessing
+            {
+                Algorithm = "matanyone2",
+                MattingDetailPx = 768
+            }, configuration) == 768 &&
+            ReprocessMattingDetail(new CustomShowProcessing
+            {
+                Algorithm = "rvm-matanyone2",
+                MattingDetailPx = 0
+            }, configuration) == 0;
+    }
 
     internal static bool VerifyWizardApplication()
     {

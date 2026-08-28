@@ -29,8 +29,7 @@ namespace IStripperQuickPlayer.DataModel
         internal bool TradingCard = true;
         internal bool Custom = true;
         internal bool RealtimeCustom = true;
-        internal string genders =
-            "Male,Female,Transgender,Femboy,Sissy,Non-Binary";
+        internal string genders = "Male,Female,Transgender";
         internal decimal minMyRating=0;
         internal decimal maxMyRating=10;
         internal DateTime minDate=new DateTime(2000,1,1);
@@ -43,7 +42,7 @@ namespace IStripperQuickPlayer.DataModel
             maxHips = 99;
             Custom = true;
             RealtimeCustom = true;
-            genders = "Male,Female,Transgender,Femboy,Sissy,Non-Binary";
+            genders = "Male,Female,Transgender";
         }
 
         public object Clone()

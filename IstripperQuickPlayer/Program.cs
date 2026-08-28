@@ -267,6 +267,8 @@ namespace IStripperQuickPlayer
                     ("cover crop", CustomShowEditorForm.VerifyCoverCrop()),
                     ("append custom-show clips", CustomShowEditorForm.VerifyAppendLayout()),
                     ("metadata save routing", CustomShowEditorForm.VerifySaveRouting()),
+                    ("reprocess matting-detail defaults",
+                        CustomShowEditorForm.VerifyReprocessMattingDetailDefaults()),
                     ("custom-show wizard recommendations",
                         CustomShowWizardRecommendations.VerifyContracts()),
                     ("custom-show wizard application",

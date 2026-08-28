@@ -2051,8 +2051,11 @@ namespace IStripperQuickPlayer
                 return;
             clipSelectionPlaybackTimer.Stop();
             clipSelectionPlaybackPending = false;
-            if (listClips.SelectedItems.Count > 0 &&
-                lastchosen != listClips.SelectedItems[0].SubItems[1].Text)
+            // MouseUp is also the retry path when an already-selected clip's
+            // previous playback request was rejected. PlaySelectedClip is a no-op
+            // when that clip is already playing, so no last-selection guard is
+            // needed here.
+            if (listClips.SelectedItems.Count > 0)
                 PlaySelectedClip();
         }
 
