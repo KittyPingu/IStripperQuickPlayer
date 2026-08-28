@@ -2128,14 +2128,6 @@ public partial class Form1
                 now.AddSeconds(-1), now) &&
             !IStripperTransitionSettled("card\\clip", "card\\clip",
                 now.AddMilliseconds(-299), now) &&
-            SuppressRepeatedClipSelection("Clip 1", "clip 1",
-                "custom:show:clip1", "CUSTOM:SHOW:CLIP1", false) &&
-            !SuppressRepeatedClipSelection("Clip 1", "Clip 1",
-                "custom:show:clip1", "custom:other:clip2", false) &&
-            !SuppressRepeatedClipSelection("Clip 1", "Clip 2",
-                "custom:show:clip2", "custom:other:clip2", false) &&
-            SuppressRepeatedClipSelection("", "Clip 1",
-                "custom:show:clip1", "", true) &&
             !RealtimeClipAllowedDuringProcessing(true,
                 CustomClipMedia.RvmOnnxMode) &&
             RealtimeClipAllowedDuringProcessing(true,

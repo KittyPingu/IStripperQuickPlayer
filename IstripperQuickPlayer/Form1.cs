@@ -286,22 +286,22 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.ToggleLockEnabled) this.BeginInvoke((Action)(() => { lockPlayerToolStripMenuItem.Checked = !lockPlayerToolStripMenuItem.Checked; setPlayerLocked(); }));
         }
 
-        private async void actPause()
+        private void actPause()
         {
             if (Properties.Settings.Default.PauseHotkeyEnabled)
-                await TogglePlaybackPauseAsync();
+                cmdPlayPause.PerformClick();
         }
 
-        private async void actRewind()
+        private void actRewind()
         {
             if (Properties.Settings.Default.RewindHotkeyEnabled)
-                await SeekPlaybackRelativeAsync(-0.1);
+                cmdRewind.PerformClick();
         }
 
-        private async void actFastForward()
+        private void actFastForward()
         {
             if (Properties.Settings.Default.FastForwardHotkeyEnabled)
-                await SeekPlaybackRelativeAsync(0.1);
+                cmdFastForward.PerformClick();
         }
 
         private async void actRestartClip()
@@ -2467,15 +2467,8 @@ namespace IStripperQuickPlayer
         {
             if (selectingClipForContextMenu) return;
             if (listClips.SelectedItems.Count == 0) return;
-            string selectedName = listClips.SelectedItems[0].SubItems[1].Text;
-            ModelCard? selectedCard = Datastore.findCardByTag(clipListTag);
-            ModelClip? selectedClip = selectedCard?.clips?.FirstOrDefault(item =>
-                string.Equals(item.clipName, selectedName,
-                    StringComparison.OrdinalIgnoreCase));
-            string selectedPath = selectedClip == null ? "" :
-                GetAnimationPath(selectedClip);
-            if (SuppressRepeatedClipSelection(lastchosen, selectedName,
-                    selectedPath, GetCurrentAnimationPath(), clickingNowPlaying))
+            if (lastchosen == listClips.SelectedItems[0].SubItems[1].Text ||
+                clickingNowPlaying)
             {
                 clickingNowPlaying = false;
                 return;
@@ -2485,22 +2478,10 @@ namespace IStripperQuickPlayer
             PlaySelectedClip();
         }
 
-        internal static bool SuppressRepeatedClipSelection(string lastChosen,
-            string selectedName, string selectedPath, string currentPath,
-            bool clickingNowPlaying) => clickingNowPlaying ||
-            string.Equals(lastChosen, selectedName,
-                StringComparison.OrdinalIgnoreCase) &&
-            !string.IsNullOrEmpty(selectedPath) &&
-            string.Equals(selectedPath, currentPath,
-                StringComparison.OrdinalIgnoreCase);
-
         private void PlaySelectedClip()
         {
             if (panicActive || listClips.SelectedItems.Count == 0)
                 return;
-            queuedAnimationPendingPath = "";
-            queuedAnimationPendingConfirmed = false;
-            queuedAnimationProtectedUntil = DateTime.MinValue;
             ClearQueuedCardSession();
             string r = listClips.SelectedItems[0].SubItems[1].Text;
             ModelCard? card = Datastore.findCardByTag(clipListTag);
@@ -3720,7 +3701,7 @@ namespace IStripperQuickPlayer
             RequirePlaybackResult("IStripperSetPlayRate", bits);
         }
 
-        private async Task TogglePlaybackPauseAsync()
+        private async void cmdPlayPause_Click(object sender, EventArgs e)
         {
             if (customPlayer != null)
             {
@@ -3751,25 +3732,17 @@ namespace IStripperQuickPlayer
             }, prepareFastDecode: false);
         }
 
-        private async void cmdPlayPause_Click(object sender, EventArgs e) =>
-            await TogglePlaybackPauseAsync();
-
-        private async Task SeekPlaybackRelativeAsync(double fraction)
+        private async void cmdRewind_Click(object sender, EventArgs e)
         {
-            if (customPlayer != null)
-            {
-                customPlayer.SeekBy(customPlayer.DurationSeconds * fraction);
-                return;
-            }
-            await RunPlaybackOperationAsync(token =>
-                SeekRelativeAsync(fraction, token));
+            if (customPlayer != null) { customPlayer.SeekBy(-customPlayer.DurationSeconds * .1); return; }
+            await RunPlaybackOperationAsync(token => SeekRelativeAsync(-0.1, token));
         }
 
-        private async void cmdRewind_Click(object sender, EventArgs e)
-            => await SeekPlaybackRelativeAsync(-0.1);
-
         private async void cmdFastForward_Click(object sender, EventArgs e)
-            => await SeekPlaybackRelativeAsync(0.1);
+        {
+            if (customPlayer != null) { customPlayer.SeekBy(customPlayer.DurationSeconds * .1); return; }
+            await RunPlaybackOperationAsync(token => SeekRelativeAsync(0.1, token));
+        }
 
         private async void cmbPlaybackSpeed_SelectedIndexChanged(object sender, EventArgs e)
         {
@@ -5290,12 +5263,6 @@ namespace IStripperQuickPlayer
                     (string.IsNullOrEmpty(path) ||
                      !string.IsNullOrEmpty(nowPlaying)))
                 {
-                    if (!string.IsNullOrEmpty(path) &&
-                        playbackBridgeLoaded && !playbackMovieRegistered)
-                    {
-                        WakePlaybackTimeline();
-                        ArmMovieCapture();
-                    }
                     QueueNowPlayingUiUpdate();
                     return;
                 }

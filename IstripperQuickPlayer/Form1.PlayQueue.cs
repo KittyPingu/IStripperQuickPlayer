@@ -2894,23 +2894,16 @@ namespace IStripperQuickPlayer
                 return false;
 
             if (!string.IsNullOrEmpty(playbackRequestedAnimationPath) &&
-                !string.Equals(playbackRequestedAnimationPath,
-                    queuedAnimationPendingPath,
+                string.Equals(proposed, playbackRequestedAnimationPath,
+                    StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(proposed, queuedAnimationPendingPath,
                     StringComparison.OrdinalIgnoreCase))
             {
-                if (string.Equals(proposed, playbackRequestedAnimationPath,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    queuedAnimationPendingPath = "";
-                    queuedAnimationPendingConfirmed = false;
-                    queuedAnimationProtectedUntil = DateTime.MinValue;
-                    ClearQueuedCardSession();
-                    return false;
-                }
-
-                selected = playbackRequestedAnimationPath;
-                forceAnimation = true;
-                return true;
+                queuedAnimationPendingPath = "";
+                queuedAnimationPendingConfirmed = false;
+                queuedAnimationProtectedUntil = DateTime.MinValue;
+                ClearQueuedCardSession();
+                return false;
             }
 
             if (!string.IsNullOrEmpty(queuedAnimationPendingPath))
