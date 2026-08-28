@@ -1748,8 +1748,13 @@ internal sealed class CustomShowStore
             mode is not ("eager" or "compiled" or "eager-fallback" or
                 "eager-oom-fallback" or "eager-bf16-sdpa" or
                 "eager-bf16-sdpa-bounded" or "realtime-playback" or
-                "metadata-only-reuse"))
+                "metadata-only-reuse" or "source-copy"))
             throw new InvalidDataException("Invalid resolved processing execution mode.");
+        if (processing.ResolvedExecutionMode == "source-copy" &&
+            (!rvmOnnx || !clips.Any(clip => clip.Included &&
+                clip.Media?.SourceCopy == true)))
+            throw new InvalidDataException(
+                "Source-copy execution requires copied real-time clip media.");
         if (processing.Encoder is string encoder &&
             encoder is not ("h264_nvenc" or "libx264"))
             throw new InvalidDataException("Invalid processing encoder.");
@@ -2234,6 +2239,17 @@ internal sealed class CustomShowStore
                 }
             };
             ValidateManifest(show, root);
+            rvmOnnx.Media!.SourceCopy = true;
+            show.Processing.ResolvedExecutionMode = "source-copy";
+            ValidateManifest(show, root);
+            bool sourceCopyWithoutCopiedMediaRejected = Reject(() =>
+            {
+                rvmOnnx.Media.SourceCopy = false;
+                try { ValidateManifest(show, root); }
+                finally { rvmOnnx.Media.SourceCopy = true; }
+            });
+            show.Processing.ResolvedExecutionMode = "metadata-only-reuse";
+            rvmOnnx.Media.SourceCopy = false;
             bool invalidRvmQualityRejected = Reject(() =>
             {
                 rvmOnnx.RvmOnnx!.Quality = "maximum";
@@ -2289,6 +2305,7 @@ internal sealed class CustomShowStore
             return invalidRvmQualityRejected && invalidRvmModelRejected &&
                 missingRvmModelDefaultsToMobileNet && realtimeAlphaRejected &&
                 traversalRejected && pairedWithoutAlphaRejected &&
+                sourceCopyWithoutCopiedMediaRejected &&
                 retiredMigrated;
         }
         finally

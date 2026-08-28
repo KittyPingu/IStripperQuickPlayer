@@ -998,6 +998,10 @@ internal sealed class CustomPlayerForm : Form
         TimestampStreamToAdvance(142, 100, 20) == 1 &&
         PairDurationMatches(145.733333, 145.8, 1d / 30) &&
         !PairDurationMatches(145.733333, 145.85, 1d / 30) &&
+        !ShouldSeekForRealtimeCatchUp(0, TimeSpan.TicksPerSecond / 50,
+            TimeSpan.TicksPerMillisecond * 200) &&
+        ShouldSeekForRealtimeCatchUp(0, TimeSpan.TicksPerSecond / 50,
+            TimeSpan.TicksPerMillisecond * 300) &&
         Math.Clamp(205, 10, 200) == 200 &&
         SettlePosition(100, 500, 0) == (100, false) &&
         SettlePosition(100, 500, 10) == (500, true) &&
@@ -1015,6 +1019,11 @@ internal sealed class CustomPlayerForm : Form
     static bool PairDurationMatches(double foreground, double alpha,
         double frameDuration) => Math.Abs(foreground - alpha) <=
             Math.Max(.05, frameDuration * 2 + .002);
+
+    static bool ShouldSeekForRealtimeCatchUp(long frameTimestamp,
+        long frameDuration, long currentTimestamp) =>
+        currentTimestamp - (frameTimestamp + frameDuration) >
+            Math.Max(frameDuration * 4, TimeSpan.TicksPerMillisecond * 250);
 
     static Size HitMapSize(int width, int height, int maximumDimension)
     {
@@ -1126,6 +1135,10 @@ internal sealed class CustomPlayerForm : Form
             uploadedMinimumTransparentAreaRadius = -1, uploadedGreenDomain = -1,
             uploadedHardwareVideo = -1;
         double clockSeconds, rate = 1;
+        long publishedClockSecondsBits = BitConverter.DoubleToInt64Bits(0);
+        long publishedRateBits = BitConverter.DoubleToInt64Bits(1);
+        long publishedClockTimestamp;
+        int publishedClockPlaying, publishedClockVersion;
         byte[] alphaRow;
         readonly byte[] yRow, cbRow, crRow;
         readonly bool alpha16;
@@ -1149,8 +1162,22 @@ internal sealed class CustomPlayerForm : Form
         internal int Width => rgb.Width; internal int Height => rgb.Height;
         internal double Duration { get; }
         internal bool Ended { get; private set; }
-        internal double CurrentTime { get { lock (sync) return TimeLocked(); } }
-        internal double PlaybackRate { get { lock (sync) return rate; } set { lock (sync) { UpdateClock(); rate = value; audio?.SetRate(value, clockSeconds, playing); } } }
+        internal double CurrentTime => PublishedCurrentTime();
+        internal double PlaybackRate
+        {
+            get => BitConverter.Int64BitsToDouble(
+                Volatile.Read(ref publishedRateBits));
+            set
+            {
+                lock (sync)
+                {
+                    UpdateClock();
+                    rate = value;
+                    PublishClockLocked();
+                    audio?.SetRate(value, clockSeconds, playing);
+                }
+            }
+        }
 
         internal PairedRenderer(string foreground, string? alphaPath,
             int alphaThreshold, int fullOpacityThreshold,
@@ -1241,6 +1268,7 @@ internal sealed class CustomPlayerForm : Form
             device1 = device.QueryInterface<ID3D11Device1>();
             device3 = device.QueryInterface<ID3D11Device3>();
             factory = DXGI.CreateDXGIFactory2<IDXGIFactory2>(false);
+            PublishClockLocked();
         }
 
         internal void AttachWindow(IntPtr handle, int width, int height)
@@ -1288,9 +1316,9 @@ internal sealed class CustomPlayerForm : Form
                 Usage = ResourceUsage.Default,
                 BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget
             });
-        internal void Play() { lock(sync) { if(playing)return; clock.Restart(); playing=true; audio?.Play(clockSeconds); } }
-        internal void Pause() { lock(sync) { if(!playing)return; UpdateClock(); playing=false; audio?.Pause(); } }
-        internal void Seek(double seconds) { lock(sync) { seconds=Math.Clamp(seconds,0,Duration); rgb.Seek(seconds); alpha?.Seek(seconds); rvmOnnx?.Reset(); rvmGpu?.Reset(); clockSeconds=seconds; clock.Restart(); if(!playing)clock.Stop(); pending=false; Ended=false; audio?.Seek(seconds,playing); } }
+        internal void Play() { lock(sync) { if(playing)return; clock.Restart(); playing=true; PublishClockLocked(); audio?.Play(clockSeconds); } }
+        internal void Pause() { lock(sync) { if(!playing)return; UpdateClock(); playing=false; clock.Stop(); PublishClockLocked(); audio?.Pause(); } }
+        internal void Seek(double seconds) { lock(sync) { seconds=Math.Clamp(seconds,0,Duration); rgb.Seek(seconds); alpha?.Seek(seconds); rvmOnnx?.Reset(); rvmGpu?.Reset(); clockSeconds=seconds; clock.Restart(); if(!playing)clock.Stop(); PublishClockLocked(); pending=false; Ended=false; audio?.Seek(seconds,playing); } }
         internal void Prime()
         {
             lock (sync)
@@ -1455,7 +1483,33 @@ internal sealed class CustomPlayerForm : Form
                 if(!pending && !DecodePair()) return false;
                 long now=(long)Math.Round(TimeLocked()*10_000_000);
                 long frame=(long)Math.Round(rgb.FrameDuration*10_000_000);
-                while(rgbTick+frame<now) { if(alpha==null)GenerateRealtimeAlphaLocked(); pending=false; if(!DecodePair())return false; }
+                if (alpha == null && rgbTick + frame < now)
+                {
+                    bool skipped = false;
+                    if (ShouldSeekForRealtimeCatchUp(rgbTick, frame, now))
+                    {
+                        rgb.Seek(now / (double)TimeSpan.TicksPerSecond);
+                        pending = false;
+                        if (!DecodePair()) return false;
+                        skipped = true;
+                    }
+                    else
+                    {
+                        while (rgbTick + frame < now)
+                        {
+                            pending = false;
+                            if (!DecodePair()) return false;
+                            skipped = true;
+                        }
+                    }
+                    if (skipped)
+                    {
+                        rvmOnnx?.Reset();
+                        rvmGpu?.Reset();
+                    }
+                }
+                else
+                    while(rgbTick+frame<now) { pending=false; if(!DecodePair())return false; }
                 if(rgbTick>now+10_000)return false;
                 if(alpha != null && Math.Abs(rgbTick-alphaTick)>Math.Max(10_000,frame/2)) throw new InvalidDataException("Foreground and alpha timestamps do not match.");
                 IntPtr yd=IntPtr.Zero,ud=IntPtr.Zero,vd=IntPtr.Zero;
@@ -1821,6 +1875,42 @@ internal sealed class CustomPlayerForm : Form
         }
         double TimeLocked()=>Math.Clamp(clockSeconds+(playing?clock.Elapsed.TotalSeconds*rate:0),0,Duration);
         void UpdateClock(){clockSeconds=TimeLocked();clock.Restart();if(!playing)clock.Stop();}
+        void PublishClockLocked()
+        {
+            Interlocked.Increment(ref publishedClockVersion);
+            Volatile.Write(ref publishedClockSecondsBits,
+                BitConverter.DoubleToInt64Bits(clockSeconds));
+            Volatile.Write(ref publishedRateBits,
+                BitConverter.DoubleToInt64Bits(rate));
+            Volatile.Write(ref publishedClockTimestamp, Stopwatch.GetTimestamp());
+            Volatile.Write(ref publishedClockPlaying, playing ? 1 : 0);
+            Interlocked.Increment(ref publishedClockVersion);
+        }
+        double PublishedCurrentTime()
+        {
+            while (true)
+            {
+                int before = Volatile.Read(ref publishedClockVersion);
+                if ((before & 1) != 0)
+                {
+                    Thread.Yield();
+                    continue;
+                }
+                double seconds = BitConverter.Int64BitsToDouble(
+                    Volatile.Read(ref publishedClockSecondsBits));
+                double publishedRate = BitConverter.Int64BitsToDouble(
+                    Volatile.Read(ref publishedRateBits));
+                long timestamp = Volatile.Read(ref publishedClockTimestamp);
+                bool publishedPlaying =
+                    Volatile.Read(ref publishedClockPlaying) != 0;
+                if (before != Volatile.Read(ref publishedClockVersion))
+                    continue;
+                if (publishedPlaying)
+                    seconds += Stopwatch.GetElapsedTime(timestamp).TotalSeconds *
+                        publishedRate;
+                return Math.Clamp(seconds, 0, Duration);
+            }
+        }
         internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),DxgiFormat.B8G8R8A8_UNorm);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);if(frameUploaded)DrawCurrentFrameLocked();else PresentTransparentLocked();}}
         public void Dispose(){lock(sync){if(disposed)return;disposed=true;audio?.Dispose();rvmOnnx?.Dispose();DisposeGpuSharedViews();rvmGpu?.Dispose();rgb.Dispose();alpha?.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();mattePs?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();matteView?.Dispose();matteTarget?.Dispose();matteTex?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();device3?.Dispose();device1?.Dispose();context?.Dispose();device?.Dispose();}}
     }

@@ -246,6 +246,21 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
 
     internal bool IsHardwareDecoded => hardwareDevice != null;
 
+    internal bool IsRealtimeSourceCopyCompatible =>
+        RealtimeSourceCopyCodecSupported(codecContext->codec_id) &&
+        PixelFormat is AVPixelFormat.AV_PIX_FMT_YUV420P or
+            AVPixelFormat.AV_PIX_FMT_YUVJ420P or
+            AVPixelFormat.AV_PIX_FMT_YUV420P10LE;
+
+    internal static bool RealtimeSourceCopyCodecSupported(AVCodecID codec) =>
+        codec is AVCodecID.AV_CODEC_ID_H264 or AVCodecID.AV_CODEC_ID_HEVC;
+
+    internal static bool VerifyRealtimeSourceCopyCodecs() =>
+        RealtimeSourceCopyCodecSupported(AVCodecID.AV_CODEC_ID_H264) &&
+        RealtimeSourceCopyCodecSupported(AVCodecID.AV_CODEC_ID_HEVC) &&
+        !RealtimeSourceCopyCodecSupported(AVCodecID.AV_CODEC_ID_AV1) &&
+        !RealtimeSourceCopyCodecSupported(AVCodecID.AV_CODEC_ID_VP9);
+
     static AVPixelFormat SelectD3D12Format(AVCodecContext* _,
         AVPixelFormat* formats)
     {

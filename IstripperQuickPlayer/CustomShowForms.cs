@@ -7,6 +7,8 @@ namespace IStripperQuickPlayer;
 
 internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
 {
+    const string SourceVideoFilter =
+        "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*";
     sealed class WizardHighlightControl : Control
     {
         internal WizardHighlightControl()
@@ -299,7 +301,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         scrollHost.Controls.Add(root);
         TableLayoutPanel basic = SectionTable();
         sourceBrowse = AddFileRow(basic, "Source video", source,
-            "Video files|*.mp4;*.mov;*.mkv;*.avi;*.webm|All files|*.*");
+            SourceVideoFilter);
         source.TextChanged += (_, _) =>
         {
             showClips = [];
@@ -846,10 +848,15 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
 
     public void OpenWizardClipEditor() => EditClips(null, EventArgs.Empty);
 
-    public void OpenWizardSourcePicker()
+    public void OpenWizardSourcePicker(IWin32Window owner)
     {
         NavigateWizardTo(CustomShowWizardArea.Source);
-        sourceBrowse.PerformClick();
+        ChooseFile(source, SourceVideoFilter, owner);
+        if (wizard is { IsDisposed: false })
+        {
+            wizard.Show();
+            wizard.Activate();
+        }
     }
 
     public void ApplyWizardRecommendation(
@@ -4524,13 +4531,16 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         string filter)
     {
         Button browse = new() { Text = "Browse...", AutoSize = true };
-        browse.Click += (_, _) =>
-        {
-            using OpenFileDialog dialog = new() { Filter = filter };
-            if (dialog.ShowDialog(table.FindForm()) == DialogResult.OK) box.Text = dialog.FileName;
-        };
+        browse.Click += (_, _) => ChooseFile(box, filter, table.FindForm());
         AddRow(table, label, box, browse);
         return browse;
+    }
+
+    static void ChooseFile(TextBox box, string filter, IWin32Window? owner)
+    {
+        using OpenFileDialog dialog = new() { Filter = filter };
+        if (dialog.ShowDialog(owner) == DialogResult.OK)
+            box.Text = dialog.FileName;
     }
 
     static void AddFolderRow(TableLayoutPanel table, string label, TextBox box)

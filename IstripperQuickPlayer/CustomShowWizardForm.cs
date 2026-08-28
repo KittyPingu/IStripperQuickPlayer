@@ -84,7 +84,7 @@ internal interface ICustomShowWizardHost
     event EventHandler? WizardStateChanged;
     CustomShowWizardState GetWizardState();
     void NavigateWizardTo(CustomShowWizardArea area);
-    void OpenWizardSourcePicker();
+    void OpenWizardSourcePicker(IWin32Window owner);
     void OpenWizardClipEditor();
     void ApplyWizardRecommendation(CustomShowWizardRecommendation recommendation,
         bool useFallback);
@@ -698,7 +698,7 @@ internal sealed class CustomShowWizardForm : Form
         {
             if (IsDisposed) return;
             if (area == CustomShowWizardArea.Source)
-                host.OpenWizardSourcePicker();
+                host.OpenWizardSourcePicker(this);
             else
                 host.NavigateWizardTo(area);
         });

@@ -167,6 +167,7 @@ internal static class CustomShowProcessor
                 checked((long)Math.Ceiling(decoder.FrameDuration * 2000)));
             if (Math.Abs(endMs - durationMs) > tolerance ||
                 !decoder.DecodeNext(out _)) return null;
+            if (!decoder.IsRealtimeSourceCopyCompatible) return null;
             double seekTarget = Math.Max(0,
                 decoder.Duration - Math.Max(.5, decoder.FrameDuration * 3));
             decoder.Seek(seekTarget);
@@ -277,6 +278,7 @@ internal static class CustomShowProcessor
                 result.Encoder is "h264_nvenc" or "libx264" &&
                 copied?.ExecutionMode == "source-copy" &&
                 copied.ForegroundFileName == "foreground.mp4" &&
+                FfmpegCpuDecoder.VerifyRealtimeSourceCopyCodecs() &&
                 File.ReadAllBytes(Path.Combine(copiedOutput, "foreground.mp4"))
                     .SequenceEqual(File.ReadAllBytes(source)) &&
                 trimmedCopy == null;
