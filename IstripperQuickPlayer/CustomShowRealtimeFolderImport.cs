@@ -425,7 +425,7 @@ internal static partial class RealtimeFolderImporter
             SourceLength = source.Length,
             SourceLastWriteUtcTicks = source.LastWriteTimeUtc.Ticks,
             RequestedOutputPath = Path.Combine(store.ShowsFolder, manifest.Id),
-            Message = "Pending; RGB clips will be encoded when the job runs"
+            Message = "Pending; seekable whole videos will be copied without re-encoding"
         };
         return new CustomShowQueueBatchEntry(job, null,
             new Dictionary<string, string>());
@@ -1245,5 +1245,4 @@ internal sealed class RealtimeFolderImportForm : Form
     }
 
 }
-
 

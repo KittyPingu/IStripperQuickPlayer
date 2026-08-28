@@ -97,6 +97,7 @@ public partial class Form1
         SetupCustomPlayerVolumeMenu();
         SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
+        ToolStripMenuItem createWithWizard = new("Create Show with Wizard...");
         ToolStripMenuItem create = new("Create Show...");
         ToolStripMenuItem createFromUrl = new(
             "Create Real-time Show from URL...");
@@ -115,6 +116,8 @@ public partial class Form1
             customShowConfiguration, QueueShowPublished,
             PrepareCustomShowPublicationAsync);
         customShowQueueManager.Changed += CustomShowQueueChanged;
+        createWithWizard.Click += (_, _) => EditCustomShow(null,
+            withWizard: true);
         create.Click += (_, _) => EditCustomShow(null);
         createFromUrl.Click += (_, _) => CreateCustomShowFromUrl();
         folderImport.Click += (_, _) => ImportRealtimeFolder();
@@ -126,7 +129,7 @@ public partial class Form1
         compareTemporalAlpha.Click += (_, _) => CompareTemporalAlphaCleanup();
         settings.Click += (_, _) => ConfigureCustomShows();
         customShowsMenu.DropDownItems.AddRange(
-            [create, createFromUrl, folderImport, queues, check,
+            [createWithWizard, create, createFromUrl, folderImport, queues, check,
                 new ToolStripSeparator(), stabilize,
                 backgroundLock, removeWatermark, compareTemporalAlpha, settings]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
@@ -851,7 +854,7 @@ public partial class Form1
     bool EditCustomShow(string? showId, bool reprocess = false,
         string? initialSourcePath = null, string? initialTitle = null,
         string? initialSourceUrl = null, bool retainInitialSource = false,
-        bool forceRvmOnnx = false)
+        bool forceRvmOnnx = false, bool withWizard = false)
     {
         using CustomShowEditorForm form = new(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
@@ -859,7 +862,11 @@ public partial class Form1
             initialSourcePath: initialSourcePath, initialTitle: initialTitle,
             initialSourceUrl: initialSourceUrl,
             retainInitialSource: retainInitialSource,
-            forceRvmOnnx: forceRvmOnnx);
+            forceRvmOnnx: forceRvmOnnx,
+            startWithWizard: withWizard,
+            wizardInstallTools: withWizard
+                ? (owner, algorithm) => InstallCustomShowTools(owner, algorithm)
+                : null);
         DialogResult result = form.ShowDialog(this);
         if (result == DialogResult.OK || form.SavedShowId != null)
         {
@@ -1201,9 +1208,10 @@ public partial class Form1
         form.ShowDialog(owner);
     }
 
-    void ConfigureCustomShows()
+    async void ConfigureCustomShows()
     {
-        if (customShowQueueManager?.IsRunning == true)
+        if (customShowQueueManager?.IsRunning == true ||
+            customShowQueueManager?.HasActiveJob == true)
         {
             MessageBox.Show(this, "Stop the custom-show queue before changing its settings.",
                 "Custom Shows", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1214,27 +1222,76 @@ public partial class Form1
             InstallCustomShowTools, CleanupFailedCustomShows);
         if (form.ShowDialog(this) != DialogResult.OK)
             return;
+
+        CustomShowLibraryMoveResult? moveResult = null;
+        if (form.LibraryMoveRequested)
+        {
+            CustomPlayerForm? previous = customPlayer;
+            StopCustomPlayback(restoreIstripper: true);
+            if (previous != null) await previous.ClosePlayerAsync();
+            customShowQueueForm?.Dispose();
+            customShowQueueForm = null;
+            DisposeCustomShowQueueManager();
+
+            using CustomShowProcessingForm moving = new(async (progress, token) =>
+            {
+                moveResult = await Task.Run(() => CustomShowLibraryMover.Move(
+                    form.LibraryMoveSource, form.Configuration.LibraryRoot,
+                    progress, token), token);
+                return new CustomShowProcessResult();
+            }, text: "Moving Custom Show Library",
+                processDescription: "Moving published shows, queued work, " +
+                    "model profiles, and recoverable drafts",
+                showPreviews: false, showFps: false);
+            if (moving.ShowDialog(this) != DialogResult.OK)
+            {
+                CreateCustomShowQueueManager(customShowConfiguration);
+                return;
+            }
+        }
+
         customShowConfiguration = form.Configuration;
         customShowConfiguration.Save();
         customShowQueueForm?.Dispose();
         customShowQueueForm = null;
-        if (customShowQueueManager != null)
-        {
-            customShowQueueManager.Changed -= CustomShowQueueChanged;
-            customShowQueueManager.Dispose();
-        }
-        customShowQueueManager = new CustomShowQueueManager(
-            new CustomShowStore(customShowConfiguration.LibraryRoot),
-            customShowConfiguration, QueueShowPublished,
-            PrepareCustomShowPublicationAsync);
-        customShowQueueManager.Changed += CustomShowQueueChanged;
+        DisposeCustomShowQueueManager();
+        CreateCustomShowQueueManager(customShowConfiguration);
         ReloadCustomCards();
+        if (moveResult != null)
+        {
+            SetPlaybackStatus($"Moved {moveResult.FileCount:N0} custom-show " +
+                $"library files to {customShowConfiguration.LibraryRoot}.");
+            if (!string.IsNullOrWhiteSpace(moveResult.CleanupWarning))
+                MessageBox.Show(this, moveResult.CleanupWarning,
+                    "Move Custom Show Library", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+        }
     }
 
-    string? InstallCustomShowTools(IWin32Window? owner = null)
+    void DisposeCustomShowQueueManager()
+    {
+        if (customShowQueueManager == null) return;
+        customShowQueueManager.Changed -= CustomShowQueueChanged;
+        customShowQueueManager.Dispose();
+        customShowQueueManager = null;
+    }
+
+    void CreateCustomShowQueueManager(CustomShowConfiguration configuration)
+    {
+        customShowQueueManager = new CustomShowQueueManager(
+            new CustomShowStore(configuration.LibraryRoot), configuration,
+            QueueShowPublished, PrepareCustomShowPublicationAsync);
+        customShowQueueManager.Changed += CustomShowQueueChanged;
+    }
+
+    string? InstallCustomShowTools(IWin32Window? owner = null) =>
+        InstallCustomShowTools(owner, null);
+
+    string? InstallCustomShowTools(IWin32Window? owner,
+        string? requestedAlgorithm)
     {
         owner ??= this;
-        using CustomShowSetupOptionsForm options = new();
+        using CustomShowSetupOptionsForm options = new(requestedAlgorithm);
         if (options.ShowDialog(owner) != DialogResult.OK) return null;
 
         try

@@ -901,6 +901,8 @@ internal sealed class CustomClipMedia
     public long DurationMs { get; set; }
     public long PlaybackStartMs { get; set; }
     public long? PlaybackEndMs { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SourceCopy { get; set; }
 }
 
 internal sealed class CustomShowSource
@@ -1480,6 +1482,9 @@ internal sealed class CustomShowStore
                     CustomClipMedia.RvmOnnxMode))
                 throw new InvalidDataException("Unknown custom clip media mode.");
             bool rvmOnnx = media.Mode == CustomClipMedia.RvmOnnxMode;
+            if (media.SourceCopy && !rvmOnnx)
+                throw new InvalidDataException(
+                    "A copied source video is valid only for real-time playback.");
             if (rvmOnnx != (clip.RvmOnnx != null))
                 throw new InvalidDataException(
                     "RVM ONNX settings are required only for RVM ONNX clips.");

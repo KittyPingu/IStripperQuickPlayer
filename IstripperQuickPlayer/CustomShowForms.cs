@@ -5,8 +5,41 @@ using System.Text.Json;
 
 namespace IStripperQuickPlayer;
 
-internal sealed class CustomShowEditorForm : Form
+internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
 {
+    sealed class WizardHighlightControl : Control
+    {
+        internal WizardHighlightControl()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.SupportsTransparentBackColor |
+                ControlStyles.OptimizedDoubleBuffer, true);
+            BackColor = Color.Transparent;
+            TabStop = false;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using Pen pen = new(Color.Red, 3);
+            pen.Alignment = System.Drawing.Drawing2D.PenAlignment.Inset;
+            e.Graphics.DrawRectangle(pen, 1, 1,
+                Math.Max(0, ClientSize.Width - 3),
+                Math.Max(0, ClientSize.Height - 3));
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            const int WmNcHitTest = 0x0084;
+            const int HtTransparent = -1;
+            if (message.Msg == WmNcHitTest)
+            {
+                message.Result = (IntPtr)HtTransparent;
+                return;
+            }
+            base.WndProc(ref message);
+        }
+    }
+
     static readonly string[] HotnessValues =
         ["Public", "NoNudity", "Topless", "Nudity", "FullNudity", "XXX"];
     static readonly string[] ClipTypeValues =
@@ -27,6 +60,8 @@ internal sealed class CustomShowEditorForm : Form
     readonly string? initialSourceUrl;
     readonly bool retainInitialSource;
     readonly bool forceRvmOnnx;
+    readonly bool startWithWizard;
+    readonly Func<IWin32Window?, string, string?>? wizardInstallTools;
     string? appendShowId;
     readonly TextBox source = new();
     readonly Button sourceBrowse;
@@ -163,6 +198,15 @@ internal sealed class CustomShowEditorForm : Form
     readonly Button queueBatch = new()
         { Text = "Queue Batch...", AutoSize = true, Visible = false };
     readonly Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+    readonly Button showWizard = new() { Text = "Show Wizard", AutoSize = true,
+        Visible = false };
+    readonly Panel scrollHost;
+    Button? metadataToggle;
+    GroupBox? metadataBody;
+    CustomShowWizardForm? wizard;
+    readonly WizardHighlightControl wizardHighlight = new() { Visible = false };
+    Control? wizardHighlightTarget;
+    Control? wizardHighlightParent;
     TableLayoutPanel? processingTable;
     int sam2MattingTrackerRow, foregroundConceptsRow, sceneMaskSummaryRow,
         maskEngineRow, sam2ModelRow, mattingDetailRow, vitMatteInferenceDetailRow,
@@ -187,9 +231,11 @@ internal sealed class CustomShowEditorForm : Form
     string? originalCoverTitleFont;
     bool loadingPerformerSelection;
     bool reprocessLayoutChanged;
+    bool? deleteSourceCopyAfterSplit;
 
     internal string? SavedShowId { get; private set; }
     internal bool SavedPerformerChanged { get; private set; }
+    public event EventHandler? WizardStateChanged;
 
     internal CustomShowEditorForm(CustomShowStore store,
         CustomShowConfiguration configuration, string? showId, bool reprocess = false,
@@ -199,7 +245,8 @@ internal sealed class CustomShowEditorForm : Form
         string? queueDraftAssetOwnerId = null,
         string? initialSourcePath = null, string? initialTitle = null,
         string? initialSourceUrl = null, bool retainInitialSource = false,
-        bool forceRvmOnnx = false)
+        bool forceRvmOnnx = false, bool startWithWizard = false,
+        Func<IWin32Window?, string, string?>? wizardInstallTools = null)
     {
         this.store = store;
         this.configuration = configuration;
@@ -215,6 +262,8 @@ internal sealed class CustomShowEditorForm : Form
         this.initialSourceUrl = initialSourceUrl;
         this.retainInitialSource = retainInitialSource;
         this.forceRvmOnnx = forceRvmOnnx;
+        this.startWithWizard = startWithWizard;
+        this.wizardInstallTools = wizardInstallTools;
         autoAccept.Text =
             "Automatically accept result with alpha threshold " +
             configuration.DefaultAlphaThreshold;
@@ -233,11 +282,12 @@ internal sealed class CustomShowEditorForm : Form
         };
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         shell.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        Panel scrollHost = new()
+        scrollHost = new Panel
         {
             Dock = DockStyle.Fill, AutoScroll = true,
             Margin = Padding.Empty, Padding = Padding.Empty
         };
+        scrollHost.Scroll += WizardHighlightLayoutChanged;
         shell.Controls.Add(scrollHost, 0, 0);
         Controls.Add(shell);
         TableLayoutPanel root = new()
@@ -257,10 +307,12 @@ internal sealed class CustomShowEditorForm : Form
             clipLayoutConfirmed = false;
             clipEditorConfirmedThisSession = false;
             UpdateClipButton();
+            NotifyWizardStateChanged();
         };
         if (showId == null && !retainInitialSource)
             AddRow(basic, "", addToExisting);
         AddRow(basic, "Show title", title);
+        title.TextChanged += (_, _) => NotifyWizardStateChanged();
         AddRow(basic, "Model profile", performer,
             FlowVertical(newPerformer, editPerformer));
         AddSection(root, "Show", basic);
@@ -289,7 +341,8 @@ internal sealed class CustomShowEditorForm : Form
         AddRow(metadata, "Cover model font", coverModelFont);
         AddRow(metadata, "Cover title font", coverTitleFont);
         AddRow(metadata, "Cover title colour", coverTitleColor);
-        AddCollapsibleSection(root, "Metadata (optional)", metadata);
+        (metadataToggle, metadataBody) = AddCollapsibleSection(root,
+            "Metadata (optional)", metadata);
 
         TableLayoutPanel sections = SectionTable();
         editClips.MinimumSize = new Size(0, 38);
@@ -297,22 +350,7 @@ internal sealed class CustomShowEditorForm : Form
         AddSection(root, "Video sections", sections);
 
         processingTable = SectionTable();
-        preset.Items.AddRange(["RVM Quality (ResNet50)", "RVM Fast (MobileNetV3)"]);
-        if (metadataOnly || CustomShowProcessor.IsRvmMatAnyone2Installed(configuration))
-            preset.Items.Add("RVM-MatAnyone (automatic RVM initialization)");
-        if (metadataOnly || CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration))
-            preset.Items.Add("RVM-ViTMatte S (automatic full RVM masks)");
-        if (metadataOnly || CustomShowProcessor.IsRvmViTMatteBaseInstalled(configuration))
-            preset.Items.Add("RVM-ViTMatte B (automatic full RVM masks, higher quality)");
-        if (metadataOnly || CustomShowProcessor.IsMatAnyone2Installed(configuration))
-            preset.Items.Add("MatAnyone 2 (interactive initial mask)");
-        if (metadataOnly || CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
-            preset.Items.Add("ViTMatte S (editable SAM2 masks)");
-        if (metadataOnly || CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
-            preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
-        preset.Items.Add("SAM2Matting");
-        preset.Items.Add("RVM ONNX (real-time playback)");
-        preset.SelectedIndex = 0;
+        PopulatePresetChoices();
         AddRow(processingTable, "Processing algorithm", preset);
         rvmOnnxModel.Items.AddRange([
             "MobileNetV3 — faster (recommended)",
@@ -340,30 +378,8 @@ internal sealed class CustomShowEditorForm : Form
         foregroundConceptsRow = AddRow(processingTable, "Foreground concepts",
             FlowVertical(foregroundConcepts, conceptHelp));
         sceneMaskSummaryRow = AddRow(processingTable, "Scene prompts", sceneMaskSummary);
-        maskEngine.Items.Add("RVM ResNet50 (fast, person-only)");
-        IReadOnlyList<string> installedSam2Models = metadataOnly
-            ? ["base-plus", "small", "tiny"]
-            : CustomShowProcessor.InstalledSam2Models(configuration);
-        if (installedSam2Models.Count > 0)
-            maskEngine.Items.Insert(0,
-                "RVM → SAM2 (automatic person mask, editable)");
-        if (installedSam2Models.Count > 0)
-            maskEngine.Items.Insert(0, "SAM2 (editable, best robustness)");
-        if (metadataOnly || CustomShowProcessor.IsEdgeTamInstalled(configuration))
-            maskEngine.Items.Add("EdgeTAM (editable, faster)");
-        maskEngine.SelectedIndex = 0;
+        PopulateMaskChoices();
         maskEngineRow = AddRow(processingTable, "Mask generation", maskEngine);
-        foreach (string model in installedSam2Models)
-            sam2Model.Items.Add(model switch
-            {
-                "small" => "Small (balanced)",
-                "tiny" => "Tiny (fastest)",
-                _ => "Base+ (best robustness)"
-            });
-        if (sam2Model.Items.Count > 0)
-            sam2Model.SelectedIndex = sam2Model.Items.Cast<string>().ToList().FindIndex(
-                value => value.StartsWith("Base+", StringComparison.Ordinal)) is int index &&
-                index >= 0 ? index : 0;
         sam2ModelRow = AddRow(processingTable, "SAM2 mask model", sam2Model);
         mattingDetail.Items.AddRange([
             "Very Low (256 px)", "Low (384 px)",
@@ -436,7 +452,8 @@ internal sealed class CustomShowEditorForm : Form
             reprocessClipsRow = AddRow(processingTable, "Clips to reprocess", reprocessClips);
         }
         AddSection(root, "Processing", processingTable);
-        FlowLayoutPanel buttons = Flow(save, queue, cancel);
+        showWizard.Visible = startWithWizard;
+        FlowLayoutPanel buttons = Flow(save, queue, showWizard, cancel);
         buttons.Dock = DockStyle.Fill;
         buttons.Margin = Padding.Empty;
         buttons.Padding = new Padding(12, 8, 12, 10);
@@ -452,9 +469,13 @@ internal sealed class CustomShowEditorForm : Form
         };
         queue.Click += QueueJob;
         queueBatch.Click += QueueBatch;
+        showWizard.Click += (_, _) => ShowWizard();
         addToExisting.Click += SelectExistingShow;
-        preset.SelectedIndexChanged += (_, _) => UpdateProcessingOptions(
-            applyRecommendedBatch: true);
+        preset.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateProcessingOptions(applyRecommendedBatch: true);
+            NotifyWizardStateChanged();
+        };
         rvmInitializerThreshold.ValueChanged += (_, _) =>
             rvmInitializerThresholdValue.Text = $"{rvmInitializerThreshold.Value}%";
         rvmMatAnyoneRefreshStrength.ValueChanged += (_, _) =>
@@ -528,6 +549,7 @@ internal sealed class CustomShowEditorForm : Form
                 queueJobId == null && appendShowId == null &&
                 !string.IsNullOrWhiteSpace(selectedProfile?.Gender))
                 gender.SelectedItem = selectedProfile.Gender;
+            NotifyWizardStateChanged();
         };
         LoadData();
         if (restoredSetup != null) RestoreIncompleteSetup(restoredSetup);
@@ -546,7 +568,355 @@ internal sealed class CustomShowEditorForm : Form
         AppTheme.Apply(this);
         coverTitleColor.BackColor = selectedCoverColor;
         UpdateColorButton();
+        Shown += (_, _) =>
+        {
+            if (startWithWizard) ShowWizard();
+        };
+        FormClosed += (_, _) =>
+        {
+            if (wizard is { IsDisposed: false }) wizard.Close();
+            wizard = null;
+            ClearWizardHighlight();
+        };
     }
+
+    void PopulatePresetChoices(string? preferredAlgorithm = null)
+    {
+        preferredAlgorithm ??= preset.Items.Count == 0 ? null : SelectedPreset();
+        preset.BeginUpdate();
+        preset.Items.Clear();
+        preset.Items.AddRange(["RVM Quality (ResNet50)",
+            "RVM Fast (MobileNetV3)"]);
+        if (metadataOnly ||
+            CustomShowProcessor.IsRvmMatAnyone2Installed(configuration))
+            preset.Items.Add("RVM-MatAnyone (automatic RVM initialization)");
+        if (metadataOnly ||
+            CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration))
+            preset.Items.Add("RVM-ViTMatte S (automatic full RVM masks)");
+        if (metadataOnly ||
+            CustomShowProcessor.IsRvmViTMatteBaseInstalled(configuration))
+            preset.Items.Add(
+                "RVM-ViTMatte B (automatic full RVM masks, higher quality)");
+        if (metadataOnly || CustomShowProcessor.IsMatAnyone2Installed(configuration))
+            preset.Items.Add("MatAnyone 2 (interactive initial mask)");
+        if (metadataOnly ||
+            CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
+            preset.Items.Add("ViTMatte S (editable SAM2 masks)");
+        if (metadataOnly ||
+            CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
+            preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
+        preset.Items.Add("SAM2Matting");
+        preset.Items.Add("RVM ONNX (real-time playback)");
+        preset.EndUpdate();
+        if (preferredAlgorithm == null || !SelectPreset(preferredAlgorithm))
+            preset.SelectedIndex = 0;
+    }
+
+    void PopulateMaskChoices()
+    {
+        string? previousEngine = maskEngine.SelectedItem?.ToString();
+        string? previousModel = sam2Model.SelectedItem?.ToString();
+        IReadOnlyList<string> installedSam2Models = metadataOnly
+            ? ["base-plus", "small", "tiny"]
+            : CustomShowProcessor.InstalledSam2Models(configuration);
+        maskEngine.BeginUpdate();
+        maskEngine.Items.Clear();
+        if (installedSam2Models.Count > 0)
+        {
+            maskEngine.Items.Add("SAM2 (editable, best robustness)");
+            maskEngine.Items.Add(
+                "RVM → SAM2 (automatic person mask, editable)");
+        }
+        maskEngine.Items.Add("RVM ResNet50 (fast, person-only)");
+        if (metadataOnly ||
+            CustomShowProcessor.IsEdgeTamInstalled(configuration))
+            maskEngine.Items.Add("EdgeTAM (editable, faster)");
+        maskEngine.EndUpdate();
+        int engineIndex = previousEngine == null ? -1 :
+            maskEngine.Items.IndexOf(previousEngine);
+        maskEngine.SelectedIndex = engineIndex >= 0 ? engineIndex : 0;
+
+        sam2Model.BeginUpdate();
+        sam2Model.Items.Clear();
+        foreach (string model in installedSam2Models)
+            sam2Model.Items.Add(model switch
+            {
+                "small" => "Small (balanced)",
+                "tiny" => "Tiny (fastest)",
+                _ => "Base+ (best robustness)"
+            });
+        sam2Model.EndUpdate();
+        int modelIndex = previousModel == null ? -1 :
+            sam2Model.Items.IndexOf(previousModel);
+        if (modelIndex < 0)
+            modelIndex = sam2Model.Items.Cast<string>().ToList().FindIndex(
+                value => value.StartsWith("Base+", StringComparison.Ordinal));
+        if (sam2Model.Items.Count > 0)
+            sam2Model.SelectedIndex = Math.Max(0, modelIndex);
+    }
+
+    bool SelectPreset(string algorithm)
+    {
+        string prefix = algorithm switch
+        {
+            "fast" => "RVM Fast",
+            "rvm-matanyone2" => "RVM-MatAnyone",
+            "rvm-vitmatte-s" => "RVM-ViTMatte S",
+            "rvm-vitmatte-b" => "RVM-ViTMatte B",
+            "matanyone2" => "MatAnyone",
+            "vitmatte-s" => "ViTMatte S",
+            "vitmatte-b" => "ViTMatte B",
+            Sam2MattingSupport.Algorithm => "SAM2Matting",
+            CustomClipMedia.RvmOnnxMode => "RVM ONNX",
+            _ => "RVM Quality"
+        };
+        int index = preset.Items.Cast<object>().Select(value => value.ToString())
+            .ToList().FindIndex(value => value?.StartsWith(prefix,
+                StringComparison.Ordinal) == true);
+        if (index < 0) return false;
+        preset.SelectedIndex = index;
+        return true;
+    }
+
+    void ShowWizard()
+    {
+        if (wizard is { IsDisposed: false })
+        {
+            wizard.Show();
+            wizard.Activate();
+            return;
+        }
+        wizard = new CustomShowWizardForm(this, this);
+        wizard.FormClosed += (_, _) =>
+        {
+            wizard = null;
+            ClearWizardHighlight();
+        };
+        // Keep the wizard as a separate tool window. Making it an owned window
+        // causes Windows to redirect owner activation back to the active popup,
+        // so a wizard action can highlight an editor field without transferring
+        // keyboard focus to it.
+        wizard.Show();
+    }
+
+    void NotifyWizardStateChanged() =>
+        WizardStateChanged?.Invoke(this, EventArgs.Empty);
+
+    public CustomShowWizardState GetWizardState()
+    {
+        HashSet<string> available =
+            [CustomShowWizardRecommendations.Quality,
+             CustomShowWizardRecommendations.Fast];
+        if (CustomShowProcessor.IsRvmMatAnyone2Installed(configuration))
+            available.Add(CustomShowWizardRecommendations.RvmMatAnyone);
+        if (CustomShowProcessor.IsRvmViTMatteSmallInstalled(configuration))
+            available.Add(CustomShowWizardRecommendations.RvmVitMatteSmall);
+        if (CustomShowProcessor.IsMatAnyone2Installed(configuration))
+            available.Add(CustomShowWizardRecommendations.MatAnyone);
+        if (CustomShowProcessor.IsViTMatteSmallInstalled(configuration))
+            available.Add(CustomShowWizardRecommendations.VitMatteSmall);
+        if (Sam2MattingSupport.IsInstalled(configuration))
+            available.Add(Sam2MattingSupport.Algorithm);
+        if (RvmOnnxSupport.IsInstalled())
+            available.Add(RvmOnnxSupport.Algorithm);
+        int included = showClips.Count(clip => clip.Included);
+        return new CustomShowWizardState(
+            File.Exists(source.Text), Path.GetFileName(source.Text),
+            !string.IsNullOrWhiteSpace(title.Text), title.Text.Trim(),
+            selectedProfile != null, selectedProfile?.DisplayName ?? "",
+            clipLayoutConfirmed, included, showClips.Length - included,
+            SelectedPreset(), WizardSelectedSettings(),
+            queue.Visible ? queue.Text : save.Text, available);
+    }
+
+    string WizardSelectedSettings()
+    {
+        string selected = SelectedPreset();
+        string detail = selected switch
+        {
+            CustomClipMedia.RvmOnnxMode =>
+                $"{rvmOnnxQuality.SelectedItem}; " +
+                (rvmOnnxTemporal.Checked ? "temporal memory on" :
+                    "temporal memory off"),
+            Sam2MattingSupport.Algorithm =>
+                sam2MattingTracker.SelectedItem?.ToString() ?? "tracker not selected",
+            "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or
+                "rvm-vitmatte-b" =>
+                vitMatteInferenceDetail.SelectedItem?.ToString() ??
+                    "inference detail not selected",
+            _ => mattingDetail.SelectedItem?.ToString() ??
+                "matting detail not selected"
+        };
+        string batch = sequenceChunk.Visible
+            ? $"; batch {sequenceChunk.SelectedItem}" : "";
+        string finish = autoAccept.Checked ? "; unattended acceptance on" :
+            "; interactive review";
+        return detail + batch + finish;
+    }
+
+    public void NavigateWizardTo(CustomShowWizardArea area)
+    {
+        Control target = area switch
+        {
+            CustomShowWizardArea.Title => title,
+            CustomShowWizardArea.Profile => performer,
+            CustomShowWizardArea.Metadata =>
+                (Control?)metadataToggle ?? description,
+            CustomShowWizardArea.Clips => editClips,
+            CustomShowWizardArea.Processing => preset,
+            CustomShowWizardArea.FinalAction => queue.Visible ? queue : save,
+            _ => sourceBrowse
+        };
+        if (area == CustomShowWizardArea.Metadata &&
+            metadataBody is { Visible: false } && metadataToggle != null)
+            metadataToggle.PerformClick();
+        scrollHost.ScrollControlIntoView(target);
+        HighlightWizardControl(target);
+        FocusEditorControl(target);
+    }
+
+    void FocusEditorControl(Control target)
+    {
+        if (IsDisposed || target.IsDisposed || !target.CanSelect) return;
+        Activate();
+        target.Select();
+        target.Focus();
+    }
+
+    void HighlightWizardControl(Control target)
+    {
+        if (target.Parent == null) return;
+        if (!ReferenceEquals(wizardHighlightTarget, target))
+        {
+            if (wizardHighlightTarget != null)
+            {
+                wizardHighlightTarget.LocationChanged -= WizardHighlightLayoutChanged;
+                wizardHighlightTarget.SizeChanged -= WizardHighlightLayoutChanged;
+                wizardHighlightTarget.VisibleChanged -= WizardHighlightLayoutChanged;
+            }
+            if (wizardHighlightParent != null)
+                wizardHighlightParent.Layout -= WizardHighlightLayoutChanged;
+            wizardHighlightTarget = target;
+            wizardHighlightParent = target.Parent;
+            target.LocationChanged += WizardHighlightLayoutChanged;
+            target.SizeChanged += WizardHighlightLayoutChanged;
+            target.VisibleChanged += WizardHighlightLayoutChanged;
+            wizardHighlightParent.Layout += WizardHighlightLayoutChanged;
+        }
+        if (!ReferenceEquals(wizardHighlight.Parent, scrollHost))
+            wizardHighlight.Parent = scrollHost;
+        UpdateWizardHighlight();
+    }
+
+    void WizardHighlightLayoutChanged(object? sender, EventArgs e) =>
+        UpdateWizardHighlight();
+
+    void UpdateWizardHighlight()
+    {
+        if (wizardHighlightTarget is not { IsDisposed: false, Visible: true } target ||
+            target.Parent == null)
+        {
+            wizardHighlight.Visible = false;
+            return;
+        }
+        Rectangle bounds = scrollHost.RectangleToClient(
+            target.RectangleToScreen(target.ClientRectangle));
+        bounds.Inflate(4, 4);
+        wizardHighlight.Bounds = bounds;
+        wizardHighlight.Visible = true;
+        wizardHighlight.BringToFront();
+        wizardHighlight.Invalidate();
+    }
+
+    void ClearWizardHighlight()
+    {
+        if (wizardHighlightTarget != null)
+        {
+            wizardHighlightTarget.LocationChanged -= WizardHighlightLayoutChanged;
+            wizardHighlightTarget.SizeChanged -= WizardHighlightLayoutChanged;
+            wizardHighlightTarget.VisibleChanged -= WizardHighlightLayoutChanged;
+        }
+        if (wizardHighlightParent != null)
+            wizardHighlightParent.Layout -= WizardHighlightLayoutChanged;
+        wizardHighlightTarget = null;
+        wizardHighlightParent = null;
+        wizardHighlight.Visible = false;
+        wizardHighlight.Parent = null;
+    }
+
+    public void OpenWizardClipEditor() => EditClips(null, EventArgs.Empty);
+
+    public void OpenWizardSourcePicker()
+    {
+        NavigateWizardTo(CustomShowWizardArea.Source);
+        sourceBrowse.PerformClick();
+    }
+
+    public void ApplyWizardRecommendation(
+        CustomShowWizardRecommendation recommendation, bool useFallback)
+    {
+        string algorithm = useFallback ? recommendation.AppliedAlgorithm :
+            recommendation.IdealAlgorithm;
+        if (!SelectPreset(algorithm))
+        {
+            MessageBox.Show(this,
+                "The recommended processing method is not installed yet.",
+                "Custom Show Wizard", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (algorithm == Sam2MattingSupport.Algorithm &&
+            sam2MattingTracker.Items.Count > recommendation.Sam2TrackerIndex)
+            sam2MattingTracker.SelectedIndex = recommendation.Sam2TrackerIndex;
+        if (algorithm is "matanyone2" or "rvm-matanyone2" or "quality" or
+            "fast")
+            mattingDetail.SelectedIndex = recommendation.MattingDetailIndex;
+        if (algorithm is "vitmatte-s" or "rvm-vitmatte-s")
+            vitMatteInferenceDetail.SelectedIndex =
+                recommendation.VitMatteDetailIndex;
+        if (algorithm is "matanyone2" or "vitmatte-s")
+        {
+            SelectStartingWith(sam2Model, "Base+");
+            if (algorithm == "vitmatte-s")
+                SelectStartingWith(maskEngine, "SAM2");
+        }
+        if (algorithm == CustomClipMedia.RvmOnnxMode)
+        {
+            rvmOnnxModel.SelectedIndex = 0;
+            rvmOnnxQuality.SelectedIndex = 1;
+            rvmOnnxTemporal.Checked = true;
+        }
+        if (recommendation.UseAutoBatch) sequenceChunk.SelectedIndex = 0;
+        autoAccept.Checked = recommendation.AutoAccept;
+        UpdateProcessingOptions();
+        NavigateWizardTo(CustomShowWizardArea.Processing);
+        NotifyWizardStateChanged();
+    }
+
+    public void InstallWizardTools(string algorithm)
+    {
+        if (algorithm == CustomClipMedia.RvmOnnxMode)
+        {
+            using RvmOnnxSetupForm setup = new();
+            setup.ShowDialog(this);
+        }
+        else if (algorithm == Sam2MattingSupport.Algorithm)
+            OpenSam2MattingSetup();
+        else if (wizardInstallTools == null)
+            MessageBox.Show(this,
+                "Open Custom Shows > Settings > Install / Update Processing " +
+                "Tools to install this method.", "Custom Show Wizard",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        else
+            wizardInstallTools(this, algorithm);
+        PopulateMaskChoices();
+        PopulatePresetChoices();
+        UpdateProcessingOptions();
+        NotifyWizardStateChanged();
+    }
+
+    public void FocusWizardFinalAction() =>
+        NavigateWizardTo(CustomShowWizardArea.FinalAction);
 
     void ApplyInitialSource()
     {
@@ -804,6 +1174,7 @@ internal sealed class CustomShowEditorForm : Form
             else if (realtime)
                 save.Text = "Encode and Preview";
         }
+        NotifyWizardStateChanged();
     }
 
     void OpenSam2MattingSetup()
@@ -933,6 +1304,7 @@ internal sealed class CustomShowEditorForm : Form
             PopulateReprocessClips(job.ReprocessClipIds.Length == 0 ? null :
                 job.ReprocessClipIds.ToHashSet(StringComparer.OrdinalIgnoreCase));
         clipDetection = job.Manifest.ClipDetection;
+        deleteSourceCopyAfterSplit = job.DeleteSourceCopyAfterSplit;
         appendShowId = job.Operation == CustomShowQueueOperation.Append
             ? job.TargetShowId : null;
         Text = "Edit Queued Custom Show";
@@ -1497,11 +1869,30 @@ internal sealed class CustomShowEditorForm : Form
                 reprocess && !keepClips.Checked,
             existingDetection: clipDetection);
         if (form.ShowDialog(this) != DialogResult.OK) return;
-        showClips = form.Clips;
+        CustomShowClip[] editedClips = form.Clips;
+        bool layoutChanged = !SameQueueLayout(priorLayout, editedClips);
+        if (reprocess && layoutChanged && priorLayout.Any(clip =>
+                clip.Included && clip.Media?.SourceCopy == true))
+        {
+            DialogResult remove = MessageBox.Show(this,
+                "The whole video was copied into this real-time show without " +
+                "re-encoding. The new clip layout will be re-encoded.\r\n\r\n" +
+                "Delete the copied whole-video file after the split clips are " +
+                "successfully published?\r\n\r\nYes saves the storage space. " +
+                "No keeps it as the show's retained source. QuickPlayer will " +
+                "never delete the external source video.",
+                "Remove copied whole video?", MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
+            if (remove == DialogResult.Cancel) return;
+            deleteSourceCopyAfterSplit = remove == DialogResult.Yes;
+        }
+        else if (!layoutChanged)
+            deleteSourceCopyAfterSplit = null;
+        showClips = editedClips;
         clipDetection = form.Detection;
         clipLayoutConfirmed = true;
         clipEditorConfirmedThisSession = true;
-        if (reprocess && !SameQueueLayout(priorLayout, showClips))
+        if (reprocess && layoutChanged)
             reprocessLayoutChanged = true;
         if (reprocess && !RetainedMasksMatch(showClips))
         {
@@ -1515,11 +1906,57 @@ internal sealed class CustomShowEditorForm : Form
 
     void UpdateClipButton()
     {
-        if (showClips.Length < 2) { editClips.Text = "Split into clips..."; return; }
+        if (showClips.Length < 2)
+        {
+            editClips.Text = "Split into clips...";
+            NotifyWizardStateChanged();
+            return;
+        }
         int included = showClips.Count(clip => clip.Included);
         int skipped = showClips.Length - included;
         editClips.Text = skipped == 0 ? $"Edit {included} clips..." :
             $"Edit {included} clips ({skipped} skipped)...";
+        NotifyWizardStateChanged();
+    }
+
+    void ApplySourceCopySplitChoice(CustomShowManifest show,
+        IEnumerable<CustomShowClip> existing, string staging)
+    {
+        if (!reprocess || deleteSourceCopyAfterSplit is not bool delete) return;
+        HashSet<string> retained = show.Clips.Where(clip => clip.Included &&
+                clip.Media != null).Select(clip => clip.Media!.Foreground)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        CustomClipMedia[] replaced = existing.Where(clip => clip.Included &&
+                clip.Media?.SourceCopy == true &&
+                !retained.Contains(clip.Media.Foreground))
+            .Select(clip => clip.Media!).ToArray();
+        if (replaced.Length == 0) return;
+        if (!delete)
+        {
+            show.Source = new CustomShowSource
+            {
+                Mode = "copy", Path = replaced[0].Foreground,
+                Url = show.Source.Url
+            };
+            return;
+        }
+        foreach (CustomClipMedia media in replaced)
+        {
+            string path = CustomShowStore.ResolveRelative(staging, media.Foreground);
+            File.Delete(path);
+            string? folder = Path.GetDirectoryName(path);
+            if (folder != null && Directory.Exists(folder) &&
+                !Directory.EnumerateFileSystemEntries(folder).Any())
+                Directory.Delete(folder);
+        }
+        if (show.Source.Mode == "copy" && replaced.Any(media =>
+                string.Equals(media.Foreground, show.Source.Path,
+                    StringComparison.OrdinalIgnoreCase)))
+            show.Source = new CustomShowSource
+            {
+                Mode = "reference", Path = source.Text,
+                Url = show.Source.Url
+            };
     }
 
     bool ConfirmAutomaticRvmSceneCreation()
@@ -1570,7 +2007,8 @@ internal sealed class CustomShowEditorForm : Form
                 : showId == null ? new() : store.LoadManifest(showId);
             CustomShowProcessing? previousProcessing = reprocess && show.Processing != null
                 ? CloneQueueValue(show.Processing) : null;
-            CustomShowClip[] existingClips = Appending ? show.Clips : [];
+            CustomShowClip[] existingClips = Appending || reprocess
+                ? CloneQueueValue(show.Clips) : [];
             long existingDuration = Appending ? show.Media.DurationMs : 0;
             ApplyFields(show, includeClipLayout: !Appending);
             AdoptSelectedProfileGender(show.Gender);
@@ -1917,6 +2355,71 @@ internal sealed class CustomShowEditorForm : Form
                             Math.Max(1, clip.EndMs - clip.StartMs));
                         long completedDuration = 0;
                         CustomShowProcessResult? first = null;
+                        if (selectedPreset == CustomClipMedia.RvmOnnxMode)
+                        {
+                            for (int index = 0; index < included.Length; index++)
+                            {
+                                CustomShowClip clip = included[index];
+                                long clipDuration = Math.Max(1,
+                                    clip.EndMs - clip.StartMs);
+                                long completedBefore = completedDuration;
+                                Progress<CustomShowProgress> aggregate = new(value =>
+                                    progress.Report(value with
+                                    {
+                                        Percent = CustomShowProcessingForm.AggregateClipPercent(
+                                            completedBefore, clipDuration,
+                                            totalDuration, value.Percent),
+                                        Message = $"Clip {index + 1}/{included.Length}: " +
+                                            value.Message
+                                    }));
+                                string relativeFolder = Path.Combine("clips", clip.Id);
+                                string output = Path.Combine(staging, relativeFolder);
+                                CustomShowProcessResult result = included.Length == 1
+                                    ? await CustomShowProcessor.TryCopySeekableRgbOnlyAsync(
+                                        input, output, clip.StartMs, clip.EndMs,
+                                        aggregate, token) ??
+                                      await CustomShowProcessor.EncodeRgbOnlyAsync(
+                                        configuration, input, output, clip.StartMs,
+                                        clip.EndMs, aggregate, token)
+                                    : await CustomShowProcessor.EncodeRgbOnlyAsync(
+                                        configuration, input, output, clip.StartMs,
+                                        clip.EndMs, aggregate, token);
+                                if (result.ExecutionMode == "source-copy" &&
+                                    clip.StartMs == 0)
+                                    clip.EndMs = result.DurationMs;
+                                clip.Media = new CustomClipMedia
+                                {
+                                    Mode = CustomClipMedia.RvmOnnxMode,
+                                    Foreground = Path.Combine(relativeFolder,
+                                        result.ForegroundFileName ?? "foreground.mp4")
+                                        .Replace('\\', '/'),
+                                    Width = result.Width, Height = result.Height,
+                                    FrameRate = result.FrameRate,
+                                    DurationMs = result.DurationMs,
+                                    SourceCopy = result.ExecutionMode == "source-copy"
+                                };
+                                clip.RvmOnnx = new CustomRvmOnnxSettings
+                                {
+                                    Model = rvmOnnxModel.SelectedIndex == 1
+                                        ? RvmOnnxSupport.ResNet50 :
+                                            RvmOnnxSupport.MobileNetV3,
+                                    Quality = RvmOnnxSupport.QualityFromIndex(
+                                        rvmOnnxQuality.SelectedIndex),
+                                    Temporal = rvmOnnxTemporal.Checked
+                                };
+                                completedDuration += clipDuration;
+                                first ??= result;
+                            }
+                            return new CustomShowProcessResult
+                            {
+                                Width = first!.Width, Height = first.Height,
+                                FrameRate = first.FrameRate,
+                                DurationMs = showClips[^1].EndMs,
+                                ExecutionMode = first.ExecutionMode,
+                                Encoder = first.Encoder,
+                                EncoderPreset = first.EncoderPreset
+                            };
+                        }
                         if (selectedPreset is "quality" or "fast")
                         {
                             CustomShowProcessJob[] jobs = included.Select(clip =>
@@ -2170,6 +2673,7 @@ internal sealed class CustomShowEditorForm : Form
                         };
                         show.Clips = showClips;
                     }
+                    ApplySourceCopySplitChoice(show, existingClips, staging);
                     int processingBatchSize = SelectedBatchSize();
                     bool usesInitialMask = selectedPreset is "matanyone2" or
                         "rvm-matanyone2" || selectedMaskEngine == "rvm-sam2";
@@ -2206,17 +2710,21 @@ internal sealed class CustomShowEditorForm : Form
                         MatAnyoneUseLongTermMemory = selectedPreset is
                             "matanyone2" or "rvm-matanyone2" &&
                             matAnyoneUseLongTermMemory.Checked,
-                        AutoAcceptedAlphaThreshold = autoAccept.Checked
+                        AutoAcceptedAlphaThreshold = selectedPreset ==
+                            CustomClipMedia.RvmOnnxMode ? null : autoAccept.Checked
                             ? configuration.DefaultAlphaThreshold : null,
                         Sam2Model = usesSam2 ? selectedSam2Model : null,
                         MaskEngine = UsesSam2(selectedPreset) ? selectedMaskEngine : null,
-                        ExecutionPolicy = "auto",
+                        ExecutionPolicy = selectedPreset ==
+                            CustomClipMedia.RvmOnnxMode ? "realtime-playback" : "auto",
                         ResolvedExecutionMode = media.ExecutionMode,
                         EffectiveBatchSize = media.EffectiveSequenceChunk,
                         PipelineDepth = media.PipelineDepth,
                         Encoder = media.Encoder,
                         EncoderPreset = media.EncoderPreset,
-                        PrecisionPolicy = "fp16-autocast-fp32-cpu-fallback",
+                        PrecisionPolicy = selectedPreset ==
+                            CustomClipMedia.RvmOnnxMode ? "onnx-directml-fp32" :
+                                "fp16-autocast-fp32-cpu-fallback",
                         RecurrentRefinementSteps = selectedPreset is "matanyone2" or
                             "rvm-matanyone2" ? 11 : 0,
                         ProcessedUtc = DateTime.UtcNow,
@@ -2638,13 +3146,17 @@ internal sealed class CustomShowEditorForm : Form
             job.KeepExistingMasks = reprocess && keepMasks.Checked;
             job.ReprocessClipIds = operation == CustomShowQueueOperation.Reprocess
                 ? SelectedReprocessClipIds() : [];
+            job.DeleteSourceCopyAfterSplit = operation ==
+                CustomShowQueueOperation.Reprocess
+                    ? deleteSourceCopyAfterSplit : null;
             job.Percent = 0;
             job.Message = algorithm switch
             {
                 CustomClipMedia.RvmOnnxMode =>
                     operation == CustomShowQueueOperation.Reprocess
                         ? "Pending; existing RGB clips will be reused where possible"
-                        : "Pending; RGB clips will be encoded when the job runs",
+                        : "Pending; seekable whole videos will be copied without " +
+                            "re-encoding, otherwise RGB clips will be encoded",
                 Sam2MattingSupport.Algorithm when promptMode == "rvm-initial-mask" =>
                     "Pending; RVM masks will be created when the job runs",
                 _ => "Pending"
@@ -2803,7 +3315,7 @@ internal sealed class CustomShowEditorForm : Form
                         CustomClipMedia.IsRealtimeMode(algorithm)
                             ? operation == CustomShowQueueOperation.Reprocess
                                 ? "Reusing existing RGB clips where possible, then opening the live foreground preview"
-                                : "Encoding RGB clips, then opening the live foreground preview"
+                                : "Copying a seekable whole video without re-encoding, or encoding split clips, then opening the live foreground preview"
                             : "Processing the selected source now, then opening its alpha preview",
                     showPreviews: true);
                 if (processing.ShowDialog(this) != DialogResult.OK ||
@@ -3526,7 +4038,7 @@ internal sealed class CustomShowEditorForm : Form
             catch (Exception error) when (error is IOException or UnauthorizedAccessException &&
                 attempt < 100)
             {
-                await Task.Delay(100);
+                await Task.Delay(100).ConfigureAwait(false);
             }
     }
 
@@ -3673,9 +4185,17 @@ internal sealed class CustomShowEditorForm : Form
     string SourceVideo(CustomShowManifest show, CustomShowSource source)
     {
         string folder = Path.Combine(store.ShowsFolder, show.Id);
-        return source.Mode == "copy"
+        string selected = source.Mode == "copy"
             ? CustomShowStore.ResolveRelative(folder, source.Path)
             : source.Path;
+        if (File.Exists(selected) || source.Mode != show.Source.Mode ||
+            !string.Equals(source.Path, show.Source.Path,
+                StringComparison.OrdinalIgnoreCase)) return selected;
+        CustomClipMedia? copied = show.Clips.Where(clip => clip.Included)
+            .Select(clip => clip.Media).FirstOrDefault(media =>
+                media?.SourceCopy == true);
+        return copied == null ? selected :
+            CustomShowStore.ResolveRelative(folder, copied.Foreground);
     }
 
     (string Video, long PositionMs) CoverFrameSource(CustomShowManifest show)
@@ -3845,6 +4365,69 @@ internal sealed class CustomShowEditorForm : Form
         RoutesSaveToQueue(false, CustomClipMedia.RvmOnnxMode) &&
         !RoutesSaveToQueue(false, "quality");
 
+    internal static bool VerifyWizardApplication()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "iqp-custom-wizard-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            CustomShowStore store = new(root);
+            store.EnsureCreated();
+            CustomPerformerProfile profile = new()
+            {
+                ModelName = "Wizard Test Model",
+                Gender = "Female"
+            };
+            store.SavePerformer(profile);
+            using CustomShowEditorForm form = new(store,
+                new CustomShowConfiguration { LibraryRoot = root }, null);
+            form.source.Text = Path.Combine(root, "source.mp4");
+            form.title.Text = "Wizard Test Show";
+            form.selectedProfile = profile;
+            form.showClips = [new CustomShowClip
+            {
+                StartMs = 0,
+                EndMs = 1_000
+            }];
+            form.clipLayoutConfirmed = true;
+            int changes = 0;
+            form.WizardStateChanged += (_, _) => changes++;
+            form.title.Text += " Updated";
+            string sourceBefore = form.source.Text;
+            string titleBefore = form.title.Text;
+            CustomShowClip[] clipsBefore = form.showClips;
+            CustomShowWizardRecommendation recommendation =
+                CustomShowWizardRecommendations.Recommend(new(
+                    CustomShowWizardPlayback.Preprocessed,
+                    CustomShowWizardInteraction.Automatic,
+                    CustomShowWizardPriority.Fast,
+                    CustomShowWizardHardware.UnknownOrCpu,
+                    CustomShowWizardRunMode.Interactive),
+                    new HashSet<string>
+                    {
+                        CustomShowWizardRecommendations.Quality,
+                        CustomShowWizardRecommendations.Fast
+                    });
+            form.ApplyWizardRecommendation(recommendation,
+                useFallback: false);
+            CustomShowWizardState state = form.GetWizardState();
+            return changes > 0 && form.source.Text == sourceBefore &&
+                form.title.Text == titleBefore &&
+                ReferenceEquals(form.selectedProfile, profile) &&
+                ReferenceEquals(form.showClips, clipsBefore) &&
+                form.SelectedPreset() == CustomShowWizardRecommendations.Fast &&
+                form.mattingDetail.SelectedIndex == 2 &&
+                form.sequenceChunk.SelectedIndex == 0 &&
+                !form.autoAccept.Checked && state.TitleValid &&
+                state.ProfileValid && state.ClipsConfirmed &&
+                state.IncludedClips == 1;
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
     static TableLayoutPanel SectionTable()
     {
         TableLayoutPanel table = new()
@@ -3880,7 +4463,8 @@ internal sealed class CustomShowEditorForm : Form
         AddRootControl(root, group);
     }
 
-    static void AddCollapsibleSection(TableLayoutPanel root, string title,
+    static (Button Toggle, GroupBox Body) AddCollapsibleSection(
+        TableLayoutPanel root, string title,
         TableLayoutPanel contents)
     {
         contents.ResumeLayout(false);
@@ -3909,6 +4493,7 @@ internal sealed class CustomShowEditorForm : Form
             root.ResumeLayout(true);
             scroll?.ResumeLayout(true);
         };
+        return (toggle, body);
     }
 
     static int AddRow(TableLayoutPanel table, string label, Control control,
@@ -4580,13 +5165,20 @@ internal sealed class CustomShowSettingsForm : Form
     readonly Label sam2Status = StatusLabel();
     readonly Label vitMatteStatus = StatusLabel();
     CancellationTokenSource? validationCancellation;
+    readonly string originalLibraryRoot;
+    string? requestedLibraryDestination;
     internal CustomShowConfiguration Configuration { get; }
+    internal bool LibraryMoveRequested => requestedLibraryDestination != null &&
+        CustomShowLibraryMover.SamePath(root.Text,
+            requestedLibraryDestination);
+    internal string LibraryMoveSource => originalLibraryRoot;
     internal CustomShowSettingsForm(CustomShowConfiguration current,
         Action<IWin32Window?>? restoreIncomplete = null,
         Action<IWin32Window?>? manageModels = null,
         Func<IWin32Window?, string?>? installTools = null,
         Action<IWin32Window?>? cleanupFailedShows = null)
     {
+        originalLibraryRoot = Path.GetFullPath(current.LibraryRoot);
         Configuration = new()
         {
             LibraryRoot = current.LibraryRoot,
@@ -4782,12 +5374,15 @@ internal sealed class CustomShowSettingsForm : Form
             Enabled = manageModels != null };
         Button setup = new() { Text = "Install / Update Processing Tools...",
             AutoSize = true, Enabled = installTools != null };
+        Button moveFolder = new() { Text = "Move Library Folder...",
+            AutoSize = true };
         Button openFolder = new() { Text = "Open Folder", AutoSize = true };
         FlowLayoutPanel maintenanceActions = new() { AutoSize = true,
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
             WrapContents = false, Padding = new Padding(4, 8, 4, 8) };
         maintenanceActions.Controls.AddRange(
-            [restore, cleanupFailed, modelsButton, setup, openFolder]);
+            [restore, cleanupFailed, modelsButton, setup, moveFolder,
+                openFolder]);
         AddWideControl(maintenance, maintenanceActions);
 
         Button validate = new() { Text = "Validate setup", AutoSize = true };
@@ -4843,6 +5438,7 @@ internal sealed class CustomShowSettingsForm : Form
                 RefreshCompilationStatus();
             }
         };
+        moveFolder.Click += (_, _) => SelectLibraryMoveDestination();
         openFolder.Click += (_, _) =>
         {
             string folder = string.IsNullOrWhiteSpace(root.Text)
@@ -4853,6 +5449,13 @@ internal sealed class CustomShowSettingsForm : Form
         validate.Click += async (_, _) => await ValidateSetup(validate);
         refresh.Click += (_, _) => RefreshCompilationStatus();
         tabs.SelectedIndexChanged += (_, _) => RefreshCompilationStatus();
+        root.TextChanged += (_, _) =>
+        {
+            if (requestedLibraryDestination != null &&
+                !CustomShowLibraryMover.SamePath(root.Text,
+                    requestedLibraryDestination))
+                requestedLibraryDestination = null;
+        };
         python.TextChanged += (_, _) => RefreshCompilationStatus();
         transNetBatch.ValueChanged += (_, _) => RefreshCompilationStatus();
         rvmQualityCutoff.ValueChanged += (_, _) => RefreshCompilationStatus();
@@ -5122,7 +5725,11 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.VitMatteBaseCompileCutoffFrames = (int)vitMatteBaseCutoff.Value;
             Configuration.VitMatteSmallPreferredBatchSize = (int)vitMatteSmallBatch.Value;
             Configuration.VitMatteBasePreferredBatchSize = (int)vitMatteBaseBatch.Value;
-            Directory.CreateDirectory(Configuration.LibraryRoot);
+            if (LibraryMoveRequested)
+                CustomShowLibraryMover.ValidatePaths(LibraryMoveSource,
+                    Configuration.LibraryRoot);
+            else
+                Directory.CreateDirectory(Configuration.LibraryRoot);
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -5258,6 +5865,42 @@ internal sealed class CustomShowSettingsForm : Form
         ComboBox input = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
         input.Items.AddRange(["Idle", "Below Normal", "Normal", "Above Normal", "High"]);
         return input;
+    }
+
+    void SelectLibraryMoveDestination()
+    {
+        try
+        {
+            using FolderBrowserDialog picker = new()
+            {
+                Description = "Select the new custom-show library folder. " +
+                    "Choose an empty folder.",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true,
+                SelectedPath = Directory.Exists(root.Text)
+                    ? root.Text : originalLibraryRoot
+            };
+            if (picker.ShowDialog(this) != DialogResult.OK) return;
+            (_, string destination) = CustomShowLibraryMover.ValidatePaths(
+                originalLibraryRoot, picker.SelectedPath);
+            if (MessageBox.Show(this,
+                "The entire custom-show library—including published shows, " +
+                "model profiles, queued jobs, and recoverable drafts—will be " +
+                "moved after you click OK. The old folder is removed only " +
+                "after the new copy is ready.\n\n" +
+                $"From:\n{originalLibraryRoot}\n\nTo:\n{destination}\n\n" +
+                "Use this destination?",
+                "Move Custom Show Library", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question) != DialogResult.Yes) return;
+            root.Text = destination;
+            requestedLibraryDestination = destination;
+            validation.Text = "Library move selected; click OK to begin.";
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Move Custom Show Library",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     static int PriorityIndex(string? value) => value switch
@@ -6041,8 +6684,22 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallRvmOnnx => rvmOnnx.Checked;
     internal bool InstallYtDlp => ytDlp.Checked;
 
-    internal CustomShowSetupOptionsForm()
+    internal CustomShowSetupOptionsForm(string? requestedAlgorithm = null)
     {
+        if (!string.IsNullOrWhiteSpace(requestedAlgorithm))
+        {
+            bool realtime = requestedAlgorithm == CustomClipMedia.RvmOnnxMode;
+            offline.Checked = !realtime;
+            rvmOnnx.Checked = realtime;
+            transNet.Checked = !realtime;
+            matAnyone.Checked = requestedAlgorithm is
+                "matanyone2" or "rvm-matanyone2";
+            sam2Matting.Checked = requestedAlgorithm ==
+                Sam2MattingSupport.Algorithm;
+            vitMatte.Checked = requestedAlgorithm is
+                "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or
+                "rvm-vitmatte-b";
+        }
         Text = "Choose Custom Show Processing Tools";
         ClientSize = new Size(860, 650);
         MinimumSize = new Size(760, 560);
@@ -6052,8 +6709,12 @@ internal sealed class CustomShowSetupOptionsForm : Form
         StartPosition = FormStartPosition.CenterParent;
         TableLayoutPanel layout = new() { Dock = DockStyle.Top, AutoSize = true,
             Padding = new Padding(16), ColumnCount = 1, RowCount = 16 };
-        layout.Controls.Add(new Label { Text =
-            "Select the processing environments and optional tools to install:", AutoSize = true });
+        layout.Controls.Add(new Label { Text = requestedAlgorithm == null
+            ? "Select the processing environments and optional tools to install:"
+            : "The components needed for " +
+                CustomShowWizardRecommendations.DisplayName(requestedAlgorithm) +
+                " are preselected. You can add other tools if wanted.",
+            AutoSize = true, MaximumSize = new Size(810, 0) });
         layout.Controls.Add(offline);
         layout.Controls.Add(rvmOnnx);
         layout.Controls.Add(ytDlp);
@@ -6136,12 +6797,25 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal static bool VerifyDefaults()
     {
         using CustomShowSetupOptionsForm form = new();
+        using CustomShowSetupOptionsForm vitMatteRecommendation =
+            new("rvm-vitmatte-s");
+        using CustomShowSetupOptionsForm onnxRecommendation =
+            new(CustomClipMedia.RvmOnnxMode);
         return form.InstallOfflineProcessing && !form.InstallRvmOnnx &&
             !form.InstallYtDlp &&
             form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
             form.InstallSam2Matting &&
             !form.InstallViTMatte && !form.InstallEdgeTam &&
-            !form.InstallStabilo && !form.InstallProPainter;
+            !form.InstallStabilo && !form.InstallProPainter &&
+            vitMatteRecommendation.InstallOfflineProcessing &&
+            vitMatteRecommendation.InstallTransNetV2 &&
+            vitMatteRecommendation.InstallViTMatte &&
+            !vitMatteRecommendation.InstallMatAnyone2 &&
+            !vitMatteRecommendation.InstallSam2Matting &&
+            !vitMatteRecommendation.InstallRvmOnnx &&
+            onnxRecommendation.InstallRvmOnnx &&
+            !onnxRecommendation.InstallOfflineProcessing &&
+            !onnxRecommendation.InstallTransNetV2;
     }
 }
 

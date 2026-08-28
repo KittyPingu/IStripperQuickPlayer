@@ -39,6 +39,7 @@ internal sealed class CustomShowProcessResult
     public int? PipelineDepth { get; set; }
     public string? Encoder { get; set; }
     public string? EncoderPreset { get; set; }
+    public string? ForegroundFileName { get; set; }
     public CustomShowProcessResult[]? Clips { get; set; }
     [System.Text.Json.Serialization.JsonExtensionData]
     public Dictionary<string, JsonElement>? AdditionalProperties { get; set; }
@@ -147,6 +148,87 @@ internal static class CustomShowProcessor
         };
     }
 
+    internal static async Task<CustomShowProcessResult?> TryCopySeekableRgbOnlyAsync(
+        string source, string outputFolder, long startMs, long endMs,
+        IProgress<CustomShowProgress>? progress, CancellationToken token)
+    {
+        if (startMs != 0 || endMs <= 0) return null;
+        string extension = Path.GetExtension(source).ToLowerInvariant();
+        if (!RealtimeFolderImporter.SupportedExtensions.Contains(extension)) return null;
+
+        int width, height;
+        string frameRate;
+        long durationMs;
+        try
+        {
+            using FfmpegCpuDecoder decoder = new(source, fastDecode: true);
+            durationMs = checked((long)Math.Round(decoder.Duration * 1000));
+            long tolerance = Math.Max(250,
+                checked((long)Math.Ceiling(decoder.FrameDuration * 2000)));
+            if (Math.Abs(endMs - durationMs) > tolerance ||
+                !decoder.DecodeNext(out _)) return null;
+            double seekTarget = Math.Max(0,
+                decoder.Duration - Math.Max(.5, decoder.FrameDuration * 3));
+            decoder.Seek(seekTarget);
+            if (!decoder.DecodeNext(out _)) return null;
+            width = decoder.Width;
+            height = decoder.Height;
+            frameRate = decoder.FrameRate;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception error) when (error is InvalidDataException or
+            NotSupportedException or IOException or InvalidOperationException)
+        {
+            return null;
+        }
+
+        token.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(outputFolder);
+        string fileName = "foreground" + extension;
+        string destination = Path.Combine(outputFolder, fileName);
+        string temporary = destination + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            long length = new FileInfo(source).Length;
+            long copied = 0;
+            byte[] buffer = new byte[1024 * 1024];
+            await using (FileStream input = new(source, FileMode.Open,
+                FileAccess.Read, FileShare.Read, buffer.Length,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            await using (FileStream output = new(temporary, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, buffer.Length,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                while (true)
+                {
+                    int read = await input.ReadAsync(buffer, token);
+                    if (read == 0) break;
+                    await output.WriteAsync(buffer.AsMemory(0, read), token);
+                    copied += read;
+                    double percent = length == 0 ? 100 :
+                        Math.Clamp(copied * 100d / length, 0, 100);
+                    progress?.Report(new CustomShowProgress("copying-rgb", percent,
+                        $"Copying original video without re-encoding ({percent:0}%)"));
+                }
+                await output.FlushAsync(token);
+            }
+            File.Move(temporary, destination, true);
+        }
+        finally
+        {
+            try { File.Delete(temporary); } catch { }
+        }
+        progress?.Report(new CustomShowProgress("copying-rgb", 100,
+            "Original video copied without re-encoding"));
+        return new CustomShowProcessResult
+        {
+            Width = width, Height = height, FrameRate = frameRate,
+            DurationMs = durationMs, ForegroundMode = "source-copy",
+            ForegroundFileName = fileName,
+            ExecutionMode = "source-copy"
+        };
+    }
+
     internal static bool VerifyRgbOnlyEncoding()
     {
         string root = Path.Combine(Path.GetTempPath(),
@@ -181,11 +263,23 @@ internal static class CustomShowProcessor
             CustomShowProcessResult result = Task.Run(() =>
                 EncodeRgbOnlyAsync(new(), source, output, 200, 800, null,
                     CancellationToken.None)).GetAwaiter().GetResult();
+            string copiedOutput = Path.Combine(root, "copied");
+            CustomShowProcessResult? copied = Task.Run(() =>
+                TryCopySeekableRgbOnlyAsync(source, copiedOutput, 0, 1200, null,
+                    CancellationToken.None)).GetAwaiter().GetResult();
+            CustomShowProcessResult? trimmedCopy = Task.Run(() =>
+                TryCopySeekableRgbOnlyAsync(source, Path.Combine(root, "trimmed-copy"),
+                    200, 800, null, CancellationToken.None)).GetAwaiter().GetResult();
             return result.Width == 66 && result.Height == 64 &&
                 result.DurationMs is >= 500 and <= 750 &&
                 File.Exists(Path.Combine(output, "foreground.mp4")) &&
                 !File.Exists(Path.Combine(output, "alpha.mkv")) &&
-                result.Encoder is "h264_nvenc" or "libx264";
+                result.Encoder is "h264_nvenc" or "libx264" &&
+                copied?.ExecutionMode == "source-copy" &&
+                copied.ForegroundFileName == "foreground.mp4" &&
+                File.ReadAllBytes(Path.Combine(copiedOutput, "foreground.mp4"))
+                    .SequenceEqual(File.ReadAllBytes(source)) &&
+                trimmedCopy == null;
         }
         catch (Exception error)
         {
@@ -1515,6 +1609,7 @@ internal sealed class CustomShowProcessingForm : Form
     readonly TableLayoutPanel previews;
     readonly TableLayoutPanel actions;
     readonly bool previewsEnabled;
+    readonly bool showFps;
     readonly CustomShowConfiguration? correctionConfiguration;
     readonly string? correctionSource;
     readonly string correctionSam2Model;
@@ -1542,12 +1637,13 @@ internal sealed class CustomShowProcessingForm : Form
         CancellationToken, Task<CustomShowProcessResult>> operation,
         string text = "Processing Custom Show", string sourceLabel = "Original input",
         string compositeLabel = "Composited result", string? processDescription = null,
-        bool showPreviews = true,
+        bool showPreviews = true, bool showFps = true,
         CustomShowConfiguration? correctionConfiguration = null,
         string? correctionSource = null, string correctionSam2Model = "base-plus")
     {
         this.operation = operation;
         previewsEnabled = showPreviews;
+        this.showFps = showFps;
         this.correctionConfiguration = correctionConfiguration;
         this.correctionSource = correctionSource;
         this.correctionSam2Model = correctionSam2Model;
@@ -1842,7 +1938,8 @@ internal sealed class CustomShowProcessingForm : Form
             ? EstimateFrameRemaining(frameSamples, frameSampleTotal, fps)
             : EstimateRemaining(progressSamples, percent);
         status.Text = $"{statusMessage}{Environment.NewLine}Elapsed {FormatDuration(elapsed.Elapsed)}  •  " +
-            (fps == null ? "FPS: estimating...  •  " : $"FPS: {fps.Value:0.0}  •  ") +
+            (showFps ? fps == null ? "FPS: estimating...  •  " :
+                $"FPS: {fps.Value:0.0}  •  " : "") +
             (remaining == null ? "Remaining: estimating..." :
                 $"Remaining: ~{FormatDuration(remaining.Value)}");
     }

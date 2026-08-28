@@ -260,6 +260,9 @@ methods publish synchronized RGB/alpha media; **RVM ONNX real-time playback**
 stores RGB-only clips and generates their matte during playback through
 DirectML. Processing also supports interactive clip boundaries, per-clip
 metadata, mask-guided tools, SAM2 correction, and post-processing alpha tuning.
+An unsplit, seekable real-time source is copied byte-for-byte instead of being
+transcoded; splitting it later re-encodes the ranges and offers to remove the
+superseded library copy without touching the user's external source.
 
 RVM ONNX is the only real-time foreground renderer. Legacy NVIDIA AI Green
 Screen shows and queue jobs are migrated automatically to RVM ONNX without

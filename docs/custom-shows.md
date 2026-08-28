@@ -2,8 +2,10 @@
 
 ## Real-time RVM segmentation
 
-The `rvm-onnx` processing method only splits/re-encodes full-colour H.264/AAC
-clips and is queueable without an installed model. Its clip media has
+The `rvm-onnx` processing method copies a single full-duration source
+byte-for-byte when FFmpeg can open, decode, and seek it. Partial ranges and
+multi-clip layouts are re-encoded as full-colour H.264/AAC clips. It is
+queueable without an installed model. Its clip media has
 `mode: "rvm-onnx"`, omits `alpha`, and carries per-clip RVM model, quality, and
 temporal-memory settings. Missing media mode remains the schema-compatible
 `paired-alpha` default, and mixed-media shows are valid.
@@ -245,9 +247,11 @@ run, pause, stop, and monitor jobs. The queue runs one show at a time and does n
 open the normal processing or result-review windows.
 
 RVM ONNX is always queueable without automatic acceptance or an installed ONNX
-model. Its queue job only trims/re-encodes RGB media; playback performs the
-matting later. Recursive **Folder Import for Real-time...** uses this path and
-adds one full-duration clip per included video without starting the queue.
+model. A one-clip full-duration job first performs a decoder seek test and then
+copies the source bytes unchanged; other layouts trim/re-encode RGB media.
+Playback performs the matting later. Recursive **Folder Import for Real-time...**
+uses this path and adds one full-duration clip per included video without
+starting the queue.
 
 ### Recursive real-time folder import
 
@@ -276,6 +280,12 @@ inserts all jobs through the atomic queue batch operation. Each job is an RVM
 ONNX show with one `0..duration` RGB-only clip and the selected shared RVM,
 hotness, and clip-type settings. The importer never copies the source, so it
 must remain unchanged at its recorded path until that job completes.
+
+At execution, a seekable full source is copied unchanged into the published
+show and marked `media.sourceCopy: true`; its original extension is retained.
+If that show is later split, the editor asks whether the now-unreferenced whole
+copy should be deleted after successful publication or retained as the show's
+owned source. External reference sources are never deleted.
 
 ### URL import with yt-dlp
 
@@ -1011,7 +1021,10 @@ normal processing. CUDA autocast FP16 with FP32/CPU fallback and Pillow resizing
 remain the quality-preserving defaults. Detailed structured stage records are
 written only to `processing.log`; they do not add UI traffic.
 
-- `clips/<clip-id>/foreground.mp4`: H.264/YUV420P with AAC source audio when present. NVENC quality encoding is preferred; libx264 is the fallback.
+- `clips/<clip-id>/foreground.<source-extension>`: byte-identical source media
+  for an eligible one-clip real-time show. Encoded layouts use
+  `foreground.mp4`: H.264/YUV420P with AAC source audio when present. NVENC
+  quality encoding is preferred; libx264 is the fallback.
 - `clips/<clip-id>/alpha.mkv`: near-lossless H.264/YUV420P alpha at CQ/CRF 10. This is substantially smaller than the previous FFV1 alpha while retaining clean matte edges.
 
 Progress is newline-delimited JSON from the worker. The processing dialog is

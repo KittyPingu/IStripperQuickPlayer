@@ -383,6 +383,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/VirtualGreenScreenEditorForm.cs
 !/IstripperQuickPlayer/DressingRoomStreamRelay.cs
 !/IstripperQuickPlayer/CustomShowQueue.cs
+!/IstripperQuickPlayer/CustomShowLibraryMover.cs
 !/IstripperQuickPlayer/CustomShowRealtimeFolderImport.cs
 !/IstripperQuickPlayer/CustomShowUrlImport.cs
 !/IstripperQuickPlayer/CustomShowFailedCleanup.cs
@@ -410,6 +411,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/CustomVideoMaskEditorForm.cs
 !/IstripperQuickPlayer/CustomShowMaskDrafts.cs
 !/IstripperQuickPlayer/CustomShowForms.cs
+!/IstripperQuickPlayer/CustomShowWizardForm.cs
 !/IstripperQuickPlayer/CustomShowProcessor.cs
 !/IstripperQuickPlayer/CustomShows.cs
 !/IstripperQuickPlayer/CustomWatermarkRemovalForm.cs

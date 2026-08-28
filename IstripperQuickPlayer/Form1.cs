@@ -2498,6 +2498,9 @@ namespace IStripperQuickPlayer
         {
             if (panicActive || listClips.SelectedItems.Count == 0)
                 return;
+            queuedAnimationPendingPath = "";
+            queuedAnimationPendingConfirmed = false;
+            queuedAnimationProtectedUntil = DateTime.MinValue;
             ClearQueuedCardSession();
             string r = listClips.SelectedItems[0].SubItems[1].Text;
             ModelCard? card = Datastore.findCardByTag(clipListTag);
@@ -5287,6 +5290,12 @@ namespace IStripperQuickPlayer
                     (string.IsNullOrEmpty(path) ||
                      !string.IsNullOrEmpty(nowPlaying)))
                 {
+                    if (!string.IsNullOrEmpty(path) &&
+                        playbackBridgeLoaded && !playbackMovieRegistered)
+                    {
+                        WakePlaybackTimeline();
+                        ArmMovieCapture();
+                    }
                     QueueNowPlayingUiUpdate();
                     return;
                 }

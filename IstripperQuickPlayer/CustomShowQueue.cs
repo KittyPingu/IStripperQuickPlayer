@@ -40,6 +40,7 @@ internal sealed class CustomShowQueueJob
     public CustomShowScenePrompt[] ScenePrompts { get; set; } = [];
     public bool KeepExistingMasks { get; set; }
     public string[] ReprocessClipIds { get; set; } = [];
+    public bool? DeleteSourceCopyAfterSplit { get; set; }
     public DateTime CreatedUtc { get; set; } = DateTime.UtcNow;
     public DateTime? StartedUtc { get; set; }
     public DateTime? CompletedUtc { get; set; }
@@ -118,7 +119,8 @@ internal sealed class CustomShowQueueStore
                     job.Manifest.Processing?.Algorithm) &&
                 job.Message.Contains("RVM masks", StringComparison.OrdinalIgnoreCase))
             {
-                job.Message = "Pending; RGB clips will be encoded when the job runs";
+                job.Message = "Pending; seekable whole videos will be copied " +
+                    "without re-encoding";
                 changed = true;
             }
         }
@@ -1018,6 +1020,7 @@ internal static class CustomShowJobRunner
             existing, staging,
             configuration, queue, log, initialMasks, retainedMasks,
             generatedMasks, progress, token, generatePreviews);
+        ApplySourceCopySplitChoice(job, show, existing, clips, staging);
         if (generatedMasks.Count > 0 && job.Operation != CustomShowQueueOperation.Append)
         {
             FileInfo sourceInfo = new(job.SourcePath);
@@ -1062,8 +1065,8 @@ internal static class CustomShowJobRunner
         }
         else
         {
-            ApplyPublishedSource(job, show, staging);
             show.Clips = clips;
+            ApplyPublishedSource(job, show, staging);
             show.Media.Width = result.Width;
             show.Media.Height = result.Height;
             show.Media.FrameRate = result.FrameRate;
@@ -1091,19 +1094,71 @@ internal static class CustomShowJobRunner
     {
         if (job.Operation != CustomShowQueueOperation.Reprocess ||
             show.Source.Mode != "copy")
-            show.Source = PublishedSource(job, staging);
+            show.Source = PublishedSource(job, staging, show);
         else if (job.SourceUrl != null)
             show.Source.Url = job.SourceUrl;
     }
 
+    static void ApplySourceCopySplitChoice(CustomShowQueueJob job,
+        CustomShowManifest show, IEnumerable<CustomShowClip> existing,
+        IEnumerable<CustomShowClip> replacement, string staging)
+    {
+        if (job.Operation != CustomShowQueueOperation.Reprocess ||
+            job.DeleteSourceCopyAfterSplit is not bool delete) return;
+        HashSet<string> retained = replacement.Where(clip => clip.Included &&
+                clip.Media != null).Select(clip => clip.Media!.Foreground)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        CustomClipMedia[] replacedCopies = existing.Where(clip => clip.Included &&
+                clip.Media?.SourceCopy == true &&
+                !retained.Contains(clip.Media.Foreground))
+            .Select(clip => clip.Media!).ToArray();
+        if (replacedCopies.Length == 0) return;
+
+        if (!delete)
+        {
+            show.Source = new CustomShowSource
+            {
+                Mode = "copy", Path = replacedCopies[0].Foreground,
+                Url = job.SourceUrl ?? show.Source.Url
+            };
+            return;
+        }
+
+        foreach (CustomClipMedia media in replacedCopies)
+        {
+            string path = CustomShowStore.ResolveRelative(staging, media.Foreground);
+            File.Delete(path);
+            string? folder = Path.GetDirectoryName(path);
+            if (folder != null && Directory.Exists(folder) &&
+                !Directory.EnumerateFileSystemEntries(folder).Any())
+                Directory.Delete(folder);
+        }
+        if (show.Source.Mode == "copy" && replacedCopies.Any(media =>
+                string.Equals(media.Foreground, show.Source.Path,
+                    StringComparison.OrdinalIgnoreCase)))
+            show.Source = new CustomShowSource
+            {
+                Mode = "reference", Path = job.SourcePath,
+                Url = job.SourceUrl ?? show.Source.Url
+            };
+    }
+
     static CustomShowSource PublishedSource(CustomShowQueueJob job,
-        string staging)
+        string staging, CustomShowManifest? show = null)
     {
         if (!job.RetainSourceInShow)
             return new CustomShowSource
             {
                 Mode = "reference", Path = job.SourcePath,
                 Url = job.SourceUrl
+            };
+        CustomClipMedia? sourceCopy = show?.Clips.Where(clip => clip.Included)
+            .Select(clip => clip.Media).SingleOrDefault(media =>
+                media?.SourceCopy == true);
+        if (sourceCopy != null)
+            return new CustomShowSource
+            {
+                Mode = "copy", Path = sourceCopy.Foreground, Url = job.SourceUrl
             };
         string extension = Path.GetExtension(job.SourcePath).ToLowerInvariant();
         if (!RealtimeFolderImporter.SupportedExtensions.Contains(extension))
@@ -1239,6 +1294,10 @@ internal static class CustomShowJobRunner
                 throw new CustomShowQueueAttentionException(
                     "The retained URL source is missing from the queue job.");
         }
+        if (job.DeleteSourceCopyAfterSplit != null &&
+            job.Operation != CustomShowQueueOperation.Reprocess)
+            throw new CustomShowQueueAttentionException(
+                "The copied-source cleanup choice is valid only when reprocessing a show.");
         if (!File.Exists(job.SourcePath))
             throw new CustomShowQueueAttentionException("The source video no longer exists.");
         if (job.Clips.Length == 0 || !job.Clips.Any(clip => clip.Included) ||
@@ -1367,16 +1426,24 @@ internal static class CustomShowJobRunner
                 }
                 else
                 {
-                    result = await CustomShowProcessor.EncodeRgbOnlyAsync(configuration,
-                            job.SourcePath, Path.Combine(staging, "clips", clip.Id),
-                            clip.StartMs, clip.EndMs,
-                            new Progress<CustomShowProgress>(value => progress.Report(
-                                value with
-                                {
-                                    Percent = CustomShowProcessingForm.AggregateClipPercent(
-                                        before, duration, total, value.Percent),
-                                    Message = $"Clip {index + 1}/{included.Length}: {value.Message}"
-                                })), token);
+                    Progress<CustomShowProgress> clipProgress = new(value =>
+                        progress.Report(value with
+                        {
+                            Percent = CustomShowProcessingForm.AggregateClipPercent(
+                                before, duration, total, value.Percent),
+                            Message = $"Clip {index + 1}/{included.Length}: {value.Message}"
+                        }));
+                    string output = Path.Combine(staging, "clips", clip.Id);
+                    result = included.Length == 1
+                        ? await CustomShowProcessor.TryCopySeekableRgbOnlyAsync(
+                            job.SourcePath, output, clip.StartMs, clip.EndMs,
+                            clipProgress, token) ??
+                          await CustomShowProcessor.EncodeRgbOnlyAsync(configuration,
+                            job.SourcePath, output, clip.StartMs, clip.EndMs,
+                            clipProgress, token)
+                        : await CustomShowProcessor.EncodeRgbOnlyAsync(configuration,
+                            job.SourcePath, output, clip.StartMs, clip.EndMs,
+                            clipProgress, token);
                     SetMedia(clip, result, options.Algorithm);
                     firstEncoded ??= result;
                 }
@@ -1566,15 +1633,19 @@ internal static class CustomShowJobRunner
     static void SetMedia(CustomShowClip clip, CustomShowProcessResult result,
         string mediaMode = CustomClipMedia.PairedAlphaMode)
     {
+        if (result.ExecutionMode == "source-copy" && clip.StartMs == 0)
+            clip.EndMs = result.DurationMs;
         string relative = Path.Combine("clips", clip.Id);
         clip.Media = new()
         {
             Mode = mediaMode,
-            Foreground = Path.Combine(relative, "foreground.mp4").Replace('\\', '/'),
+            Foreground = Path.Combine(relative,
+                result.ForegroundFileName ?? "foreground.mp4").Replace('\\', '/'),
             Alpha = CustomClipMedia.IsRealtimeMode(mediaMode) ? null :
                 Path.Combine(relative, "alpha.mkv").Replace('\\', '/'),
             Width = result.Width, Height = result.Height,
-            FrameRate = result.FrameRate, DurationMs = result.DurationMs
+            FrameRate = result.FrameRate, DurationMs = result.DurationMs,
+            SourceCopy = result.ExecutionMode == "source-copy"
         };
     }
 
@@ -1668,6 +1739,43 @@ internal static class CustomShowJobRunner
             };
             File.WriteAllBytes(reprocess.SourcePath, [7, 8, 9]);
             ApplyPublishedSource(reprocess, retainedSourceShow, root);
+            string copiedFolder = Path.Combine(root, "clips", "whole");
+            Directory.CreateDirectory(copiedFolder);
+            string copiedPath = Path.Combine(copiedFolder, "foreground.mov");
+            File.WriteAllBytes(copiedPath, [10, 11, 12]);
+            CustomShowClip copiedWhole = new()
+            {
+                Id = "whole", StartMs = 0, EndMs = 1000,
+                Media = new CustomClipMedia
+                {
+                    Mode = CustomClipMedia.RvmOnnxMode,
+                    Foreground = "clips/whole/foreground.mov",
+                    Width = 720, Height = 1280, FrameRate = "30/1",
+                    DurationMs = 1000, SourceCopy = true
+                },
+                RvmOnnx = new CustomRvmOnnxSettings()
+            };
+            CustomShowManifest splitShow = new()
+            {
+                Source = new CustomShowSource
+                    { Mode = "reference", Path = reprocess.SourcePath }
+            };
+            CustomShowQueueJob keepOriginal = new()
+            {
+                Operation = CustomShowQueueOperation.Reprocess,
+                SourcePath = reprocess.SourcePath,
+                DeleteSourceCopyAfterSplit = false
+            };
+            ApplySourceCopySplitChoice(keepOriginal, splitShow, [copiedWhole],
+                [new CustomShowClip { Id = "split", StartMs = 0, EndMs = 500 }], root);
+            bool retainedCopy = splitShow.Source.Mode == "copy" &&
+                splitShow.Source.Path == copiedWhole.Media.Foreground &&
+                File.Exists(copiedPath);
+            keepOriginal.DeleteSourceCopyAfterSplit = true;
+            ApplySourceCopySplitChoice(keepOriginal, splitShow, [copiedWhole],
+                [new CustomShowClip { Id = "split", StartMs = 0, EndMs = 500 }], root);
+            bool deletedCopy = !File.Exists(copiedPath) &&
+                splitShow.Source.Mode == "reference";
             return reused && replacement.Media?.Mode ==
                     CustomClipMedia.RvmOnnxMode &&
                 replacement.Media.Alpha == null && File.Exists(foreground) &&
@@ -1676,6 +1784,7 @@ internal static class CustomShowJobRunner
                 retainedSourceShow.Source.Mode == "copy" &&
                 retainedSourceShow.Source.Path == "source.mp4" &&
                 retainedSourceShow.Source.Url == reprocess.SourceUrl &&
+                retainedCopy && deletedCopy &&
                 !TryReuseRealtimeMedia(new CustomShowClip
                     { Id = clipId, StartMs = 100, EndMs = 1000 }, [old], root,
                     CustomClipMedia.RvmOnnxMode, out _);
@@ -1914,7 +2023,7 @@ internal static class CustomShowJobRunner
             if (loaded.Jobs.Count != 5 || loaded.Jobs[0].Id != pending.Id ||
                 loaded.Jobs[0].StartedUtc != null || loaded.Jobs[0].CompletedUtc != null ||
                 loaded.Jobs[0].Message !=
-                    "Pending; RGB clips will be encoded when the job runs" ||
+                    "Pending; seekable whole videos will be copied without re-encoding" ||
                 loaded.Jobs[0].Manifest.Processing?.Algorithm != "rvm-onnx" ||
                 loaded.Jobs[0].Clips.Single().RvmOnnx?.Model != "resnet50" ||
                 loaded.Jobs[0].Clips.Single().RvmOnnx?.Temporal != false ||

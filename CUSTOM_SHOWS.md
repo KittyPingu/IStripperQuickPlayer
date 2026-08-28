@@ -3,9 +3,11 @@
 ## RVM ONNX real-time playback
 
 `RVM ONNX (real-time playback)` does not require Python, a vendor segmentation
-SDK, or an API key. Show creation trims and encodes RGB-only
-`foreground.mp4` clips; QuickPlayer runs Robust Video Matting through DirectML
-during playback and generates the alpha mask for each frame. The original
+SDK, or an API key. When a show contains one full-duration clip and the source
+passes a real seek test, QuickPlayer copies the video byte-for-byte into the
+show without transcoding it. Trimmed or split clips are encoded as RGB-only
+H.264/AAC media. QuickPlayer runs Robust Video Matting through DirectML during
+playback and generates the alpha mask for each frame. The original
 full-resolution RGB remains the displayed image.
 
 Install the optional model from **Custom Shows > Settings > Maintenance >
@@ -77,6 +79,12 @@ Reprocessing an existing show to RVM ONNX reuses each unchanged clip's existing
 `foreground.mp4`. QuickPlayer encodes again only when a selected clip's source
 range changed or its retained RGB file is missing.
 
+If a copied whole-video show is later divided into clips, those ranges must be
+encoded so their boundaries are accurate. QuickPlayer then asks whether to
+delete the superseded whole-video copy after the split clips publish. Choosing
+No keeps it as the show's retained source; choosing Yes reclaims its library
+storage. This prompt never deletes the external source selected by the user.
+
 ### Create a real-time show from a URL
 
 Choose **File > Custom Shows > Create Real-time Show from URL...** and paste an
@@ -117,11 +125,12 @@ temporal memory, then use **Encode and Preview** or **Queue** as usual. This
 workflow creates a new show; it cannot append directly to an existing show.
 
 The temporary download is deleted when the editor closes. Before that happens,
-queueing copies the complete source into the queue job. Publication then keeps
-a source copy inside the finished show as well as its encoded RGB clips, so the
-remote page does not need to remain available and the show can be reprocessed
-later. Deleting the custom show removes that retained source with the rest of
-the show. Allow enough storage for the downloaded source and encoded clips.
+queueing copies the complete source into the queue job. For an unsplit seekable
+video, that byte-for-byte copy is also the clip's playback media, avoiding a
+second encoded copy. If it cannot be reused directly, publication keeps a
+separate source copy alongside the encoded RGB clips. The remote page therefore
+does not need to remain available and the show can be reprocessed later.
+Deleting the custom show removes its owned media with the rest of the show.
 
 Only download and process videos you have permission to use, and follow the
 site's terms. A failed extraction normally means the page is unsupported,
@@ -180,6 +189,28 @@ REST controls.
 This is the end-user guide. Exact model versions, storage formats, benchmarks,
 licences, and implementation details are in the
 [technical reference](docs/custom-shows.md).
+
+## Guided custom-show wizard
+
+Choose **File > Custom Shows > Create Show with Wizard...** when you want help
+choosing the source, model profile, clip divisions, and processing method. The
+normal Create Custom Show editor stays open and editable while a companion
+window explains the current step and shows which required details are complete.
+
+The wizard asks whether you want preprocessed or real-time transparency, how
+much mask editing you are willing to do, whether speed, exact selection, soft
+edges, or scene changes matter most, what class of hardware you have, and
+whether you want to review the result interactively or queue it. It then
+explains an ideal method and applies its recommended starting values only when
+you choose **Apply recommendation**. Later manual changes in the editor are not
+overwritten.
+
+If the ideal method is not installed, the wizard can open the appropriate setup
+with the needed components preselected or apply the best available fallback.
+The recommendation clearly identifies features lost by a fallback, such as
+real-time playback, exact subject selection, ViTMatte edge refinement, or
+independent scene prompts. The existing editor remains responsible for final
+validation, processing, previews, and queue creation.
 
 ## Recommended workflow
 
@@ -446,10 +477,10 @@ previews, and opens a final review where each clip's minimum alpha can be tuned.
 New clips use alpha threshold 25. Choose **Accept** to publish atomically;
 cancelling or failing never publishes a partial card.
 
-For RVM ONNX, the immediate action is **Encode and Preview** because creation
-only splits and encodes RGB clips. **Queue** is available without automatic
-acceptance and without an installed ONNX model; the model is required only when
-the resulting show is played.
+For RVM ONNX, the immediate action is **Encode and Preview**. A single seekable
+whole video is copied without transcoding; split or trimmed clips are encoded.
+**Queue** is available without automatic acceptance and without an installed
+ONNX model; the model is required only when the resulting show is played.
 
 Enable **Automatically accept result with alpha threshold 25** for a fire-and-
 forget run. The number is an alpha cutoff on the 0-255 scale, not 25% of the
