@@ -450,18 +450,27 @@ internal sealed class CustomVideoMaskEditorForm : Form
             if (kind == "progress")
             {
                 double value = response.GetProperty("percent").GetDouble();
-                workerStatus = response.GetProperty("message").GetString() ?? "Updating masks...";
-                bool compiling = workerStatus.StartsWith("Compiling ",
-                    StringComparison.Ordinal) || workerStatus.StartsWith(
-                    "Loading cached ", StringComparison.Ordinal);
+                string nextStatus = response.GetProperty("message").GetString() ??
+                    "Updating masks...";
+                workerStatus = nextStatus;
+                bool initializing = workerStatus.StartsWith("Compiling ",
+                    StringComparison.Ordinal) || workerStatus.StartsWith("Loading ",
+                    StringComparison.Ordinal) || workerStatus.StartsWith("Initializing ",
+                    StringComparison.Ordinal) || workerStatus.StartsWith("Applying initial ",
+                    StringComparison.Ordinal);
                 long now = Environment.TickCount64;
-                bool refreshUi = value >= 100 || now - lastProgressUiTick >= 250;
+                // Initialization can begin immediately after the final extraction
+                // update. Never let the rate limiter discard these messages: these
+                // phases have no numeric updates of their own and would otherwise
+                // leave the old extraction text visible for minutes.
+                bool refreshUi = initializing || value >= 100 ||
+                    now - lastProgressUiTick >= 250;
                 if (refreshUi)
                 {
                     lastProgressUiTick = now;
-                    progress.Style = compiling ? ProgressBarStyle.Marquee :
+                    progress.Style = initializing ? ProgressBarStyle.Marquee :
                         ProgressBarStyle.Blocks;
-                    if (!compiling && (value >= displayed + .5 || value >= 100))
+                    if (!initializing && (value >= displayed + .5 || value >= 100))
                     {
                         displayed = value;
                         progress.Value = Math.Clamp((int)Math.Round(value), 0, 100);

@@ -1083,6 +1083,8 @@ def process(args):
                               model_name=args.model, encoder_compiled=encoder_compiled,
                               compile_mode=compile_mode)
     profiler.add("model_load", time.perf_counter() - loaded)
+    send(status="progress", percent=15, message=
+         f"Initializing {label} frame tracker for {total} review frames...")
     add_feature_profiler(predictor, profiler, torch, device, args.detailed_profile)
     predictor.add_all_frames_to_correct_as_cond = True
     mark_step = torch.compiler.cudagraph_mark_step_begin if optimized and \
@@ -1114,6 +1116,8 @@ def process(args):
                 install_gpu_feature_cache(predictor, state, torch,
                                           feature_cache_frames, profiler)
             if mark_step: mark_step()
+            send(status="progress", percent=15, message=
+                 "Applying initial foreground mask...")
             prompted = time.perf_counter()
             predictor.add_new_mask(state, frame_idx=initial_frame, obj_id=1,
                                    mask=initial)
