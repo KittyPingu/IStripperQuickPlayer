@@ -557,6 +557,24 @@ library, so back up the complete custom-library folder separately.
 Deleting a custom show moves its show folder to the Recycle Bin. It does not
 delete its referenced source or shared model profile.
 
+### Send a custom show to another QuickPlayer user
+
+Choose **Custom Shows > Export Custom Show Package...**, select a show, and save
+the generated `.iqpshow.zip` file. The same command is available by
+right-clicking a custom card. The package contains the complete published show
+folder, all playback media, its cover and retained show files, the linked model
+profile, and any available attached photo folder. Referenced original source
+videos are not duplicated because they are not required for playback; their
+private local paths are reduced to filenames in the exported manifest.
+
+On the receiving computer, choose **Custom Shows > Import Custom Show
+Package...**. QuickPlayer validates and stages the ZIP before changing the
+library. It reuses a model profile with the same profile ID, iStripper model ID,
+or model name; otherwise it creates the supplied model profile automatically.
+The imported show appears immediately. Import never overwrites a show with the
+same show ID, and an invalid or incomplete package leaves the library unchanged.
+Reprocessing may require the recipient to relink the original source video.
+
 ## Source preparation tools
 
 - **Stabilize Video (FFmpeg)** performs conventional two-pass stabilization.

@@ -1171,6 +1171,25 @@ page address in optional `source.url` provenance. Invalid/duplicate profiles or
 shows are skipped and recorded in the model reload diagnostic without blocking
 valid shows. Older shared-media shows must be reprocessed.
 
+**Custom Shows > Export Custom Show Package...** creates a versioned
+`.iqpshow.zip` archive containing `package.json`, `performer.json`, and the
+complete published show folder. The card context menu exports that card
+directly. Playback media, copied sources, covers, retained masks, and other show
+files are included. An attached photo folder is copied into the portable show
+when it is available. External reference-source videos are not required for
+playback and are not duplicated; exported reference paths contain only the
+source filename rather than the sender's private directory.
+
+**Custom Shows > Import Custom Show Package...** extracts into a private staging
+folder, rejects traversal and duplicate archive paths, validates package IDs,
+the performer, manifest, and required media, then atomically publishes the show.
+A performer with the same profile ID, iStripper model ID, or model name is
+reused. Otherwise the packaged profile is created and linked automatically. A
+package never overwrites an existing show ID, and a failed import rolls back a
+newly created profile. Imported external photos are linked to their new library
+location. Reprocessing a show whose original source was a reference still
+requires the recipient to relink that source.
+
 Every show has a `clips` array. Each entry contains a UUID `id`, contiguous source
 `startMs`/`endMs`, `hotness`, `clipTypes`, and per-clip media metadata when
 included. Ranges start at zero and cover the complete source without gaps or

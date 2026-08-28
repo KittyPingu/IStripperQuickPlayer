@@ -934,7 +934,7 @@ internal sealed record CustomShowCheckIssue(string Folder, string? ShowId,
 internal sealed record CustomShowCheckReport(int TotalShows, int ValidShows,
     IReadOnlyList<CustomShowCheckIssue> Issues);
 
-internal sealed class CustomShowStore
+internal sealed partial class CustomShowStore
 {
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -2187,6 +2187,7 @@ internal sealed class CustomShowStore
             PropSegmenterCompatible("sam2matting", true, null) &&
             PropSegmenterCompatible("matanyone2", false, null) &&
             !PropSegmenterCompatible("quality", false, null) &&
+            VerifyPackageContracts() &&
             VerifyVirtualGreenScreen() &&
             VerifyRealtimeManifestContracts() &&
             RejectsTraversal();

@@ -41,6 +41,7 @@ public partial class Form1
     readonly ToolStripMenuItem virtualGreenScreenCustomShowMenu =
         new("Virtual Green Screen...");
     readonly ToolStripMenuItem reprocessCustomShowMenu = new("Reprocess Custom Show...");
+    readonly ToolStripMenuItem exportCustomShowMenu = new("Export Custom Show...");
     readonly ToolStripMenuItem deleteCustomShowMenu = new("Delete Custom Show");
     readonly ContextMenuStrip customClipContextMenu = new();
     readonly ToolStripMenuItem trimCustomClipMenu =
@@ -102,6 +103,8 @@ public partial class Form1
         ToolStripMenuItem createFromUrl = new(
             "Create Real-time Show from URL...");
         ToolStripMenuItem folderImport = new("Folder Import for Real-time...");
+        ToolStripMenuItem importPackage = new("Import Custom Show Package...");
+        ToolStripMenuItem exportPackage = new("Export Custom Show Package...");
         ToolStripMenuItem queues = new("Queues...");
         ToolStripMenuItem check = new("Check Custom Shows...");
         ToolStripMenuItem stabilize = new("Stabilize Video (FFmpeg)...");
@@ -121,6 +124,8 @@ public partial class Form1
         create.Click += (_, _) => EditCustomShow(null);
         createFromUrl.Click += (_, _) => CreateCustomShowFromUrl();
         folderImport.Click += (_, _) => ImportRealtimeFolder();
+        importPackage.Click += (_, _) => ImportCustomShowPackage();
+        exportPackage.Click += (_, _) => ExportCustomShowPackage(null);
         queues.Click += (_, _) => ShowCustomShowQueues();
         check.Click += async (_, _) => await CheckCustomShowsAsync(check);
         stabilize.Click += (_, _) => StabilizeVideo();
@@ -129,7 +134,9 @@ public partial class Form1
         compareTemporalAlpha.Click += (_, _) => CompareTemporalAlphaCleanup();
         settings.Click += (_, _) => ConfigureCustomShows();
         customShowsMenu.DropDownItems.AddRange(
-            [createWithWizard, create, createFromUrl, folderImport, queues, check,
+            [createWithWizard, create, createFromUrl, folderImport,
+                new ToolStripSeparator(), importPackage, exportPackage,
+                new ToolStripSeparator(), queues, check,
                 new ToolStripSeparator(), stabilize,
                 backgroundLock, removeWatermark, compareTemporalAlpha, settings]);
         fileToolStripMenuItem.DropDownItems.Insert(0, customShowsMenu);
@@ -140,11 +147,14 @@ public partial class Form1
             EditVirtualGreenScreen(CurrentContextCustomShowId(), null);
         reprocessCustomShowMenu.Click += (_, _) =>
             EditCustomShow(CurrentContextCustomShowId(), reprocess: true);
+        exportCustomShowMenu.Click += (_, _) =>
+            ExportCustomShowPackage(CurrentContextCustomShowId());
         deleteCustomShowMenu.Click += (_, _) => DeleteCurrentCustomShow();
         menuCardList.Items.Add(new ToolStripSeparator());
         menuCardList.Items.Add(editCustomShowMenu);
         menuCardList.Items.Add(virtualGreenScreenCustomShowMenu);
         menuCardList.Items.Add(reprocessCustomShowMenu);
+        menuCardList.Items.Add(exportCustomShowMenu);
         menuCardList.Items.Add(deleteCustomShowMenu);
         menuCardList.Opening += (_, _) =>
         {
@@ -152,6 +162,7 @@ public partial class Form1
             editCustomShowMenu.Visible = custom;
             virtualGreenScreenCustomShowMenu.Visible = custom;
             reprocessCustomShowMenu.Visible = custom;
+            exportCustomShowMenu.Visible = custom;
             deleteCustomShowMenu.Visible = custom;
             deleteFromDiskToolStripMenuItem.Visible = !custom;
         };
@@ -916,6 +927,97 @@ public partial class Form1
         }
     }
 
+    async void ExportCustomShowPackage(string? showId)
+    {
+        try
+        {
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            if (showId == null)
+            {
+                using CustomShowPickerForm picker = new(store,
+                    "Export Custom Show", "Export selected show");
+                if (picker.ShowDialog(this) != DialogResult.OK ||
+                    picker.ShowId == null)
+                    return;
+                showId = picker.ShowId;
+            }
+            CustomShowManifest show = store.LoadManifest(showId);
+            CustomPerformerProfile performer = store.LoadPerformer(
+                show.PerformerId);
+            using System.Windows.Forms.SaveFileDialog save = new()
+            {
+                Title = "Export Custom Show Package",
+                Filter = "QuickPlayer custom-show package (*.iqpshow.zip)|" +
+                    "*.iqpshow.zip|ZIP archive (*.zip)|*.zip",
+                FileName = PackageFilename(performer.ModelName, show.Title),
+                AddExtension = true,
+                DefaultExt = "iqpshow.zip",
+                OverwritePrompt = true
+            };
+            if (save.ShowDialog(this) != DialogResult.OK) return;
+            UseWaitCursor = true;
+            await Task.Run(() => store.ExportPackage(showId, save.FileName));
+            SetPlaybackStatus($"Exported custom show '{show.Title}'.");
+            MessageBox.Show(this,
+                $"'{show.Title}' was exported with its media and model profile to:\n\n" +
+                save.FileName,
+                "Export Custom Show", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Export Custom Show",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally { UseWaitCursor = false; }
+    }
+
+    async void ImportCustomShowPackage()
+    {
+        using System.Windows.Forms.OpenFileDialog open = new()
+        {
+            Title = "Import Custom Show Package",
+            Filter = "QuickPlayer custom-show package (*.iqpshow.zip;*.zip)|" +
+                "*.iqpshow.zip;*.zip|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (open.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            UseWaitCursor = true;
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            CustomShowPackageImportResult result = await Task.Run(() =>
+                store.ImportPackage(open.FileName));
+            ReloadCustomCards();
+            SetPlaybackStatus($"Imported custom show '{result.ShowTitle}'.");
+            MessageBox.Show(this,
+                $"Imported '{result.ShowTitle}'.\n\nModel: {result.ModelName} " +
+                (result.CreatedModel
+                    ? "(new model profile created)"
+                    : "(existing model profile reused)"),
+                "Import Custom Show", MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Import Custom Show",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally { UseWaitCursor = false; }
+    }
+
+    static string PackageFilename(string model, string title)
+    {
+        HashSet<char> invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        string filename = new string(($"{model} - {title}").Select(character =>
+            invalid.Contains(character) ? ' ' : character).ToArray());
+        filename = string.Join(' ', filename.Split(' ',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        if (filename.Length > 120) filename = filename[..120].TrimEnd();
+        return (filename.Length == 0 ? "Custom Show" : filename) + ".iqpshow.zip";
+    }
+
     void RestoreIncompleteCustomShow(IWin32Window? owner = null)
     {
         owner ??= this;
@@ -1380,16 +1482,9 @@ public partial class Form1
             return;
         string playing = !string.IsNullOrEmpty(customPlayerAnimationPath)
             ? customPlayerAnimationPath : GetCurrentAnimationPath();
-        if (string.Equals(GetCardTagFromAnimationPath(playing), card.name,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            MessageBox.Show(this,
-                "This custom show is currently playing. Play another show " +
-                "or stop playback before deleting it.",
-                "Delete Custom Show", MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            return;
-        }
+        bool showIsPlaying = string.Equals(
+            GetCardTagFromAnimationPath(playing), card.name,
+            StringComparison.OrdinalIgnoreCase);
         if (MessageBox.Show(this,
                 $"Move '{card.outfit}' to the Recycle Bin?",
                 "Delete Custom Show", MessageBoxButtons.YesNo,
@@ -1398,6 +1493,8 @@ public partial class Form1
         try
         {
             UseWaitCursor = true;
+            if (showIsPlaying)
+                await StopCustomPlaybackAndWaitAsync(restoreIstripper: true);
             CustomShowStore store = new(customShowConfiguration.LibraryRoot);
             await Task.Run(() => store.DeleteShow(showId));
             RemoveCustomClipQueueEntries(card.name, null);
@@ -1982,7 +2079,9 @@ public partial class Form1
         return RequestAnimationPlayback(customPreloadedAnimationPath);
     }
 
-    void CancelCustomPreload()
+    void CancelCustomPreload() => _ = CancelCustomPreloadAsync();
+
+    async Task CancelCustomPreloadAsync()
     {
         CancellationTokenSource? cancellation = customPreloadCancellation;
         Task<CustomPlayerForm.PreparedPlayback?>? prepared =
@@ -1992,12 +2091,10 @@ public partial class Form1
         customPreloadedAnimationPath = "";
         cancellation?.Cancel();
         cancellation?.Dispose();
-        if (prepared != null)
-            _ = prepared.ContinueWith(task =>
-            {
-                if (task.Status == TaskStatus.RanToCompletion)
-                    task.Result?.Dispose();
-            }, TaskScheduler.Default);
+        if (prepared == null) return;
+        try { (await prepared.ConfigureAwait(false))?.Dispose(); }
+        catch (OperationCanceledException) { }
+        catch { }
     }
 
     void SuspendIStripperForCustomPlayback()
@@ -2036,6 +2133,16 @@ public partial class Form1
         customPlayerAnimationPath = "";
         if (!apiOnlyMode) RefreshPlaybackControlVisibility();
         player?.ClosePlayer();
+        if (restoreIstripper) RestoreIStripperAfterCustomPlayback();
+    }
+
+    async Task StopCustomPlaybackAndWaitAsync(bool restoreIstripper)
+    {
+        Task preloadClose = CancelCustomPreloadAsync();
+        CustomPlayerForm? player = customPlayer;
+        StopCustomPlayback(restoreIstripper: false);
+        if (player != null) await player.ClosePlayerAsync();
+        await preloadClose;
         if (restoreIstripper) RestoreIStripperAfterCustomPlayback();
     }
 

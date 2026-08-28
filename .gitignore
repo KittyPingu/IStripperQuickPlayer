@@ -366,6 +366,7 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /IstripperQuickPlayer/*
+!/IstripperQuickPlayer/CustomShowPackages.cs
 !/IstripperQuickPlayer/BLL/
 /IstripperQuickPlayer/BLL/*
 !/IstripperQuickPlayer/BLL/CardOverlayLoader.cs
