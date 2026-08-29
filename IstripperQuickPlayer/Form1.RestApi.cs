@@ -266,6 +266,8 @@ namespace IStripperQuickPlayer
                         "GET /api/v1/fullscreen",
                         "GET /api/v1/fullscreen/shader-data",
                         "PUT /api/v1/fullscreen/shader-data",
+                        "POST /api/v1/fullscreen/shader-clip-bounds/{channel}",
+                        "DELETE /api/v1/fullscreen/shader-clip-bounds/{channel}",
                         "GET /api/v1/fullscreen/shader-texture",
                         "PUT /api/v1/fullscreen/shader-texture",
                         "GET /api/v1/fullscreen/shader-texture/shared-memory",
@@ -327,6 +329,18 @@ namespace IStripperQuickPlayer
                     await ReadRestApiJsonAsync<ApiShaderDataRequest>(
                         request, cancellationToken);
                 return SetRestApiFullscreenShaderData(body);
+            }
+
+            if ((method == "POST" || method == "DELETE") &&
+                parts.Length == 5 &&
+                parts[2].Equals("fullscreen",
+                    StringComparison.OrdinalIgnoreCase) &&
+                parts[3].Equals("shader-clip-bounds",
+                    StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(parts[4], out int clipBoundsChannel))
+            {
+                return SetRestApiFullscreenShaderClipBounds(
+                    clipBoundsChannel, method == "POST");
             }
 
             if (method == "GET" &&
@@ -818,6 +832,50 @@ namespace IStripperQuickPlayer
                         $"(0x{result:X8}).")
                     : new ApiResult(200, new { sequence, values });
             }
+        }
+
+        private ApiResult SetRestApiFullscreenShaderClipBounds(
+            int channel, bool enabled)
+        {
+            if (channel is < 0 or >=
+                PlaybackBridgeClient.MaximumShaderClipBoundsChannels)
+            {
+                return Error(400, "The shader clip-bounds channel must be " +
+                    $"between 0 and " +
+                    $"{PlaybackBridgeClient.MaximumShaderClipBoundsChannels - 1}.");
+            }
+            lock (playbackApiLock)
+            {
+                if (playbackBridgeClient?.IsConnected != true)
+                    return Error(409,
+                        "The iStripper bridge is not connected.");
+                int result = enabled
+                    ? playbackBridgeClient.StartFullscreenShaderClipBounds(
+                        channel)
+                    : playbackBridgeClient.StopFullscreenShaderClipBounds(
+                        channel);
+                if (result < 0)
+                {
+                    return Error(409, "Fullscreen shader clip bounds could " +
+                        $"not be {(enabled ? "enabled" : "disabled")} " +
+                        $"(0x{result:X8}).");
+                }
+            }
+            return new ApiResult(enabled ? 201 : 200, new
+            {
+                channel,
+                active = enabled,
+                coordinateSpace = "target-normalized-bottom-left",
+                uniforms = new
+                {
+                    captureChannel =
+                        "u_QuickPlayerCaptureClipBoundsChannel",
+                    enabled = $"u_QuickPlayerClipBoundsEnabled{channel}",
+                    bounds = $"u_QuickPlayerClipBounds{channel}",
+                    targetSize = $"u_QuickPlayerClipTargetSize{channel}",
+                    sequence = $"u_QuickPlayerClipBoundsSequence{channel}"
+                }
+            });
         }
 
         private ApiResult GetRestApiFullscreenShaderTexture(

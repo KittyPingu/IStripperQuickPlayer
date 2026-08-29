@@ -21,6 +21,7 @@ public sealed class PlaybackBridgeClient : IDisposable
     private const int ShaderTextureHeaderLength = 24 +
         ShaderTextureNameCapacity;
     private const int MaximumShaderTextureDimension = 4096;
+    public const int MaximumShaderClipBoundsChannels = 8;
     private const int MaximumShaderTextureByteLength =
         MaximumShaderTextureDimension * MaximumShaderTextureDimension * 4;
     private const int MaximumBridgeBufferLength =
@@ -143,6 +144,24 @@ public sealed class PlaybackBridgeClient : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(apiName);
         ArgumentNullException.ThrowIfNull(packet);
         return CallBuffer(apiName, packet, packet.Length);
+    }
+
+    public int StartFullscreenShaderClipBounds(int channel)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(channel);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(
+            channel, MaximumShaderClipBoundsChannels);
+        return Call("IStripperStartFullscreenShaderClipBounds",
+            (ulong)channel);
+    }
+
+    public int StopFullscreenShaderClipBounds(int channel)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(channel);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(
+            channel, MaximumShaderClipBoundsChannels);
+        return Call("IStripperStopFullscreenShaderClipBounds",
+            (ulong)channel);
     }
 
     public int SetFullscreenShaderData(float[] values, out uint sequence)

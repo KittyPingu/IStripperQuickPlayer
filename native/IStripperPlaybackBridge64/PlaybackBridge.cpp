@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <cstring>
+#include <cmath>
 #include <float.h>
 #include <functional>
 #include <memory>
@@ -314,11 +315,17 @@ namespace
     using WglGetCurrentContext = HGLRC(WINAPI*)();
     using WglGetProcAddress = PROC(WINAPI*)(LPCSTR);
     using GlActiveTexture = void(APIENTRY*)(unsigned int texture);
+    using GlBegin = void(APIENTRY*)(unsigned int mode);
+    using GlEnd = void(APIENTRY*)();
+    using GlVertex2d = void(APIENTRY*)(double x, double y);
     using GlGenTextures = void(APIENTRY*)(int count, unsigned int* textures);
     using GlBindTexture = void(APIENTRY*)(
         unsigned int target, unsigned int texture);
     using GlIsTexture = unsigned char(APIENTRY*)(unsigned int texture);
     using GlGetIntegerv = void(APIENTRY*)(unsigned int name, int* value);
+    using GlGetDoublev = void(APIENTRY*)(unsigned int name, double* value);
+    using GlGetUniformfv = void(APIENTRY*)(
+        unsigned int program, int location, float* value);
     using GlPixelStorei = void(APIENTRY*)(unsigned int name, int value);
     using GlTexParameteri = void(APIENTRY*)(
         unsigned int target, unsigned int name, int value);
@@ -336,6 +343,26 @@ namespace
     };
 
     static_assert(sizeof(FullScreenShaderDataPacket) == 20);
+
+    constexpr int MaximumFullScreenClipBoundsChannels = 8;
+    struct FullScreenClipBoundsState
+    {
+        float bounds[4] = {};
+        float targetSize[2] = {};
+        std::uint32_t sequence = 0;
+        bool captured = false;
+    };
+
+    struct FullScreenClipBoundsCapture
+    {
+        int channel = -1;
+        int vertexCount = 0;
+        int viewport[4] = {};
+        double modelView[16] = {};
+        double projection[16] = {};
+        double vertices[64][2] = {};
+        bool collecting = false;
+    };
 
     constexpr std::uint32_t FullScreenShaderTextureMagic = 0x58545051;
     constexpr std::uint32_t MaximumFullScreenShaderTextureDimension = 4096;
@@ -446,6 +473,9 @@ namespace
     PVOID volatile g_originalFsClipNodeStartNextShow = nullptr;
     PVOID volatile g_originalFsClipNodeNextShowClip = nullptr;
     PVOID volatile g_originalQOpenGLShaderProgramBind = nullptr;
+    PVOID volatile g_originalGlBegin = nullptr;
+    PVOID volatile g_originalGlEnd = nullptr;
+    PVOID volatile g_originalGlVertex2d = nullptr;
     QOpenGLShaderUniformLocation g_qOpenGLShaderUniformLocation = nullptr;
     QOpenGLShaderSetUniform1 g_qOpenGLShaderSetUniform1 = nullptr;
     QOpenGLShaderSetUniformInt g_qOpenGLShaderSetUniformInt = nullptr;
@@ -457,6 +487,7 @@ namespace
     GlBindTexture g_glBindTexture = nullptr;
     GlIsTexture g_glIsTexture = nullptr;
     GlGetIntegerv g_glGetIntegerv = nullptr;
+    GlGetDoublev g_glGetDoublev = nullptr;
     GlPixelStorei g_glPixelStorei = nullptr;
     GlTexParameteri g_glTexParameteri = nullptr;
     GlTexImage2D g_glTexImage2D = nullptr;
@@ -470,6 +501,16 @@ namespace
     SRWLOCK g_fullScreenShaderTextureLock = SRWLOCK_INIT;
     std::vector<FullScreenShaderTextureState> g_fullScreenShaderTextures;
     LONG volatile g_fullScreenShaderTextureSet = 0;
+    SRWLOCK g_fullScreenClipBoundsLock = SRWLOCK_INIT;
+    SRWLOCK g_fullScreenClipBoundsHookLock = SRWLOCK_INIT;
+    FullScreenClipBoundsState g_fullScreenClipBounds[
+        MaximumFullScreenClipBoundsChannels];
+    LONG volatile g_fullScreenClipBoundsActiveMask = 0;
+    LONG volatile g_fullScreenClipBoundsEverMask = 0;
+    thread_local int g_fullScreenClipBoundsProgramChannel = -1;
+    thread_local int g_fullScreenClipBoundsProgramChannelLocation = -1;
+    thread_local GlGetUniformfv g_fullScreenClipBoundsGetUniform = nullptr;
+    thread_local FullScreenClipBoundsCapture g_fullScreenClipBoundsCapture;
     std::mutex g_fullScreenShaderGlTextureLock;
     std::vector<FullScreenShaderGlTexture> g_fullScreenShaderGlTextures;
     std::mutex g_fullScreenShaderPixelPoolLock;
@@ -1860,6 +1901,17 @@ namespace
         return reinterpret_cast<GlActiveTexture>(address);
     }
 
+    GlGetUniformfv ResolveGlGetUniformfv()
+    {
+        if (g_wglGetProcAddress == nullptr)
+            return nullptr;
+        PROC address = g_wglGetProcAddress("glGetUniformfv");
+        const std::uintptr_t value = reinterpret_cast<std::uintptr_t>(address);
+        if (value <= 3 || value == static_cast<std::uintptr_t>(-1))
+            return nullptr;
+        return reinterpret_cast<GlGetUniformfv>(address);
+    }
+
     bool TryReadFullScreenShaderTextureName(
         const FullScreenShaderTexturePacket& packet, std::string& name)
     {
@@ -2250,6 +2302,337 @@ namespace
         }
     }
 
+    std::string FullScreenClipBoundsUniform(
+        const char* prefix, int channel)
+    {
+        return std::string(prefix) + std::to_string(channel);
+    }
+
+    std::uint32_t NextShaderSequence(std::uint32_t value)
+    {
+        return value >= 0x00FFFFFF ? 0 : value + 1;
+    }
+
+    void MultiplyMatrixVector(const double* matrix, const double* vector,
+        double* result)
+    {
+        for (int row = 0; row < 4; ++row)
+        {
+            result[row] = matrix[row] * vector[0] +
+                matrix[4 + row] * vector[1] +
+                matrix[8 + row] * vector[2] +
+                matrix[12 + row] * vector[3];
+        }
+    }
+
+    void PublishCapturedClipBounds(
+        const FullScreenClipBoundsCapture& capture)
+    {
+        if (capture.channel < 0 ||
+            capture.channel >= MaximumFullScreenClipBoundsChannels ||
+            capture.vertexCount < 3 || capture.viewport[2] <= 0 ||
+            capture.viewport[3] <= 0)
+            return;
+
+        double minimumX = DBL_MAX;
+        double minimumY = DBL_MAX;
+        double maximumX = -DBL_MAX;
+        double maximumY = -DBL_MAX;
+        for (int index = 0; index < capture.vertexCount; ++index)
+        {
+            const double vertex[] = {
+                capture.vertices[index][0], capture.vertices[index][1],
+                0.0, 1.0
+            };
+            double eye[4] = {};
+            double clip[4] = {};
+            MultiplyMatrixVector(capture.modelView, vertex, eye);
+            MultiplyMatrixVector(capture.projection, eye, clip);
+            if (clip[3] == 0.0)
+                return;
+            const double x = (clip[0] / clip[3] + 1.0) * 0.5;
+            const double y = (clip[1] / clip[3] + 1.0) * 0.5;
+            if (!std::isfinite(x) || !std::isfinite(y))
+                return;
+            minimumX = std::min(minimumX, x);
+            minimumY = std::min(minimumY, y);
+            maximumX = std::max(maximumX, x);
+            maximumY = std::max(maximumY, y);
+        }
+
+        const LONG bit = 1L << capture.channel;
+        if ((InterlockedCompareExchange(
+                &g_fullScreenClipBoundsActiveMask, 0, 0) & bit) == 0)
+            return;
+        AcquireSRWLockExclusive(&g_fullScreenClipBoundsLock);
+        FullScreenClipBoundsState& state =
+            g_fullScreenClipBounds[capture.channel];
+        state.bounds[0] = static_cast<float>(minimumX);
+        state.bounds[1] = static_cast<float>(minimumY);
+        state.bounds[2] = static_cast<float>(maximumX);
+        state.bounds[3] = static_cast<float>(maximumY);
+        state.targetSize[0] = static_cast<float>(capture.viewport[2]);
+        state.targetSize[1] = static_cast<float>(capture.viewport[3]);
+        state.sequence = NextShaderSequence(state.sequence);
+        state.captured = true;
+        ReleaseSRWLockExclusive(&g_fullScreenClipBoundsLock);
+    }
+
+    void APIENTRY CapturingGlBegin(unsigned int mode)
+    {
+        FullScreenClipBoundsCapture& capture =
+            g_fullScreenClipBoundsCapture;
+        capture.collecting = false;
+        int channel = g_fullScreenClipBoundsProgramChannel;
+        if (g_fullScreenClipBoundsProgramChannelLocation >= 0 &&
+            g_fullScreenClipBoundsGetUniform != nullptr &&
+            g_glGetIntegerv != nullptr)
+        {
+            constexpr unsigned int GlCurrentProgram = 0x8B8D;
+            int program = 0;
+            float selectedChannel = -1.0f;
+            g_glGetIntegerv(GlCurrentProgram, &program);
+            if (program > 0)
+            {
+                g_fullScreenClipBoundsGetUniform(
+                    static_cast<unsigned int>(program),
+                    g_fullScreenClipBoundsProgramChannelLocation,
+                    &selectedChannel);
+                if (std::isfinite(selectedChannel))
+                    channel = static_cast<int>(std::lround(selectedChannel));
+            }
+        }
+        const LONG mask = InterlockedCompareExchange(
+            &g_fullScreenClipBoundsActiveMask, 0, 0);
+        if (channel >= 0 && channel < MaximumFullScreenClipBoundsChannels &&
+            (mask & (1L << channel)) != 0 &&
+            g_glGetIntegerv != nullptr && g_glGetDoublev != nullptr)
+        {
+            constexpr unsigned int GlViewport = 0x0BA2;
+            constexpr unsigned int GlModelViewMatrix = 0x0BA6;
+            constexpr unsigned int GlProjectionMatrix = 0x0BA7;
+            capture.channel = channel;
+            capture.vertexCount = 0;
+            g_glGetIntegerv(GlViewport, capture.viewport);
+            g_glGetDoublev(GlModelViewMatrix, capture.modelView);
+            g_glGetDoublev(GlProjectionMatrix, capture.projection);
+            capture.collecting = capture.viewport[2] > 0 &&
+                capture.viewport[3] > 0;
+        }
+        const auto original = reinterpret_cast<GlBegin>(
+            InterlockedCompareExchangePointer(
+                &g_originalGlBegin, nullptr, nullptr));
+        if (original != nullptr)
+            original(mode);
+    }
+
+    void APIENTRY CapturingGlVertex2d(double x, double y)
+    {
+        FullScreenClipBoundsCapture& capture =
+            g_fullScreenClipBoundsCapture;
+        if (capture.collecting && capture.vertexCount <
+                static_cast<int>(_countof(capture.vertices)))
+        {
+            capture.vertices[capture.vertexCount][0] = x;
+            capture.vertices[capture.vertexCount][1] = y;
+            ++capture.vertexCount;
+        }
+        const auto original = reinterpret_cast<GlVertex2d>(
+            InterlockedCompareExchangePointer(
+                &g_originalGlVertex2d, nullptr, nullptr));
+        if (original != nullptr)
+            original(x, y);
+    }
+
+    void APIENTRY CapturingGlEnd()
+    {
+        const auto original = reinterpret_cast<GlEnd>(
+            InterlockedCompareExchangePointer(
+                &g_originalGlEnd, nullptr, nullptr));
+        if (original != nullptr)
+            original();
+        FullScreenClipBoundsCapture capture =
+            g_fullScreenClipBoundsCapture;
+        g_fullScreenClipBoundsCapture.collecting = false;
+        if (capture.collecting)
+            PublishCapturedClipBounds(capture);
+    }
+
+    HRESULT InstallFullScreenClipBoundsCaptureHook()
+    {
+        AcquireSRWLockExclusive(&g_fullScreenClipBoundsHookLock);
+        if (InterlockedCompareExchangePointer(
+                &g_originalGlBegin, nullptr, nullptr) != nullptr)
+        {
+            ReleaseSRWLockExclusive(&g_fullScreenClipBoundsHookLock);
+            return BridgeSuccess;
+        }
+        if (InterlockedCompareExchangePointer(
+                &g_originalQOpenGLShaderProgramBind,
+                nullptr, nullptr) == nullptr)
+        {
+            ReleaseSRWLockExclusive(&g_fullScreenClipBoundsHookLock);
+            return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+        }
+
+        const HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
+        void* begin = openGl == nullptr ? nullptr :
+            GetProcAddress(openGl, "glBegin");
+        void* end = openGl == nullptr ? nullptr :
+            GetProcAddress(openGl, "glEnd");
+        void* vertex2d = openGl == nullptr ? nullptr :
+            GetProcAddress(openGl, "glVertex2d");
+        g_glGetDoublev = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlGetDoublev>(GetProcAddress(
+                openGl, "glGetDoublev"));
+        if (begin == nullptr || end == nullptr || vertex2d == nullptr ||
+            g_glGetDoublev == nullptr || PinBridge() < 0)
+        {
+            ReleaseSRWLockExclusive(&g_fullScreenClipBoundsHookLock);
+            return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+        }
+
+        MH_STATUS status = MH_Initialize();
+        if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED)
+        {
+            ReleaseSRWLockExclusive(&g_fullScreenClipBoundsHookLock);
+            return E_FAIL;
+        }
+        void* originalBegin = nullptr;
+        void* originalEnd = nullptr;
+        void* originalVertex2d = nullptr;
+        status = MH_CreateHook(begin,
+            reinterpret_cast<void*>(&CapturingGlBegin), &originalBegin);
+        if (status == MH_OK)
+            status = MH_CreateHook(end,
+                reinterpret_cast<void*>(&CapturingGlEnd), &originalEnd);
+        if (status == MH_OK)
+            status = MH_CreateHook(vertex2d,
+                reinterpret_cast<void*>(&CapturingGlVertex2d),
+                &originalVertex2d);
+        if (status == MH_OK)
+        {
+            InterlockedExchangePointer(&g_originalGlBegin, originalBegin);
+            InterlockedExchangePointer(&g_originalGlEnd, originalEnd);
+            InterlockedExchangePointer(
+                &g_originalGlVertex2d, originalVertex2d);
+            status = MH_QueueEnableHook(begin);
+        }
+        if (status == MH_OK)
+            status = MH_QueueEnableHook(end);
+        if (status == MH_OK)
+            status = MH_QueueEnableHook(vertex2d);
+        if (status == MH_OK)
+            status = MH_ApplyQueued();
+        if (status != MH_OK)
+        {
+            MH_DisableHook(begin);
+            MH_DisableHook(end);
+            MH_DisableHook(vertex2d);
+            MH_RemoveHook(begin);
+            MH_RemoveHook(end);
+            MH_RemoveHook(vertex2d);
+            InterlockedExchangePointer(&g_originalGlBegin, nullptr);
+            InterlockedExchangePointer(&g_originalGlEnd, nullptr);
+            InterlockedExchangePointer(&g_originalGlVertex2d, nullptr);
+            g_glGetDoublev = nullptr;
+        }
+        ReleaseSRWLockExclusive(&g_fullScreenClipBoundsHookLock);
+        return status == MH_OK ? BridgeSuccess : E_FAIL;
+    }
+
+    void ApplyFullScreenClipBounds(void* program)
+    {
+        g_fullScreenClipBoundsProgramChannel = -1;
+        g_fullScreenClipBoundsProgramChannelLocation = -1;
+        g_fullScreenClipBoundsGetUniform = nullptr;
+        if (g_qOpenGLShaderUniformLocation == nullptr ||
+            g_qOpenGLShaderSetUniform1 == nullptr ||
+            g_qOpenGLShaderSetUniform2 == nullptr ||
+            g_qOpenGLShaderSetUniform4 == nullptr)
+            return;
+
+        const LONG activeMask = InterlockedCompareExchange(
+            &g_fullScreenClipBoundsActiveMask, 0, 0);
+        const LONG everMask = InterlockedCompareExchange(
+            &g_fullScreenClipBoundsEverMask, 0, 0);
+        if ((activeMask & everMask) != 0)
+        {
+            const int channelLocation = g_qOpenGLShaderUniformLocation(
+                program, "u_QuickPlayerCaptureClipBoundsChannel");
+            if (channelLocation >= 0)
+            {
+                g_fullScreenClipBoundsProgramChannelLocation =
+                    channelLocation;
+                g_fullScreenClipBoundsGetUniform = ResolveGlGetUniformfv();
+            }
+        }
+        for (int channel = 0;
+            channel < MaximumFullScreenClipBoundsChannels; ++channel)
+        {
+            const LONG bit = 1L << channel;
+            if ((everMask & bit) == 0)
+                continue;
+            const bool active = (activeMask & bit) != 0;
+            const std::string captureName = FullScreenClipBoundsUniform(
+                "u_QuickPlayerCaptureClipBounds", channel);
+            const int captureLocation =
+                g_qOpenGLShaderUniformLocation(
+                    program, captureName.c_str());
+            if (captureLocation >= 0)
+            {
+                g_qOpenGLShaderSetUniform1(program, captureLocation,
+                    active ? 1.0f : 0.0f);
+                if (active && g_fullScreenClipBoundsProgramChannel < 0)
+                    g_fullScreenClipBoundsProgramChannel = channel;
+            }
+
+            FullScreenClipBoundsState state;
+            AcquireSRWLockShared(&g_fullScreenClipBoundsLock);
+            state = g_fullScreenClipBounds[channel];
+            ReleaseSRWLockShared(&g_fullScreenClipBoundsLock);
+            const bool available = active && state.captured;
+            const std::string enabledName = FullScreenClipBoundsUniform(
+                "u_QuickPlayerClipBoundsEnabled", channel);
+            const int enabledLocation =
+                g_qOpenGLShaderUniformLocation(
+                    program, enabledName.c_str());
+            if (enabledLocation >= 0)
+                g_qOpenGLShaderSetUniform1(program, enabledLocation,
+                    available ? 1.0f : 0.0f);
+
+            const std::string boundsName = FullScreenClipBoundsUniform(
+                "u_QuickPlayerClipBounds", channel);
+            const int boundsLocation =
+                g_qOpenGLShaderUniformLocation(
+                    program, boundsName.c_str());
+            if (boundsLocation >= 0)
+                g_qOpenGLShaderSetUniform4(program, boundsLocation,
+                    available ? state.bounds[0] : 0.0f,
+                    available ? state.bounds[1] : 0.0f,
+                    available ? state.bounds[2] : 0.0f,
+                    available ? state.bounds[3] : 0.0f);
+
+            const std::string sizeName = FullScreenClipBoundsUniform(
+                "u_QuickPlayerClipTargetSize", channel);
+            const int sizeLocation =
+                g_qOpenGLShaderUniformLocation(program, sizeName.c_str());
+            if (sizeLocation >= 0)
+                g_qOpenGLShaderSetUniform2(program, sizeLocation,
+                    available ? state.targetSize[0] : 0.0f,
+                    available ? state.targetSize[1] : 0.0f);
+
+            const std::string sequenceName = FullScreenClipBoundsUniform(
+                "u_QuickPlayerClipBoundsSequence", channel);
+            const int sequenceLocation =
+                g_qOpenGLShaderUniformLocation(
+                    program, sequenceName.c_str());
+            if (sequenceLocation >= 0)
+                g_qOpenGLShaderSetUniform1(program, sequenceLocation,
+                    static_cast<float>(state.sequence));
+        }
+    }
+
     bool __fastcall CapturingQOpenGLShaderProgramBind(void* program)
     {
         const auto original = reinterpret_cast<QOpenGLShaderProgramBind>(
@@ -2287,6 +2670,7 @@ namespace
             }
         }
         ApplyFullScreenShaderTexture(program);
+        ApplyFullScreenClipBounds(program);
         return bound;
     }
 
@@ -10553,6 +10937,60 @@ IStripperStartFullscreenHook()
     if (hook >= 0)
         PublishFullScreenState(true);
     return hook;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperStartFullscreenShaderClipBounds(SIZE_T channel)
+{
+    __try
+    {
+        if (channel >= MaximumFullScreenClipBoundsChannels)
+            return E_INVALIDARG;
+        const HRESULT hook = InstallFullScreenClipBoundsCaptureHook();
+        if (hook < 0)
+            return hook;
+        const LONG bit = 1L << static_cast<LONG>(channel);
+        AcquireSRWLockExclusive(&g_fullScreenClipBoundsLock);
+        FullScreenClipBoundsState& state =
+            g_fullScreenClipBounds[channel];
+        const std::uint32_t sequence =
+            NextShaderSequence(state.sequence);
+        state = {};
+        state.sequence = sequence;
+        ReleaseSRWLockExclusive(&g_fullScreenClipBoundsLock);
+        InterlockedOr(&g_fullScreenClipBoundsEverMask, bit);
+        InterlockedOr(&g_fullScreenClipBoundsActiveMask, bit);
+        return BridgeSuccess;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperStopFullscreenShaderClipBounds(SIZE_T channel)
+{
+    __try
+    {
+        if (channel >= MaximumFullScreenClipBoundsChannels)
+            return E_INVALIDARG;
+        const LONG bit = 1L << static_cast<LONG>(channel);
+        InterlockedAnd(&g_fullScreenClipBoundsActiveMask, ~bit);
+        AcquireSRWLockExclusive(&g_fullScreenClipBoundsLock);
+        FullScreenClipBoundsState& state =
+            g_fullScreenClipBounds[channel];
+        const std::uint32_t sequence =
+            NextShaderSequence(state.sequence);
+        state = {};
+        state.sequence = sequence;
+        ReleaseSRWLockExclusive(&g_fullScreenClipBoundsLock);
+        return BridgeSuccess;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return E_UNEXPECTED;
+    }
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

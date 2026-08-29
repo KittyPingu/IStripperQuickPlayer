@@ -125,6 +125,8 @@ Calls are synchronous because `Open` uses `false`. Change the port in
 | `GET` | `/api/v1/fullscreen` | Get active fullscreen clips and iStripper's observed next queue. |
 | `GET` | `/api/v1/fullscreen/shader-data` | Read the current external fullscreen shader values and sequence. |
 | `PUT` | `/api/v1/fullscreen/shader-data` | Publish four external values to fullscreen shaders. |
+| `POST` | `/api/v1/fullscreen/shader-clip-bounds/{channel}` | Capture a marked clip sprite and publish its bounds to scene shaders. |
+| `DELETE` | `/api/v1/fullscreen/shader-clip-bounds/{channel}` | Stop one clip-bounds capture channel and clear its shader values. |
 | `GET` | `/api/v1/fullscreen/shader-texture` | Read the current external shader texture metadata. |
 | `PUT` | `/api/v1/fullscreen/shader-texture` | Publish a PNG, JPEG, or raw RGBA8 texture to fullscreen shaders. |
 | `GET` | `/api/v1/fullscreen/shader-texture/shared-memory` | Discover the optional local shared-memory texture channel. |
@@ -437,6 +439,60 @@ The endpoint is a latest-value register, not a queue. If several updates are
 sent between rendered frames, the shader may observe only the newest one. For
 guaranteed command delivery, wait for the shader to return the observed
 sequence through an acknowledgment channel before sending the next command.
+
+### Clip bounds uniforms
+
+QuickPlayer can capture the rendered quad of a marked clip shader and publish
+its bounds to later scene shaders. Eight independent channels, numbered 0
+through 7, are available.
+
+The shader attached to each clip sprite declares one channel selector. The
+scene sets it to an integer from 0 through 7, matching the REST channel:
+
+```glsl
+uniform float u_QuickPlayerCaptureClipBoundsChannel;
+
+// Keep the selector active without changing normal output.
+if (u_QuickPlayerCaptureClipBoundsChannel < -1.5)
+    discard;
+```
+
+The same shader program can serve several clip sprites; assign a different
+selector value to each sprite. A value of `-1` disables capture for that draw.
+
+Enable capture for channel 0:
+
+```powershell
+Invoke-RestMethod `
+  http://127.0.0.1:17871/api/v1/fullscreen/shader-clip-bounds/0 `
+  -Method Post -Headers $headers
+```
+
+A later scene shader can consume the captured rectangle:
+
+```glsl
+uniform float u_QuickPlayerClipBoundsEnabled0;
+uniform vec4 u_QuickPlayerClipBounds0;
+uniform vec2 u_QuickPlayerClipTargetSize0;
+uniform float u_QuickPlayerClipBoundsSequence0;
+```
+
+`u_QuickPlayerClipBounds0` is `(minimumX, minimumY, maximumX, maximumY)`
+normalized to the OpenGL viewport in which the marked sprite was drawn. Its
+origin is the viewport's bottom-left. `u_QuickPlayerClipTargetSize0` contains
+that viewport's pixel width and height. Enabled remains zero until the first
+quad has been captured.
+
+Stop capture and clear the published values:
+
+```powershell
+Invoke-RestMethod `
+  http://127.0.0.1:17871/api/v1/fullscreen/shader-clip-bounds/0 `
+  -Method Delete -Headers $headers
+```
+
+If several sprites select the same channel, the last quad drawn on that channel
+becomes the published value.
 
 ### External shader texture
 
