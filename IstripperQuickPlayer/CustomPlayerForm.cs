@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using Vortice.D3DCompiler;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
@@ -23,6 +24,9 @@ internal sealed class CustomPlayerForm : Form
         WmRightButtonDown = 0x204, WmRightButtonUp = 0x205,
         WmMiddleButtonDown = 0x207, WmMiddleButtonUp = 0x208,
         WmMouseWheel = 0x20A, WmXButtonDown = 0x20B, WmXButtonUp = 0x20C,
+        WmDisplayChange = 0x7E, WmPowerBroadcast = 0x218,
+        WmDpiChanged = 0x2E0, PbtApmResumeCritical = 0x6,
+        PbtApmResumeSuspend = 0x7, PbtApmResumeAutomatic = 0x12,
         WmEnterSizeMove = 0x231, WmExitSizeMove = 0x232,
         HtTransparent = -1, HtClient = 1, HtCaption = 2,
         WhMouseLl = 14, HcAction = 0, VkControl = 0x11;
@@ -64,7 +68,8 @@ internal sealed class CustomPlayerForm : Form
         allowWheelWhileLocked;
     bool? mouseTransparent;
     bool movingWindow;
-    int pointerRefreshPending;
+    bool systemEventsSubscribed;
+    int pointerRefreshPending, displayRecoveryPending;
     int visualRefreshPending;
     bool windowConfigured;
     bool preloadRequested;
@@ -172,11 +177,13 @@ internal sealed class CustomPlayerForm : Form
         SetStyle(ControlStyles.Opaque, true);
         Shown += (_, _) =>
         {
+            SubscribeSystemEvents();
             UpdateGlobalWheelHook();
             playbackTask = Task.Run(PlayAsync);
         };
         FormClosed += (_, _) =>
         {
+            UnsubscribeSystemEvents();
             ReleaseGlobalWheelHook();
             cancellation.Cancel();
             settleTimer.Dispose();
@@ -775,6 +782,99 @@ internal sealed class CustomPlayerForm : Form
         }
     }
 
+    static void ReinstallGlobalMouseHook()
+    {
+        lock (globalMouseSync)
+        {
+            if (globalWheelHook != IntPtr.Zero)
+                UnhookWindowsHookEx(globalWheelHook);
+            globalWheelHook = globalMousePlayers.Any(player =>
+                    player.IsHandleCreated && player.Visible &&
+                    !player.IsDisposed)
+                ? SetWindowsHookEx(WhMouseLl, globalWheelProc,
+                    GetModuleHandle(null), 0)
+                : IntPtr.Zero;
+        }
+    }
+
+    void SubscribeSystemEvents()
+    {
+        if (systemEventsSubscribed) return;
+        try
+        {
+            SystemEvents.DisplaySettingsChanged += SystemDisplaySettingsChanged;
+            SystemEvents.PowerModeChanged += SystemPowerModeChanged;
+            SystemEvents.SessionSwitch += SystemSessionSwitch;
+            systemEventsSubscribed = true;
+        }
+        catch
+        {
+            SystemEvents.DisplaySettingsChanged -= SystemDisplaySettingsChanged;
+            SystemEvents.PowerModeChanged -= SystemPowerModeChanged;
+            SystemEvents.SessionSwitch -= SystemSessionSwitch;
+        }
+    }
+
+    void UnsubscribeSystemEvents()
+    {
+        if (!systemEventsSubscribed) return;
+        SystemEvents.DisplaySettingsChanged -= SystemDisplaySettingsChanged;
+        SystemEvents.PowerModeChanged -= SystemPowerModeChanged;
+        SystemEvents.SessionSwitch -= SystemSessionSwitch;
+        systemEventsSubscribed = false;
+    }
+
+    void SystemDisplaySettingsChanged(object? sender, EventArgs e) =>
+        QueueDisplayRecovery();
+
+    void SystemPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume) QueueDisplayRecovery();
+    }
+
+    void SystemSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason == SessionSwitchReason.SessionUnlock)
+            QueueDisplayRecovery();
+    }
+
+    void QueueDisplayRecovery()
+    {
+        if (!IsHandleCreated || IsDisposed ||
+            Interlocked.Exchange(ref displayRecoveryPending, 1) != 0) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                Interlocked.Exchange(ref displayRecoveryPending, 0);
+                RecoverAfterDisplayChange();
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref displayRecoveryPending, 0);
+        }
+    }
+
+    void RecoverAfterDisplayChange()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        ReinstallGlobalMouseHook();
+        mouseTransparent = null;
+        UpdateMouseTransparency();
+        SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0,
+            0x1 | 0x2 | 0x4 | 0x10 | 0x20);
+        if (renderer != null && ClientSize.Width > 0 && ClientSize.Height > 0)
+            try { renderer.ResizeOutput(ClientSize.Width, ClientSize.Height); }
+            catch (Exception error)
+            {
+                Debug.WriteLine("Could not resize the custom player after a " +
+                    "display change: " + error.Message);
+            }
+        RequestVisualRefresh();
+        QueuePointerTransparencyRefresh();
+    }
+
     void ReleaseGlobalWheelHook()
     {
         lock (globalMouseSync)
@@ -931,6 +1031,10 @@ internal sealed class CustomPlayerForm : Form
 
     protected override void WndProc(ref Message message)
     {
+        bool recoverDisplay = message.Msg is WmDisplayChange or WmDpiChanged ||
+            message.Msg == WmPowerBroadcast && message.WParam.ToInt32() is
+                PbtApmResumeCritical or PbtApmResumeSuspend or
+                PbtApmResumeAutomatic;
         if (message.Msg == WmNcHitTest)
         {
             long coordinates = message.LParam.ToInt64();
@@ -965,6 +1069,7 @@ internal sealed class CustomPlayerForm : Form
             StartSettle();
         }
         base.WndProc(ref message);
+        if (recoverDisplay) QueueDisplayRecovery();
     }
 
     internal static bool VerifyHitTesting() =>
