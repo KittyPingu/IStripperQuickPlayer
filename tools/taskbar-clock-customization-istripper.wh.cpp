@@ -119,9 +119,9 @@ patterns can be used:
     It's recommended to use this field on the taskbar, and other fields in the
     tooltip.
 * `%media%` - shorthand for `%media_info%`.
-* `%istripper%` - the current iStripper QuickPlayer item as "Model: Show" for
-  both native and custom shows. Falls back to `%media%` when QuickPlayer has no
-  current show or its local REST API is unavailable.
+* `%istripper%` - `%media%` while a playing or paused media session has useful
+  metadata, otherwise the current iStripper QuickPlayer item as "Model: Show"
+  for native and custom shows.
 * `%weather%` - Weather information, powered by [wttr.in](https://wttr.in/),
   using the location and format configured in settings.
 * `%web<n>%` - the web contents as configured in settings, truncated with
@@ -790,6 +790,7 @@ winrt::event_token g_mediaPropertiesChangedToken;
 winrt::event_token g_mediaPlaybackChangedToken;
 
 bool g_mediaActive = false;
+bool g_mediaPlayingOrPaused = false;
 
 // Set while %media_info% expands its format string, to keep a stray
 // %media_info% tag inside that format from recursing into itself.
@@ -2756,10 +2757,33 @@ std::wstring RemoveBracketsFromString(std::wstring_view input) {
 
 void ClearMediaFormattedStrings() {
     g_mediaActive = false;
+    g_mediaPlayingOrPaused = false;
     wcscpy_s(g_mediaTitleFormatted.buffer, L"");
     wcscpy_s(g_mediaArtistFormatted.buffer, L"");
     wcscpy_s(g_mediaAlbumFormatted.buffer, L"");
     wcscpy_s(g_mediaStatusFormatted.buffer, L"");
+}
+
+bool IsUsefulPlayingMediaSession(
+    const winrt::Windows::Media::Control::
+        GlobalSystemMediaTransportControlsSession& session) {
+    auto status = session.GetPlaybackInfo().PlaybackStatus();
+    using Status = winrt::Windows::Media::Control::
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus;
+    if (status != Status::Playing && status != Status::Paused) {
+        return false;
+    }
+
+    auto properties = session.TryGetMediaPropertiesAsync().get();
+    if (!properties) {
+        return false;
+    }
+
+    auto title = properties.Title();
+    return !(title.size() >= 5 &&
+             _wcsnicmp(title.c_str(), L"data:", 5) == 0) &&
+           (!title.empty() || !properties.Artist().empty() ||
+            !properties.AlbumTitle().empty());
 }
 
 winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession
@@ -2768,22 +2792,22 @@ FindActiveMediaSession() {
         return nullptr;
     }
 
-    // First try the current session
+    // Prefer the current session only when it contains useful playing media.
     auto currentSession = g_mediaSessionManager.GetCurrentSession();
     if (currentSession) {
         try {
             auto appId = currentSession.SourceAppUserModelId();
-            if (!IsMediaPlayerIgnored(appId)) {
+            if (!IsMediaPlayerIgnored(appId) &&
+                IsUsefulPlayingMediaSession(currentSession)) {
                 return currentSession;
             }
         } catch (...) {
             HRESULT hr = winrt::to_hresult();
-            Wh_Log(L"Failed to get app ID for current session: %08X", hr);
-            return currentSession;
+            Wh_Log(L"Failed to query current media session: %08X", hr);
         }
     }
 
-    // If current session is ignored or null, search for an alternative
+    // Search every session so a previously dormant player can take priority.
     try {
         auto sessions = g_mediaSessionManager.GetSessions();
         for (uint32_t i = 0; i < sessions.Size(); i++) {
@@ -2794,13 +2818,7 @@ FindActiveMediaSession() {
                     continue;
                 }
 
-                auto playbackInfo = session.GetPlaybackInfo();
-                auto status = playbackInfo.PlaybackStatus();
-
-                // Prefer playing or paused sessions
-                using Status = winrt::Windows::Media::Control::
-                    GlobalSystemMediaTransportControlsSessionPlaybackStatus;
-                if (status == Status::Playing || status == Status::Paused) {
+                if (IsUsefulPlayingMediaSession(session)) {
                     return session;
                 }
             } catch (...) {
@@ -2810,7 +2828,19 @@ FindActiveMediaSession() {
             }
         }
 
-        // If no active session found, return first non-ignored one
+        // Preserve the original %media% stopped-session behavior.
+        if (currentSession) {
+            try {
+                if (!IsMediaPlayerIgnored(
+                        currentSession.SourceAppUserModelId())) {
+                    return currentSession;
+                }
+            } catch (...) {
+                return currentSession;
+            }
+        }
+
+        // If no active session was found, return the first non-ignored one.
         for (uint32_t i = 0; i < sessions.Size(); i++) {
             auto session = sessions.GetAt(i);
             try {
@@ -2861,6 +2891,8 @@ void RefreshMediaData() {
         auto status = playbackInfo.PlaybackStatus();
         using Status = winrt::Windows::Media::Control::
             GlobalSystemMediaTransportControlsSessionPlaybackStatus;
+        g_mediaPlayingOrPaused =
+            status == Status::Playing || status == Status::Paused;
 
         switch (status) {
             case Status::Playing:
@@ -2975,7 +3007,8 @@ bool IsMediaPatternUsed() {
            IsStrInDateTimePatternSettings(L"%media_artist%") ||
            IsStrInDateTimePatternSettings(L"%media_album%") ||
            IsStrInDateTimePatternSettings(L"%media_status%") ||
-           IsStrInDateTimePatternSettings(L"%media_info%");
+           IsStrInDateTimePatternSettings(L"%media_info%") ||
+           IsStrInDateTimePatternSettings(L"%istripper%");
 }
 
 void UnsubscribeFromMediaSession() {
@@ -3839,6 +3872,7 @@ void UpdateIStripperQuickPlayer() {
 
     std::lock_guard<std::mutex> guard(g_iStripperMutex);
     g_iStripperFormatted = std::move(formatted);
+    g_mediaDataDirty = true;
 }
 
 DWORD WINAPI IStripperUpdateThread(LPVOID) {
@@ -3880,12 +3914,22 @@ void IStripperUpdateThreadUninit() {
 }
 
 PCWSTR GetIStripperFormatted() {
+    PCWSTR media = GetMediaInfoFormatted();
+    PCWSTR title = g_mediaTitleFormatted.buffer;
+    bool usefulMetadata =
+        _wcsnicmp(title, L"data:", 5) != 0 &&
+        (*title || *g_mediaArtistFormatted.buffer ||
+         *g_mediaAlbumFormatted.buffer);
+    if (g_mediaPlayingOrPaused && usefulMetadata && *media) {
+        return media;
+    }
+
     static thread_local std::wstring snapshot;
     {
         std::lock_guard<std::mutex> guard(g_iStripperMutex);
         snapshot = g_iStripperFormatted;
     }
-    return snapshot.empty() ? GetMediaInfoFormatted() : snapshot.c_str();
+    return snapshot.c_str();
 }
 
 int ResolveFormatTokenWithDigit(std::wstring_view format,
@@ -4233,7 +4277,8 @@ void ClockSystemTrayIconDataModel_RefreshIcon_Hook_Impl(
     g_refreshIconThreadId = GetCurrentThreadId();
     bool webContentPending = g_webContentUpdateThread && !g_webContentLoaded;
     g_refreshIconNeedToAdjustTimer =
-        g_settings.showSeconds || g_dataCollectionSession || webContentPending;
+        g_settings.showSeconds || g_dataCollectionSession || webContentPending ||
+        g_iStripperUpdateThread;
 
     original(pThis, param1);
 
@@ -5058,7 +5103,7 @@ ClockButton_UpdateTextStringsIfNecessary_Hook(LPVOID pThis, bool* param1) {
 
     bool webContentPending = g_webContentUpdateThread && !g_webContentLoaded;
     if (g_settings.showSeconds || g_dataCollectionSession ||
-        webContentPending) {
+        webContentPending || g_iStripperUpdateThread) {
         // Return the time-out value for the time of the next update.
         SYSTEMTIME time;
         GetLocalTime(&time);
