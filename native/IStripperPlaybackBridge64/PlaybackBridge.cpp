@@ -3047,7 +3047,7 @@ namespace
             empty, empty, empty, empty, empty) ? BridgeSuccess : E_FAIL;
     }
 
-    HRESULT InvokeDesktopNext()
+    HRESULT InvokeDesktopActorAction(const char* method)
     {
         const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
         using QObjectChildren = const void*(__fastcall*)(const void*);
@@ -3078,7 +3078,7 @@ namespace
             void* object = objects[index];
             if (object != live && qt.inherits(object, "LiveActor"))
             {
-                return qt.invoke(object, "doNext", empty, empty, empty,
+                return qt.invoke(object, method, empty, empty, empty,
                     empty, empty, empty, empty, empty, empty, empty)
                     ? BridgeSuccess : E_FAIL;
             }
@@ -3090,6 +3090,11 @@ namespace
                     childObjects.end());
         }
         return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    }
+
+    HRESULT InvokeDesktopNext()
+    {
+        return InvokeDesktopActorAction("doNext");
     }
 
     HRESULT DumpFullScreenObjectTree()
@@ -4299,28 +4304,7 @@ namespace
             return BridgeSuccess;
         }
 
-        HWND window = nullptr;
-        EnumWindows(&FindVisibleMovieWindow,
-            reinterpret_cast<LPARAM>(&window));
-        if (window == nullptr)
-        {
-            return BridgeSuccess;
-        }
-
-        RECT client = {};
-        if (!GetClientRect(window, &client))
-        {
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-        const LPARAM point = MAKELPARAM(
-            (client.right - client.left) / 2,
-            (client.bottom - client.top) / 2);
-        if (!PostMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, point) ||
-            !PostMessageW(window, WM_LBUTTONUP, 0, point))
-        {
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-        return BridgeSuccess;
+        return InvokeDesktopActorAction(large ? "doLarge" : "doSmall");
     }
 
     bool IsReadable(const void* address, std::size_t length)
@@ -11308,7 +11292,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 94;
+    return 96;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

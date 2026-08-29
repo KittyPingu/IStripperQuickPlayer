@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 94;
+        private const int PlaybackBridgeVersion = 96;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -286,22 +286,22 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.ToggleLockEnabled) this.BeginInvoke((Action)(() => { lockPlayerToolStripMenuItem.Checked = !lockPlayerToolStripMenuItem.Checked; setPlayerLocked(); }));
         }
 
-        private void actPause()
+        private async void actPause()
         {
             if (Properties.Settings.Default.PauseHotkeyEnabled)
-                cmdPlayPause.PerformClick();
+                await TogglePlaybackPauseAsync();
         }
 
-        private void actRewind()
+        private async void actRewind()
         {
             if (Properties.Settings.Default.RewindHotkeyEnabled)
-                cmdRewind.PerformClick();
+                await SeekPlaybackRelativeAsync(-0.1);
         }
 
-        private void actFastForward()
+        private async void actFastForward()
         {
             if (Properties.Settings.Default.FastForwardHotkeyEnabled)
-                cmdFastForward.PerformClick();
+                await SeekPlaybackRelativeAsync(0.1);
         }
 
         private async void actRestartClip()
@@ -3098,22 +3098,22 @@ namespace IStripperQuickPlayer
                         actToggleLock();
                         return;
                     case PauseHotkeyId:
-                        actPause();
+                        PostPlayerHotkey(actPause);
                         return;
                     case RewindHotkeyId:
-                        actRewind();
+                        PostPlayerHotkey(actRewind);
                         return;
                     case FastForwardHotkeyId:
-                        actFastForward();
+                        PostPlayerHotkey(actFastForward);
                         return;
                     case RestartClipHotkeyId:
-                        actRestartClip();
+                        PostPlayerHotkey(actRestartClip);
                         return;
                     case LargePlayerHotkeyId:
-                        actSetPlayerLarge(true);
+                        PostPlayerHotkey(() => actSetPlayerLarge(true));
                         return;
                     case SmallPlayerHotkeyId:
-                        actSetPlayerLarge(false);
+                        PostPlayerHotkey(() => actSetPlayerLarge(false));
                         return;
                     case NowPlayingInfoHotkeyId:
                         actNowPlayingInfo();
@@ -3133,6 +3133,12 @@ namespace IStripperQuickPlayer
             {
                 Invalidate(true);
             }
+        }
+
+        private void PostPlayerHotkey(Action action)
+        {
+            if (!formIsClosing && IsHandleCreated && !IsDisposed)
+                BeginInvoke(action);
         }
 
         System.Threading.Timer? timerhook;
@@ -3717,7 +3723,7 @@ namespace IStripperQuickPlayer
             RequirePlaybackResult("IStripperSetPlayRate", bits);
         }
 
-        private async void cmdPlayPause_Click(object sender, EventArgs e)
+        private async Task TogglePlaybackPauseAsync()
         {
             if (customPlayer != null)
             {
@@ -3748,17 +3754,25 @@ namespace IStripperQuickPlayer
             }, prepareFastDecode: false);
         }
 
-        private async void cmdRewind_Click(object sender, EventArgs e)
+        private async void cmdPlayPause_Click(object sender, EventArgs e) =>
+            await TogglePlaybackPauseAsync();
+
+        private async Task SeekPlaybackRelativeAsync(double fraction)
         {
-            if (customPlayer != null) { customPlayer.SeekBy(-customPlayer.DurationSeconds * .1); return; }
-            await RunPlaybackOperationAsync(token => SeekRelativeAsync(-0.1, token));
+            if (customPlayer != null)
+            {
+                customPlayer.SeekBy(customPlayer.DurationSeconds * fraction);
+                return;
+            }
+            await RunPlaybackOperationAsync(token =>
+                SeekRelativeAsync(fraction, token));
         }
 
+        private async void cmdRewind_Click(object sender, EventArgs e) =>
+            await SeekPlaybackRelativeAsync(-0.1);
+
         private async void cmdFastForward_Click(object sender, EventArgs e)
-        {
-            if (customPlayer != null) { customPlayer.SeekBy(customPlayer.DurationSeconds * .1); return; }
-            await RunPlaybackOperationAsync(token => SeekRelativeAsync(0.1, token));
-        }
+            => await SeekPlaybackRelativeAsync(0.1);
 
         private async void cmbPlaybackSpeed_SelectedIndexChanged(object sender, EventArgs e)
         {
