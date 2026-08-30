@@ -75,6 +75,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="BridgeIpc.cpp" />
+    <ClCompile Include="OpenGlHdr.cpp" />
     <ClCompile Include="PlaybackBridge.cpp" />
     <ClCompile Include="..\..\third_party\minhook\src\buffer.c">
       <DisableSpecificWarnings>4201;%(DisableSpecificWarnings)</DisableSpecificWarnings>

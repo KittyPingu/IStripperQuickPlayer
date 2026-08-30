@@ -938,6 +938,18 @@ namespace IStripperQuickPlayer.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool EnableIStripperRtxHdr {
+            get {
+                return ((bool)(this["EnableIStripperRtxHdr"]));
+            }
+            set {
+                this["EnableIStripperRtxHdr"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool AllowWheelWhileLocked {
             get {
                 return ((bool)(this["AllowWheelWhileLocked"]));

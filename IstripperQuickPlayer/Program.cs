@@ -1127,6 +1127,8 @@ namespace IStripperQuickPlayer
                     "Pass mouse input through locked animation windows to apps behind them.",
                 ["Resize player with mouse wheel"] =
                     "Resize an animation by scrolling while the pointer is over it.",
+                ["NVIDIA RTX HDR for iStripper (experimental)"] =
+                    "Apply NVIDIA TrueHDR to iStripper's transparent show video layer.",
                 ["Library & search"] =
                     "Configure card display and searchable library fields.",
                 ["Appearance"] =

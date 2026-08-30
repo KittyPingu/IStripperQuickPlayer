@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include "BridgeIpc.h"
+#include "OpenGlHdr.h"
 #include <MinHook.h>
 #include <TlHelp32.h>
 #include <dwmapi.h>
@@ -313,6 +314,7 @@ namespace
         void* program, int location, float x, float y, float z, float w);
 
     using WglGetCurrentContext = HGLRC(WINAPI*)();
+    using WglGetCurrentDc = HDC(WINAPI*)();
     using WglGetProcAddress = PROC(WINAPI*)(LPCSTR);
     using GlActiveTexture = void(APIENTRY*)(unsigned int texture);
     using GlBegin = void(APIENTRY*)(unsigned int mode);
@@ -335,6 +337,376 @@ namespace
     using GlTexSubImage2D = void(APIENTRY*)(unsigned int target, int level,
         int x, int y, int width, int height, unsigned int format,
         unsigned int type, const void* pixels);
+    using GlGetProgramiv = void(APIENTRY*)(unsigned int program,
+        unsigned int name, int* value);
+    using GlGetActiveUniform = void(APIENTRY*)(unsigned int program,
+        unsigned int index, int capacity, int* length, int* size,
+        unsigned int* type, char* name);
+    using GlGetUniformLocation = int(APIENTRY*)(unsigned int program,
+        const char* name);
+    using GlGetUniformiv = void(APIENTRY*)(unsigned int program, int location,
+        int* values);
+    using GlActiveTexture = void(APIENTRY*)(unsigned int texture);
+    using GlGetTexLevelParameteriv = void(APIENTRY*)(unsigned int target,
+        int level, unsigned int name, int* value);
+    using GlGetFloatv = void(APIENTRY*)(unsigned int name, float* values);
+    using GlGetBooleanv = void(APIENTRY*)(unsigned int name,
+        unsigned char* values);
+    using GlIsEnabled = unsigned char(APIENTRY*)(unsigned int capability);
+    using GlEnableDisable = void(APIENTRY*)(unsigned int capability);
+    using GlClearColor = void(APIENTRY*)(float red, float green, float blue,
+        float alpha);
+    using GlColorMask = void(APIENTRY*)(unsigned char red,
+        unsigned char green, unsigned char blue, unsigned char alpha);
+    using GlClear = void(APIENTRY*)(unsigned int mask);
+    using QOpenGLFunctionsBindTexture = void(__fastcall*)(void* functions,
+        unsigned int target, unsigned int texture);
+    using QOpenGLFunctionsDrawElements = void(__fastcall*)(void* functions,
+        unsigned int mode, int count, unsigned int type, const void* indices);
+    using QOpenGLFunctionsDrawArrays = void(__fastcall*)(void* functions,
+        unsigned int mode, int first, int count);
+    using SwapBuffersAction = BOOL(WINAPI*)(HDC deviceContext);
+
+    PVOID g_swapBuffersTarget = nullptr;
+    PVOID g_originalSwapBuffers = nullptr;
+    volatile LONG g_openGlPresentProbeEnabled = 0;
+    volatile LONG g_openGlPresentProbeInstalled = 0;
+    volatile LONG g_openGlHdrReleasePending = 0;
+    volatile LONG g_openGlPresentCount = 0;
+    SRWLOCK g_openGlPresentWindowsLock = SRWLOCK_INIT;
+    HWND g_openGlPresentWindows[32] = {};
+    LONG g_openGlPresentWindowCount = 0;
+    bool IsMovieWindow(HWND window);
+    SRWLOCK g_movieShaderProbeLock = SRWLOCK_INIT;
+    unsigned int g_movieShaderPrograms[64] = {};
+    LONG g_movieShaderProgramCount = 0;
+    PVOID volatile g_originalGlBindTexture = nullptr;
+    PVOID volatile g_originalQOpenGLFunctionsBindTexture = nullptr;
+    PVOID volatile g_originalQOpenGLFunctionsDrawElements = nullptr;
+    PVOID volatile g_originalQOpenGLFunctionsDrawArrays = nullptr;
+    unsigned int g_movieTextures[128] = {};
+    LONG g_movieTextureCount = 0;
+
+    void ClearCurrentOpenGlShowSurface(HMODULE openGl)
+    {
+        if (!openGl) return;
+        auto getFloat = reinterpret_cast<GlGetFloatv>(
+            GetProcAddress(openGl, "glGetFloatv"));
+        auto getBoolean = reinterpret_cast<GlGetBooleanv>(
+            GetProcAddress(openGl, "glGetBooleanv"));
+        auto isEnabled = reinterpret_cast<GlIsEnabled>(
+            GetProcAddress(openGl, "glIsEnabled"));
+        auto disable = reinterpret_cast<GlEnableDisable>(
+            GetProcAddress(openGl, "glDisable"));
+        auto enable = reinterpret_cast<GlEnableDisable>(
+            GetProcAddress(openGl, "glEnable"));
+        auto clearColor = reinterpret_cast<GlClearColor>(
+            GetProcAddress(openGl, "glClearColor"));
+        auto colorMask = reinterpret_cast<GlColorMask>(
+            GetProcAddress(openGl, "glColorMask"));
+        auto clear = reinterpret_cast<GlClear>(
+            GetProcAddress(openGl, "glClear"));
+        if (!getFloat || !getBoolean || !isEnabled || !disable || !enable ||
+            !clearColor || !colorMask || !clear) return;
+
+        constexpr unsigned int ColorClearValue = 0x0C22;
+        constexpr unsigned int ColorWriteMask = 0x0C23;
+        constexpr unsigned int ScissorTest = 0x0C11;
+        constexpr unsigned int ColorBufferBit = 0x00004000;
+        float previousClear[4] = {};
+        unsigned char previousMask[4] = {};
+        getFloat(ColorClearValue, previousClear);
+        getBoolean(ColorWriteMask, previousMask);
+        const bool scissorEnabled = isEnabled(ScissorTest) != 0;
+        if (scissorEnabled) disable(ScissorTest);
+        colorMask(1, 1, 1, 1);
+        clearColor(0, 0, 0, 0);
+        clear(ColorBufferBit);
+        clearColor(previousClear[0], previousClear[1], previousClear[2],
+            previousClear[3]);
+        colorMask(previousMask[0], previousMask[1], previousMask[2],
+            previousMask[3]);
+        if (scissorEnabled) enable(ScissorTest);
+    }
+
+    void ProbeMovieShader()
+    {
+        if (InterlockedCompareExchange(
+                &g_openGlPresentProbeEnabled, 0, 0) == 0) return;
+        HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
+        if (!openGl) return;
+        auto currentDc = reinterpret_cast<WglGetCurrentDc>(
+            GetProcAddress(openGl, "wglGetCurrentDC"));
+        auto getInteger = reinterpret_cast<GlGetIntegerv>(
+            GetProcAddress(openGl, "glGetIntegerv"));
+        auto wglProc = reinterpret_cast<WglGetProcAddress>(
+            GetProcAddress(openGl, "wglGetProcAddress"));
+        HWND window = currentDc ? WindowFromDC(currentDc()) : nullptr;
+        if (!IsMovieWindow(window) || !getInteger || !wglProc) return;
+        int programValue = 0;
+        getInteger(0x8B8D, &programValue); // GL_CURRENT_PROGRAM
+        if (programValue <= 0) return;
+        const unsigned int program = static_cast<unsigned int>(programValue);
+        AcquireSRWLockExclusive(&g_movieShaderProbeLock);
+        bool known = false;
+        for (LONG index = 0; index < g_movieShaderProgramCount; ++index)
+            known |= g_movieShaderPrograms[index] == program;
+        if (!known && g_movieShaderProgramCount <
+            static_cast<LONG>(_countof(g_movieShaderPrograms)))
+            g_movieShaderPrograms[g_movieShaderProgramCount++] = program;
+        ReleaseSRWLockExclusive(&g_movieShaderProbeLock);
+        if (known) return;
+
+        auto getProgram = reinterpret_cast<GlGetProgramiv>(
+            wglProc("glGetProgramiv"));
+        auto getActiveUniform = reinterpret_cast<GlGetActiveUniform>(
+            wglProc("glGetActiveUniform"));
+        auto getUniformLocation = reinterpret_cast<GlGetUniformLocation>(
+            wglProc("glGetUniformLocation"));
+        auto getUniform = reinterpret_cast<GlGetUniformiv>(
+            wglProc("glGetUniformiv"));
+        auto activeTexture = reinterpret_cast<GlActiveTexture>(
+            wglProc("glActiveTexture"));
+        auto getTexLevelParameter = reinterpret_cast<GlGetTexLevelParameteriv>(
+            GetProcAddress(openGl, "glGetTexLevelParameteriv"));
+        if (!getProgram || !getActiveUniform || !getUniformLocation ||
+            !getUniform) return;
+        int count = 0;
+        getProgram(program, 0x8B86, &count); // GL_ACTIVE_UNIFORMS
+        DressingRoomLog("Movie OpenGL program=%u uniforms=%d hwnd=%p",
+            program, count, window);
+
+        const int samplerLocation = getUniformLocation(program, "texture0");
+        if (samplerLocation >= 0 && activeTexture && getTexLevelParameter)
+        {
+            int samplerUnit = 0;
+            int previousUnit = 0;
+            getUniform(program, samplerLocation, &samplerUnit);
+            getInteger(0x84E0, &previousUnit); // GL_ACTIVE_TEXTURE
+            activeTexture(0x84C0u + static_cast<unsigned int>(samplerUnit));
+            int texture = 0;
+            int width = 0;
+            int height = 0;
+            int format = 0;
+            getInteger(0x8069, &texture); // GL_TEXTURE_BINDING_2D
+            getTexLevelParameter(0x0DE1, 0, 0x1000, &width);
+            getTexLevelParameter(0x0DE1, 0, 0x1001, &height);
+            getTexLevelParameter(0x0DE1, 0, 0x1003, &format);
+            activeTexture(static_cast<unsigned int>(previousUnit));
+            DressingRoomLog(
+                "Movie OpenGL sampler program=%u name=texture0 unit=%d texture=%d size=%dx%d internalFormat=0x%x",
+                program, samplerUnit, texture, width, height, format);
+        }
+        for (int index = 0; index < (std::min)(count, 96); ++index)
+        {
+            char name[256] = {};
+            int length = 0;
+            int size = 0;
+            unsigned int type = 0;
+            getActiveUniform(program, static_cast<unsigned int>(index),
+                static_cast<int>(_countof(name)), &length, &size, &type, name);
+            int value = -1;
+            int location = getUniformLocation(program, name);
+            if (location >= 0) getUniform(program, location, &value);
+            DressingRoomLog(
+                "Movie OpenGL uniform program=%u name=%s type=0x%x size=%d value=%d",
+                program, name, type, size, value);
+        }
+    }
+
+    void ProbeBoundMovieTexture(unsigned int target, unsigned int texture)
+    {
+        if (InterlockedCompareExchange(
+                &g_openGlPresentProbeEnabled, 0, 0) == 0) return;
+        if (target != 0x0DE1 || texture == 0) return; // GL_TEXTURE_2D
+
+        HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
+        auto currentDc = openGl == nullptr ? nullptr :
+            reinterpret_cast<WglGetCurrentDc>(GetProcAddress(
+                openGl, "wglGetCurrentDC"));
+        auto getInteger = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlGetIntegerv>(GetProcAddress(
+                openGl, "glGetIntegerv"));
+        HWND window = currentDc ? WindowFromDC(currentDc()) : nullptr;
+        if (!IsMovieWindow(window) || !getInteger) return;
+        int programValue = 0;
+        getInteger(0x8B8D, &programValue); // GL_CURRENT_PROGRAM
+        if (programValue <= 0) return;
+
+        bool movieProgram = false;
+        bool knownTexture = false;
+        AcquireSRWLockExclusive(&g_movieShaderProbeLock);
+        for (LONG index = 0; index < g_movieShaderProgramCount; ++index)
+            movieProgram |= g_movieShaderPrograms[index] ==
+                static_cast<unsigned int>(programValue);
+        for (LONG index = 0; index < g_movieTextureCount; ++index)
+            knownTexture |= g_movieTextures[index] == texture;
+        if (movieProgram && !knownTexture && g_movieTextureCount <
+            static_cast<LONG>(_countof(g_movieTextures)))
+            g_movieTextures[g_movieTextureCount++] = texture;
+        ReleaseSRWLockExclusive(&g_movieShaderProbeLock);
+        if (!movieProgram || knownTexture) return;
+
+        auto getTexLevelParameter = reinterpret_cast<GlGetTexLevelParameteriv>(
+            GetProcAddress(openGl, "glGetTexLevelParameteriv"));
+        if (!getTexLevelParameter) return;
+        int width = 0;
+        int height = 0;
+        int format = 0;
+        getTexLevelParameter(target, 0, 0x1000, &width);
+        getTexLevelParameter(target, 0, 0x1001, &height);
+        getTexLevelParameter(target, 0, 0x1003, &format);
+        DressingRoomLog(
+            "Movie OpenGL texture program=%d texture=%u size=%dx%d internalFormat=0x%x hwnd=%p",
+            programValue, texture, width, height, format, window);
+
+    }
+
+    void APIENTRY ProbingGlBindTexture(unsigned int target,
+        unsigned int texture)
+    {
+        const auto original = reinterpret_cast<GlBindTexture>(
+            InterlockedCompareExchangePointer(
+                &g_originalGlBindTexture, nullptr, nullptr));
+        if (original) original(target, texture);
+        ProbeBoundMovieTexture(target, texture);
+    }
+
+    void __fastcall ProbingQOpenGLFunctionsBindTexture(void* functions,
+        unsigned int target, unsigned int texture)
+    {
+        const auto original = reinterpret_cast<QOpenGLFunctionsBindTexture>(
+            InterlockedCompareExchangePointer(
+                &g_originalQOpenGLFunctionsBindTexture, nullptr, nullptr));
+        if (original) original(functions, target, texture);
+        ProbeBoundMovieTexture(target, texture);
+    }
+
+    void __fastcall ProbingQOpenGLFunctionsDrawElements(void* functions,
+        unsigned int mode, int count, unsigned int type, const void* indices)
+    {
+        HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
+        auto getInteger = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlGetIntegerv>(GetProcAddress(
+                openGl, "glGetIntegerv"));
+        int texture = 0;
+        if (getInteger) getInteger(0x8069, &texture);
+        ProbeBoundMovieTexture(0x0DE1, static_cast<unsigned int>(texture));
+        const auto original = reinterpret_cast<QOpenGLFunctionsDrawElements>(
+            InterlockedCompareExchangePointer(
+                &g_originalQOpenGLFunctionsDrawElements, nullptr, nullptr));
+        if (original) original(functions, mode, count, type, indices);
+    }
+
+    void __fastcall ProbingQOpenGLFunctionsDrawArrays(void* functions,
+        unsigned int mode, int first, int count)
+    {
+        HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
+        auto getInteger = openGl == nullptr ? nullptr :
+            reinterpret_cast<GlGetIntegerv>(GetProcAddress(
+                openGl, "glGetIntegerv"));
+        int texture = 0;
+        if (getInteger) getInteger(0x8069, &texture);
+        ProbeBoundMovieTexture(0x0DE1, static_cast<unsigned int>(texture));
+        const auto original = reinterpret_cast<QOpenGLFunctionsDrawArrays>(
+            InterlockedCompareExchangePointer(
+                &g_originalQOpenGLFunctionsDrawArrays, nullptr, nullptr));
+        if (original) original(functions, mode, first, count);
+    }
+
+    BOOL WINAPI ProbingSwapBuffers(HDC deviceContext)
+    {
+        if (InterlockedCompareExchange(
+                &g_openGlPresentProbeEnabled, 0, 0) != 0)
+        {
+            InterlockedIncrement(&g_openGlPresentCount);
+            HWND window = WindowFromDC(deviceContext);
+            bool discovered = false;
+            if (IsMovieWindow(window))
+            {
+                RECT client = {};
+                GetClientRect(window, &client);
+                // Qt can alternate a transparent show surface by one physical
+                // pixel at fractional DPI positions. Keep the RTX allocation
+                // stable instead of rebuilding the NVIDIA session every frame.
+                const int hdrWidth = (client.right - client.left) & ~1;
+                const int hdrHeight = (client.bottom - client.top) & ~1;
+                if (TryEvaluateOpenGlHdr(window, hdrWidth, hdrHeight))
+                    ClearCurrentOpenGlShowSurface(
+                        GetModuleHandleW(L"opengl32.dll"));
+                AcquireSRWLockExclusive(&g_openGlPresentWindowsLock);
+                bool known = false;
+                for (LONG index = 0; index < g_openGlPresentWindowCount; ++index)
+                    known |= g_openGlPresentWindows[index] == window;
+                if (!known && g_openGlPresentWindowCount <
+                    static_cast<LONG>(_countof(g_openGlPresentWindows)))
+                {
+                    g_openGlPresentWindows[g_openGlPresentWindowCount++] = window;
+                    discovered = true;
+                }
+                ReleaseSRWLockExclusive(&g_openGlPresentWindowsLock);
+            }
+            if (discovered)
+            {
+                RECT client = {};
+                GetClientRect(window, &client);
+                int viewport[4] = {};
+                HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
+                auto getInteger = openGl
+                    ? reinterpret_cast<GlGetIntegerv>(
+                        GetProcAddress(openGl, "glGetIntegerv")) : nullptr;
+                if (getInteger) getInteger(0x0BA2, viewport); // GL_VIEWPORT
+                PIXELFORMATDESCRIPTOR descriptor = {};
+                descriptor.nSize = sizeof(descriptor);
+                descriptor.nVersion = 1;
+                const int pixelFormat = GetPixelFormat(deviceContext);
+                DescribePixelFormat(deviceContext, pixelFormat,
+                    sizeof(descriptor), &descriptor);
+                auto wglProc = openGl
+                    ? reinterpret_cast<WglGetProcAddress>(
+                        GetProcAddress(openGl, "wglGetProcAddress")) : nullptr;
+                const bool dxInterop = wglProc &&
+                    wglProc("wglDXOpenDeviceNV") &&
+                    wglProc("wglDXRegisterObjectNV") &&
+                    wglProc("wglDXLockObjectsNV") &&
+                    wglProc("wglDXUnlockObjectsNV");
+                DressingRoomLog(
+                    "OpenGL present hwnd=%p client=%ldx%ld viewport=%dx%d "
+                    "pixelFormat=%d colorBits=%u alphaBits=%u flags=0x%08lx "
+                    "wglNvDxInterop=%d",
+                    window, client.right - client.left,
+                    client.bottom - client.top, viewport[2], viewport[3],
+                    pixelFormat, descriptor.cColorBits, descriptor.cAlphaBits,
+                    descriptor.dwFlags, dxInterop ? 1 : 0);
+            }
+        }
+        else if (InterlockedExchange(&g_openGlHdrReleasePending, 0) != 0)
+            ReleaseOpenGlHdr();
+        const auto original = reinterpret_cast<SwapBuffersAction>(
+            g_originalSwapBuffers);
+        return original ? original(deviceContext) : FALSE;
+    }
+
+    HRESULT InstallOpenGlPresentProbe()
+    {
+        if (InterlockedCompareExchange(
+                &g_openGlPresentProbeInstalled, 0, 0) != 0)
+            return BridgeSuccess;
+        MH_STATUS status = MH_Initialize();
+        if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED)
+            return E_FAIL;
+        status = MH_CreateHookApiEx(L"gdi32.dll", "SwapBuffers",
+            reinterpret_cast<LPVOID>(&ProbingSwapBuffers),
+            &g_originalSwapBuffers,
+            &g_swapBuffersTarget);
+        if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED)
+            return E_FAIL;
+        status = MH_EnableHook(g_swapBuffersTarget);
+        if (status != MH_OK && status != MH_ERROR_ENABLED)
+            return E_FAIL;
+        InterlockedExchange(&g_openGlPresentProbeInstalled, 1);
+        return BridgeSuccess;
+    }
 
     struct FullScreenShaderDataPacket
     {
@@ -2641,6 +3013,9 @@ namespace
         const bool bound = original != nullptr && original(program);
         if (!bound)
             return bound;
+
+        ProbeMovieShader();
+
         if (InterlockedCompareExchange(
                 &g_fullScreenShaderDataSet, 0, 0) != 0)
         {
@@ -2850,6 +3225,12 @@ namespace
             "?activate@QMetaObject@@SAXPEAVQObject@@PEBU1@HPEAPEAX@Z");
         void* shaderBind = gui == nullptr ? nullptr : GetProcAddress(gui,
             "?bind@QOpenGLShaderProgram@@QEAA_NXZ");
+        void* functionsBindTexture = gui == nullptr ? nullptr : GetProcAddress(
+            gui, "?glBindTexture@QOpenGLFunctions_1_1@@QEAAXII@Z");
+        void* functionsDrawElements = gui == nullptr ? nullptr : GetProcAddress(
+            gui, "?glDrawElements@QOpenGLFunctions@@QEAAXIHIPEBX@Z");
+        void* functionsDrawArrays = gui == nullptr ? nullptr : GetProcAddress(
+            gui, "?glDrawArrays@QOpenGLFunctions@@QEAAXIHH@Z");
         g_qOpenGLShaderUniformLocation = gui == nullptr ? nullptr :
             reinterpret_cast<QOpenGLShaderUniformLocation>(GetProcAddress(gui,
                 "?uniformLocation@QOpenGLShaderProgram@@QEBAHPEBD@Z"));
@@ -2909,6 +3290,9 @@ namespace
         if (OffsetProfilePath(profilePath))
             SaveResolvedOffsets(profilePath);
         if (target == nullptr || shaderBind == nullptr ||
+            functionsBindTexture == nullptr ||
+            functionsDrawElements == nullptr ||
+            functionsDrawArrays == nullptr ||
             g_qOpenGLShaderUniformLocation == nullptr ||
             g_qOpenGLShaderSetUniform1 == nullptr ||
             g_qOpenGLShaderSetUniformInt == nullptr ||
@@ -2987,10 +3371,75 @@ namespace
             if (status == MH_OK)
                 status = MH_EnableHook(shaderBind);
         }
+        if (status == MH_OK || status == MH_ERROR_ENABLED)
+        {
+            void* glBindTextureOriginal = nullptr;
+            status = MH_CreateHook(
+                reinterpret_cast<void*>(g_glBindTexture),
+                reinterpret_cast<void*>(&ProbingGlBindTexture),
+                &glBindTextureOriginal);
+            if (status == MH_OK)
+            {
+                InterlockedExchangePointer(
+                    &g_originalGlBindTexture, glBindTextureOriginal);
+                g_glBindTexture = reinterpret_cast<GlBindTexture>(
+                    glBindTextureOriginal);
+                status = MH_EnableHook(reinterpret_cast<void*>(
+                    GetProcAddress(openGl, "glBindTexture")));
+            }
+        }
+        if (status == MH_OK || status == MH_ERROR_ENABLED)
+        {
+            void* functionsBindTextureOriginal = nullptr;
+            status = MH_CreateHook(functionsBindTexture,
+                reinterpret_cast<void*>(
+                    &ProbingQOpenGLFunctionsBindTexture),
+                &functionsBindTextureOriginal);
+            if (status == MH_OK)
+                InterlockedExchangePointer(
+                    &g_originalQOpenGLFunctionsBindTexture,
+                    functionsBindTextureOriginal);
+            if (status == MH_OK)
+                status = MH_EnableHook(functionsBindTexture);
+        }
+        if (status == MH_OK || status == MH_ERROR_ENABLED)
+        {
+            void* functionsDrawElementsOriginal = nullptr;
+            status = MH_CreateHook(functionsDrawElements,
+                reinterpret_cast<void*>(
+                    &ProbingQOpenGLFunctionsDrawElements),
+                &functionsDrawElementsOriginal);
+            if (status == MH_OK)
+                InterlockedExchangePointer(
+                    &g_originalQOpenGLFunctionsDrawElements,
+                    functionsDrawElementsOriginal);
+            if (status == MH_OK)
+                status = MH_EnableHook(functionsDrawElements);
+        }
+        if (status == MH_OK || status == MH_ERROR_ENABLED)
+        {
+            void* functionsDrawArraysOriginal = nullptr;
+            status = MH_CreateHook(functionsDrawArrays,
+                reinterpret_cast<void*>(
+                    &ProbingQOpenGLFunctionsDrawArrays),
+                &functionsDrawArraysOriginal);
+            if (status == MH_OK)
+                InterlockedExchangePointer(
+                    &g_originalQOpenGLFunctionsDrawArrays,
+                    functionsDrawArraysOriginal);
+            if (status == MH_OK)
+                status = MH_EnableHook(functionsDrawArrays);
+        }
         const HRESULT result = status == MH_OK || status == MH_ERROR_ENABLED
             ? BridgeSuccess : E_FAIL;
         if (result < 0)
         {
+            MH_DisableHook(functionsDrawArrays);
+            MH_DisableHook(functionsDrawElements);
+            MH_DisableHook(functionsBindTexture);
+            if (openGl != nullptr)
+                MH_DisableHook(reinterpret_cast<void*>(
+                    GetProcAddress(openGl, "glBindTexture")));
             MH_DisableHook(shaderBind);
             MH_DisableHook(nextShowClip);
             MH_DisableHook(startNextShow);
@@ -3002,6 +3451,13 @@ namespace
                 &g_originalFsClipNodeNextShowClip, nullptr);
             InterlockedExchangePointer(
                 &g_originalQOpenGLShaderProgramBind, nullptr);
+            InterlockedExchangePointer(&g_originalGlBindTexture, nullptr);
+            InterlockedExchangePointer(
+                &g_originalQOpenGLFunctionsBindTexture, nullptr);
+            InterlockedExchangePointer(
+                &g_originalQOpenGLFunctionsDrawElements, nullptr);
+            InterlockedExchangePointer(
+                &g_originalQOpenGLFunctionsDrawArrays, nullptr);
             g_qOpenGLShaderUniformLocation = nullptr;
             g_qOpenGLShaderSetUniform1 = nullptr;
             g_qOpenGLShaderSetUniformInt = nullptr;
@@ -11292,7 +11748,58 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 96;
+    return 98;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSuspendOpenGlHdrSurface()
+{
+    InterlockedExchange(&g_openGlPresentProbeEnabled, 0);
+    InterlockedExchange(&g_openGlHdrReleasePending, 0);
+    SuspendOpenGlHdrSurface();
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetOpenGlPresentProbe(SIZE_T enabled)
+{
+    if (enabled)
+    {
+        const HRESULT result = InstallOpenGlPresentProbe();
+        if (FAILED(result)) return result;
+    }
+    InterlockedExchange(&g_openGlPresentProbeEnabled, enabled ? 1 : 0);
+    if (enabled)
+        ResumeOpenGlHdr();
+    else
+    {
+        InterlockedExchange(&g_openGlHdrReleasePending, 0);
+        ReleaseOpenGlHdr();
+    }
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperGetOpenGlPresentCount()
+{
+    return InterlockedCompareExchange(&g_openGlPresentCount, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperGetOpenGlPresentWindowCount()
+{
+    return InterlockedCompareExchange(&g_openGlPresentWindowCount, 0, 0);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetOpenGlHdrStatus()
+{
+    return OpenGlHdrStatus();
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperGetOpenGlHdrFrameCount()
+{
+    return OpenGlHdrFrameCount();
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetCompatibilityMask()

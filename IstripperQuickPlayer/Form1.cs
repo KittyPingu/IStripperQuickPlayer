@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 96;
+        private const int PlaybackBridgeVersion = 98;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -197,6 +197,9 @@ namespace IStripperQuickPlayer
             new("Click through locked player") { CheckOnClick = true };
         private readonly ToolStripMenuItem wheelResizePlayerToolStripMenuItem =
             new("Resize player with mouse wheel") { CheckOnClick = true };
+        private readonly ToolStripMenuItem iStripperRtxHdrToolStripMenuItem =
+            new("NVIDIA RTX HDR for iStripper (experimental)")
+            { CheckOnClick = true };
         private readonly ToolStripMenuItem allowWheelWhileLockedToolStripMenuItem =
             new("Allow Resize while Locked") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
@@ -380,8 +383,12 @@ namespace IStripperQuickPlayer
             queuedAnimationProtectedUntil = DateTime.MinValue;
             if (!apiOnlyMode)
                 panicResumeButton.Visible = true;
+            if (Properties.Settings.Default.EnableIStripperRtxHdr &&
+                playbackBridgeClient != null)
+                CallPlaybackBridgeApi("IStripperSuspendOpenGlHdrSurface");
             panicMovieWindow =
                 LockStateOverlay.HideMovieWindowForProcess(vghd_procID);
+            LockStateOverlay.HideRtxHdrWindowForProcess(vghd_procID);
             if (!apiOnlyMode)
             {
                 Wallpaper.SuspendAndRestoreOriginalDesktop();
@@ -397,6 +404,9 @@ namespace IStripperQuickPlayer
                     return Task.CompletedTask;
                 }, prepareFastDecode: false);
             }
+            // The pause request can overlap an already-rendering HDR frame.
+            // Hide once more after it completes so panic always ends blank.
+            LockStateOverlay.HideRtxHdrWindowForProcess(vghd_procID);
         }
 
         private async void panicResumeButton_Click(object? sender, EventArgs e)
@@ -414,6 +424,9 @@ namespace IStripperQuickPlayer
                 }, prepareFastDecode: false);
             }
             LockStateOverlay.ShowMovieWindow(panicMovieWindow);
+            if (Properties.Settings.Default.EnableIStripperRtxHdr &&
+                playbackBridgeClient != null)
+                CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe", 1UL);
             if (!apiOnlyMode)
                 Wallpaper.ResumeQuickPlayerDesktop();
             panicMovieWindow = IntPtr.Zero;
@@ -809,6 +822,43 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.EnablePlayerWheelResize =
                     wheelResizePlayerToolStripMenuItem.Checked;
                 ChangePlayerWheelResize();
+            };
+            iStripperRtxHdrToolStripMenuItem.Checked =
+                Properties.Settings.Default.EnableIStripperRtxHdr;
+            iStripperRtxHdrToolStripMenuItem.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.EnableIStripperRtxHdr =
+                    iStripperRtxHdrToolStripMenuItem.Checked;
+                if (playbackBridgeClient != null)
+                    CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
+                        iStripperRtxHdrToolStripMenuItem.Checked ? 1UL : 0UL);
+            };
+            settingsToolStripMenuItem.DropDownOpening += (_, _) =>
+            {
+                const string label =
+                    "NVIDIA RTX HDR for iStripper (experimental)";
+                if (!iStripperRtxHdrToolStripMenuItem.Checked ||
+                    playbackBridgeClient == null)
+                {
+                    iStripperRtxHdrToolStripMenuItem.Text = label;
+                    return;
+                }
+                try
+                {
+                    int status = playbackBridgeClient.Call(
+                        "IStripperGetOpenGlHdrStatus");
+                    int frames = playbackBridgeClient.Call(
+                        "IStripperGetOpenGlHdrFrameCount");
+                    iStripperRtxHdrToolStripMenuItem.Text = status > 0
+                        ? $"{label} — Active ({frames:N0} frames)"
+                        : status < 0 ? $"{label} — Unavailable"
+                        : $"{label} — Waiting for OpenGL video";
+                }
+                catch
+                {
+                    iStripperRtxHdrToolStripMenuItem.Text =
+                        $"{label} — Bridge unavailable";
+                }
             };
             allowWheelWhileLockedToolStripMenuItem.Checked =
                 Properties.Settings.Default.AllowWheelWhileLocked;
@@ -3314,6 +3364,14 @@ namespace IStripperQuickPlayer
                     throw new COMException(
                         $"Fullscreen hook setup failed (0x{fullscreenHookResult:X8}).",
                         fullscreenHookResult);
+
+                int hdrProbeResult = playbackBridgeClient.Call(
+                    "IStripperSetOpenGlPresentProbe",
+                    Properties.Settings.Default.EnableIStripperRtxHdr ? 1UL : 0UL);
+                if (hdrProbeResult < 0)
+                    throw new COMException(
+                        $"OpenGL HDR probe setup failed (0x{hdrProbeResult:X8}).",
+                        hdrProbeResult);
 
                 int resetResult = playbackBridgeClient.Call(
                     "IStripperResetPlaybackSession");

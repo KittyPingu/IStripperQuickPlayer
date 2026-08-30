@@ -180,6 +180,20 @@ internal sealed class LockStateOverlay : Form
         return window;
     }
 
+    internal static void HideRtxHdrWindowForProcess(int processId)
+    {
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out int ownerProcessId);
+            if (ownerProcessId != processId) return true;
+            StringBuilder className = new(128);
+            if (GetClassName(window, className, className.Capacity) != 0 &&
+                className.ToString() == "IStripperQuickPlayerRtxHdrOverlay")
+                ShowWindowAsync(window, 0);
+            return true;
+        }, IntPtr.Zero);
+    }
+
     internal static void ShowMovieWindow(IntPtr window)
     {
         if (window != IntPtr.Zero && IsWindow(window))
