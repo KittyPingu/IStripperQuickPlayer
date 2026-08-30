@@ -1891,6 +1891,9 @@ public partial class Form1
             preparedPlayback: preparedPlayback,
             edgeChokePixels: clip.customEdgeChokePixels,
             virtualGreenScreen: clip.customVirtualGreenScreen,
+            rtxVideoSuperResolutionQuality:
+                customShowConfiguration.RtxVideoSuperResolutionQuality,
+            showRtxVideoStatus: customShowConfiguration.ShowRtxVideoStatus,
             rvmOnnxModelPath: rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 clip.customRvmOnnxSettings?.Model ??
                     RvmOnnxSupport.MobileNetV3) : null,
@@ -2043,6 +2046,7 @@ public partial class Form1
             next.customEdgeChokePixels,
             next.customVirtualGreenScreen,
             next.customStartMs, customPreloadCancellation.Token,
+            customShowConfiguration.RtxVideoSuperResolutionQuality,
             rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 next.customRvmOnnxSettings?.Model ??
                     RvmOnnxSupport.MobileNetV3) : null,

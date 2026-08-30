@@ -1684,6 +1684,18 @@ internal sealed class CustomShowProcessingForm : Form
         actions.Controls.Add(cancel, 1, 0);
         layout.Controls.Add(actions, 0, 4);
         Controls.Add(layout);
+        ResizeBegin += (_, _) =>
+        {
+            layout.SuspendLayout();
+            previews.SuspendLayout();
+            actions.SuspendLayout();
+        };
+        ResizeEnd += (_, _) =>
+        {
+            actions.ResumeLayout(performLayout: false);
+            previews.ResumeLayout(performLayout: false);
+            layout.ResumeLayout(performLayout: true);
+        };
         cancel.Click += (_, _) => { cancel.Enabled = false; status.Text = "Cancelling..."; cancellation.Cancel(); };
         pauseAndCorrect.Click += (_, _) => RequestCorrectionPause();
         source.Click += (_, _) => PauseAndCorrectFromPreview();

@@ -149,6 +149,16 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Link>%(Filename)%(Extension)</Link>
     </Content>
+    <Content Include="dependencies\IStripperRtxVideoBridge64.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>%(Filename)%(Extension)</Link>
+    </Content>
+    <Content Include="dependencies\nvngx_vsr.dll;dependencies\NVIDIA-RTX-VIDEO-NOTICE.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>%(Filename)%(Extension)</Link>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\.editorconfig" Link=".editorconfig" />
@@ -192,6 +202,9 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
     <ProjectReference Include="..\native\IStripperRvmGpuBridge64\IStripperRvmGpuBridge64.vcxproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\native\IStripperRtxVideoBridge64\IStripperRtxVideoBridge64.vcxproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>

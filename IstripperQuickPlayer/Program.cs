@@ -34,6 +34,24 @@ namespace IStripperQuickPlayer
 
             ApplicationConfiguration.Initialize();
 
+            if (args.Length == 1 && args[0] == "--verify-rtx-video")
+            {
+                try
+                {
+                    RtxVideoSession.Verify();
+                    Console.WriteLine("NVIDIA RTX Video Super Resolution " +
+                        "initialized and processed a 640x360 frame at 1280x720.");
+                    Environment.ExitCode = 0;
+                }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine("RTX Video diagnostic failed: " +
+                        error.Message);
+                    Environment.ExitCode = 1;
+                }
+                return;
+            }
+
             if (args.Length is 1 or 2 &&
                 args[0] == "--verify-url-downloader")
             {

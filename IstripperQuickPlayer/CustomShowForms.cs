@@ -5209,6 +5209,15 @@ internal sealed class CustomShowSettingsForm : Form
     {
         Minimum = 0, Maximum = 255, DecimalPlaces = 0, Width = 90
     };
+    readonly ComboBox rtxVideoSuperResolution = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList, Width = 180
+    };
+    readonly CheckBox showRtxVideoStatus = new()
+    {
+        Text = "Show transient in-player RTX Video diagnostics",
+        AutoSize = true
+    };
     readonly Label sam2CacheUsage = new() { AutoSize = true };
     readonly NumericUpDown transNetBatch = new()
     {
@@ -5263,6 +5272,9 @@ internal sealed class CustomShowSettingsForm : Form
             LargePlayerVolume = current.LargePlayerVolume,
             DefaultAlphaThreshold = current.DefaultAlphaThreshold,
             FullOpacityThreshold = current.FullOpacityThreshold,
+            RtxVideoSuperResolutionQuality =
+                current.RtxVideoSuperResolutionQuality,
+            ShowRtxVideoStatus = current.ShowRtxVideoStatus,
             Sam2FrameCacheSizeGb = current.Sam2FrameCacheSizeGb,
             TransNetPreferredBatchSize = current.TransNetPreferredBatchSize,
             TransNetCompileCutoffFrames = current.TransNetCompileCutoffFrames,
@@ -5331,6 +5343,16 @@ internal sealed class CustomShowSettingsForm : Form
         Controls.Add(layout);
         TabControl tabs = new() { Dock = DockStyle.Fill, Padding = new Point(14, 5) };
         layout.Controls.Add(tabs, 0, 0);
+        ResizeBegin += (_, _) =>
+        {
+            layout.SuspendLayout();
+            tabs.SuspendLayout();
+        };
+        ResizeEnd += (_, _) =>
+        {
+            tabs.ResumeLayout(performLayout: false);
+            layout.ResumeLayout(performLayout: true);
+        };
 
         TabPage generalTab = new("General");
         TableLayoutPanel general = SettingsTable();
@@ -5343,6 +5365,14 @@ internal sealed class CustomShowSettingsForm : Form
         AddExplanation(general, "Default playback transparency",
             "Applied to newly created and automatically processed clips. " +
             "Existing clips keep their saved per-clip threshold.");
+        rtxVideoSuperResolution.Items.AddRange(
+            ["Off", "Low", "Medium", "High", "Ultra"]);
+        AddChoice(general, "RTX Video Super Resolution",
+            rtxVideoSuperResolution);
+        AddChoice(general, "RTX Video diagnostics", showRtxVideoStatus);
+        AddExplanation(general, "NVIDIA RTX Video enhancement",
+            "Enhances custom-player RGB while keeping its transparency matte separate. " +
+            "It runs only while upscaling and falls back automatically when NVIDIA RTX Video is unavailable.");
         AddExplanation(general, "Processing priority",
             "Controls custom-show processing workers only. Normal preserves current behaviour. " +
             "Lower priorities favour playback and desktop responsiveness when resources are busy.");
@@ -5471,6 +5501,9 @@ internal sealed class CustomShowSettingsForm : Form
         root.Text = Configuration.LibraryRoot; python.Text = Configuration.PythonExecutable;
         defaultAlphaThreshold.Value = Math.Clamp(
             Configuration.DefaultAlphaThreshold, 0, 255);
+        rtxVideoSuperResolution.SelectedIndex = Math.Clamp(
+            Configuration.RtxVideoSuperResolutionQuality, 0, 4);
+        showRtxVideoStatus.Checked = Configuration.ShowRtxVideoStatus;
         sam2CacheSize.Value = Math.Clamp(Configuration.Sam2FrameCacheSizeGb, 0, 100);
         transNetBatch.Value = Math.Clamp(Configuration.TransNetPreferredBatchSize, 1, 64);
         transNetCutoff.Value = ClampCutoff(Configuration.TransNetCompileCutoffFrames);
@@ -5781,6 +5814,9 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.PythonExecutable = Path.GetFullPath(python.Text);
             Configuration.DefaultAlphaThreshold =
                 (int)defaultAlphaThreshold.Value;
+            Configuration.RtxVideoSuperResolutionQuality =
+                Math.Max(0, rtxVideoSuperResolution.SelectedIndex);
+            Configuration.ShowRtxVideoStatus = showRtxVideoStatus.Checked;
             Configuration.Sam2FrameCacheSizeGb = (int)sam2CacheSize.Value;
             Configuration.TransNetPreferredBatchSize = (int)transNetBatch.Value;
             Configuration.TransNetCompileCutoffFrames = (int)transNetCutoff.Value;

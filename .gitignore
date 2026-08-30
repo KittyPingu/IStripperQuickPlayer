@@ -376,6 +376,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/DirectCompositionCardOverlayControl.cs
 !/IstripperQuickPlayer/DxgiMaskPreviewControl.cs
 !/IstripperQuickPlayer/RvmOnnx.cs
+!/IstripperQuickPlayer/RtxVideo.cs
 !/IstripperQuickPlayer/Form1.PlayQueue.cs
 !/IstripperQuickPlayer/Form1.LibraryCleanup.cs
 !/IstripperQuickPlayer/Form1.RestApi.cs
@@ -433,8 +434,14 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/dependencies/FFmpeg-VERSION.txt
 !/IstripperQuickPlayer/dependencies/FFmpeg-LIBRARIES-LICENSE.txt
 !/IstripperQuickPlayer/dependencies/FFmpeg-LIBRARIES-VERSION.txt
+!/IstripperQuickPlayer/dependencies/IStripperRtxVideoBridge64.dll
+!/IstripperQuickPlayer/dependencies/nvngx_vsr.dll
+!/IstripperQuickPlayer/dependencies/NVIDIA-RTX-VIDEO-NOTICE.txt
 !/IstripperQuickPlayer/DataModel/
 /IstripperQuickPlayer/DataModel/*
 !/IstripperQuickPlayer/DataModel/Persistence.cs
 /*.pt
 /yolo-cache/
+/third_party/nvidia/
+/native/IStripperRtxVideoBridge64/obj/
+/tmp/

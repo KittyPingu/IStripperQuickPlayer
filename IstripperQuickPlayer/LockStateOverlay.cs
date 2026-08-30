@@ -16,15 +16,18 @@ internal sealed class LockStateOverlay : Form
     private readonly bool locked;
     private readonly Image? image;
     private readonly string? text;
+    private readonly bool statusText;
     private readonly System.Windows.Forms.Timer closeTimer = new() { Interval = 900 };
 
     private LockStateOverlay(Rectangle bounds, bool locked, Image? image = null,
-        string? text = null)
+        string? text = null, bool statusText = false)
     {
         this.locked = locked;
         this.image = image;
         this.text = text;
+        this.statusText = statusText;
         if (image != null) closeTimer.Interval = 4_000;
+        if (statusText) closeTimer.Interval = 5_000;
         AutoScaleMode = AutoScaleMode.None;
         BackColor = image != null ? Color.Black : text != null
             ? Color.FromArgb(45, 45, 45)
@@ -158,6 +161,17 @@ internal sealed class LockStateOverlay : Form
         current.Show();
     }
 
+    internal static void ShowStatusForWindow(Form window, string text)
+    {
+        if (!window.IsHandleCreated || window.Bounds.IsEmpty)
+            return;
+        current?.Close();
+        current = new LockStateOverlay(CalculateStatusBounds(window.Bounds,
+            (int)GetDpiForWindow(window.Handle)), false, text: text,
+            statusText: true);
+        current.Show(window);
+    }
+
     internal static IntPtr HideMovieWindowForProcess(int processId)
     {
         IntPtr window = FindMovieWindow(processId, visibleOnly: true);
@@ -209,13 +223,13 @@ internal sealed class LockStateOverlay : Form
         if (text != null)
         {
             float badgeSize = Math.Min(ClientSize.Width, ClientSize.Height);
-            float fontSize = badgeSize * 0.26f;
+            float fontSize = statusText ? badgeSize * 0.24f : badgeSize * 0.26f;
             using SolidBrush textBrush = new(Color.White);
             using StringFormat centered = new()
             {
                 Alignment = StringAlignment.Center,
                 LineAlignment = StringAlignment.Center,
-                FormatFlags = StringFormatFlags.NoWrap,
+                FormatFlags = statusText ? 0 : StringFormatFlags.NoWrap,
                 Trimming = StringTrimming.None
             };
             using (Font measureFont = new(FontFamily.GenericSansSerif,
@@ -294,6 +308,19 @@ internal sealed class LockStateOverlay : Form
             movieBounds.Left + (movieBounds.Width - size) / 2,
             movieBounds.Top + (movieBounds.Height - size) / 2,
             size, size);
+    }
+
+    private static Rectangle CalculateStatusBounds(Rectangle movieBounds,
+        int movieDpi)
+    {
+        float scale = movieDpi / (float)GetDpiForSystem();
+        int margin = Math.Max(6, (int)Math.Round(10 * scale));
+        int width = Math.Min(movieBounds.Width - margin * 2,
+            Math.Max((int)Math.Round(300 * scale), movieBounds.Width * 3 / 4));
+        int height = Math.Min(movieBounds.Height - margin * 2,
+            Math.Max((int)Math.Round(58 * scale), movieBounds.Height / 9));
+        return new Rectangle(movieBounds.Left + (movieBounds.Width - width) / 2,
+            movieBounds.Top + margin, Math.Max(1, width), Math.Max(1, height));
     }
 
     private static void FillRoundedRectangle(Graphics graphics, Brush brush,

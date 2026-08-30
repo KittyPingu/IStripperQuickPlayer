@@ -30,6 +30,8 @@ internal sealed class CustomShowConfiguration
     public int DefaultAlphaThreshold { get; set; } =
         CustomShowClip.DefaultAlphaThreshold;
     public int FullOpacityThreshold { get; set; } = 200;
+    public int RtxVideoSuperResolutionQuality { get; set; }
+    public bool ShowRtxVideoStatus { get; set; }
     public int Sam2FrameCacheSizeGb { get; set; } = 10;
     public int TransNetPreferredBatchSize { get; set; } = 8;
     public int TransNetCompileCutoffFrames { get; set; } = 16000;
@@ -118,6 +120,8 @@ internal sealed class CustomShowConfiguration
                     FindSam2MattingPythonExecutable();
             configuration.DefaultAlphaThreshold = Math.Clamp(
                 configuration.DefaultAlphaThreshold, 0, 255);
+            configuration.RtxVideoSuperResolutionQuality = Math.Clamp(
+                configuration.RtxVideoSuperResolutionQuality, 0, 4);
             int[] rvmChunks = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
             if (!rvmChunks.Contains(configuration.RvmQualityPreferredChunk))
                 configuration.RvmQualityPreferredChunk = 12;

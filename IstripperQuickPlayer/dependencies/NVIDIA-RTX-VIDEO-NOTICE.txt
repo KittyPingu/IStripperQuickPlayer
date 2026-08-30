@@ -1,0 +1,12 @@
+NVIDIA RTX Video SDK notice
+
+This application incorporates NVIDIA RTX Video SDK components.
+Copyright (c) NVIDIA Corporation and affiliates. All rights reserved.
+
+The RTX Video SDK is licensed under the NVIDIA RTX SDKs License supplied with
+the SDK. NVIDIA RTX Video integration uses NVIDIA GPUs only. NVIDIA does not
+sponsor or endorse this application.
+
+Before a commercial release, the distributor must complete NVIDIA's required
+SDK notification and review the attribution and distribution requirements in
+the NVIDIA RTX Video SDK license.
