@@ -154,7 +154,7 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Link>%(Filename)%(Extension)</Link>
     </Content>
-    <Content Include="dependencies\nvngx_vsr.dll;dependencies\NVIDIA-RTX-VIDEO-NOTICE.txt">
+    <Content Include="dependencies\nvngx_vsr.dll;dependencies\nvngx_truehdr.dll;dependencies\NVIDIA-RTX-VIDEO-NOTICE.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Link>%(Filename)%(Extension)</Link>

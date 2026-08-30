@@ -436,6 +436,7 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/dependencies/FFmpeg-LIBRARIES-VERSION.txt
 !/IstripperQuickPlayer/dependencies/IStripperRtxVideoBridge64.dll
 !/IstripperQuickPlayer/dependencies/nvngx_vsr.dll
+!/IstripperQuickPlayer/dependencies/nvngx_truehdr.dll
 !/IstripperQuickPlayer/dependencies/NVIDIA-RTX-VIDEO-NOTICE.txt
 !/IstripperQuickPlayer/DataModel/
 /IstripperQuickPlayer/DataModel/*

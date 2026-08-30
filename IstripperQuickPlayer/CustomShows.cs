@@ -31,6 +31,7 @@ internal sealed class CustomShowConfiguration
         CustomShowClip.DefaultAlphaThreshold;
     public int FullOpacityThreshold { get; set; } = 200;
     public int RtxVideoSuperResolutionQuality { get; set; }
+    public bool RtxVideoHdr { get; set; }
     public bool ShowRtxVideoStatus { get; set; }
     public int Sam2FrameCacheSizeGb { get; set; } = 10;
     public int TransNetPreferredBatchSize { get; set; } = 8;

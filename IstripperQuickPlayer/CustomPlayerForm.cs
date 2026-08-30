@@ -80,6 +80,7 @@ internal sealed class CustomPlayerForm : Form
     volatile float edgeChokePixels;
     CustomVirtualGreenScreen virtualGreenScreen;
     readonly int rtxVideoSuperResolutionQuality;
+    readonly bool rtxVideoHdr;
     readonly bool showRtxVideoStatus;
     VirtualGreenScreenSample[] hitTestGreenSamples;
     Task playbackTask = Task.CompletedTask;
@@ -144,6 +145,7 @@ internal sealed class CustomPlayerForm : Form
         float edgeChokePixels = 1,
         CustomVirtualGreenScreen? virtualGreenScreen = null,
         int rtxVideoSuperResolutionQuality = 0,
+        bool rtxVideoHdr = false,
         bool showRtxVideoStatus = false,
         string? rvmOnnxModelPath = null,
         CustomRvmOnnxSettings? rvmOnnxSettings = null)
@@ -154,6 +156,7 @@ internal sealed class CustomPlayerForm : Form
         this.rvmOnnxSettings = rvmOnnxSettings?.Clone();
         this.rtxVideoSuperResolutionQuality = Math.Clamp(
             rtxVideoSuperResolutionQuality, 0, 4);
+        this.rtxVideoHdr = rtxVideoHdr;
         this.showRtxVideoStatus = showRtxVideoStatus;
         this.suppressErrorDialog = suppressErrorDialog;
         rangeStartSeconds = Math.Max(0, startMs / 1000d);
@@ -262,7 +265,7 @@ internal sealed class CustomPlayerForm : Form
                 fullOpacityThreshold, edgeChokePixels,
                 virtualGreenScreen, rvmOnnxModelPath,
                 Volatile.Read(ref rvmOnnxSettings),
-                rtxVideoSuperResolutionQuality),
+                rtxVideoSuperResolutionQuality, rtxVideoHdr),
                 cancellation.Token);
             prepared?.Dispose();
             renderer.SetVolume(volumePercent);
@@ -547,13 +550,14 @@ internal sealed class CustomPlayerForm : Form
         long startMs,
         CancellationToken cancellationToken,
         int rtxVideoSuperResolutionQuality = 0,
+        bool rtxVideoHdr = false,
         string? rvmOnnxModelPath = null,
         CustomRvmOnnxSettings? rvmOnnxSettings = null) => Task.Run(() =>
         {
             PairedRenderer renderer = new(foregroundPath, alphaPath,
                 alphaThreshold, fullOpacityThreshold, edgeChokePixels,
                 virtualGreenScreen, rvmOnnxModelPath, rvmOnnxSettings,
-                rtxVideoSuperResolutionQuality);
+                rtxVideoSuperResolutionQuality, rtxVideoHdr);
             try
             {
                 renderer.Seek(Math.Max(0, startMs / 1000d));
@@ -1210,12 +1214,13 @@ internal sealed class CustomPlayerForm : Form
             float RemovedDiskSupport(float2 uv,float2 radius,float lower,float upper){float support=0;[unroll]for(int n=0;n<16;n++)support+=Removed(uv+Disk[n]*radius,lower,upper);return support;}
             float ConnectedRemovedRays(float2 uv,float2 radius,float lower,float upper){float rays=0;[unroll]for(int n=0;n<8;n++){float connected=1;[unroll]for(int step=1;step<=4;step++)connected*=Removed(uv+Rays[n]*radius*(step*.25),lower,upper);rays+=connected;}return rays;}
             float4 RgbMain(O i):SV_TARGET{return float4(RgbAt(i.uv),1);}
-            float4 PixelMain(O i,bool enhanced) { float3 c=enhanced?E.Sample(S,i.uv).rgb:RgbAt(i.uv); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;uint aw,ah;A.GetDimensions(aw,ah);
+            float4 PixelMain(O i,bool enhanced,bool hdr) { float3 c=enhanced?E.Sample(S,i.uv).rgb:RgbAt(i.uv); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;uint aw,ah;A.GetDimensions(aw,ah);
               if(r>0){float2 d=r/float2(aw,ah);a=min(a,A.Sample(S,i.uv+float2(d.x,0)));a=min(a,A.Sample(S,i.uv-float2(d.x,0)));a=min(a,A.Sample(S,i.uv+float2(0,d.y)));a=min(a,A.Sample(S,i.uv-float2(0,d.y)));a=min(a,A.Sample(S,i.uv+d));a=min(a,A.Sample(S,i.uv-d));a=min(a,A.Sample(S,i.uv+float2(d.x,-d.y)));a=min(a,A.Sample(S,i.uv+float2(-d.x,d.y)));}
               float4 spatial=T.Load(int3(1,0,0));float baseAlpha=a;a*=M.Sample(S,i.uv);float keyedAlpha=a;float patch=round(spatial.r*255.0);if(patch>0&&a>0&&a>=t.r){float2 d=patch/float2(aw,ah);if(DiskSupport(i.uv,d,t.r)<4||ConnectedSupportedRays(i.uv,d,t.r)<2)a=0;}float area=round(spatial.g*255.0);if(area>0&&OutputAlpha(keyedAlpha,t.r,t.g)<OutputAlpha(baseAlpha,t.r,t.g)){float2 d=area/float2(aw,ah);if(ConnectedRemovedRays(i.uv,d,t.r,t.g)<3||RemovedDiskSupport(i.uv,d,t.r,t.g)<8)a=baseAlpha;}
-              a=AntialiasedOutputAlpha(a,t.r,t.g); return float4(saturate(c)*a,a); }
-            float4 PSMain(O i):SV_TARGET{return PixelMain(i,false);}
-            float4 PSMainEnhanced(O i):SV_TARGET{return PixelMain(i,true);}
+              a=AntialiasedOutputAlpha(a,t.r,t.g); return float4((hdr?max(c,0):saturate(c))*a,a); }
+            float4 PSMain(O i):SV_TARGET{return PixelMain(i,false,false);}
+            float4 PSMainEnhanced(O i):SV_TARGET{return PixelMain(i,true,false);}
+            float4 PSMainHdr(O i):SV_TARGET{return PixelMain(i,true,true);}
             """;
         readonly string foregroundPath;
         FfmpegCpuDecoder rgb;
@@ -1233,14 +1238,16 @@ internal sealed class CustomPlayerForm : Form
         ID3D11Device? device; ID3D11DeviceContext? context;
         IDXGIDevice? dxgiDevice; IDXGIFactory2? factory; IDXGISwapChain1? swap;
         ID3D11Texture2D? back, yTex, uTex, vTex, aTex, thresholdTex, keyTex,
-            matteTex, rtxInputTex, rtxOutputTex;
-        ID3D11RenderTargetView? target, matteTarget, rtxInputTarget;
+            matteTex, rtxInputTex, rtxOutputTex, hdrOutputTex;
+        ID3D11RenderTargetView? target, matteTarget, rtxInputTarget,
+            rtxOutputTarget;
         ID3D11ShaderResourceView? yView, uView, vView, aView, thresholdView,
-            keyView, matteView, rtxOutputView;
+            keyView, matteView, rtxOutputView, hdrOutputView;
         ID3D11SamplerState? sampler; ID3D11VertexShader? vs;
-        ID3D11PixelShader? ps, mattePs, rgbPs, enhancedPs;
+        ID3D11PixelShader? ps, mattePs, rgbPs, enhancedPs, hdrPs;
         RtxVideoSession? rtxVideo;
         readonly int rtxVideoSuperResolutionQuality;
+        readonly bool rtxVideoHdr;
         string? rtxVideoStatus;
         internal event Action<string>? RtxVideoStatusChanged;
         ID3D11Device1? device1;
@@ -1314,7 +1321,7 @@ internal sealed class CustomPlayerForm : Form
             float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen,
             string? rvmOnnxModelPath = null,
             CustomRvmOnnxSettings? rvmOnnxSettings = null,
-            int rtxVideoSuperResolutionQuality = 0)
+            int rtxVideoSuperResolutionQuality = 0, bool rtxVideoHdr = false)
         {
             foregroundPath = foreground;
             this.rvmOnnxModelPath = rvmOnnxModelPath;
@@ -1323,6 +1330,7 @@ internal sealed class CustomPlayerForm : Form
             this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
             this.rtxVideoSuperResolutionQuality = Math.Clamp(
                 rtxVideoSuperResolutionQuality, 0, 4);
+            this.rtxVideoHdr = rtxVideoHdr;
             greenSamples = VirtualGreenScreenMath.Samples(virtualGreenScreen);
             greenDomain = (int)VirtualGreenScreenMath.Domain(virtualGreenScreen);
             smallPatchSize = VirtualGreenScreenMath.SmallPatchSize(
@@ -1406,11 +1414,24 @@ internal sealed class CustomPlayerForm : Form
 
         internal void AttachWindow(IntPtr handle, int width, int height)
         {
+            string? unavailable = null;
+            if (rtxVideoSuperResolutionQuality > 0 || rtxVideoHdr)
+                rtxVideo = RtxVideoSession.TryCreate(device!,
+                    enableVsr: rtxVideoSuperResolutionQuality > 0,
+                    enableTrueHdr: rtxVideoHdr, out unavailable);
+            bool hdrActive = rtxVideo?.HasTrueHdr == true;
+            DxgiFormat swapFormat = hdrActive
+                ? DxgiFormat.R16G16B16A16_Float : DxgiFormat.B8G8R8A8_UNorm;
             swap = factory!.CreateSwapChainForComposition(device!, new SwapChainDescription1(
-                (uint)width, (uint)height, DxgiFormat.B8G8R8A8_UNorm,
+                (uint)width, (uint)height, swapFormat,
                 bufferUsage: Usage.RenderTargetOutput, bufferCount: 2,
                 scaling: Scaling.Stretch, swapEffect: SwapEffect.FlipSequential,
                 alphaMode: DxgiAlphaMode.Premultiplied));
+            if (hdrActive)
+            {
+                using IDXGISwapChain3 swap3 = swap.QueryInterface<IDXGISwapChain3>();
+                swap3.SetColorSpace1(ColorSpaceType.RgbFullG10NoneP709);
+            }
             back = swap.GetBuffer<ID3D11Texture2D>(0); target = device!.CreateRenderTargetView(back);
             PresentTransparentLocked();
             yTex = Texture(Width, Height); uTex = Texture((Width+1)/2, (Height+1)/2);
@@ -1420,18 +1441,17 @@ internal sealed class CustomPlayerForm : Form
             keyTex = Texture(2, 1,
                 DxgiFormat.R32G32B32A32_Float);
             matteTex = RenderTexture((Width + 1) / 2, (Height + 1) / 2);
-            if (rtxVideoSuperResolutionQuality > 0)
+            if (rtxVideo?.HasVsr == true)
             {
                 rtxInputTex = RenderTexture(Width, Height,
                     DxgiFormat.R8G8B8A8_UNorm);
                 rtxInputTarget = device.CreateRenderTargetView(rtxInputTex);
-                rtxVideo = RtxVideoSession.TryCreate(device,
-                    out string? unavailable);
-                if (rtxVideo == null)
-                    SetRtxVideoStatus($"RTX VSR {RtxQualityName()}: Unavailable\n" +
-                        unavailable);
             }
-            else SetRtxVideoStatus("RTX VSR: Off");
+            if (rtxVideo == null &&
+                (rtxVideoSuperResolutionQuality > 0 || rtxVideoHdr))
+                SetRtxVideoStatus("RTX Video: Unavailable\n" + unavailable);
+            else if (rtxVideoSuperResolutionQuality == 0 && !rtxVideoHdr)
+                SetRtxVideoStatus("RTX Video: Off");
             yView=device.CreateShaderResourceView(yTex); uView=device.CreateShaderResourceView(uTex);
             vView=device.CreateShaderResourceView(vTex); aView=device.CreateShaderResourceView(aTex);
             thresholdView=device.CreateShaderResourceView(thresholdTex);
@@ -1444,6 +1464,7 @@ internal sealed class CustomPlayerForm : Form
             rgbPs=device.CreatePixelShader(Compiler.Compile(Shader,"RgbMain","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
             ps=device.CreatePixelShader(Compiler.Compile(Shader,"PSMain","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
             enhancedPs=device.CreatePixelShader(Compiler.Compile(Shader,"PSMainEnhanced","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
+            hdrPs=device.CreatePixelShader(Compiler.Compile(Shader,"PSMainHdr","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
             composition=DComp.DCompositionCreateDevice<IDCompositionDevice>(dxgiDevice!);
             composition.CreateTargetForHwnd(handle,true,out compositionTarget).CheckError();
             visual=composition.CreateVisual(); visual.SetContent(swap); compositionTarget.SetRoot(visual); composition.Commit();
@@ -1840,14 +1861,21 @@ internal sealed class CustomPlayerForm : Form
             {
             if(keyedMutex!=null){keyedMutex.AcquireSync(0,-1);displayLocked=true;}
             if(gpuAlphaMutex!=null){gpuAlphaMutex.AcquireSync(0,-1);alphaLocked=true;}
-            bool enhanced = false;
+            ID3D11ShaderResourceView? enhancedView = null;
+            bool hdrEnhanced = false;
             bool upscaling = back!.Description.Width > Width ||
                 back.Description.Height > Height;
-            if (rtxVideo != null && rtxInputTex != null && upscaling)
+            bool useVsr = rtxVideo?.HasVsr == true && upscaling;
+            bool useHdr = rtxVideo?.HasTrueHdr == true;
+            if (useVsr || useHdr)
             {
                 EnsureRtxOutput();
-                context!.OMSetRenderTargets(rtxInputTarget!);
-                context.RSSetViewport(new GpuViewport(0, 0, Width, Height));
+                ID3D11RenderTargetView rgbTarget = useVsr
+                    ? rtxInputTarget! : rtxOutputTarget!;
+                int rgbWidth = useVsr ? Width : (int)back.Description.Width;
+                int rgbHeight = useVsr ? Height : (int)back.Description.Height;
+                context!.OMSetRenderTargets(rgbTarget);
+                context.RSSetViewport(new GpuViewport(0, 0, rgbWidth, rgbHeight));
                 context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
                 context.VSSetShader(vs); context.PSSetShader(rgbPs);
                 context.PSSetShaderResource(0, drawY);
@@ -1858,22 +1886,42 @@ internal sealed class CustomPlayerForm : Form
                 context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());
                 context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1);
                 context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(4);
-                enhanced = rtxVideo.Evaluate(rtxInputTex, rtxOutputTex!, Width,
-                    Height, (int)back.Description.Width,
-                    (int)back.Description.Height,
-                    rtxVideoSuperResolutionQuality, out _);
-                if (!enhanced)
+                if (useVsr && !rtxVideo!.Evaluate(rtxInputTex!, rtxOutputTex!,
+                    Width, Height, (int)back.Description.Width,
+                    (int)back.Description.Height, rtxVideoSuperResolutionQuality,
+                    out string? vsrFailure))
                 {
                     SetRtxVideoStatus($"RTX VSR {RtxQualityName()}: Failed\n" +
-                        "Falling back to standard scaling");
-                    rtxVideo.Dispose();
-                    rtxVideo = null;
+                        (vsrFailure ?? "Falling back to standard scaling"));
+                    throw new InvalidOperationException(vsrFailure ??
+                        "RTX Video Super Resolution evaluation failed.");
                 }
-                else SetRtxVideoStatus($"RTX VSR {RtxQualityName()}: Active\n" +
+                enhancedView = rtxOutputView;
+                if (useHdr)
+                {
+                    EnsureHdrOutput();
+                    if (!rtxVideo!.EvaluateTrueHdr(rtxOutputTex!, hdrOutputTex!,
+                        (int)back.Description.Width, (int)back.Description.Height,
+                        out string? hdrFailure))
+                    {
+                        SetRtxVideoStatus("RTX HDR: Failed\n" +
+                            (hdrFailure ?? "HDR conversion could not be applied"));
+                        throw new InvalidOperationException(hdrFailure ??
+                            "RTX Video HDR evaluation failed.");
+                    }
+                    enhancedView = hdrOutputView;
+                    hdrEnhanced = true;
+                }
+                string operation = useHdr
+                    ? useVsr ? $"RTX VSR {RtxQualityName()} + HDR" : "RTX HDR"
+                    : $"RTX VSR {RtxQualityName()}";
+                string bypass = useHdr && rtxVideo!.HasVsr && !upscaling
+                    ? " · VSR bypassed" : "";
+                SetRtxVideoStatus($"{operation}: Active{bypass}\n" +
                     $"{Width}×{Height} → {back.Description.Width}×" +
                     back.Description.Height);
             }
-            else if (rtxVideo != null && !upscaling)
+            else if (rtxVideo?.HasVsr == true && !upscaling)
                 SetRtxVideoStatus($"RTX VSR {RtxQualityName()}: Bypassed\n" +
                     $"Output {back.Description.Width}×{back.Description.Height} " +
                     $"is not larger than source {Width}×{Height}");
@@ -1891,12 +1939,13 @@ internal sealed class CustomPlayerForm : Form
 
             context.OMSetRenderTargets(target!);
             context.RSSetViewport(new GpuViewport(0,0,back!.Description.Width,back.Description.Height));
-            context.PSSetShader(enhanced ? enhancedPs : ps);
+            context.PSSetShader(hdrEnhanced ? hdrPs :
+                enhancedView != null ? enhancedPs : ps);
             context.PSSetShaderResource(0,drawY);
             context.PSSetShaderResource(1,drawU); context.PSSetShaderResource(2,drawV);
             context.PSSetShaderResource(3,drawA); context.PSSetShaderResource(4,thresholdView);
             context.PSSetShaderResource(5,keyView); context.PSSetShaderResource(6,matteView);
-            if(enhanced)context.PSSetShaderResource(7,rtxOutputView);
+            if(enhancedView != null)context.PSSetShaderResource(7,enhancedView);
             context.Draw(3,0);
             context.PSUnsetShaderResource(0); context.PSUnsetShaderResource(1);
             context.PSUnsetShaderResource(2); context.PSUnsetShaderResource(3);
@@ -1915,11 +1964,24 @@ internal sealed class CustomPlayerForm : Form
             if (rtxOutputTex != null &&
                 rtxOutputTex.Description.Width == back!.Description.Width &&
                 rtxOutputTex.Description.Height == back.Description.Height) return;
+            rtxOutputTarget?.Dispose();
             rtxOutputView?.Dispose();
             rtxOutputTex?.Dispose();
             rtxOutputTex = RenderTexture((int)back!.Description.Width,
                 (int)back.Description.Height, DxgiFormat.R8G8B8A8_UNorm);
             rtxOutputView = device!.CreateShaderResourceView(rtxOutputTex);
+            rtxOutputTarget = device.CreateRenderTargetView(rtxOutputTex);
+        }
+        void EnsureHdrOutput()
+        {
+            if (hdrOutputTex != null &&
+                hdrOutputTex.Description.Width == back!.Description.Width &&
+                hdrOutputTex.Description.Height == back.Description.Height) return;
+            hdrOutputView?.Dispose();
+            hdrOutputTex?.Dispose();
+            hdrOutputTex = RenderTexture((int)back!.Description.Width,
+                (int)back.Description.Height, DxgiFormat.R16G16B16A16_Float);
+            hdrOutputView = device!.CreateShaderResourceView(hdrOutputTex);
         }
         string RtxQualityName() => rtxVideoSuperResolutionQuality switch
         {
@@ -2025,6 +2087,8 @@ internal sealed class CustomPlayerForm : Form
                     !Compiler.Compile(Shader, "PSMain", "CustomPlayer.hlsl",
                         "ps_5_0", ShaderFlags.OptimizationLevel3).IsEmpty &&
                     !Compiler.Compile(Shader, "PSMainEnhanced", "CustomPlayer.hlsl",
+                        "ps_5_0", ShaderFlags.OptimizationLevel3).IsEmpty &&
+                    !Compiler.Compile(Shader, "PSMainHdr", "CustomPlayer.hlsl",
                         "ps_5_0", ShaderFlags.OptimizationLevel3).IsEmpty;
             }
             catch
@@ -2126,7 +2190,7 @@ internal sealed class CustomPlayerForm : Form
                 return Math.Clamp(seconds, 0, Duration);
             }
         }
-        internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();rtxOutputView?.Dispose();rtxOutputView=null;rtxOutputTex?.Dispose();rtxOutputTex=null;swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),DxgiFormat.B8G8R8A8_UNorm);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);if(frameUploaded)DrawCurrentFrameLocked();else PresentTransparentLocked();}}
-        public void Dispose(){lock(sync){if(disposed)return;disposed=true;audio?.Dispose();rvmOnnx?.Dispose();DisposeGpuSharedViews();rvmGpu?.Dispose();rtxVideo?.Dispose();rtxVideo=null;rgb.Dispose();alpha?.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();enhancedPs?.Dispose();rgbPs?.Dispose();mattePs?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();rtxOutputView?.Dispose();rtxOutputTex?.Dispose();rtxInputTarget?.Dispose();rtxInputTex?.Dispose();matteView?.Dispose();matteTarget?.Dispose();matteTex?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();device3?.Dispose();device1?.Dispose();context?.Dispose();device?.Dispose();}}
+        internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;DxgiFormat format=back!.Description.Format;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();rtxOutputTarget?.Dispose();rtxOutputTarget=null;rtxOutputView?.Dispose();rtxOutputView=null;rtxOutputTex?.Dispose();rtxOutputTex=null;hdrOutputView?.Dispose();hdrOutputView=null;hdrOutputTex?.Dispose();hdrOutputTex=null;swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),format);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);if(frameUploaded)DrawCurrentFrameLocked();else PresentTransparentLocked();}}
+        public void Dispose(){lock(sync){if(disposed)return;disposed=true;audio?.Dispose();rvmOnnx?.Dispose();DisposeGpuSharedViews();rvmGpu?.Dispose();rtxVideo?.Dispose();rtxVideo=null;rgb.Dispose();alpha?.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();hdrPs?.Dispose();enhancedPs?.Dispose();rgbPs?.Dispose();mattePs?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();hdrOutputView?.Dispose();hdrOutputTex?.Dispose();rtxOutputTarget?.Dispose();rtxOutputView?.Dispose();rtxOutputTex?.Dispose();rtxInputTarget?.Dispose();rtxInputTex?.Dispose();matteView?.Dispose();matteTarget?.Dispose();matteTex?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();device3?.Dispose();device1?.Dispose();context?.Dispose();device?.Dispose();}}
     }
 }

@@ -10,19 +10,27 @@ internal sealed class RtxVideoSession : IDisposable
 {
     const string Bridge = "IStripperRtxVideoBridge64.dll";
     IntPtr handle;
+    internal bool HasVsr { get; }
+    internal bool HasTrueHdr { get; }
 
-    RtxVideoSession(IntPtr handle) => this.handle = handle;
+    RtxVideoSession(IntPtr handle, int features)
+    {
+        this.handle = handle;
+        HasVsr = (features & 1) != 0;
+        HasTrueHdr = (features & 2) != 0;
+    }
 
     internal static RtxVideoSession? TryCreate(ID3D11Device device,
-        out string? unavailableReason)
+        bool enableVsr, bool enableTrueHdr, out string? unavailableReason)
     {
         unavailableReason = null;
         try
         {
             StringBuilder error = new(512);
             IntPtr handle = RtxVideo_CreateD3D11(device.NativePointer,
+                enableVsr ? 1 : 0, enableTrueHdr ? 1 : 0, out int features,
                 error, error.Capacity);
-            if (handle != IntPtr.Zero) return new(handle);
+            if (handle != IntPtr.Zero) return new(handle, features);
             unavailableReason = error.Length == 0
                 ? "NVIDIA RTX Video Super Resolution is unavailable."
                 : error.ToString();
@@ -33,6 +41,18 @@ internal sealed class RtxVideoSession : IDisposable
             unavailableReason = error.Message;
         }
         return null;
+    }
+
+    internal bool EvaluateTrueHdr(ID3D11Texture2D input,
+        ID3D11Texture2D output, int width, int height, out string? failure)
+    {
+        StringBuilder error = new(512);
+        bool succeeded = RtxVideo_EvaluateTrueHdrD3D11(handle,
+            input.NativePointer, output.NativePointer, width, height,
+            contrast: 100, saturation: 100, middleGray: 50,
+            maxLuminance: 1000, error, error.Capacity) != 0;
+        failure = succeeded ? null : error.ToString();
+        return succeeded;
     }
 
     internal bool Evaluate(ID3D11Texture2D input, ID3D11Texture2D output,
@@ -61,23 +81,33 @@ internal sealed class RtxVideoSession : IDisposable
             DeviceCreationFlags.BgraSupport,
             Vortice.Direct3D.FeatureLevel.Level_11_1,
             Vortice.Direct3D.FeatureLevel.Level_11_0);
-        using RtxVideoSession session = TryCreate(device, out string? unavailable)
+        using RtxVideoSession session = TryCreate(device, enableVsr: true,
+            enableTrueHdr: true, out string? unavailable)
             ?? throw new NotSupportedException(unavailable);
+        if (!session.HasVsr || !session.HasTrueHdr)
+            throw new NotSupportedException(
+                "Both NVIDIA RTX VSR and RTX HDR must be available.");
         using ID3D11Texture2D input = VideoTexture(device, 640, 360);
         using ID3D11Texture2D output = VideoTexture(device, 1280, 720);
         if (!session.Evaluate(input, output, 640, 360, 1280, 720, 2,
                 out string? failure))
             throw new InvalidOperationException(failure);
+        using ID3D11Texture2D hdrOutput = VideoTexture(device, 1280, 720,
+            Format.R16G16B16A16_Float);
+        if (!session.EvaluateTrueHdr(output, hdrOutput, 1280, 720,
+                out failure))
+            throw new InvalidOperationException(failure);
     }
 
     static ID3D11Texture2D VideoTexture(ID3D11Device device, int width,
-        int height) => device.CreateTexture2D(new Texture2DDescription
+        int height, Format format = Format.R8G8B8A8_UNorm) =>
+        device.CreateTexture2D(new Texture2DDescription
         {
             Width = (uint)width,
             Height = (uint)height,
             MipLevels = 1,
             ArraySize = 1,
-            Format = Format.R8G8B8A8_UNorm,
+            Format = format,
             SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Default,
             BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget |
@@ -86,14 +116,22 @@ internal sealed class RtxVideoSession : IDisposable
 
     [DllImport(Bridge, CallingConvention = CallingConvention.Cdecl,
         CharSet = CharSet.Unicode)]
-    static extern IntPtr RtxVideo_CreateD3D11(IntPtr device,
-        StringBuilder error, int errorCapacity);
+    static extern IntPtr RtxVideo_CreateD3D11(IntPtr device, int enableVsr,
+        int enableTrueHdr, out int availableFeatures, StringBuilder error,
+        int errorCapacity);
 
     [DllImport(Bridge, CallingConvention = CallingConvention.Cdecl,
         CharSet = CharSet.Unicode)]
     static extern int RtxVideo_EvaluateVsrD3D11(IntPtr handle, IntPtr input,
         IntPtr output, int inputWidth, int inputHeight, int outputWidth,
         int outputHeight, int quality, StringBuilder error, int errorCapacity);
+
+    [DllImport(Bridge, CallingConvention = CallingConvention.Cdecl,
+        CharSet = CharSet.Unicode)]
+    static extern int RtxVideo_EvaluateTrueHdrD3D11(IntPtr handle,
+        IntPtr input, IntPtr output, int width, int height, int contrast,
+        int saturation, int middleGray, int maxLuminance, StringBuilder error,
+        int errorCapacity);
 
     [DllImport(Bridge, CallingConvention = CallingConvention.Cdecl)]
     static extern void RtxVideo_Destroy(IntPtr handle);

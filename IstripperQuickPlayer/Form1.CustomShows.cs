@@ -1893,6 +1893,7 @@ public partial class Form1
             virtualGreenScreen: clip.customVirtualGreenScreen,
             rtxVideoSuperResolutionQuality:
                 customShowConfiguration.RtxVideoSuperResolutionQuality,
+            rtxVideoHdr: customShowConfiguration.RtxVideoHdr,
             showRtxVideoStatus: customShowConfiguration.ShowRtxVideoStatus,
             rvmOnnxModelPath: rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 clip.customRvmOnnxSettings?.Model ??
@@ -2047,6 +2048,7 @@ public partial class Form1
             next.customVirtualGreenScreen,
             next.customStartMs, customPreloadCancellation.Token,
             customShowConfiguration.RtxVideoSuperResolutionQuality,
+            customShowConfiguration.RtxVideoHdr,
             rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 next.customRvmOnnxSettings?.Model ??
                     RvmOnnxSupport.MobileNetV3) : null,

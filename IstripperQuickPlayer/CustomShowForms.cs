@@ -5218,6 +5218,10 @@ internal sealed class CustomShowSettingsForm : Form
         Text = "Show transient in-player RTX Video diagnostics",
         AutoSize = true
     };
+    readonly CheckBox rtxVideoHdr = new()
+    {
+        Text = "Convert SDR custom videos to HDR", AutoSize = true
+    };
     readonly Label sam2CacheUsage = new() { AutoSize = true };
     readonly NumericUpDown transNetBatch = new()
     {
@@ -5274,6 +5278,7 @@ internal sealed class CustomShowSettingsForm : Form
             FullOpacityThreshold = current.FullOpacityThreshold,
             RtxVideoSuperResolutionQuality =
                 current.RtxVideoSuperResolutionQuality,
+            RtxVideoHdr = current.RtxVideoHdr,
             ShowRtxVideoStatus = current.ShowRtxVideoStatus,
             Sam2FrameCacheSizeGb = current.Sam2FrameCacheSizeGb,
             TransNetPreferredBatchSize = current.TransNetPreferredBatchSize,
@@ -5369,6 +5374,7 @@ internal sealed class CustomShowSettingsForm : Form
             ["Off", "Low", "Medium", "High", "Ultra"]);
         AddChoice(general, "RTX Video Super Resolution",
             rtxVideoSuperResolution);
+        AddChoice(general, "RTX Video HDR", rtxVideoHdr);
         AddChoice(general, "RTX Video diagnostics", showRtxVideoStatus);
         AddExplanation(general, "NVIDIA RTX Video enhancement",
             "Enhances custom-player RGB while keeping its transparency matte separate. " +
@@ -5503,6 +5509,7 @@ internal sealed class CustomShowSettingsForm : Form
             Configuration.DefaultAlphaThreshold, 0, 255);
         rtxVideoSuperResolution.SelectedIndex = Math.Clamp(
             Configuration.RtxVideoSuperResolutionQuality, 0, 4);
+        rtxVideoHdr.Checked = Configuration.RtxVideoHdr;
         showRtxVideoStatus.Checked = Configuration.ShowRtxVideoStatus;
         sam2CacheSize.Value = Math.Clamp(Configuration.Sam2FrameCacheSizeGb, 0, 100);
         transNetBatch.Value = Math.Clamp(Configuration.TransNetPreferredBatchSize, 1, 64);
@@ -5816,6 +5823,7 @@ internal sealed class CustomShowSettingsForm : Form
                 (int)defaultAlphaThreshold.Value;
             Configuration.RtxVideoSuperResolutionQuality =
                 Math.Max(0, rtxVideoSuperResolution.SelectedIndex);
+            Configuration.RtxVideoHdr = rtxVideoHdr.Checked;
             Configuration.ShowRtxVideoStatus = showRtxVideoStatus.Checked;
             Configuration.Sam2FrameCacheSizeGb = (int)sam2CacheSize.Value;
             Configuration.TransNetPreferredBatchSize = (int)transNetBatch.Value;

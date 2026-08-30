@@ -7,6 +7,8 @@
 #include <nvsdk_ngx_defs.h>
 #include <nvsdk_ngx_defs_vsr.h>
 #include <nvsdk_ngx_helpers_vsr.h>
+#include <nvsdk_ngx_defs_truehdr.h>
+#include <nvsdk_ngx_helpers_truehdr.h>
 
 namespace
 {
@@ -19,6 +21,7 @@ namespace
         ID3D10Multithread* multithread = nullptr;
         NVSDK_NGX_Parameter* parameters = nullptr;
         NVSDK_NGX_Handle* vsr = nullptr;
+        NVSDK_NGX_Handle* trueHdr = nullptr;
         bool initialized = false;
 
         ~Session() { Release(); }
@@ -28,6 +31,8 @@ namespace
             std::scoped_lock lock(ngxMutex);
             if (vsr) NVSDK_NGX_D3D11_ReleaseFeature(vsr);
             vsr = nullptr;
+            if (trueHdr) NVSDK_NGX_D3D11_ReleaseFeature(trueHdr);
+            trueHdr = nullptr;
             if (parameters) NVSDK_NGX_D3D11_DestroyParameters(parameters);
             parameters = nullptr;
             if (initialized && device) NVSDK_NGX_D3D11_Shutdown1(device);
@@ -49,8 +54,10 @@ namespace
 }
 
 extern "C" __declspec(dllexport) void* __cdecl RtxVideo_CreateD3D11(
-    ID3D11Device* device, wchar_t* error, int errorCapacity)
+    ID3D11Device* device, int enableVsr, int enableTrueHdr,
+    int* availableFeatures, wchar_t* error, int errorCapacity)
 {
+    if (availableFeatures) *availableFeatures = 0;
     if (!device)
     {
         Error(error, errorCapacity, L"The Direct3D 11 device is missing.");
@@ -81,19 +88,36 @@ extern "C" __declspec(dllexport) void* __cdecl RtxVideo_CreateD3D11(
         {
             session->initialized = true;
             result = NVSDK_NGX_D3D11_GetCapabilityParameters(&session->parameters);
-            int available = 0;
-            if (NVSDK_NGX_FAILED(result) || !session->parameters ||
-                NVSDK_NGX_FAILED(session->parameters->Get(
-                    NVSDK_NGX_Parameter_VSR_Available, &available)) || !available)
-                Error(error, errorCapacity, L"NVIDIA RTX Video Super Resolution is unavailable on this system.");
+            if (NVSDK_NGX_FAILED(result) || !session->parameters)
+                Error(error, errorCapacity, L"NVIDIA RTX Video capabilities could not be queried.");
             else
             {
-                NVSDK_NGX_Feature_Create_Params create = {};
-                result = NGX_D3D11_CREATE_VSR_EXT(session->context, &session->vsr,
-                    session->parameters, &create);
-                if (NVSDK_NGX_FAILED(result))
-                    Error(error, errorCapacity, L"NVIDIA RTX Video Super Resolution could not create its feature instance.");
-                else created = true;
+                int features = 0;
+                if (enableVsr)
+                {
+                    int available = 0;
+                    session->parameters->Get(NVSDK_NGX_Parameter_VSR_Available,
+                        &available);
+                    NVSDK_NGX_Feature_Create_Params create = {};
+                    if (available && NVSDK_NGX_SUCCEED(
+                        NGX_D3D11_CREATE_VSR_EXT(session->context, &session->vsr,
+                            session->parameters, &create))) features |= 1;
+                }
+                if (enableTrueHdr)
+                {
+                    int available = 0;
+                    session->parameters->Get(
+                        NVSDK_NGX_Parameter_TrueHDR_Available, &available);
+                    NVSDK_NGX_Feature_Create_Params create = {};
+                    if (available && NVSDK_NGX_SUCCEED(
+                        NGX_D3D11_CREATE_TRUEHDR_EXT(session->context,
+                            &session->trueHdr, session->parameters, &create)))
+                        features |= 2;
+                }
+                created = features != 0;
+                if (availableFeatures) *availableFeatures = features;
+                if (!created)
+                    Error(error, errorCapacity, L"The requested NVIDIA RTX Video features are unavailable on this system.");
             }
         }
     }
@@ -103,6 +127,39 @@ extern "C" __declspec(dllexport) void* __cdecl RtxVideo_CreateD3D11(
         return nullptr;
     }
     return session;
+}
+
+extern "C" __declspec(dllexport) int __cdecl RtxVideo_EvaluateTrueHdrD3D11(
+    void* handle, ID3D11Texture2D* input, ID3D11Texture2D* output,
+    int width, int height, int contrast, int saturation, int middleGray,
+    int maxLuminance, wchar_t* error, int errorCapacity)
+{
+    Session* session = static_cast<Session*>(handle);
+    if (!session || !session->trueHdr || !input || !output)
+    {
+        Error(error, errorCapacity, L"The RTX Video HDR evaluation resources are incomplete.");
+        return 0;
+    }
+    NVSDK_NGX_D3D11_TRUEHDR_Eval_Params evaluate = {};
+    evaluate.pInput = input;
+    evaluate.pOutput = output;
+    evaluate.InputSubrectBR = { static_cast<unsigned int>(width), static_cast<unsigned int>(height) };
+    evaluate.OutputSubrectBR = { static_cast<unsigned int>(width), static_cast<unsigned int>(height) };
+    evaluate.Contrast = static_cast<unsigned int>(contrast);
+    evaluate.Saturation = static_cast<unsigned int>(saturation);
+    evaluate.MiddleGray = static_cast<unsigned int>(middleGray);
+    evaluate.MaxLuminance = static_cast<unsigned int>(maxLuminance);
+    std::scoped_lock lock(ngxMutex);
+    if (session->multithread) session->multithread->Enter();
+    NVSDK_NGX_Result result = NGX_D3D11_EVALUATE_TRUEHDR_EXT(session->context,
+        session->trueHdr, session->parameters, &evaluate);
+    if (session->multithread) session->multithread->Leave();
+    if (NVSDK_NGX_FAILED(result))
+    {
+        Error(error, errorCapacity, L"NVIDIA RTX Video HDR failed to process the frame.");
+        return 0;
+    }
+    return 1;
 }
 
 extern "C" __declspec(dllexport) int __cdecl RtxVideo_EvaluateVsrD3D11(
