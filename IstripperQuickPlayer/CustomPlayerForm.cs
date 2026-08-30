@@ -304,7 +304,8 @@ internal sealed class CustomPlayerForm : Form
                 {
                     renderer.Pause();
                     if (refreshPausedFrame && renderer.TryRenderDue(
-                            captureHitMap: true, out AlphaHitMap? pausedAlpha))
+                            captureHitMap: true, out AlphaHitMap? pausedAlpha,
+                            allowFutureFrame: true))
                     {
                         refreshPausedFrame = false;
                         if (pausedAlpha != null)
@@ -1188,13 +1189,14 @@ internal sealed class CustomPlayerForm : Form
             float DiskSupport(float2 uv,float2 radius,float lower){float support=0;[unroll]for(int n=0;n<16;n++)support+=Supported(uv+Disk[n]*radius,lower);return support;}
             float ConnectedSupportedRays(float2 uv,float2 radius,float lower){float rays=0;[unroll]for(int n=0;n<8;n++){float connected=1;[unroll]for(int step=1;step<=4;step++)connected*=Supported(uv+Rays[n]*radius*(step*.25),lower);rays+=connected;}return rays;}
             float OutputAlpha(float a,float lower,float upper){return a<lower?0:a>=upper?1:a;}
+            float AntialiasedOutputAlpha(float a,float lower,float upper){float w=max(fwidth(a),1.0/255.0);float visible=smoothstep(lower-w,lower+w,a);float opaque=smoothstep(upper-w,upper+w,a);return lerp(a*visible,1,opaque);}
             float Removed(float2 uv,float lower,float upper){float a=A.Sample(S,uv);float before=OutputAlpha(a,lower,upper);float after=OutputAlpha(a*M.Sample(S,uv),lower,upper);return after<before?1:0;}
             float RemovedDiskSupport(float2 uv,float2 radius,float lower,float upper){float support=0;[unroll]for(int n=0;n<16;n++)support+=Removed(uv+Disk[n]*radius,lower,upper);return support;}
             float ConnectedRemovedRays(float2 uv,float2 radius,float lower,float upper){float rays=0;[unroll]for(int n=0;n<8;n++){float connected=1;[unroll]for(int step=1;step<=4;step++)connected*=Removed(uv+Rays[n]*radius*(step*.25),lower,upper);rays+=connected;}return rays;}
             float4 PSMain(O i):SV_TARGET { float3 c=RgbAt(i.uv); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;uint aw,ah;A.GetDimensions(aw,ah);
               if(r>0){float2 d=r/float2(aw,ah);a=min(a,A.Sample(S,i.uv+float2(d.x,0)));a=min(a,A.Sample(S,i.uv-float2(d.x,0)));a=min(a,A.Sample(S,i.uv+float2(0,d.y)));a=min(a,A.Sample(S,i.uv-float2(0,d.y)));a=min(a,A.Sample(S,i.uv+d));a=min(a,A.Sample(S,i.uv-d));a=min(a,A.Sample(S,i.uv+float2(d.x,-d.y)));a=min(a,A.Sample(S,i.uv+float2(-d.x,d.y)));}
               float4 spatial=T.Load(int3(1,0,0));float baseAlpha=a;a*=M.Sample(S,i.uv);float keyedAlpha=a;float patch=round(spatial.r*255.0);if(patch>0&&a>0&&a>=t.r){float2 d=patch/float2(aw,ah);if(DiskSupport(i.uv,d,t.r)<4||ConnectedSupportedRays(i.uv,d,t.r)<2)a=0;}float area=round(spatial.g*255.0);if(area>0&&OutputAlpha(keyedAlpha,t.r,t.g)<OutputAlpha(baseAlpha,t.r,t.g)){float2 d=area/float2(aw,ah);if(ConnectedRemovedRays(i.uv,d,t.r,t.g)<3||RemovedDiskSupport(i.uv,d,t.r,t.g)<8)a=baseAlpha;}
-              a=a<t.r?0:a>=t.g?1:a; return float4(saturate(c)*a,a); }
+              a=AntialiasedOutputAlpha(a,t.r,t.g); return float4(saturate(c)*a,a); }
             """;
         readonly string foregroundPath;
         FfmpegCpuDecoder rgb;
@@ -1581,7 +1583,7 @@ internal sealed class CustomPlayerForm : Form
             }
         }
         internal unsafe bool TryRenderDue(bool captureHitMap,
-            out AlphaHitMap? alphaBytes)
+            out AlphaHitMap? alphaBytes, bool allowFutureFrame = false)
         {
             alphaBytes=null; lock(sync)
             {
@@ -1615,7 +1617,7 @@ internal sealed class CustomPlayerForm : Form
                 }
                 else
                     while(rgbTick+frame<now) { pending=false; if(!DecodePair())return false; }
-                if(rgbTick>now+10_000)return false;
+                if(!allowFutureFrame&&rgbTick>now+10_000)return false;
                 if(alpha != null && Math.Abs(rgbTick-alphaTick)>Math.Max(10_000,frame/2)) throw new InvalidDataException("Foreground and alpha timestamps do not match.");
                 IntPtr yd=IntPtr.Zero,ud=IntPtr.Zero,vd=IntPtr.Zero;
                 uint yp=0,up=0,vp=0;
