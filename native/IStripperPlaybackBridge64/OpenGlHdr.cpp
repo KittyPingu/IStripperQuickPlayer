@@ -4,6 +4,7 @@
 #include <dcomp.h>
 #include <d3dcompiler.h>
 #include <mutex>
+#include <vector>
 #include <cwchar>
 #include "OpenGlHdr.h"
 
@@ -78,23 +79,154 @@ namespace
         RtxDestroyFn destroy = nullptr;
     };
 
+    struct CachedSurface
+    {
+        int width = 0;
+        int height = 0;
+        HANDLE interopObject = nullptr;
+        unsigned glTexture = 0;
+        ID3D11Texture2D* input = nullptr;
+        ID3D11Texture2D* alphaCopy = nullptr;
+        ID3D11Texture2D* output = nullptr;
+        ID3D11ShaderResourceView* inputView = nullptr;
+        ID3D11ShaderResourceView* alphaView = nullptr;
+        ID3D11ShaderResourceView* outputView = nullptr;
+    };
+
     std::mutex stateMutex;
     State state;
+    std::vector<CachedSurface> cachedSurfaces;
     volatile LONG status = 0;
     volatile LONG frameCount = 0;
     volatile LONG suspended = 0;
+    volatile LONG playerLocked = 0;
+
+    UINT OverlayCreateMessage()
+    {
+        static const UINT message = RegisterWindowMessageW(
+            L"IStripperQuickPlayer.RtxHdrOverlay.Create.v101");
+        return message;
+    }
+
+    LRESULT CALLBACK OverlayWindowProc(HWND window, UINT message,
+        WPARAM wParam, LPARAM lParam)
+    {
+        HWND source = reinterpret_cast<HWND>(GetWindowLongPtrW(
+            window, GWLP_USERDATA));
+        if (message == WM_NCHITTEST)
+        {
+            return (GetWindowLongPtrW(window, GWL_EXSTYLE) &
+                WS_EX_TRANSPARENT) != 0 ? HTTRANSPARENT : HTCLIENT;
+        }
+        if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+        if (message == WM_SETCURSOR)
+        {
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            return TRUE;
+        }
+        if (message == WM_CLOSE)
+        {
+            DestroyWindow(window);
+            return 0;
+        }
+        if (message == WM_LBUTTONDOWN)
+        {
+            if (InterlockedCompareExchange(&playerLocked, 0, 0) != 0)
+                return 0;
+            POINT point = {
+                static_cast<short>(LOWORD(lParam)),
+                static_cast<short>(HIWORD(lParam))
+            };
+            ClientToScreen(window, &point);
+            if (source && IsWindow(source))
+            {
+                // Enter the source window's native move loop. Moving it with
+                // SetWindowPos only changes the HWND temporarily; Qt retains
+                // its old geometry and snaps the show back when drag ends.
+                SendMessageW(source, WM_NCLBUTTONDOWN, HTCAPTION,
+                    MAKELPARAM(point.x, point.y));
+            }
+            return 0;
+        }
+        if ((message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) &&
+            HandleOpenGlHdrMouseWheel(wParam))
+        {
+            return 0;
+        }
+        if (source && IsWindow(source) && message >= WM_MOUSEFIRST &&
+            message <= WM_MOUSELAST)
+        {
+            LPARAM translated = lParam;
+            if (message != WM_MOUSEWHEEL && message != WM_MOUSEHWHEEL)
+            {
+                POINT point = {
+                    static_cast<short>(LOWORD(lParam)),
+                    static_cast<short>(HIWORD(lParam))
+                };
+                ClientToScreen(window, &point);
+                ScreenToClient(source, &point);
+                translated = MAKELPARAM(point.x, point.y);
+            }
+            return SendMessageW(source, message, wParam, translated);
+        }
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+
+    HWND CreateOverlayWindowOnOwnerThread(HWND sourceWindow)
+    {
+        HMODULE module = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&OverlayWindowProc), &module);
+        WNDCLASSW windowClass = {};
+        windowClass.lpfnWndProc = OverlayWindowProc;
+        windowClass.hInstance = module;
+        windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        windowClass.lpszClassName = L"IStripperQuickPlayerRtxHdrOverlay";
+        RegisterClassW(&windowClass);
+        HWND overlay = CreateWindowExW(
+            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT |
+                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            windowClass.lpszClassName, L"", WS_POPUP, 0, 0, 1, 1,
+            nullptr, nullptr, module, nullptr);
+        if (overlay)
+            SetWindowLongPtrW(overlay, GWLP_USERDATA,
+                reinterpret_cast<LONG_PTR>(sourceWindow));
+        return overlay;
+    }
 
     LRESULT CALLBACK SourceWindowProc(HWND window, UINT message,
         WPARAM wParam, LPARAM lParam)
     {
+        if (message == OverlayCreateMessage())
+        {
+            HWND overlay = state.overlayWindow;
+            if (!overlay || !IsWindow(overlay))
+            {
+                overlay = CreateOverlayWindowOnOwnerThread(window);
+                InterlockedExchangePointer(
+                    reinterpret_cast<PVOID volatile*>(&state.overlayWindow),
+                    overlay);
+            }
+            return reinterpret_cast<LRESULT>(overlay);
+        }
+        if (message == WM_MOUSEACTIVATE)
+            return MA_NOACTIVATE;
         if (message == WM_SETCURSOR)
         {
             SetCursor(LoadCursorW(nullptr, IDC_ARROW));
             return TRUE;
         }
         WNDPROC original = state.sourceWindowProc;
-        return original ? CallWindowProcW(original, window, message, wParam,
-            lParam) : DefWindowProcW(window, message, wParam, lParam);
+        const LRESULT result = original
+            ? CallWindowProcW(original, window, message, wParam, lParam)
+            : DefWindowProcW(window, message, wParam, lParam);
+        // Qt can call SetCursor directly while processing mouse movement,
+        // after WM_SETCURSOR has already returned. Apply our cursor last so
+        // its transient busy/pointing-hand cursors cannot leak through.
+        if (message == WM_MOUSEMOVE)
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        return result;
     }
 
     void Log(const wchar_t* message)
@@ -123,20 +255,89 @@ namespace
         value = nullptr;
     }
 
-    void ReleaseSurfaceState()
+    void CacheActiveSurface()
     {
-        if (state.sourceWindow && state.sourceWindowProc &&
-            IsWindow(state.sourceWindow))
-            SetWindowLongPtrW(state.sourceWindow, GWLP_WNDPROC,
-                reinterpret_cast<LONG_PTR>(state.sourceWindowProc));
-        state.sourceWindowProc = nullptr;
-        if (state.interopObject && state.unregisterObject)
-            state.unregisterObject(state.interopDevice, state.interopObject);
+        if (!state.interopObject) return;
+        cachedSurfaces.push_back({
+            state.width, state.height, state.interopObject, state.glTexture,
+            state.input, state.alphaCopy, state.output, state.inputView,
+            state.alphaView, state.outputView });
         state.interopObject = nullptr;
+        state.glTexture = 0;
+        state.input = nullptr;
+        state.alphaCopy = nullptr;
+        state.output = nullptr;
+        state.inputView = nullptr;
+        state.alphaView = nullptr;
+        state.outputView = nullptr;
+        state.width = state.height = 0;
+    }
+
+    bool ActivateCachedSurface(int width, int height)
+    {
+        for (auto entry = cachedSurfaces.begin();
+            entry != cachedSurfaces.end(); ++entry)
+        {
+            if (entry->width != width || entry->height != height) continue;
+            state.width = entry->width;
+            state.height = entry->height;
+            state.interopObject = entry->interopObject;
+            state.glTexture = entry->glTexture;
+            state.input = entry->input;
+            state.alphaCopy = entry->alphaCopy;
+            state.output = entry->output;
+            state.inputView = entry->inputView;
+            state.alphaView = entry->alphaView;
+            state.outputView = entry->outputView;
+            cachedSurfaces.erase(entry);
+            return true;
+        }
+        return false;
+    }
+
+    void ReleaseCachedSurfaces()
+    {
+        for (auto& surface : cachedSurfaces)
+        {
+            if (surface.interopObject && state.unregisterObject)
+                state.unregisterObject(
+                    state.interopDevice, surface.interopObject);
+            ReleaseCom(surface.outputView);
+            ReleaseCom(surface.alphaView);
+            ReleaseCom(surface.inputView);
+            ReleaseCom(surface.output);
+            ReleaseCom(surface.alphaCopy);
+            ReleaseCom(surface.input);
+        }
+        cachedSurfaces.clear();
+    }
+
+    void ReleasePresentationState(bool restoreWindow = true)
+    {
         ReleaseCom(state.visual);
         ReleaseCom(state.compositionTarget);
         ReleaseCom(state.composition);
         ReleaseCom(state.swapChain);
+        HWND overlay = static_cast<HWND>(InterlockedExchangePointer(
+            reinterpret_cast<PVOID volatile*>(&state.overlayWindow), nullptr));
+        if (overlay && IsWindow(overlay)) PostMessageW(overlay, WM_CLOSE, 0, 0);
+        if (restoreWindow)
+        {
+            if (state.sourceWindow && state.sourceWindowProc &&
+                IsWindow(state.sourceWindow))
+                SetWindowLongPtrW(state.sourceWindow, GWLP_WNDPROC,
+                    reinterpret_cast<LONG_PTR>(state.sourceWindowProc));
+            state.sourceWindowProc = nullptr;
+            state.sourceWindow = nullptr;
+        }
+    }
+
+    void ReleaseSurfaceState(bool preserveWindow = false)
+    {
+        if (state.interopObject && state.unregisterObject)
+            state.unregisterObject(state.interopDevice, state.interopObject);
+        state.interopObject = nullptr;
+        ReleasePresentationState(!preserveWindow);
         ReleaseCom(state.sampler);
         ReleaseCom(state.pixelShader);
         ReleaseCom(state.vertexShader);
@@ -146,9 +347,6 @@ namespace
         ReleaseCom(state.output);
         ReleaseCom(state.alphaCopy);
         ReleaseCom(state.input);
-        if (state.overlayWindow) DestroyWindow(state.overlayWindow);
-        state.overlayWindow = nullptr;
-        state.sourceWindow = nullptr;
         state.glContext = nullptr;
         state.glTexture = 0;
         state.width = state.height = 0;
@@ -158,6 +356,7 @@ namespace
     void ReleaseState()
     {
         ReleaseSurfaceState();
+        ReleaseCachedSurfaces();
         if (state.rtxSession && state.destroy) state.destroy(state.rtxSession);
         state.rtxSession = nullptr;
         if (state.interopDevice && state.closeDevice)
@@ -188,38 +387,10 @@ namespace
         return true;
     }
 
-    LRESULT CALLBACK OverlayWindowProc(HWND window, UINT message,
-        WPARAM wParam, LPARAM lParam)
+    bool CreateOverlay(int width, int height, bool flipVertical)
     {
-        if (message == WM_NCHITTEST) return HTTRANSPARENT;
-        if (message == WM_SETCURSOR)
-        {
-            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
-            return TRUE;
-        }
-        return DefWindowProcW(window, message, wParam, lParam);
-    }
-
-    bool CreateOverlay(HWND sourceWindow, int width, int height,
-        bool flipVertical)
-    {
-        HMODULE module = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&OverlayWindowProc), &module);
-        WNDCLASSW windowClass = {};
-        windowClass.lpfnWndProc = OverlayWindowProc;
-        windowClass.hInstance = module;
-        windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        windowClass.lpszClassName = L"IStripperQuickPlayerRtxHdrOverlay";
-        RegisterClassW(&windowClass);
-        state.overlayWindow = CreateWindowExW(
-            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT |
-                WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-            windowClass.lpszClassName, L"", WS_POPUP, 0, 0, width, height,
-            nullptr, nullptr, module, nullptr);
-        if (!state.overlayWindow) return false;
-
+        HWND overlay = state.overlayWindow;
+        if (!overlay || !IsWindow(overlay)) return false;
         IDXGIDevice* dxgiDevice = nullptr;
         IDXGIFactory2* factory = nullptr;
         HRESULT result = state.device->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
@@ -245,8 +416,11 @@ namespace
         if (SUCCEEDED(result)) result = DCompositionCreateDevice(dxgiDevice,
             __uuidof(IDCompositionDevice),
             reinterpret_cast<void**>(&state.composition));
+        // Keep the HDR presentation in its own HWND immediately behind the
+        // Qt show/control windows. Its input transparency is driven from the
+        // decoded alpha mask, independently of the cleared Qt framebuffer.
         if (SUCCEEDED(result)) result = state.composition->CreateTargetForHwnd(
-            state.overlayWindow, TRUE, &state.compositionTarget);
+            overlay, TRUE, &state.compositionTarget);
         if (SUCCEEDED(result)) result = state.composition->CreateVisual(
             &state.visual);
         if (SUCCEEDED(result)) result = state.visual->SetContent(state.swapChain);
@@ -289,65 +463,153 @@ namespace
             "OpenGlHdr.hlsl", nullptr, nullptr, "PS", "ps_5_0",
             D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pixelCode, &errors);
         if (errors) errors->Release();
-        if (SUCCEEDED(result)) result = state.device->CreateVertexShader(
-            vertexCode->GetBufferPointer(), vertexCode->GetBufferSize(),
-            nullptr, &state.vertexShader);
-        if (SUCCEEDED(result)) result = state.device->CreatePixelShader(
-            pixelCode->GetBufferPointer(), pixelCode->GetBufferSize(),
-            nullptr, &state.pixelShader);
+        if (SUCCEEDED(result) && !state.vertexShader)
+            result = state.device->CreateVertexShader(
+                vertexCode->GetBufferPointer(), vertexCode->GetBufferSize(),
+                nullptr, &state.vertexShader);
+        if (SUCCEEDED(result) && !state.pixelShader)
+            result = state.device->CreatePixelShader(
+                pixelCode->GetBufferPointer(), pixelCode->GetBufferSize(),
+                nullptr, &state.pixelShader);
         if (vertexCode) vertexCode->Release();
         if (pixelCode) pixelCode->Release();
-        if (SUCCEEDED(result)) result = state.device->CreateShaderResourceView(
-            state.input, nullptr, &state.inputView);
-        if (SUCCEEDED(result)) result = state.device->CreateShaderResourceView(
-            state.alphaCopy, nullptr, &state.alphaView);
-        if (SUCCEEDED(result)) result = state.device->CreateShaderResourceView(
-            state.output, nullptr, &state.outputView);
+        if (SUCCEEDED(result) && !state.inputView)
+            result = state.device->CreateShaderResourceView(
+                state.input, nullptr, &state.inputView);
+        if (SUCCEEDED(result) && !state.alphaView)
+            result = state.device->CreateShaderResourceView(
+                state.alphaCopy, nullptr, &state.alphaView);
+        if (SUCCEEDED(result) && !state.outputView)
+            result = state.device->CreateShaderResourceView(
+                state.output, nullptr, &state.outputView);
         D3D11_SAMPLER_DESC sampler = {};
         sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sampler.AddressU = sampler.AddressV = sampler.AddressW =
             D3D11_TEXTURE_ADDRESS_CLAMP;
         sampler.MaxLOD = D3D11_FLOAT32_MAX;
-        if (SUCCEEDED(result)) result = state.device->CreateSamplerState(
-            &sampler, &state.sampler);
+        if (SUCCEEDED(result) && !state.sampler)
+            result = state.device->CreateSamplerState(&sampler, &state.sampler);
         if (FAILED(result)) return false;
-        state.sourceWindow = sourceWindow;
-        state.sourceWindowProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
-            sourceWindow, GWLP_WNDPROC,
-            reinterpret_cast<LONG_PTR>(&SourceWindowProc)));
         return true;
+    }
+
+    void RequestOverlayWindow()
+    {
+        if (state.sourceWindow && IsWindow(state.sourceWindow))
+            PostMessageW(state.sourceWindow, OverlayCreateMessage(), 0, 0);
+    }
+
+    bool EnsurePresentation(bool flipVertical)
+    {
+        if (state.swapChain) return true;
+        if (!state.overlayWindow || !IsWindow(state.overlayWindow))
+        {
+            RequestOverlayWindow();
+            return false;
+        }
+        return CreateOverlay(state.targetWidth, state.targetHeight,
+            flipVertical);
     }
 
     void PositionOverlay()
     {
-        // Panic and other iStripper visibility changes hide the source show
-        // window. Never let a late/in-flight HDR frame resurrect its overlay.
+        HWND overlay = state.overlayWindow;
+        if (!overlay || !IsWindow(overlay)) return;
         if (InterlockedCompareExchange(&suspended, 0, 0) != 0 ||
             !state.sourceWindow || !IsWindowVisible(state.sourceWindow))
         {
-            if (state.overlayWindow)
-                ShowWindowAsync(state.overlayWindow, SW_HIDE);
+            ShowWindowAsync(overlay, SW_HIDE);
             return;
         }
-
         POINT origin = {};
         ClientToScreen(state.sourceWindow, &origin);
-        // Keep iStripper's transparent interaction window and its native
-        // lock/info/volume/resize controls above the HDR pixels. The cleared
-        // show framebuffer reveals this overlay immediately underneath it.
-        SetWindowPos(state.overlayWindow, HWND_TOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
-                SWP_NOSENDCHANGING);
-        SetWindowPos(state.overlayWindow, state.sourceWindow, origin.x, origin.y,
+        // Put the HDR surface directly behind the Qt show HWND. iStripper's
+        // own info/lock/size windows retain their relative order above both.
+        SetWindowPos(overlay, state.sourceWindow, origin.x, origin.y,
             state.targetWidth, state.targetHeight,
             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING);
     }
 
+    bool RebindPresentation(HWND sourceWindow, int targetWidth,
+        int targetHeight, HGLRC currentContext)
+    {
+        HWND previousWindow = state.sourceWindow;
+        ReleasePresentationState();
+        SetLastError(ERROR_SUCCESS);
+        const LONG_PTR original = SetWindowLongPtrW(sourceWindow, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(&SourceWindowProc));
+        if (original == 0 && GetLastError() != ERROR_SUCCESS)
+            return false;
+        state.sourceWindow = sourceWindow;
+        state.sourceWindowProc = reinterpret_cast<WNDPROC>(original);
+        state.glContext = currentContext;
+        state.targetWidth = targetWidth;
+        state.targetHeight = targetHeight;
+        RequestOverlayWindow();
+        wchar_t message[192] = {};
+        swprintf_s(message,
+            L"RTX HDR presentation rebound from hwnd=%p to hwnd=%p at %dx%d",
+            previousWindow, sourceWindow, targetWidth, targetHeight);
+        Log(message);
+        return true;
+    }
+
     bool Initialize(HWND sourceWindow, int width, int height,
         int targetWidth, int targetHeight, HGLRC currentContext,
-        HMODULE openGl, WglGetProcAddressFn wglProc, bool flipVertical)
+        HMODULE openGl, WglGetProcAddressFn wglProc)
     {
-        ReleaseSurfaceState();
+        // iStripper creates a new Qt/OpenGL HWND for each clip. Those contexts
+        // share textures, so a same-sized clip change only needs a new DComp
+        // target. Target-only resizing also does not require new interop.
+        if (state.rtxSession && state.sourceWindow != sourceWindow &&
+            state.width == width && state.height == height)
+            return RebindPresentation(sourceWindow, targetWidth, targetHeight,
+                currentContext);
+        if (state.rtxSession && state.sourceWindow == sourceWindow &&
+            state.width == width && state.height == height &&
+            (state.targetWidth != targetWidth ||
+                state.targetHeight != targetHeight))
+            return RebindPresentation(sourceWindow, targetWidth, targetHeight,
+                currentContext);
+
+        const bool preserveWindow = state.sourceWindow == sourceWindow &&
+            state.sourceWindowProc && IsWindow(sourceWindow);
+        if (state.rtxSession && state.interopObject)
+        {
+            // NVIDIA's WGL unregister can deadlock against Qt's render thread
+            // during a clip/size transition. Keep each size registered and
+            // reuse it when iStripper switches between small and large shows.
+            ReleasePresentationState(!preserveWindow);
+            CacheActiveSurface();
+            if (ActivateCachedSurface(width, height))
+            {
+                state.glContext = currentContext;
+                state.targetWidth = targetWidth;
+                state.targetHeight = targetHeight;
+                if (!preserveWindow)
+                {
+                    state.sourceWindow = sourceWindow;
+                    SetLastError(ERROR_SUCCESS);
+                    const LONG_PTR original = SetWindowLongPtrW(sourceWindow,
+                        GWLP_WNDPROC,
+                        reinterpret_cast<LONG_PTR>(&SourceWindowProc));
+                    if (original == 0 && GetLastError() != ERROR_SUCCESS)
+                        return false;
+                    state.sourceWindowProc =
+                        reinterpret_cast<WNDPROC>(original);
+                }
+                RequestOverlayWindow();
+                wchar_t message[128] = {};
+                swprintf_s(message,
+                    L"RTX HDR cached surface reused at %dx%d", width, height);
+                Log(message);
+                return true;
+            }
+        }
+        else
+        {
+            ReleaseSurfaceState(preserveWindow);
+        }
         auto openDevice = reinterpret_cast<WglDxOpenDeviceFn>(
             wglProc("wglDXOpenDeviceNV"));
         state.closeDevice = reinterpret_cast<WglDxCloseDeviceFn>(
@@ -434,8 +696,17 @@ namespace
         state.height = height;
         state.targetWidth = targetWidth;
         state.targetHeight = targetHeight;
-        if (!CreateOverlay(sourceWindow, targetWidth, targetHeight,
-                flipVertical)) return false;
+        if (!preserveWindow)
+        {
+            state.sourceWindow = sourceWindow;
+            SetLastError(ERROR_SUCCESS);
+            const LONG_PTR original = SetWindowLongPtrW(sourceWindow,
+                GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&SourceWindowProc));
+            if (original == 0 && GetLastError() != ERROR_SUCCESS)
+                return false;
+            state.sourceWindowProc = reinterpret_cast<WNDPROC>(original);
+        }
+        RequestOverlayWindow();
         wchar_t message[128] = {};
         swprintf_s(message, L"OpenGL to D3D11 RTX HDR initialized at %dx%d",
             width, height);
@@ -457,17 +728,24 @@ bool TryEvaluateOpenGlHdr(HWND window, int width, int height)
 
     std::lock_guard<std::mutex> lock(stateMutex);
     if (InterlockedCompareExchange(&suspended, 0, 0) != 0) return false;
+    // During a clip transition Qt may present the incoming and outgoing show
+    // HWNDs concurrently. Keep the established surface until Qt hides it so
+    // the two renderers cannot repeatedly steal the single HDR presentation.
+    if (state.rtxSession && state.sourceWindow != window &&
+        IsWindow(state.sourceWindow) && IsWindowVisible(state.sourceWindow))
+        return false;
     if (!state.rtxSession || state.sourceWindow != window ||
         state.width != width || state.height != height)
     {
         if (!Initialize(window, width, height, width, height,
-                currentContext(), openGl, wglProc, true))
+                currentContext(), openGl, wglProc))
         {
             ReleaseState();
             InterlockedExchange(&status, -1);
             return false;
         }
     }
+    if (!EnsurePresentation(true)) return false;
 
     auto lockObjects = reinterpret_cast<WglDxLockObjectsFn>(
         wglProc("wglDXLockObjectsNV"));
@@ -566,14 +844,14 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
         state.targetHeight != targetHeight)
     {
         if (!Initialize(window, textureWidth, textureHeight,
-                targetWidth, targetHeight, currentContext(), openGl, wglProc,
-                false))
+                targetWidth, targetHeight, currentContext(), openGl, wglProc))
         {
             ReleaseState();
             InterlockedExchange(&status, -1);
             return false;
         }
     }
+    if (!EnsurePresentation(false)) return false;
 
     auto lockObjects = reinterpret_cast<WglDxLockObjectsFn>(
         wglProc("wglDXLockObjectsNV"));
@@ -631,6 +909,53 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
     return true;
 }
 
+void SetOpenGlHdrClickThrough(HWND sourceWindow, bool enabled)
+{
+    if (!sourceWindow || state.sourceWindow != sourceWindow) return;
+    HWND overlay = state.overlayWindow;
+    if (!overlay || !IsWindow(overlay)) return;
+    const LONG_PTR style = GetWindowLongPtrW(overlay, GWL_EXSTYLE);
+    const LONG_PTR updated = enabled
+        ? style | WS_EX_TRANSPARENT
+        : style & ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT);
+    if (updated != style)
+        SetWindowLongPtrW(overlay, GWL_EXSTYLE, updated);
+
+    if (!enabled)
+    {
+        SetWindowRgn(overlay, nullptr, TRUE);
+        return;
+    }
+
+    // WS_EX_TRANSPARENT does not provide reliable hit-test pass-through to a
+    // window in another process. Punch a small real window-region hole under
+    // the cursor. The hook calls this only for decoded transparent pixels, so
+    // clipping this area cannot remove visible video.
+    POINT cursor = {};
+    RECT client = {};
+    if (!GetCursorPos(&cursor) || !ScreenToClient(overlay, &cursor) ||
+        !GetClientRect(overlay, &client))
+        return;
+    HRGN fullRegion = CreateRectRgn(0, 0, client.right, client.bottom);
+    HRGN cursorHole = CreateRectRgn(cursor.x - 4, cursor.y - 4,
+        cursor.x + 5, cursor.y + 5);
+    if (!fullRegion || !cursorHole)
+    {
+        if (fullRegion) DeleteObject(fullRegion);
+        if (cursorHole) DeleteObject(cursorHole);
+        return;
+    }
+    CombineRgn(fullRegion, fullRegion, cursorHole, RGN_DIFF);
+    DeleteObject(cursorHole);
+    if (!SetWindowRgn(overlay, fullRegion, TRUE))
+        DeleteObject(fullRegion);
+}
+
+void SetOpenGlHdrPlayerLocked(bool locked)
+{
+    InterlockedExchange(&playerLocked, locked ? 1 : 0);
+}
+
 void ReleaseOpenGlHdr()
 {
     InterlockedExchange(&suspended, 1);
@@ -644,9 +969,10 @@ void SuspendOpenGlHdrSurface()
     InterlockedExchange(&suspended, 1);
     std::lock_guard<std::mutex> lock(stateMutex);
     // DirectComposition can retain the last committed frame after hiding its
-    // HWND. Destroy the presentation surface for panic while retaining the
-    // NVIDIA session/device so resume only rebuilds per-window resources.
-    ReleaseSurfaceState();
+    // HWND. Destroy only presentation resources for panic. NVIDIA WGL
+    // interop remains registered because synchronous unregister can deadlock
+    // against Qt's render thread during a transition.
+    ReleasePresentationState(false);
     InterlockedExchange(&status, 0);
 }
 

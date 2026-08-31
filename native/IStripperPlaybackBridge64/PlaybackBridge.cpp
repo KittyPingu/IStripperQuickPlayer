@@ -4105,6 +4105,48 @@ namespace
 
     void SetMovieWindowClickThrough(HWND window, bool enabled);
 
+    bool HandlePlayerWheelInput(int delta)
+    {
+        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+            InterlockedCompareExchange(
+                &g_playerWheelWhileLocked, 0, 0) == 0)
+        {
+            return false;
+        }
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
+        {
+            const LONG accumulated = InterlockedExchangeAdd(
+                &g_playerVolumeWheelDelta, delta) + delta;
+            const int steps = accumulated / WHEEL_DELTA;
+            if (steps != 0 && g_volumeWheelMessage != 0)
+            {
+                InterlockedExchangeAdd(&g_playerVolumeWheelDelta,
+                    -steps * WHEEL_DELTA);
+                PostMessageW(HWND_BROADCAST, g_volumeWheelMessage,
+                    static_cast<WPARAM>(steps),
+                    static_cast<LPARAM>(InterlockedCompareExchange(
+                        &g_playerMode, 0, 0)));
+            }
+            return true;
+        }
+        if (InterlockedCompareExchange(&g_playerWheelResize, 0, 0) == 0)
+            return false;
+
+        const LONG accumulated = InterlockedExchangeAdd(
+            &g_playerWheelDelta, delta) + delta;
+        const int steps = accumulated / WHEEL_DELTA;
+        if (steps != 0 && g_wheelResizeMessage != 0)
+        {
+            InterlockedExchangeAdd(&g_playerWheelDelta,
+                -steps * WHEEL_DELTA);
+            PostMessageW(HWND_BROADCAST, g_wheelResizeMessage,
+                static_cast<WPARAM>(steps),
+                static_cast<LPARAM>(InterlockedCompareExchange(
+                    &g_playerMode, 0, 0)));
+        }
+        return true;
+    }
+
     LRESULT CALLBACK MovieMouseHook(int code, WPARAM wParam, LPARAM lParam)
     {
         if (code == HC_ACTION)
@@ -4141,23 +4183,33 @@ namespace
                     &g_pointerMovieWindow, search.window));
             InterlockedExchange(&g_pointerOverVisiblePixel,
                 search.visiblePixel ? 1 : 0);
-
+            if (mouseMove && search.window != nullptr)
+            {
+                // The non-redirected DirectComposition overlay can remain the
+                // User32 hit target at transparent pixels and leave Qt's last
+                // busy cursor installed. Reset it without changing render or
+                // window ownership.
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            }
             const bool locked = InterlockedCompareExchange(
                 &g_playerLocked, 0, 0) != 0;
             const bool clickThrough = InterlockedCompareExchange(
                 &g_playerClickThrough, 0, 0) != 0;
             if (previousWindow != nullptr && previousWindow != search.window &&
-                locked && !clickThrough)
+                !clickThrough)
             {
                 SetMovieWindowClickThrough(previousWindow, false);
             }
-            if (search.window != nullptr && locked)
+            if (search.window != nullptr)
             {
                 // HTTRANSPARENT only continues hit testing through windows
                 // owned by the same GUI thread. The application beneath the
                 // iStripper movie belongs to another process, so let Windows
-                // route all pointer input across that boundary by changing the
-                // extended style while the sampled movie pixel is transparent.
+                // route input across that boundary by changing the extended
+                // style while the sampled movie pixel is transparent. This is
+                // also required while unlocked: HDR clears the original Qt
+                // surface, so Windows' layered-alpha hit-test cache is not a
+                // reliable representation of the composited model.
                 SetMovieWindowClickThrough(search.window,
                     clickThrough || !search.visiblePixel);
             }
@@ -4177,49 +4229,8 @@ namespace
             if (wheel && search.window != nullptr &&
                 search.visiblePixel)
             {
-                if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
-                    InterlockedCompareExchange(
-                        &g_playerWheelWhileLocked, 0, 0) == 0)
-                {
-                    return CallNextHookEx(
-                        g_movieMouseHook, code, wParam, lParam);
-                }
                 const int delta = GET_WHEEL_DELTA_WPARAM(mouse->mouseData);
-                if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
-                {
-                    const LONG accumulated = InterlockedExchangeAdd(
-                        &g_playerVolumeWheelDelta, delta) + delta;
-                    const int steps = accumulated / WHEEL_DELTA;
-                    if (steps != 0 && g_volumeWheelMessage != 0)
-                    {
-                        InterlockedExchangeAdd(&g_playerVolumeWheelDelta,
-                            -steps * WHEEL_DELTA);
-                        PostMessageW(HWND_BROADCAST, g_volumeWheelMessage,
-                            static_cast<WPARAM>(steps),
-                            static_cast<LPARAM>(InterlockedCompareExchange(
-                                &g_playerMode, 0, 0)));
-                    }
-                    return 1;
-                }
-                if (InterlockedCompareExchange(
-                        &g_playerWheelResize, 0, 0) == 0)
-                {
-                    return CallNextHookEx(
-                        g_movieMouseHook, code, wParam, lParam);
-                }
-                const LONG accumulated = InterlockedExchangeAdd(
-                    &g_playerWheelDelta, delta) + delta;
-                const int steps = accumulated / WHEEL_DELTA;
-                if (steps != 0 && g_wheelResizeMessage != 0)
-                {
-                    InterlockedExchangeAdd(&g_playerWheelDelta,
-                        -steps * WHEEL_DELTA);
-                    PostMessageW(HWND_BROADCAST, g_wheelResizeMessage,
-                        static_cast<WPARAM>(steps),
-                        static_cast<LPARAM>(InterlockedCompareExchange(
-                            &g_playerMode, 0, 0)));
-                }
-                return 1;
+                if (HandlePlayerWheelInput(delta)) return 1;
             }
         }
         return CallNextHookEx(g_movieMouseHook, code, wParam, lParam);
@@ -4227,6 +4238,7 @@ namespace
 
     void SetMovieWindowClickThrough(HWND window, bool enabled)
     {
+        SetOpenGlHdrClickThrough(window, enabled);
         const LONG_PTR style = GetWindowLongPtrW(window, GWL_EXSTYLE);
         if (enabled)
         {
@@ -4295,6 +4307,16 @@ namespace
         {
             return MovieWindowProbeResult;
         }
+        if (message == WM_SETCURSOR)
+        {
+            // Qt alternates its busy/pointing-hand cursors as the transparent
+            // movie surface changes hit-test state. Visible model pixels use
+            // a stable arrow; transparent pixels bypass this HWND through
+            // WS_EX_TRANSPARENT and inherit the underlying application's
+            // cursor instead.
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            return TRUE;
+        }
         if (message == WM_NCHITTEST &&
             InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
         {
@@ -4339,6 +4361,14 @@ namespace
             // procedure is called, so underlying applications remain usable.
             return 0;
         }
+        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+            (message == WM_NCLBUTTONDOWN || message == WM_NCLBUTTONUP ||
+                message == WM_NCLBUTTONDBLCLK ||
+                (message == WM_SYSCOMMAND &&
+                    (wParam & 0xFFF0) == SC_MOVE)))
+        {
+            return 0;
+        }
 
         WNDPROC original = OriginalMovieWindowProc(window);
         const LRESULT result = original == nullptr
@@ -4370,19 +4400,13 @@ namespace
 
     bool SubclassMovieWindow(HWND window)
     {
-        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) == 0 ||
-            !IsMovieWindow(window))
+        if (!IsMovieWindow(window))
         {
             return false;
         }
 
         const bool clickThrough = InterlockedCompareExchange(
             &g_playerClickThrough, 0, 0) != 0;
-        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) == 0)
-        {
-            SetMovieWindowClickThrough(window, false);
-            return false;
-        }
         const HWND pointerWindow = static_cast<HWND>(
             InterlockedCompareExchangePointer(
                 &g_pointerMovieWindow, nullptr, nullptr));
@@ -4602,6 +4626,7 @@ namespace
 
     HRESULT SetPlayerLocked(bool locked)
     {
+        SetOpenGlHdrPlayerLocked(locked);
         if (locked)
         {
             const HRESULT pinResult = PinBridge();
@@ -11285,6 +11310,11 @@ namespace
     }
 }
 
+bool HandleOpenGlHdrMouseWheel(WPARAM wParam)
+{
+    return HandlePlayerWheelInput(GET_WHEEL_DELTA_WPARAM(wParam));
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerLocked(
     SIZE_T locked)
 {
@@ -11748,7 +11778,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 98;
+    return 106;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
@@ -11765,6 +11795,18 @@ IStripperSetOpenGlPresentProbe(SIZE_T enabled)
 {
     if (enabled)
     {
+        if (g_movieWindowProbeMessage == 0)
+        {
+            g_movieWindowProbeMessage = RegisterWindowMessageW(
+                L"IStripperQuickPlayer.MovieWindowProc.v19");
+            if (g_movieWindowProbeMessage == 0)
+                return HRESULT_FROM_WIN32(GetLastError());
+        }
+        const HRESULT watcherResult = EnsureMovieWindowWatcher();
+        if (watcherResult < 0 || g_movieMouseHook == nullptr)
+            return watcherResult < 0 ? watcherResult :
+                HRESULT_FROM_WIN32(ERROR_HOOK_NOT_INSTALLED);
+        EnumWindows(&FindMovieWindow, 0);
         const HRESULT result = InstallOpenGlPresentProbe();
         if (FAILED(result)) return result;
     }
