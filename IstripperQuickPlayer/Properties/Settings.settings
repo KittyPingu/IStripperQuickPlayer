@@ -255,7 +255,7 @@
       <Value Profile="(Default)">False</Value>
     </Setting>
     <Setting Name="EnableCustomPlayerAlphaAntialiasing" Type="System.Boolean" Scope="User">
-      <Value Profile="(Default)">True</Value>
+      <Value Profile="(Default)">False</Value>
     </Setting>
     <Setting Name="AllowWheelWhileLocked" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>

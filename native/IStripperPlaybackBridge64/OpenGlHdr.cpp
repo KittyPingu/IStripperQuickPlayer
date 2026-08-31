@@ -59,6 +59,8 @@ namespace
         ID3D11ShaderResourceView* outputView = nullptr;
         ID3D11VertexShader* vertexShader = nullptr;
         ID3D11PixelShader* pixelShader = nullptr;
+        ID3D11PixelShader* pixelShaderRaw = nullptr;
+        ID3D11Buffer* presentationConstants = nullptr;
         ID3D11SamplerState* sampler = nullptr;
         IDXGISwapChain1* swapChain = nullptr;
         IDCompositionDevice* composition = nullptr;
@@ -101,6 +103,8 @@ namespace
     volatile LONG suspended = 0;
     volatile LONG interactiveMove = 0;
     volatile LONG playerLocked = 0;
+    volatile LONG hdrEnabled = 0;
+    volatile LONG alphaAntialiasing = 0;
 
     UINT OverlayCreateMessage()
     {
@@ -196,6 +200,20 @@ namespace
             SetLayeredWindowAttributes(overlay, 0, 255, LWA_ALPHA);
             SetWindowLongPtrW(overlay, GWLP_USERDATA,
                 reinterpret_cast<LONG_PTR>(sourceWindow));
+            if ((GetWindowLongPtrW(sourceWindow, GWL_EXSTYLE) &
+                    WS_EX_TOPMOST) != 0)
+            {
+                // Qt can leave WS_EX_TOPMOST set while its show HWND is
+                // actually in the normal z-order band. Promote the visual
+                // surface first and the cleared Qt input/control window
+                // second, producing an adjacent topmost pair with Qt above.
+                SetWindowPos(overlay, HWND_TOPMOST, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                    SWP_NOSENDCHANGING);
+                SetWindowPos(sourceWindow, HWND_TOPMOST, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                    SWP_NOSENDCHANGING);
+            }
         }
         return overlay;
     }
@@ -344,6 +362,8 @@ namespace
         state.interopObject = nullptr;
         ReleasePresentationState(!preserveWindow);
         ReleaseCom(state.sampler);
+        ReleaseCom(state.presentationConstants);
+        ReleaseCom(state.pixelShaderRaw);
         ReleaseCom(state.pixelShader);
         ReleaseCom(state.vertexShader);
         ReleaseCom(state.outputView);
@@ -390,6 +410,37 @@ namespace
         if (!slash) return false;
         slash[1] = L'\0';
         return true;
+    }
+
+    bool EnsureRtxSession()
+    {
+        if (state.rtxSession) return true;
+        if (!state.device) return false;
+        wchar_t directory[MAX_PATH] = {};
+        wchar_t path[MAX_PATH] = {};
+        if (!ModuleDirectory(directory, ARRAYSIZE(directory))) return false;
+        if (wcscpy_s(path, directory) ||
+            wcscat_s(path, L"nvngx_truehdr.dll")) return false;
+        if (!state.trueHdrModule) state.trueHdrModule = LoadLibraryW(path);
+        if (wcscpy_s(path, directory) ||
+            wcscat_s(path, L"IStripperRtxVideoBridge64.dll")) return false;
+        if (!state.bridgeModule) state.bridgeModule = LoadLibraryW(path);
+        if (!state.bridgeModule) return false;
+        auto create = reinterpret_cast<RtxCreateFn>(GetProcAddress(
+            state.bridgeModule, "RtxVideo_CreateD3D11"));
+        state.evaluate = reinterpret_cast<RtxEvaluateHdrFn>(GetProcAddress(
+            state.bridgeModule, "RtxVideo_EvaluateTrueHdrD3D11"));
+        state.destroy = reinterpret_cast<RtxDestroyFn>(GetProcAddress(
+            state.bridgeModule, "RtxVideo_Destroy"));
+        if (!create || !state.evaluate || !state.destroy) return false;
+        int features = 0;
+        wchar_t error[512] = {};
+        state.rtxSession = create(state.device, 0, 1, &features,
+            error, ARRAYSIZE(error));
+        if (state.rtxSession && (features & 2)) return true;
+        if (state.rtxSession && state.destroy) state.destroy(state.rtxSession);
+        state.rtxSession = nullptr;
+        return false;
     }
 
     bool CreateOverlay(int width, int height, bool flipVertical)
@@ -442,22 +493,66 @@ namespace
             "O VS(uint id:SV_VertexID){O o;float2 uv=float2((id<<1)&2,id&2);"
             "o.uv=uv;o.p=float4(uv.x*2-1,1-uv.y*2,0,1);return o;}"
             "Texture2D<float4> H:register(t0);Texture2D<float4> S:register(t1);"
+            "cbuffer M:register(b0){float hdr;float3 pad;}"
             "SamplerState L:register(s0);"
+            "float3 Lin(float3 c){return lerp(pow((c+.055)/1.055,2.4),"
+            "c/12.92,step(c,.04045));}"
             "float4 PS(O i):SV_TARGET{float2 uv=i.uv;"
             "float3 h=max(H.Sample(L,uv).rgb,0);float a=S.Sample(L,uv).a;"
+            "h=hdr>.5?h:Lin(saturate(h));"
+            "return float4(h*a,a);}";
+        static const char shaderNormalAa[] =
+            "struct O{float4 p:SV_POSITION;float2 uv:TEXCOORD0;};"
+            "O VS(uint id:SV_VertexID){O o;float2 uv=float2((id<<1)&2,id&2);"
+            "o.uv=uv;o.p=float4(uv.x*2-1,1-uv.y*2,0,1);return o;}"
+            "Texture2D<float4> H:register(t0);Texture2D<float4> S:register(t1);"
+            "cbuffer M:register(b0){float hdr;float3 pad;}"
+            "SamplerState L:register(s0);"
+            "float3 Lin(float3 c){return lerp(pow((c+.055)/1.055,2.4),"
+            "c/12.92,step(c,.04045));}"
+            "float AA(float a){float lo=1.0/255.0,hi=254.0/255.0;"
+            "float w=max(fwidth(a),1.0/255.0);"
+            "float v=smoothstep(lo-w,lo+w,a);"
+            "float o=smoothstep(hi-w,hi+w,a);return lerp(a*v,1,o);}"
+            "float4 PS(O i):SV_TARGET{float2 uv=i.uv;"
+            "float3 h=max(H.Sample(L,uv).rgb,0);float a=AA(S.Sample(L,uv).a);"
+            "h=hdr>.5?h:Lin(saturate(h));"
             "return float4(h*a,a);}";
         static const char shaderFlipped[] =
             "struct O{float4 p:SV_POSITION;float2 uv:TEXCOORD0;};"
             "O VS(uint id:SV_VertexID){O o;float2 uv=float2((id<<1)&2,id&2);"
             "o.uv=uv;o.p=float4(uv.x*2-1,1-uv.y*2,0,1);return o;}"
             "Texture2D<float4> H:register(t0);Texture2D<float4> S:register(t1);"
+            "cbuffer M:register(b0){float hdr;float3 pad;}"
             "SamplerState L:register(s0);"
+            "float3 Lin(float3 c){return lerp(pow((c+.055)/1.055,2.4),"
+            "c/12.92,step(c,.04045));}"
             "float4 PS(O i):SV_TARGET{float2 uv=float2(i.uv.x,1-i.uv.y);"
             "float3 h=max(H.Sample(L,uv).rgb,0);float a=S.Sample(L,uv).a;"
+            "h=hdr>.5?h:Lin(saturate(h));"
+            "return float4(h*a,a);}";
+        static const char shaderFlippedAa[] =
+            "struct O{float4 p:SV_POSITION;float2 uv:TEXCOORD0;};"
+            "O VS(uint id:SV_VertexID){O o;float2 uv=float2((id<<1)&2,id&2);"
+            "o.uv=uv;o.p=float4(uv.x*2-1,1-uv.y*2,0,1);return o;}"
+            "Texture2D<float4> H:register(t0);Texture2D<float4> S:register(t1);"
+            "cbuffer M:register(b0){float hdr;float3 pad;}"
+            "SamplerState L:register(s0);"
+            "float3 Lin(float3 c){return lerp(pow((c+.055)/1.055,2.4),"
+            "c/12.92,step(c,.04045));}"
+            "float AA(float a){float lo=1.0/255.0,hi=254.0/255.0;"
+            "float w=max(fwidth(a),1.0/255.0);"
+            "float v=smoothstep(lo-w,lo+w,a);"
+            "float o=smoothstep(hi-w,hi+w,a);return lerp(a*v,1,o);}"
+            "float4 PS(O i):SV_TARGET{float2 uv=float2(i.uv.x,1-i.uv.y);"
+            "float3 h=max(H.Sample(L,uv).rgb,0);float a=AA(S.Sample(L,uv).a);"
+            "h=hdr>.5?h:Lin(saturate(h));"
             "return float4(h*a,a);}";
         const char* shader = flipVertical ? shaderFlipped : shaderNormal;
+        const char* shaderAa = flipVertical ? shaderFlippedAa : shaderNormalAa;
         ID3DBlob* vertexCode = nullptr;
         ID3DBlob* pixelCode = nullptr;
+        ID3DBlob* pixelCodeAa = nullptr;
         ID3DBlob* errors = nullptr;
         result = D3DCompile(shader, strlen(shader) + 1, "OpenGlHdr.hlsl", nullptr,
             nullptr, "VS", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0,
@@ -468,16 +563,34 @@ namespace
             "OpenGlHdr.hlsl", nullptr, nullptr, "PS", "ps_5_0",
             D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pixelCode, &errors);
         if (errors) errors->Release();
+        errors = nullptr;
+        if (SUCCEEDED(result)) result = D3DCompile(shaderAa,
+            strlen(shaderAa) + 1, "OpenGlHdr.hlsl", nullptr, nullptr, "PS",
+            "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pixelCodeAa,
+            &errors);
+        if (errors) errors->Release();
         if (SUCCEEDED(result) && !state.vertexShader)
             result = state.device->CreateVertexShader(
                 vertexCode->GetBufferPointer(), vertexCode->GetBufferSize(),
                 nullptr, &state.vertexShader);
-        if (SUCCEEDED(result) && !state.pixelShader)
+        if (SUCCEEDED(result) && !state.pixelShaderRaw)
             result = state.device->CreatePixelShader(
                 pixelCode->GetBufferPointer(), pixelCode->GetBufferSize(),
+                nullptr, &state.pixelShaderRaw);
+        if (SUCCEEDED(result) && !state.pixelShader)
+            result = state.device->CreatePixelShader(
+                pixelCodeAa->GetBufferPointer(), pixelCodeAa->GetBufferSize(),
                 nullptr, &state.pixelShader);
+        D3D11_BUFFER_DESC constants = {};
+        constants.ByteWidth = 16;
+        constants.Usage = D3D11_USAGE_DEFAULT;
+        constants.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        if (SUCCEEDED(result) && !state.presentationConstants)
+            result = state.device->CreateBuffer(
+                &constants, nullptr, &state.presentationConstants);
         if (vertexCode) vertexCode->Release();
         if (pixelCode) pixelCode->Release();
+        if (pixelCodeAa) pixelCodeAa->Release();
         if (SUCCEEDED(result) && !state.inputView)
             result = state.device->CreateShaderResourceView(
                 state.input, nullptr, &state.inputView);
@@ -535,6 +648,57 @@ namespace
             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING);
     }
 
+    bool PresentOutput(int width, int height)
+    {
+        const bool useHdr = InterlockedCompareExchange(&hdrEnabled, 0, 0) != 0;
+        ID3D11ShaderResourceView* colorView = useHdr
+            ? state.outputView : state.inputView;
+        if (!state.swapChain || !colorView || !state.alphaView ||
+            !state.vertexShader || !state.pixelShader || !state.pixelShaderRaw ||
+            !state.presentationConstants)
+            return false;
+        ID3D11Texture2D* backBuffer = nullptr;
+        if (FAILED(state.swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
+            return false;
+        ID3D11RenderTargetView* target = nullptr;
+        HRESULT result = state.device->CreateRenderTargetView(
+            backBuffer, nullptr, &target);
+        if (SUCCEEDED(result))
+        {
+            state.context->OMSetRenderTargets(1, &target, nullptr);
+            const FLOAT transparent[] = { 0, 0, 0, 0 };
+            state.context->ClearRenderTargetView(target, transparent);
+            D3D11_VIEWPORT viewport = { 0, 0, static_cast<float>(width),
+                static_cast<float>(height), 0, 1 };
+            state.context->RSSetViewports(1, &viewport);
+            state.context->IASetPrimitiveTopology(
+                D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            state.context->VSSetShader(state.vertexShader, nullptr, 0);
+            ID3D11PixelShader* shader = InterlockedCompareExchange(
+                &alphaAntialiasing, 0, 0) != 0
+                ? state.pixelShader : state.pixelShaderRaw;
+            state.context->PSSetShader(shader, nullptr, 0);
+            const float mode[] = { useHdr ? 1.0f : 0.0f, 0, 0, 0 };
+            state.context->UpdateSubresource(
+                state.presentationConstants, 0, nullptr, mode, 0, 0);
+            state.context->PSSetConstantBuffers(
+                0, 1, &state.presentationConstants);
+            ID3D11ShaderResourceView* views[] = {
+                colorView, state.alphaView };
+            state.context->PSSetShaderResources(0, 2, views);
+            state.context->PSSetSamplers(0, 1, &state.sampler);
+            state.context->Draw(3, 0);
+            ID3D11ShaderResourceView* empty[] = { nullptr, nullptr };
+            state.context->PSSetShaderResources(0, 2, empty);
+            state.context->OMSetRenderTargets(0, nullptr, nullptr);
+        }
+        if (target) target->Release();
+        backBuffer->Release();
+        if (FAILED(result)) return false;
+        PositionOverlay();
+        return SUCCEEDED(state.swapChain->Present(1, 0));
+    }
+
     bool RebindPresentation(HWND sourceWindow, int targetWidth,
         int targetHeight, HGLRC currentContext)
     {
@@ -566,11 +730,11 @@ namespace
         // iStripper creates a new Qt/OpenGL HWND for each clip. Those contexts
         // share textures, so a same-sized clip change only needs a new DComp
         // target. Target-only resizing also does not require new interop.
-        if (state.rtxSession && state.sourceWindow != sourceWindow &&
+        if (state.interopObject && state.sourceWindow != sourceWindow &&
             state.width == width && state.height == height)
             return RebindPresentation(sourceWindow, targetWidth, targetHeight,
                 currentContext);
-        if (state.rtxSession && state.sourceWindow == sourceWindow &&
+        if (state.interopObject && state.sourceWindow == sourceWindow &&
             state.width == width && state.height == height &&
             (state.targetWidth != targetWidth ||
                 state.targetHeight != targetHeight))
@@ -579,7 +743,7 @@ namespace
 
         const bool preserveWindow = state.sourceWindow == sourceWindow &&
             state.sourceWindowProc && IsWindow(sourceWindow);
-        if (state.rtxSession && state.interopObject)
+        if (state.interopObject)
         {
             // NVIDIA's WGL unregister can deadlock against Qt's render thread
             // during a clip/size transition. Keep each size registered and
@@ -653,32 +817,6 @@ namespace
         if (FAILED(state.device->CreateTexture2D(
                 &texture, nullptr, &state.output))) return false;
 
-        if (!state.rtxSession)
-        {
-            wchar_t directory[MAX_PATH] = {};
-            wchar_t path[MAX_PATH] = {};
-            if (!ModuleDirectory(directory, ARRAYSIZE(directory))) return false;
-            if (wcscpy_s(path, directory) ||
-                wcscat_s(path, L"nvngx_truehdr.dll")) return false;
-            state.trueHdrModule = LoadLibraryW(path);
-            if (wcscpy_s(path, directory) ||
-                wcscat_s(path, L"IStripperRtxVideoBridge64.dll")) return false;
-            state.bridgeModule = LoadLibraryW(path);
-            if (!state.bridgeModule) return false;
-            auto create = reinterpret_cast<RtxCreateFn>(GetProcAddress(
-                state.bridgeModule, "RtxVideo_CreateD3D11"));
-            state.evaluate = reinterpret_cast<RtxEvaluateHdrFn>(GetProcAddress(
-                state.bridgeModule, "RtxVideo_EvaluateTrueHdrD3D11"));
-            state.destroy = reinterpret_cast<RtxDestroyFn>(GetProcAddress(
-                state.bridgeModule, "RtxVideo_Destroy"));
-            if (!create || !state.evaluate || !state.destroy) return false;
-            int features = 0;
-            wchar_t error[512] = {};
-            state.rtxSession = create(state.device, 0, 1, &features,
-                error, ARRAYSIZE(error));
-            if (!state.rtxSession || !(features & 2)) return false;
-        }
-
         auto genTextures = reinterpret_cast<GlGenTexturesFn>(
             GetProcAddress(openGl, "glGenTextures"));
         auto bindTexture = reinterpret_cast<GlBindTextureFn>(
@@ -713,7 +851,7 @@ namespace
         }
         RequestOverlayWindow();
         wchar_t message[128] = {};
-        swprintf_s(message, L"OpenGL to D3D11 RTX HDR initialized at %dx%d",
+        swprintf_s(message, L"OpenGL to D3D11 video bridge initialized at %dx%d",
             width, height);
         Log(message);
         return true;
@@ -738,10 +876,10 @@ bool TryEvaluateOpenGlHdr(HWND window, int width, int height)
     // During a clip transition Qt may present the incoming and outgoing show
     // HWNDs concurrently. Keep the established surface until Qt hides it so
     // the two renderers cannot repeatedly steal the single HDR presentation.
-    if (state.rtxSession && state.sourceWindow != window &&
+    if (state.interopObject && state.sourceWindow != window &&
         IsWindow(state.sourceWindow) && IsWindowVisible(state.sourceWindow))
         return false;
-    if (!state.rtxSession || state.sourceWindow != window ||
+    if (!state.interopObject || state.sourceWindow != window ||
         state.width != width || state.height != height)
     {
         if (!Initialize(window, width, height, width, height,
@@ -785,45 +923,20 @@ bool TryEvaluateOpenGlHdr(HWND window, int width, int height)
     unlockObjects(state.interopDevice, 1, &object);
     state.context->CopyResource(state.alphaCopy, state.input);
 
+    const bool useHdr = InterlockedCompareExchange(&hdrEnabled, 0, 0) != 0;
     wchar_t error[512] = {};
-    bool succeeded = state.evaluate(state.rtxSession, state.input,
-        state.output, width, height, 100, 100, 50, 1000,
-        error, ARRAYSIZE(error)) != 0;
+    bool succeeded = !useHdr || (EnsureRtxSession() &&
+        state.evaluate(state.rtxSession, state.input, state.output,
+            width, height, 100, 100, 50, 1000,
+            error, ARRAYSIZE(error)) != 0);
     LONG previous = InterlockedExchange(&status, succeeded ? 1 : -1);
     if (succeeded)
     {
-        ID3D11Texture2D* backBuffer = nullptr;
-        if (SUCCEEDED(state.swapChain->GetBuffer(0,
-                IID_PPV_ARGS(&backBuffer))))
-        {
-            ID3D11RenderTargetView* target = nullptr;
-            state.device->CreateRenderTargetView(backBuffer, nullptr, &target);
-            state.context->OMSetRenderTargets(1, &target, nullptr);
-            const FLOAT transparent[] = { 0, 0, 0, 0 };
-            state.context->ClearRenderTargetView(target, transparent);
-            D3D11_VIEWPORT viewport = { 0, 0,
-                static_cast<float>(state.width),
-                static_cast<float>(state.height), 0, 1 };
-            state.context->RSSetViewports(1, &viewport);
-            state.context->IASetPrimitiveTopology(
-                D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            state.context->VSSetShader(state.vertexShader, nullptr, 0);
-            state.context->PSSetShader(state.pixelShader, nullptr, 0);
-            ID3D11ShaderResourceView* views[] = {
-                state.outputView, state.alphaView };
-            state.context->PSSetShaderResources(0, 2, views);
-            state.context->PSSetSamplers(0, 1, &state.sampler);
-            state.context->Draw(3, 0);
-            ID3D11ShaderResourceView* empty[] = { nullptr, nullptr };
-            state.context->PSSetShaderResources(0, 2, empty);
-            state.context->OMSetRenderTargets(0, nullptr, nullptr);
-            if (target) target->Release();
-            backBuffer->Release();
-            PositionOverlay();
-            state.swapChain->Present(1, 0);
-        }
-        InterlockedIncrement(&frameCount);
-        if (previous != 1) Log(L"NVIDIA TrueHDR frame evaluation active");
+        if (PresentOutput(state.width, state.height))
+            InterlockedIncrement(&frameCount);
+        if (previous != 1) Log(useHdr
+            ? L"NVIDIA TrueHDR frame evaluation active"
+            : L"SDR alpha presentation active");
     }
     else if (previous != -1)
         Log(L"NVIDIA TrueHDR frame evaluation failed");
@@ -847,7 +960,7 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
 
     std::lock_guard<std::mutex> lock(stateMutex);
     if (InterlockedCompareExchange(&suspended, 0, 0) != 0) return false;
-    if (!state.rtxSession || state.sourceWindow != window ||
+    if (!state.interopObject || state.sourceWindow != window ||
         state.width != textureWidth ||
         state.height != textureHeight || state.targetWidth != targetWidth ||
         state.targetHeight != targetHeight)
@@ -877,10 +990,12 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
     unlockObjects(state.interopDevice, 1, &object);
     state.context->CopyResource(state.alphaCopy, state.input);
 
+    const bool useHdr = InterlockedCompareExchange(&hdrEnabled, 0, 0) != 0;
     wchar_t error[512] = {};
-    bool succeeded = state.evaluate(state.rtxSession, state.input,
-        state.output, textureWidth, textureHeight, 100, 100, 50, 1000,
-        error, ARRAYSIZE(error)) != 0;
+    bool succeeded = !useHdr || (EnsureRtxSession() &&
+        state.evaluate(state.rtxSession, state.input, state.output,
+            textureWidth, textureHeight, 100, 100, 50, 1000,
+            error, ARRAYSIZE(error)) != 0);
     LONG previous = InterlockedExchange(&status, succeeded ? 1 : -1);
     if (!succeeded)
     {
@@ -888,33 +1003,11 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
         return false;
     }
 
-    ID3D11Texture2D* backBuffer = nullptr;
-    if (FAILED(state.swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
-        return false;
-    ID3D11RenderTargetView* target = nullptr;
-    state.device->CreateRenderTargetView(backBuffer, nullptr, &target);
-    state.context->OMSetRenderTargets(1, &target, nullptr);
-    const FLOAT transparent[] = { 0, 0, 0, 0 };
-    state.context->ClearRenderTargetView(target, transparent);
-    D3D11_VIEWPORT viewport = { 0, 0,
-        static_cast<float>(targetWidth), static_cast<float>(targetHeight), 0, 1 };
-    state.context->RSSetViewports(1, &viewport);
-    state.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    state.context->VSSetShader(state.vertexShader, nullptr, 0);
-    state.context->PSSetShader(state.pixelShader, nullptr, 0);
-    ID3D11ShaderResourceView* views[] = { state.outputView, state.alphaView };
-    state.context->PSSetShaderResources(0, 2, views);
-    state.context->PSSetSamplers(0, 1, &state.sampler);
-    state.context->Draw(3, 0);
-    ID3D11ShaderResourceView* empty[] = { nullptr, nullptr };
-    state.context->PSSetShaderResources(0, 2, empty);
-    state.context->OMSetRenderTargets(0, nullptr, nullptr);
-    if (target) target->Release();
-    backBuffer->Release();
-    PositionOverlay();
-    state.swapChain->Present(1, 0);
+    if (!PresentOutput(targetWidth, targetHeight)) return false;
     InterlockedIncrement(&frameCount);
-    if (previous != 1) Log(L"NVIDIA TrueHDR show-texture evaluation active");
+    if (previous != 1) Log(useHdr
+        ? L"NVIDIA TrueHDR show-texture evaluation active"
+        : L"SDR alpha show-texture presentation active");
     return true;
 }
 
@@ -946,6 +1039,38 @@ void SetOpenGlHdrInteractiveMove(bool active)
         HWND overlay = state.overlayWindow;
         if (overlay && IsWindow(overlay)) ShowWindowAsync(overlay, SW_HIDE);
     }
+}
+
+void SetOpenGlHdrEnabled(bool enabled)
+{
+    const LONG changed = InterlockedExchange(&hdrEnabled, enabled ? 1 : 0);
+    if (changed == (enabled ? 1 : 0)) return;
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (InterlockedCompareExchange(&suspended, 0, 0) != 0 ||
+        InterlockedCompareExchange(&status, 0, 0) != 1 || !state.input)
+        return;
+    if (!enabled)
+    {
+        PresentOutput(state.targetWidth, state.targetHeight);
+        return;
+    }
+    wchar_t error[512] = {};
+    const bool succeeded = EnsureRtxSession() &&
+        state.evaluate(state.rtxSession, state.input, state.output,
+            state.width, state.height, 100, 100, 50, 1000,
+            error, ARRAYSIZE(error)) != 0;
+    InterlockedExchange(&status, succeeded ? 1 : -1);
+    if (succeeded)
+        PresentOutput(state.targetWidth, state.targetHeight);
+}
+
+void SetOpenGlHdrAlphaAntialiasing(bool enabled)
+{
+    InterlockedExchange(&alphaAntialiasing, enabled ? 1 : 0);
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (InterlockedCompareExchange(&suspended, 0, 0) == 0 &&
+        InterlockedCompareExchange(&status, 0, 0) == 1)
+        PresentOutput(state.targetWidth, state.targetHeight);
 }
 
 void HideOpenGlHdr()

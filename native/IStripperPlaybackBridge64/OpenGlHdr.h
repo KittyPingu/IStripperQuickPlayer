@@ -6,6 +6,8 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
 void SetOpenGlHdrClickThrough(HWND sourceWindow, bool enabled);
 void SetOpenGlHdrPlayerLocked(bool locked);
 void SetOpenGlHdrInteractiveMove(bool active);
+void SetOpenGlHdrEnabled(bool enabled);
+void SetOpenGlHdrAlphaAntialiasing(bool enabled);
 void HideOpenGlHdr();
 bool HandleOpenGlHdrMouseWheel(WPARAM wParam);
 void ReleaseOpenGlHdr();

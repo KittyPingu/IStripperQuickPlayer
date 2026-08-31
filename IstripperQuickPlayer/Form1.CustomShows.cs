@@ -20,7 +20,7 @@ public partial class Form1
     readonly ToolStripMenuItem iStripperPlayerLargeVolumeMenu = new();
     readonly ToolStripMenuItem customPlayerFullOpacityMenu = new();
     readonly ToolStripMenuItem customPlayerAlphaAntialiasingMenu =
-        new("Custom player alpha antialiasing") { CheckOnClick = true };
+        new("Player alpha antialiasing") { CheckOnClick = true };
     readonly TrackBar customPlayerFullOpacitySlider = new();
     readonly Label customAlphaThresholdLabel = new()
         { Text = "Alpha threshold", AutoSize = true };
@@ -103,7 +103,7 @@ public partial class Form1
         customPlayerAlphaAntialiasingMenu.Checked =
             Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing;
         customPlayerAlphaAntialiasingMenu.ToolTipText =
-            "Smooth transparency threshold edges in the custom player.";
+            "Smooth transparency edges in the custom player and iStripper video bridge; works with HDR on or off.";
         customPlayerAlphaAntialiasingMenu.CheckedChanged += (_, _) =>
             SetCustomPlayerAlphaAntialiasing(
                 customPlayerAlphaAntialiasingMenu.Checked);
@@ -602,8 +602,28 @@ public partial class Form1
             customPlayerAlphaAntialiasingMenu.Checked = enabled;
         CancelCustomPreload();
         customPlayer?.SetAlphaAntialiasing(enabled);
-        SetPlaybackStatus($"Custom player alpha antialiasing: " +
-            (enabled ? "On." : "Off."));
+        if (playbackBridgeClient != null)
+        {
+            CallPlaybackBridgeApi(
+                "IStripperSetOpenGlHdrAlphaAntialiasing", enabled ? 1UL : 0UL);
+            CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
+                IStripperVideoBridgeEnabled ? 1UL : 0UL);
+        }
+        SetPlaybackStatus($"Player alpha antialiasing: " +
+            (enabled ? "On" : "Off") + " (custom player and iStripper).");
+    }
+
+    bool IStripperVideoBridgeEnabled =>
+        Properties.Settings.Default.EnableIStripperRtxHdr ||
+        Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing;
+
+    void ApplyIStripperVideoBridgeMode()
+    {
+        if (playbackBridgeClient == null) return;
+        CallPlaybackBridgeApi("IStripperSetOpenGlHdrEnabled",
+            Properties.Settings.Default.EnableIStripperRtxHdr ? 1UL : 0UL);
+        CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
+            IStripperVideoBridgeEnabled ? 1UL : 0UL);
     }
 
     int CustomPlayerVolume(bool large) => Math.Clamp(large

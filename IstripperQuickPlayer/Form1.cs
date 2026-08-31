@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 123;
+        private const int PlaybackBridgeVersion = 124;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -386,8 +386,7 @@ namespace IStripperQuickPlayer
             queuedAnimationProtectedUntil = DateTime.MinValue;
             if (!apiOnlyMode)
                 panicResumeButton.Visible = true;
-            if (Properties.Settings.Default.EnableIStripperRtxHdr &&
-                playbackBridgeClient != null)
+            if (IStripperVideoBridgeEnabled && playbackBridgeClient != null)
                 CallPlaybackBridgeApi("IStripperSuspendOpenGlHdrSurface");
             panicMovieWindow =
                 LockStateOverlay.HideMovieWindowForProcess(vghd_procID);
@@ -423,9 +422,8 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.Save();
             if (iStripperRtxHdrToolStripMenuItem.Checked != enabled)
                 iStripperRtxHdrToolStripMenuItem.Checked = enabled;
-            else if (playbackBridgeClient != null)
-                CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
-                    enabled ? 1UL : 0UL);
+            else
+                ApplyIStripperVideoBridgeMode();
 
             customShowConfiguration.RtxVideoHdr = enabled;
             customShowConfiguration.Save();
@@ -498,9 +496,8 @@ namespace IStripperQuickPlayer
                 }, prepareFastDecode: false);
             }
             LockStateOverlay.ShowMovieWindow(panicMovieWindow);
-            if (Properties.Settings.Default.EnableIStripperRtxHdr &&
-                playbackBridgeClient != null)
-                CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe", 1UL);
+            if (IStripperVideoBridgeEnabled && playbackBridgeClient != null)
+                ApplyIStripperVideoBridgeMode();
             if (!apiOnlyMode)
                 Wallpaper.ResumeQuickPlayerDesktop();
             panicMovieWindow = IntPtr.Zero;
@@ -903,9 +900,7 @@ namespace IStripperQuickPlayer
             {
                 Properties.Settings.Default.EnableIStripperRtxHdr =
                     iStripperRtxHdrToolStripMenuItem.Checked;
-                if (playbackBridgeClient != null)
-                    CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
-                        iStripperRtxHdrToolStripMenuItem.Checked ? 1UL : 0UL);
+                ApplyIStripperVideoBridgeMode();
             };
             settingsToolStripMenuItem.DropDownOpening += (_, _) =>
             {
@@ -3461,12 +3456,29 @@ namespace IStripperQuickPlayer
                         $"Fullscreen hook setup failed (0x{fullscreenHookResult:X8}).",
                         fullscreenHookResult);
 
+                int alphaAaResult = playbackBridgeClient.Call(
+                    "IStripperSetOpenGlHdrAlphaAntialiasing",
+                    Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing
+                        ? 1UL : 0UL);
+                if (alphaAaResult < 0)
+                    throw new COMException(
+                        $"HDR alpha antialiasing setup failed (0x{alphaAaResult:X8}).",
+                        alphaAaResult);
+
+                int hdrModeResult = playbackBridgeClient.Call(
+                    "IStripperSetOpenGlHdrEnabled",
+                    Properties.Settings.Default.EnableIStripperRtxHdr ? 1UL : 0UL);
+                if (hdrModeResult < 0)
+                    throw new COMException(
+                        $"OpenGL HDR mode setup failed (0x{hdrModeResult:X8}).",
+                        hdrModeResult);
+
                 int hdrProbeResult = playbackBridgeClient.Call(
                     "IStripperSetOpenGlPresentProbe",
-                    Properties.Settings.Default.EnableIStripperRtxHdr ? 1UL : 0UL);
+                    IStripperVideoBridgeEnabled ? 1UL : 0UL);
                 if (hdrProbeResult < 0)
                     throw new COMException(
-                        $"OpenGL HDR probe setup failed (0x{hdrProbeResult:X8}).",
+                        $"OpenGL video bridge setup failed (0x{hdrProbeResult:X8}).",
                         hdrProbeResult);
 
                 int resetResult = playbackBridgeClient.Call(

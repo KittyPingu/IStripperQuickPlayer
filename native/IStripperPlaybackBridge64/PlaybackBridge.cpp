@@ -4217,6 +4217,15 @@ namespace
         {
             if ((style & WS_EX_TRANSPARENT) != 0)
             {
+                // Qt may create the layered show HWND with this style already
+                // set. Still mark it as bridge-managed so an opaque-pixel
+                // hit can remove click-through before that mouse event is
+                // routed; otherwise the drag hook sees the model but User32
+                // sends the click to the window underneath it.
+                if (GetPropW(window,
+                        MovieWindowClickThroughProperty) == nullptr)
+                    SetPropW(window, MovieWindowClickThroughProperty,
+                        reinterpret_cast<HANDLE>(static_cast<INT_PTR>(1)));
                 return;
             }
             SetWindowLongPtrW(window, GWL_EXSTYLE,
@@ -4231,12 +4240,15 @@ namespace
                 changed = true;
             }
         }
-        else if (RemovePropW(window,
-            MovieWindowClickThroughProperty) != nullptr)
+        else
         {
-            SetWindowLongPtrW(window, GWL_EXSTYLE,
-                style & ~WS_EX_TRANSPARENT);
-            changed = true;
+            RemovePropW(window, MovieWindowClickThroughProperty);
+            if ((style & WS_EX_TRANSPARENT) != 0)
+            {
+                SetWindowLongPtrW(window, GWL_EXSTYLE,
+                    style & ~WS_EX_TRANSPARENT);
+                changed = true;
+            }
         }
         if (changed)
             SetWindowPos(window, nullptr, 0, 0, 0, 0,
@@ -11404,6 +11416,20 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
     return SetPlayerMode(mode);
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetOpenGlHdrEnabled(SIZE_T enabled)
+{
+    SetOpenGlHdrEnabled(enabled != 0);
+    return BridgeSuccess;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperSetOpenGlHdrAlphaAntialiasing(SIZE_T enabled)
+{
+    SetOpenGlHdrAlphaAntialiasing(enabled != 0);
+    return BridgeSuccess;
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerVolume(
     SIZE_T percent)
 {
@@ -11822,7 +11848,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 123;
+    return 124;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
