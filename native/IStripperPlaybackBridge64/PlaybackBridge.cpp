@@ -832,6 +832,7 @@ namespace
     LONG volatile g_playerMode = 2;
     LONG volatile g_mouseDiagnostics = 0;
     PVOID volatile g_pointerMovieWindow = nullptr;
+    PVOID volatile g_nativeDragWindow = nullptr;
     LONG volatile g_pointerOverVisiblePixel = 0;
     LONGLONG volatile g_lastHitTestRefreshTick = 0;
     std::uintptr_t g_liveVtableRva = 0;
@@ -983,6 +984,7 @@ namespace
     LONG volatile g_movieWindowWatcherResult = E_PENDING;
     UINT g_movieWindowProbeMessage = 0;
     UINT g_movieWindowBeginDragMessage = 0;
+    UINT g_movieWindowEndDragMessage = 0;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
     void* g_wmvRateAnimation = nullptr;
@@ -4154,13 +4156,46 @@ namespace
         if (code == HC_ACTION)
         {
             const bool mouseMove = wParam == WM_MOUSEMOVE;
+            const bool leftButtonUp = wParam == WM_LBUTTONUP;
             const bool wheel = wParam == WM_MOUSEWHEEL ||
                 wParam == WM_MOUSEHWHEEL;
             const bool buttonDown = wParam == WM_LBUTTONDOWN ||
                 wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN ||
                 wParam == WM_XBUTTONDOWN;
-            if (!mouseMove && !wheel && !buttonDown)
+            if (!mouseMove && !wheel && !buttonDown && !leftButtonUp)
             {
+                return CallNextHookEx(
+                    g_movieMouseHook, code, wParam, lParam);
+            }
+
+            const auto mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+            HWND nativeDrag = static_cast<HWND>(
+                InterlockedCompareExchangePointer(
+                    &g_nativeDragWindow, nullptr, nullptr));
+            if (leftButtonUp && nativeDrag != nullptr)
+            {
+                InterlockedExchangePointer(&g_nativeDragWindow, nullptr);
+                const BOOL posted = IsWindow(nativeDrag) &&
+                    PostMessageW(nativeDrag, g_movieWindowEndDragMessage,
+                        0, 0);
+                if (!posted) SetOpenGlHdrInteractiveMove(false);
+                if (InterlockedCompareExchange(
+                        &g_mouseDiagnostics, 0, 0) != 0)
+                {
+                    DressingRoomLog(
+                        "HDR drag release hwnd=%p posted=%d error=%lu",
+                        nativeDrag, posted ? 1 : 0,
+                        posted ? ERROR_SUCCESS : GetLastError());
+                }
+                return CallNextHookEx(
+                    g_movieMouseHook, code, wParam, lParam);
+            }
+            if (mouseMove && nativeDrag != nullptr)
+            {
+                // Do not change WS_EX_TRANSPARENT or force a frame change
+                // while DefWindowProc owns the system move loop. Doing so can
+                // route the physical button-up away from its capture window.
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
                 return CallNextHookEx(
                     g_movieMouseHook, code, wParam, lParam);
             }
@@ -4177,7 +4212,6 @@ namespace
                 lastMoveSample = now;
             }
 
-            const auto mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
             MovieWindowAtPoint search =
                 FindVisibleMovieWindowAtPoint(mouse->pt);
             const HWND previousWindow = static_cast<HWND>(
@@ -4232,9 +4266,14 @@ namespace
                 if (locked) return 1;
                 if (wParam == WM_LBUTTONDOWN)
                 {
+                    InterlockedExchangePointer(
+                        &g_nativeDragWindow, search.window);
                     const BOOL posted = PostMessageW(search.window,
                         g_movieWindowBeginDragMessage, 0,
                         MAKELPARAM(mouse->pt.x, mouse->pt.y));
+                    if (!posted)
+                        InterlockedCompareExchangePointer(
+                            &g_nativeDragWindow, nullptr, search.window);
                     if (InterlockedCompareExchange(
                             &g_mouseDiagnostics, 0, 0) != 0)
                     {
@@ -4355,13 +4394,42 @@ namespace
                     window, InterlockedCompareExchange(
                         &g_playerLocked, 0, 0));
             if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
+            {
+                InterlockedCompareExchangePointer(
+                    &g_nativeDragWindow, nullptr, window);
+                SetOpenGlHdrInteractiveMove(false);
                 return 0;
+            }
+            if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0)
+            {
+                InterlockedCompareExchangePointer(
+                    &g_nativeDragWindow, nullptr, window);
+                SetOpenGlHdrInteractiveMove(false);
+                return 0;
+            }
             // Run the standard Windows move loop on the Qt HWND's GUI thread.
             // Sending WM_NCLBUTTONDOWN through Qt is unreliable because its
             // frameless-window handler can consume the synthetic message.
             ReleaseCapture();
+            SetOpenGlHdrInteractiveMove(true);
             return DefWindowProcW(window, WM_NCLBUTTONDOWN, HTCAPTION,
                 lParam);
+        }
+        if (g_movieWindowEndDragMessage != 0 &&
+            message == g_movieWindowEndDragMessage)
+        {
+            // This runs on the Qt window's GUI thread. Releasing Win32 capture
+            // terminates DefWindowProc's move loop without injecting a Qt
+            // button-up or changing iStripper's own mouse-grab state.
+            ReleaseCapture();
+            SetOpenGlHdrInteractiveMove(false);
+            return 0;
+        }
+        if (message == WM_EXITSIZEMOVE || message == WM_CANCELMODE)
+        {
+            InterlockedCompareExchangePointer(
+                &g_nativeDragWindow, nullptr, window);
+            SetOpenGlHdrInteractiveMove(false);
         }
         if (message == WM_SETCURSOR)
         {
@@ -4677,6 +4745,13 @@ namespace
             g_movieWindowBeginDragMessage = RegisterWindowMessageW(
                 L"IStripperQuickPlayer.MovieWindowBeginDrag.v1");
             if (g_movieWindowBeginDragMessage == 0)
+                return HRESULT_FROM_WIN32(GetLastError());
+        }
+        if (g_movieWindowEndDragMessage == 0)
+        {
+            g_movieWindowEndDragMessage = RegisterWindowMessageW(
+                L"IStripperQuickPlayer.MovieWindowEndDrag.v1");
+            if (g_movieWindowEndDragMessage == 0)
                 return HRESULT_FROM_WIN32(GetLastError());
         }
         if (!InitOnceExecuteOnce(&g_movieWindowWatcherOnce,
@@ -11849,7 +11924,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 117;
+    return 118;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

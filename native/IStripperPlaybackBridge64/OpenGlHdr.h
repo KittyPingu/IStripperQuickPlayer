@@ -5,6 +5,7 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
     int textureWidth, int textureHeight, int targetWidth, int targetHeight);
 void SetOpenGlHdrClickThrough(HWND sourceWindow, bool enabled);
 void SetOpenGlHdrPlayerLocked(bool locked);
+void SetOpenGlHdrInteractiveMove(bool active);
 bool HandleOpenGlHdrMouseWheel(WPARAM wParam);
 void ReleaseOpenGlHdr();
 void SuspendOpenGlHdrSurface();

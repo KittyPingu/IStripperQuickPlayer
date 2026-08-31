@@ -99,6 +99,7 @@ namespace
     volatile LONG status = 0;
     volatile LONG frameCount = 0;
     volatile LONG suspended = 0;
+    volatile LONG interactiveMove = 0;
     volatile LONG playerLocked = 0;
 
     UINT OverlayCreateMessage()
@@ -722,6 +723,8 @@ namespace
 bool TryEvaluateOpenGlHdr(HWND window, int width, int height)
 {
     if (InterlockedCompareExchange(&suspended, 0, 0) != 0) return false;
+    if (InterlockedCompareExchange(&interactiveMove, 0, 0) != 0)
+        return false;
     HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
     if (!openGl || !window || width < 2 || height < 2) return false;
     auto currentContext = reinterpret_cast<WglGetCurrentContextFn>(
@@ -831,6 +834,8 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
     int textureWidth, int textureHeight, int targetWidth, int targetHeight)
 {
     if (InterlockedCompareExchange(&suspended, 0, 0) != 0) return false;
+    if (InterlockedCompareExchange(&interactiveMove, 0, 0) != 0)
+        return false;
     HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
     if (!openGl || !window || !sourceTexture || textureWidth < 2 ||
         textureHeight < 2 || targetWidth < 2 || targetHeight < 2) return false;
@@ -931,6 +936,16 @@ void SetOpenGlHdrClickThrough(HWND sourceWindow, bool)
 void SetOpenGlHdrPlayerLocked(bool locked)
 {
     InterlockedExchange(&playerLocked, locked ? 1 : 0);
+}
+
+void SetOpenGlHdrInteractiveMove(bool active)
+{
+    InterlockedExchange(&interactiveMove, active ? 1 : 0);
+    if (active)
+    {
+        HWND overlay = state.overlayWindow;
+        if (overlay && IsWindow(overlay)) ShowWindowAsync(overlay, SW_HIDE);
+    }
 }
 
 void ReleaseOpenGlHdr()
