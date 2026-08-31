@@ -4415,6 +4415,22 @@ namespace
         const LRESULT result = original == nullptr
             ? DefWindowProcW(window, message, wParam, lParam)
             : CallWindowProcW(original, window, message, wParam, lParam);
+        const HWND dragWindow = static_cast<HWND>(
+            InterlockedCompareExchangePointer(
+                &g_nativeDragWindow, nullptr, nullptr));
+        if (dragWindow == window && message == WM_LBUTTONDOWN &&
+            InterlockedCompareExchange(&g_playerLocked, 0, 0) == 0)
+        {
+            // Preserve iStripper's real drag handling (including hanging
+            // animation clip changes), but keep subsequent physical moves
+            // routed to its Qt HWND when the pointer crosses QuickPlayer or
+            // a transparent part of the layered show surface.
+            SetCapture(window);
+        }
+        else if (message == WM_LBUTTONUP && GetCapture() == window)
+        {
+            ReleaseCapture();
+        }
         if (message == WM_STYLECHANGING &&
             static_cast<int>(wParam) == GWL_EXSTYLE && lParam != 0 &&
             InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&

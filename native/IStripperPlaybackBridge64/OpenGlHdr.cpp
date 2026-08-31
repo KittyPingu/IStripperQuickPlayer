@@ -105,11 +105,21 @@ namespace
     volatile LONG playerLocked = 0;
     volatile LONG hdrEnabled = 0;
     volatile LONG alphaAntialiasing = 0;
+    volatile LONG overlayPositionPending = 0;
+    volatile LONG overlayPositionWidth = 0;
+    volatile LONG overlayPositionHeight = 0;
 
     UINT OverlayCreateMessage()
     {
         static const UINT message = RegisterWindowMessageW(
             L"IStripperQuickPlayer.RtxHdrOverlay.Create.v101");
+        return message;
+    }
+
+    UINT OverlayPositionMessage()
+    {
+        static const UINT message = RegisterWindowMessageW(
+            L"IStripperQuickPlayer.RtxHdrOverlay.Position.v1");
         return message;
     }
 
@@ -127,7 +137,34 @@ namespace
         }
         if (message == WM_CLOSE)
         {
+            InterlockedExchange(&overlayPositionPending, 0);
             DestroyWindow(window);
+            return 0;
+        }
+        if (message == OverlayPositionMessage())
+        {
+            InterlockedExchange(&overlayPositionPending, 0);
+            if (!source || !IsWindow(source) ||
+                !IsWindowVisible(source) ||
+                InterlockedCompareExchange(&suspended, 0, 0) != 0)
+            {
+                ShowWindow(window, SW_HIDE);
+                return 0;
+            }
+            POINT origin = {};
+            ClientToScreen(source, &origin);
+            const int width = InterlockedCompareExchange(
+                &overlayPositionWidth, 0, 0);
+            const int height = InterlockedCompareExchange(
+                &overlayPositionHeight, 0, 0);
+            if (width > 0 && height > 0)
+            {
+                // This procedure owns the overlay HWND, so positioning it
+                // here cannot synchronously block iStripper's render thread.
+                SetWindowPos(window, source, origin.x, origin.y,
+                    width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW |
+                        SWP_NOSENDCHANGING);
+            }
             return 0;
         }
         if (message == WM_LBUTTONDOWN)
@@ -227,6 +264,7 @@ namespace
             if (!overlay || !IsWindow(overlay))
             {
                 overlay = CreateOverlayWindowOnOwnerThread(window);
+                InterlockedExchange(&overlayPositionPending, 0);
                 InterlockedExchangePointer(
                     reinterpret_cast<PVOID volatile*>(&state.overlayWindow),
                     overlay);
@@ -639,13 +677,16 @@ namespace
             ShowWindowAsync(overlay, SW_HIDE);
             return;
         }
-        POINT origin = {};
-        ClientToScreen(state.sourceWindow, &origin);
-        // Put the HDR surface directly behind the Qt show HWND. iStripper's
-        // own info/lock/size windows retain their relative order above both.
-        SetWindowPos(overlay, state.sourceWindow, origin.x, origin.y,
-            state.targetWidth, state.targetHeight,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOSENDCHANGING);
+        InterlockedExchange(&overlayPositionWidth, state.targetWidth);
+        InterlockedExchange(&overlayPositionHeight, state.targetHeight);
+        if (InterlockedExchange(&overlayPositionPending, 1) == 0)
+        {
+            // The OpenGL render thread must never synchronously position a
+            // GUI-thread HWND: Qt can wait for this render thread during clip
+            // or drag transitions, producing an AB/BA deadlock.
+            if (!PostMessageW(overlay, OverlayPositionMessage(), 0, 0))
+                InterlockedExchange(&overlayPositionPending, 0);
+        }
     }
 
     bool PresentOutput(int width, int height)
