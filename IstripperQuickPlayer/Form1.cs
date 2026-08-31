@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 106;
+        private const int PlaybackBridgeVersion = 117;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -200,6 +200,8 @@ namespace IStripperQuickPlayer
         private readonly ToolStripMenuItem iStripperRtxHdrToolStripMenuItem =
             new("NVIDIA RTX HDR for iStripper (experimental)")
             { CheckOnClick = true };
+        private readonly ToolStripMenuItem rtxMouseDiagnosticsToolStripMenuItem =
+            new("RTX HDR mouse diagnostics") { CheckOnClick = true };
         private readonly ToolStripMenuItem allowWheelWhileLockedToolStripMenuItem =
             new("Allow Resize while Locked") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
@@ -832,6 +834,16 @@ namespace IStripperQuickPlayer
                 if (playbackBridgeClient != null)
                     CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
                         iStripperRtxHdrToolStripMenuItem.Checked ? 1UL : 0UL);
+            };
+            rtxMouseDiagnosticsToolStripMenuItem.Checked =
+                Properties.Settings.Default.EnableRtxMouseDiagnostics;
+            rtxMouseDiagnosticsToolStripMenuItem.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.EnableRtxMouseDiagnostics =
+                    rtxMouseDiagnosticsToolStripMenuItem.Checked;
+                if (playbackBridgeClient != null)
+                    CallPlaybackBridgeApi("IStripperSetMouseDiagnostics",
+                        rtxMouseDiagnosticsToolStripMenuItem.Checked ? 1UL : 0UL);
             };
             settingsToolStripMenuItem.DropDownOpening += (_, _) =>
             {
@@ -3372,6 +3384,10 @@ namespace IStripperQuickPlayer
                     throw new COMException(
                         $"OpenGL HDR probe setup failed (0x{hdrProbeResult:X8}).",
                         hdrProbeResult);
+
+                CallPlaybackBridgeApi("IStripperSetMouseDiagnostics",
+                    Properties.Settings.Default.EnableRtxMouseDiagnostics
+                        ? 1UL : 0UL);
 
                 int resetResult = playbackBridgeClient.Call(
                     "IStripperResetPlaybackSession");

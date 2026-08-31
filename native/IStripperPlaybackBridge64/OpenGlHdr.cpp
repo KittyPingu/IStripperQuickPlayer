@@ -113,11 +113,7 @@ namespace
     {
         HWND source = reinterpret_cast<HWND>(GetWindowLongPtrW(
             window, GWLP_USERDATA));
-        if (message == WM_NCHITTEST)
-        {
-            return (GetWindowLongPtrW(window, GWL_EXSTYLE) &
-                WS_EX_TRANSPARENT) != 0 ? HTTRANSPARENT : HTCLIENT;
-        }
+        if (message == WM_NCHITTEST) return HTTRANSPARENT;
         if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
         if (message == WM_SETCURSOR)
         {
@@ -185,13 +181,21 @@ namespace
         windowClass.lpszClassName = L"IStripperQuickPlayerRtxHdrOverlay";
         RegisterClassW(&windowClass);
         HWND overlay = CreateWindowExW(
-            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT |
+            WS_EX_LAYERED | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT |
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             windowClass.lpszClassName, L"", WS_POPUP, 0, 0, 1, 1,
             nullptr, nullptr, module, nullptr);
         if (overlay)
+        {
+            // Top-level WS_EX_TRANSPARENT windows only receive true
+            // cross-process hit-test transparency when they are layered.
+            // The DComp swap chain remains responsible for per-pixel alpha;
+            // this constant alpha merely enables the documented HWND input
+            // behavior without changing the rendered image.
+            SetLayeredWindowAttributes(overlay, 0, 255, LWA_ALPHA);
             SetWindowLongPtrW(overlay, GWLP_USERDATA,
                 reinterpret_cast<LONG_PTR>(sourceWindow));
+        }
         return overlay;
     }
 
@@ -909,46 +913,19 @@ bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
     return true;
 }
 
-void SetOpenGlHdrClickThrough(HWND sourceWindow, bool enabled)
+void SetOpenGlHdrClickThrough(HWND sourceWindow, bool)
 {
     if (!sourceWindow || state.sourceWindow != sourceWindow) return;
     HWND overlay = state.overlayWindow;
     if (!overlay || !IsWindow(overlay)) return;
     const LONG_PTR style = GetWindowLongPtrW(overlay, GWL_EXSTYLE);
-    const LONG_PTR updated = enabled
-        ? style | WS_EX_TRANSPARENT
-        : style & ~static_cast<LONG_PTR>(WS_EX_TRANSPARENT);
+    // The HDR presentation window is visual-only. Keeping it permanently out
+    // of hit testing avoids changing compositor-visible window regions as the
+    // decoded alpha under the pointer changes. The source Qt window and the
+    // low-level alpha hook own all interaction semantics.
+    const LONG_PTR updated = style | WS_EX_LAYERED | WS_EX_TRANSPARENT;
     if (updated != style)
         SetWindowLongPtrW(overlay, GWL_EXSTYLE, updated);
-
-    if (!enabled)
-    {
-        SetWindowRgn(overlay, nullptr, TRUE);
-        return;
-    }
-
-    // WS_EX_TRANSPARENT does not provide reliable hit-test pass-through to a
-    // window in another process. Punch a small real window-region hole under
-    // the cursor. The hook calls this only for decoded transparent pixels, so
-    // clipping this area cannot remove visible video.
-    POINT cursor = {};
-    RECT client = {};
-    if (!GetCursorPos(&cursor) || !ScreenToClient(overlay, &cursor) ||
-        !GetClientRect(overlay, &client))
-        return;
-    HRGN fullRegion = CreateRectRgn(0, 0, client.right, client.bottom);
-    HRGN cursorHole = CreateRectRgn(cursor.x - 4, cursor.y - 4,
-        cursor.x + 5, cursor.y + 5);
-    if (!fullRegion || !cursorHole)
-    {
-        if (fullRegion) DeleteObject(fullRegion);
-        if (cursorHole) DeleteObject(cursorHole);
-        return;
-    }
-    CombineRgn(fullRegion, fullRegion, cursorHole, RGN_DIFF);
-    DeleteObject(cursorHole);
-    if (!SetWindowRgn(overlay, fullRegion, TRUE))
-        DeleteObject(fullRegion);
 }
 
 void SetOpenGlHdrPlayerLocked(bool locked)

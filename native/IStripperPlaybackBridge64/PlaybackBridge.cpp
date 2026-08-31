@@ -830,6 +830,7 @@ namespace
     LONG volatile g_playerSmallSizePercent = 0;
     LONG volatile g_playerLargeSizePercent = 0;
     LONG volatile g_playerMode = 2;
+    LONG volatile g_mouseDiagnostics = 0;
     PVOID volatile g_pointerMovieWindow = nullptr;
     LONG volatile g_pointerOverVisiblePixel = 0;
     LONGLONG volatile g_lastHitTestRefreshTick = 0;
@@ -981,6 +982,7 @@ namespace
     UINT g_volumeWheelMessage = 0;
     LONG volatile g_movieWindowWatcherResult = E_PENDING;
     UINT g_movieWindowProbeMessage = 0;
+    UINT g_movieWindowBeginDragMessage = 0;
     PVOID volatile g_fastForwardMovie = nullptr;
     LONG volatile g_fastForwardTargetFrame = -1;
     void* g_wmvRateAnimation = nullptr;
@@ -4193,8 +4195,17 @@ namespace
             }
             const bool locked = InterlockedCompareExchange(
                 &g_playerLocked, 0, 0) != 0;
-            const bool clickThrough = InterlockedCompareExchange(
+            const bool clickThrough = locked && InterlockedCompareExchange(
                 &g_playerClickThrough, 0, 0) != 0;
+            if (buttonDown && InterlockedCompareExchange(
+                    &g_mouseDiagnostics, 0, 0) != 0)
+            {
+                DressingRoomLog(
+                    "HDR mouse button=0x%04llx point=%ld,%ld hwnd=%p visible=%d locked=%d clickThrough=%d",
+                    static_cast<unsigned long long>(wParam), mouse->pt.x,
+                    mouse->pt.y, search.window, search.visiblePixel ? 1 : 0,
+                    locked ? 1 : 0, clickThrough ? 1 : 0);
+            }
             if (previousWindow != nullptr && previousWindow != search.window &&
                 !clickThrough)
             {
@@ -4202,14 +4213,9 @@ namespace
             }
             if (search.window != nullptr)
             {
-                // HTTRANSPARENT only continues hit testing through windows
-                // owned by the same GUI thread. The application beneath the
-                // iStripper movie belongs to another process, so let Windows
-                // route input across that boundary by changing the extended
-                // style while the sampled movie pixel is transparent. This is
-                // also required while unlocked: HDR clears the original Qt
-                // surface, so Windows' layered-alpha hit-test cache is not a
-                // reliable representation of the composited model.
+                // The HDR presentation is permanently input-transparent. Keep
+                // the cleared Qt source transparent only at decoded-alpha
+                // pixels (or for the explicit locked click-through option).
                 SetMovieWindowClickThrough(search.window,
                     clickThrough || !search.visiblePixel);
             }
@@ -4218,6 +4224,29 @@ namespace
                 !search.visiblePixel)
             {
                 RefreshStaleMovieHitTest(search.window);
+            }
+
+            if (buttonDown && search.window != nullptr &&
+                search.visiblePixel && !clickThrough)
+            {
+                if (locked) return 1;
+                if (wParam == WM_LBUTTONDOWN)
+                {
+                    const BOOL posted = PostMessageW(search.window,
+                        g_movieWindowBeginDragMessage, 0,
+                        MAKELPARAM(mouse->pt.x, mouse->pt.y));
+                    if (InterlockedCompareExchange(
+                            &g_mouseDiagnostics, 0, 0) != 0)
+                    {
+                        DressingRoomLog(
+                            "HDR drag post hwnd=%p posted=%d error=%lu",
+                            search.window,
+                            posted ? 1 : 0,
+                            posted ? ERROR_SUCCESS : GetLastError());
+                    }
+                    return CallNextHookEx(
+                        g_movieMouseHook, code, wParam, lParam);
+                }
             }
 
             if (mouseMove || buttonDown)
@@ -4240,6 +4269,7 @@ namespace
     {
         SetOpenGlHdrClickThrough(window, enabled);
         const LONG_PTR style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        bool changed = false;
         if (enabled)
         {
             if ((style & WS_EX_TRANSPARENT) != 0)
@@ -4253,13 +4283,22 @@ namespace
             {
                 SetWindowLongPtrW(window, GWL_EXSTYLE, style);
             }
+            else
+            {
+                changed = true;
+            }
         }
         else if (RemovePropW(window,
             MovieWindowClickThroughProperty) != nullptr)
         {
             SetWindowLongPtrW(window, GWL_EXSTYLE,
                 style & ~WS_EX_TRANSPARENT);
+            changed = true;
         }
+        if (changed)
+            SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                SWP_FRAMECHANGED);
     }
 
     WNDPROC OriginalMovieWindowProc(HWND window)
@@ -4306,6 +4345,23 @@ namespace
             message == g_movieWindowProbeMessage)
         {
             return MovieWindowProbeResult;
+        }
+        if (g_movieWindowBeginDragMessage != 0 &&
+            message == g_movieWindowBeginDragMessage)
+        {
+            if (InterlockedCompareExchange(&g_mouseDiagnostics, 0, 0) != 0)
+                DressingRoomLog(
+                    "HDR drag GUI message hwnd=%p locked=%ld",
+                    window, InterlockedCompareExchange(
+                        &g_playerLocked, 0, 0));
+            if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
+                return 0;
+            // Run the standard Windows move loop on the Qt HWND's GUI thread.
+            // Sending WM_NCLBUTTONDOWN through Qt is unreliable because its
+            // frameless-window handler can consume the synthetic message.
+            ReleaseCapture();
+            return DefWindowProcW(window, WM_NCLBUTTONDOWN, HTCAPTION,
+                lParam);
         }
         if (message == WM_SETCURSOR)
         {
@@ -4405,8 +4461,9 @@ namespace
             return false;
         }
 
-        const bool clickThrough = InterlockedCompareExchange(
-            &g_playerClickThrough, 0, 0) != 0;
+        const bool clickThrough =
+            InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+            InterlockedCompareExchange(&g_playerClickThrough, 0, 0) != 0;
         const HWND pointerWindow = static_cast<HWND>(
             InterlockedCompareExchangePointer(
                 &g_pointerMovieWindow, nullptr, nullptr));
@@ -4615,6 +4672,13 @@ namespace
 
     HRESULT EnsureMovieWindowWatcher()
     {
+        if (g_movieWindowBeginDragMessage == 0)
+        {
+            g_movieWindowBeginDragMessage = RegisterWindowMessageW(
+                L"IStripperQuickPlayer.MovieWindowBeginDrag.v1");
+            if (g_movieWindowBeginDragMessage == 0)
+                return HRESULT_FROM_WIN32(GetLastError());
+        }
         if (!InitOnceExecuteOnce(&g_movieWindowWatcherOnce,
                 &StartMovieWindowWatcher, nullptr, nullptr))
         {
@@ -4666,7 +4730,7 @@ namespace
         {
             EnumWindows(&FindMovieWindow, 0);
         }
-        else if (!enabled)
+        else
         {
             EnumWindows(&UnlockMovieWindow, 0);
         }
@@ -11354,6 +11418,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerWheelResize(
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMouseDiagnostics(
+    SIZE_T enabled)
+{
+    InterlockedExchange(&g_mouseDiagnostics, enabled ? 1 : 0);
+    return BridgeSuccess;
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(
     SIZE_T mode)
 {
@@ -11778,7 +11849,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 106;
+    return 117;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

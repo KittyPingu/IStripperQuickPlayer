@@ -950,6 +950,18 @@ namespace IStripperQuickPlayer.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool EnableRtxMouseDiagnostics {
+            get {
+                return ((bool)(this["EnableRtxMouseDiagnostics"]));
+            }
+            set {
+                this["EnableRtxMouseDiagnostics"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool AllowWheelWhileLocked {
             get {
                 return ((bool)(this["AllowWheelWhileLocked"]));
