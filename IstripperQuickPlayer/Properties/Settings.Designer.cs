@@ -985,6 +985,30 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ToggleAlphaAntialiasingHotkeyEnabled {
+            get {
+                return ((bool)(this["ToggleAlphaAntialiasingHotkeyEnabled"]));
+            }
+            set {
+                this["ToggleAlphaAntialiasingHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+A")]
+        public string ToggleAlphaAntialiasingHotkeyString {
+            get {
+                return ((string)(this["ToggleAlphaAntialiasingHotkeyString"]));
+            }
+            set {
+                this["ToggleAlphaAntialiasingHotkeyString"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool EnableIStripperRtxHdr {
             get {
@@ -997,13 +1021,13 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("False")]
-        public bool EnableRtxMouseDiagnostics {
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool EnableCustomPlayerAlphaAntialiasing {
             get {
-                return ((bool)(this["EnableRtxMouseDiagnostics"]));
+                return ((bool)(this["EnableCustomPlayerAlphaAntialiasing"]));
             }
             set {
-                this["EnableRtxMouseDiagnostics"] = value;
+                this["EnableCustomPlayerAlphaAntialiasing"] = value;
             }
         }
 

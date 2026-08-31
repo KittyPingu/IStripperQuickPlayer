@@ -78,6 +78,7 @@ internal sealed class CustomPlayerForm : Form
     int sizePercent, volumePercent, wheelDelta, volumeWheelDelta,
         settleStart, settleTarget;
     volatile int alphaThreshold, fullOpacityThreshold;
+    volatile bool alphaAntialiasing;
     int smallPatchSize, minimumTransparentAreaRadius;
     volatile float edgeChokePixels;
     CustomVirtualGreenScreen virtualGreenScreen;
@@ -145,6 +146,7 @@ internal sealed class CustomPlayerForm : Form
         int playerSizePercent = 40, int volumePercent = 100,
         int alphaThreshold = CustomShowClip.DefaultAlphaThreshold,
         int fullOpacityThreshold = 200,
+        bool alphaAntialiasing = true,
         bool suppressErrorDialog = false, long startMs = 0, long endMs = 0,
         Rectangle? initialBounds = null,
         Task<PreparedPlayback?>? preparedPlayback = null,
@@ -175,6 +177,7 @@ internal sealed class CustomPlayerForm : Form
         this.volumePercent = Math.Clamp(volumePercent, 0, 100);
         this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
         this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
+        this.alphaAntialiasing = alphaAntialiasing;
         this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
         this.virtualGreenScreen = virtualGreenScreen?.Clone() ??
             new CustomVirtualGreenScreen { Enabled = false };
@@ -283,7 +286,7 @@ internal sealed class CustomPlayerForm : Form
                 {
                     renderer = await Task.Run(() => new PairedRenderer(
                         foregroundPath, alphaPath, alphaThreshold,
-                        fullOpacityThreshold, edgeChokePixels,
+                        fullOpacityThreshold, alphaAntialiasing, edgeChokePixels,
                         virtualGreenScreen, rvmOnnxModelPath,
                         Volatile.Read(ref rvmOnnxSettings),
                         rtxVideoSuperResolutionQuality, rtxVideoHdr,
@@ -298,6 +301,7 @@ internal sealed class CustomPlayerForm : Form
             renderer.SetVolume(volumePercent);
             renderer.SetAlphaThreshold(alphaThreshold);
             renderer.SetFullOpacityThreshold(fullOpacityThreshold);
+            renderer.SetAlphaAntialiasing(alphaAntialiasing);
             renderer.SetEdgeChoke(edgeChokePixels);
             renderer.SetVirtualGreenScreen(virtualGreenScreen);
             if (showRtxVideoStatus)
@@ -530,6 +534,12 @@ internal sealed class CustomPlayerForm : Form
         renderer?.SetFullOpacityThreshold(fullOpacityThreshold);
         RequestVisualRefresh();
     }
+    internal void SetAlphaAntialiasing(bool enabled)
+    {
+        alphaAntialiasing = enabled;
+        renderer?.SetAlphaAntialiasing(enabled);
+        RequestVisualRefresh();
+    }
     internal void SetEdgeChoke(float pixels)
     {
         edgeChokePixels = Math.Clamp(pixels, 0, 4);
@@ -660,7 +670,8 @@ internal sealed class CustomPlayerForm : Form
 
     internal static Task<PreparedPlayback?> PrepareAsync(string foregroundPath,
         string? alphaPath, int alphaThreshold, int fullOpacityThreshold,
-        float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen,
+        bool alphaAntialiasing, float edgeChokePixels,
+        CustomVirtualGreenScreen? virtualGreenScreen,
         long startMs,
         CancellationToken cancellationToken,
         int rtxVideoSuperResolutionQuality = 0,
@@ -678,7 +689,8 @@ internal sealed class CustomPlayerForm : Form
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 renderer = new PairedRenderer(foregroundPath, alphaPath,
-                    alphaThreshold, fullOpacityThreshold, edgeChokePixels,
+                    alphaThreshold, fullOpacityThreshold, alphaAntialiasing,
+                    edgeChokePixels,
                     virtualGreenScreen, rvmOnnxModelPath, rvmOnnxSettings,
                     rtxVideoSuperResolutionQuality, rtxVideoHdr,
                     sharedDevice);
@@ -1325,7 +1337,9 @@ internal sealed class CustomPlayerForm : Form
             static const float2 Disk[16]={float2(.1767767,0),float2(-.2257722,.2068258),float2(.0345581,-.3937712),float2(.2845712,.3711728),float2(-.5222232,-.0923739),float2(.4946954,-.3146847),float2(-.1654659,.6155250),float2(-.3155615,-.6075944),float2(.6846422,.2500302),float2(-.7122561,.2940090),float2(.3433545,-.7337286),float2(.2537302,.8089320),float2(-.7647459,-.4431859),float2(.8971340,-.1972324),float2(-.5475069,.7787722),float2(-.1264868,-.9760897)};
             static const float2 Rays[8]={float2(1,0),float2(.7071068,.7071068),float2(0,1),float2(-.7071068,.7071068),float2(-1,0),float2(-.7071068,-.7071068),float2(0,-1),float2(.7071068,-.7071068)};
             float LinearChannel(float c){return c<=.04045?c/12.92:pow((c+.055)/1.055,2.4);}
-            int InputMode(){return (int)round(T.Load(int3(0,0,0)).a*255.0);}
+            int InputFlags(){return (int)round(T.Load(int3(0,0,0)).a*255.0);}
+            int InputMode(){return InputFlags()&3;}
+            bool AlphaAntialiasingEnabled(){return (InputFlags()&4)!=0;}
             float2 ChromaAt(float2 uv){if(InputMode()==2){float3 c=Y.Sample(S,uv).rgb;float l=.2126*c.r+.7152*c.g+.0722*c.b;return float2(.5+(c.b-l)*.5389,.5+(c.r-l)*.6350);}float2 first=U.Sample(S,uv);return float2(first.r,InputMode()==1?first.g:V.Sample(S,uv).r);}
             float3 RgbAt(float2 uv){if(InputMode()==2)return Y.Sample(S,uv).rgb;float y=1.16438356*(Y.Sample(S,uv).r-16.0/255.0);float2 chroma=ChromaAt(uv)-.5;return saturate(float3(y+1.79274107*chroma.y,y-.21324861*chroma.x-.53290933*chroma.y,y+2.11240179*chroma.x));}
             float3 DomainAt(float2 uv,int domain){float2 chroma=ChromaAt(uv);if(domain==0)return float3(chroma,0);float3 c=RgbAt(uv);if(domain==1)return c;if(domain==2){float maximum=max(c.r,max(c.g,c.b));float minimum=min(c.r,min(c.g,c.b));float delta=maximum-minimum;float hue=0;if(delta>.000001){hue=maximum==c.r?(c.g-c.b)/delta:maximum==c.g?2+(c.b-c.r)/delta:4+(c.r-c.g)/delta;hue=frac(hue/6+1);}float saturation=maximum<=0?0:delta/maximum;float angle=hue*6.283185307;return float3(.5+cos(angle)*saturation*.5,.5+sin(angle)*saturation*.5,maximum);}c=float3(LinearChannel(c.r),LinearChannel(c.g),LinearChannel(c.b));float l=pow(max(0,.4122214708*c.r+.5363325363*c.g+.0514459929*c.b),1.0/3.0);float m=pow(max(0,.2119034982*c.r+.6806995451*c.g+.1073969566*c.b),1.0/3.0);float s=pow(max(0,.0883024619*c.r+.2817188376*c.g+.6299787005*c.b),1.0/3.0);return float3(.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s+.5,.0259040371*l+.7827717662*m-.808675766*s+.5);}
@@ -1343,7 +1357,7 @@ internal sealed class CustomPlayerForm : Form
             float4 PixelMain(O i,bool enhanced,bool hdr) { float3 c=enhanced?E.Sample(S,i.uv).rgb:RgbAt(i.uv); float a=A.Sample(S,i.uv); float4 t=T.Load(int3(0,0,0)); float r=round(t.b*255.0)*.25;uint aw,ah;A.GetDimensions(aw,ah);
               if(r>0){float2 d=r/float2(aw,ah);a=min(a,A.Sample(S,i.uv+float2(d.x,0)));a=min(a,A.Sample(S,i.uv-float2(d.x,0)));a=min(a,A.Sample(S,i.uv+float2(0,d.y)));a=min(a,A.Sample(S,i.uv-float2(0,d.y)));a=min(a,A.Sample(S,i.uv+d));a=min(a,A.Sample(S,i.uv-d));a=min(a,A.Sample(S,i.uv+float2(d.x,-d.y)));a=min(a,A.Sample(S,i.uv+float2(-d.x,d.y)));}
               float4 spatial=T.Load(int3(1,0,0));float baseAlpha=a;a*=M.Sample(S,i.uv);float keyedAlpha=a;float patch=round(spatial.r*255.0);if(patch>0&&a>0&&a>=t.r){float2 d=patch/float2(aw,ah);if(DiskSupport(i.uv,d,t.r)<4||ConnectedSupportedRays(i.uv,d,t.r)<2)a=0;}float area=round(spatial.g*255.0);if(area>0&&OutputAlpha(keyedAlpha,t.r,t.g)<OutputAlpha(baseAlpha,t.r,t.g)){float2 d=area/float2(aw,ah);if(ConnectedRemovedRays(i.uv,d,t.r,t.g)<3||RemovedDiskSupport(i.uv,d,t.r,t.g)<8)a=baseAlpha;}
-              a=AntialiasedOutputAlpha(a,t.r,t.g); return float4((hdr?max(c,0):saturate(c))*a,a); }
+              a=AlphaAntialiasingEnabled()?AntialiasedOutputAlpha(a,t.r,t.g):OutputAlpha(a,t.r,t.g); return float4((hdr?max(c,0):saturate(c))*a,a); }
             float4 PSMain(O i):SV_TARGET{return PixelMain(i,false,false);}
             float4 PSMainEnhanced(O i):SV_TARGET{return PixelMain(i,true,false);}
             float4 PSMainHdr(O i):SV_TARGET{return PixelMain(i,true,true);}
@@ -1404,6 +1418,7 @@ internal sealed class CustomPlayerForm : Form
         long rgbTick, alphaTick;
         int alphaThreshold, fullOpacityThreshold, smallPatchSize,
             minimumTransparentAreaRadius, greenDomain;
+        bool alphaAntialiasing;
         float edgeChokePixels;
         VirtualGreenScreenSample[] greenSamples;
         VirtualGreenScreenSample[]? uploadedGreenSamples;
@@ -1411,7 +1426,7 @@ internal sealed class CustomPlayerForm : Form
         int uploadedAlphaThreshold = -1, uploadedFullOpacityThreshold = -1,
             uploadedEdgeChokeQuarters = -1, uploadedSmallPatchSize = -1,
             uploadedMinimumTransparentAreaRadius = -1, uploadedGreenDomain = -1,
-            uploadedHardwareVideo = -1;
+            uploadedInputFlags = -1;
         double clockSeconds, rate = 1;
         long publishedClockSecondsBits = BitConverter.DoubleToInt64Bits(0);
         long publishedRateBits = BitConverter.DoubleToInt64Bits(1);
@@ -1460,7 +1475,8 @@ internal sealed class CustomPlayerForm : Form
 
         internal PairedRenderer(string foreground, string? alphaPath,
             int alphaThreshold, int fullOpacityThreshold,
-            float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen,
+            bool alphaAntialiasing, float edgeChokePixels,
+            CustomVirtualGreenScreen? virtualGreenScreen,
             string? rvmOnnxModelPath = null,
             CustomRvmOnnxSettings? rvmOnnxSettings = null,
             int rtxVideoSuperResolutionQuality = 0, bool rtxVideoHdr = false,
@@ -1475,6 +1491,7 @@ internal sealed class CustomPlayerForm : Form
             this.rvmOnnxModelPath = rvmOnnxModelPath;
             this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
             this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
+            this.alphaAntialiasing = alphaAntialiasing;
             this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
             this.rtxVideoSuperResolutionQuality = Math.Clamp(
                 rtxVideoSuperResolutionQuality, 0, 4);
@@ -2086,6 +2103,8 @@ internal sealed class CustomPlayerForm : Form
             Volatile.Write(ref alphaThreshold, Math.Clamp(value, 0, 255));
         internal void SetFullOpacityThreshold(int value) =>
             Volatile.Write(ref fullOpacityThreshold, Math.Clamp(value, 1, 255));
+        internal void SetAlphaAntialiasing(bool enabled) =>
+            Volatile.Write(ref alphaAntialiasing, enabled);
         internal void SetEdgeChoke(float pixels) =>
             Volatile.Write(ref edgeChokePixels, Math.Clamp(pixels, 0, 4));
         internal void SetVirtualGreenScreen(CustomVirtualGreenScreen? settings)
@@ -2475,7 +2494,7 @@ internal sealed class CustomPlayerForm : Form
         }
         unsafe void DrawCurrentFrameLocked()
         {
-            float maskScale=alpha==null?alphaWidth/(float)Width:1;int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4*maskScale), patch=(int)Math.Round(Volatile.Read(ref smallPatchSize)*maskScale), area=(int)Math.Round(Volatile.Read(ref minimumTransparentAreaRadius)*maskScale), domain=Volatile.Read(ref greenDomain), hardware=hardwareVideoFrame?2:0; VirtualGreenScreenSample[] samples=Volatile.Read(ref greenSamples); int competition=samples.Length==0?0:(int)Math.Round(samples[0].KeyOverLockedThreshold*255); EnsureKeyTextureCapacity(samples.Length); bool greenChanged=!ReferenceEquals(samples,uploadedGreenSamples); if(greenChanged){float[] values=new float[keyTextureCapacity*8];for(int index=0;index<samples.Length;index++){int offset=index*4;values[offset]=samples[index].X;values[offset+1]=samples[index].Y;values[offset+2]=samples[index].Z;values[offset+3]=samples[index].Tolerance;int metadata=(index+keyTextureCapacity)*4;values[metadata]=samples[index].Feather;values[metadata+1]=1;values[metadata+2]=samples[index].Locked?1:0;}fixed(float* data=values)context!.UpdateSubresource(keyTex!,0,null,new IntPtr(data),(uint)(keyTextureCapacity*32),0);uploadedGreenSamples=samples;} if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters||patch!=uploadedSmallPatchSize||area!=uploadedMinimumTransparentAreaRadius||domain!=uploadedGreenDomain||hardware!=uploadedHardwareVideo||greenChanged){uint[] values=[(uint)(lower|(upper<<8)|(chokeQuarters<<16)|(hardware<<24)),(uint)(patch|(area<<8)|(competition<<16)|(domain<<24))];fixed(uint* data=values)context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(data),8,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;uploadedSmallPatchSize=patch;uploadedMinimumTransparentAreaRadius=area;uploadedGreenDomain=domain;uploadedHardwareVideo=hardware;}
+            float maskScale=alpha==null?alphaWidth/(float)Width:1;int lower=Volatile.Read(ref alphaThreshold), upper=Volatile.Read(ref fullOpacityThreshold), chokeQuarters=(int)Math.Round(Volatile.Read(ref edgeChokePixels)*4*maskScale), patch=(int)Math.Round(Volatile.Read(ref smallPatchSize)*maskScale), area=(int)Math.Round(Volatile.Read(ref minimumTransparentAreaRadius)*maskScale), domain=Volatile.Read(ref greenDomain), inputFlags=(hardwareVideoFrame?2:0)|(Volatile.Read(ref alphaAntialiasing)?4:0); VirtualGreenScreenSample[] samples=Volatile.Read(ref greenSamples); int competition=samples.Length==0?0:(int)Math.Round(samples[0].KeyOverLockedThreshold*255); EnsureKeyTextureCapacity(samples.Length); bool greenChanged=!ReferenceEquals(samples,uploadedGreenSamples); if(greenChanged){float[] values=new float[keyTextureCapacity*8];for(int index=0;index<samples.Length;index++){int offset=index*4;values[offset]=samples[index].X;values[offset+1]=samples[index].Y;values[offset+2]=samples[index].Z;values[offset+3]=samples[index].Tolerance;int metadata=(index+keyTextureCapacity)*4;values[metadata]=samples[index].Feather;values[metadata+1]=1;values[metadata+2]=samples[index].Locked?1:0;}fixed(float* data=values)context!.UpdateSubresource(keyTex!,0,null,new IntPtr(data),(uint)(keyTextureCapacity*32),0);uploadedGreenSamples=samples;} if(lower!=uploadedAlphaThreshold||upper!=uploadedFullOpacityThreshold||chokeQuarters!=uploadedEdgeChokeQuarters||patch!=uploadedSmallPatchSize||area!=uploadedMinimumTransparentAreaRadius||domain!=uploadedGreenDomain||inputFlags!=uploadedInputFlags||greenChanged){uint[] values=[(uint)(lower|(upper<<8)|(chokeQuarters<<16)|(inputFlags<<24)),(uint)(patch|(area<<8)|(competition<<16)|(domain<<24))];fixed(uint* data=values)context!.UpdateSubresource(thresholdTex!,0,null,new IntPtr(data),8,0);uploadedAlphaThreshold=lower;uploadedFullOpacityThreshold=upper;uploadedEdgeChokeQuarters=chokeQuarters;uploadedSmallPatchSize=patch;uploadedMinimumTransparentAreaRadius=area;uploadedGreenDomain=domain;uploadedInputFlags=inputFlags;}
             ID3D11ShaderResourceView drawY=activeHardwareViews?.Y??yView!;
             ID3D11ShaderResourceView drawU=activeHardwareViews?.UV??uView!;
             ID3D11ShaderResourceView drawV=activeHardwareViews?.UV??vView!;

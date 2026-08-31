@@ -19,6 +19,8 @@ public partial class Form1
     readonly ToolStripMenuItem iStripperPlayerSmallVolumeMenu = new();
     readonly ToolStripMenuItem iStripperPlayerLargeVolumeMenu = new();
     readonly ToolStripMenuItem customPlayerFullOpacityMenu = new();
+    readonly ToolStripMenuItem customPlayerAlphaAntialiasingMenu =
+        new("Custom player alpha antialiasing") { CheckOnClick = true };
     readonly TrackBar customPlayerFullOpacitySlider = new();
     readonly Label customAlphaThresholdLabel = new()
         { Text = "Alpha threshold", AutoSize = true };
@@ -98,6 +100,13 @@ public partial class Form1
         SetupCustomPlayerVolumeMenu();
         SetupIStripperPlayerVolumeMenu();
         SetupCustomPlayerFullOpacityMenu();
+        customPlayerAlphaAntialiasingMenu.Checked =
+            Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing;
+        customPlayerAlphaAntialiasingMenu.ToolTipText =
+            "Smooth transparency threshold edges in the custom player.";
+        customPlayerAlphaAntialiasingMenu.CheckedChanged += (_, _) =>
+            SetCustomPlayerAlphaAntialiasing(
+                customPlayerAlphaAntialiasingMenu.Checked);
         ToolStripMenuItem createWithWizard = new("Create Show with Wizard...");
         ToolStripMenuItem create = new("Create Show...");
         ToolStripMenuItem createFromUrl = new(
@@ -583,6 +592,18 @@ public partial class Form1
             customShowConfiguration.Save();
         customPlayerFullOpacityMenu.DropDownItems.Add(new ToolStripControlHost(
             customPlayerFullOpacitySlider) { AutoSize = false, Size = new(260, 34) });
+    }
+
+    void SetCustomPlayerAlphaAntialiasing(bool enabled)
+    {
+        Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing = enabled;
+        Properties.Settings.Default.Save();
+        if (customPlayerAlphaAntialiasingMenu.Checked != enabled)
+            customPlayerAlphaAntialiasingMenu.Checked = enabled;
+        CancelCustomPreload();
+        customPlayer?.SetAlphaAntialiasing(enabled);
+        SetPlaybackStatus($"Custom player alpha antialiasing: " +
+            (enabled ? "On." : "Off."));
     }
 
     int CustomPlayerVolume(bool large) => Math.Clamp(large
@@ -1892,6 +1913,7 @@ public partial class Form1
             playbackAlpha, size,
             CustomPlayerVolume(playerMode == 1), clip.customAlphaThreshold,
             customShowConfiguration.FullOpacityThreshold,
+            Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing,
             startMs: clip.customStartMs,
             endMs: clip.customEndMs, initialBounds: initialBounds,
             preparedPlayback: preparedPlayback,
@@ -2094,6 +2116,7 @@ public partial class Form1
             next.customForegroundPath, playbackAlpha,
             next.customAlphaThreshold,
             customShowConfiguration.FullOpacityThreshold,
+            Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing,
             next.customEdgeChokePixels,
             next.customVirtualGreenScreen,
             next.customStartMs, customPreloadCancellation.Token,

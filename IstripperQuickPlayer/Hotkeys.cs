@@ -42,6 +42,8 @@ namespace IStripperQuickPlayer
                 Properties.Settings.Default.ToggleHdrHotkeyEnabled;
             chkToggleVsr.Checked =
                 Properties.Settings.Default.ToggleVsrHotkeyEnabled;
+            chkToggleAlphaAntialiasing.Checked = Properties.Settings.Default.
+                ToggleAlphaAntialiasingHotkeyEnabled;
             txtNextClip.Text = Properties.Settings.Default.NextClipString;
             txtNextCard.Text = Properties.Settings.Default.NextCardString;
             txtToggleLock.Text = Properties.Settings.Default.ToggleLockString;
@@ -55,6 +57,8 @@ namespace IStripperQuickPlayer
             txtPanic.Text = Properties.Settings.Default.PanicHotkeyString;
             txtToggleHdr.Text = Properties.Settings.Default.ToggleHdrHotkeyString;
             txtToggleVsr.Text = Properties.Settings.Default.ToggleVsrHotkeyString;
+            txtToggleAlphaAntialiasing.Text = Properties.Settings.Default.
+                ToggleAlphaAntialiasingHotkeyString;
         }
 
         private void cmdOK_Click(object sender, EventArgs e)
@@ -74,6 +78,8 @@ namespace IStripperQuickPlayer
                 chkToggleHdr.Checked;
             Properties.Settings.Default.ToggleVsrHotkeyEnabled =
                 chkToggleVsr.Checked;
+            Properties.Settings.Default.ToggleAlphaAntialiasingHotkeyEnabled =
+                chkToggleAlphaAntialiasing.Checked;
             Properties.Settings.Default.NextClipString = txtNextClip.Text;
             Properties.Settings.Default.NextCardString = txtNextCard.Text;
             Properties.Settings.Default.ToggleLockString = txtToggleLock.Text;
@@ -87,6 +93,8 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.PanicHotkeyString = txtPanic.Text;
             Properties.Settings.Default.ToggleHdrHotkeyString = txtToggleHdr.Text;
             Properties.Settings.Default.ToggleVsrHotkeyString = txtToggleVsr.Text;
+            Properties.Settings.Default.ToggleAlphaAntialiasingHotkeyString =
+                txtToggleAlphaAntialiasing.Text;
             this.Close();
         }
     }

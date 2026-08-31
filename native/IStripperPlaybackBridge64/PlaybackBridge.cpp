@@ -830,7 +830,6 @@ namespace
     LONG volatile g_playerSmallSizePercent = 0;
     LONG volatile g_playerLargeSizePercent = 0;
     LONG volatile g_playerMode = 2;
-    LONG volatile g_mouseDiagnostics = 0;
     PVOID volatile g_pointerMovieWindow = nullptr;
     PVOID volatile g_nativeDragWindow = nullptr;
     LONG volatile g_pointerOverVisiblePixel = 0;
@@ -4112,12 +4111,6 @@ namespace
             {
                 InterlockedExchangePointer(&g_nativeDragWindow, nullptr);
                 SetOpenGlHdrInteractiveMove(false);
-                if (InterlockedCompareExchange(
-                        &g_mouseDiagnostics, 0, 0) != 0)
-                {
-                    DressingRoomLog(
-                        "HDR native drag release hwnd=%p", nativeDrag);
-                }
                 return CallNextHookEx(
                     g_movieMouseHook, code, wParam, lParam);
             }
@@ -4162,15 +4155,6 @@ namespace
                 &g_playerLocked, 0, 0) != 0;
             const bool clickThrough = locked && InterlockedCompareExchange(
                 &g_playerClickThrough, 0, 0) != 0;
-            if (buttonDown && InterlockedCompareExchange(
-                    &g_mouseDiagnostics, 0, 0) != 0)
-            {
-                DressingRoomLog(
-                    "HDR mouse button=0x%04llx point=%ld,%ld hwnd=%p visible=%d locked=%d clickThrough=%d",
-                    static_cast<unsigned long long>(wParam), mouse->pt.x,
-                    mouse->pt.y, search.window, search.visiblePixel ? 1 : 0,
-                    locked ? 1 : 0, clickThrough ? 1 : 0);
-            }
             if (previousWindow != nullptr && previousWindow != search.window &&
                 !clickThrough)
             {
@@ -4200,12 +4184,6 @@ namespace
                     InterlockedExchangePointer(
                         &g_nativeDragWindow, search.window);
                     SetOpenGlHdrInteractiveMove(true);
-                    if (InterlockedCompareExchange(
-                            &g_mouseDiagnostics, 0, 0) != 0)
-                    {
-                        DressingRoomLog(
-                            "HDR native drag begin hwnd=%p", search.window);
-                    }
                     // iStripper owns drag semantics, including hanging/swing
                     // clips that switch to a separate drag animation. Pass
                     // the real mouse sequence through unchanged.
@@ -4314,11 +4292,6 @@ namespace
         if (g_movieWindowBeginDragMessage != 0 &&
             message == g_movieWindowBeginDragMessage)
         {
-            if (InterlockedCompareExchange(&g_mouseDiagnostics, 0, 0) != 0)
-                DressingRoomLog(
-                    "HDR drag GUI message hwnd=%p locked=%ld",
-                    window, InterlockedCompareExchange(
-                        &g_playerLocked, 0, 0));
             if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
             {
                 InterlockedCompareExchangePointer(
@@ -11423,13 +11396,6 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerWheelResize(
     {
         return E_UNEXPECTED;
     }
-}
-
-extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetMouseDiagnostics(
-    SIZE_T enabled)
-{
-    InterlockedExchange(&g_mouseDiagnostics, enabled ? 1 : 0);
-    return BridgeSuccess;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerMode(

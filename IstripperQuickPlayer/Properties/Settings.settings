@@ -77,6 +77,12 @@
     <Setting Name="ToggleVsrHotkeyString" Type="System.String" Scope="User">
       <Value Profile="(Default)">Control+Alt+V</Value>
     </Setting>
+    <Setting Name="ToggleAlphaAntialiasingHotkeyEnabled" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="ToggleAlphaAntialiasingHotkeyString" Type="System.String" Scope="User">
+      <Value Profile="(Default)">Control+Alt+A</Value>
+    </Setting>
     <Setting Name="MinSizeMB" Type="System.Int64" Scope="User">
       <Value Profile="(Default)">25</Value>
     </Setting>
@@ -248,8 +254,8 @@
     <Setting Name="EnableIStripperRtxHdr" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
     </Setting>
-    <Setting Name="EnableRtxMouseDiagnostics" Type="System.Boolean" Scope="User">
-      <Value Profile="(Default)">False</Value>
+    <Setting Name="EnableCustomPlayerAlphaAntialiasing" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
     </Setting>
     <Setting Name="AllowWheelWhileLocked" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>

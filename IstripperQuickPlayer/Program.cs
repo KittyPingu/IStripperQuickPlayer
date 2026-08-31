@@ -1002,6 +1002,10 @@ namespace IStripperQuickPlayer
                 ["chkPanic"] = "Enable the global Panic / Resume hotkey.",
                 ["chkToggleHdr"] =
                     "Enable the global iStripper and custom-player HDR toggle hotkey.",
+                ["chkToggleVsr"] =
+                    "Enable the global custom-player VSR toggle hotkey.",
+                ["chkToggleAlphaAntialiasing"] =
+                    "Enable the global custom-player alpha antialiasing toggle hotkey.",
                 ["txtNextClip"] =
                     HotkeySyntax + "Ctrl+Alt+N.",
                 ["txtNextCard"] =
@@ -1023,7 +1027,13 @@ namespace IStripperQuickPlayer
                 ["txtNowPlayingInfo"] =
                     HotkeySyntax + "Ctrl+Alt+I.",
                 ["txtPanic"] =
-                    HotkeySyntax + "Ctrl+Alt+X."
+                    HotkeySyntax + "Ctrl+Alt+X.",
+                ["txtToggleHdr"] =
+                    HotkeySyntax + "Ctrl+Alt+H.",
+                ["txtToggleVsr"] =
+                    HotkeySyntax + "Ctrl+Alt+V.",
+                ["txtToggleAlphaAntialiasing"] =
+                    HotkeySyntax + "Ctrl+Alt+A."
             };
 
         private static readonly Dictionary<string, string> MenuDescriptions =

@@ -874,9 +874,9 @@ namespace IStripperQuickPlayer
                 iStripperPlayerVolumeMenu,
                 customPlayerVolumeMenu,
                 customPlayerFullOpacityMenu,
+                customPlayerAlphaAntialiasingMenu,
                 enablePlaybackControlToolStripMenuItem,
                 iStripperRtxHdrToolStripMenuItem,
-                rtxMouseDiagnosticsToolStripMenuItem,
                 alphaCheckpointCacheToolStripMenuItem,
                 alphaCheckpointCacheSizeToolStripMenuItem
             ]);

@@ -4150,6 +4150,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                     alphaThreshold: threshold,
                     fullOpacityThreshold:
                         configuration.FullOpacityThreshold,
+                    alphaAntialiasing: Properties.Settings.Default.
+                        EnableCustomPlayerAlphaAntialiasing,
                     rvmOnnxModelPath: RvmOnnxSupport.ModelPathFor(
                         clip.RvmOnnx?.Model ?? RvmOnnxSupport.MobileNetV3),
                     rvmOnnxSettings: clip.RvmOnnx);

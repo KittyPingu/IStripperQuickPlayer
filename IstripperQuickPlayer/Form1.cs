@@ -131,6 +131,7 @@ namespace IStripperQuickPlayer
         private const int PanicHotkeyId = 11;
         private const int ToggleHdrHotkeyId = 12;
         private const int ToggleVsrHotkeyId = 13;
+        private const int ToggleAlphaAntialiasingHotkeyId = 14;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -202,8 +203,6 @@ namespace IStripperQuickPlayer
         private readonly ToolStripMenuItem iStripperRtxHdrToolStripMenuItem =
             new("NVIDIA RTX HDR for iStripper (experimental)")
             { CheckOnClick = true };
-        private readonly ToolStripMenuItem rtxMouseDiagnosticsToolStripMenuItem =
-            new("RTX HDR mouse diagnostics") { CheckOnClick = true };
         private readonly ToolStripMenuItem allowWheelWhileLockedToolStripMenuItem =
             new("Allow Resize while Locked") { CheckOnClick = true };
         private readonly ToolStripMenuItem playbackHistoryToolStripMenuItem =
@@ -473,6 +472,15 @@ namespace IStripperQuickPlayer
             SetPlaybackStatus(applied
                 ? $"RTX VSR: {quality}."
                 : $"RTX VSR could not switch to {quality}: {failure}");
+        }
+
+        private void actToggleAlphaAntialiasing()
+        {
+            if (!Properties.Settings.Default.
+                    ToggleAlphaAntialiasingHotkeyEnabled)
+                return;
+            SetCustomPlayerAlphaAntialiasing(!Properties.Settings.Default.
+                EnableCustomPlayerAlphaAntialiasing);
         }
 
         private async void panicResumeButton_Click(object? sender, EventArgs e)
@@ -898,16 +906,6 @@ namespace IStripperQuickPlayer
                 if (playbackBridgeClient != null)
                     CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
                         iStripperRtxHdrToolStripMenuItem.Checked ? 1UL : 0UL);
-            };
-            rtxMouseDiagnosticsToolStripMenuItem.Checked =
-                Properties.Settings.Default.EnableRtxMouseDiagnostics;
-            rtxMouseDiagnosticsToolStripMenuItem.CheckedChanged += (_, _) =>
-            {
-                Properties.Settings.Default.EnableRtxMouseDiagnostics =
-                    rtxMouseDiagnosticsToolStripMenuItem.Checked;
-                if (playbackBridgeClient != null)
-                    CallPlaybackBridgeApi("IStripperSetMouseDiagnostics",
-                        rtxMouseDiagnosticsToolStripMenuItem.Checked ? 1UL : 0UL);
             };
             settingsToolStripMenuItem.DropDownOpening += (_, _) =>
             {
@@ -3094,6 +3092,10 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.ToggleVsrHotkeyEnabled)
                 RegisterConfiguredHotKey(ToggleVsrHotkeyId,
                     Properties.Settings.Default.ToggleVsrHotkeyString);
+            if (Properties.Settings.Default.ToggleAlphaAntialiasingHotkeyEnabled)
+                RegisterConfiguredHotKey(ToggleAlphaAntialiasingHotkeyId,
+                    Properties.Settings.Default.
+                        ToggleAlphaAntialiasingHotkeyString);
             hotkeysInitialized = true;
         }
 
@@ -3125,6 +3127,7 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, PanicHotkeyId);
             UnregisterHotKey(Handle, ToggleHdrHotkeyId);
             UnregisterHotKey(Handle, ToggleVsrHotkeyId);
+            UnregisterHotKey(Handle, ToggleAlphaAntialiasingHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -3260,6 +3263,9 @@ namespace IStripperQuickPlayer
                         return;
                     case ToggleVsrHotkeyId:
                         PostPlayerHotkey(actToggleVsr);
+                        return;
+                    case ToggleAlphaAntialiasingHotkeyId:
+                        PostPlayerHotkey(actToggleAlphaAntialiasing);
                         return;
                 }
             }
@@ -3462,10 +3468,6 @@ namespace IStripperQuickPlayer
                     throw new COMException(
                         $"OpenGL HDR probe setup failed (0x{hdrProbeResult:X8}).",
                         hdrProbeResult);
-
-                CallPlaybackBridgeApi("IStripperSetMouseDiagnostics",
-                    Properties.Settings.Default.EnableRtxMouseDiagnostics
-                        ? 1UL : 0UL);
 
                 int resetResult = playbackBridgeClient.Call(
                     "IStripperResetPlaybackSession");

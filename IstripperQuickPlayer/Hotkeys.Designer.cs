@@ -55,6 +55,8 @@
             chkToggleHdr = new CheckBox();
             txtToggleVsr = new TextBox();
             chkToggleVsr = new CheckBox();
+            txtToggleAlphaAntialiasing = new TextBox();
+            chkToggleAlphaAntialiasing = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -97,7 +99,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 782);
+            cmdOK.Location = new Point(229, 835);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -294,12 +296,31 @@
             chkToggleVsr.TabIndex = 25;
             chkToggleVsr.Text = "Toggle VSR";
             chkToggleVsr.UseVisualStyleBackColor = true;
+            //
+            // txtToggleAlphaAntialiasing
+            //
+            txtToggleAlphaAntialiasing.Location = new Point(229, 769);
+            txtToggleAlphaAntialiasing.Name = "txtToggleAlphaAntialiasing";
+            txtToggleAlphaAntialiasing.Size = new Size(263, 31);
+            txtToggleAlphaAntialiasing.TabIndex = 28;
+            //
+            // chkToggleAlphaAntialiasing
+            //
+            chkToggleAlphaAntialiasing.AutoSize = true;
+            chkToggleAlphaAntialiasing.Location = new Point(70, 773);
+            chkToggleAlphaAntialiasing.Name = "chkToggleAlphaAntialiasing";
+            chkToggleAlphaAntialiasing.Size = new Size(143, 29);
+            chkToggleAlphaAntialiasing.TabIndex = 27;
+            chkToggleAlphaAntialiasing.Text = "Toggle alpha AA";
+            chkToggleAlphaAntialiasing.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(144F, 144F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(578, 857);
+            ClientSize = new Size(578, 910);
+            Controls.Add(txtToggleAlphaAntialiasing);
+            Controls.Add(chkToggleAlphaAntialiasing);
             Controls.Add(txtToggleVsr);
             Controls.Add(chkToggleVsr);
             Controls.Add(txtToggleHdr);
@@ -369,5 +390,7 @@
         private CheckBox chkToggleHdr;
         private TextBox txtToggleVsr;
         private CheckBox chkToggleVsr;
+        private TextBox txtToggleAlphaAntialiasing;
+        private CheckBox chkToggleAlphaAntialiasing;
     }
 }

@@ -191,6 +191,8 @@ internal sealed class CustomClipTrimForm : Form
             playerSizePercent: 45, volumePercent: 0,
             alphaThreshold: alphaThreshold,
             fullOpacityThreshold: fullOpacityThreshold,
+            alphaAntialiasing: Properties.Settings.Default.
+                EnableCustomPlayerAlphaAntialiasing,
             suppressErrorDialog: true, startMs: 0, endMs: durationMs,
             edgeChokePixels: edgeChokePixels,
             virtualGreenScreen: virtualGreenScreen,
