@@ -3018,6 +3018,16 @@ namespace
         if (!bound)
             return bound;
 
+        if (InterlockedCompareExchange(
+                &g_openGlPresentProbeEnabled, 0, 0) == 0 &&
+            InterlockedCompareExchange(
+                &g_fullScreenShaderDataSet, 0, 0) == 0 &&
+            InterlockedCompareExchange(
+                &g_fullScreenShaderTextureSet, 0, 0) == 0 &&
+            InterlockedCompareExchange(
+                &g_fullScreenClipBoundsEverMask, 0, 0) == 0)
+            return bound;
+
         ProbeMovieShader();
 
         if (InterlockedCompareExchange(
@@ -3229,12 +3239,6 @@ namespace
             "?activate@QMetaObject@@SAXPEAVQObject@@PEBU1@HPEAPEAX@Z");
         void* shaderBind = gui == nullptr ? nullptr : GetProcAddress(gui,
             "?bind@QOpenGLShaderProgram@@QEAA_NXZ");
-        void* functionsBindTexture = gui == nullptr ? nullptr : GetProcAddress(
-            gui, "?glBindTexture@QOpenGLFunctions_1_1@@QEAAXII@Z");
-        void* functionsDrawElements = gui == nullptr ? nullptr : GetProcAddress(
-            gui, "?glDrawElements@QOpenGLFunctions@@QEAAXIHIPEBX@Z");
-        void* functionsDrawArrays = gui == nullptr ? nullptr : GetProcAddress(
-            gui, "?glDrawArrays@QOpenGLFunctions@@QEAAXIHH@Z");
         g_qOpenGLShaderUniformLocation = gui == nullptr ? nullptr :
             reinterpret_cast<QOpenGLShaderUniformLocation>(GetProcAddress(gui,
                 "?uniformLocation@QOpenGLShaderProgram@@QEBAHPEBD@Z"));
@@ -3294,9 +3298,6 @@ namespace
         if (OffsetProfilePath(profilePath))
             SaveResolvedOffsets(profilePath);
         if (target == nullptr || shaderBind == nullptr ||
-            functionsBindTexture == nullptr ||
-            functionsDrawElements == nullptr ||
-            functionsDrawArrays == nullptr ||
             g_qOpenGLShaderUniformLocation == nullptr ||
             g_qOpenGLShaderSetUniform1 == nullptr ||
             g_qOpenGLShaderSetUniformInt == nullptr ||
@@ -3375,75 +3376,10 @@ namespace
             if (status == MH_OK)
                 status = MH_EnableHook(shaderBind);
         }
-        if (status == MH_OK || status == MH_ERROR_ENABLED)
-        {
-            void* glBindTextureOriginal = nullptr;
-            status = MH_CreateHook(
-                reinterpret_cast<void*>(g_glBindTexture),
-                reinterpret_cast<void*>(&ProbingGlBindTexture),
-                &glBindTextureOriginal);
-            if (status == MH_OK)
-            {
-                InterlockedExchangePointer(
-                    &g_originalGlBindTexture, glBindTextureOriginal);
-                g_glBindTexture = reinterpret_cast<GlBindTexture>(
-                    glBindTextureOriginal);
-                status = MH_EnableHook(reinterpret_cast<void*>(
-                    GetProcAddress(openGl, "glBindTexture")));
-            }
-        }
-        if (status == MH_OK || status == MH_ERROR_ENABLED)
-        {
-            void* functionsBindTextureOriginal = nullptr;
-            status = MH_CreateHook(functionsBindTexture,
-                reinterpret_cast<void*>(
-                    &ProbingQOpenGLFunctionsBindTexture),
-                &functionsBindTextureOriginal);
-            if (status == MH_OK)
-                InterlockedExchangePointer(
-                    &g_originalQOpenGLFunctionsBindTexture,
-                    functionsBindTextureOriginal);
-            if (status == MH_OK)
-                status = MH_EnableHook(functionsBindTexture);
-        }
-        if (status == MH_OK || status == MH_ERROR_ENABLED)
-        {
-            void* functionsDrawElementsOriginal = nullptr;
-            status = MH_CreateHook(functionsDrawElements,
-                reinterpret_cast<void*>(
-                    &ProbingQOpenGLFunctionsDrawElements),
-                &functionsDrawElementsOriginal);
-            if (status == MH_OK)
-                InterlockedExchangePointer(
-                    &g_originalQOpenGLFunctionsDrawElements,
-                    functionsDrawElementsOriginal);
-            if (status == MH_OK)
-                status = MH_EnableHook(functionsDrawElements);
-        }
-        if (status == MH_OK || status == MH_ERROR_ENABLED)
-        {
-            void* functionsDrawArraysOriginal = nullptr;
-            status = MH_CreateHook(functionsDrawArrays,
-                reinterpret_cast<void*>(
-                    &ProbingQOpenGLFunctionsDrawArrays),
-                &functionsDrawArraysOriginal);
-            if (status == MH_OK)
-                InterlockedExchangePointer(
-                    &g_originalQOpenGLFunctionsDrawArrays,
-                    functionsDrawArraysOriginal);
-            if (status == MH_OK)
-                status = MH_EnableHook(functionsDrawArrays);
-        }
         const HRESULT result = status == MH_OK || status == MH_ERROR_ENABLED
             ? BridgeSuccess : E_FAIL;
         if (result < 0)
         {
-            MH_DisableHook(functionsDrawArrays);
-            MH_DisableHook(functionsDrawElements);
-            MH_DisableHook(functionsBindTexture);
-            if (openGl != nullptr)
-                MH_DisableHook(reinterpret_cast<void*>(
-                    GetProcAddress(openGl, "glBindTexture")));
             MH_DisableHook(shaderBind);
             MH_DisableHook(nextShowClip);
             MH_DisableHook(startNextShow);
@@ -4175,17 +4111,12 @@ namespace
             if (leftButtonUp && nativeDrag != nullptr)
             {
                 InterlockedExchangePointer(&g_nativeDragWindow, nullptr);
-                const BOOL posted = IsWindow(nativeDrag) &&
-                    PostMessageW(nativeDrag, g_movieWindowEndDragMessage,
-                        0, 0);
-                if (!posted) SetOpenGlHdrInteractiveMove(false);
+                SetOpenGlHdrInteractiveMove(false);
                 if (InterlockedCompareExchange(
                         &g_mouseDiagnostics, 0, 0) != 0)
                 {
                     DressingRoomLog(
-                        "HDR drag release hwnd=%p posted=%d error=%lu",
-                        nativeDrag, posted ? 1 : 0,
-                        posted ? ERROR_SUCCESS : GetLastError());
+                        "HDR native drag release hwnd=%p", nativeDrag);
                 }
                 return CallNextHookEx(
                     g_movieMouseHook, code, wParam, lParam);
@@ -4268,21 +4199,16 @@ namespace
                 {
                     InterlockedExchangePointer(
                         &g_nativeDragWindow, search.window);
-                    const BOOL posted = PostMessageW(search.window,
-                        g_movieWindowBeginDragMessage, 0,
-                        MAKELPARAM(mouse->pt.x, mouse->pt.y));
-                    if (!posted)
-                        InterlockedCompareExchangePointer(
-                            &g_nativeDragWindow, nullptr, search.window);
+                    SetOpenGlHdrInteractiveMove(true);
                     if (InterlockedCompareExchange(
                             &g_mouseDiagnostics, 0, 0) != 0)
                     {
                         DressingRoomLog(
-                            "HDR drag post hwnd=%p posted=%d error=%lu",
-                            search.window,
-                            posted ? 1 : 0,
-                            posted ? ERROR_SUCCESS : GetLastError());
+                            "HDR native drag begin hwnd=%p", search.window);
                     }
+                    // iStripper owns drag semantics, including hanging/swing
+                    // clips that switch to a separate drag animation. Pass
+                    // the real mouse sequence through unchanged.
                     return CallNextHookEx(
                         g_movieMouseHook, code, wParam, lParam);
                 }
@@ -4427,9 +4353,15 @@ namespace
         }
         if (message == WM_EXITSIZEMOVE || message == WM_CANCELMODE)
         {
-            InterlockedCompareExchangePointer(
-                &g_nativeDragWindow, nullptr, window);
-            SetOpenGlHdrInteractiveMove(false);
+            // iStripper can replace/cancel its movie HWND during a quick
+            // movement. Keep Qt's corresponding drag alive until the actual
+            // physical button-up arrives through the low-level hook.
+            if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0)
+            {
+                InterlockedCompareExchangePointer(
+                    &g_nativeDragWindow, nullptr, window);
+                SetOpenGlHdrInteractiveMove(false);
+            }
         }
         if (message == WM_SETCURSOR)
         {
@@ -11924,7 +11856,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 118;
+    return 123;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
@@ -11958,11 +11890,15 @@ IStripperSetOpenGlPresentProbe(SIZE_T enabled)
     }
     InterlockedExchange(&g_openGlPresentProbeEnabled, enabled ? 1 : 0);
     if (enabled)
+    {
+        InterlockedExchange(&g_openGlHdrReleasePending, 0);
         ResumeOpenGlHdr();
+    }
     else
     {
         InterlockedExchange(&g_openGlHdrReleasePending, 0);
         ReleaseOpenGlHdr();
+        EnumWindows(&UnlockMovieWindow, 0);
     }
     return BridgeSuccess;
 }

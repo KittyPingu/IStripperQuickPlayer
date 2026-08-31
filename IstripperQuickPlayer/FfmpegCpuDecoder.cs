@@ -1,10 +1,13 @@
 using FFmpeg.AutoGen;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace IStripperQuickPlayer;
 
 internal sealed unsafe class FfmpegCpuDecoder : IDisposable
 {
+    readonly long diagnosticId = CustomRtxDiagnostics.NewId();
+    readonly string sourcePath;
     [StructLayout(LayoutKind.Sequential)]
     struct D3D12Frame
     {
@@ -51,6 +54,10 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
     internal FfmpegCpuDecoder(string path, bool fastDecode = true,
         bool d3d12Hardware = false)
     {
+        long openStarted = Stopwatch.GetTimestamp();
+        sourcePath = path;
+        CustomRtxDiagnostics.Write("decoder", diagnosticId, "open-start",
+            $"path=\"{path}\" fast={fastDecode} d3d12={d3d12Hardware}");
         ffmpeg.RootPath = AppContext.BaseDirectory;
         uint codecVersion = ffmpeg.avcodec_version();
         if (codecVersion >> 16 != 62)
@@ -148,9 +155,17 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
             if (!double.IsFinite(Duration) || Duration <= 0)
                 throw new InvalidDataException(
                     "FFmpeg returned an invalid video duration.");
+            CustomRtxDiagnostics.Write("decoder", diagnosticId, "open-ok",
+                $"stream={streamIndex} codec={(int)openedCodec->codec_id} " +
+                $"size={Width}x{Height} fps={FrameRate} duration={Duration:F3} " +
+                $"timeBase={timeBase:R} origin={timestampOrigin:R} " +
+                $"hardware={hardwareDevice != null} " +
+                $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(openStarted):F3}");
         }
-        catch
+        catch (Exception error)
         {
+            CustomRtxDiagnostics.Write("decoder", diagnosticId, "open-failed",
+                $"path=\"{path}\"", error);
             if (openedPacket != null)
                 ffmpeg.av_packet_free(&openedPacket);
             if (openedFrame != null)
@@ -227,9 +242,13 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
 
     internal void Seek(double seconds)
     {
+        long seekStarted = Stopwatch.GetTimestamp();
         long timestamp = (long)Math.Round(
             (Math.Clamp(seconds, 0, Duration) + timestampOrigin) /
                 timeBase);
+        CustomRtxDiagnostics.Write("decoder", diagnosticId, "seek",
+            $"seconds={seconds:F6} timestamp={timestamp} ended={Ended} " +
+            $"sentEof={sentEndOfStream}");
         Check(ffmpeg.av_seek_frame(
             formatContext, streamIndex, timestamp,
             ffmpeg.AVSEEK_FLAG_BACKWARD), "seek video");
@@ -239,6 +258,9 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
         sentEndOfStream = false;
         Ended = false;
         discardBefore = Math.Clamp(seconds, 0, Duration);
+        CustomRtxDiagnostics.Write("decoder", diagnosticId, "seek-ok",
+            $"seconds={seconds:F6} timestamp={timestamp} " +
+            $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(seekStarted):F3}");
     }
 
     internal AVPixelFormat PixelFormat =>
@@ -438,21 +460,34 @@ internal sealed unsafe class FfmpegCpuDecoder : IDisposable
         }
     }
 
-    static void Check(int result, string operation)
+    void Check(int result, string operation)
     {
         if (result >= 0)
             return;
         byte* buffer = stackalloc byte[1024];
         ffmpeg.av_strerror(result, buffer, 1024);
         string message = new((sbyte*)buffer);
+        string state = $"operation=\"{operation}\" result={result} " +
+            $"message=\"{message}\" path=\"{sourcePath}\" " +
+            $"stream={streamIndex} ended={Ended} sentEof={sentEndOfStream}";
+        if (packet != null)
+            state += $" packetStream={packet->stream_index} " +
+                $"packetSize={packet->size} packetPts={packet->pts} " +
+                $"packetDts={packet->dts}";
+        if (frame != null)
+            state += $" framePts={frame->pts} frameBest={frame->best_effort_timestamp}";
+        CustomRtxDiagnostics.Write("decoder", diagnosticId, "ffmpeg-error",
+            state);
         throw new InvalidOperationException(
-            $"FFmpeg could not {operation}: {message}");
+            $"FFmpeg could not {operation}: {message} (code {result})");
     }
 
     public void Dispose()
     {
         if (disposed)
             return;
+        CustomRtxDiagnostics.Write("decoder", diagnosticId, "dispose",
+            $"path=\"{sourcePath}\" ended={Ended} sentEof={sentEndOfStream}");
         disposed = true;
         AVPacket* releasedPacket = packet;
         AVFrame* releasedFrame = frame;

@@ -51,6 +51,8 @@
             chkNowPlayingInfo = new CheckBox();
             txtPanic = new TextBox();
             chkPanic = new CheckBox();
+            txtToggleHdr = new TextBox();
+            chkToggleHdr = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -93,7 +95,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 676);
+            cmdOK.Location = new Point(229, 729);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -256,12 +258,31 @@
             chkPanic.TabIndex = 21;
             chkPanic.Text = "Panic";
             chkPanic.UseVisualStyleBackColor = true;
+            //
+            // txtToggleHdr
+            //
+            txtToggleHdr.Location = new Point(229, 663);
+            txtToggleHdr.Name = "txtToggleHdr";
+            txtToggleHdr.Size = new Size(263, 31);
+            txtToggleHdr.TabIndex = 24;
+            //
+            // chkToggleHdr
+            //
+            chkToggleHdr.AutoSize = true;
+            chkToggleHdr.Location = new Point(70, 667);
+            chkToggleHdr.Name = "chkToggleHdr";
+            chkToggleHdr.Size = new Size(132, 29);
+            chkToggleHdr.TabIndex = 23;
+            chkToggleHdr.Text = "Toggle HDR";
+            chkToggleHdr.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(144F, 144F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(578, 751);
+            ClientSize = new Size(578, 804);
+            Controls.Add(txtToggleHdr);
+            Controls.Add(chkToggleHdr);
             Controls.Add(txtPanic);
             Controls.Add(chkPanic);
             Controls.Add(txtNowPlayingInfo);
@@ -323,5 +344,7 @@
         private CheckBox chkNowPlayingInfo;
         private TextBox txtPanic;
         private CheckBox chkPanic;
+        private TextBox txtToggleHdr;
+        private CheckBox chkToggleHdr;
     }
 }

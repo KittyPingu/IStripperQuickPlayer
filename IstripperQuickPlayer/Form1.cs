@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 118;
+        private const int PlaybackBridgeVersion = 123;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -129,6 +129,7 @@ namespace IStripperQuickPlayer
         private const int SmallPlayerHotkeyId = 9;
         private const int NowPlayingInfoHotkeyId = 10;
         private const int PanicHotkeyId = 11;
+        private const int ToggleHdrHotkeyId = 12;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -409,6 +410,34 @@ namespace IStripperQuickPlayer
             // The pause request can overlap an already-rendering HDR frame.
             // Hide once more after it completes so panic always ends blank.
             LockStateOverlay.HideRtxHdrWindowForProcess(vghd_procID);
+        }
+
+        private void actToggleHdr()
+        {
+            if (!Properties.Settings.Default.ToggleHdrHotkeyEnabled)
+                return;
+
+            bool enabled = !(Properties.Settings.Default.EnableIStripperRtxHdr &&
+                customShowConfiguration.RtxVideoHdr);
+            Properties.Settings.Default.EnableIStripperRtxHdr = enabled;
+            Properties.Settings.Default.Save();
+            if (iStripperRtxHdrToolStripMenuItem.Checked != enabled)
+                iStripperRtxHdrToolStripMenuItem.Checked = enabled;
+            else if (playbackBridgeClient != null)
+                CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
+                    enabled ? 1UL : 0UL);
+
+            customShowConfiguration.RtxVideoHdr = enabled;
+            customShowConfiguration.Save();
+            CancelCustomPreload();
+            string? customFailure = null;
+            bool customApplied = customPlayer?.SetRtxVideoHdr(enabled,
+                out customFailure) ?? true;
+            SetPlaybackStatus(customApplied
+                ? $"RTX HDR {(enabled ? "enabled" : "disabled")} for " +
+                    "iStripper and custom playback."
+                : $"RTX HDR changed for iStripper, but the current custom " +
+                    $"clip could not switch: {customFailure}");
         }
 
         private async void panicResumeButton_Click(object? sender, EventArgs e)
@@ -3024,6 +3053,9 @@ namespace IStripperQuickPlayer
                 RegisterConfiguredHotKey(NowPlayingInfoHotkeyId, Properties.Settings.Default.NowPlayingInfoHotkeyString);
             if (Properties.Settings.Default.PanicHotkeyEnabled)
                 RegisterConfiguredHotKey(PanicHotkeyId, Properties.Settings.Default.PanicHotkeyString);
+            if (Properties.Settings.Default.ToggleHdrHotkeyEnabled)
+                RegisterConfiguredHotKey(ToggleHdrHotkeyId,
+                    Properties.Settings.Default.ToggleHdrHotkeyString);
             hotkeysInitialized = true;
         }
 
@@ -3053,6 +3085,7 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, SmallPlayerHotkeyId);
             UnregisterHotKey(Handle, NowPlayingInfoHotkeyId);
             UnregisterHotKey(Handle, PanicHotkeyId);
+            UnregisterHotKey(Handle, ToggleHdrHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -3182,6 +3215,9 @@ namespace IStripperQuickPlayer
                         return;
                     case PanicHotkeyId:
                         actPanic();
+                        return;
+                    case ToggleHdrHotkeyId:
+                        PostPlayerHotkey(actToggleHdr);
                         return;
                 }
             }

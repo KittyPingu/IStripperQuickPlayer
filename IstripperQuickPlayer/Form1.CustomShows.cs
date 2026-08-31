@@ -1850,10 +1850,16 @@ public partial class Form1
     {
         if (InvokeRequired)
             return (bool)Invoke(() => StartCustomPlayback(animationPath));
+        long handoffStarted = Stopwatch.GetTimestamp();
         ModelCard? card = Datastore.findCardByTag(
             GetCardTagFromAnimationPath(animationPath));
         ModelClip? clip = card?.clips?.FirstOrDefault(item => string.Equals(
             item.clipName, animationPath, StringComparison.OrdinalIgnoreCase));
+        CustomRtxDiagnostics.Write("handoff", 0, "start-request",
+            $"animation=\"{animationPath}\" card=\"{card?.name}\" " +
+            $"clip={clip?.clipNumber} currentPlayer={customPlayer?.DiagnosticId} " +
+            $"vsr={customShowConfiguration.RtxVideoSuperResolutionQuality} " +
+            $"hdr={customShowConfiguration.RtxVideoHdr}");
         string? playbackAlpha = clip?.customAlphaPath == null ? null :
             CustomShowStore.PreferredAlphaPath(clip.customAlphaPath);
         bool rvmOnnx = clip?.customMediaMode == CustomClipMedia.RvmOnnxMode;
@@ -1940,13 +1946,27 @@ public partial class Form1
             if (customPlayer == player) RememberCustomPlayerBounds(player);
         };
         customPlayer = player;
+        CustomRtxDiagnostics.Write("handoff", 0, "new-player",
+            $"animation=\"{animationPath}\" player={player.DiagnosticId} " +
+            $"previous={previous?.DiagnosticId} prepared={preparedPlayback != null}");
         SelectCustomAlphaThreshold(card!, clip);
         customPlayerAnimationPath = animationPath;
         RefreshPlaybackControlVisibility();
         if (previous != null)
         {
-            player.FirstFramePresented += (_, _) => previous.ClosePlayer();
+            player.FirstFramePresented += (_, _) =>
+            {
+                CustomRtxDiagnostics.Write("handoff", 0,
+                    "outgoing-close-request", $"player={player.DiagnosticId} " +
+                    $"previous={previous.DiagnosticId} elapsedMs=" +
+                    $"{CustomRtxDiagnostics.ElapsedMilliseconds(handoffStarted):F3}");
+                previous.ClosePlayer();
+            };
         }
+        player.FirstFramePresented += (_, _) =>
+            CustomRtxDiagnostics.Write("handoff", 0, "first-frame",
+                $"player={player.DiagnosticId} previous={previous?.DiagnosticId} " +
+                $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(handoffStarted):F3}");
         player.PreloadRequested += (_, _) => BeginInvoke(() =>
             PreloadNextCustomClip(card!, clip));
         player.PlaybackCompleted += (_, _) =>
@@ -1970,8 +1990,11 @@ public partial class Form1
                     RestoreIStripperAfterCustomPlayback();
             });
         };
-        player.PlaybackFailed += (_, _) => BeginInvoke(() =>
+        player.PlaybackFailed += (_, error) => BeginInvoke(() =>
         {
+            CustomRtxDiagnostics.Write("handoff", 0, "player-failed",
+                $"animation=\"{animationPath}\" player={player.DiagnosticId} " +
+                $"previous={previous?.DiagnosticId}", error);
             previous?.ClosePlayer();
             if (customPlayer == player) StopCustomPlayback(true);
         });
@@ -1994,7 +2017,18 @@ public partial class Form1
         // Keep the always-on-top playback surface independent from the library
         // window. An owned Win32 window is minimized automatically with its
         // owner, which is not appropriate for desktop-style custom playback.
+        long releaseStarted = Stopwatch.GetTimestamp();
+        previous?.PrepareRtxHandoff();
+        long released = Stopwatch.GetTimestamp();
+        CustomRtxDiagnostics.Write("handoff", 0, "show-player",
+            $"player={player.DiagnosticId} previous={previous?.DiagnosticId} " +
+            $"releaseMs={Stopwatch.GetElapsedTime(releaseStarted, released).TotalMilliseconds:F3} " +
+            $"setupMs={Stopwatch.GetElapsedTime(handoffStarted, releaseStarted).TotalMilliseconds:F3} " +
+            $"elapsedMs={Stopwatch.GetElapsedTime(handoffStarted, released).TotalMilliseconds:F3}");
         player.Show();
+        CustomRtxDiagnostics.Write("handoff", 0, "show-returned",
+            $"player={player.DiagnosticId} elapsedMs=" +
+            $"{CustomRtxDiagnostics.ElapsedMilliseconds(handoffStarted):F3}");
         return true;
     }
 

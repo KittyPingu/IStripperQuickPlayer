@@ -948,11 +948,20 @@ void SetOpenGlHdrInteractiveMove(bool active)
     }
 }
 
-void ReleaseOpenGlHdr()
+void HideOpenGlHdr()
 {
     InterlockedExchange(&suspended, 1);
+    HWND overlay = state.overlayWindow;
+    if (overlay && IsWindow(overlay)) ShowWindowAsync(overlay, SW_HIDE);
+}
+
+void ReleaseOpenGlHdr()
+{
+    HideOpenGlHdr();
     std::lock_guard<std::mutex> lock(stateMutex);
-    if (state.overlayWindow) ShowWindowAsync(state.overlayWindow, SW_HIDE);
+    // Keep the NVIDIA, D3D11 and WGL interop session warm while disabled.
+    // The overlay is hidden and evaluation is suspended, so re-enabling HDR
+    // does not need to rebuild the session.
     InterlockedExchange(&status, 0);
 }
 

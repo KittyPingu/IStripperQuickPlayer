@@ -1000,6 +1000,8 @@ namespace IStripperQuickPlayer
                 ["chkNowPlayingInfo"] =
                     "Enable the global Now Playing Info overlay hotkey.",
                 ["chkPanic"] = "Enable the global Panic / Resume hotkey.",
+                ["chkToggleHdr"] =
+                    "Enable the global iStripper and custom-player HDR toggle hotkey.",
                 ["txtNextClip"] =
                     HotkeySyntax + "Ctrl+Alt+N.",
                 ["txtNextCard"] =

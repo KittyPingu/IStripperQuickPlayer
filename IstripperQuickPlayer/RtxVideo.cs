@@ -10,6 +10,7 @@ internal sealed class RtxVideoSession : IDisposable
 {
     const string Bridge = "IStripperRtxVideoBridge64.dll";
     IntPtr handle;
+    readonly long diagnosticId = CustomRtxDiagnostics.NewId();
     internal bool HasVsr { get; }
     internal bool HasTrueHdr { get; }
 
@@ -18,11 +19,18 @@ internal sealed class RtxVideoSession : IDisposable
         this.handle = handle;
         HasVsr = (features & 1) != 0;
         HasTrueHdr = (features & 2) != 0;
+        CustomRtxDiagnostics.Write("rtx-session", diagnosticId, "created",
+            $"handle=0x{handle.ToInt64():X} features={features} " +
+            $"vsr={HasVsr} hdr={HasTrueHdr}");
     }
 
     internal static RtxVideoSession? TryCreate(ID3D11Device device,
         bool enableVsr, bool enableTrueHdr, out string? unavailableReason)
     {
+        long attempt = CustomRtxDiagnostics.NewId();
+        CustomRtxDiagnostics.Write("rtx-create", attempt, "start",
+            $"device=0x{device.NativePointer.ToInt64():X} " +
+            $"vsr={enableVsr} hdr={enableTrueHdr}");
         unavailableReason = null;
         try
         {
@@ -30,7 +38,12 @@ internal sealed class RtxVideoSession : IDisposable
             IntPtr handle = RtxVideo_CreateD3D11(device.NativePointer,
                 enableVsr ? 1 : 0, enableTrueHdr ? 1 : 0, out int features,
                 error, error.Capacity);
-            if (handle != IntPtr.Zero) return new(handle, features);
+            if (handle != IntPtr.Zero)
+            {
+                CustomRtxDiagnostics.Write("rtx-create", attempt, "ok",
+                    $"handle=0x{handle.ToInt64():X} features={features}");
+                return new(handle, features);
+            }
             unavailableReason = error.Length == 0
                 ? "NVIDIA RTX Video Super Resolution is unavailable."
                 : error.ToString();
@@ -39,7 +52,11 @@ internal sealed class RtxVideoSession : IDisposable
             EntryPointNotFoundException or BadImageFormatException)
         {
             unavailableReason = error.Message;
+            CustomRtxDiagnostics.Write("rtx-create", attempt, "exception",
+                error: error);
         }
+        CustomRtxDiagnostics.Write("rtx-create", attempt, "failed",
+            $"reason=\"{unavailableReason}\"");
         return null;
     }
 
@@ -52,6 +69,10 @@ internal sealed class RtxVideoSession : IDisposable
             contrast: 100, saturation: 100, middleGray: 50,
             maxLuminance: 1000, error, error.Capacity) != 0;
         failure = succeeded ? null : error.ToString();
+        if (!succeeded)
+            CustomRtxDiagnostics.Write("rtx-session", diagnosticId,
+                "hdr-evaluate-failed", $"handle=0x{handle.ToInt64():X} " +
+                $"size={width}x{height} failure=\"{failure}\"");
         return succeeded;
     }
 
@@ -65,13 +86,26 @@ internal sealed class RtxVideoSession : IDisposable
             outputWidth, outputHeight, Math.Clamp(quality, 1, 4), error,
             error.Capacity) != 0;
         failure = succeeded ? null : error.ToString();
+        if (!succeeded)
+            CustomRtxDiagnostics.Write("rtx-session", diagnosticId,
+                "vsr-evaluate-failed", $"handle=0x{handle.ToInt64():X} " +
+                $"input={inputWidth}x{inputHeight} " +
+                $"output={outputWidth}x{outputHeight} quality={quality} " +
+                $"failure=\"{failure}\"");
         return succeeded;
     }
 
     public void Dispose()
     {
         IntPtr current = Interlocked.Exchange(ref handle, IntPtr.Zero);
-        if (current != IntPtr.Zero) RtxVideo_Destroy(current);
+        if (current != IntPtr.Zero)
+        {
+            CustomRtxDiagnostics.Write("rtx-session", diagnosticId,
+                "destroy-start", $"handle=0x{current.ToInt64():X}");
+            RtxVideo_Destroy(current);
+            CustomRtxDiagnostics.Write("rtx-session", diagnosticId,
+                "destroy-ok");
+        }
     }
 
     internal static void Verify()

@@ -52,6 +52,7 @@ internal sealed class CustomPlayerForm : Form
     static readonly List<CustomPlayerForm> globalMousePlayers = [];
     static IntPtr globalWheelHook;
     readonly string foregroundPath;
+    readonly long diagnosticId = CustomRtxDiagnostics.NewId();
     readonly string? alphaPath;
     readonly string? rvmOnnxModelPath;
     CustomRvmOnnxSettings? rvmOnnxSettings;
@@ -80,7 +81,7 @@ internal sealed class CustomPlayerForm : Form
     volatile float edgeChokePixels;
     CustomVirtualGreenScreen virtualGreenScreen;
     readonly int rtxVideoSuperResolutionQuality;
-    readonly bool rtxVideoHdr;
+    volatile bool rtxVideoHdr;
     readonly bool showRtxVideoStatus;
     VirtualGreenScreenSample[] hitTestGreenSamples;
     Task playbackTask = Task.CompletedTask;
@@ -91,6 +92,7 @@ internal sealed class CustomPlayerForm : Form
         : Math.Min(requestedRangeEndSeconds, renderer.Duration);
     internal bool HasEstablishedBounds =>
         IsEstablishedWindow(windowConfigured, Width, Height);
+    internal long DiagnosticId => diagnosticId;
     internal double CurrentSeconds => Math.Max(0,
         (renderer?.CurrentTime ?? rangeStartSeconds) - rangeStartSeconds);
     internal double DurationSeconds => Math.Max(0,
@@ -170,6 +172,10 @@ internal sealed class CustomPlayerForm : Form
         this.edgeChokePixels = Math.Clamp(edgeChokePixels, 0, 4);
         this.virtualGreenScreen = virtualGreenScreen?.Clone() ??
             new CustomVirtualGreenScreen { Enabled = false };
+        CustomRtxDiagnostics.Write("player", diagnosticId, "created",
+            $"foreground=\"{foregroundPath}\" alpha=\"{alphaPath}\" " +
+            $"vsr={this.rtxVideoSuperResolutionQuality} hdr={rtxVideoHdr} " +
+            $"sizePercent={sizePercent} prepared={preparedPlayback != null}");
         smallPatchSize = VirtualGreenScreenMath.SmallPatchSize(
             this.virtualGreenScreen);
         minimumTransparentAreaRadius =
@@ -232,6 +238,7 @@ internal sealed class CustomPlayerForm : Form
 
     async Task PlayAsync()
     {
+        CustomRtxDiagnostics.Write("player", diagnosticId, "play-start");
         try
         {
             PreparedPlayback? prepared = null;
@@ -260,6 +267,8 @@ internal sealed class CustomPlayerForm : Form
             }
             renderer = prepared?.TakeRenderer();
             bool rendererWasPrepared = renderer != null;
+            CustomRtxDiagnostics.Write("player", diagnosticId,
+                "renderer-selected", $"prepared={rendererWasPrepared}");
             renderer ??= await Task.Run(() => new PairedRenderer(
                 foregroundPath, alphaPath, alphaThreshold,
                 fullOpacityThreshold, edgeChokePixels,
@@ -267,6 +276,7 @@ internal sealed class CustomPlayerForm : Form
                 Volatile.Read(ref rvmOnnxSettings),
                 rtxVideoSuperResolutionQuality, rtxVideoHdr),
                 cancellation.Token);
+            renderer.SetRtxVideoHdr(rtxVideoHdr, out _);
             prepared?.Dispose();
             renderer.SetVolume(volumePercent);
             renderer.SetAlphaThreshold(alphaThreshold);
@@ -294,6 +304,10 @@ internal sealed class CustomPlayerForm : Form
             (IntPtr handle, int width, int height) window =
                 ((IntPtr, int, int))Invoke(() => (Handle, ClientSize.Width, ClientSize.Height));
             renderer.AttachWindow(window.handle, window.width, window.height);
+            CustomRtxDiagnostics.Write("player", diagnosticId,
+                "renderer-attached", $"renderer={renderer.DiagnosticId} " +
+                $"window=0x{window.handle.ToInt64():X} " +
+                $"size={window.width}x{window.height}");
             renderer.Play();
             bool firstFramePresented = false;
             bool rvmFallbackReported = false;
@@ -366,6 +380,8 @@ internal sealed class CustomPlayerForm : Form
                     if (!firstFramePresented)
                     {
                         firstFramePresented = true;
+                        CustomRtxDiagnostics.Write("player", diagnosticId,
+                            "first-frame", $"renderer={renderer.DiagnosticId}");
                         BeginInvoke(() => FirstFramePresented?.Invoke(
                             this, EventArgs.Empty));
                     }
@@ -373,6 +389,9 @@ internal sealed class CustomPlayerForm : Form
                 else await Task.Delay(1, cancellation.Token);
             }
             renderer.Pause();
+            CustomRtxDiagnostics.Write("player", diagnosticId,
+                "play-completed", $"renderer={renderer.DiagnosticId} " +
+                $"time={renderer.CurrentTime:F3}");
             if (!IsDisposed) BeginInvoke(() =>
             {
                 PlaybackCompleted?.Invoke(this, EventArgs.Empty);
@@ -382,6 +401,8 @@ internal sealed class CustomPlayerForm : Form
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
+            CustomRtxDiagnostics.Write("player", diagnosticId,
+                "play-failed", error: error);
             if (!IsDisposed) BeginInvoke(() =>
             {
                 PlaybackFailed?.Invoke(this, error);
@@ -391,7 +412,13 @@ internal sealed class CustomPlayerForm : Form
                 Close();
             });
         }
-        finally { renderer?.Dispose(); renderer = null; }
+        finally
+        {
+            CustomRtxDiagnostics.Write("player", diagnosticId,
+                "play-finally", $"renderer={renderer?.DiagnosticId}");
+            renderer?.Dispose();
+            renderer = null;
+        }
     }
 
     void ConfigureWindow(int width, int height)
@@ -508,6 +535,23 @@ internal sealed class CustomPlayerForm : Form
             Task.Run(() => current.SetRvmOnnxSettings(next));
     }
 
+    internal bool SetRtxVideoHdr(bool enabled, out string? failure)
+    {
+        CustomRtxDiagnostics.Write("player", diagnosticId, "hdr-request",
+            $"enabled={enabled} renderer={renderer?.DiagnosticId}");
+        rtxVideoHdr = enabled;
+        PairedRenderer? current = renderer;
+        if (current == null)
+        {
+            failure = null;
+            return true;
+        }
+        bool applied = current.SetRtxVideoHdr(enabled, out failure);
+        CustomRtxDiagnostics.Write("player", diagnosticId, "hdr-result",
+            $"enabled={enabled} applied={applied} failure=\"{failure}\"");
+        return applied;
+    }
+
     void RequestVisualRefresh() =>
         Interlocked.Exchange(ref visualRefreshPending, 1);
     internal void SetSizePercent(int percent, int minimumPercent = 10,
@@ -523,6 +567,9 @@ internal sealed class CustomPlayerForm : Form
             double scale = work.Height * sizePercent / 100d / renderer.Height;
             int width = Math.Max(2, (int)Math.Round(renderer.Width * scale));
             int height = Math.Max(2, (int)Math.Round(renderer.Height * scale));
+            CustomRtxDiagnostics.Write("player", diagnosticId,
+                "size-request", $"percent={next} output={width}x{height} " +
+                $"renderer={renderer.DiagnosticId}");
             SetWindowPos(Handle, new IntPtr(-1), Left + (Width - width) / 2,
                 work.Bottom - height, width, height, 0x10 | 0x40);
             renderer.ResizeOutput(width, height);
@@ -532,6 +579,16 @@ internal sealed class CustomPlayerForm : Form
             SizePercentChanged?.Invoke(sizePercent);
     }
     internal void ClosePlayer() { if (!IsDisposed) BeginInvoke(Close); }
+    internal void PrepareRtxHandoff()
+    {
+        long started = Stopwatch.GetTimestamp();
+        CustomRtxDiagnostics.Write("player", diagnosticId, "handoff-request",
+            $"renderer={renderer?.DiagnosticId}");
+        renderer?.PrepareRtxHandoff();
+        CustomRtxDiagnostics.Write("player", diagnosticId, "handoff-returned",
+            $"renderer={renderer?.DiagnosticId} " +
+            $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(started):F3}");
+    }
     internal async Task ClosePlayerAsync()
     {
         cancellation.Cancel();
@@ -1191,6 +1248,7 @@ internal sealed class CustomPlayerForm : Form
 
     internal sealed class PairedRenderer : IDisposable
     {
+        readonly long diagnosticId = CustomRtxDiagnostics.NewId();
         const string Shader = """
             struct O { float4 p:SV_POSITION; float2 uv:TEXCOORD0; };
             O VSMain(uint id:SV_VertexID) { O o; float2 uv=float2((id<<1)&2,id&2); o.uv=uv; o.p=float4(uv.x*2-1,1-uv.y*2,0,1); return o; }
@@ -1247,7 +1305,7 @@ internal sealed class CustomPlayerForm : Form
         ID3D11PixelShader? ps, mattePs, rgbPs, enhancedPs, hdrPs;
         RtxVideoSession? rtxVideo;
         readonly int rtxVideoSuperResolutionQuality;
-        readonly bool rtxVideoHdr;
+        bool rtxVideoHdr;
         string? rtxVideoStatus;
         internal event Action<string>? RtxVideoStatusChanged;
         ID3D11Device1? device1;
@@ -1297,6 +1355,7 @@ internal sealed class CustomPlayerForm : Form
             public void Dispose() { KeyedMutex.Dispose(); UV.Dispose(); Y.Dispose(); Texture.Dispose(); }
         }
         internal int Width => rgb.Width; internal int Height => rgb.Height;
+        internal long DiagnosticId => diagnosticId;
         internal double Duration { get; }
         internal bool Ended { get; private set; }
         internal double CurrentTime => PublishedCurrentTime();
@@ -1323,7 +1382,12 @@ internal sealed class CustomPlayerForm : Form
             CustomRvmOnnxSettings? rvmOnnxSettings = null,
             int rtxVideoSuperResolutionQuality = 0, bool rtxVideoHdr = false)
         {
+            long constructStarted = Stopwatch.GetTimestamp();
             foregroundPath = foreground;
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "construct-start", $"foreground=\"{foreground}\" " +
+                $"alpha=\"{alphaPath}\" vsr={rtxVideoSuperResolutionQuality} " +
+                $"hdr={rtxVideoHdr} rvm={rvmOnnxSettings != null}");
             this.rvmOnnxModelPath = rvmOnnxModelPath;
             this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
             this.fullOpacityThreshold = Math.Clamp(fullOpacityThreshold, 1, 255);
@@ -1410,16 +1474,32 @@ internal sealed class CustomPlayerForm : Form
             device3 = device.QueryInterface<ID3D11Device3>();
             factory = DXGI.CreateDXGIFactory2<IDXGIFactory2>(false);
             PublishClockLocked();
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "construct-ok", $"size={Width}x{Height} duration={Duration:F3} " +
+                $"alphaSize={alphaWidth}x{alphaHeight} " +
+                $"device=0x{device.NativePointer.ToInt64():X} " +
+                $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(constructStarted):F3}");
         }
 
         internal void AttachWindow(IntPtr handle, int width, int height)
         {
+            long attachStarted = Stopwatch.GetTimestamp();
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "attach-start", $"window=0x{handle.ToInt64():X} " +
+                $"output={width}x{height} vsr={rtxVideoSuperResolutionQuality} " +
+                $"hdrRequested={rtxVideoHdr}");
             string? unavailable = null;
+            long sessionStarted = Stopwatch.GetTimestamp();
             if (rtxVideoSuperResolutionQuality > 0 || rtxVideoHdr)
                 rtxVideo = RtxVideoSession.TryCreate(device!,
                     enableVsr: rtxVideoSuperResolutionQuality > 0,
                     enableTrueHdr: rtxVideoHdr, out unavailable);
             bool hdrActive = rtxVideo?.HasTrueHdr == true;
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "session-created", $"session={rtxVideo != null} " +
+                $"vsrActive={rtxVideo?.HasVsr == true} hdrActive={hdrActive} " +
+                $"unavailable=\"{unavailable}\" " +
+                $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(sessionStarted):F3}");
             DxgiFormat swapFormat = hdrActive
                 ? DxgiFormat.R16G16B16A16_Float : DxgiFormat.B8G8R8A8_UNorm;
             swap = factory!.CreateSwapChainForComposition(device!, new SwapChainDescription1(
@@ -1468,6 +1548,260 @@ internal sealed class CustomPlayerForm : Form
             composition=DComp.DCompositionCreateDevice<IDCompositionDevice>(dxgiDevice!);
             composition.CreateTargetForHwnd(handle,true,out compositionTarget).CheckError();
             visual=composition.CreateVisual(); visual.SetContent(swap); compositionTarget.SetRoot(visual); composition.Commit();
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "attach-ok", $"swap=0x{swap.NativePointer.ToInt64():X} " +
+                $"format={back.Description.Format} output=" +
+                $"{back.Description.Width}x{back.Description.Height} " +
+                $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(attachStarted):F3}");
+        }
+        (IDXGISwapChain1 Swap, ID3D11Texture2D Back,
+            ID3D11RenderTargetView Target) CreateSwapChain(
+            int width, int height, bool hdr)
+        {
+            IDXGISwapChain1 nextSwap = factory!.CreateSwapChainForComposition(
+                device!, new SwapChainDescription1(
+                    (uint)Math.Max(2, width), (uint)Math.Max(2, height),
+                    hdr ? DxgiFormat.R16G16B16A16_Float :
+                        DxgiFormat.B8G8R8A8_UNorm,
+                    bufferUsage: Usage.RenderTargetOutput, bufferCount: 2,
+                    scaling: Scaling.Stretch,
+                    swapEffect: SwapEffect.FlipSequential,
+                    alphaMode: DxgiAlphaMode.Premultiplied));
+            try
+            {
+                if (hdr)
+                {
+                    using IDXGISwapChain3 swap3 =
+                        nextSwap.QueryInterface<IDXGISwapChain3>();
+                    swap3.SetColorSpace1(ColorSpaceType.RgbFullG10NoneP709);
+                }
+                ID3D11Texture2D nextBack =
+                    nextSwap.GetBuffer<ID3D11Texture2D>(0);
+                try
+                {
+                    ID3D11RenderTargetView nextTarget =
+                        device!.CreateRenderTargetView(nextBack);
+                    return (nextSwap, nextBack, nextTarget);
+                }
+                catch
+                {
+                    nextBack.Dispose();
+                    throw;
+                }
+            }
+            catch
+            {
+                nextSwap.Dispose();
+                throw;
+            }
+        }
+        void ReleaseOutputTexturesLocked()
+        {
+            context!.PSUnsetShaderResource(7);
+            rtxOutputTarget?.Dispose();
+            rtxOutputTarget = null;
+            rtxOutputView?.Dispose();
+            rtxOutputView = null;
+            rtxOutputTex?.Dispose();
+            rtxOutputTex = null;
+            hdrOutputView?.Dispose();
+            hdrOutputView = null;
+            hdrOutputTex?.Dispose();
+            hdrOutputTex = null;
+        }
+        void ReplaceSwapChainLocked(int width, int height, bool hdr)
+        {
+            long replaceStarted = Stopwatch.GetTimestamp();
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "swap-replace-start", $"oldSwap=0x{swap?.NativePointer.ToInt64():X} " +
+                $"oldFormat={back?.Description.Format} " +
+                $"oldSize={back?.Description.Width}x{back?.Description.Height} " +
+                $"newSize={width}x{height} hdr={hdr}");
+            var next = CreateSwapChain(width, height, hdr);
+            long created = Stopwatch.GetTimestamp();
+            try
+            {
+                visual!.SetContent(next.Swap);
+                composition!.Commit();
+            }
+            catch
+            {
+                next.Target.Dispose();
+                next.Back.Dispose();
+                next.Swap.Dispose();
+                throw;
+            }
+            long committed = Stopwatch.GetTimestamp();
+
+            context!.OMSetRenderTargets(
+                Array.Empty<ID3D11RenderTargetView>());
+            ID3D11RenderTargetView? oldTarget = target;
+            ID3D11Texture2D? oldBack = back;
+            IDXGISwapChain1? oldSwap = swap;
+            target = next.Target;
+            back = next.Back;
+            swap = next.Swap;
+            ReleaseOutputTexturesLocked();
+            oldTarget?.Dispose();
+            oldBack?.Dispose();
+            oldSwap?.Dispose();
+            long released = Stopwatch.GetTimestamp();
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "swap-replace-ok", $"swap=0x{swap.NativePointer.ToInt64():X} " +
+                $"format={back.Description.Format} " +
+                $"size={back.Description.Width}x{back.Description.Height} " +
+                $"createMs={Stopwatch.GetElapsedTime(replaceStarted, created).TotalMilliseconds:F3} " +
+                $"commitMs={Stopwatch.GetElapsedTime(created, committed).TotalMilliseconds:F3} " +
+                $"releaseMs={Stopwatch.GetElapsedTime(committed, released).TotalMilliseconds:F3} " +
+                $"totalMs={Stopwatch.GetElapsedTime(replaceStarted, released).TotalMilliseconds:F3}");
+        }
+        internal bool SetRtxVideoHdr(bool enabled, out string? failure)
+        {
+            lock (sync)
+            {
+                long switchStarted = Stopwatch.GetTimestamp();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "hdr-switch-start", $"requested={enabled} " +
+                    $"configured={rtxVideoHdr} session={rtxVideo != null} " +
+                    $"vsrActive={rtxVideo?.HasVsr == true} " +
+                    $"hdrActive={rtxVideo?.HasTrueHdr == true} " +
+                    $"swapFormat={back?.Description.Format}");
+                failure = null;
+                if (swap == null)
+                {
+                    rtxVideoHdr = enabled;
+                    return true;
+                }
+                if (rtxVideoHdr == enabled &&
+                    (rtxVideo?.HasTrueHdr == true) == enabled)
+                    return true;
+
+                RtxVideoSession? previous = rtxVideo;
+                rtxVideo = null;
+                previous?.Dispose();
+                long oldDisposed = Stopwatch.GetTimestamp();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "hdr-old-session-disposed", $"hadSession={previous != null} " +
+                    $"elapsedMs={Stopwatch.GetElapsedTime(switchStarted, oldDisposed).TotalMilliseconds:F3}");
+
+                RtxVideoSession? replacement = null;
+                if (rtxVideoSuperResolutionQuality > 0 || enabled)
+                    replacement = RtxVideoSession.TryCreate(device!,
+                        enableVsr: rtxVideoSuperResolutionQuality > 0,
+                        enableTrueHdr: enabled, out failure);
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "hdr-new-session", $"session={replacement != null} " +
+                    $"vsrActive={replacement?.HasVsr == true} " +
+                    $"hdrActive={replacement?.HasTrueHdr == true} " +
+                    $"failure=\"{failure}\" " +
+                    $"elapsedMs={Stopwatch.GetElapsedTime(oldDisposed).TotalMilliseconds:F3}");
+                if (enabled && replacement?.HasTrueHdr != true)
+                {
+                    rtxVideo = replacement;
+                    rtxVideoHdr = false;
+                    failure ??= "NVIDIA RTX Video HDR is unavailable.";
+                    SetRtxVideoStatus("RTX HDR: Unavailable\n" + failure);
+                    try
+                    {
+                        if (back!.Description.Format ==
+                            DxgiFormat.R16G16B16A16_Float)
+                            ReplaceSwapChainLocked(
+                                (int)back.Description.Width,
+                                (int)back.Description.Height, hdr: false);
+                    }
+                    catch (Exception error)
+                    {
+                        Debug.WriteLine("Could not restore the SDR custom " +
+                            "player surface: " + error.Message);
+                    }
+                    return false;
+                }
+
+                try
+                {
+                    ReplaceSwapChainLocked((int)back!.Description.Width,
+                        (int)back.Description.Height, enabled);
+                }
+                catch (Exception error)
+                {
+                    replacement?.Dispose();
+                    rtxVideoHdr = false;
+                    failure = error.Message;
+                    SetRtxVideoStatus("RTX HDR: Could not switch\n" +
+                        error.Message);
+                    return false;
+                }
+
+                rtxVideo = replacement;
+                rtxVideoHdr = enabled;
+                if (rtxVideo?.HasVsr == true && rtxInputTex == null)
+                {
+                    rtxInputTex = RenderTexture(Width, Height,
+                        DxgiFormat.R8G8B8A8_UNorm);
+                    rtxInputTarget =
+                        device!.CreateRenderTargetView(rtxInputTex);
+                }
+                try
+                {
+                    if (frameUploaded) DrawCurrentFrameLocked();
+                    else PresentTransparentLocked();
+                    if (!enabled && rtxVideoSuperResolutionQuality == 0)
+                        SetRtxVideoStatus("RTX Video: Off");
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "hdr-switch-ok", $"enabled={enabled} " +
+                        $"vsrActive={rtxVideo?.HasVsr == true} " +
+                        $"hdrActive={rtxVideo?.HasTrueHdr == true} " +
+                        $"totalMs={CustomRtxDiagnostics.ElapsedMilliseconds(switchStarted):F3}");
+                    return true;
+                }
+                catch (Exception error)
+                {
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "hdr-switch-draw-failed", error: error);
+                    failure = error.Message;
+                    SetRtxVideoStatus("RTX HDR: Switch failed\n" +
+                        error.Message);
+                    return false;
+                }
+            }
+        }
+        internal void PrepareRtxHandoff()
+        {
+            lock (sync)
+            {
+                long handoffStarted = Stopwatch.GetTimestamp();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "handoff-start", $"session={rtxVideo != null} " +
+                    $"vsrActive={rtxVideo?.HasVsr == true} " +
+                    $"hdrActive={rtxVideo?.HasTrueHdr == true}");
+                if (rtxVideo == null) return;
+                rtxVideo.Dispose();
+                rtxVideo = null;
+                long destroyed = Stopwatch.GetTimestamp();
+                try
+                {
+                    if (back?.Description.Format ==
+                        DxgiFormat.R16G16B16A16_Float)
+                        ReplaceSwapChainLocked((int)back.Description.Width,
+                            (int)back.Description.Height, hdr: false);
+                    if (frameUploaded) DrawCurrentFrameLocked();
+                    else if (swap != null) PresentTransparentLocked();
+                    SetRtxVideoStatus("RTX Video: Handing off to next clip");
+                    long finished = Stopwatch.GetTimestamp();
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "handoff-ok", $"swapFormat={back?.Description.Format} " +
+                        $"destroyMs={Stopwatch.GetElapsedTime(handoffStarted, destroyed).TotalMilliseconds:F3} " +
+                        $"afterDestroyMs={Stopwatch.GetElapsedTime(destroyed, finished).TotalMilliseconds:F3} " +
+                        $"totalMs={Stopwatch.GetElapsedTime(handoffStarted, finished).TotalMilliseconds:F3}");
+                }
+                catch (Exception error)
+                {
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "handoff-failed", error: error);
+                    Debug.WriteLine("Could not release RTX Video for clip " +
+                        "handoff: " + error.Message);
+                }
+            }
         }
         ID3D11Texture2D Texture(int width,int height,DxgiFormat format=DxgiFormat.R8_UNorm) => device!.CreateTexture2D(new Texture2DDescription
             { Width=(uint)width, Height=(uint)height, MipLevels=1, ArraySize=1, Format=format,
@@ -1656,7 +1990,11 @@ internal sealed class CustomPlayerForm : Form
                 if (alpha == null && rgbTick + frame < now)
                 {
                     bool skipped = false;
-                    if (ShouldSeekForRealtimeCatchUp(rgbTick, frame, now))
+                    // FFmpeg's D3D12 decoder can reject the first packet after
+                    // avcodec_flush_buffers with EINVAL.  Decode/discard to
+                    // catch up on hardware instead of flush-seeking it.
+                    if (!rgb.IsHardwareDecoded &&
+                        ShouldSeekForRealtimeCatchUp(rgbTick, frame, now))
                     {
                         rgb.Seek(now / (double)TimeSpan.TicksPerSecond);
                         pending = false;
@@ -1752,6 +2090,9 @@ internal sealed class CustomPlayerForm : Form
             }
             catch (Exception error)
             {
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "rvm-frame-failed", $"gpu={rvmGpu != null} " +
+                    $"cpu={rvmOnnx != null} tick={rgbTick}", error);
                 RvmOnnxFallbackReason ??= error.Message;
                 rvmOnnx?.Dispose(); rvmOnnx = null;
                 if (rvmGpu != null && TryFallbackRvmToCpuLocked())
@@ -1767,9 +2108,11 @@ internal sealed class CustomPlayerForm : Form
         bool TryFallbackRvmToCpuLocked()
         {
             if (activeRvmSettings == null) return false;
+            FfmpegCpuDecoder? software = null;
             try
             {
-                FfmpegCpuDecoder software = new(foregroundPath);
+                long started = Stopwatch.GetTimestamp();
+                software = new FfmpegCpuDecoder(foregroundPath);
                 software.Seek(Math.Max(0, rgbTick / 10_000_000d));
                 if (!software.DecodeNext(out rgbTick))
                 {
@@ -1788,9 +2131,53 @@ internal sealed class CustomPlayerForm : Form
                 hardwareVideoFrame = false;
                 activeHardwareViews = null;
                 old.Dispose();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "rvm-cpu-fallback-ok", $"tick={rgbTick} elapsedMs=" +
+                    $"{CustomRtxDiagnostics.ElapsedMilliseconds(started):F3}");
                 return true;
             }
-            catch { return false; }
+            catch (Exception error)
+            {
+                software?.Dispose();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "rvm-cpu-fallback-failed", $"tick={rgbTick}", error);
+                return false;
+            }
+        }
+
+        bool TryFallbackDecoderToSoftwareLocked()
+        {
+            FfmpegCpuDecoder? software = null;
+            try
+            {
+                long started = Stopwatch.GetTimestamp();
+                software = new FfmpegCpuDecoder(foregroundPath);
+                software.Seek(Math.Max(0, rgbTick / 10_000_000d));
+                if (!software.DecodeNext(out rgbTick))
+                    throw new InvalidDataException(
+                        "Could not restore the current software-decoded frame.");
+                FfmpegCpuDecoder old = rgb;
+                rgb = software;
+                software = null;
+                DisposeGpuSharedViews();
+                rvmGpu?.Dispose();
+                rvmGpu = null;
+                hardwareVideoFrame = false;
+                activeHardwareViews = null;
+                old.Dispose();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "decoder-software-fallback-ok", $"tick={rgbTick} " +
+                    $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(started):F3}");
+                return true;
+            }
+            catch (Exception error)
+            {
+                software?.Dispose();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "decoder-software-fallback-failed", $"tick={rgbTick}",
+                    error);
+                return false;
+            }
         }
 
         void PrepareGpuDisplayFrame()
@@ -1992,6 +2379,8 @@ internal sealed class CustomPlayerForm : Form
             if (string.Equals(rtxVideoStatus, status,
                     StringComparison.Ordinal)) return;
             rtxVideoStatus = status;
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "rtx-status", $"status=\"{status}\"");
             RtxVideoStatusChanged?.Invoke(status);
         }
         void PresentTransparentLocked()
@@ -2102,11 +2491,17 @@ internal sealed class CustomPlayerForm : Form
             {
                 bool decoded;
                 try { decoded = rgb.DecodeNext(out rgbTick); }
-                catch (Exception error) when (rgb.IsHardwareDecoded &&
-                    rvmGpu != null)
+                catch (Exception error) when (rgb.IsHardwareDecoded)
                 {
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "hardware-decode-failed", $"tick={rgbTick} " +
+                        $"rvmGpu={rvmGpu != null}", error);
                     RvmOnnxFallbackReason ??= error.Message;
-                    if (!TryFallbackRvmToCpuLocked()) throw;
+                    bool recovered = rvmGpu != null &&
+                        TryFallbackRvmToCpuLocked();
+                    if (!recovered)
+                        recovered = TryFallbackDecoderToSoftwareLocked();
+                    if (!recovered) throw;
                     decoded = true;
                 }
                 alphaTick = rgbTick;
@@ -2190,7 +2585,43 @@ internal sealed class CustomPlayerForm : Form
                 return Math.Clamp(seconds, 0, Duration);
             }
         }
-        internal void ResizeOutput(int width,int height){lock(sync){if(swap==null)return;DxgiFormat format=back!.Description.Format;context!.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());target?.Dispose();back?.Dispose();rtxOutputTarget?.Dispose();rtxOutputTarget=null;rtxOutputView?.Dispose();rtxOutputView=null;rtxOutputTex?.Dispose();rtxOutputTex=null;hdrOutputView?.Dispose();hdrOutputView=null;hdrOutputTex?.Dispose();hdrOutputTex=null;swap.ResizeBuffers(2,(uint)Math.Max(2,width),(uint)Math.Max(2,height),format);back=swap.GetBuffer<ID3D11Texture2D>(0);target=device!.CreateRenderTargetView(back);if(frameUploaded)DrawCurrentFrameLocked();else PresentTransparentLocked();}}
-        public void Dispose(){lock(sync){if(disposed)return;disposed=true;audio?.Dispose();rvmOnnx?.Dispose();DisposeGpuSharedViews();rvmGpu?.Dispose();rtxVideo?.Dispose();rtxVideo=null;rgb.Dispose();alpha?.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();hdrPs?.Dispose();enhancedPs?.Dispose();rgbPs?.Dispose();mattePs?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();hdrOutputView?.Dispose();hdrOutputTex?.Dispose();rtxOutputTarget?.Dispose();rtxOutputView?.Dispose();rtxOutputTex?.Dispose();rtxInputTarget?.Dispose();rtxInputTex?.Dispose();matteView?.Dispose();matteTarget?.Dispose();matteTex?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();device3?.Dispose();device1?.Dispose();context?.Dispose();device?.Dispose();}}
+        internal void ResizeOutput(int width, int height)
+        {
+            lock (sync)
+            {
+                long resizeStarted = Stopwatch.GetTimestamp();
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "resize-start", $"requested={width}x{height} " +
+                    $"current={back?.Description.Width}x" +
+                    $"{back?.Description.Height} format={back?.Description.Format} " +
+                    $"vsrActive={rtxVideo?.HasVsr == true} " +
+                    $"hdrActive={rtxVideo?.HasTrueHdr == true}");
+                if (swap == null || back == null) return;
+                int nextWidth = Math.Max(2, width);
+                int nextHeight = Math.Max(2, height);
+                if (back.Description.Width == nextWidth &&
+                    back.Description.Height == nextHeight) return;
+                try
+                {
+                    ReplaceSwapChainLocked(nextWidth, nextHeight,
+                        rtxVideo?.HasTrueHdr == true);
+                    if (frameUploaded) DrawCurrentFrameLocked();
+                    else PresentTransparentLocked();
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "resize-ok", $"output={back.Description.Width}x" +
+                        $"{back.Description.Height} format={back.Description.Format} " +
+                        $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(resizeStarted):F3}");
+                }
+                catch (Exception error)
+                {
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "resize-failed", error: error);
+                    SetRtxVideoStatus("Video resize failed\n" + error.Message);
+                    Debug.WriteLine("Could not resize the custom player: " +
+                        error.Message);
+                }
+            }
+        }
+        public void Dispose(){lock(sync){if(disposed)return;CustomRtxDiagnostics.Write("renderer",diagnosticId,"dispose-start",$"playing={playing} time={TimeLocked():F3} session={rtxVideo!=null} swap=0x{swap?.NativePointer.ToInt64():X}");disposed=true;audio?.Dispose();rvmOnnx?.Dispose();DisposeGpuSharedViews();rvmGpu?.Dispose();rtxVideo?.Dispose();rtxVideo=null;rgb.Dispose();alpha?.Dispose();visual?.Dispose();compositionTarget?.Dispose();composition?.Dispose();hdrPs?.Dispose();enhancedPs?.Dispose();rgbPs?.Dispose();mattePs?.Dispose();ps?.Dispose();vs?.Dispose();sampler?.Dispose();hdrOutputView?.Dispose();hdrOutputTex?.Dispose();rtxOutputTarget?.Dispose();rtxOutputView?.Dispose();rtxOutputTex?.Dispose();rtxInputTarget?.Dispose();rtxInputTex?.Dispose();matteView?.Dispose();matteTarget?.Dispose();matteTex?.Dispose();keyView?.Dispose();keyTex?.Dispose();thresholdView?.Dispose();thresholdTex?.Dispose();aView?.Dispose();aTex?.Dispose();vView?.Dispose();vTex?.Dispose();uView?.Dispose();uTex?.Dispose();yView?.Dispose();yTex?.Dispose();target?.Dispose();back?.Dispose();swap?.Dispose();factory?.Dispose();dxgiDevice?.Dispose();device3?.Dispose();device1?.Dispose();context?.Dispose();device?.Dispose();CustomRtxDiagnostics.Write("renderer",diagnosticId,"dispose-ok");}}
     }
 }
