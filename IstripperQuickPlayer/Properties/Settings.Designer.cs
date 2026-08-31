@@ -961,6 +961,30 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool ToggleVsrHotkeyEnabled {
+            get {
+                return ((bool)(this["ToggleVsrHotkeyEnabled"]));
+            }
+            set {
+                this["ToggleVsrHotkeyEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Control+Alt+V")]
+        public string ToggleVsrHotkeyString {
+            get {
+                return ((string)(this["ToggleVsrHotkeyString"]));
+            }
+            set {
+                this["ToggleVsrHotkeyString"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool EnableIStripperRtxHdr {
             get {

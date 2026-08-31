@@ -130,6 +130,7 @@ namespace IStripperQuickPlayer
         private const int NowPlayingInfoHotkeyId = 10;
         private const int PanicHotkeyId = 11;
         private const int ToggleHdrHotkeyId = 12;
+        private const int ToggleVsrHotkeyId = 13;
         private const uint ModAlt = 0x0001;
         private const uint ModControl = 0x0002;
         private const uint ModShift = 0x0004;
@@ -438,6 +439,40 @@ namespace IStripperQuickPlayer
                     "iStripper and custom playback."
                 : $"RTX HDR changed for iStripper, but the current custom " +
                     $"clip could not switch: {customFailure}");
+        }
+
+        private void actToggleVsr()
+        {
+            if (!Properties.Settings.Default.ToggleVsrHotkeyEnabled)
+                return;
+            int current = Math.Clamp(
+                customShowConfiguration.RtxVideoSuperResolutionQuality, 0, 4);
+            int next;
+            if (current > 0)
+            {
+                customShowConfiguration.LastRtxVideoSuperResolutionQuality =
+                    current;
+                next = 0;
+            }
+            else
+            {
+                next = Math.Clamp(customShowConfiguration.
+                    LastRtxVideoSuperResolutionQuality, 1, 4);
+            }
+            customShowConfiguration.RtxVideoSuperResolutionQuality = next;
+            customShowConfiguration.Save();
+            CancelCustomPreload();
+            string? failure = null;
+            bool applied = customPlayer?.SetRtxVideoSuperResolutionQuality(
+                next, out failure) ?? true;
+            string quality = next switch
+            {
+                1 => "Low", 2 => "Medium", 3 => "High", 4 => "Ultra",
+                _ => "Off"
+            };
+            SetPlaybackStatus(applied
+                ? $"RTX VSR: {quality}."
+                : $"RTX VSR could not switch to {quality}: {failure}");
         }
 
         private async void panicResumeButton_Click(object? sender, EventArgs e)
@@ -3056,6 +3091,9 @@ namespace IStripperQuickPlayer
             if (Properties.Settings.Default.ToggleHdrHotkeyEnabled)
                 RegisterConfiguredHotKey(ToggleHdrHotkeyId,
                     Properties.Settings.Default.ToggleHdrHotkeyString);
+            if (Properties.Settings.Default.ToggleVsrHotkeyEnabled)
+                RegisterConfiguredHotKey(ToggleVsrHotkeyId,
+                    Properties.Settings.Default.ToggleVsrHotkeyString);
             hotkeysInitialized = true;
         }
 
@@ -3086,6 +3124,7 @@ namespace IStripperQuickPlayer
             UnregisterHotKey(Handle, NowPlayingInfoHotkeyId);
             UnregisterHotKey(Handle, PanicHotkeyId);
             UnregisterHotKey(Handle, ToggleHdrHotkeyId);
+            UnregisterHotKey(Handle, ToggleVsrHotkeyId);
         }
 
         internal static bool TryParseHotKey(string shortcut, out uint modifiers, out uint key)
@@ -3218,6 +3257,9 @@ namespace IStripperQuickPlayer
                         return;
                     case ToggleHdrHotkeyId:
                         PostPlayerHotkey(actToggleHdr);
+                        return;
+                    case ToggleVsrHotkeyId:
+                        PostPlayerHotkey(actToggleVsr);
                         return;
                 }
             }

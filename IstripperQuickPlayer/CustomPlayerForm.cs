@@ -60,6 +60,7 @@ internal sealed class CustomPlayerForm : Form
     readonly double rangeStartSeconds, requestedRangeEndSeconds;
     readonly Rectangle? initialBounds;
     readonly Task<PreparedPlayback?>? preparedPlayback;
+    ID3D11Device? sharedGraphicsDevice;
     readonly CancellationTokenSource cancellation = new();
     readonly System.Windows.Forms.Timer settleTimer = new() { Interval = 15 };
     readonly Stopwatch settleClock = new();
@@ -80,11 +81,12 @@ internal sealed class CustomPlayerForm : Form
     int smallPatchSize, minimumTransparentAreaRadius;
     volatile float edgeChokePixels;
     CustomVirtualGreenScreen virtualGreenScreen;
-    readonly int rtxVideoSuperResolutionQuality;
+    volatile int rtxVideoSuperResolutionQuality;
     volatile bool rtxVideoHdr;
     readonly bool showRtxVideoStatus;
     VirtualGreenScreenSample[] hitTestGreenSamples;
     Task playbackTask = Task.CompletedTask;
+    Action? beforeRendererAttach;
     long requestedSeekBits = BitConverter.DoubleToInt64Bits(double.NaN);
     long requestedRateBits = BitConverter.DoubleToInt64Bits(1d);
     double RangeEndSeconds => renderer == null || requestedRangeEndSeconds <= 0
@@ -107,6 +109,8 @@ internal sealed class CustomPlayerForm : Form
     internal event Action<int>? VolumeChanged;
     internal event Action<int>? SizePercentChanged;
     internal event Action<string>? RvmOnnxFallback;
+    internal void SetBeforeRendererAttach(Action callback) =>
+        beforeRendererAttach = callback;
     internal bool HoldFinalFrameOnCompletion;
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
@@ -150,7 +154,8 @@ internal sealed class CustomPlayerForm : Form
         bool rtxVideoHdr = false,
         bool showRtxVideoStatus = false,
         string? rvmOnnxModelPath = null,
-        CustomRvmOnnxSettings? rvmOnnxSettings = null)
+        CustomRvmOnnxSettings? rvmOnnxSettings = null,
+        CustomPlayerForm? graphicsSource = null)
     {
         this.foregroundPath = foregroundPath;
         this.alphaPath = alphaPath;
@@ -165,6 +170,7 @@ internal sealed class CustomPlayerForm : Form
         requestedRangeEndSeconds = endMs / 1000d;
         this.initialBounds = initialBounds;
         this.preparedPlayback = preparedPlayback;
+        sharedGraphicsDevice = graphicsSource?.renderer?.ShareDevice();
         sizePercent = Math.Clamp(playerSizePercent, 10, 200);
         this.volumePercent = Math.Clamp(volumePercent, 0, 100);
         this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
@@ -269,13 +275,24 @@ internal sealed class CustomPlayerForm : Form
             bool rendererWasPrepared = renderer != null;
             CustomRtxDiagnostics.Write("player", diagnosticId,
                 "renderer-selected", $"prepared={rendererWasPrepared}");
-            renderer ??= await Task.Run(() => new PairedRenderer(
-                foregroundPath, alphaPath, alphaThreshold,
-                fullOpacityThreshold, edgeChokePixels,
-                virtualGreenScreen, rvmOnnxModelPath,
-                Volatile.Read(ref rvmOnnxSettings),
-                rtxVideoSuperResolutionQuality, rtxVideoHdr),
-                cancellation.Token);
+            ID3D11Device? sharedDevice = Interlocked.Exchange(
+                ref sharedGraphicsDevice, null);
+            if (renderer == null)
+            {
+                try
+                {
+                    renderer = await Task.Run(() => new PairedRenderer(
+                        foregroundPath, alphaPath, alphaThreshold,
+                        fullOpacityThreshold, edgeChokePixels,
+                        virtualGreenScreen, rvmOnnxModelPath,
+                        Volatile.Read(ref rvmOnnxSettings),
+                        rtxVideoSuperResolutionQuality, rtxVideoHdr,
+                        sharedDevice), cancellation.Token);
+                    sharedDevice = null;
+                }
+                finally { sharedDevice?.Dispose(); }
+            }
+            else sharedDevice?.Dispose();
             renderer.SetRtxVideoHdr(rtxVideoHdr, out _);
             prepared?.Dispose();
             renderer.SetVolume(volumePercent);
@@ -303,6 +320,19 @@ internal sealed class CustomPlayerForm : Form
             Invoke(() => ConfigureWindow(renderer.Width, renderer.Height));
             (IntPtr handle, int width, int height) window =
                 ((IntPtr, int, int))Invoke(() => (Handle, ClientSize.Width, ClientSize.Height));
+            renderer.PrepareForAttach();
+            Action? beforeAttach = Interlocked.Exchange(
+                ref beforeRendererAttach, null);
+            if (beforeAttach != null)
+            {
+                long releaseStarted = Stopwatch.GetTimestamp();
+                CustomRtxDiagnostics.Write("player", diagnosticId,
+                    "before-attach-start", $"renderer={renderer.DiagnosticId}");
+                Invoke(beforeAttach);
+                CustomRtxDiagnostics.Write("player", diagnosticId,
+                    "before-attach-ok", $"renderer={renderer.DiagnosticId} " +
+                    $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(releaseStarted):F3}");
+            }
             renderer.AttachWindow(window.handle, window.width, window.height);
             CustomRtxDiagnostics.Write("player", diagnosticId,
                 "renderer-attached", $"renderer={renderer.DiagnosticId} " +
@@ -418,6 +448,7 @@ internal sealed class CustomPlayerForm : Form
                 "play-finally", $"renderer={renderer?.DiagnosticId}");
             renderer?.Dispose();
             renderer = null;
+            Interlocked.Exchange(ref sharedGraphicsDevice, null)?.Dispose();
         }
     }
 
@@ -551,6 +582,20 @@ internal sealed class CustomPlayerForm : Form
             $"enabled={enabled} applied={applied} failure=\"{failure}\"");
         return applied;
     }
+    internal bool SetRtxVideoSuperResolutionQuality(int quality,
+        out string? failure)
+    {
+        int requested = Math.Clamp(quality, 0, 4);
+        rtxVideoSuperResolutionQuality = requested;
+        PairedRenderer? current = renderer;
+        if (current == null)
+        {
+            failure = null;
+            return true;
+        }
+        return current.SetRtxVideoSuperResolutionQuality(requested,
+            out failure);
+    }
 
     void RequestVisualRefresh() =>
         Interlocked.Exchange(ref visualRefreshPending, 1);
@@ -589,6 +634,18 @@ internal sealed class CustomPlayerForm : Form
             $"renderer={renderer?.DiagnosticId} " +
             $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(started):F3}");
     }
+    internal bool PrepareRtxHandoffTo(CustomPlayerForm target)
+    {
+        PairedRenderer? sourceRenderer = renderer;
+        PairedRenderer? targetRenderer = target.renderer;
+        if (sourceRenderer == null || targetRenderer == null)
+            return false;
+        bool transferred = sourceRenderer.TransferRtxSessionTo(targetRenderer);
+        CustomRtxDiagnostics.Write("player", diagnosticId,
+            "handoff-transfer", $"target={target.diagnosticId} " +
+            $"transferred={transferred}");
+        return transferred;
+    }
     internal async Task ClosePlayerAsync()
     {
         cancellation.Cancel();
@@ -609,24 +666,35 @@ internal sealed class CustomPlayerForm : Form
         int rtxVideoSuperResolutionQuality = 0,
         bool rtxVideoHdr = false,
         string? rvmOnnxModelPath = null,
-        CustomRvmOnnxSettings? rvmOnnxSettings = null) => Task.Run(() =>
+        CustomRvmOnnxSettings? rvmOnnxSettings = null,
+        CustomPlayerForm? graphicsSource = null)
+    {
+        ID3D11Device? sharedDevice =
+            graphicsSource?.renderer?.ShareDevice();
+        return Task.Run(() =>
         {
-            PairedRenderer renderer = new(foregroundPath, alphaPath,
-                alphaThreshold, fullOpacityThreshold, edgeChokePixels,
-                virtualGreenScreen, rvmOnnxModelPath, rvmOnnxSettings,
-                rtxVideoSuperResolutionQuality, rtxVideoHdr);
+            PairedRenderer? renderer = null;
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                renderer = new PairedRenderer(foregroundPath, alphaPath,
+                    alphaThreshold, fullOpacityThreshold, edgeChokePixels,
+                    virtualGreenScreen, rvmOnnxModelPath, rvmOnnxSettings,
+                    rtxVideoSuperResolutionQuality, rtxVideoHdr,
+                    sharedDevice);
+                sharedDevice = null;
                 renderer.Seek(Math.Max(0, startMs / 1000d));
                 renderer.Prime();
                 return (PreparedPlayback?)new PreparedPlayback(renderer);
             }
             catch
             {
-                renderer.Dispose();
+                renderer?.Dispose();
                 throw;
             }
-        }, cancellationToken);
+            finally { sharedDevice?.Dispose(); }
+        }, CancellationToken.None);
+    }
 
     bool IsAlphaVisible(Point point)
     {
@@ -1280,6 +1348,20 @@ internal sealed class CustomPlayerForm : Form
             float4 PSMainEnhanced(O i):SV_TARGET{return PixelMain(i,true,false);}
             float4 PSMainHdr(O i):SV_TARGET{return PixelMain(i,true,true);}
             """;
+        sealed record CompiledShaders(byte[] Vertex, byte[] Matte,
+            byte[] Rgb, byte[] Standard, byte[] Enhanced, byte[] Hdr);
+        static readonly Lazy<CompiledShaders> compiledShaders = new(() =>
+            new CompiledShaders(
+                CompileShader("VSMain", "vs_5_0"),
+                CompileShader("MatteMain", "ps_5_0"),
+                CompileShader("RgbMain", "ps_5_0"),
+                CompileShader("PSMain", "ps_5_0"),
+                CompileShader("PSMainEnhanced", "ps_5_0"),
+                CompileShader("PSMainHdr", "ps_5_0")),
+            LazyThreadSafetyMode.ExecutionAndPublication);
+        static byte[] CompileShader(string entryPoint, string profile) =>
+            Compiler.Compile(Shader, entryPoint, "CustomPlayer.hlsl", profile,
+                ShaderFlags.OptimizationLevel3).Span.ToArray();
         readonly string foregroundPath;
         FfmpegCpuDecoder rgb;
         readonly FfmpegCpuDecoder? alpha;
@@ -1304,7 +1386,7 @@ internal sealed class CustomPlayerForm : Form
         ID3D11SamplerState? sampler; ID3D11VertexShader? vs;
         ID3D11PixelShader? ps, mattePs, rgbPs, enhancedPs, hdrPs;
         RtxVideoSession? rtxVideo;
-        readonly int rtxVideoSuperResolutionQuality;
+        int rtxVideoSuperResolutionQuality;
         bool rtxVideoHdr;
         string? rtxVideoStatus;
         internal event Action<string>? RtxVideoStatusChanged;
@@ -1318,7 +1400,8 @@ internal sealed class CustomPlayerForm : Form
         bool hardwareVideoFrame;
         IDCompositionDevice? composition; IDCompositionTarget? compositionTarget;
         IDCompositionVisual? visual;
-        bool pending, playing, disposed, frameUploaded; long rgbTick, alphaTick;
+        bool pending, playing, disposed, frameUploaded, handoffSuspended;
+        long rgbTick, alphaTick;
         int alphaThreshold, fullOpacityThreshold, smallPatchSize,
             minimumTransparentAreaRadius, greenDomain;
         float edgeChokePixels;
@@ -1380,7 +1463,8 @@ internal sealed class CustomPlayerForm : Form
             float edgeChokePixels, CustomVirtualGreenScreen? virtualGreenScreen,
             string? rvmOnnxModelPath = null,
             CustomRvmOnnxSettings? rvmOnnxSettings = null,
-            int rtxVideoSuperResolutionQuality = 0, bool rtxVideoHdr = false)
+            int rtxVideoSuperResolutionQuality = 0, bool rtxVideoHdr = false,
+            ID3D11Device? sharedDevice = null)
         {
             long constructStarted = Stopwatch.GetTimestamp();
             foregroundPath = foreground;
@@ -1466,8 +1550,9 @@ internal sealed class CustomPlayerForm : Form
             cbRow = new byte[(Width + 1) / 2];
             crRow = new byte[(Width + 1) / 2];
             audio = InternalAudioPlayer.TryOpen(foreground);
-            device = D3D11.D3D11CreateDevice(DriverType.Hardware,
-                DeviceCreationFlags.BgraSupport, Vortice.Direct3D.FeatureLevel.Level_11_1,
+            device = sharedDevice ?? D3D11.D3D11CreateDevice(
+                DriverType.Hardware, DeviceCreationFlags.BgraSupport,
+                Vortice.Direct3D.FeatureLevel.Level_11_1,
                 Vortice.Direct3D.FeatureLevel.Level_11_0);
             context = device.ImmediateContext; dxgiDevice = device.QueryInterface<IDXGIDevice>();
             device1 = device.QueryInterface<ID3D11Device1>();
@@ -1478,7 +1563,17 @@ internal sealed class CustomPlayerForm : Form
                 "construct-ok", $"size={Width}x{Height} duration={Duration:F3} " +
                 $"alphaSize={alphaWidth}x{alphaHeight} " +
                 $"device=0x{device.NativePointer.ToInt64():X} " +
+                $"sharedDevice={sharedDevice != null} " +
                 $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(constructStarted):F3}");
+        }
+        internal ID3D11Device ShareDevice()
+        {
+            lock (sync)
+            {
+                if (disposed || device == null)
+                    throw new ObjectDisposedException(nameof(PairedRenderer));
+                return device.QueryInterface<ID3D11Device>();
+            }
         }
 
         internal void AttachWindow(IntPtr handle, int width, int height)
@@ -1490,14 +1585,23 @@ internal sealed class CustomPlayerForm : Form
                 $"hdrRequested={rtxVideoHdr}");
             string? unavailable = null;
             long sessionStarted = Stopwatch.GetTimestamp();
-            if (rtxVideoSuperResolutionQuality > 0 || rtxVideoHdr)
+            bool sessionReused = rtxVideo != null &&
+                (rtxVideoSuperResolutionQuality == 0 || rtxVideo.HasVsr) &&
+                (!rtxVideoHdr || rtxVideo.HasTrueHdr);
+            if (!sessionReused &&
+                (rtxVideoSuperResolutionQuality > 0 || rtxVideoHdr))
                 rtxVideo = RtxVideoSession.TryCreate(device!,
-                    enableVsr: rtxVideoSuperResolutionQuality > 0,
-                    enableTrueHdr: rtxVideoHdr, out unavailable);
-            bool hdrActive = rtxVideo?.HasTrueHdr == true;
+                    enableVsr: true,
+                    // Keep TrueHDR warm whenever VSR already requires an NGX
+                    // session.  The render path still bypasses it while the
+                    // user setting is off.
+                    enableTrueHdr: true, out unavailable);
+            bool hdrActive = rtxVideoHdr &&
+                rtxVideo?.HasTrueHdr == true;
             CustomRtxDiagnostics.Write("renderer", diagnosticId,
                 "session-created", $"session={rtxVideo != null} " +
                 $"vsrActive={rtxVideo?.HasVsr == true} hdrActive={hdrActive} " +
+                $"reused={sessionReused} " +
                 $"unavailable=\"{unavailable}\" " +
                 $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(sessionStarted):F3}");
             DxgiFormat swapFormat = hdrActive
@@ -1539,12 +1643,19 @@ internal sealed class CustomPlayerForm : Form
             matteView=device.CreateShaderResourceView(matteTex);
             matteTarget=device.CreateRenderTargetView(matteTex);
             sampler=device.CreateSamplerState(SamplerDescription.LinearClamp);
-            vs=device.CreateVertexShader(Compiler.Compile(Shader,"VSMain","CustomPlayer.hlsl","vs_5_0",ShaderFlags.OptimizationLevel3).Span);
-            mattePs=device.CreatePixelShader(Compiler.Compile(Shader,"MatteMain","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
-            rgbPs=device.CreatePixelShader(Compiler.Compile(Shader,"RgbMain","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
-            ps=device.CreatePixelShader(Compiler.Compile(Shader,"PSMain","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
-            enhancedPs=device.CreatePixelShader(Compiler.Compile(Shader,"PSMainEnhanced","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
-            hdrPs=device.CreatePixelShader(Compiler.Compile(Shader,"PSMainHdr","CustomPlayer.hlsl","ps_5_0",ShaderFlags.OptimizationLevel3).Span);
+            long shaderStarted = Stopwatch.GetTimestamp();
+            bool shaderCacheHit = compiledShaders.IsValueCreated;
+            CompiledShaders shaders = compiledShaders.Value;
+            vs=device.CreateVertexShader(shaders.Vertex);
+            mattePs=device.CreatePixelShader(shaders.Matte);
+            rgbPs=device.CreatePixelShader(shaders.Rgb);
+            ps=device.CreatePixelShader(shaders.Standard);
+            enhancedPs=device.CreatePixelShader(shaders.Enhanced);
+            hdrPs=device.CreatePixelShader(shaders.Hdr);
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "shaders-created", $"elapsedMs=" +
+                $"{CustomRtxDiagnostics.ElapsedMilliseconds(shaderStarted):F3} " +
+                $"cacheHit={shaderCacheHit}");
             composition=DComp.DCompositionCreateDevice<IDCompositionDevice>(dxgiDevice!);
             composition.CreateTargetForHwnd(handle,true,out compositionTarget).CheckError();
             visual=composition.CreateVisual(); visual.SetContent(swap); compositionTarget.SetRoot(visual); composition.Commit();
@@ -1553,6 +1664,15 @@ internal sealed class CustomPlayerForm : Form
                 $"format={back.Description.Format} output=" +
                 $"{back.Description.Width}x{back.Description.Height} " +
                 $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(attachStarted):F3}");
+        }
+        internal void PrepareForAttach()
+        {
+            long started = Stopwatch.GetTimestamp();
+            bool cacheHit = compiledShaders.IsValueCreated;
+            _ = compiledShaders.Value;
+            CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                "attach-prepared", $"shaderCacheHit={cacheHit} elapsedMs=" +
+                $"{CustomRtxDiagnostics.ElapsedMilliseconds(started):F3}");
         }
         (IDXGISwapChain1 Swap, ID3D11Texture2D Back,
             ID3D11RenderTargetView Target) CreateSwapChain(
@@ -1672,9 +1792,36 @@ internal sealed class CustomPlayerForm : Form
                     rtxVideoHdr = enabled;
                     return true;
                 }
-                if (rtxVideoHdr == enabled &&
-                    (rtxVideo?.HasTrueHdr == true) == enabled)
+                if (rtxVideoHdr == enabled)
                     return true;
+
+                bool warmSession = rtxVideo != null &&
+                    (!enabled || rtxVideo.HasTrueHdr) &&
+                    (rtxVideoSuperResolutionQuality == 0 || rtxVideo.HasVsr);
+                if (warmSession)
+                {
+                    try
+                    {
+                        ReplaceSwapChainLocked((int)back!.Description.Width,
+                            (int)back.Description.Height, enabled);
+                        rtxVideoHdr = enabled;
+                        if (frameUploaded) DrawCurrentFrameLocked();
+                        else PresentTransparentLocked();
+                        if (!enabled && rtxVideoSuperResolutionQuality == 0)
+                            SetRtxVideoStatus("RTX Video: Off");
+                        CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                            "hdr-switch-warm-ok", $"enabled={enabled} " +
+                            $"totalMs={CustomRtxDiagnostics.ElapsedMilliseconds(switchStarted):F3}");
+                        return true;
+                    }
+                    catch (Exception error)
+                    {
+                        failure = error.Message;
+                        CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                            "hdr-switch-warm-failed", error: error);
+                        return false;
+                    }
+                }
 
                 RtxVideoSession? previous = rtxVideo;
                 rtxVideo = null;
@@ -1687,8 +1834,8 @@ internal sealed class CustomPlayerForm : Form
                 RtxVideoSession? replacement = null;
                 if (rtxVideoSuperResolutionQuality > 0 || enabled)
                     replacement = RtxVideoSession.TryCreate(device!,
-                        enableVsr: rtxVideoSuperResolutionQuality > 0,
-                        enableTrueHdr: enabled, out failure);
+                        enableVsr: true,
+                        enableTrueHdr: true, out failure);
                 CustomRtxDiagnostics.Write("renderer", diagnosticId,
                     "hdr-new-session", $"session={replacement != null} " +
                     $"vsrActive={replacement?.HasVsr == true} " +
@@ -1765,6 +1912,65 @@ internal sealed class CustomPlayerForm : Form
                 }
             }
         }
+        internal bool SetRtxVideoSuperResolutionQuality(int quality,
+            out string? failure)
+        {
+            lock (sync)
+            {
+                int requested = Math.Clamp(quality, 0, 4);
+                failure = null;
+                if (rtxVideoSuperResolutionQuality == requested)
+                    return true;
+                if (swap == null)
+                {
+                    rtxVideoSuperResolutionQuality = requested;
+                    return true;
+                }
+
+                if (requested == 0 || rtxVideo?.HasVsr == true)
+                {
+                    rtxVideoSuperResolutionQuality = requested;
+                    try
+                    {
+                        if (frameUploaded) DrawCurrentFrameLocked();
+                        else PresentTransparentLocked();
+                        if (requested == 0 && !rtxVideoHdr)
+                            SetRtxVideoStatus("RTX Video: Off");
+                        return true;
+                    }
+                    catch (Exception error)
+                    {
+                        failure = error.Message;
+                        return false;
+                    }
+                }
+
+                RtxVideoSession? replacement = RtxVideoSession.TryCreate(
+                    device!, enableVsr: true, enableTrueHdr: true,
+                    out failure);
+                if (replacement?.HasVsr != true)
+                {
+                    replacement?.Dispose();
+                    failure ??= "NVIDIA RTX Video Super Resolution is unavailable.";
+                    return false;
+                }
+                RtxVideoSession? previous = rtxVideo;
+                rtxVideo = replacement;
+                rtxVideoSuperResolutionQuality = requested;
+                previous?.Dispose();
+                try
+                {
+                    if (frameUploaded) DrawCurrentFrameLocked();
+                    else PresentTransparentLocked();
+                    return true;
+                }
+                catch (Exception error)
+                {
+                    failure = error.Message;
+                    return false;
+                }
+            }
+        }
         internal void PrepareRtxHandoff()
         {
             lock (sync)
@@ -1801,6 +2007,37 @@ internal sealed class CustomPlayerForm : Form
                     Debug.WriteLine("Could not release RTX Video for clip " +
                         "handoff: " + error.Message);
                 }
+            }
+        }
+        internal bool TransferRtxSessionTo(PairedRenderer targetRenderer)
+        {
+            lock (sync)
+            lock (targetRenderer.sync)
+            {
+                if (disposed || targetRenderer.disposed || rtxVideo == null ||
+                    device == null || targetRenderer.device == null ||
+                    device.NativePointer != targetRenderer.device.NativePointer ||
+                    targetRenderer.rtxVideo != null ||
+                    targetRenderer.rtxVideoSuperResolutionQuality > 0 &&
+                        !rtxVideo.HasVsr ||
+                    targetRenderer.rtxVideoHdr && !rtxVideo.HasTrueHdr)
+                {
+                    CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                        "session-transfer-rejected", $"target=" +
+                        $"{targetRenderer.diagnosticId} session={rtxVideo != null} " +
+                        $"sameDevice={device?.NativePointer == targetRenderer.device?.NativePointer} " +
+                        $"targetSession={targetRenderer.rtxVideo != null}");
+                    return false;
+                }
+                handoffSuspended = true;
+                targetRenderer.rtxVideo = rtxVideo;
+                rtxVideo = null;
+                CustomRtxDiagnostics.Write("renderer", diagnosticId,
+                    "session-transfer-ok", $"target={targetRenderer.diagnosticId} " +
+                    $"device=0x{device.NativePointer.ToInt64():X} " +
+                    $"vsr={targetRenderer.rtxVideo.HasVsr} " +
+                    $"hdr={targetRenderer.rtxVideo.HasTrueHdr}");
+                return true;
             }
         }
         ID3D11Texture2D Texture(int width,int height,DxgiFormat format=DxgiFormat.R8_UNorm) => device!.CreateTexture2D(new Texture2DDescription
@@ -1974,7 +2211,7 @@ internal sealed class CustomPlayerForm : Form
         {
             lock (sync)
             {
-                if (!frameUploaded) return false;
+                if (handoffSuspended || !frameUploaded) return false;
                 DrawCurrentFrameLocked();
                 return true;
             }
@@ -1984,6 +2221,7 @@ internal sealed class CustomPlayerForm : Form
         {
             alphaBytes=null; lock(sync)
             {
+                if (handoffSuspended) return false;
                 if(!pending && !DecodePair()) return false;
                 long now=(long)Math.Round(TimeLocked()*10_000_000);
                 long frame=(long)Math.Round(rgb.FrameDuration*10_000_000);
@@ -2252,8 +2490,9 @@ internal sealed class CustomPlayerForm : Form
             bool hdrEnhanced = false;
             bool upscaling = back!.Description.Width > Width ||
                 back.Description.Height > Height;
-            bool useVsr = rtxVideo?.HasVsr == true && upscaling;
-            bool useHdr = rtxVideo?.HasTrueHdr == true;
+            bool useVsr = rtxVideoSuperResolutionQuality > 0 &&
+                rtxVideo?.HasVsr == true && upscaling;
+            bool useHdr = rtxVideoHdr && rtxVideo?.HasTrueHdr == true;
             if (useVsr || useHdr)
             {
                 EnsureRtxOutput();
@@ -2308,7 +2547,8 @@ internal sealed class CustomPlayerForm : Form
                     $"{Width}×{Height} → {back.Description.Width}×" +
                     back.Description.Height);
             }
-            else if (rtxVideo?.HasVsr == true && !upscaling)
+            else if (rtxVideoSuperResolutionQuality > 0 &&
+                rtxVideo?.HasVsr == true && !upscaling)
                 SetRtxVideoStatus($"RTX VSR {RtxQualityName()}: Bypassed\n" +
                     $"Output {back.Description.Width}×{back.Description.Height} " +
                     $"is not larger than source {Width}×{Height}");
@@ -2597,6 +2837,7 @@ internal sealed class CustomPlayerForm : Form
                     $"vsrActive={rtxVideo?.HasVsr == true} " +
                     $"hdrActive={rtxVideo?.HasTrueHdr == true}");
                 if (swap == null || back == null) return;
+                if (handoffSuspended) return;
                 int nextWidth = Math.Max(2, width);
                 int nextHeight = Math.Max(2, height);
                 if (back.Description.Width == nextWidth &&
@@ -2604,7 +2845,7 @@ internal sealed class CustomPlayerForm : Form
                 try
                 {
                     ReplaceSwapChainLocked(nextWidth, nextHeight,
-                        rtxVideo?.HasTrueHdr == true);
+                        rtxVideoHdr && rtxVideo?.HasTrueHdr == true);
                     if (frameUploaded) DrawCurrentFrameLocked();
                     else PresentTransparentLocked();
                     CustomRtxDiagnostics.Write("renderer", diagnosticId,

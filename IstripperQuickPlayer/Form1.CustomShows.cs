@@ -1904,7 +1904,8 @@ public partial class Form1
             rvmOnnxModelPath: rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 clip.customRvmOnnxSettings?.Model ??
                     RvmOnnxSupport.MobileNetV3) : null,
-            rvmOnnxSettings: rvmOnnx ? clip.customRvmOnnxSettings ?? new() : null);
+            rvmOnnxSettings: rvmOnnx ? clip.customRvmOnnxSettings ?? new() : null,
+            graphicsSource: previous);
         player.RvmOnnxFallback += reason => BeginInvoke(() =>
         {
             if (rvmOnnxPlaybackWarningShown) return;
@@ -1949,6 +1950,25 @@ public partial class Form1
         CustomRtxDiagnostics.Write("handoff", 0, "new-player",
             $"animation=\"{animationPath}\" player={player.DiagnosticId} " +
             $"previous={previous?.DiagnosticId} prepared={preparedPlayback != null}");
+        if (previous != null)
+        {
+            player.SetBeforeRendererAttach(() =>
+            {
+                long releaseStarted = Stopwatch.GetTimestamp();
+                CustomRtxDiagnostics.Write("handoff", 0,
+                    "deferred-release-start", $"player={player.DiagnosticId} " +
+                    $"previous={previous.DiagnosticId} elapsedMs=" +
+                    $"{CustomRtxDiagnostics.ElapsedMilliseconds(handoffStarted):F3}");
+                bool transferred = previous.PrepareRtxHandoffTo(player);
+                if (!transferred)
+                    previous.PrepareRtxHandoff();
+                CustomRtxDiagnostics.Write("handoff", 0,
+                    "deferred-release-ok", $"player={player.DiagnosticId} " +
+                    $"previous={previous.DiagnosticId} " +
+                    $"transferred={transferred} releaseMs=" +
+                    $"{CustomRtxDiagnostics.ElapsedMilliseconds(releaseStarted):F3}");
+            });
+        }
         SelectCustomAlphaThreshold(card!, clip);
         customPlayerAnimationPath = animationPath;
         RefreshPlaybackControlVisibility();
@@ -2017,14 +2037,10 @@ public partial class Form1
         // Keep the always-on-top playback surface independent from the library
         // window. An owned Win32 window is minimized automatically with its
         // owner, which is not appropriate for desktop-style custom playback.
-        long releaseStarted = Stopwatch.GetTimestamp();
-        previous?.PrepareRtxHandoff();
-        long released = Stopwatch.GetTimestamp();
         CustomRtxDiagnostics.Write("handoff", 0, "show-player",
             $"player={player.DiagnosticId} previous={previous?.DiagnosticId} " +
-            $"releaseMs={Stopwatch.GetElapsedTime(releaseStarted, released).TotalMilliseconds:F3} " +
-            $"setupMs={Stopwatch.GetElapsedTime(handoffStarted, releaseStarted).TotalMilliseconds:F3} " +
-            $"elapsedMs={Stopwatch.GetElapsedTime(handoffStarted, released).TotalMilliseconds:F3}");
+            $"release=deferred setupMs=" +
+            $"{CustomRtxDiagnostics.ElapsedMilliseconds(handoffStarted):F3}");
         player.Show();
         CustomRtxDiagnostics.Write("handoff", 0, "show-returned",
             $"player={player.DiagnosticId} elapsedMs=" +
@@ -2086,7 +2102,8 @@ public partial class Form1
             rvmOnnx ? RvmOnnxSupport.ModelPathFor(
                 next.customRvmOnnxSettings?.Model ??
                     RvmOnnxSupport.MobileNetV3) : null,
-            rvmOnnx ? next.customRvmOnnxSettings ?? new() : null);
+            rvmOnnx ? next.customRvmOnnxSettings ?? new() : null,
+            graphicsSource: customPlayer);
     }
 
     Task<CustomPlayerForm.PreparedPlayback?>? TakeCustomPreload(

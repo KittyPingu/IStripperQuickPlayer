@@ -53,6 +53,8 @@
             chkPanic = new CheckBox();
             txtToggleHdr = new TextBox();
             chkToggleHdr = new CheckBox();
+            txtToggleVsr = new TextBox();
+            chkToggleVsr = new CheckBox();
             SuspendLayout();
             // 
             // chkNextClip
@@ -95,7 +97,7 @@
             // 
             // cmdOK
             // 
-            cmdOK.Location = new Point(229, 729);
+            cmdOK.Location = new Point(229, 782);
             cmdOK.Margin = new Padding(4, 4, 4, 4);
             cmdOK.Name = "cmdOK";
             cmdOK.Size = new Size(109, 55);
@@ -275,12 +277,31 @@
             chkToggleHdr.TabIndex = 23;
             chkToggleHdr.Text = "Toggle HDR";
             chkToggleHdr.UseVisualStyleBackColor = true;
+            //
+            // txtToggleVsr
+            //
+            txtToggleVsr.Location = new Point(229, 716);
+            txtToggleVsr.Name = "txtToggleVsr";
+            txtToggleVsr.Size = new Size(263, 31);
+            txtToggleVsr.TabIndex = 26;
+            //
+            // chkToggleVsr
+            //
+            chkToggleVsr.AutoSize = true;
+            chkToggleVsr.Location = new Point(70, 720);
+            chkToggleVsr.Name = "chkToggleVsr";
+            chkToggleVsr.Size = new Size(128, 29);
+            chkToggleVsr.TabIndex = 25;
+            chkToggleVsr.Text = "Toggle VSR";
+            chkToggleVsr.UseVisualStyleBackColor = true;
             // 
             // Hotkeys
             // 
             AutoScaleDimensions = new SizeF(144F, 144F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(578, 804);
+            ClientSize = new Size(578, 857);
+            Controls.Add(txtToggleVsr);
+            Controls.Add(chkToggleVsr);
             Controls.Add(txtToggleHdr);
             Controls.Add(chkToggleHdr);
             Controls.Add(txtPanic);
@@ -346,5 +367,7 @@
         private CheckBox chkPanic;
         private TextBox txtToggleHdr;
         private CheckBox chkToggleHdr;
+        private TextBox txtToggleVsr;
+        private CheckBox chkToggleVsr;
     }
 }

@@ -40,6 +40,8 @@ namespace IStripperQuickPlayer
             chkPanic.Checked = Properties.Settings.Default.PanicHotkeyEnabled;
             chkToggleHdr.Checked =
                 Properties.Settings.Default.ToggleHdrHotkeyEnabled;
+            chkToggleVsr.Checked =
+                Properties.Settings.Default.ToggleVsrHotkeyEnabled;
             txtNextClip.Text = Properties.Settings.Default.NextClipString;
             txtNextCard.Text = Properties.Settings.Default.NextCardString;
             txtToggleLock.Text = Properties.Settings.Default.ToggleLockString;
@@ -52,6 +54,7 @@ namespace IStripperQuickPlayer
             txtNowPlayingInfo.Text = Properties.Settings.Default.NowPlayingInfoHotkeyString;
             txtPanic.Text = Properties.Settings.Default.PanicHotkeyString;
             txtToggleHdr.Text = Properties.Settings.Default.ToggleHdrHotkeyString;
+            txtToggleVsr.Text = Properties.Settings.Default.ToggleVsrHotkeyString;
         }
 
         private void cmdOK_Click(object sender, EventArgs e)
@@ -69,6 +72,8 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.PanicHotkeyEnabled = chkPanic.Checked;
             Properties.Settings.Default.ToggleHdrHotkeyEnabled =
                 chkToggleHdr.Checked;
+            Properties.Settings.Default.ToggleVsrHotkeyEnabled =
+                chkToggleVsr.Checked;
             Properties.Settings.Default.NextClipString = txtNextClip.Text;
             Properties.Settings.Default.NextCardString = txtNextCard.Text;
             Properties.Settings.Default.ToggleLockString = txtToggleLock.Text;
@@ -81,6 +86,7 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.NowPlayingInfoHotkeyString = txtNowPlayingInfo.Text;
             Properties.Settings.Default.PanicHotkeyString = txtPanic.Text;
             Properties.Settings.Default.ToggleHdrHotkeyString = txtToggleHdr.Text;
+            Properties.Settings.Default.ToggleVsrHotkeyString = txtToggleVsr.Text;
             this.Close();
         }
     }

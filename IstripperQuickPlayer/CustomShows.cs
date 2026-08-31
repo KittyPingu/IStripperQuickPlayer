@@ -31,6 +31,7 @@ internal sealed class CustomShowConfiguration
         CustomShowClip.DefaultAlphaThreshold;
     public int FullOpacityThreshold { get; set; } = 200;
     public int RtxVideoSuperResolutionQuality { get; set; }
+    public int LastRtxVideoSuperResolutionQuality { get; set; } = 3;
     public bool RtxVideoHdr { get; set; }
     public bool ShowRtxVideoStatus { get; set; }
     public int Sam2FrameCacheSizeGb { get; set; } = 10;
@@ -123,6 +124,8 @@ internal sealed class CustomShowConfiguration
                 configuration.DefaultAlphaThreshold, 0, 255);
             configuration.RtxVideoSuperResolutionQuality = Math.Clamp(
                 configuration.RtxVideoSuperResolutionQuality, 0, 4);
+            configuration.LastRtxVideoSuperResolutionQuality = Math.Clamp(
+                configuration.LastRtxVideoSuperResolutionQuality, 1, 4);
             int[] rvmChunks = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
             if (!rvmChunks.Contains(configuration.RvmQualityPreferredChunk))
                 configuration.RvmQualityPreferredChunk = 12;
