@@ -2784,10 +2784,7 @@ namespace IStripperQuickPlayer
             StartRestApi();
             clickingNowPlaying = false;
             SetupKeyHooks();
-            await Task.Delay(1000);
-            if (!formIsClosing && string.IsNullOrEmpty(
-                    GetCurrentAnimationPath()))
-                TryPlayNextQueuedAnimation();
+            await ResynchronizeStartupNowPlayingAsync();
             if (!Application.ProductVersion.Contains(
                     "-dev", StringComparison.OrdinalIgnoreCase))
                 _ = CheckForUpdatesAsync(false);
@@ -3299,6 +3296,20 @@ namespace IStripperQuickPlayer
                     ConfigurePlaybackHooks(process);
                     if (!playerLockBridgeLoaded)
                         continue;
+                    if (customPlayer != null && !formIsClosing &&
+                        IsHandleCreated)
+                    {
+                        int attachedProcessId = process.Id;
+                        BeginInvoke((Action)(() =>
+                        {
+                            if (customPlayer != null && !formIsClosing)
+                            {
+                                SuspendIStripperForCustomPlayback();
+                                _ = EnsureIStripperSuspendedForCustomPlaybackAsync(
+                                    attachedProcessId);
+                            }
+                        }));
+                    }
                     //check that we havent played a new clip while we weren't hooked
                     if (!apiOnlyMode)
                     {
@@ -3374,6 +3385,7 @@ namespace IStripperQuickPlayer
 
         private void ResetVghdAttachment()
         {
+            DisposePlaybackRegistryCache();
             lock (playbackApiLock)
             {
                 playbackBridgeClient?.Dispose();
@@ -5435,6 +5447,20 @@ namespace IStripperQuickPlayer
             ShowNowPlaying(nowp, !string.IsNullOrEmpty(nowp));
         }
 
+        private async Task ResynchronizeStartupNowPlayingAsync()
+        {
+            for (int attempt = 0; attempt < 40 && !formIsClosing; attempt++)
+            {
+                string current = GetPlaybackRegistryValue("CurrentAnim");
+                if (!string.IsNullOrEmpty(current))
+                {
+                    ShowNowPlaying(current, doWallpaper: true);
+                    return;
+                }
+                await Task.Delay(250);
+            }
+        }
+
         private bool EnforceNowPlaying(string nowplaying)
         {
             ModelCard? model = Datastore.findCardByTag(
@@ -6058,6 +6084,9 @@ namespace IStripperQuickPlayer
         private void GetNextCard()
         {
             if (panicActive)
+                return;
+
+            if (IStripperTransitionPending(customPendingIstripperAnimation))
                 return;
 
             ClearUnqueuedCardSession();

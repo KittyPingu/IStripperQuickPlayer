@@ -80,6 +80,7 @@ public partial class Form1
     Rectangle? customPlayerBounds;
     bool customResumeIstripper;
     bool customIstripperSuspended;
+    int customSuspendRetryActive;
     string customPendingIstripperAnimation = "";
     static readonly string customPlayerPositionLog = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -1870,10 +1871,9 @@ public partial class Form1
         BeginAnimationReplacement(animationPath);
         key.SetValue("ForceAnim", animationPath);
         if (customTransition)
-        {
             ResumeHiddenIStripperForTransition();
+        if (customTransition)
             _ = CompleteIStripperTransitionAsync(animationPath);
-        }
         return true;
     }
 
@@ -2222,6 +2222,29 @@ public partial class Form1
         catch { }
     }
 
+    async Task EnsureIStripperSuspendedForCustomPlaybackAsync(int processId)
+    {
+        if (Interlocked.Exchange(ref customSuspendRetryActive, 1) != 0)
+            return;
+        try
+        {
+            for (int attempt = 0; attempt < 80; attempt++)
+            {
+                if (customPlayer == null || !customIstripperSuspended ||
+                    formIsClosing || processId != Volatile.Read(ref vghd_procID))
+                    return;
+                SuspendIStripperForCustomPlayback();
+                if (customResumeIstripper)
+                    return;
+                await Task.Delay(125);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref customSuspendRetryActive, 0);
+        }
+    }
+
     void StopCustomPlayback(bool restoreIstripper)
     {
         CancelCustomPreload();
@@ -2326,6 +2349,9 @@ public partial class Form1
         string.Equals(expected, current, StringComparison.OrdinalIgnoreCase) &&
         now - matchedAt >= TimeSpan.FromMilliseconds(300);
 
+    static bool IStripperTransitionPending(string pendingAnimationPath) =>
+        !string.IsNullOrWhiteSpace(pendingAnimationPath);
+
     internal static bool VerifyCustomPlaybackHandoff()
     {
         DateTime now = DateTime.UtcNow;
@@ -2343,7 +2369,9 @@ public partial class Form1
                 CustomClipMedia.RvmOnnxMode) &&
             !ClipSelectionWasHandled(false, false) &&
             ClipSelectionWasHandled(true, false) &&
-            ClipSelectionWasHandled(false, true);
+            ClipSelectionWasHandled(false, true) &&
+            IStripperTransitionPending("card\\clip") &&
+            !IStripperTransitionPending("");
     }
 
     void RememberCustomPlayerBounds(CustomPlayerForm player)

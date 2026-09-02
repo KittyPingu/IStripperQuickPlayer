@@ -320,6 +320,7 @@ internal static class CustomShowWizardRecommendations
 internal sealed class CustomShowWizardForm : Form
 {
     const int PageCount = 6;
+    const int ContentWidth = 500;
     readonly ICustomShowWizardHost host;
     readonly Form editor;
     readonly Label progress = new() { AutoSize = true };
@@ -363,15 +364,18 @@ internal sealed class CustomShowWizardForm : Form
     Button? liveClipButton;
     int step;
 
+    internal bool CanAdvanceForVerification => next.Enabled;
+
     internal CustomShowWizardForm(ICustomShowWizardHost host, Form editor)
     {
         this.host = host;
         this.editor = editor;
         Text = "Custom Show Wizard";
-        ClientSize = new Size(440, 690);
-        MinimumSize = new Size(390, 560);
+        ClientSize = new Size(570, 690);
+        MinimumSize = new Size(500, 560);
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
+        TopMost = true;
         AccessibleName = "Custom Show creation wizard";
         TableLayoutPanel root = new()
         {
@@ -429,7 +433,7 @@ internal sealed class CustomShowWizardForm : Form
         ComboBox result = new()
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 385,
+            Width = ContentWidth,
             AccessibleRole = AccessibleRole.ComboBox
         };
         result.Items.AddRange(values);
@@ -471,6 +475,7 @@ internal sealed class CustomShowWizardForm : Form
         if (liveClipButton != null)
             liveClipButton.Text = state.ClipsConfirmed
                 ? "Review clip divisions…" : "Split into clips…";
+        UpdateNextEnabled(state);
     }
 
     void EditorBoundsChanged(object? sender, EventArgs e) => PositionBesideEditor();
@@ -494,7 +499,6 @@ internal sealed class CustomShowWizardForm : Form
     {
         step = Math.Clamp(value, 0, PageCount - 1);
         back.Enabled = step > 0;
-        next.Enabled = step < PageCount - 1;
         next.Text = step == PageCount - 2 ? "Review" : "Next";
         NavigateEditor();
         RefreshPage();
@@ -534,7 +538,13 @@ internal sealed class CustomShowWizardForm : Form
         }
         page.ResumeLayout(true);
         AppTheme.Apply(this);
+        UpdateNextEnabled(state);
     }
+
+    void UpdateNextEnabled(CustomShowWizardState state) =>
+        next.Enabled = step < PageCount - 1 &&
+            (step != 0 || state.SourceValid && state.TitleValid &&
+                state.ProfileValid);
 
     void BuildSourcePage(CustomShowWizardState state)
     {
@@ -551,8 +561,8 @@ internal sealed class CustomShowWizardForm : Form
             state.ProfileValid ? state.ProfileName :
                 "Select an existing model or create a reusable profile.");
         AddAction("Choose or create model", CustomShowWizardArea.Profile);
-        AddParagraph("You can continue at any time. The editor will still check " +
-            "required information before processing starts.");
+        AddParagraph("Complete all three required details to continue. The editor " +
+            "will still validate them again before processing starts.");
     }
 
     void BuildDetailsPage()
@@ -711,7 +721,7 @@ internal sealed class CustomShowWizardForm : Form
         Label status = new()
         {
             AutoSize = true,
-            MaximumSize = new Size(390, 0),
+            MaximumSize = new Size(ContentWidth, 0),
             Text = $"{(complete ? "✓" : incompleteIsWarning ? "!" : "○")} " +
                 $"{label}: {detail}",
             ForeColor = complete ? Color.ForestGreen : incompleteIsWarning
@@ -741,7 +751,7 @@ internal sealed class CustomShowWizardForm : Form
     {
         Text = text,
         AutoSize = true,
-        MaximumSize = new Size(390, 0),
+        MaximumSize = new Size(ContentWidth, 0),
         Font = new Font(SystemFonts.MessageBoxFont, FontStyle.Bold),
         Margin = new Padding(3, 10, 3, 3)
     });
@@ -750,7 +760,7 @@ internal sealed class CustomShowWizardForm : Form
     {
         Text = text,
         AutoSize = true,
-        MaximumSize = new Size(390, 0),
+        MaximumSize = new Size(ContentWidth, 0),
         Margin = new Padding(3, 5, 3, 8)
     });
 

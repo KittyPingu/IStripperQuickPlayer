@@ -1439,7 +1439,9 @@ namespace IStripperQuickPlayer
             bool dark = Properties.Settings.Default.DarkMode;
             List<PlayQueueDrag> cards = [];
             if (active != null)
-                cards.Add(new(source, -1, active, true));
+                cards.Add(new(source, -1, active,
+                    customPlayer != null || queuedAnimationPendingConfirmed ||
+                    string.IsNullOrEmpty(queuedAnimationPendingPath)));
             cards.AddRange(entries.Select((entry, index) =>
                 new PlayQueueDrag(source, index, entry)));
             if (QueueRenderIsCurrent(flow, cards, dark))

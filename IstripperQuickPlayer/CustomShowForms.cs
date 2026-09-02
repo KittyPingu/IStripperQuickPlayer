@@ -19,6 +19,24 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             TabStop = false;
         }
 
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            Region? previous = Region;
+            if (ClientSize.Width > 8 && ClientSize.Height > 8)
+            {
+                Region outline = new(ClientRectangle);
+                outline.Exclude(new Rectangle(4, 4,
+                    ClientSize.Width - 8, ClientSize.Height - 8));
+                Region = outline;
+            }
+            else
+            {
+                Region = null;
+            }
+            previous?.Dispose();
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
@@ -701,8 +719,45 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         wizard.Show();
     }
 
-    void NotifyWizardStateChanged() =>
+    void NotifyWizardStateChanged()
+    {
+        if (WizardHighlightRequirementSatisfied())
+        {
+            Control? completed = wizardHighlightTarget;
+            ClearWizardHighlight();
+            Control? next = completed switch
+            {
+                _ when ReferenceEquals(completed, sourceBrowse) &&
+                    string.IsNullOrWhiteSpace(title.Text) => title,
+                _ when (ReferenceEquals(completed, sourceBrowse) ||
+                    ReferenceEquals(completed, title)) &&
+                    selectedProfile == null => performer,
+                _ => null
+            };
+            if (next != null)
+            {
+                scrollHost.ScrollControlIntoView(next);
+                HighlightWizardControl(next);
+                if (ReferenceEquals(completed, sourceBrowse))
+                    FocusEditorControl(next);
+            }
+        }
         WizardStateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    bool WizardHighlightRequirementSatisfied() => wizardHighlightTarget switch
+    {
+        null => false,
+        _ when ReferenceEquals(wizardHighlightTarget, sourceBrowse) =>
+            File.Exists(source.Text),
+        _ when ReferenceEquals(wizardHighlightTarget, title) =>
+            !string.IsNullOrWhiteSpace(title.Text),
+        _ when ReferenceEquals(wizardHighlightTarget, performer) =>
+            selectedProfile != null,
+        _ when ReferenceEquals(wizardHighlightTarget, editClips) =>
+            clipLayoutConfirmed && showClips.Any(clip => clip.Included),
+        _ => false
+    };
 
     public CustomShowWizardState GetWizardState()
     {
@@ -771,8 +826,9 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         };
         if (area == CustomShowWizardArea.Metadata &&
             metadataBody is { Visible: false } && metadataToggle != null)
-            metadataToggle.PerformClick();
-        scrollHost.ScrollControlIntoView(target);
+            SetCollapsibleSectionExpanded(metadataToggle, metadataBody, true);
+        scrollHost.ScrollControlIntoView(area == CustomShowWizardArea.Metadata &&
+            metadataBody != null ? metadataBody : target);
         HighlightWizardControl(target);
         FocusEditorControl(target);
     }
@@ -805,8 +861,10 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             target.VisibleChanged += WizardHighlightLayoutChanged;
             wizardHighlightParent.Layout += WizardHighlightLayoutChanged;
         }
-        if (!ReferenceEquals(wizardHighlight.Parent, scrollHost))
-            wizardHighlight.Parent = scrollHost;
+        Control overlayParent = scrollHost.Contains(target)
+            ? scrollHost : this;
+        if (!ReferenceEquals(wizardHighlight.Parent, overlayParent))
+            wizardHighlight.Parent = overlayParent;
         UpdateWizardHighlight();
     }
 
@@ -821,7 +879,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             wizardHighlight.Visible = false;
             return;
         }
-        Rectangle bounds = scrollHost.RectangleToClient(
+        Control overlayParent = wizardHighlight.Parent ?? scrollHost;
+        Rectangle bounds = overlayParent.RectangleToClient(
             target.RectangleToScreen(target.ClientRectangle));
         bounds.Inflate(4, 4);
         wizardHighlight.Bounds = bounds;
@@ -851,11 +910,37 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     public void OpenWizardSourcePicker(IWin32Window owner)
     {
         NavigateWizardTo(CustomShowWizardArea.Source);
-        ChooseFile(source, SourceVideoFilter, owner);
+        RunWithTopMostSuspended(owner,
+            () => ChooseFile(source, SourceVideoFilter, owner));
         if (wizard is { IsDisposed: false })
         {
             wizard.Show();
             wizard.Activate();
+        }
+    }
+
+    static void RunWithTopMostSuspended(IWin32Window owner, Action action)
+    {
+        Form? form = owner as Form;
+        bool restoreTopMost = form?.TopMost == true;
+        bool restoreVisible = form?.Visible == true;
+        try
+        {
+            if (restoreTopMost)
+                form!.TopMost = false;
+            if (restoreVisible)
+                form!.Hide();
+            action();
+        }
+        finally
+        {
+            if (form is { IsDisposed: false })
+            {
+                if (restoreVisible)
+                    form.Show();
+                if (restoreTopMost)
+                    form.TopMost = true;
+            }
         }
     }
 
@@ -1358,6 +1443,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         performer.DataSource = profiles.OrderBy(profile => profile.ModelName).ToList();
         if (showId != null)
             PopulateFromShow(store.LoadManifest(showId), editingExisting: true);
+        else
+            performer.SelectedIndex = -1;
         loadingPerformerSelection = false;
         selectedProfile = performer.SelectedItem as CustomPerformerProfile;
         if (showId == null && queueJobId == null &&
@@ -1917,7 +2004,13 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             configuration, allowBoundaryEditing: showId == null ||
                 reprocess && !keepClips.Checked,
             existingDetection: clipDetection);
-        if (form.ShowDialog(this) != DialogResult.OK) return;
+        DialogResult result = DialogResult.Cancel;
+        if (wizard is { IsDisposed: false, Visible: true })
+            RunWithTopMostSuspended(wizard,
+                () => result = form.ShowDialog(this));
+        else
+            result = form.ShowDialog(this);
+        if (result != DialogResult.OK) return;
         CustomShowClip[] editedClips = form.Clips;
         bool layoutChanged = !SameQueueLayout(priorLayout, editedClips);
         if (reprocess && layoutChanged && priorLayout.Any(clip =>
@@ -4455,9 +4548,40 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             store.SavePerformer(profile);
             using CustomShowEditorForm form = new(store,
                 new CustomShowConfiguration { LibraryRoot = root }, null);
-            form.source.Text = Path.Combine(root, "source.mp4");
+            using CustomShowWizardForm wizard = new(form, form);
+            bool wizardStaysAboveEditor = wizard.TopMost;
+            bool wizardLoweredForModal = false;
+            RunWithTopMostSuspended(wizard,
+                () => wizardLoweredForModal = !wizard.TopMost);
+            bool wizardRestoredAfterModal = wizard.TopMost;
+            bool incompleteSourceStepBlocksNext =
+                !wizard.CanAdvanceForVerification;
+            bool newShowStartsWithoutProfile = form.selectedProfile == null &&
+                form.performer.SelectedIndex == -1;
+            string sourcePath = Path.Combine(root, "source.mp4");
+            File.WriteAllText(sourcePath, "test");
+            form.wizardHighlightTarget = form.sourceBrowse;
+            form.source.Text = sourcePath;
+            bool validSourceAdvancesHighlight =
+                ReferenceEquals(form.wizardHighlightTarget, form.title);
             form.title.Text = "Wizard Test Show";
+            bool validTitleAdvancesHighlight =
+                ReferenceEquals(form.wizardHighlightTarget, form.performer);
+            form.NavigateWizardTo(CustomShowWizardArea.Metadata);
+            bool metadataNavigationExpandsSection =
+                form.metadataToggle?.Text.StartsWith("▼  ",
+                    StringComparison.Ordinal) == true &&
+                form.metadataBody?.Parent is TableLayoutPanel metadataRoot &&
+                metadataRoot.RowStyles[metadataRoot.GetRow(form.metadataBody)]
+                    .SizeType == SizeType.AutoSize;
+            form.performer.SelectedItem = profile;
             form.selectedProfile = profile;
+            form.NotifyWizardStateChanged();
+            bool completeSourceStepEnablesNext =
+                wizard.CanAdvanceForVerification;
+            form.NavigateWizardTo(CustomShowWizardArea.FinalAction);
+            bool finalActionHighlightUsesFormLayer =
+                ReferenceEquals(form.wizardHighlight.Parent, form);
             form.showClips = [new CustomShowClip
             {
                 StartMs = 0,
@@ -4485,7 +4609,20 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             form.ApplyWizardRecommendation(recommendation,
                 useFallback: false);
             CustomShowWizardState state = form.GetWizardState();
-            return changes > 0 && form.source.Text == sourceBefore &&
+            using WizardHighlightControl highlight = new()
+                { Size = new Size(120, 32) };
+            bool highlightIsHollow = highlight.Region != null &&
+                highlight.Region.IsVisible(1, 1) &&
+                !highlight.Region.IsVisible(60, 16);
+            bool passed = wizardStaysAboveEditor && wizardLoweredForModal &&
+                wizardRestoredAfterModal && incompleteSourceStepBlocksNext &&
+                completeSourceStepEnablesNext &&
+                finalActionHighlightUsesFormLayer &&
+                newShowStartsWithoutProfile &&
+                validSourceAdvancesHighlight &&
+                validTitleAdvancesHighlight && metadataNavigationExpandsSection &&
+                changes > 0 &&
+                form.source.Text == sourceBefore &&
                 form.title.Text == titleBefore &&
                 ReferenceEquals(form.selectedProfile, profile) &&
                 ReferenceEquals(form.showClips, clipsBefore) &&
@@ -4494,7 +4631,18 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                 form.sequenceChunk.SelectedIndex == 0 &&
                 !form.autoAccept.Checked && state.TitleValid &&
                 state.ProfileValid && state.ClipsConfirmed &&
-                state.IncludedClips == 1;
+                state.IncludedClips == 1 && highlightIsHollow;
+            if (!passed)
+            {
+                Console.Error.WriteLine($"Wizard verification details: " +
+                    $"topmost={wizardStaysAboveEditor}, lowered={wizardLoweredForModal}, " +
+                    $"restored={wizardRestoredAfterModal}, blocked={incompleteSourceStepBlocksNext}, " +
+                    $"enabled={completeSourceStepEnablesNext}, footer={finalActionHighlightUsesFormLayer}, " +
+                    $"emptyProfile={newShowStartsWithoutProfile}, sourceAdvance={validSourceAdvancesHighlight}, " +
+                    $"titleAdvance={validTitleAdvancesHighlight}, metadata={metadataNavigationExpandsSection}, " +
+                    $"changes={changes}, hollow={highlightIsHollow}");
+            }
+            return passed;
         }
         finally
         {
@@ -4546,7 +4694,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         {
             Text = $"▶  {title}", AutoSize = false, Height = 36,
             Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft,
-            Margin = new Padding(0, 0, 0, 14)
+            Margin = new Padding(0, 0, 0, 14), Tag = title
         };
         GroupBox body = new() { AutoSize = true, Dock = DockStyle.Top,
             Padding = new Padding(8), Visible = false,
@@ -4555,19 +4703,33 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         AddRootControl(root, toggle);
         AddRootControl(root, body);
         toggle.Click += (_, _) =>
-        {
-            ScrollableControl? scroll = root.Parent as ScrollableControl;
-            scroll?.SuspendLayout();
-            root.SuspendLayout();
-            bool expanding = !body.Visible;
-            toggle.Margin = expanding
-                ? Padding.Empty : new Padding(0, 0, 0, 14);
-            body.Visible = expanding;
-            toggle.Text = $"{(expanding ? "▼" : "▶")}  {title}";
-            root.ResumeLayout(true);
-            scroll?.ResumeLayout(true);
-        };
+            SetCollapsibleSectionExpanded(toggle, body, !body.Visible);
         return (toggle, body);
+    }
+
+    static void SetCollapsibleSectionExpanded(Button toggle, GroupBox body,
+        bool expanded)
+    {
+        Control? root = body.Parent;
+        ScrollableControl? scroll = root?.Parent as ScrollableControl;
+        scroll?.SuspendLayout();
+        root?.SuspendLayout();
+        if (root is TableLayoutPanel table)
+        {
+            int row = table.GetRow(body);
+            if (row >= 0 && row < table.RowStyles.Count)
+            {
+                table.RowStyles[row].SizeType = expanded
+                    ? SizeType.AutoSize : SizeType.Absolute;
+                table.RowStyles[row].Height = 0;
+            }
+        }
+        toggle.Margin = expanded
+            ? Padding.Empty : new Padding(0, 0, 0, 14);
+        body.Visible = expanded;
+        toggle.Text = $"{(expanded ? "▼" : "▶")}  {toggle.Tag}";
+        root?.ResumeLayout(true);
+        scroll?.ResumeLayout(true);
     }
 
     static int AddRow(TableLayoutPanel table, string label, Control control,
@@ -4594,11 +4756,19 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         table.RowStyles[row].Height = 0;
     }
 
-    static Button AddFileRow(TableLayoutPanel table, string label, TextBox box,
+    Button AddFileRow(TableLayoutPanel table, string label, TextBox box,
         string filter)
     {
         Button browse = new() { Text = "Browse...", AutoSize = true };
-        browse.Click += (_, _) => ChooseFile(box, filter, table.FindForm());
+        browse.Click += (_, _) =>
+        {
+            IWin32Window? owner = table.FindForm();
+            if (wizard is { IsDisposed: false, Visible: true })
+                RunWithTopMostSuspended(wizard,
+                    () => ChooseFile(box, filter, owner));
+            else
+                ChooseFile(box, filter, owner);
+        };
         AddRow(table, label, box, browse);
         return browse;
     }
@@ -4610,19 +4780,26 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             box.Text = dialog.FileName;
     }
 
-    static void AddFolderRow(TableLayoutPanel table, string label, TextBox box)
+    void AddFolderRow(TableLayoutPanel table, string label, TextBox box)
     {
         Button browse = new() { Text = "Browse...", AutoSize = true };
         browse.Click += (_, _) =>
         {
-            using FolderBrowserDialog dialog = new()
+            void ShowPicker()
             {
-                SelectedPath = Directory.Exists(box.Text) ? box.Text : "",
-                Description = "Select the folder containing photos for this custom show",
-                UseDescriptionForTitle = true
-            };
-            if (dialog.ShowDialog(table.FindForm()) == DialogResult.OK)
-                box.Text = dialog.SelectedPath;
+                using FolderBrowserDialog dialog = new()
+                {
+                    SelectedPath = Directory.Exists(box.Text) ? box.Text : "",
+                    Description = "Select the folder containing photos for this custom show",
+                    UseDescriptionForTitle = true
+                };
+                if (dialog.ShowDialog(table.FindForm()) == DialogResult.OK)
+                    box.Text = dialog.SelectedPath;
+            }
+            if (wizard is { IsDisposed: false, Visible: true })
+                RunWithTopMostSuspended(wizard, ShowPicker);
+            else
+                ShowPicker();
         };
         AddRow(table, label, box, browse);
     }
