@@ -1464,6 +1464,10 @@ internal static class CustomShowJobRunner
             }
             return firstEncoded ?? first!;
         }
+        // The interactive SAM2 mask editor keeps its worker and GPU lease alive
+        // for reuse. Full-show processing uses the same single-slot scheduler,
+        // so release that cached worker before any queued GPU work can wait on it.
+        CustomMaskEditorForm.CloseSam2MattingWorker();
         async Task CleanupAlpha(string output,
             IProgress<CustomShowProgress> cleanupProgress) =>
             await CustomShowProcessor.RunTemporalAlphaCleanupAsync(configuration,
