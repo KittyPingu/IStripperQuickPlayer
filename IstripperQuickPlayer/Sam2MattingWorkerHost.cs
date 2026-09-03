@@ -137,6 +137,10 @@ internal sealed class Sam2MattingWorkerHost : IDisposable
             AppContext.BaseDirectory, "ffmpeg.exe");
         start.Environment["IQP_FFPROBE"] = Path.Combine(
             AppContext.BaseDirectory, "ffprobe.exe");
+        start.Environment["IQP_SAM2MATTING_COMPILE_ENCODER"] = "1";
+        start.Environment["TORCHINDUCTOR_USE_STATIC_CUDA_LAUNCHER"] = "0";
+        start.Environment["TORCHINDUCTOR_CACHE_DIR"] = Path.Combine(
+            Sam2MattingSupport.RuntimeRoot, "torchinductor-cache");
         start.Environment["PYTHONUNBUFFERED"] = "1";
         CustomShowProcessor.ConfigureProcessingPriorities(start, configuration);
         process = Process.Start(start) ??

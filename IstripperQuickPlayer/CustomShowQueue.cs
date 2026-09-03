@@ -773,7 +773,18 @@ internal sealed class CustomShowQueueManager : IDisposable
             if (next > 0 || job.Percent <= 0)
                 job.Percent = next;
             job.Message = message;
-            if (DateTime.UtcNow - lastSavedUtc >= TimeSpan.FromSeconds(1)) SaveLocked();
+            if (DateTime.UtcNow - lastSavedUtc >= TimeSpan.FromSeconds(1))
+            {
+                try { SaveLocked(); }
+                catch (Exception error) when (error is IOException or
+                    UnauthorizedAccessException)
+                {
+                    // Progress is still retained in memory and the next update
+                    // retries it. A transient queue-file lock must not terminate
+                    // a multi-hour processing job.
+                    Debug.WriteLine("Could not persist custom-show progress: " + error);
+                }
+            }
         }
         OnChanged();
     }
@@ -2019,6 +2030,15 @@ internal static class CustomShowJobRunner
             Directory.CreateDirectory(published);
             File.WriteAllText(Path.Combine(published, "sentinel"), "x");
             storage.Save(document);
+            FileStream queueLock = new(storage.FilePath, FileMode.Open,
+                FileAccess.Read, FileShare.None);
+            Task releaseQueueLock = Task.Run(async () =>
+            {
+                await Task.Delay(100);
+                queueLock.Dispose();
+            });
+            storage.Save(document);
+            releaseQueueLock.GetAwaiter().GetResult();
             CustomShowQueueDocument loaded = storage.Load();
             if (loaded.Jobs.Count != 5 || loaded.Jobs[0].Id != pending.Id ||
                 loaded.Jobs[0].StartedUtc != null || loaded.Jobs[0].CompletedUtc != null ||

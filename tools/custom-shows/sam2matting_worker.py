@@ -1,7 +1,8 @@
 """Pinned QuickPlayer adapter for FudanCVL/SAM2Matting.
 
 Stdout is reserved for NDJSON protocol/progress messages.  Diagnostics go to
-stderr.  The adapter intentionally uses eager BF16 and the upstream SDPA path.
+stderr.  The adapter uses BF16, the upstream SDPA path, and the upstream
+fixed-shape compiled image encoder when QuickPlayer enables it.
 """
 
 from __future__ import annotations
@@ -22,6 +23,11 @@ import time
 import traceback
 from fractions import Fraction
 from pathlib import Path
+
+# PyTorch 2.8's static CUDA launcher passes pointer-sized values through a
+# Windows 32-bit C long during Triton autotuning. Use Triton's regular launcher
+# so compiled SAM2 kernels remain pointer-safe on win-x64.
+os.environ.setdefault("TORCHINDUCTOR_USE_STATIC_CUDA_LAUNCHER", "0")
 
 SOURCE_REVISION = "73dd721d77b56749248aefe5e8824d7f61b9d13c"
 CHECKPOINT_REVISION = "4315db9c60d27fde396b09765748a0ca6c97bed5"
@@ -490,6 +496,17 @@ def install_float32_sam2_image_loader():
     misc.AsyncVideoFrameLoader = ParallelVideoFrameLoader
 
 
+def compile_image_encoder_enabled():
+    return os.environ.get("IQP_SAM2MATTING_COMPILE_ENCODER", "0").strip().lower() \
+        in {"1", "true", "yes", "on"}
+
+
+def resolved_execution_mode():
+    return ("compiled-image-encoder-bf16-sdpa-bounded"
+            if compile_image_encoder_enabled()
+            else "eager-bf16-sdpa-bounded")
+
+
 def load_variant(runtime, tracker):
     import torch
 
@@ -499,15 +516,20 @@ def load_variant(runtime, tracker):
     os.chdir(source)
     sys.path.insert(0, str(source))
     checkpoint = runtime / "checkpoints" / CHECKPOINTS[tracker][0]
-    emit("checkpoint-loading", 1, f"Loading {tracker} checkpoint")
+    compiled = compile_image_encoder_enabled()
+    mode = "compiled image encoder" if compiled else "eager image encoder"
+    emit("checkpoint-loading", 1, f"Loading {tracker} checkpoint with {mode}")
     from sam2.build_sam import build_sam2matting_video_predictor
     install_float32_sam2_image_loader()
     with contextlib.redirect_stdout(sys.stderr):
         predictor = build_sam2matting_video_predictor(
             CHECKPOINTS[tracker][3], str(checkpoint), device="cuda",
-            hydra_overrides_extra=[],
+            hydra_overrides_extra=(
+                ["++model.compile_image_encoder=True"] if compiled else []),
         )
-    emit("checkpoint-loading", 5, f"Loaded {tracker} in eager BF16 mode")
+    emit("checkpoint-loading", 5,
+         f"Loaded {tracker} in BF16 mode with {mode}",
+         compiledImageEncoder=compiled)
     return predictor
 
 
@@ -891,7 +913,10 @@ def encode_foreground(source, destination, start_frame, fps, count,
     # Use the same canonical frame origin as scene extraction and alpha.  This
     # avoids independently rounding a millisecond clip boundary on VFR input.
     start = max(0.0, float(Fraction(start_frame, 1) / fps))
-    duration = count / float(fps)
+    # A duration ending exactly on the final frame boundary can make FFmpeg's
+    # fps filter emit count-1 frames after an accurate seek. Give timestamp
+    # rounding half a frame of headroom; -frames:v remains the hard video cap.
+    duration = (count + 0.5) / float(fps)
     if nvenc_available():
         codec = ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq",
                  "-cq", "19"]
@@ -1259,16 +1284,35 @@ def run_job(request, loaded=None):
                  max(1, total_units), "Validating foreground and alpha timing")
             alpha_info = probe_output(alpha_path)
             foreground_info = probe_output(foreground_path)
-            if (alpha_info["frames"] != decoded_count or
-                    foreground_info["frames"] != decoded_count or
-                    alpha_info["width"] != foreground_info["width"] or
-                    alpha_info["height"] != foreground_info["height"] or
-                    not frame_rates_match(alpha_info["frameRate"],
-                                          foreground_info["frameRate"]) or
-                    alpha_info["codec"] != "h264" or
-                    alpha_info["pixelFormat"] not in ("yuv420p", "yuvj420p") or
-                    alpha_info["colorRange"] != "pc"):
-                raise RuntimeError("Foreground/alpha validation failed")
+            mismatches = []
+            if alpha_info["frames"] != decoded_count:
+                mismatches.append(
+                    f"alpha frames {alpha_info['frames']} != {decoded_count}")
+            if foreground_info["frames"] != decoded_count:
+                mismatches.append(
+                    f"foreground frames {foreground_info['frames']} != {decoded_count}")
+            if alpha_info["width"] != foreground_info["width"] or \
+                    alpha_info["height"] != foreground_info["height"]:
+                mismatches.append(
+                    f"dimensions alpha {alpha_info['width']}x{alpha_info['height']} "
+                    f"!= foreground {foreground_info['width']}x"
+                    f"{foreground_info['height']}")
+            if not frame_rates_match(alpha_info["frameRate"],
+                                     foreground_info["frameRate"]):
+                mismatches.append(
+                    f"frame rates {alpha_info['frameRate']} != "
+                    f"{foreground_info['frameRate']}")
+            if alpha_info["codec"] != "h264":
+                mismatches.append(f"alpha codec {alpha_info['codec']} != h264")
+            if alpha_info["pixelFormat"] not in ("yuv420p", "yuvj420p"):
+                mismatches.append(
+                    f"alpha pixel format {alpha_info['pixelFormat']} is unsupported")
+            if alpha_info["colorRange"] != "pc":
+                mismatches.append(
+                    f"alpha color range {alpha_info['colorRange']} != pc")
+            if mismatches:
+                raise RuntimeError("Foreground/alpha validation failed: " +
+                                   "; ".join(mismatches))
             duration_ms = round(decoded_count / float(media["fps"]) * 1000)
             results.append({
                 "clipId": clip["id"], "width": media["width"],
@@ -1281,7 +1325,7 @@ def run_job(request, loaded=None):
                 "alphaCodec": alpha_info["codec"],
                 "alphaPixelFormat": alpha_info["pixelFormat"],
                 "tracker": tracker,
-                "executionMode": "eager-bf16-sdpa-bounded",
+                "executionMode": resolved_execution_mode(),
                 "encoder": foreground_encoder,
                 "encoderPreset": foreground_preset,
                 "firstTimestamp": 0,
@@ -1290,7 +1334,7 @@ def run_job(request, loaded=None):
             raw_path.unlink(missing_ok=True)
         first = results[0]
         contract = {**first, "clips": results, "tracker": tracker,
-                    "executionMode": "eager-bf16-sdpa-bounded"}
+                    "executionMode": resolved_execution_mode()}
         temporary = output / "result.json.tmp"
         temporary.write_text(json.dumps(contract, indent=2), encoding="utf-8")
         os.replace(temporary, output / "result.json")
@@ -1422,6 +1466,20 @@ def self_test():
 
     if sam2_tracking_history(Predictor()) != 15:
         raise RuntimeError("SAM2 tracking-history calculation failed")
+    previous_compile = os.environ.get("IQP_SAM2MATTING_COMPILE_ENCODER")
+    try:
+        os.environ["IQP_SAM2MATTING_COMPILE_ENCODER"] = "1"
+        if not compile_image_encoder_enabled() or resolved_execution_mode() != \
+                "compiled-image-encoder-bf16-sdpa-bounded":
+            raise RuntimeError("SAM2 compiled-encoder selection failed")
+        os.environ["IQP_SAM2MATTING_COMPILE_ENCODER"] = "0"
+        if compile_image_encoder_enabled():
+            raise RuntimeError("SAM2 eager-encoder selection failed")
+    finally:
+        if previous_compile is None:
+            os.environ.pop("IQP_SAM2MATTING_COMPILE_ENCODER", None)
+        else:
+            os.environ["IQP_SAM2MATTING_COMPILE_ENCODER"] = previous_compile
     if not frame_rates_match("19001/317", "60000/1001") or \
             frame_rates_match("25/1", "30/1"):
         raise RuntimeError("SAM2 output frame-rate tolerance failed")

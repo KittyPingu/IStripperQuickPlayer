@@ -1418,7 +1418,21 @@ internal sealed partial class CustomShowStore
         try
         {
             File.WriteAllText(temporary, JsonSerializer.Serialize(value, JsonOptions));
-            File.Move(temporary, path, true);
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(temporary, path, true);
+                    break;
+                }
+                catch (Exception error) when (attempt < 4 &&
+                    error is IOException or UnauthorizedAccessException)
+                {
+                    // Antivirus, indexers, and readers can briefly prevent a
+                    // Windows replace even though the directory is writable.
+                    Thread.Sleep(25 << attempt);
+                }
+            }
         }
         finally
         {
@@ -1759,7 +1773,9 @@ internal sealed partial class CustomShowStore
         if (processing.ResolvedExecutionMode is string mode &&
             mode is not ("eager" or "compiled" or "eager-fallback" or
                 "eager-oom-fallback" or "eager-bf16-sdpa" or
-                "eager-bf16-sdpa-bounded" or "realtime-playback" or
+                "eager-bf16-sdpa-bounded" or
+                "compiled-image-encoder-bf16-sdpa-bounded" or
+                "realtime-playback" or
                 "metadata-only-reuse" or "source-copy"))
             throw new InvalidDataException("Invalid resolved processing execution mode.");
         if (processing.ResolvedExecutionMode == "source-copy" &&
