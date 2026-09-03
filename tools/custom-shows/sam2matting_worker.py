@@ -330,18 +330,26 @@ def probe_source(source):
     ])
     data = json.loads(result.stdout)
     stream = data["streams"][0]
-    rate = stream.get("avg_frame_rate")
-    if not rate or rate == "0/0":
-        rate = stream["r_frame_rate"]
-    fps = Fraction(rate)
-    if fps <= 0:
-        raise RuntimeError("The input frame rate is invalid")
+    fps = canonical_frame_rate(stream)
     return {
         "width": int(stream["width"]), "height": int(stream["height"]),
         "frameRate": f"{fps.numerator}/{fps.denominator}",
         "fps": fps, "timeBase": stream.get("time_base") or "",
         "duration": float(data["format"]["duration"]),
     }
+
+
+def canonical_frame_rate(stream):
+    """Match FFmpeg av_guess_frame_rate used by QuickPlayer's scene planner."""
+    rate = stream.get("r_frame_rate")
+    if not rate or rate == "0/0":
+        rate = stream.get("avg_frame_rate")
+    if not rate or rate == "0/0":
+        raise RuntimeError("The input frame rate is invalid")
+    fps = Fraction(rate)
+    if fps <= 0:
+        raise RuntimeError("The input frame rate is invalid")
+    return fps
 
 
 def extract_scene(source, directory, start_frame, frame_count, fps,
@@ -1417,6 +1425,13 @@ def self_test():
     if not frame_rates_match("19001/317", "60000/1001") or \
             frame_rates_match("25/1", "30/1"):
         raise RuntimeError("SAM2 output frame-rate tolerance failed")
+    if canonical_frame_rate({
+            "r_frame_rate": "60000/1001",
+            "avg_frame_rate": "125/2"}) != Fraction(60000, 1001) or \
+            canonical_frame_rate({
+                "r_frame_rate": "0/0",
+                "avg_frame_rate": "25/1"}) != Fraction(25, 1):
+        raise RuntimeError("SAM2 canonical input frame-rate selection failed")
     state = {
         "output_dict_per_obj": {0: {
             "cond_frame_outputs": {0: {}},

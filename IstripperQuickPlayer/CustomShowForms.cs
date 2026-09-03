@@ -121,8 +121,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     readonly Button openRvmOnnxSetup = new()
         { Text = "Open Setup", AutoSize = true };
     readonly ComboBox sam2MattingTracker = new()
-        { DropDownStyle = ComboBoxStyle.DropDownList, Width = 620,
-          DropDownWidth = 620 };
+        { DropDownStyle = ComboBoxStyle.DropDownList, DropDownWidth = 620 };
     readonly TextBox foregroundConcepts = new()
     {
         Multiline = true, AcceptsReturn = true, Height = 96, Width = 620,
@@ -394,7 +393,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             "RVM → SAM2.1-B+ — automatic person mask"]);
         sam2MattingTracker.SelectedIndex = 3;
         sam2MattingTrackerRow = AddRow(processingTable, "Backbone tracker",
-            Flow(sam2MattingTracker, sam2MattingStatus, openSam2MattingSetup));
+            FillRow(sam2MattingTracker, sam2MattingStatus,
+                openSam2MattingSetup));
         foregroundConceptsRow = AddRow(processingTable, "Foreground concepts",
             FlowVertical(foregroundConcepts, conceptHelp));
         sceneMaskSummaryRow = AddRow(processingTable, "Scene prompts", sceneMaskSummary);
@@ -4812,6 +4812,25 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             Dock = DockStyle.Fill, WrapContents = false
         };
         panel.Controls.AddRange(controls);
+        return panel;
+    }
+
+    static TableLayoutPanel FillRow(Control fill, params Control[] trailing)
+    {
+        TableLayoutPanel panel = new()
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill, ColumnCount = trailing.Length + 1,
+            RowCount = 1, Margin = Padding.Empty
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        fill.Dock = DockStyle.Fill;
+        panel.Controls.Add(fill, 0, 0);
+        for (int index = 0; index < trailing.Length; index++)
+        {
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            panel.Controls.Add(trailing[index], index + 1, 0);
+        }
         return panel;
     }
 
