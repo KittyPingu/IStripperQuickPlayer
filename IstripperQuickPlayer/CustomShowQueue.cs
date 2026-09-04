@@ -16,6 +16,9 @@ internal sealed class CustomShowQueueDocument
     public List<CustomShowQueueJob> Jobs { get; set; } = [];
 }
 
+internal sealed record CustomShowQueueProgress(string JobId, double Percent,
+    string Message, DateTime UpdatedUtc);
+
 internal sealed class CustomShowQueueJob
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
@@ -67,6 +70,7 @@ internal sealed class CustomShowQueueStore
     readonly CustomShowStore shows;
     internal string Root => Path.Combine(shows.Root, "queue");
     internal string FilePath => Path.Combine(Root, "queue.json");
+    internal string ProgressPath(string id) => Path.Combine(Root, "progress", id + ".json");
     internal string Assets(string id) => Path.Combine(Root, "jobs", id);
     internal string Work(string id) => Path.Combine(Root, "work", id);
 
@@ -93,6 +97,9 @@ internal sealed class CustomShowQueueStore
         }
         if (document.SchemaVersion is not (1 or 2))
             throw new InvalidDataException("Unsupported custom-show queue version.");
+        foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
+            value.Status == CustomShowQueueStatus.Running))
+            ApplyProgress(job);
         bool changed = migrated || document.SchemaVersion == 1;
         if (changed) document.SchemaVersion = 2;
         foreach (CustomShowQueueJob job in document.Jobs)
@@ -130,7 +137,7 @@ internal sealed class CustomShowQueueStore
             job.ReadyToPublish |= File.Exists(Path.Combine(
                 Work(job.Id), "show.json"));
             job.Status = CustomShowQueueStatus.Pending;
-            job.Percent = job.ReadyToPublish ? 100 : 0;
+            job.Percent = job.ReadyToPublish ? 100 : job.Percent;
             job.Message = job.ReadyToPublish
                 ? "Interrupted; ready to retry publication"
                 : "Interrupted; ready to resume";
@@ -170,8 +177,42 @@ internal sealed class CustomShowQueueStore
         return document;
     }
 
-    internal void Save(CustomShowQueueDocument document) =>
+    internal void Save(CustomShowQueueDocument document)
+    {
         CustomShowStore.WriteJsonAtomic(FilePath, document);
+        foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
+            value.Status != CustomShowQueueStatus.Running))
+            DeleteProgress(job.Id);
+    }
+
+    internal void SaveProgress(CustomShowQueueJob job) =>
+        CustomShowStore.WriteJsonAtomic(ProgressPath(job.Id),
+            new CustomShowQueueProgress(job.Id, job.Percent, job.Message,
+                DateTime.UtcNow));
+
+    void ApplyProgress(CustomShowQueueJob job)
+    {
+        try
+        {
+            string path = ProgressPath(job.Id);
+            if (!File.Exists(path)) return;
+            CustomShowQueueProgress? progress = JsonSerializer.Deserialize<
+                CustomShowQueueProgress>(File.ReadAllText(path),
+                    CustomShowStore.JsonOptions);
+            if (progress == null || !string.Equals(progress.JobId, job.Id,
+                    StringComparison.OrdinalIgnoreCase)) return;
+            job.Percent = Math.Clamp(progress.Percent, 0, 100);
+            job.Message = progress.Message;
+        }
+        catch (Exception error) when (error is IOException or JsonException) { }
+    }
+
+    void DeleteProgress(string id)
+    {
+        try { File.Delete(ProgressPath(id)); }
+        catch (Exception error) when (error is IOException or
+            UnauthorizedAccessException) { }
+    }
 
     internal void DeleteAssets(string id)
     {
@@ -580,7 +621,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     job.ReadyToPublish |= File.Exists(Path.Combine(
                         storage.Work(job.Id), "show.json"));
                     job.Status = CustomShowQueueStatus.Pending;
-                    job.Percent = job.ReadyToPublish ? 100 : 0;
+                    job.Percent = job.ReadyToPublish ? 100 : job.Percent;
                     job.Message = job.ReadyToPublish
                         ? "Stopped; ready to retry publication"
                         : "Stopped; ready to resume";
@@ -770,7 +811,11 @@ internal sealed class CustomShowQueueManager : IDisposable
             job.Message = message;
             if (DateTime.UtcNow - lastSavedUtc >= TimeSpan.FromSeconds(1))
             {
-                try { SaveLocked(); }
+                try
+                {
+                    storage.SaveProgress(job);
+                    lastSavedUtc = DateTime.UtcNow;
+                }
                 catch (Exception error) when (error is IOException or
                     UnauthorizedAccessException)
                 {
@@ -1183,11 +1228,13 @@ internal static class CustomShowJobRunner
 
     static void ResolvePerformer(CustomShowQueueJob job, CustomShowStore store)
     {
-        CustomPerformerProfile? existing = store.LoadPerformers().FirstOrDefault(value =>
+        CustomPerformerProfile[] profiles = store.LoadPerformers().ToArray();
+        CustomPerformerProfile? existing = profiles.FirstOrDefault(value =>
+            string.Equals(value.Id, job.Performer.Id,
+                StringComparison.OrdinalIgnoreCase)) ?? profiles.FirstOrDefault(value =>
             string.Equals(value.ModelName.Trim(), job.Performer.ModelName.Trim(),
                 StringComparison.OrdinalIgnoreCase));
-        if (existing == null || string.Equals(existing.Id, job.Performer.Id,
-                StringComparison.OrdinalIgnoreCase))
+        if (existing == null)
         {
             store.SavePerformer(job.Performer);
             return;
@@ -2000,9 +2047,24 @@ internal static class CustomShowJobRunner
             CustomShowQueueStore storage = new(shows);
             CustomPerformerProfile savedPerformer = new()
             {
-                ModelName = "Existing model", IstripperModelId = "123"
+                ModelName = "Existing model", IstripperModelId = "123",
+                Description = "edited metadata"
             };
             shows.SavePerformer(savedPerformer);
+            CustomShowQueueJob stalePerformer = new()
+            {
+                Performer = new()
+                {
+                    Id = savedPerformer.Id, ModelName = savedPerformer.ModelName,
+                    IstripperModelId = savedPerformer.IstripperModelId,
+                    Description = "stale queued metadata"
+                }
+            };
+            stalePerformer.Manifest.PerformerId = stalePerformer.Performer.Id;
+            ResolvePerformer(stalePerformer, shows);
+            if (stalePerformer.Performer.Description != "edited metadata" ||
+                shows.LoadPerformer(savedPerformer.Id).Description != "edited metadata")
+                return false;
             CustomShowQueueJob duplicatePerformer = new()
             {
                 Performer = new()
@@ -2064,6 +2126,14 @@ internal static class CustomShowJobRunner
             Directory.CreateDirectory(published);
             File.WriteAllText(Path.Combine(published, "sentinel"), "x");
             storage.Save(document);
+            byte[] savedQueue = File.ReadAllBytes(storage.FilePath);
+            running.Percent = 71;
+            running.Message = "sidecar progress";
+            storage.SaveProgress(running);
+            if (new FileInfo(storage.ProgressPath(running.Id)).Length >=
+                    new FileInfo(storage.FilePath).Length ||
+                !savedQueue.SequenceEqual(File.ReadAllBytes(storage.FilePath)))
+                return false;
             FileStream queueLock = new(storage.FilePath, FileMode.Open,
                 FileAccess.Read, FileShare.None);
             Task releaseQueueLock = Task.Run(async () =>
@@ -2083,7 +2153,10 @@ internal static class CustomShowJobRunner
                 loaded.Jobs[0].Clips.Single().RvmOnnx?.Temporal != false ||
                 loaded.Jobs[0].Clips.Single().RvmOnnx?.Quality != "quality" ||
                 loaded.Jobs[1].Status != CustomShowQueueStatus.Pending ||
-                loaded.Jobs[1].Percent != 0 || !Directory.Exists(storage.Work(running.Id)) ||
+                loaded.Jobs[1].Percent != 71 ||
+                loaded.Jobs[1].Message != "Interrupted; ready to resume" ||
+                File.Exists(storage.ProgressPath(running.Id)) ||
+                !Directory.Exists(storage.Work(running.Id)) ||
                 loaded.Jobs[3].ReadyToPublish ||
                 loaded.Jobs[3].Message != "Failed" ||
                 !loaded.Jobs[4].ReadyToPublish)

@@ -1449,20 +1449,33 @@ namespace IStripperQuickPlayer
                 return;
 
             ClearPlayQueueCardHighlight();
+            System.Drawing.Size cardSize =
+                PlayQueueCardSize(flow, cards.Count);
+            Control[] replacements = cards.Select(card =>
+                CreatePlayQueueCard(card, cardSize)).ToArray();
+            Control[] previous = flow.Controls.Cast<Control>().ToArray();
+            const uint wmSetRedraw = 0x000B;
+            bool redrawDisabled = flow.IsHandleCreated;
+            if (redrawDisabled)
+                Utils.SendMessage(flow.Handle, wmSetRedraw,
+                    IntPtr.Zero, IntPtr.Zero);
             flow.SuspendLayout();
             try
             {
-                while (flow.Controls.Count > 0)
-                    flow.Controls[0].Dispose();
-                System.Drawing.Size cardSize =
-                    PlayQueueCardSize(flow, cards.Count);
-                foreach (PlayQueueDrag card in cards)
-                    flow.Controls.Add(CreatePlayQueueCard(card, cardSize));
+                flow.Controls.Clear();
+                flow.Controls.AddRange(replacements);
                 flow.Tag = dark;
             }
             finally
             {
-                flow.ResumeLayout(true);
+                flow.ResumeLayout(false);
+                foreach (Control control in previous)
+                    control.Dispose();
+                flow.PerformLayout();
+                if (redrawDisabled)
+                    Utils.SendMessage(flow.Handle, wmSetRedraw,
+                        new IntPtr(1), IntPtr.Zero);
+                flow.Invalidate(true);
             }
             if (cards.Count == 0)
                 flow.AutoScrollMinSize = new System.Drawing.Size(1, 1);

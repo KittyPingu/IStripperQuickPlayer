@@ -172,7 +172,7 @@ internal sealed class CustomPlayerForm : Form
         requestedRangeEndSeconds = endMs / 1000d;
         this.initialBounds = initialBounds;
         this.preparedPlayback = preparedPlayback;
-        sharedGraphicsDevice = graphicsSource?.renderer?.ShareDevice();
+        sharedGraphicsDevice = graphicsSource?.renderer?.TryShareDevice();
         sizePercent = Math.Clamp(playerSizePercent, 10, 200);
         this.volumePercent = Math.Clamp(volumePercent, 0, 100);
         this.alphaThreshold = Math.Clamp(alphaThreshold, 0, 255);
@@ -681,7 +681,7 @@ internal sealed class CustomPlayerForm : Form
         CustomPlayerForm? graphicsSource = null)
     {
         ID3D11Device? sharedDevice =
-            graphicsSource?.renderer?.ShareDevice();
+            graphicsSource?.renderer?.TryShareDevice();
         return Task.Run(() =>
         {
             PairedRenderer? renderer = null;
@@ -1583,12 +1583,12 @@ internal sealed class CustomPlayerForm : Form
                 $"sharedDevice={sharedDevice != null} " +
                 $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(constructStarted):F3}");
         }
-        internal ID3D11Device ShareDevice()
+        internal ID3D11Device? TryShareDevice()
         {
             lock (sync)
             {
                 if (disposed || device == null)
-                    throw new ObjectDisposedException(nameof(PairedRenderer));
+                    return null;
                 return device.QueryInterface<ID3D11Device>();
             }
         }
