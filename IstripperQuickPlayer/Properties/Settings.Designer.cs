@@ -1102,5 +1102,17 @@ namespace IStripperQuickPlayer.Properties {
                 this["ClipTypePlayerSizes"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool UseMetricMeasurements {
+            get {
+                return ((bool)(this["UseMetricMeasurements"]));
+            }
+            set {
+                this["UseMetricMeasurements"] = value;
+            }
+        }
     }
 }

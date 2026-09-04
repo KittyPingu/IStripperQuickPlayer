@@ -40,6 +40,8 @@ public partial class Form1
         AccessibleName = "Custom player edge cleanup"
     };
     readonly ToolStripMenuItem editCustomShowMenu = new("Edit Custom Show Metadata...");
+    readonly ToolStripMenuItem editCustomModelMetadataMenu =
+        new("Edit Model Metadata...");
     readonly ToolStripMenuItem virtualGreenScreenCustomShowMenu =
         new("Virtual Green Screen...");
     readonly ToolStripMenuItem reprocessCustomShowMenu = new("Reprocess Custom Show...");
@@ -153,6 +155,8 @@ public partial class Form1
 
         editCustomShowMenu.Click += (_, _) =>
             EditCustomShow(CurrentContextCustomShowId());
+        editCustomModelMetadataMenu.Click += (_, _) =>
+            EditCurrentCustomModelMetadata();
         virtualGreenScreenCustomShowMenu.Click += (_, _) =>
             EditVirtualGreenScreen(CurrentContextCustomShowId(), null);
         reprocessCustomShowMenu.Click += (_, _) =>
@@ -162,6 +166,7 @@ public partial class Form1
         deleteCustomShowMenu.Click += (_, _) => DeleteCurrentCustomShow();
         menuCardList.Items.Add(new ToolStripSeparator());
         menuCardList.Items.Add(editCustomShowMenu);
+        menuCardList.Items.Add(editCustomModelMetadataMenu);
         menuCardList.Items.Add(virtualGreenScreenCustomShowMenu);
         menuCardList.Items.Add(reprocessCustomShowMenu);
         menuCardList.Items.Add(exportCustomShowMenu);
@@ -170,6 +175,8 @@ public partial class Form1
         {
             bool custom = CurrentContextCustomShowId() != null;
             editCustomShowMenu.Visible = custom;
+            editCustomModelMetadataMenu.Visible = custom &&
+                CurrentContextCard()?.customPerformerId != null;
             virtualGreenScreenCustomShowMenu.Visible = custom;
             reprocessCustomShowMenu.Visible = custom;
             exportCustomShowMenu.Visible = custom;
@@ -899,9 +906,36 @@ public partial class Form1
 
     string? CurrentContextCustomShowId()
     {
+        return CurrentContextCard()?.customShowId;
+    }
+
+    ModelCard? CurrentContextCard()
+    {
         string tag = currentMenuCard?.Tag?.ToString() ??
             mousedownCard?.Tag?.ToString() ?? "";
-        return Datastore.findCardByTag(tag)?.customShowId;
+        return Datastore.findCardByTag(tag);
+    }
+
+    void EditCurrentCustomModelMetadata()
+    {
+        ModelCard? card = CurrentContextCard();
+        if (string.IsNullOrWhiteSpace(card?.customPerformerId)) return;
+        try
+        {
+            CustomShowStore store = new(customShowConfiguration.LibraryRoot);
+            CustomPerformerProfile profile = store.LoadPerformer(
+                card.customPerformerId);
+            using CustomPerformerForm form = new(profile,
+                store.LoadPerformers());
+            if (form.ShowDialog(this) != DialogResult.OK) return;
+            store.SavePerformer(form.Profile);
+            ReloadCustomCards();
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Edit Model Metadata",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     bool EditCustomShow(string? showId, bool reprocess = false,

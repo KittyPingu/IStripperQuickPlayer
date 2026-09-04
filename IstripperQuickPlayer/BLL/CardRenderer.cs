@@ -128,6 +128,50 @@ namespace IStripperQuickPlayer.BLL
         internal static bool RetainsExpandedHover(
             Rectangle bounds, Point point) => bounds.Contains(point);
 
+        internal static bool TryParseLegacyHeight(string value,
+            out decimal decimalFeet)
+        {
+            return decimal.TryParse(value.Trim(), NumberStyles.AllowDecimalPoint,
+                CultureInfo.InvariantCulture, out decimalFeet) && decimalFeet > 0;
+        }
+
+        internal static decimal? LegacyHeightSortValue(string value) =>
+            TryParseLegacyHeight(value, out decimal decimalFeet)
+                ? decimalFeet : null;
+
+        internal static string FormatLegacyHeight(string value, bool metric,
+            CultureInfo culture)
+        {
+            if (!TryParseLegacyHeight(value, out decimal decimalFeet))
+                return "";
+            if (metric)
+                return Math.Round(decimalFeet * 30.48m, 0,
+                    MidpointRounding.AwayFromZero).ToString("0", culture) +
+                    "cm";
+            int feet = (int)Math.Floor(decimalFeet);
+            decimal inches = Math.Round((decimalFeet - feet) * 24m,
+                MidpointRounding.AwayFromZero) / 2m;
+            if (inches == 12) { feet++; inches = 0; }
+            return feet.ToString(culture) + "'" +
+                inches.ToString("0.#", culture) + "''";
+        }
+
+        internal static string FormatMeasurement(decimal? inches, bool metric,
+            CultureInfo culture, bool includeUnit = false)
+        {
+            if (inches == null || inches <= 0) return "";
+            decimal value = metric ? inches.Value * 2.54m : inches.Value;
+            string text = Math.Round(value, 0,
+                MidpointRounding.AwayFromZero).ToString("0", culture);
+            return includeUnit ? text + (metric ? " cm" : " in") : text;
+        }
+
+        internal static string FormatStats(ModelCard card, bool metric,
+            CultureInfo culture) => (metric ? "Stats (cm): " : "Stats (in): ") +
+            FormatMeasurement(card.bust, metric, culture) + "/" +
+            FormatMeasurement(card.waist, metric, culture) + "/" +
+            FormatMeasurement(card.hips, metric, culture);
+
         public override bool RetainsHover(
             ImageListViewItem item, Point point)
         {
@@ -183,6 +227,16 @@ namespace IStripperQuickPlayer.BLL
                 !RetainsExpandedHover(
                     new Rectangle(20, 20, 200, 300),
                     new Point(19, 170)) &&
+                FormatLegacyHeight("5.7", false,
+                    CultureInfo.InvariantCulture) == "5'8.5''" &&
+                FormatLegacyHeight("5.11", false,
+                    CultureInfo.InvariantCulture) == "5'1.5''" &&
+                FormatLegacyHeight("5.7", true,
+                    CultureInfo.InvariantCulture) == "174cm" &&
+                FormatLegacyHeight("0", false,
+                    CultureInfo.InvariantCulture) == "" &&
+                FormatMeasurement(36, true,
+                    CultureInfo.InvariantCulture, true) == "91 cm" &&
                 PromotedBounds(
                     new Rectangle(100, 100, 100, 150),
                     new Rectangle(0, 0, 500, 500), .2f) ==
@@ -585,19 +639,8 @@ namespace IStripperQuickPlayer.BLL
                     return !Properties.Settings.Default.ShowRatingStars &&
                         myrating > 0 ? myrating.ToString() : "";
                 case "Height":
-                    decimal height;
-                    if (!decimal.TryParse(
-                            card.height, style, culture, out height) ||
-                        height <= 0)
-                        return "";
-                    return RegionInfo.CurrentRegion.IsMetric &&
-                        CultureInfo.CurrentCulture.Name != "en-GB"
-                        ? (((Math.Floor(height) * 12) +
-                            (height - Math.Floor(height)) * 10) *
-                            2.54M).ToString("N1") + "cm"
-                        : Math.Floor(height) + "'" +
-                            (int)(24 * (height - Math.Floor(height))) /
-                            2.0M + "''";
+                    return FormatLegacyHeight(card.height,
+                        Properties.Settings.Default.UseMetricMeasurements, culture);
                 case "":
                 case "Model Name":
                     return "";
@@ -610,13 +653,19 @@ namespace IStripperQuickPlayer.BLL
                     return card.ethnicity ?? "";
                 case "Breast Size":
                 case "Breast Size (Descending)":
-                    return (card.bust ?? 0).ToString();
+                    return FormatMeasurement(card.bust,
+                        Properties.Settings.Default.UseMetricMeasurements,
+                        culture, true);
                 case "Waist":
                 case "Waist (Descending)":
-                    return (card.waist ?? 0).ToString();
+                    return FormatMeasurement(card.waist,
+                        Properties.Settings.Default.UseMetricMeasurements,
+                        culture, true);
                 case "Hips":
                 case "Hips (Descending)":
-                    return (card.hips ?? 0).ToString();
+                    return FormatMeasurement(card.hips,
+                        Properties.Settings.Default.UseMetricMeasurements,
+                        culture, true);
                 case "Date Purchased":
                 case "Date Purchased (Descending)":
                     return card.datePurchased?.ToShortDateString() ?? "";

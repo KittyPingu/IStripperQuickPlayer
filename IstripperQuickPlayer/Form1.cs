@@ -1902,10 +1902,14 @@ namespace IStripperQuickPlayer
                     currentCards = currentCards.OrderByDescending(i => i.ethnicity).ToList();
                     break;
                 case "Height":
-                    currentCards = currentCards.OrderBy(i => i.height).ToList();
+                    currentCards = currentCards
+                        .OrderBy(i => CardRenderer.LegacyHeightSortValue(i.height) == null)
+                        .ThenBy(i => CardRenderer.LegacyHeightSortValue(i.height)).ToList();
                     break;
                 case "Height (Descending)":
-                    currentCards = currentCards.OrderByDescending(i => i.height).ToList();
+                    currentCards = currentCards
+                        .OrderBy(i => CardRenderer.LegacyHeightSortValue(i.height) == null)
+                        .ThenByDescending(i => CardRenderer.LegacyHeightSortValue(i.height)).ToList();
                     break;
                 case "Date Purchased (Descending)":
                     currentCards = currentCards.OrderByDescending(i => i.datePurchased).ToList();
@@ -2580,7 +2584,8 @@ namespace IStripperQuickPlayer
             PositionPhotosButton();
             txtDescription.Text = card.description;
             lblAge.Text = "Age: " + card.modelAge;
-            lblStats.Text = "Stats: " + card.bust + "/" + card.waist + "/" + card.hips;
+            lblStats.Text = CardRenderer.FormatStats(card,
+                Properties.Settings.Default.UseMetricMeasurements, culture);
             lblRatingScore.Text = card.rating is > 0
                 ? "Rating: " + (card.rating - 5m)
                 : "Rating: NA";
@@ -2707,6 +2712,8 @@ namespace IStripperQuickPlayer
             menuShowRatingsStars.Checked = Properties.Settings.Default.ShowRatingStars;
             menuShowCardSortLabels.Checked =
                 Properties.Settings.Default.ShowCardSortLabels;
+            metricMeasurementsToolStripMenuItem.Checked =
+                Properties.Settings.Default.UseMetricMeasurements;
             includeDescriptionInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowDescInSearch;
             includeShowTitleInSearchToolStripMenuItem.Checked = Properties.Settings.Default.ShowOutfitInSearch;
             cardScaleSeekBar.Value = Math.Clamp(
@@ -6277,7 +6284,8 @@ namespace IStripperQuickPlayer
             if (myData != null) menuCardFavourite.Checked = myData.GetCardFavourite(c.name);
             if (c.rating > 0) ratingToolStripMenuItem.Text = "Rating: " + (c.rating - 5M).ToString();
             else ratingToolStripMenuItem.Text = "Rating: NA";
-            statsToolStripMenuItem.Text = "Stats: " + c.bust + "/" + c.waist + "/" + c.hips;
+            statsToolStripMenuItem.Text = CardRenderer.FormatStats(c,
+                Properties.Settings.Default.UseMetricMeasurements, culture);
             nameToolStripMenuItem.Text = c.modelName;
             outfitToolStripMenuItem.Text = c.outfit;
             outfitToolStripMenuItem.Enabled = !c.IsCustom;
@@ -6404,6 +6412,19 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.ShowCardSortLabels =
                 menuShowCardSortLabels.Checked;
             listModelsNew.Refresh();
+        }
+
+        private void metricMeasurementsToolStripMenuItem_CheckedChanged(
+            object sender, EventArgs e)
+        {
+            if (Properties.Settings.Default.UseMetricMeasurements ==
+                metricMeasurementsToolStripMenuItem.Checked)
+                return;
+            Properties.Settings.Default.UseMetricMeasurements =
+                metricMeasurementsToolStripMenuItem.Checked;
+            Properties.Settings.Default.Save();
+            listModelsNew.Refresh();
+            listModelsNew_SelectedIndexChanged(listModelsNew, EventArgs.Empty);
         }
 
         private void EditOverlayDefaults()

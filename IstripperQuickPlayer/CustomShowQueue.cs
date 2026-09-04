@@ -133,9 +133,8 @@ internal sealed class CustomShowQueueStore
             job.Percent = job.ReadyToPublish ? 100 : 0;
             job.Message = job.ReadyToPublish
                 ? "Interrupted; ready to retry publication"
-                : "Interrupted; ready to restart";
+                : "Interrupted; ready to resume";
             job.StartedUtc = null;
-            if (!job.ReadyToPublish) TryDelete(Work(job.Id));
             changed = true;
         }
         foreach (CustomShowQueueJob job in document.Jobs.Where(value =>
@@ -288,6 +287,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                     throw new InvalidOperationException("A running job cannot be edited.");
                 job.Id = existingId;
                 job.CreatedUtc = document.Jobs[existingIndex].CreatedUtc;
+                CustomShowQueueStore.TryDelete(storage.Work(job.Id));
             }
             string assets = storage.Assets(job.Id);
             Directory.CreateDirectory(assets);
@@ -531,7 +531,6 @@ internal sealed class CustomShowQueueManager : IDisposable
                 job.ReadyToPublish = false;
                 SaveLocked();
             }
-            CustomShowQueueStore.TryDelete(storage.Work(job.Id));
             OnChanged();
             throw;
         }
@@ -584,13 +583,11 @@ internal sealed class CustomShowQueueManager : IDisposable
                     job.Percent = job.ReadyToPublish ? 100 : 0;
                     job.Message = job.ReadyToPublish
                         ? "Stopped; ready to retry publication"
-                        : "Stopped; ready to restart";
+                        : "Stopped; ready to resume";
                     job.StartedUtc = null;
                     job.CompletedUtc = null;
                     SaveLocked();
                 }
-                if (!job.ReadyToPublish)
-                    CustomShowQueueStore.TryDelete(storage.Work(job.Id));
                 OnChanged();
                 break;
             }
@@ -641,8 +638,6 @@ internal sealed class CustomShowQueueManager : IDisposable
             job.CompletedUtc = DateTime.UtcNow;
             SaveLocked();
         }
-        if (!completedOutput)
-            CustomShowQueueStore.TryDelete(work);
     }
 
     void CompleteJobLocked(CustomShowQueueJob job, string publishedId)
@@ -818,7 +813,7 @@ internal sealed class CustomShowQueueManager : IDisposable
                 job.Percent = job.ReadyToPublish ? 100 : 0;
                 job.Message = job.ReadyToPublish
                     ? "QuickPlayer closed; ready to retry publication"
-                    : "QuickPlayer closed; ready to restart";
+                    : "QuickPlayer closed; ready to resume";
                 job.StartedUtc = null;
                 job.CompletedUtc = null;
             }
@@ -980,7 +975,6 @@ internal static class CustomShowJobRunner
                 preparePublication, token);
             return ready.Id;
         }
-        CustomShowQueueStore.TryDelete(staging);
         Directory.CreateDirectory(staging);
         CustomShowManifest show;
         CustomShowProcessing? previousProcessing = null;
@@ -1550,6 +1544,15 @@ internal static class CustomShowJobRunner
             IProgress<CustomShowProgress> cleanupProgress = new Progress<CustomShowProgress>(value =>
                 aggregate.Report(value with { Percent = 90 + value.Percent * .1 }));
             string output = Path.Combine(staging, "clips", clip.Id);
+            if (TryLoadCompletedClip(output, cleanup, out CustomShowProcessResult? resumed))
+            {
+                SetMedia(clip, resumed);
+                completed += clipDuration;
+                firstResult ??= resumed;
+                aggregate.Report(new CustomShowProgress("resuming", 100,
+                    "Reusing completed clip"));
+                continue;
+            }
             string? mask = job.InitialMaskAssets.TryGetValue(clip.Id, out string? relative)
                 ? Path.Combine(queue.Assets(job.Id), relative.Replace('/',
                     Path.DirectorySeparatorChar))
@@ -1575,6 +1578,7 @@ internal static class CustomShowJobRunner
                 propSegmenterModelPath: propSegmenterPath);
             if (cleanup)
                 await CleanupAlpha(output, cleanupProgress);
+            File.WriteAllText(Path.Combine(output, ".queue-complete"), "complete");
             if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
             {
                 string masks = Path.Combine(output, ".rvm-masks");
@@ -1594,6 +1598,32 @@ internal static class CustomShowJobRunner
                 Directory.Delete(masks, true);
             }
         return firstResult!;
+    }
+
+    static bool TryLoadCompletedClip(string output, bool cleanup,
+        out CustomShowProcessResult result)
+    {
+        result = new();
+        string resultPath = Path.Combine(output, "result.json");
+        if (!File.Exists(resultPath) || cleanup &&
+            !File.Exists(Path.Combine(output, ".queue-complete"))) return false;
+        try
+        {
+            result = JsonSerializer.Deserialize<CustomShowProcessResult>(
+                File.ReadAllText(resultPath), CustomShowStore.JsonOptions) ?? new();
+            string foreground = Path.Combine(output,
+                result.ForegroundFileName ?? "foreground.mp4");
+            string alpha = Path.Combine(output, "alpha.mkv");
+            return result.Width > 0 && result.Height > 0 &&
+                !string.IsNullOrWhiteSpace(result.FrameRate) && result.DurationMs > 0 &&
+                new FileInfo(foreground).Length > 0 && new FileInfo(alpha).Length > 0;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or
+            JsonException or NotSupportedException)
+        {
+            result = new();
+            return false;
+        }
     }
 
     internal static string? PropSegmenterPath(CustomShowProcessing options)
@@ -2053,11 +2083,25 @@ internal static class CustomShowJobRunner
                 loaded.Jobs[0].Clips.Single().RvmOnnx?.Temporal != false ||
                 loaded.Jobs[0].Clips.Single().RvmOnnx?.Quality != "quality" ||
                 loaded.Jobs[1].Status != CustomShowQueueStatus.Pending ||
-                loaded.Jobs[1].Percent != 0 || Directory.Exists(storage.Work(running.Id)) ||
+                loaded.Jobs[1].Percent != 0 || !Directory.Exists(storage.Work(running.Id)) ||
                 loaded.Jobs[3].ReadyToPublish ||
                 loaded.Jobs[3].Message != "Failed" ||
                 !loaded.Jobs[4].ReadyToPublish)
                 return false;
+            string resumable = Path.Combine(storage.Work(running.Id), "clips", "complete");
+            Directory.CreateDirectory(resumable);
+            File.WriteAllText(Path.Combine(resumable, "foreground.mp4"), "video");
+            File.WriteAllText(Path.Combine(resumable, "alpha.mkv"), "alpha");
+            CustomShowStore.WriteJsonAtomic(Path.Combine(resumable, "result.json"),
+                new CustomShowProcessResult
+                {
+                    Width = 1280, Height = 720, FrameRate = "25/1", DurationMs = 1000
+                });
+            if (!TryLoadCompletedClip(resumable, false, out CustomShowProcessResult resumed) ||
+                resumed.DurationMs != 1000 || TryLoadCompletedClip(resumable, true, out _))
+                return false;
+            File.WriteAllText(Path.Combine(resumable, ".queue-complete"), "complete");
+            if (!TryLoadCompletedClip(resumable, true, out _)) return false;
             CustomShowQueueManager manager = new(shows,
                 new CustomShowConfiguration { LibraryRoot = root }, () => { });
             manager.Move(running.Id, -1);

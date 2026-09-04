@@ -90,6 +90,18 @@ class StageProfiler:
                    compileStats=compile_stats or {}, stages=stages)
 
 
+def add_cuda_timing(profiler, name, begin, end):
+    # Profiling must never serialize the asynchronous frame pipeline. A timing
+    # sample that is not ready yet is optional and can safely be omitted.
+    if not begin.query() or not end.query():
+        return
+    try:
+        profiler.add(name, begin.elapsed_time(end) / 1000)
+    except RuntimeError as error:
+        if "Both events must be completed" not in str(error):
+            raise
+
+
 def process_rss():
     if os.name != "nt":
         try:
@@ -618,7 +630,7 @@ class BoundedPipeline:
                 if slot.download_done is not None:
                     slot.download_done.synchronize()
                 for name, start, end in slot.gpu_timings:
-                    self.profiler.add(name, start.elapsed_time(end) / 1000)
+                    add_cuda_timing(self.profiler, name, start, end)
                 self.consume(slot)
                 slot.reset()
                 self._put(self.free, slot)
@@ -636,7 +648,7 @@ class BoundedPipeline:
                 if slot.download_done is not None:
                     slot.download_done.synchronize()
                 for name, start, end in slot.gpu_timings:
-                    self.profiler.add(name, start.elapsed_time(end) / 1000)
+                    add_cuda_timing(self.profiler, name, start, end)
                 self.consume(slot)
             return
         input_thread = threading.Thread(target=self._input, args=(items,),
@@ -1340,7 +1352,7 @@ def _process_once(args, compile_enabled):
             if warm_slot.download_done is not None:
                 warm_slot.download_done.synchronize()
             for name, begin, finish in warm_slot.gpu_timings:
-                profiler.add(name, begin.elapsed_time(finish) / 1000)
+                add_cuda_timing(profiler, name, begin, finish)
             if compile_enabled and not (runtime / COMPILE_READY).is_file():
                 (runtime / COMPILE_READY).write_text(json.dumps({
                     "detail": args.max_size, "createdUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

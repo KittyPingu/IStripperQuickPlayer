@@ -72,6 +72,7 @@
             trackBarZoomOnHover = new TrackBarMenuItem();
             menuShowRatingsStars = new ToolStripMenuItem();
             menuShowCardSortLabels = new ToolStripMenuItem();
+            metricMeasurementsToolStripMenuItem = new ToolStripMenuItem();
             includeDescriptionInSearchToolStripMenuItem = new ToolStripMenuItem();
             includeShowTitleInSearchToolStripMenuItem = new ToolStripMenuItem();
             wallpaperToolStripMenuItem = new ToolStripMenuItem();
@@ -432,7 +433,7 @@
             // 
             // settingsToolStripMenuItem
             // 
-            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, menuShowCardSortLabels, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, enablePlaybackControlToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
+            settingsToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { hotkeysToolStripMenuItem, enforceCardFilterToolStripMenuItem, randomPlayOrderToolStripMenuItem, zoomOnHoverToolStripMenuItem, menuShowRatingsStars, menuShowCardSortLabels, metricMeasurementsToolStripMenuItem, includeDescriptionInSearchToolStripMenuItem, includeShowTitleInSearchToolStripMenuItem, wallpaperToolStripMenuItem, showKittyToolStripMenuItem, lockPlayerToolStripMenuItem, enablePlaybackControlToolStripMenuItem, minimizeToTrayToolStripMenuItem, darkModeToolStripMenuItem });
             settingsToolStripMenuItem.Name = "settingsToolStripMenuItem";
             settingsToolStripMenuItem.Size = new Size(92, 29);
             settingsToolStripMenuItem.Text = "Settings";
@@ -508,6 +509,14 @@
             menuShowCardSortLabels.Size = new Size(342, 34);
             menuShowCardSortLabels.Text = "Show Card Sort Labels";
             menuShowCardSortLabels.CheckedChanged += menuShowCardSortLabels_CheckedChanged;
+            //
+            // metricMeasurementsToolStripMenuItem
+            //
+            metricMeasurementsToolStripMenuItem.CheckOnClick = true;
+            metricMeasurementsToolStripMenuItem.Name = "metricMeasurementsToolStripMenuItem";
+            metricMeasurementsToolStripMenuItem.Size = new Size(342, 34);
+            metricMeasurementsToolStripMenuItem.Text = "Display Measurements in Metric";
+            metricMeasurementsToolStripMenuItem.CheckedChanged += metricMeasurementsToolStripMenuItem_CheckedChanged;
             //
             // includeDescriptionInSearchToolStripMenuItem
             // 
@@ -1294,6 +1303,7 @@
         private CheckBox chkFavourite;
         private ToolStripMenuItem menuShowRatingsStars;
         private ToolStripMenuItem menuShowCardSortLabels;
+        private ToolStripMenuItem metricMeasurementsToolStripMenuItem;
         private TrackBarMenuItem ratingSlider;
         private ToolStripMenuItem nameToolStripMenuItem;
         private ToolStripMenuItem outfitToolStripMenuItem;

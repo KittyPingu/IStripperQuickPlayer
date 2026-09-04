@@ -885,6 +885,7 @@ namespace IStripperQuickPlayer
                 zoomOnHoverToolStripMenuItem,
                 menuShowRatingsStars,
                 menuShowCardSortLabels,
+                metricMeasurementsToolStripMenuItem,
                 roundCardCornersToolStripMenuItem,
                 drawCardOverlaysToolStripMenuItem,
                 directCompositionOverlaysToolStripMenuItem,

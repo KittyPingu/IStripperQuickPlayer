@@ -290,6 +290,7 @@ internal sealed class CustomPerformerProfile
     public string Ethnicity { get; set; } = "";
     public string City { get; set; } = "";
     public string Country { get; set; } = "";
+    public string Description { get; set; } = "";
 }
 
 internal sealed class CustomShowManifest
@@ -1956,8 +1957,8 @@ internal sealed partial class CustomShowStore
     internal static string CmToLegacyHeight(decimal? centimetres)
     {
         if (centimetres is null) return "";
-        int inches = (int)Math.Round(centimetres.Value / 2.54m);
-        return $"{inches / 12}.{inches % 12}";
+        return decimal.Round(centimetres.Value / 30.48m, 2)
+            .ToString("0.##", CultureInfo.InvariantCulture);
     }
 
     internal static bool TryFrameRate(string value, out double rate)
@@ -2038,7 +2039,8 @@ internal sealed partial class CustomShowStore
             modelId = string.IsNullOrWhiteSpace(performer.IstripperModelId)
                 ? show.PerformerId : performer.IstripperModelId,
             outfit = show.Title.Trim(),
-            description = show.Description,
+            description = CombineDescriptions(show.Description,
+                performer.Description),
             tags = show.Tags,
             datePurchased = show.CreatedUtc.ToLocalTime(),
             dateReleased = show.ReleaseDate.ToDateTime(TimeOnly.MinValue),
@@ -2093,6 +2095,19 @@ internal sealed partial class CustomShowStore
                     media.Mode, clip.RvmOnnx);
             }).ToList();
         return card;
+    }
+
+    static string CombineDescriptions(string? showDescription,
+        string? performerDescription)
+    {
+        string showText = showDescription?.Trim() ?? "";
+        string performerText = performerDescription?.Trim() ?? "";
+        if (showText.Length == 0) return performerText;
+        if (performerText.Length == 0 || string.Equals(showText,
+                performerText, StringComparison.OrdinalIgnoreCase))
+            return showText;
+        return showText + Environment.NewLine + Environment.NewLine +
+            performerText;
     }
 
     internal static long PlaybackEnd(CustomClipMedia media) =>
@@ -2197,7 +2212,7 @@ internal sealed partial class CustomShowStore
             ManifestGenderValues.Contains("Femboy") &&
             ManifestGenderValues.Contains("Sissy") &&
             ManifestGenderValues.Contains("Non-Binary") &&
-            CmToInches(91.44m) == 36m && CmToLegacyHeight(170m) == "5.7" &&
+            CmToInches(91.44m) == 36m && CmToLegacyHeight(170m) == "5.58" &&
             TryFrameRate("30000/1001", out double rate) && rate > 29.9 && rate < 30 &&
             (FindPythonForVerification() is string python &&
                 (python.Length == 0 || File.Exists(python))) &&
@@ -2490,7 +2505,8 @@ internal sealed partial class CustomShowStore
             {
                 IstripperModelId = "test-native-model",
                 ModelName = "Test Model", Gender = "Non-Binary", HeightCm = 170,
-                BustCm = 91.44m, WaistCm = 66, HipsCm = 94
+                BustCm = 91.44m, WaistCm = 66, HipsCm = 94,
+                Description = "Test model description"
             };
             store.SavePerformer(profile);
             bool duplicateNameRejected = false;
@@ -2510,6 +2526,7 @@ internal sealed partial class CustomShowStore
             CustomShowManifest show = new()
             {
                 PerformerId = profile.Id, Title = "Test Show",
+                Description = "Test show description",
                 Gender = "Non-Binary",
                 AgeAtReleaseOverride = 24,
                 ClipDetection = new()
@@ -2775,7 +2792,10 @@ internal sealed partial class CustomShowStore
                 cards[0].modelId != "test-native-model" ||
                 cards[0].gender != "Non-Binary" ||
                 cards[0].modelAge != 24 || cards[0].bust != 36 ||
-                cards[0].height != "5.7" || loadedClips?.Count != 2 ||
+                cards[0].description != "Test show description" +
+                    Environment.NewLine + Environment.NewLine +
+                    "Test model description" ||
+                cards[0].height != "5.58" || loadedClips?.Count != 2 ||
                 loadedClips[0].customStartMs != 100 ||
                 loadedClips[0].customEndMs != 300 ||
                 loadedClips[0].customAlphaThreshold != 24 ||

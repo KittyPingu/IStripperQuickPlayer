@@ -306,6 +306,7 @@ namespace IStripperQuickPlayer
                     ("divider handles", ClipTimelineControl.VerifyMarkerHitTesting()),
                     ("time estimate", CustomShowProcessingForm.VerifyEstimate()),
                     ("alpha review", CustomShowDecisionForm.VerifyAlphaReview()),
+                    ("performer measurements", CustomPerformerForm.VerifyMeasurements()),
                     ("temporal alpha threshold preview",
                         TemporalAlphaComparisonForm.VerifyThresholdPreview()),
                     ("setup defaults", CustomShowSetupOptionsForm.VerifyDefaults()),

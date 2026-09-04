@@ -5263,15 +5263,34 @@ internal sealed class CustomPerformerForm : Form
     readonly TextBox name = new();
     readonly ComboBox gender = new() { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly DateTimePicker birth = new() { Format = DateTimePickerFormat.Short, ShowCheckBox = true };
-    readonly NumericUpDown height = Measure(80, 250);
-    readonly NumericUpDown bust = Measure(30, 250);
-    readonly NumericUpDown waist = Measure(30, 250);
-    readonly NumericUpDown hips = Measure(30, 250);
-    readonly CheckBox useHeight = new() { Text = "Set" };
-    readonly CheckBox useBust = new() { Text = "Set" };
-    readonly CheckBox useWaist = new() { Text = "Set" };
-    readonly CheckBox useHips = new() { Text = "Set" };
+    readonly NumericUpDown height = Measure(0, 250);
+    readonly NumericUpDown bust = Measure(0, 250);
+    readonly NumericUpDown waist = Measure(0, 250);
+    readonly NumericUpDown hips = Measure(0, 250);
+    readonly NumericUpDown heightFeet = new()
+    {
+        Minimum = 0,
+        Maximum = 8,
+        Width = 58
+    };
+    readonly NumericUpDown heightInches = new()
+    {
+        Minimum = 0,
+        Maximum = 11.99m,
+        DecimalPlaces = 2,
+        Increment = .25m,
+        Width = 70
+    };
+    readonly NumericUpDown bustInches = Measure(0, 100);
+    readonly NumericUpDown waistInches = Measure(0, 100);
+    readonly NumericUpDown hipsInches = Measure(0, 100);
     readonly TextBox hair = new(), ethnicity = new(), city = new(), country = new();
+    readonly TextBox description = new()
+    {
+        Multiline = true,
+        ScrollBars = ScrollBars.Vertical,
+        MinimumSize = new Size(0, 90)
+    };
     internal CustomPerformerProfile Profile { get; private set; }
     readonly IReadOnlyList<CustomPerformerProfile> existingProfiles;
 
@@ -5281,7 +5300,7 @@ internal sealed class CustomPerformerForm : Form
         Profile = profile == null ? new() : Clone(profile);
         this.existingProfiles = existingProfiles?.ToArray() ?? [];
         Text = profile == null ? "New Model Profile" : "Edit Model Profile";
-        ClientSize = new Size(500, 510);
+        ClientSize = new Size(560, 640);
         TableLayoutPanel table = new() { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12) };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -5291,18 +5310,24 @@ internal sealed class CustomPerformerForm : Form
         gender.Items.AddRange(CustomShowStore.GenderValues);
         Add(table, "Gender", gender);
         Add(table, "Birth date", birth);
-        Add(table, "Height (cm)", Pair(height, useHeight));
-        Add(table, "Bust (cm)", Pair(bust, useBust));
-        Add(table, "Waist (cm)", Pair(waist, useWaist));
-        Add(table, "Hips (cm)", Pair(hips, useHips));
+        ConfigureMeasurements();
+        Add(table, "Height", HeightPair(height, heightFeet, heightInches));
+        Add(table, "Bust", MeasurementPair(bust, bustInches));
+        Add(table, "Waist", MeasurementPair(waist, waistInches));
+        Add(table, "Hips", MeasurementPair(hips, hipsInches));
         Add(table, "Hair", hair); Add(table, "Ethnicity", ethnicity);
         Add(table, "City", city); Add(table, "Country", country);
+        Add(table, "Description", description);
         Button ok = new() { Text = "OK", AutoSize = true };
         Button cancel = new() { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
         Add(table, "", Pair(ok, cancel));
         ok.Click += Save;
         AcceptButton = ok; CancelButton = cancel;
         Read();
+        SynchronizeHeight(height, heightFeet, heightInches);
+        Synchronize(bust, bustInches);
+        Synchronize(waist, waistInches);
+        Synchronize(hips, hipsInches);
         AppTheme.Apply(this);
     }
 
@@ -5313,10 +5338,13 @@ internal sealed class CustomPerformerForm : Form
             ? "(Not set)" : Profile.Gender;
         birth.Checked = Profile.BirthDate != null;
         if (Profile.BirthDate is DateOnly date) birth.Value = date.ToDateTime(TimeOnly.MinValue);
-        Set(height, useHeight, Profile.HeightCm); Set(bust, useBust, Profile.BustCm);
-        Set(waist, useWaist, Profile.WaistCm); Set(hips, useHips, Profile.HipsCm);
+        SetHeight(height, heightFeet, heightInches, Profile.HeightCm);
+        Set(bust, bustInches, Profile.BustCm);
+        Set(waist, waistInches, Profile.WaistCm);
+        Set(hips, hipsInches, Profile.HipsCm);
         hair.Text = Profile.Hair; ethnicity.Text = Profile.Ethnicity;
         city.Text = Profile.City; country.Text = Profile.Country;
+        description.Text = Profile.Description;
     }
 
     void Save(object? sender, EventArgs e)
@@ -5327,12 +5355,13 @@ internal sealed class CustomPerformerForm : Form
             Profile.Gender = gender.SelectedIndex <= 0
                 ? null : gender.SelectedItem?.ToString();
             Profile.BirthDate = birth.Checked ? DateOnly.FromDateTime(birth.Value) : null;
-            Profile.HeightCm = useHeight.Checked ? height.Value : null;
-            Profile.BustCm = useBust.Checked ? bust.Value : null;
-            Profile.WaistCm = useWaist.Checked ? waist.Value : null;
-            Profile.HipsCm = useHips.Checked ? hips.Value : null;
+            Profile.HeightCm = ValueOrNull(height.Value);
+            Profile.BustCm = ValueOrNull(bust.Value);
+            Profile.WaistCm = ValueOrNull(waist.Value);
+            Profile.HipsCm = ValueOrNull(hips.Value);
             Profile.Hair = hair.Text.Trim(); Profile.Ethnicity = ethnicity.Text.Trim();
             Profile.City = city.Text.Trim(); Profile.Country = country.Text.Trim();
+            Profile.Description = description.Text.Trim();
             CustomShowStore.ValidateProfile(Profile);
             if (existingProfiles.Any(existing =>
                     !string.Equals(existing.Id, Profile.Id,
@@ -5347,18 +5376,132 @@ internal sealed class CustomPerformerForm : Form
     }
 
     static NumericUpDown Measure(int min, int max) => new()
-        { Minimum = min, Maximum = max, DecimalPlaces = 1, Increment = .5m };
-    static void Set(NumericUpDown input, CheckBox enabled, decimal? value)
-        { enabled.Checked = value != null; if (value != null) input.Value = value.Value; }
+        { Minimum = min, Maximum = max, DecimalPlaces = 2, Increment = .25m,
+          Width = 92 };
+    static decimal? ToInches(decimal? centimetres) => centimetres == null ? null :
+        decimal.Round(centimetres.Value / 2.54m, 1);
+    static decimal? ToCentimetres(decimal? inches) => inches == null ? null :
+        decimal.Round(inches.Value * 2.54m, 2);
+    void ConfigureMeasurements()
+    {
+        SetRange(height, 0, 250);
+        foreach (NumericUpDown input in new[] { bust, waist, hips })
+            SetRange(input, 0, 250);
+        foreach (NumericUpDown input in
+                 new[] { bustInches, waistInches, hipsInches })
+            SetRange(input, 0, 100);
+    }
+    static void SetRange(NumericUpDown input, decimal minimum, decimal maximum)
+    {
+        input.Minimum = minimum; input.Maximum = maximum; input.Value = minimum;
+    }
+    static void Synchronize(NumericUpDown centimetres,
+        NumericUpDown inches)
+    {
+        bool updating = false;
+        centimetres.ValueChanged += (_, _) =>
+        {
+            if (updating) return;
+            updating = true;
+            inches.Value = Clamp(inches, ToInches(centimetres.Value)!.Value);
+            updating = false;
+        };
+        inches.ValueChanged += (_, _) =>
+        {
+            if (updating) return;
+            updating = true;
+            centimetres.Value = Clamp(centimetres,
+                ToCentimetres(inches.Value)!.Value);
+            updating = false;
+        };
+    }
+    static void SynchronizeHeight(NumericUpDown centimetres,
+        NumericUpDown feet, NumericUpDown inches)
+    {
+        bool updating = false;
+        centimetres.ValueChanged += (_, _) =>
+        {
+            if (updating) return;
+            updating = true;
+            SetImperialHeight(centimetres.Value, feet, inches);
+            updating = false;
+        };
+        void ImperialChanged(object? sender, EventArgs e)
+        {
+            if (updating) return;
+            updating = true;
+            decimal totalInches = feet.Value * 12m + inches.Value;
+            centimetres.Value = Clamp(centimetres,
+                ToCentimetres(totalInches)!.Value);
+            updating = false;
+        }
+        feet.ValueChanged += ImperialChanged;
+        inches.ValueChanged += ImperialChanged;
+    }
+    static decimal Clamp(NumericUpDown input, decimal value) =>
+        Math.Min(input.Maximum, Math.Max(input.Minimum, value));
+    static void Set(NumericUpDown centimetres, NumericUpDown inches,
+        decimal? value)
+    {
+        centimetres.Value = Clamp(centimetres, value ?? 0);
+        inches.Value = Clamp(inches, ToInches(value) ?? 0);
+    }
+    static void SetHeight(NumericUpDown centimetres, NumericUpDown feet,
+        NumericUpDown inches, decimal? value)
+    {
+        centimetres.Value = Clamp(centimetres, value ?? 0);
+        SetImperialHeight(value ?? 0, feet, inches);
+    }
+    static void SetImperialHeight(decimal centimetres, NumericUpDown feet,
+        NumericUpDown inches)
+    {
+        decimal totalInches = ToInches(centimetres)!.Value;
+        decimal wholeFeet = Math.Floor(totalInches / 12m);
+        decimal remainingInches = decimal.Round(totalInches - wholeFeet * 12m,
+            2, MidpointRounding.AwayFromZero);
+        if (remainingInches >= 12m)
+        {
+            wholeFeet++;
+            remainingInches = 0;
+        }
+        feet.Value = Clamp(feet, wholeFeet);
+        inches.Value = Clamp(inches, remainingInches);
+    }
+    static decimal? ValueOrNull(decimal value) => value > 0 ? value : null;
+    static FlowLayoutPanel MeasurementPair(NumericUpDown centimetres,
+        NumericUpDown inches) => Pair(centimetres,
+            new Label { Text = "cm", AutoSize = true, Anchor = AnchorStyles.Left },
+            inches,
+            new Label { Text = "in", AutoSize = true, Anchor = AnchorStyles.Left });
+    static FlowLayoutPanel HeightPair(NumericUpDown centimetres,
+        NumericUpDown feet, NumericUpDown inches) =>
+        Pair(centimetres,
+            new Label { Text = "cm", AutoSize = true, Anchor = AnchorStyles.Left },
+            feet,
+            new Label { Text = "ft", AutoSize = true, Anchor = AnchorStyles.Left },
+            inches,
+            new Label { Text = "in", AutoSize = true, Anchor = AnchorStyles.Left });
     static FlowLayoutPanel Pair(params Control[] controls)
         { FlowLayoutPanel p = new() { AutoSize = true, Dock = DockStyle.Fill }; p.Controls.AddRange(controls); return p; }
     static void Add(TableLayoutPanel table, string label, Control control)
         { int row = table.RowCount++; table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row); control.Dock = DockStyle.Fill; table.Controls.Add(control, 1, row); }
+    internal static bool VerifyMeasurements()
+    {
+        using CustomPerformerForm form = new(null);
+        form.bustInches.Value = 36;
+        form.heightFeet.Value = 5;
+        form.heightInches.Value = 7;
+        return form.bust.Value == 91.44m && form.waist.Value == 0 &&
+            ToCentimetres(36) == 91.44m && ToInches(91.44m) == 36m &&
+            form.height.Value == 170.18m && ValueOrNull(0) == null &&
+            ValueOrNull(1) == 1;
+    }
     static CustomPerformerProfile Clone(CustomPerformerProfile p) => new()
         { SchemaVersion=p.SchemaVersion, Id=p.Id, IstripperModelId=p.IstripperModelId,
           ModelName=p.ModelName, Gender=p.Gender, BirthDate=p.BirthDate,
           HeightCm=p.HeightCm, BustCm=p.BustCm, WaistCm=p.WaistCm, HipsCm=p.HipsCm,
-          Hair=p.Hair, Ethnicity=p.Ethnicity, City=p.City, Country=p.Country };
+          Hair=p.Hair, Ethnicity=p.Ethnicity, City=p.City, Country=p.Country,
+          Description=p.Description };
 }
 
 internal sealed class CustomModelManagerForm : Form
