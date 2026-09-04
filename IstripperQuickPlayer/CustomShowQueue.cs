@@ -231,6 +231,7 @@ internal sealed class CustomShowQueueStore
 }
 
 internal sealed class CustomShowQueueAttentionException(string message) : Exception(message);
+internal sealed class CustomShowQueueClipPauseException : Exception { }
 internal sealed class CustomShowPublicationException(string message, Exception inner) :
     IOException(message, inner);
 
@@ -248,6 +249,7 @@ internal sealed class CustomShowQueueManager : IDisposable
     CancellationTokenSource? cancellation;
     Task? loop;
     bool pauseAfterCurrent;
+    bool pauseAfterClip;
     DateTime lastSavedUtc;
     internal event EventHandler? Changed;
 
@@ -271,6 +273,30 @@ internal sealed class CustomShowQueueManager : IDisposable
     internal bool IsRunning { get { lock (gate) return loop is { IsCompleted: false }; } }
     internal bool HasActiveJob { get { lock (gate) return document.Jobs.Any(
         job => job.Status == CustomShowQueueStatus.Running); } }
+    internal bool CanPauseAfterCurrentClip
+    {
+        get
+        {
+            lock (gate)
+            {
+                CustomShowQueueJob? job = document.Jobs.FirstOrDefault(value =>
+                    value.Status == CustomShowQueueStatus.Running);
+                if (job?.Manifest.Processing?.Algorithm is not
+                        ("matanyone2" or "rvm-matanyone2"))
+                    return false;
+                IEnumerable<CustomShowClip> clips = job.Clips.Where(clip =>
+                    clip.Included);
+                if (job.Operation == CustomShowQueueOperation.Reprocess &&
+                    job.ReprocessClipIds.Length > 0)
+                {
+                    HashSet<string> selected = job.ReprocessClipIds.ToHashSet(
+                        StringComparer.OrdinalIgnoreCase);
+                    clips = clips.Where(clip => selected.Contains(clip.Id));
+                }
+                return clips.Skip(1).Any();
+            }
+        }
+    }
 
     void PrepareTargetDependencyLocked(CustomShowQueueJob job,
         string? existingId)
@@ -507,6 +533,7 @@ internal sealed class CustomShowQueueManager : IDisposable
         {
             if (loop is { IsCompleted: false }) return;
             pauseAfterCurrent = false;
+            pauseAfterClip = false;
             cancellation = new();
             loop = Task.Run(() => RunLoop(cancellation.Token));
         }
@@ -605,7 +632,11 @@ internal sealed class CustomShowQueueManager : IDisposable
                         ? value.Stage : value.Message));
                 await EnsureRvmScenePromptsAsync(job, progress, token);
                 string publishedId = await CustomShowJobRunner.RunAsync(job, shows,
-                    configuration, storage, progress, preparePublication, token);
+                    configuration, storage, progress, preparePublication, token,
+                    pauseAfterClipRequested: () =>
+                    {
+                        lock (gate) return pauseAfterClip;
+                    });
                 lock (gate)
                 {
                     CompleteJobLocked(job, publishedId);
@@ -613,6 +644,19 @@ internal sealed class CustomShowQueueManager : IDisposable
                 }
                 try { published(); } catch (Exception error)
                 { Debug.WriteLine("Could not refresh published custom show: " + error); }
+            }
+            catch (CustomShowQueueClipPauseException)
+            {
+                lock (gate)
+                {
+                    job.Status = CustomShowQueueStatus.Pending;
+                    job.Message = "Paused after clip; ready to resume";
+                    job.StartedUtc = null;
+                    job.CompletedUtc = null;
+                    SaveLocked();
+                }
+                OnChanged();
+                break;
             }
             catch (OperationCanceledException)
             {
@@ -835,6 +879,16 @@ internal sealed class CustomShowQueueManager : IDisposable
         OnChanged();
     }
 
+    internal void PauseAfterCurrentClip()
+    {
+        lock (gate)
+        {
+            pauseAfterClip = true;
+            pauseAfterCurrent = true;
+        }
+        OnChanged();
+    }
+
     internal async Task CancelAndPauseAsync()
     {
         Task? running;
@@ -1005,7 +1059,8 @@ internal static class CustomShowJobRunner
         CustomShowQueueStore queue, IProgress<CustomShowProgress> progress,
         Func<string?, Task> preparePublication, CancellationToken token,
         Func<string, CustomShowManifest, Task<bool>>? reviewBeforePublication = null,
-        bool generatePreviews = false)
+        bool generatePreviews = false,
+        Func<bool>? pauseAfterClipRequested = null)
     {
         ResolvePerformer(job, store);
         Validate(job, store, configuration, queue);
@@ -1069,7 +1124,8 @@ internal static class CustomShowJobRunner
         CustomShowProcessResult result = await ProcessClips(job, clipsToProcess,
             existing, staging,
             configuration, queue, log, initialMasks, retainedMasks,
-            generatedMasks, progress, token, generatePreviews);
+            generatedMasks, progress, token, generatePreviews,
+            pauseAfterClipRequested);
         ApplySourceCopySplitChoice(job, show, existing, clips, staging);
         if (generatedMasks.Count > 0 && job.Operation != CustomShowQueueOperation.Append)
         {
@@ -1449,7 +1505,7 @@ internal static class CustomShowJobRunner
         IReadOnlyDictionary<string, string> retainedTrackedMasks,
         Dictionary<string, string> generatedMasks,
         IProgress<CustomShowProgress> progress, CancellationToken token,
-        bool generatePreviews)
+        bool generatePreviews, Func<bool>? pauseAfterClipRequested)
     {
         CustomShowProcessing options = job.Manifest.Processing!;
         string? propSegmenterPath = PropSegmenterPath(options);
@@ -1634,6 +1690,8 @@ internal static class CustomShowJobRunner
             SetMedia(clip, media);
             completed += clipDuration;
             firstResult ??= media;
+            if (pauseAfterClipRequested?.Invoke() == true)
+                throw new CustomShowQueueClipPauseException();
         }
         if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
             foreach ((string clipId, string masks) in generatedMasks)
@@ -2485,16 +2543,29 @@ internal sealed class CustomShowQueueForm : Form
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
     }
 
-    async void Pause(object? sender, EventArgs e)
+    void Pause(object? sender, EventArgs e)
     {
         if (!manager.HasActiveJob) { manager.PauseAfterCurrent(); return; }
-        DialogResult answer = MessageBox.Show(this,
-            "Choose Yes to let the current show finish and pause before the next.\n\n" +
-            "Choose No to cancel it now. It will return to Pending and restart from " +
-            "the beginning next time.", "Pause Queue", MessageBoxButtons.YesNoCancel,
-            MessageBoxIcon.Question);
-        if (answer == DialogResult.Yes) manager.PauseAfterCurrent();
-        else if (answer == DialogResult.No) await manager.CancelAndPauseAsync();
+        TaskDialogButton? afterClip = manager.CanPauseAfterCurrentClip
+            ? new TaskDialogButton("Pause after this clip") : null;
+        TaskDialogButton afterShow = new("Pause after this show");
+        TaskDialogButton keepRunning = new("Keep queue running");
+        TaskDialogPage page = new()
+        {
+            Caption = "Pause Queue",
+            Heading = "When should queued processing pause?",
+            Text = afterClip == null
+                ? "This processing workflow cannot stop safely at a clip boundary."
+                : "Completed clip output will be kept and reused when the queue resumes.",
+            Icon = TaskDialogIcon.Information,
+            AllowCancel = true
+        };
+        if (afterClip != null) page.Buttons.Add(afterClip);
+        page.Buttons.Add(afterShow);
+        page.Buttons.Add(keepRunning);
+        TaskDialogButton choice = TaskDialog.ShowDialog(this, page);
+        if (choice == afterClip) manager.PauseAfterCurrentClip();
+        else if (choice == afterShow) manager.PauseAfterCurrent();
     }
 
     void Delete(object? sender, EventArgs e)
