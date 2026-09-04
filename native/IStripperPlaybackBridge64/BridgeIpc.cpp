@@ -13,6 +13,7 @@ namespace
     constexpr HRESULT BridgeSuccess = 1;
     constexpr std::uint32_t MaximumApiNameBytes = 512;
     constexpr std::uint32_t MaximumEventDataBytes = 1024 * 1024;
+    constexpr std::size_t AnimationPathCapacity = 1024;
 
     using RegSetValueExWAction = LSTATUS(WINAPI*)(HKEY, LPCWSTR, DWORD,
         DWORD, const BYTE*, DWORD);
@@ -25,6 +26,8 @@ namespace
     INIT_ONCE g_registryHookOnce = INIT_ONCE_STATIC_INIT;
     HRESULT g_registryHookResult = E_PENDING;
     thread_local bool g_insideRegistryHook = false;
+    SRWLOCK g_animationPathLock = SRWLOCK_INIT;
+    std::wstring g_lastCurrentAnimation;
 
     std::wstring PipeName(const wchar_t* kind)
     {
@@ -146,6 +149,20 @@ namespace
              _wcsicmp(valueName, L"playingMode") == 0);
         if (relevant && !g_insideRegistryHook)
         {
+            if (_wcsicmp(valueName, L"CurrentAnim") == 0 &&
+                type == REG_SZ && dataSize >= sizeof(wchar_t))
+            {
+                const wchar_t* text = reinterpret_cast<const wchar_t*>(data);
+                std::size_t length = dataSize / sizeof(wchar_t);
+                while (length > 0 && text[length - 1] == L'\0')
+                    --length;
+                if (length > 0 && length < AnimationPathCapacity)
+                {
+                    AcquireSRWLockExclusive(&g_animationPathLock);
+                    g_lastCurrentAnimation.assign(text, length);
+                    ReleaseSRWLockExclusive(&g_animationPathLock);
+                }
+            }
             g_insideRegistryHook = true;
             const bool skip = SendRegistryEvent(valueName, data, dataSize);
             g_insideRegistryHook = false;
@@ -257,6 +274,27 @@ IStripperStartRegistryHook()
     InitOnceExecuteOnce(
         &g_registryHookOnce, &InstallRegistryHook, nullptr, nullptr);
     return g_registryHookResult;
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperGetLastCurrentAnimation(SIZE_T bufferAddress)
+{
+    if (bufferAddress == 0)
+        return E_POINTER;
+    auto* destination = reinterpret_cast<wchar_t*>(bufferAddress);
+    __try
+    {
+        AcquireSRWLockShared(&g_animationPathLock);
+        wcsncpy_s(destination, AnimationPathCapacity,
+            g_lastCurrentAnimation.c_str(), _TRUNCATE);
+        ReleaseSRWLockShared(&g_animationPathLock);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        ReleaseSRWLockShared(&g_animationPathLock);
+        return E_POINTER;
+    }
+    return BridgeSuccess;
 }
 
 DWORD WINAPI StartBridgeCommandServer(void* module)

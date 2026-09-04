@@ -148,6 +148,7 @@ namespace IStripperQuickPlayer
         private int playerMode = 2;
         private volatile bool playerLockBridgeLoaded;
         private volatile bool playbackBridgeLoaded;
+        private bool playbackCapturedAnimationSupported = true;
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
         private int playbackFastDecodeRetryPending;
@@ -3400,6 +3401,7 @@ namespace IStripperQuickPlayer
                 vghd_procID = 0;
                 playerLockBridgeLoaded = false;
                 playbackBridgeLoaded = false;
+                playbackCapturedAnimationSupported = true;
                 movieCaptureHookInstalled = false;
                 playbackMovieRegistered = false;
                 playbackFastDecodeEnabled = false;
@@ -4914,8 +4916,32 @@ namespace IStripperQuickPlayer
         }
 
         private string GetCurrentAnimationPath()
-            => customPlayer != null ? customPlayerAnimationPath :
-                GetPlaybackRegistryValue("CurrentAnim");
+        {
+            if (customPlayer != null)
+                return customPlayerAnimationPath;
+            string current = GetPlaybackRegistryValue("CurrentAnim");
+            if (!string.IsNullOrEmpty(current) || !playbackMovieRegistered ||
+                playbackBridgeClient?.IsConnected != true ||
+                !playbackCapturedAnimationSupported)
+                return current;
+            try
+            {
+                int state = CallPlaybackBridgeApi("IStripperGetState");
+                if (state is not 3 and not 4)
+                    return current;
+                int result = playbackBridgeClient.GetLastCurrentAnimation(
+                    out string captured);
+                if (result == unchecked((int)0x8007007F))
+                    playbackCapturedAnimationSupported = false;
+                if (result < 0)
+                    return current;
+                return captured;
+            }
+            catch
+            {
+                return current;
+            }
+        }
 
         private static string GetPlaybackRegistryValue(string valueName)
         {

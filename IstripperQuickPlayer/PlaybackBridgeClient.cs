@@ -366,6 +366,21 @@ public sealed class PlaybackBridgeClient : IDisposable
 
     public int StartRegistryHook() => Call("IStripperStartRegistryHook");
 
+    public int GetLastCurrentAnimation(out string animationPath)
+    {
+        const int characterCapacity = 1024;
+        byte[] buffer = new byte[characterCapacity * sizeof(char)];
+        int result = CallBuffer("IStripperGetLastCurrentAnimation", buffer,
+            readBackLength: buffer.Length);
+        int terminator = 0;
+        while (terminator + 1 < buffer.Length &&
+            (buffer[terminator] != 0 || buffer[terminator + 1] != 0))
+            terminator += sizeof(char);
+        animationPath = result < 0 ? "" :
+            Encoding.Unicode.GetString(buffer, 0, terminator);
+        return result;
+    }
+
     internal static bool VerifyProtocol()
     {
         using var stream = new MemoryStream();
