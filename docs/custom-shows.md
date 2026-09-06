@@ -59,8 +59,8 @@ or reprocessing a migrated show does not require a conversion encode unless its
 source range changed or its media is missing. The retired SDK root setting is
 ignored and removed from loaded configuration. No proprietary NVIDIA SDK DLL,
 feature package, model, NGC login, or API key participates in playback or setup.
-References to NVIDIA elsewhere in this document concern CUDA acceleration for
-optional offline Python tools, not NVIDIA AI Green Screen.
+References to NVIDIA elsewhere in this document concern CUDA acceleration and
+hardware optical flow for optional offline Python tools, not NVIDIA AI Green Screen.
 
 The collapsed Metadata section can attach a local **Photo folder** containing
 JPG, JPEG, PNG, BMP, or GIF images. QuickPlayer scans the folder and its
@@ -98,6 +98,88 @@ RVM-ViTMatte S**.
 Only process videos you have permission to use. The RVM, MatAnyone, ViTMatte,
 and SAM2.1 workflows matte one or more visible people and link each show to one
 primary reusable model profile. SAM2 correction clicks refine prompted masks.
+
+## Optional temporal alpha cleanup
+
+**Repair short alpha flicker after matting (NVIDIA GPU required)** runs during
+processing and saves the corrected alpha video. Playback uses that saved alpha;
+it does not run optical flow or another correction model. This option applies
+to processed foreground/alpha clips, not real-time RVM playback.
+
+The option applies to both **Process and Preview / Reprocess and Preview** and
+queued processing. In the immediate workflow, matting occupies the first 90% of
+the progress bar, then the selected clips are stabilized during the last 10%,
+before review or acceptance. Each cleanup progress message starts with
+**NVIDIA alpha stabilization** and identifies the clip. The percentage allocation
+describes stages, not an estimate of their relative runtime. A cleanup error or
+cancellation prevents the staged show from being accepted. Full reprocessing
+saves the cleanup settings so the checkbox and controls reopen consistently;
+partial reprocessing retains the existing show-wide processing provenance.
+
+Cleanup uses NVIDIA's hardware optical-flow engine to align neighboring alpha
+frames before deciding where the existing MatAnyone 2 correction should apply.
+It rejects high-cost flow, inconsistent forward/backward matches, insufficient
+image detail, out-of-frame samples and mismatched source imagery. Evidence never
+crosses a detected camera cut. The window, strength and component-tracking
+controls retain their existing roles.
+
+A supported NVIDIA GPU/driver and the installed MatAnyone 2 processing model
+are required. The worker calls the driver-supplied NVOFA CUDA interface directly;
+no DLSS files or additional CUDA toolkit installation are needed. It reports
+the selected GPU and flow grid at startup and fails clearly if hardware flow
+is unavailable. There is no automatic CPU optical-flow fallback.
+
+The source-image analysis cache is stored on disk alongside the alpha analysis;
+the in-memory flow-pair cache is limited to 128 MiB. Optical-flow estimation runs
+on NVIDIA hardware; alignment checks and alpha sampling currently run on the CPU.
+For developer comparisons, `--motion-alignment off` selects the previous
+unaligned instability calculation. The application defaults to `nvidia` whenever
+temporal cleanup is enabled.
+
+### NVIDIA optical-flow scene detection
+
+Create Clips offers `nvidia-flow` alongside FFmpeg, TransNetV2 and OmniShotCut.
+`nvidia_scene_worker.py` reuses `nvidia_optical_flow.py` for bidirectional NVOFA
+motion and cost maps. It scores motion-compensated colour error, round-trip
+failure and spatial coverage on frames downscaled to at most 192 pixels on the
+long edge (minimum dimensions 96). Large motion by itself is not evidence of a
+cut. Flow estimation uses NVIDIA hardware. FFmpeg uses NVDEC and CUDA scaling,
+falling back to CPU decoding only if hardware decoding fails before the first
+frame. Reprojection and scoring remain on the CPU. Missing NVOFA support fails
+explicitly; alpha stabilization's flow resolution and settings are unchanged.
+
+The streaming worker keeps two adjacent images and about two seconds of images
+sampled at roughly 10 Hz for gradual transitions, plus compact candidates.
+FFmpeg presentation timestamps preserve VFR and bounded-range
+positions. A three-frame check rejects isolated exposure flashes whose outside
+frames still match. Relative sharpness loss lasting at least 160 ms can produce
+`Possible Blur` ranges; the reference is within one second and does not cross a
+strong candidate cut. This is conservative heuristic classification, not a
+trained transition classifier, and needs review on actual footage.
+The v2 detector also requires a plausible intermediate blend between
+exposure-normalized views, with NVOFA mismatch across the whole window and both
+halves, to propose a `Dissolve` range. This rejects many exposure changes and
+ordinary movements that can resemble a blend at low resolution. Hard-cut
+candidates below 0.05 are discarded as noise regardless of slider position.
+An inexpensive colour-change check avoids NVOFA calls on almost unchanged
+adjacent frames; it does not bypass the independent gradual-transition checks.
+Blur detection no longer imposes an absolute Laplacian-variance ceiling.
+The v3 revision retains the same confidence test but expands dissolve coverage
+from the 10–90% blend core to the 2–98% tails, brackets those times by neighboring
+samples, and adds 200 ms on each side (clamped to the selected range). This makes
+the center skipped interval cover more of the transition independently of
+sensitivity. The editor's transition buffer remains additional padding. The
+retained data format remains v2; existing scans need rerunning to gain wider ranges.
+
+Compressed `nvidia-flow-gzip-json-v2` data stores source-relative millisecond
+positions, cut/transition scores, optional transition kinds and duration. The
+editor also reads v1 data (missing kind means Blur). A new scan is required to
+replace old candidates; the slider cannot upgrade an old analysis.
+The editor applies `1 - sensitivity/100`
+to both, default 50%, and rebuilds labels, transition buffers and short-clip
+skipping without decoding again. Scores persist even when no candidate passes.
+Weak cut responses inside accepted blur ranges are suppressed. The selected
+detector and its sensitivity also carry into automatic SAM2 scene planning.
 
 ## Requirements
 

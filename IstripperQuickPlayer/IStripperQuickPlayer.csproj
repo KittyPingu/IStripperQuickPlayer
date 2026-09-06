@@ -62,6 +62,12 @@
     <Content Include="..\tools\custom-shows\temporal_alpha_cleanup_worker.py" Link="custom-shows\temporal_alpha_cleanup_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="..\tools\custom-shows\nvidia_scene_worker.py" Link="custom-shows\nvidia_scene_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\nvidia_optical_flow.py" Link="custom-shows\nvidia_optical_flow.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="..\tools\custom-shows\vitmatte_worker.py" Link="custom-shows\vitmatte_worker.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

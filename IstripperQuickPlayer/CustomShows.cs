@@ -42,6 +42,7 @@ internal sealed class CustomShowConfiguration
     public int FastClipDetectionSensitivity { get; set; } = 65;
     public int TransNetClipDetectionSensitivity { get; set; } = 50;
     public int OmniShotCutClipDetectionSensitivity { get; set; } = 100;
+    public int NvidiaFlowClipDetectionSensitivity { get; set; } = 50;
     public int RvmQualityPreferredChunk { get; set; } = 12;
     public int RvmFastPreferredChunk { get; set; } = 12;
     public int RvmQualityCompileCutoffFrames { get; set; }
@@ -145,7 +146,7 @@ internal sealed class CustomShowConfiguration
             if (configuration.TransNetDecodeMode is not ("auto" or "legacy" or "cpu"))
                 configuration.TransNetDecodeMode = "auto";
             if (configuration.LastClipDetector is not
-                ("ffmpeg" or "transnetv2" or "omnishotcut"))
+                ("ffmpeg" or "transnetv2" or "omnishotcut" or "nvidia-flow"))
                 configuration.LastClipDetector = "transnetv2";
             configuration.FastClipDetectionSensitivity = Math.Clamp(
                 configuration.FastClipDetectionSensitivity, 1, 99);
@@ -153,6 +154,8 @@ internal sealed class CustomShowConfiguration
                 configuration.TransNetClipDetectionSensitivity, 1, 99);
             configuration.OmniShotCutClipDetectionSensitivity = Math.Clamp(
                 configuration.OmniShotCutClipDetectionSensitivity, 1, 100);
+            configuration.NvidiaFlowClipDetectionSensitivity = Math.Clamp(
+                configuration.NvidiaFlowClipDetectionSensitivity, 1, 99);
             if (configuration.LastProcessingAlgorithm is not
                 ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" or
                  "matanyone2" or "vitmatte-s" or "vitmatte-b" or
@@ -977,12 +980,13 @@ internal sealed partial class CustomShowStore
     static readonly HashSet<int> BatchSizeValues = [0, 1, 2, 3, 4, 6, 8, 12, 16, 24];
     static readonly HashSet<string> Sam2Models = ["base-plus", "small", "tiny"];
     static readonly HashSet<string> ClipDetectionMethods =
-        ["ffmpeg", "transnetv2", "omnishotcut"];
+        ["ffmpeg", "transnetv2", "omnishotcut", "nvidia-flow"];
     static readonly HashSet<string> DetectionLabels =
         ["General", "Skipped", "Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway", "Padding",
          "Hard Cut", "Sudden Jump", "Scene change buffer", "Hard Cut buffer",
          "Sudden Jump buffer", "Dissolve buffer", "Wipes buffer", "Push buffer",
-         "Slide buffer", "Zoom buffer", "Fade buffer", "Doorway buffer", "Short (<10s)"];
+         "Slide buffer", "Zoom buffer", "Fade buffer", "Doorway buffer", "Short (<10s)",
+         "Possible Blur", "Possible Blur buffer"];
     static readonly Regex ShortDetectionLabel = new(
         @"\AShort \(<(?:0|[1-9]\d*)(?:\.\d{1,3})?s\)\z",
         RegexOptions.CultureInvariant);

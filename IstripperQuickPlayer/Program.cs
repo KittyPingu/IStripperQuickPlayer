@@ -287,6 +287,10 @@ namespace IStripperQuickPlayer
                     ("metadata save routing", CustomShowEditorForm.VerifySaveRouting()),
                     ("reprocess matting-detail defaults",
                         CustomShowEditorForm.VerifyReprocessMattingDetailDefaults()),
+                    ("reprocess alpha cleanup options",
+                        CustomShowEditorForm.VerifyTemporalCleanupOptions()),
+                    ("immediate alpha cleanup routing", Task.Run(
+                        CustomShowProcessor.VerifyTemporalAlphaCleanupRoutingAsync).GetAwaiter().GetResult()),
                     ("custom-show wizard recommendations",
                         CustomShowWizardRecommendations.VerifyContracts()),
                     ("custom-show wizard application",

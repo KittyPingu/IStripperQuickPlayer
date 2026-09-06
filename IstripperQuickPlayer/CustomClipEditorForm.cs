@@ -234,6 +234,8 @@ internal sealed class CustomClipEditorForm : Form
         if (configuration != null &&
             CustomShowProcessor.IsOmniShotCutInstalled(configuration))
             detector.Items.Add("Modern/Quality (OmniShotCut)");
+        if (configuration != null)
+            detector.Items.Add("Motion (NVIDIA optical flow)");
         string preferred = configuration?.LastClipDetector ?? "transnetv2";
         int preferredIndex = detector.Items.Cast<string>().ToList().FindIndex(item =>
             DetectorId(item) == preferred);
@@ -704,6 +706,7 @@ internal sealed class CustomClipEditorForm : Form
     {
         string value when value.StartsWith("Accurate", StringComparison.Ordinal) => "transnetv2",
         string value when value.StartsWith("Modern/Quality", StringComparison.Ordinal) => "omnishotcut",
+        string value when value.StartsWith("Motion", StringComparison.Ordinal) => "nvidia-flow",
         _ => "ffmpeg"
     };
 
@@ -735,6 +738,8 @@ internal sealed class CustomClipEditorForm : Form
                 ? configuration?.FastClipDetectionSensitivity ?? 65
                 : method == "transnetv2"
                     ? configuration?.TransNetClipDetectionSensitivity ?? 50
+                    : method == "nvidia-flow"
+                        ? configuration?.NvidiaFlowClipDetectionSensitivity ?? 50
                     : configuration?.OmniShotCutClipDetectionSensitivity ?? 100;
         applyingSensitivity = true;
         sensitivity.Value = Math.Clamp(value, sensitivity.Minimum,
@@ -753,6 +758,8 @@ internal sealed class CustomClipEditorForm : Form
             configuration.FastClipDetectionSensitivity = (int)sensitivity.Value;
         else if (DetectorId(detector.SelectedItem?.ToString()) == "transnetv2")
             configuration.TransNetClipDetectionSensitivity = (int)sensitivity.Value;
+        else if (DetectorId(detector.SelectedItem?.ToString()) == "nvidia-flow")
+            configuration.NvidiaFlowClipDetectionSensitivity = (int)sensitivity.Value;
         else configuration.OmniShotCutClipDetectionSensitivity =
             (int)sensitivity.Value;
         configuration.Save();
@@ -845,7 +852,7 @@ internal sealed class CustomClipEditorForm : Form
             return;
         int retainedSensitivity = clipDetection.SensitivityPercent ??
             (clipDetection.Method == "ffmpeg" ? 65 :
-             clipDetection.Method == "transnetv2" ? 50 : 100);
+             clipDetection.Method is "transnetv2" or "nvidia-flow" ? 50 : 100);
         RebuildRetainedClips(retainedSensitivity, RequestedTransitionBufferMs(),
             RequestedMinimumClipMs());
     }
@@ -914,7 +921,7 @@ internal sealed class CustomClipEditorForm : Form
             return;
         StopPlayback(requestPreview: false);
         SaveSelectedMetadata();
-        autoDetect.Enabled = reapplyDetection.Enabled = detector.Enabled = skipTransitions.Enabled =
+        autoDetect.Enabled = reapplyDetection.Enabled = detector.Enabled = sensitivity.Enabled = skipTransitions.Enabled =
             transitionSeconds.Enabled = shortClipSeconds.Enabled = importSetup.Enabled = addDivider.Enabled =
             removeDivider.Enabled = timeline.Enabled = false;
         Cursor = Cursors.WaitCursor;
@@ -935,6 +942,9 @@ internal sealed class CustomClipEditorForm : Form
                 "omnishotcut" => await CustomSceneDetector.DetectOmniShotCutAsync(configuration!,
                     videoPath, (int)sensitivity.Value, progress,
                     detectionCancellation.Token),
+                "nvidia-flow" => await CustomSceneDetector.DetectNvidiaFlowAsync(configuration!,
+                    videoPath, (int)sensitivity.Value, progress,
+                    detectionCancellation.Token),
                 _ => await CustomSceneDetector.DetectFastAsync(videoPath, durationMs,
                     (int)sensitivity.Value, progress, detectionCancellation.Token)
             };
@@ -949,9 +959,12 @@ internal sealed class CustomClipEditorForm : Form
             if (validDividers.Length == 0 && !validRanges.Any(range =>
                     range.IntraLabel != "General"))
             {
-                MessageBox.Show(this, "No scene changes were found.",
+                MessageBox.Show(this, result.Method == "nvidia-flow"
+                        ? "No scene changes were found at this sensitivity. Scores have been retained; " +
+                          "increase the sensitivity to try weaker candidates without another GPU pass."
+                        : "No scene changes were found.",
                     Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                if (result.Method != "nvidia-flow") return;
             }
             CustomShowClip seed = Clone(clips.FirstOrDefault(clip => clip.Included) ?? clips[0]);
             long bufferMs = RequestedTransitionBufferMs();
@@ -995,7 +1008,7 @@ internal sealed class CustomClipEditorForm : Form
             if (!IsDisposed)
             {
                 autoDetect.Text = "Auto-detect clips";
-                autoDetect.Enabled = detector.Enabled = skipTransitions.Enabled =
+                autoDetect.Enabled = detector.Enabled = sensitivity.Enabled = skipTransitions.Enabled =
                     shortClipSeconds.Enabled = importSetup.Enabled = addDivider.Enabled =
                     timeline.Enabled = true;
                 transitionSeconds.Enabled = skipTransitions.Checked;
@@ -1290,13 +1303,13 @@ internal sealed class CustomClipEditorForm : Form
     {
         if (minimumClipMs is < 0 or > 3_600_000)
             throw new ArgumentOutOfRangeException(nameof(minimumClipMs));
-        string[] gradual = ["Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway"];
+        string[] gradual = ["Dissolve", "Wipes", "Push", "Slide", "Zoom", "Fade", "Doorway", "Blur"];
         string[] intra = ["General", .. gradual, "Padding"];
         string[] inter = ["New_Start", "Hard_Cut", "Transition_Source", "Transition",
             "Sudden_Jump", "Padding"];
         if (detection.Ranges.Any(range => !intra.Contains(range.IntraLabel) ||
                 !inter.Contains(range.InterLabel)))
-            throw new InvalidDataException("OmniShotCut returned an unknown classification label.");
+            throw new InvalidDataException("The scene detector returned an unknown classification label.");
 
         List<long> cuts = [0, durationMs];
         List<(long Start, long End, string Label, bool Exact)> skipped = [];
@@ -1314,10 +1327,11 @@ internal sealed class CustomClipEditorForm : Form
             }
             if (gradual.Contains(range.IntraLabel))
             {
-                skipped.Add((start, end, range.IntraLabel, true));
+                string label = range.IntraLabel == "Blur" ? "Possible Blur" : range.IntraLabel;
+                skipped.Add((start, end, label, true));
                 if (bufferMs > 0)
                     skipped.Add((Math.Max(0, start - bufferMs),
-                        Math.Min(durationMs, end + bufferMs), range.IntraLabel + " buffer", false));
+                        Math.Min(durationMs, end + bufferMs), label + " buffer", false));
             }
             if (range.InterLabel is "Hard_Cut" or "Sudden_Jump" && start > 0)
             {
@@ -1411,6 +1425,9 @@ internal sealed class CustomClipEditorForm : Form
     }
 
     internal sealed record FastCandidate(long TimeMs, float Score);
+    internal sealed record BlurCandidate(long StartMs, long EndMs, float Score, string? Kind = null);
+    internal sealed record NvidiaFlowSensitivityData(long DurationMs,
+        FastCandidate[] Cuts, BlurCandidate[] Blurs);
     internal sealed record OmniCandidate(int EndFrame, string Intra, string Inter,
         float Confidence);
     internal sealed record OmniSensitivityData(int TotalFrames, OmniCandidate[] Boundaries);
@@ -1434,6 +1451,43 @@ internal sealed class CustomClipEditorForm : Form
         int sensitivityPercent)
     {
         double threshold = DetectionThreshold(sensitivityPercent);
+        if (detection.SensitivityDataFormat is "nvidia-flow-gzip-json-v1" or "nvidia-flow-gzip-json-v2")
+        {
+            NvidiaFlowSensitivityData data = DecompressSensitivityData<NvidiaFlowSensitivityData>(
+                detection.SensitivityData!);
+            if (data.DurationMs <= 0 || data.Cuts == null || data.Blurs == null)
+                throw new InvalidDataException("Retained NVIDIA optical-flow scores are invalid.");
+            BlurCandidate[] blurs = data.Blurs.Where(value => value.Score >= threshold &&
+                value.StartMs >= 0 && value.EndMs <= data.DurationMs &&
+                value.EndMs > value.StartMs).ToArray();
+            // Weak responses at a recognised blur's edges are part of the blur,
+            // rather than additional hard cuts when the slider is raised.
+            long[] cuts = data.Cuts.Where(value => value.Score >= threshold &&
+                    value.TimeMs > 250 && value.TimeMs < data.DurationMs - 250 &&
+                    !(value.Score < .5f && blurs.Any(blur =>
+                        value.TimeMs >= blur.StartMs && value.TimeMs <= blur.EndMs)))
+                .Select(value => value.TimeMs).Distinct().Order().ToArray();
+            long[] edges = new long[] { 0, data.DurationMs }.Concat(cuts)
+                .Concat(blurs.SelectMany(value => new[] { value.StartMs, value.EndMs }))
+                .Distinct().Order().ToArray();
+            List<SceneDetectionRange> ranges = [];
+            for (int index = 0; index < edges.Length - 1; index++)
+            {
+                long start = edges[index], end = edges[index + 1];
+                BlurCandidate? transition = blurs.Where(value =>
+                    start >= value.StartMs && end <= value.EndMs)
+                    .OrderByDescending(value => value.Score).FirstOrDefault();
+                string label = transition == null ? "General" :
+                    transition.Kind is "Dissolve" or "Fade" ? transition.Kind : "Blur";
+                ranges.Add(new(start, end, label,
+                    start == 0 ? "New_Start" : Array.BinarySearch(cuts, start) >= 0
+                        ? "Hard_Cut" : "Transition_Source"));
+            }
+            return new("nvidia-flow", cuts, [.. ranges], detection.ToolRevision,
+                SensitivityDataFormat: detection.SensitivityDataFormat,
+                SensitivityData: detection.SensitivityData,
+                DetectionFrameRate: detection.DetectionFrameRate);
+        }
         if (detection.SensitivityDataFormat == "ffmpeg-scene-gzip-json-v1")
         {
             FastCandidate[] candidates = DecompressSensitivityData<FastCandidate[]>(
@@ -1570,6 +1624,35 @@ internal sealed class CustomClipEditorForm : Form
             SensitivityData = CompressSensitivityData(omniData)
         };
         SceneDetectionResult rebuiltOmni = RebuildDetection(retainedOmni, 50);
+        CustomShowClipDetection retainedNvidia = new()
+        {
+            Method = "nvidia-flow", ToolRevision = "nvidia-flow-v1",
+            SensitivityDataFormat = "nvidia-flow-gzip-json-v1",
+            SensitivityData = CompressSensitivityData(new NvidiaFlowSensitivityData(40_000,
+                [new(9_375, .2f), new(20_125, .9f), new(25_000, .25f), new(26_000, .25f)],
+                [new(25_000, 26_000, .7f)]))
+        };
+        // JSON persistence and slider reconstruction must use the same source PTS,
+        // independent of nominal FPS. Raising sensitivity restores weak candidates.
+        retainedNvidia = JsonSerializer.Deserialize<CustomShowClipDetection>(
+            JsonSerializer.Serialize(retainedNvidia, CustomShowStore.JsonOptions),
+            CustomShowStore.JsonOptions)!;
+        SceneDetectionResult rebuiltNvidia = RebuildDetection(retainedNvidia, 50);
+        CustomShowClip[] nvidiaClips = BuildDetectedClips(seed, rebuiltNvidia, 40_000, 0, 0);
+        CustomShowStore.ValidateClips(nvidiaClips, 40_000);
+        CustomShowClip[] bufferedNvidia = BuildDetectedClips(seed, rebuiltNvidia, 40_000, 500, 0);
+        CustomShowStore.ValidateClips(bufferedNvidia, 40_000);
+        CustomShowClipDetection retainedNvidiaV2 = new()
+        {
+            Method = "nvidia-flow", ToolRevision = "nvidia-flow-v2",
+            SensitivityDataFormat = "nvidia-flow-gzip-json-v2",
+            SensitivityData = CompressSensitivityData(new NvidiaFlowSensitivityData(400_000,
+                [], [new(305_606, 306_206, .61f, "Dissolve")]))
+        };
+        SceneDetectionResult rebuiltNvidiaV2 = RebuildDetection(retainedNvidiaV2, 50);
+        CustomShowClip[] nvidiaDissolveClips = BuildDetectedClips(seed, rebuiltNvidiaV2,
+            400_000, 0, 0);
+        CustomShowStore.ValidateClips(nvidiaDissolveClips, 400_000);
         CustomShowClip importFirst = new()
         {
             StartMs = 0, EndMs = 400, Included = false,
@@ -1633,6 +1716,24 @@ internal sealed class CustomClipEditorForm : Form
             hardCutBuffered[1].DetectionLabels.Contains("Scene change buffer") &&
             hardCutBuffered[2].Included && hardCutBuffered[2].StartMs == 11_500 &&
             rebuiltFast.BoundariesMs.SequenceEqual([2_000, 3_000]) &&
+            DetectorId("Motion (NVIDIA optical flow)") == "nvidia-flow" &&
+            rebuiltNvidia.Method == "nvidia-flow" &&
+            rebuiltNvidia.ToolRevision == "nvidia-flow-v1" &&
+            rebuiltNvidiaV2.BoundariesMs.Length == 0 &&
+            nvidiaDissolveClips.Any(clip => clip.StartMs == 305_606 &&
+                clip.EndMs == 306_206 && !clip.Included &&
+                clip.DetectionLabels.Contains("Dissolve")) &&
+            RebuildDetection(retainedNvidiaV2, 10).Ranges.All(range => range.IntraLabel == "General") &&
+            RebuildDetection(retainedNvidiaV2, 99).Ranges.Any(range => range.IntraLabel == "Dissolve") &&
+            rebuiltNvidia.BoundariesMs.SequenceEqual([20_125]) &&
+            RebuildDetection(retainedNvidia, 85).BoundariesMs.SequenceEqual([9_375, 20_125]) &&
+            RebuildDetection(retainedNvidia, 10).Ranges.All(range => range.IntraLabel == "General") &&
+            nvidiaClips.Any(clip => clip.StartMs == 20_125 && clip.Included &&
+                clip.DetectionLabels.Contains("Hard Cut")) &&
+            nvidiaClips.Any(clip => clip.StartMs == 25_000 && clip.EndMs == 26_000 &&
+                !clip.Included && clip.DetectionLabels.Contains("Possible Blur")) &&
+            bufferedNvidia.Any(clip => clip.StartMs == 24_500 && clip.EndMs == 26_500 &&
+                !clip.Included && clip.DetectionLabels.Contains("Possible Blur buffer")) &&
             rebuiltTransNet.BoundariesMs.SequenceEqual([300]) &&
             rebuiltOmni.Ranges.Length == 2 &&
             rebuiltOmni.Ranges[0].EndMs == 20_000 &&
@@ -1856,6 +1957,68 @@ internal static class CustomSceneDetector
             ReadRevision(runtime, "TRANSNETV2_COMMIT"),
             SensitivityDataFormat: sensitivityDataFormat,
             SensitivityData: sensitivityData, DetectionFrameRate: detectionFrameRate);
+    }
+
+    internal static async Task<SceneDetectionResult> DetectNvidiaFlowAsync(
+        CustomShowConfiguration configuration, string source, int sensitivityPercent,
+        IProgress<int>? progress, CancellationToken token,
+        long startMs = 0, long? endMs = null)
+    {
+        if (!File.Exists(configuration.PythonExecutable))
+            throw new FileNotFoundException("Configure the custom-show Python environment first.",
+                configuration.PythonExecutable);
+        string worker = Path.Combine(AppContext.BaseDirectory, "custom-shows", "nvidia_scene_worker.py");
+        if (!File.Exists(worker))
+            throw new FileNotFoundException("The NVIDIA optical-flow scene worker is missing.", worker);
+        ProcessStartInfo start = new(configuration.PythonExecutable)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (string argument in new[] { worker, "--source", source, "--start-ms",
+                     Math.Max(0, startMs).ToString(CultureInfo.InvariantCulture) })
+            start.ArgumentList.Add(argument);
+        if (endMs is long end)
+        {
+            start.ArgumentList.Add("--end-ms");
+            start.ArgumentList.Add(end.ToString(CultureInfo.InvariantCulture));
+        }
+        start.Environment["IQP_FFMPEG"] = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
+        start.Environment["IQP_FFPROBE"] = Path.Combine(AppContext.BaseDirectory, "ffprobe.exe");
+        using Process process = Process.Start(start) ??
+            throw new InvalidOperationException("Python could not be started.");
+        await using ProcessCancellationScope cancellationScope = new(process, token);
+        Task<string> error = process.StandardError.ReadToEndAsync(token);
+        CustomShowClipDetection detection = new() { Method = "nvidia-flow" };
+        int displayedProgress = 0;
+        while (await process.StandardOutput.ReadLineAsync(token) is string line)
+        {
+            using JsonDocument json = JsonDocument.Parse(line);
+            JsonElement root = json.RootElement;
+            if (root.TryGetProperty("percent", out JsonElement percent))
+            {
+                int next = MonotonicProgress(displayedProgress, percent.GetDouble());
+                if (next > displayedProgress) progress?.Report(next);
+                displayedProgress = next;
+            }
+            if (root.TryGetProperty("sensitivityDataFormat", out JsonElement format))
+                detection.SensitivityDataFormat = format.GetString();
+            if (root.TryGetProperty("sensitivityData", out JsonElement data))
+                detection.SensitivityData = data.GetString();
+            if (root.TryGetProperty("detectionFrameRate", out JsonElement rate))
+                detection.DetectionFrameRate = rate.GetDouble();
+            if (root.TryGetProperty("revision", out JsonElement revision))
+                detection.ToolRevision = revision.GetString();
+        }
+        await process.WaitForExitAsync(token);
+        string errorText = await error;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(errorText)
+                ? $"NVIDIA optical flow failed with exit code {process.ExitCode}." : errorText.Trim());
+        if (detection.SensitivityDataFormat is not ("nvidia-flow-gzip-json-v1" or "nvidia-flow-gzip-json-v2") ||
+            string.IsNullOrWhiteSpace(detection.SensitivityData))
+            throw new InvalidDataException("NVIDIA optical flow did not return scene scores.");
+        return CustomClipEditorForm.RebuildDetection(detection, sensitivityPercent);
     }
 
     internal static async Task<SceneDetectionResult> DetectOmniShotCutAsync(

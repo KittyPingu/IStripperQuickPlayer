@@ -1160,6 +1160,97 @@ internal static class CustomShowProcessor
         }
     }
 
+    internal static async Task<CustomShowProcessResult> RunWithTemporalAlphaCleanupAsync(
+        CustomShowConfiguration configuration, CustomShowProcessing options,
+        string[] outputFolders,
+        Func<IProgress<CustomShowProgress>, CancellationToken, Task<CustomShowProcessResult>> matting,
+        string logPath, IProgress<CustomShowProgress> progress, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        bool cleanup = options.TemporalAlphaCleanup &&
+            !CustomClipMedia.IsRealtimeMode(options.Algorithm);
+        if (!cleanup) return await matting(progress, token);
+        if (outputFolders.Length == 0)
+            throw new InvalidDataException("No selected clips are available for alpha stabilization.");
+        IProgress<CustomShowProgress> mattingProgress = new Progress<CustomShowProgress>(value =>
+            progress.Report(value with { Percent = Math.Clamp(value.Percent, 0, 100) * .9 }));
+        CustomShowProcessResult result = await matting(mattingProgress, token);
+        // Both batched RVM and per-clip matting must complete this post-pass
+        // before preview/accept can publish the staged result.
+        for (int index = 0; index < outputFolders.Length; index++)
+        {
+            token.ThrowIfCancellationRequested();
+            int clipIndex = index;
+            IProgress<CustomShowProgress> cleanupProgress = new Progress<CustomShowProgress>(value =>
+                progress.Report(value with
+                {
+                    Percent = 90 + 10d * (clipIndex + Math.Clamp(value.Percent, 0, 100) / 100) /
+                        outputFolders.Length,
+                    Message = $"Clip {clipIndex + 1}/{outputFolders.Length}: {value.Message}"
+                }));
+            await RunTemporalAlphaCleanupAsync(configuration, outputFolders[index],
+                options.TemporalAlphaCleanupWindowFrames,
+                options.TemporalAlphaCleanupStrengthPercent,
+                options.TemporalAlphaTrackingStrengthPercent,
+                options.TemporalAlphaCleanupAlphaThreshold, logPath, cleanupProgress, token);
+        }
+        return result;
+    }
+
+    internal static async Task<bool> VerifyTemporalAlphaCleanupRoutingAsync()
+    {
+        // A missing runtime makes an attempted cleanup observable without
+        // requiring an NVIDIA GPU in the general application verifier.
+        string missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "python.exe");
+        CustomShowConfiguration configuration = new()
+            { PythonExecutable = missing, Sam2MattingPythonExecutable = missing };
+        CustomShowProcessing options = new() { Algorithm = "rvm-vitmatte-b" };
+        CustomShowProcessResult expected = new() { Width = 1920, Height = 1080 };
+        int mattingCalls = 0;
+        Task<CustomShowProcessResult> Matting(IProgress<CustomShowProgress> _, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            mattingCalls++;
+            return Task.FromResult(expected);
+        }
+        IProgress<CustomShowProgress> progress = new Progress<CustomShowProgress>();
+        string[] outputs = [Path.GetDirectoryName(missing)!];
+        CustomShowProcessResult result = await RunWithTemporalAlphaCleanupAsync(configuration,
+            options, outputs, Matting, missing + ".log", progress, CancellationToken.None);
+        if (!ReferenceEquals(result, expected) || mattingCalls != 1) return false;
+        options.TemporalAlphaCleanup = true;
+        try
+        {
+            await RunWithTemporalAlphaCleanupAsync(configuration, options, outputs,
+                Matting, missing + ".log", progress, CancellationToken.None);
+            return false; // The formerly skipped pass must now prevent success.
+        }
+        catch (FileNotFoundException error) when (error.FileName == missing) { }
+        if (mattingCalls != 2) return false;
+        InvalidOperationException failure = new("Matting failed before cleanup");
+        try
+        {
+            await RunWithTemporalAlphaCleanupAsync(configuration, options, outputs,
+                (_, _) => Task.FromException<CustomShowProcessResult>(failure),
+                missing + ".log", progress, CancellationToken.None);
+            return false;
+        }
+        catch (InvalidOperationException error) when (ReferenceEquals(error, failure)) { }
+        using CancellationTokenSource cancelled = new();
+        try
+        {
+            await RunWithTemporalAlphaCleanupAsync(configuration, options, outputs,
+                (_, _) => { cancelled.Cancel(); return Task.FromResult(expected); },
+                missing + ".log", progress, cancelled.Token);
+            return false;
+        }
+        catch (OperationCanceledException) when (cancelled.IsCancellationRequested) { }
+        options.Algorithm = CustomClipMedia.RvmOnnxMode;
+        result = await RunWithTemporalAlphaCleanupAsync(configuration, options, outputs,
+            Matting, missing + ".log", progress, CancellationToken.None);
+        return ReferenceEquals(result, expected) && mattingCalls == 3;
+    }
+
     internal static async Task RunTemporalAlphaCleanupAsync(
         CustomShowConfiguration configuration, string outputFolder,
         int windowFrames, int strengthPercent, int trackingStrengthPercent,
@@ -1169,6 +1260,9 @@ internal static class CustomShowProcessor
         string? alphaPath = null, string? destinationPath = null,
         string? previewCache = null, string? analysisCache = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        progress?.Report(new CustomShowProgress("temporal-stabilization", 0,
+            "NVIDIA alpha stabilization: starting after matting..."));
         string python = File.Exists(configuration.PythonExecutable)
             ? configuration.PythonExecutable
             : configuration.Sam2MattingPythonExecutable;
@@ -1259,6 +1353,7 @@ internal static class CustomShowProcessor
                         : "Stabilizing alpha flicker";
                     if (stage == "error")
                         workerError = WorkerErrorMessage(line) ?? workerError;
+                    else message = "NVIDIA alpha stabilization: " + message;
                     progress?.Report(new CustomShowProgress(stage,
                         root.TryGetProperty("percent", out JsonElement percentNode)
                             ? percentNode.GetDouble() : 0, message));
@@ -1735,6 +1830,11 @@ internal sealed class CustomShowProcessingForm : Form
                     compositeGroup.Text != value.PreviewCompositeLabel)
                     compositeGroup.Text = value.PreviewCompositeLabel;
                 UpdatePreview(value.PreviewSource, value.PreviewComposite);
+                if (value.Stage == "temporal-stabilization")
+                {
+                    pauseAndCorrect.Enabled = false;
+                    interactiveControlFolder = null;
+                }
                 if (!string.IsNullOrWhiteSpace(value.InteractiveControlFolder))
                 {
                     interactiveControlFolder = value.InteractiveControlFolder;

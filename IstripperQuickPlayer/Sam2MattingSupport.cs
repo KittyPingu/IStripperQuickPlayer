@@ -159,13 +159,14 @@ internal static class Sam2MattingScenePlanner
             !CustomShowProcessor.IsTransNetV2Installed(configuration) ||
             method == "omnishotcut" &&
             !CustomShowProcessor.IsOmniShotCutInstalled(configuration) ||
-            method is not ("ffmpeg" or "transnetv2" or "omnishotcut"))
+            method is not ("ffmpeg" or "transnetv2" or "omnishotcut" or "nvidia-flow"))
             throw new InvalidDataException(
                 $"The queued scene detector '{method}' is no longer installed.");
         int sensitivity = requested?.SensitivityPercent ?? method switch
         {
             "transnetv2" => configuration.TransNetClipDetectionSensitivity,
             "omnishotcut" => configuration.OmniShotCutClipDetectionSensitivity,
+            "nvidia-flow" => configuration.NvidiaFlowClipDetectionSensitivity,
             _ => configuration.FastClipDetectionSensitivity
         };
         bool reuseScores = requested != null &&
@@ -204,6 +205,9 @@ internal static class Sam2MattingScenePlanner
                         configuration, source, sensitivity, clipProgress, token,
                         clip.StartMs, clip.EndMs),
                     "omnishotcut" => await CustomSceneDetector.DetectOmniShotCutAsync(
+                        configuration, source, sensitivity, clipProgress, token,
+                        clip.StartMs, clip.EndMs),
+                    "nvidia-flow" => await CustomSceneDetector.DetectNvidiaFlowAsync(
                         configuration, source, sensitivity, clipProgress, token,
                         clip.StartMs, clip.EndMs),
                     _ => await CustomSceneDetector.DetectFastAsync(source, durationMs,
@@ -285,6 +289,7 @@ internal static class Sam2MattingScenePlanner
         {
             "transnetv2" => configuration.TransNetClipDetectionSensitivity,
             "omnishotcut" => configuration.OmniShotCutClipDetectionSensitivity,
+            "nvidia-flow" => configuration.NvidiaFlowClipDetectionSensitivity,
             _ => configuration.FastClipDetectionSensitivity
         };
         string? marker = method switch
@@ -385,6 +390,7 @@ internal static class Sam2MattingScenePlanner
         // FFmpeg is always available with QuickPlayer, so an explicit Fast
         // preference is already a resolved, installed detector choice.
         if (configuration.LastClipDetector == "ffmpeg") return "ffmpeg";
+        if (configuration.LastClipDetector == "nvidia-flow") return "nvidia-flow";
         if (configuration.LastClipDetector == "omnishotcut" &&
             CustomShowProcessor.IsOmniShotCutInstalled(configuration))
             return "omnishotcut";

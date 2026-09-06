@@ -8,6 +8,8 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections import OrderedDict
+from contextlib import ExitStack
 from pathlib import Path
 
 from rvm_worker import emit, executable, probe
@@ -17,7 +19,109 @@ PREVIEW_MAXIMUM = 768
 MODEL_DETAIL = 512
 CUT_MEAN_DIFFERENCE = 46.0
 ALPHA_VARIATION = 12
-ANALYSIS_CACHE_REVISION = 2
+ANALYSIS_CACHE_REVISION = 3
+FLOW_CACHE_BYTES = 128 * 1024 * 1024
+
+
+class MotionAlignment:
+    """Align alpha evidence using source-image motion, without modifying alpha.
+
+    Adjacent flows are composed in the current frame's coordinates. Each alpha
+    is sampled only once, avoiding repeated resampling of soft edges. The cache
+    is bounded independently of clip length and never pairs frames across cuts.
+    """
+
+    def __init__(self, gray, cuts, window, cv2, np, engine=None):
+        self.gray, self.cuts, self.cv2, self.np = gray, cuts, cv2, np
+        self.height, self.width = gray.shape[1:]
+        self.grid = np.stack(np.meshgrid(np.arange(self.width, dtype=np.float32),
+            np.arange(self.height, dtype=np.float32)), axis=-1)
+        from nvidia_optical_flow import NvidiaOpticalFlow
+        self.engine = engine if engine is not None else NvidiaOpticalFlow(self.width, self.height)
+        # Two float32 XY fields and two float32 validity maps per cached pair.
+        pair_bytes = self.width * self.height * 24
+        self.cache_limit = max(1, min(window * 2, FLOW_CACHE_BYTES // pair_bytes))
+        self.pairs = OrderedDict()
+
+    def sample(self, value, coordinates):
+        return self.cv2.remap(value, coordinates, None, self.cv2.INTER_LINEAR,
+            borderMode=self.cv2.BORDER_CONSTANT, borderValue=0)
+
+    def inside(self, coordinates):
+        np = self.np
+        return (np.isfinite(coordinates).all(axis=2) &
+            (coordinates[..., 0] >= 0) & (coordinates[..., 0] <= self.width - 1) &
+            (coordinates[..., 1] >= 0) & (coordinates[..., 1] <= self.height - 1))
+
+    def reliable(self, source, target, flow, reverse, cost):
+        np, cv2 = self.np, self.cv2
+        coordinates = self.grid + flow
+        inverse = self.sample(reverse, coordinates)
+        # Forward/backward round-trip error, in preview-image pixels. Reject
+        # uncertain correspondence; do not shrink its displacement toward zero.
+        error = np.square(flow + inverse).sum(axis=2)
+        tolerance = 1.0 + .01 * (np.square(flow).sum(axis=2) +
+                                 np.square(inverse).sum(axis=2))
+        matched = self.sample(target, coordinates)
+        photo_error = np.abs(source.astype(np.float32) - matched.astype(np.float32))
+        # Flat patches cannot establish correspondence, even if both flows are 0.
+        image = source.astype(np.float32)
+        mean = cv2.boxFilter(image, -1, (7, 7))
+        variance = cv2.boxFilter(image * image, -1, (7, 7)) - mean * mean
+        return (self.inside(coordinates) & np.isfinite(error) &
+                (error <= tolerance) & (photo_error <= 20) &
+                (variance >= 4) & (cost <= 40)).astype(np.float32)
+
+    def pair(self, first):
+        if first + 1 in self.cuts or not 0 <= first < len(self.gray) - 1:
+            raise ValueError("Optical flow cannot cross a camera cut")
+        if first in self.pairs:
+            self.pairs.move_to_end(first)
+            return self.pairs[first]
+        # Evict before allocating another pair, including for large windows.
+        while len(self.pairs) >= self.cache_limit:
+            self.pairs.popitem(last=False)
+        np = self.np
+        source = np.ascontiguousarray(self.gray[first])
+        target = np.ascontiguousarray(self.gray[first + 1])
+        forward, backward, forward_cost, backward_cost = self.engine.compute(source, target)
+        pair = (forward, backward, self.reliable(source, target, forward, backward, forward_cost),
+                self.reliable(target, source, backward, forward, backward_cost))
+        self.pairs[first] = pair
+        return pair
+
+    def close(self):
+        self.pairs.clear()
+        self.gray = None
+        self.engine.close()
+
+    def alpha_range(self, alpha, frame, lower, upper):
+        np = self.np
+        minimum = alpha[frame].astype(np.float32)
+        maximum = minimum.copy()
+        support = np.ones(minimum.shape, np.uint8)
+        for step, stop in ((-1, lower - 1), (1, upper)):
+            coordinates = self.grid.copy()
+            valid = np.ones(minimum.shape, bool)
+            for neighbor in range(frame + step, stop, step):
+                forward, backward, forward_valid, backward_valid = self.pair(
+                    min(neighbor, neighbor - step))
+                flow, confidence = (backward, backward_valid) if step < 0 else \
+                    (forward, forward_valid)
+                valid &= self.sample(confidence, coordinates) >= .999
+                coordinates = coordinates + self.sample(flow, coordinates)
+                valid &= self.inside(coordinates)
+                # Check the composed path against the target image too. A series
+                # of plausible local matches can still drift over a long window.
+                matched = self.sample(self.gray[neighbor], coordinates)
+                valid &= np.abs(self.gray[frame].astype(np.float32) -
+                                matched.astype(np.float32)) <= 20
+                warped = self.sample(alpha[neighbor].astype(np.float32), coordinates)
+                minimum = np.where(valid, np.minimum(minimum, warped), minimum)
+                maximum = np.where(valid, np.maximum(maximum, warped), maximum)
+                support += valid
+        # At least two neighboring observations must corroborate the comparison.
+        return minimum, maximum, support >= 3
 
 
 def read_exact(stream, size):
@@ -242,18 +346,23 @@ def choose_anchors(alpha, cuts, window, tracking_strength, components, tracks):
 
 
 def instability_weight(alpha, frame, cuts, window, threshold, strength,
-                       tracking_strength, components, tracks, cv2, np):
+                       tracking_strength, components, tracks, cv2, np, motion=None):
     lower, upper = temporal_bounds(cuts, frame, window)
     if upper - lower < 3:
         return np.zeros(alpha.shape[1:], np.float32)
-    values = np.asarray(alpha[lower:upper])
-    maximum = values.max(axis=0)
-    minimum = values.min(axis=0)
-    unstable = ((maximum.astype(np.int16) - minimum.astype(np.int16) >=
-                 ALPHA_VARIATION) & (maximum >= max(1, threshold)))
+    if motion is not None:
+        minimum, maximum, supported = motion.alpha_range(alpha, frame, lower, upper)
+    else:
+        values = np.asarray(alpha[lower:upper], dtype=np.float32)
+        maximum, minimum = values.max(axis=0), values.min(axis=0)
+        supported = np.ones(alpha.shape[1:], bool)
+    unstable = ((maximum - minimum >= ALPHA_VARIATION) &
+                (maximum >= max(1, threshold)) & supported)
     unstable = cv2.dilate(unstable.astype(np.uint8),
                           np.ones((3, 3), np.uint8)).astype(np.float32)
     unstable = cv2.GaussianBlur(unstable, (3, 3), .65)
+    # Dilation/feathering must not reintroduce correction into rejected matches.
+    unstable *= supported
     labels, _ = frame_components(alpha[frame], threshold, cv2, np)
     protected = np.zeros(alpha.shape[1:], np.uint8)
     for component in components[frame]:
@@ -271,13 +380,15 @@ def blend(original, stabilized, weight, np):
 
 
 def analyse_inputs(foreground, alpha_path, rate, total, preview_width,
-                   preview_height, cache_path, ffmpeg, cv2, np):
+                   preview_height, cache_path, gray_path, ffmpeg, cv2, np):
     alpha = np.memmap(cache_path, mode="w+", dtype=np.uint8,
                       shape=(total, preview_height, preview_width))
-    paired_decode = paired_gray_alpha_decoder(ffmpeg, foreground, alpha_path,
-        rate, preview_width, preview_height)
+    images = np.memmap(gray_path, mode="w+", dtype=np.uint8, shape=alpha.shape)
+    paired_decode = None
     cuts, previous, count = [0], None, 0
     try:
+        paired_decode = paired_gray_alpha_decoder(ffmpeg, foreground, alpha_path,
+            rate, preview_width, preview_height)
         while count < total:
             paired_data = read_exact(paired_decode.stdout,
                 preview_width * preview_height * 2)
@@ -286,6 +397,7 @@ def analyse_inputs(foreground, alpha_path, rate, total, preview_width,
             paired = np.frombuffer(paired_data, np.uint8).reshape(
                 preview_height, preview_width, 2)
             gray = paired[:, :, 0]
+            images[count] = gray
             alpha[count] = paired[:, :, 1]
             if previous is not None and camera_cut(previous, gray, cv2, np):
                 cuts.append(count)
@@ -296,23 +408,30 @@ def analyse_inputs(foreground, alpha_path, rate, total, preview_width,
         if paired_decode.wait():
             raise RuntimeError(paired_error.strip() or
                                "Paired input analysis decoder failed")
-        if count not in (total, total - 1):
+        if count < 1 or count not in (total, total - 1):
             raise RuntimeError(f"Input analysis decoded {count}/{total} frames")
         if count != total:
             alpha.flush()
-            del alpha
-            with cache_path.open("r+b") as stream:
-                stream.truncate(count * preview_width * preview_height)
+            images.flush()
+            alpha._mmap.close()
+            images._mmap.close()
+            for path in (cache_path, gray_path):
+                with path.open("r+b") as stream:
+                    stream.truncate(count * preview_width * preview_height)
             alpha = np.memmap(cache_path, mode="r+", dtype=np.uint8,
                 shape=(count, preview_height, preview_width))
+            images = np.memmap(gray_path, mode="r+", dtype=np.uint8, shape=alpha.shape)
         cuts.append(count)
-        return alpha, sorted(set(cuts)), count
+        return alpha, images, sorted(set(cuts)), count
     except BaseException:
         try:
-            if paired_decode.poll() is None: paired_decode.kill()
-            paired_decode.wait()
+            if paired_decode is not None:
+                if paired_decode.poll() is None: paired_decode.kill()
+                paired_decode.wait()
         except OSError:
             pass
+        alpha._mmap.close()
+        images._mmap.close()
         raise
 
 
@@ -340,16 +459,20 @@ def write_json_atomic(path, value):
 def load_cached_analysis(folder, identity, preview_width, preview_height, np):
     metadata_path = folder / "analysis.json"
     raw_path = folder / "input-alpha.gray8"
+    gray_path = folder / "input-source.gray8"
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         count = int(metadata["frames"])
         cuts = [int(value) for value in metadata["cuts"]]
         expected = count * preview_width * preview_height
         if metadata.get("identity") != identity or count < 1 or \
-                cuts[0] != 0 or cuts[-1] != count or \
-                raw_path.stat().st_size != expected:
+                not cuts or cuts[0] != 0 or cuts[-1] != count or \
+                cuts != sorted(set(cuts)) or \
+                raw_path.stat().st_size != expected or gray_path.stat().st_size != expected:
             return None
         return (np.memmap(raw_path, mode="r", dtype=np.uint8,
+                          shape=(count, preview_height, preview_width)),
+                np.memmap(gray_path, mode="r", dtype=np.uint8,
                           shape=(count, preview_height, preview_width)),
                 cuts, count)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
@@ -362,18 +485,25 @@ def cached_analysis(folder, identity, foreground, alpha_path, rate, total,
                                   preview_height, np)
     if cached is not None:
         emit("temporal-stabilization", 1,
-             "Reusing cached alpha analysis and camera cuts...")
+             "Reusing cached source frames, alpha analysis and camera cuts...")
         return cached
     folder.mkdir(parents=True, exist_ok=True)
     staged = folder / "input-alpha.building"
+    staged_gray = folder / "input-source.building"
     staged.unlink(missing_ok=True)
+    staged_gray.unlink(missing_ok=True)
+    # Metadata is the commit marker for the pair of raw caches.
+    (folder / "analysis.json").unlink(missing_ok=True)
     try:
-        alpha, cuts, count = analyse_inputs(foreground, alpha_path, rate, total,
-            preview_width, preview_height, staged, ffmpeg, cv2, np)
+        alpha, images, cuts, count = analyse_inputs(foreground, alpha_path, rate, total,
+            preview_width, preview_height, staged, staged_gray, ffmpeg, cv2, np)
         alpha.flush()
-        del alpha
+        images.flush()
+        del alpha, images
         raw_path = folder / "input-alpha.gray8"
         os.replace(staged, raw_path)
+        gray_path = folder / "input-source.gray8"
+        os.replace(staged_gray, gray_path)
         write_json_atomic(folder / "analysis.json",
                           {"identity": identity, "frames": count,
                            "cuts": cuts})
@@ -381,9 +511,12 @@ def cached_analysis(folder, identity, foreground, alpha_path, rate, total,
             old.unlink(missing_ok=True)
         return (np.memmap(raw_path, mode="r", dtype=np.uint8,
                           shape=(count, preview_height, preview_width)),
+                np.memmap(gray_path, mode="r", dtype=np.uint8,
+                          shape=(count, preview_height, preview_width)),
                 cuts, count)
     finally:
         staged.unlink(missing_ok=True)
+        staged_gray.unlink(missing_ok=True)
 
 
 def cached_components(folder, identity, alpha, threshold, cv2, np):
@@ -454,7 +587,7 @@ def preview_metadata(folder, width, height, rate, total):
 def append_stabilized_frames(raw_path, weight_path, model_size, original,
                              start, end, preview_folder, cuts, window,
                              threshold, strength, tracking_strength,
-                             components, tracks, cv2, np):
+                             components, tracks, cv2, np, motion=None):
     model_width, model_height = model_size
     model = np.memmap(raw_path, mode="r", dtype=np.uint8,
         shape=(original.shape[0], model_height, model_width))
@@ -472,7 +605,7 @@ def append_stabilized_frames(raw_path, weight_path, model_size, original,
                     interpolation=cv2.INTER_LINEAR)
             weight = instability_weight(original, frame, cuts, window,
                 threshold, strength, tracking_strength, components, tracks,
-                cv2, np)
+                cv2, np, motion)
             compact_weight = np.rint(weight * 255).astype(np.uint8)
             weights.write(memoryview(compact_weight).cast("B"))
             if output is None or decisions is None:
@@ -492,12 +625,12 @@ def append_stabilized_frames(raw_path, weight_path, model_size, original,
         weights.close()
         if output is not None: output.close()
         if decisions is not None: decisions.close()
-        del model
+        model._mmap.close()
 
 
 def run_model(args, source, runtime, model_output, raw_path, weight_path, anchors,
               first_anchor, fps, total, model_size, original, preview_folder,
-              cuts, components, tracks, cv2, np):
+              cuts, components, tracks, cv2, np, motion=None):
     worker = Path(__file__).with_name("matanyone2_worker.py")
     command = [sys.executable, str(worker), "--source", str(source),
         "--output", str(model_output), "--runtime", str(runtime),
@@ -534,7 +667,7 @@ def run_model(args, source, runtime, model_output, raw_path, weight_path, anchor
                         original, preview_count, available, preview_folder,
                         cuts, args.window, args.alpha_threshold,
                         args.strength / 100, args.tracking_strength / 100,
-                        components, tracks, cv2, np)
+                        components, tracks, cv2, np, motion)
                     preview_count = available
             reported_percent = max(reported_percent,
                 min(100.0, float(value.get("percent", 0))))
@@ -548,7 +681,7 @@ def run_model(args, source, runtime, model_output, raw_path, weight_path, anchor
             append_stabilized_frames(raw_path, weight_path, model_size,
                 original, preview_count, total, preview_folder, cuts,
                 args.window, args.alpha_threshold, args.strength / 100,
-                args.tracking_strength / 100, components, tracks, cv2, np)
+                args.tracking_strength / 100, components, tracks, cv2, np, motion)
     except BaseException:
         if process.poll() is None:
             process.kill()
@@ -632,23 +765,36 @@ def process(args):
     ffmpeg = executable("ffmpeg")
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="iqp-auto-alpha-") as temporary_value:
+    with tempfile.TemporaryDirectory(prefix="iqp-auto-alpha-") as temporary_value, \
+            ExitStack() as resources:
         temporary = Path(temporary_value)
         original_cache = temporary / "input-alpha.gray8"
+        gray_cache = temporary / "input-source.gray8"
+        engine = None
+        if args.motion_alignment == "nvidia":
+            from nvidia_optical_flow import NvidiaOpticalFlow
+            engine = resources.enter_context(NvidiaOpticalFlow(preview_width, preview_height))
+            emit("temporal-stabilization", 0,
+                 f"NVIDIA hardware optical flow ready: {engine.device_name}; "
+                 f"{engine.grid}x{engine.grid} flow grid")
         emit("temporal-stabilization", 0, "Analysing alpha stability and camera cuts...")
         identity = analysis_identity(foreground, alpha_path, preview_width,
                                      preview_height, rate, total)
         if args.analysis_cache:
-            original, cuts, total = cached_analysis(args.analysis_cache, identity,
+            original, images, cuts, total = cached_analysis(args.analysis_cache, identity,
                 foreground, alpha_path, rate, total, preview_width,
                 preview_height, ffmpeg, cv2, np)
-            detected = cached_components(args.analysis_cache, identity, original,
-                                         args.alpha_threshold, cv2, np)
         else:
-            original, cuts, total = analyse_inputs(foreground, alpha_path, rate,
-                total, preview_width, preview_height, original_cache, ffmpeg,
-                cv2, np)
-            detected = None
+            original, images, cuts, total = analyse_inputs(foreground, alpha_path, rate,
+                total, preview_width, preview_height, original_cache, gray_cache,
+                ffmpeg, cv2, np)
+        resources.callback(original._mmap.close)
+        resources.callback(images._mmap.close)
+        detected = cached_components(args.analysis_cache, identity, original,
+            args.alpha_threshold, cv2, np) if args.analysis_cache else None
+        motion = MotionAlignment(images, cuts, args.window, cv2, np, engine) if engine else None
+        if motion is not None:
+            resources.callback(motion.close)
         emit("temporal-stabilization", 2,
              "Tracking moving alpha components across camera shots...")
         components, tracks = track_components(original, cuts, args.window,
@@ -674,13 +820,14 @@ def process(args):
         run_model(args, foreground, args.runtime, model_output, raw_path,
             weight_path,
             anchor_folder, first_anchor, fps, total, (model_width, model_height),
-            original, args.preview_cache, cuts, components, tracks, cv2, np)
+            original, args.preview_cache, cuts, components, tracks, cv2, np, motion)
         encode_blended_output(alpha_path, model_output / "alpha.mkv", weight_path,
             destination, rate, width, height, original, ffmpeg, cv2, np)
         original.flush()
         del original
     emit("temporal-stabilization", 100,
-         f"Automatic alpha stabilization completed using {len(anchors)} memory anchors")
+         f"Automatic alpha stabilization completed using {len(anchors)} memory anchors" +
+         (" and NVIDIA motion alignment" if args.motion_alignment == "nvidia" else ""))
 
 
 def self_test():
@@ -736,11 +883,14 @@ def self_test():
         identity = {"revision": ANALYSIS_CACHE_REVISION, "test": True}
         raw = folder / "input-alpha.gray8"
         raw.write_bytes(alpha.tobytes())
+        gray_path = folder / "input-source.gray8"
+        gray_path.write_bytes(alpha.tobytes())
         write_json_atomic(folder / "analysis.json",
             {"identity": identity, "frames": alpha.shape[0], "cuts": cuts})
         loaded = load_cached_analysis(folder, identity, 8, 8, np)
-        assert loaded is not None and loaded[1] == cuts and \
+        assert loaded is not None and loaded[2] == cuts and \
             np.array_equal(loaded[0], alpha)
+        assert np.array_equal(loaded[1], alpha)
         detected = cached_components(folder, identity, loaded[0], 120, cv2, np)
         cached = cached_components(folder, identity, loaded[0], 120, cv2, np)
         assert cached == detected and len(cached) == alpha.shape[0]
@@ -756,7 +906,74 @@ def self_test():
         assert weight_cache.stat().st_size == alpha.size and \
             np.array_equal(compact[4], expected)
         del loaded
+        gray_path.write_bytes(b"incomplete")
+        assert load_cached_analysis(folder, identity, 8, 8, np) is None
+    test_motion_alignment(cv2, np)
     print("Automatic temporal alpha stabilization worker self-test passed")
+
+
+def test_motion_alignment(cv2, np):
+    class Translation:
+        def compute(self, source, target):
+            flow = np.zeros((*source.shape, 2), np.float32)
+            flow[..., 0] = 4
+            costs = np.zeros(source.shape, np.uint8)
+            return flow, -flow, costs, costs
+
+        def close(self):
+            pass
+
+    texture = np.random.default_rng(5).integers(0, 256, (96, 160), dtype=np.uint8)
+    images = np.stack([np.roll(texture, 4 * frame, axis=1) for frame in range(9)])
+    alpha = np.zeros(images.shape, np.uint8)
+    for frame in range(9):
+        alpha[frame, 24:72, 24 + 4 * frame:72 + 4 * frame] = 220
+    cuts = [0, 9]
+    components, tracks = track_components(alpha, cuts, 3, 120, cv2, np)
+    motion = MotionAlignment(images, cuts, 3, cv2, np, Translation())
+    unaligned = instability_weight(alpha, 4, cuts, 3, 120, 1, 0,
+                                  components, tracks, cv2, np)
+    aligned = instability_weight(alpha, 4, cuts, 3, 120, 1, 0,
+                                 components, tracks, cv2, np, motion)
+    assert unaligned.sum() > 100 and aligned.sum() == 0, "Movement was classified as flicker"
+    # The source still moves smoothly, but its matte has a one-frame dropout.
+    alpha[4, 40:56, 52:68] = 0
+    aligned = instability_weight(alpha, 4, cuts, 3, 120, 1, 0,
+                                 components, tracks, cv2, np, motion)
+    assert aligned[48, 60] > .9, "Aligned matte dropout was missed"
+    motion.close()
+    # Newly visible/occluding content must retain the current matte.
+    images[4, 36:60, 48:72] = 0
+    motion = MotionAlignment(images, cuts, 3, cv2, np, Translation())
+    occluded = instability_weight(alpha, 4, cuts, 3, 120, 1, 0,
+                                  components, tracks, cv2, np, motion)
+    assert occluded[48, 60] == 0, "Unreliable correspondence was blended"
+    # High costs and inconsistent reverse vectors must also reject history.
+    flow = np.zeros((96, 160, 2), np.float32)
+    high = np.full((96, 160), 255, np.uint8)
+    assert not motion.reliable(texture, texture, flow, flow, high).any()
+    wrong = flow.copy(); wrong[..., 0] = 8
+    assert not motion.reliable(texture, texture, flow, wrong, high * 0).any()
+    motion.close()
+    # Each shot is stable despite a large alpha change at the cut.
+    alpha[:4] = 0; alpha[4:] = 220
+    cuts = [0, 4, 9]
+    components, tracks = track_components(alpha, cuts, 3, 120, cv2, np)
+    motion = MotionAlignment(images, cuts, 3, cv2, np, Translation())
+    for frame in (3, 4):
+        weight = instability_weight(alpha, frame, cuts, 3, 120, 1, 0,
+                                    components, tracks, cv2, np, motion)
+        assert not weight.any(), "Temporal evidence crossed a camera cut"
+    assert 3 not in motion.pairs and len(motion.pairs) <= motion.cache_limit
+    motion.close()
+    # Out-of-frame samples must not become transparent evidence at the border.
+    cuts = [0, 9]
+    alpha[:] = 220
+    motion = MotionAlignment(images, cuts, 3, cv2, np, Translation())
+    weight = instability_weight(alpha, 4, cuts, 3, 120, 1, 0,
+                                components, tracks, cv2, np, motion)
+    assert not weight.any(), "Out-of-frame alpha contaminated the current frame"
+    motion.close()
 
 
 def main():
@@ -772,6 +989,8 @@ def main():
     parser.add_argument("--strength", type=int, default=100)
     parser.add_argument("--tracking-strength", type=int, default=100)
     parser.add_argument("--alpha-threshold", type=int, default=120)
+    parser.add_argument("--motion-alignment", choices=("nvidia", "off"), default="nvidia",
+                        help="NVIDIA hardware alignment, or unaligned comparison for diagnostics")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:

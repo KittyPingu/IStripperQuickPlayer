@@ -332,15 +332,42 @@ segments. Automatic detectors are:
 - **Modern/Quality (OmniShotCut)**: optional CUDA detector that identifies hard
   cuts, sudden jumps, fades, dissolves, wipes, pushes, slides, zooms, and doorway
   transitions.
+- **Motion (NVIDIA optical flow)**: uses the NVIDIA hardware optical-flow engine
+  to find widespread motion-matching failures between adjacent frames. Requires
+  the configured custom-show Python environment and a supported NVIDIA GPU and
+  driver; no model download or DLSS installation is needed. There is no CPU-flow
+  fallback. Best suited to hard cuts; camera motion alone is not a cut signal.
+  Sustained detail loss relative to nearby sharp frames is labelled **Possible
+  Blur**, separately from **Hard Cut**. Possible Blur sections initially appear
+  skipped and can be included manually. Blur classification is a heuristic, not
+  a guarantee. Motion also checks a two-second window for **Dissolve** transitions,
+  including blends that adjacent-frame flow can otherwise follow. These ranges
+  initially appear skipped and remain reviewable.
+  Dissolve skipped ranges include faint transition tails and a 200 ms safety
+  margin on each side. The optional transition buffer adds further padding.
 
-All three detectors show a **Sensitivity** slider above the grid beside **Show
+All detectors show a **Sensitivity** slider above the grid beside **Show
 skipped clips in grid**. Higher values find or retain more possible cuts; lower
-values keep only stronger changes. Fast defaults to 65% and TransNetV2 to 50%,
+values keep only stronger changes. Fast defaults to 65%, NVIDIA optical flow and TransNetV2 to 50%,
 matching their previous fixed behaviour. OmniShotCut defaults to 100%, preserving
 its previous result; its confidence scores cluster near 1.0, so its percentage
 means the proportion of strongest candidate boundaries retained. For example,
 1% keeps roughly the strongest 1%, while 100% keeps them all. Each detector
 remembers its own setting.
+
+NVIDIA sensitivity adjusts cut, blur and dissolve candidate thresholds. Scores are
+retained even when the first pass finds no changes, so raising the slider does
+not repeat GPU analysis. Weak cut responses within an accepted blur range are
+classified as part of that blur. A uniformly soft shot without a nearby sharp
+reference is not automatically labelled as a blur transition. An isolated
+exposure flash is rejected when the frames before and after still match.
+Motion detection uses NVIDIA video decoding and scaling when the codec supports
+it, plus NVOFA for motion. Unsupported decoding falls back to the CPU; motion
+estimation still requires NVIDIA hardware. Scoring runs on small CPU images.
+The updated detector rejects very weak cut noise even at 99% sensitivity and
+normalizes exposure for dissolve checks. Existing saved results require a new
+**Auto Detect** scan to benefit from these changes; moving the slider only
+re-evaluates the candidates already saved.
 
 New detections retain compressed confidence data. While you move the slider,
 QuickPlayer rebuilds the grid after a short debounce without decoding the source

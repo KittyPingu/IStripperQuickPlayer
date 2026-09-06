@@ -177,7 +177,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     readonly CheckBox matAnyoneUseLongTermMemory = new()
         { Text = "Use compressed long-term memory", AutoSize = true, Checked = true };
     readonly CheckBox temporalAlphaCleanup = new()
-        { Text = "Repair short alpha flicker after matting", AutoSize = true };
+        { Text = "Repair short alpha flicker after matting (NVIDIA GPU required)", AutoSize = true };
     readonly NumericUpDown temporalAlphaCleanupWindow = new()
         { Minimum = 1, Maximum = 30, Value = 3, Width = 58 };
     readonly TrackBar temporalAlphaCleanupStrength = new()
@@ -1884,6 +1884,16 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         configuration.Save();
     }
 
+    void ApplyTemporalCleanupOptions(CustomShowProcessing processing)
+    {
+        processing.TemporalAlphaCleanup = !CustomClipMedia.IsRealtimeMode(processing.Algorithm) &&
+            temporalAlphaCleanup.Checked;
+        processing.TemporalAlphaCleanupWindowFrames = (int)temporalAlphaCleanupWindow.Value;
+        processing.TemporalAlphaCleanupStrengthPercent = temporalAlphaCleanupStrength.Value;
+        processing.TemporalAlphaTrackingStrengthPercent = temporalAlphaTrackingStrength.Value;
+        processing.TemporalAlphaCleanupAlphaThreshold = (int)temporalAlphaCleanupAlphaThreshold.Value;
+    }
+
     internal static void AddIstripperModels(List<CustomPerformerProfile> target)
     {
         HashSet<string> existingIds = target
@@ -2488,7 +2498,13 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                 bool retry;
                 do
                 {
-                    using CustomShowProcessingForm processing = new(async (progress, token) =>
+                    CustomShowProcessing cleanupOptions = new() { Algorithm = selectedPreset };
+                    ApplyTemporalCleanupOptions(cleanupOptions);
+                    string[] cleanupOutputs = showClips.Where(clip => clip.Included &&
+                            (!reprocess || reprocessClipSet.Contains(clip.Id)))
+                        .Select(clip => Path.Combine(staging, "clips", clip.Id)).ToArray();
+                    async Task<CustomShowProcessResult> ProcessMatting(
+                        IProgress<CustomShowProgress> progress, CancellationToken token)
                     {
                         int chunk = SelectedBatchSize();
                         CustomShowClip[] included = showClips.Where(clip => clip.Included &&
@@ -2698,7 +2714,11 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                             Width = first!.Width, Height = first.Height,
                             FrameRate = first.FrameRate, DurationMs = showClips[^1].EndMs
                         };
-                    }, correctionConfiguration: selectedPreset == "matanyone2"
+                    }
+                    using CustomShowProcessingForm processing = new((progress, token) =>
+                        CustomShowProcessor.RunWithTemporalAlphaCleanupAsync(configuration,
+                            cleanupOptions, cleanupOutputs, ProcessMatting, log, progress, token),
+                        correctionConfiguration: selectedPreset == "matanyone2"
                             ? configuration : null,
                         correctionSource: selectedPreset == "matanyone2" ? input : null,
                         correctionSam2Model: selectedSam2Model);
@@ -2887,6 +2907,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                                     selectedMaskEngine is "sam2" or "rvm-sam2"
                             })).ToArray()
                     };
+                    ApplyTemporalCleanupOptions(show.Processing);
                     ApplyPropSegmenter(show.Processing,
                         selectedPreset is "matanyone2" or "rvm-matanyone2" or
                             "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
@@ -4509,6 +4530,41 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         RoutesSaveToQueue(false, CustomClipMedia.RvmOnnxMode) &&
         !RoutesSaveToQueue(false, "quality");
 
+    internal static bool VerifyTemporalCleanupOptions()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "iqp-cleanup-options-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            CustomShowStore store = new(root);
+            store.EnsureCreated();
+            using CustomShowEditorForm form = new(store,
+                new CustomShowConfiguration { LibraryRoot = root }, null);
+            form.temporalAlphaCleanup.Checked = true;
+            form.temporalAlphaCleanupWindow.Value = 7;
+            form.temporalAlphaCleanupStrength.Value = 75;
+            form.temporalAlphaTrackingStrength.Value = 60;
+            form.temporalAlphaCleanupAlphaThreshold.Value = 81;
+            CustomShowProcessing processing = new() { Algorithm = "rvm-vitmatte-b" };
+            form.ApplyTemporalCleanupOptions(processing);
+            CustomShowProcessing saved = CloneQueueValue(processing);
+            form.temporalAlphaCleanup.Checked = false;
+            form.SelectProcessingOptions(saved, []);
+            bool restored = form.temporalAlphaCleanup.Checked &&
+                form.temporalAlphaCleanupWindow.Value == 7 &&
+                form.temporalAlphaCleanupStrength.Value == 75 &&
+                form.temporalAlphaTrackingStrength.Value == 60 &&
+                form.temporalAlphaCleanupAlphaThreshold.Value == 81;
+            form.temporalAlphaCleanup.Checked = false;
+            form.ApplyTemporalCleanupOptions(processing);
+            bool disabled = !processing.TemporalAlphaCleanup;
+            form.temporalAlphaCleanup.Checked = true;
+            processing.Algorithm = CustomClipMedia.RvmOnnxMode;
+            form.ApplyTemporalCleanupOptions(processing);
+            return restored && disabled && !processing.TemporalAlphaCleanup;
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     internal static bool VerifyReprocessMattingDetailDefaults()
     {
         CustomShowConfiguration configuration = new()
@@ -5630,6 +5686,7 @@ internal sealed class CustomShowSettingsForm : Form
             TransNetClipDetectionSensitivity = current.TransNetClipDetectionSensitivity,
             OmniShotCutClipDetectionSensitivity =
                 current.OmniShotCutClipDetectionSensitivity,
+            NvidiaFlowClipDetectionSensitivity = current.NvidiaFlowClipDetectionSensitivity,
             RvmQualityPreferredChunk = current.RvmQualityPreferredChunk,
             RvmFastPreferredChunk = current.RvmFastPreferredChunk,
             RvmQualityCompileCutoffFrames = current.RvmQualityCompileCutoffFrames,
