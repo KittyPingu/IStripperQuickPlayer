@@ -49,9 +49,9 @@ class MotionAlignment:
 
     def inside(self, coordinates):
         np = self.np
-        return (np.isfinite(coordinates).all(axis=2) &
-            (coordinates[..., 0] >= 0) & (coordinates[..., 0] <= self.width - 1) &
-            (coordinates[..., 1] >= 0) & (coordinates[..., 1] <= self.height - 1))
+        x, y = coordinates[..., 0], coordinates[..., 1]
+        return (np.isfinite(x) & np.isfinite(y) &
+            (x >= 0) & (x <= self.width - 1) & (y >= 0) & (y <= self.height - 1))
 
     def reliable(self, source, target, flow, reverse, cost):
         np, cv2 = self.np, self.cv2
@@ -59,9 +59,10 @@ class MotionAlignment:
         inverse = self.sample(reverse, coordinates)
         # Forward/backward round-trip error, in preview-image pixels. Reject
         # uncertain correspondence; do not shrink its displacement toward zero.
-        error = np.square(flow + inverse).sum(axis=2)
-        tolerance = 1.0 + .01 * (np.square(flow).sum(axis=2) +
-                                 np.square(inverse).sum(axis=2))
+        error = ((flow[..., 0] + inverse[..., 0]) ** 2 +
+                 (flow[..., 1] + inverse[..., 1]) ** 2)
+        tolerance = 1.0 + .01 * ((flow[..., 0] ** 2 + flow[..., 1] ** 2) +
+                                 (inverse[..., 0] ** 2 + inverse[..., 1] ** 2))
         matched = self.sample(target, coordinates)
         photo_error = np.abs(source.astype(np.float32) - matched.astype(np.float32))
         # Flat patches cannot establish correspondence, even if both flows are 0.
@@ -100,6 +101,7 @@ class MotionAlignment:
         minimum = alpha[frame].astype(np.float32)
         maximum = minimum.copy()
         support = np.ones(minimum.shape, np.uint8)
+        source = self.gray[frame].astype(np.float32)
         for step, stop in ((-1, lower - 1), (1, upper)):
             coordinates = self.grid.copy()
             valid = np.ones(minimum.shape, bool)
@@ -109,16 +111,15 @@ class MotionAlignment:
                 flow, confidence = (backward, backward_valid) if step < 0 else \
                     (forward, forward_valid)
                 valid &= self.sample(confidence, coordinates) >= .999
-                coordinates = coordinates + self.sample(flow, coordinates)
+                coordinates += self.sample(flow, coordinates)
                 valid &= self.inside(coordinates)
                 # Check the composed path against the target image too. A series
                 # of plausible local matches can still drift over a long window.
                 matched = self.sample(self.gray[neighbor], coordinates)
-                valid &= np.abs(self.gray[frame].astype(np.float32) -
-                                matched.astype(np.float32)) <= 20
+                valid &= np.abs(source - matched.astype(np.float32)) <= 20
                 warped = self.sample(alpha[neighbor].astype(np.float32), coordinates)
-                minimum = np.where(valid, np.minimum(minimum, warped), minimum)
-                maximum = np.where(valid, np.maximum(maximum, warped), maximum)
+                np.minimum(minimum, warped, out=minimum, where=valid)
+                np.maximum(maximum, warped, out=maximum, where=valid)
                 support += valid
         # At least two neighboring observations must corroborate the comparison.
         return minimum, maximum, support >= 3

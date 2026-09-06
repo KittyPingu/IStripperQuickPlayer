@@ -2099,7 +2099,7 @@ internal sealed class CustomShowProcessingForm : Form
             CultureInfo.InvariantCulture, out result);
     }
 
-    static bool TryParseFrameProgress(string message, out long frames, out long total)
+    internal static bool TryParseFrameProgress(string message, out long frames, out long total)
     {
         frames = total = 0;
         Match match = Regex.Match(message,
@@ -2110,7 +2110,7 @@ internal sealed class CustomShowProcessingForm : Form
             TryParseFrameCount(match.Groups[2].Value, out total);
     }
 
-    static double? EstimateFps(IReadOnlyList<(double Seconds, long Frames)> samples)
+    internal static double? EstimateFps(IReadOnlyList<(double Seconds, long Frames)> samples)
     {
         if (samples.Count < 2) return null;
         double seconds = samples[^1].Seconds - samples[0].Seconds;
@@ -2120,7 +2120,7 @@ internal sealed class CustomShowProcessingForm : Form
         return double.IsFinite(fps) && fps > 0 ? fps : null;
     }
 
-    static TimeSpan? EstimateFrameRemaining(
+    internal static TimeSpan? EstimateFrameRemaining(
         IReadOnlyList<(double Seconds, long Frames)> samples,
         long totalFrames, double? fps)
     {

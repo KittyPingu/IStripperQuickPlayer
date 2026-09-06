@@ -24,7 +24,7 @@ import numpy as np
 from nvidia_optical_flow import NvidiaOpticalFlow
 from rvm_worker import executable, probe
 
-REVISION = "nvidia-flow-v3"
+REVISION = "nvidia-flow-v4"
 DATA_FORMAT = "nvidia-flow-gzip-json-v2"
 PTS = re.compile(r"\bn:\s*(\d+).*?\bpts_time:([\d.eE+\-]+)")
 
@@ -50,12 +50,18 @@ def decode(source, width, height, start_ms, duration, hardware=False):
     timestamps, errors = queue.Queue(), deque(maxlen=30)
 
     def drain():
+        generation = 0
         try:
             for raw in process.stderr:
                 line = raw.decode("utf-8", errors="replace")
+                # showinfo's frame number belongs to a filter instance. FFmpeg
+                # can rebuild the graph mid-stream (including NVDEC changes),
+                # restarting n at zero while presentation times continue.
+                if "showinfo" in line and "config in time_base:" in line:
+                    generation += 1
                 match = PTS.search(line)
                 if match:
-                    timestamps.put((int(match[1]), float(match[2])))
+                    timestamps.put((int(match[1]), float(match[2]), generation))
                 elif "showinfo" not in line:
                     errors.append(line.strip())
         finally:
@@ -64,6 +70,7 @@ def decode(source, width, height, start_ms, duration, hardware=False):
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
     size, index, last_time = width * height * 3, 0, -1
+    last_generation, expected_local_index = None, 0
     try:
         while True:
             data = process.stdout.read(size)
@@ -72,8 +79,14 @@ def decode(source, width, height, start_ms, duration, hardware=False):
             if len(data) != size:
                 raise RuntimeError("FFmpeg returned a truncated video frame")
             stamp = timestamps.get()
-            if stamp is None or stamp[0] != index or not np.isfinite(stamp[1]):
-                raise RuntimeError("FFmpeg did not return matching frame timestamps")
+            if stamp is not None and stamp[2] != last_generation:
+                expected_local_index = 0
+            if stamp is None or stamp[0] != expected_local_index or not np.isfinite(stamp[1]):
+                raise RuntimeError("FFmpeg did not return matching frame timestamps "
+                    f"(output frame {index}, expected filter frame {expected_local_index}, "
+                    f"timestamp record {stamp}).")
+            last_generation = stamp[2]
+            expected_local_index += 1
             time_ms = round(stamp[1] * 1000)
             if time_ms < last_time:
                 raise RuntimeError("Video presentation timestamps are not monotonic")
@@ -312,6 +325,32 @@ def analyse(frames, engine, width, height, duration_ms, progress=None):
 
 
 def self_test():
+    # Reproduce showinfo's log protocol across a filter rebuild without needing
+    # the user's video. Check frame/PTS pairing, not just acceptance of a reset.
+    import io
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    def logged_frames(log):
+        process = SimpleNamespace(stdout=io.BytesIO(
+                b"".join(bytes([value]) * 12 for value in (10, 20, 30, 40))),
+            stderr=io.BytesIO(log.encode()), returncode=0, poll=lambda: 0, wait=lambda: 0)
+        with patch.object(subprocess, "Popen", return_value=process):
+            return [(stamp, int(frame[0, 0, 0])) for stamp, frame in decode("fixture", 2, 2, 0, 20)]
+
+    rebuild_log = ("[showinfo] config in time_base: 1/30000\n"
+        "[showinfo] n: 0 pts_time:0\n[showinfo] n: 1 pts_time:0.0333667\n"
+        "[showinfo] config in time_base: 1/30000\n"
+        "[showinfo] n: 0 pts_time:13.880533\n[showinfo] n: 1 pts_time:13.9139\n")
+    assert logged_frames(rebuild_log) == [(0, 10), (33, 20), (13881, 30), (13914, 40)]
+    for invalid in (rebuild_log.replace("n: 1 pts_time:13.9139", "n: 2 pts_time:13.9139"),
+            rebuild_log.replace("pts_time:13.9139", "pts_time:0")):
+        try:
+            logged_frames(invalid)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Missing or non-monotonic frame timestamps were accepted")
     rng = np.random.default_rng(145)
     a = cv2.GaussianBlur(rng.integers(25, 210, (192, 256, 3), np.uint8), (3, 3), 0)
     a[:, :128] //= 2  # Preserve broad scene structure through the blur.

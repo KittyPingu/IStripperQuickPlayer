@@ -116,6 +116,10 @@ cancellation prevents the staged show from being accepted. Full reprocessing
 saves the cleanup settings so the checkbox and controls reopen consistently;
 partial reprocessing retains the existing show-wide processing provenance.
 
+During queued stabilization, the ETA is calculated from recent frame
+progress and marked `(pass)`: it estimates the current refinement pass, excluding
+later encoding and other clips. Setup and stale progress show `estimating pass...`
+instead of extrapolating from the overall 90–100% progress allocation.
 Cleanup uses NVIDIA's hardware optical-flow engine to align neighboring alpha
 frames before deciding where the existing MatAnyone 2 correction should apply.
 It rejects high-cost flow, inconsistent forward/backward matches, insufficient
@@ -170,6 +174,9 @@ samples, and adds 200 ms on each side (clamped to the selected range). This make
 the center skipped interval cover more of the transition independently of
 sensitivity. The editor's transition buffer remains additional padding. The
 retained data format remains v2; existing scans need rerunning to gain wider ranges.
+The v4 revision handles FFmpeg filter-graph rebuilds during decoding: showinfo's
+local frame counter may restart, but source presentation timestamps must remain
+monotonic and frame records must remain consecutive within each filter instance.
 
 Compressed `nvidia-flow-gzip-json-v2` data stores source-relative millisecond
 positions, cut/transition scores, optional transition kinds and duration. The

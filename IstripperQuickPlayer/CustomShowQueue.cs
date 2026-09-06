@@ -2365,10 +2365,69 @@ internal static class CustomShowJobRunner
     }
 }
 
+internal sealed class CustomShowAlphaEta
+{
+    const string Marker = "NVIDIA alpha stabilization:";
+    readonly List<(double Seconds, long Frames)> samples = [];
+    string? clip;
+    DateTime? started;
+    long total;
+
+    internal static bool IsStabilizing(CustomShowQueueJob job) =>
+        job.Status == CustomShowQueueStatus.Running && job.Message.Contains(Marker,
+            StringComparison.Ordinal);
+
+    internal TimeSpan? Update(CustomShowQueueJob job, double seconds)
+    {
+        int marker = job.Message.IndexOf(Marker, StringComparison.Ordinal);
+        if (!IsStabilizing(job) || !CustomShowProcessingForm.TryParseFrameProgress(
+                job.Message, out long frames, out long frameTotal))
+        {
+            samples.Clear();
+            return null;
+        }
+        string currentClip = job.Message[..marker];
+        if (started != job.StartedUtc || clip != currentClip || total != frameTotal ||
+            samples.Count > 0 && frames < samples[^1].Frames)
+            samples.Clear();
+        started = job.StartedUtc;
+        clip = currentClip;
+        total = frameTotal;
+        if (samples.Count == 0 || frames > samples[^1].Frames)
+            samples.Add((seconds, frames));
+        while (samples.Count > 2 && samples[1].Seconds < seconds - 30)
+            samples.RemoveAt(0);
+        // Never leave an old estimate looking live during a stalled/loading pass.
+        if (seconds - samples[^1].Seconds > 30 || frames >= total) return null;
+        return CustomShowProcessingForm.EstimateFrameRemaining(samples, total,
+            CustomShowProcessingForm.EstimateFps(samples));
+    }
+
+    internal static bool Verify()
+    {
+        CustomShowQueueJob job = new() { Status = CustomShowQueueStatus.Running,
+            StartedUtc = DateTime.UtcNow,
+            Message = "Clip 1/2: NVIDIA alpha stabilization: Processed 100/1000 frames" };
+        CustomShowAlphaEta estimate = new();
+        if (estimate.Update(job, 0) != null) return false;
+        job.Message = "Clip 1/2: NVIDIA alpha stabilization: Processed 200/1000 frames";
+        if (estimate.Update(job, 10) != TimeSpan.FromSeconds(80)) return false;
+        job.Message = "Clip 1/2: NVIDIA alpha stabilization: Processed 300/1000 frames";
+        if (estimate.Update(job, 20) != TimeSpan.FromSeconds(70) ||
+            estimate.Update(job, 51) != null) return false;
+        job.Message = "Clip 2/2: NVIDIA alpha stabilization: Processed 400/1000 frames";
+        if (estimate.Update(job, 52) != null) return false;
+        job.Message = "Clip 2/2: NVIDIA alpha stabilization: Encoding alpha";
+        return estimate.Update(job, 53) == null;
+    }
+}
+
 internal sealed class CustomShowQueueForm : Form
 {
     const int MessageColumnIndex = 7;
     readonly CustomShowQueueManager manager;
+    readonly Dictionary<string, CustomShowAlphaEta> alphaEstimates = [];
+    readonly Stopwatch estimateClock = Stopwatch.StartNew();
     readonly Action<CustomShowQueueJob> edit;
     readonly Action<CustomShowQueueJob, string> duplicate;
     readonly QueueGrid grid = new()
@@ -2412,7 +2471,7 @@ internal sealed class CustomShowQueueForm : Form
             Column("Model", "Model", 125), Column("Algorithm", "Algorithm", 120),
             Column("Source", "Source", 180), Column("Status", "Status", 95),
             Column("Progress", "Progress", 70), Column("Current work", "Message", 250),
-            Column("Elapsed / ETA", "Timing", 135), Column("Completed", "Completed", 130));
+            Column("Elapsed / ETA", "Timing", 190), Column("Completed", "Completed", 130));
         TableLayoutPanel layout = new() { Dock = DockStyle.Fill, RowCount = 3 };
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
@@ -2479,7 +2538,12 @@ internal sealed class CustomShowQueueForm : Form
         refreshPending = false;
         string? selected = SelectedId();
         CustomShowQueueJob[] jobs = manager.Jobs.ToArray();
-        QueueRow[] values = jobs.Select(job => new QueueRow(job)).ToArray();
+        QueueRow[] values = jobs.Select(job =>
+        {
+            if (!alphaEstimates.TryGetValue(job.Id, out CustomShowAlphaEta? estimate))
+                alphaEstimates[job.Id] = estimate = new();
+            return new QueueRow(job, estimate.Update(job, estimateClock.Elapsed.TotalSeconds));
+        }).ToArray();
         bool structureChanged = grid.Rows.Count != values.Length ||
             values.Where((value, index) => index >= grid.Rows.Count ||
                 !string.Equals(grid.Rows[index].Tag as string, value.Id,
@@ -2699,6 +2763,7 @@ internal sealed class CustomShowQueueForm : Form
     sealed class QueueRow
     {
         readonly CustomShowQueueJob job;
+        readonly TimeSpan? alphaRemaining;
         internal string Id => job.Id;
         public string Operation => job.Operation.ToString();
         public string Title => job.Manifest.Title;
@@ -2718,6 +2783,9 @@ internal sealed class CustomShowQueueForm : Form
                 if (job.Status == CustomShowQueueStatus.Pending) return "";
                 if (job.StartedUtc is not DateTime started) return "";
                 TimeSpan elapsed = (job.CompletedUtc ?? DateTime.UtcNow) - started;
+                if (CustomShowAlphaEta.IsStabilizing(job))
+                    return $"{Format(elapsed)} / " + (alphaRemaining is TimeSpan alpha
+                        ? $"~{Format(alpha)} (pass)" : "estimating pass...");
                 if (job.Status != CustomShowQueueStatus.Running || job.Percent < 1)
                     return Format(elapsed);
                 TimeSpan remaining = TimeSpan.FromSeconds(elapsed.TotalSeconds *
@@ -2726,7 +2794,11 @@ internal sealed class CustomShowQueueForm : Form
             }
         }
         public string Completed => job.CompletedUtc?.ToLocalTime().ToString("g") ?? "";
-        internal QueueRow(CustomShowQueueJob job) => this.job = job;
+        internal QueueRow(CustomShowQueueJob job, TimeSpan? alphaRemaining)
+        {
+            this.job = job;
+            this.alphaRemaining = alphaRemaining;
+        }
         internal object[] Values() => [Operation, Title, Model, Algorithm, Source,
             Status, Progress, Message, Timing, Completed];
         static string Format(TimeSpan value) => value.TotalHours >= 1
