@@ -54,7 +54,7 @@ namespace IStripperQuickPlayer
             string Card, string Clip);
         private sealed record FullscreenBridgeSnapshot(
             string[] Clips, FullscreenBridgeQueueEntry[] Queue,
-            FullscreenBridgeSlot[] Slots);
+            FullscreenBridgeSlot[] Slots, bool? Active = null);
         private FullscreenBridgeSnapshot fullscreenBridgeState =
             new([], [], []);
         private string fullscreenTreeJson = "[]";
@@ -199,6 +199,7 @@ namespace IStripperQuickPlayer
             HttpListenerContext context,
             CancellationToken cancellationToken)
         {
+            long requestStarted = Stopwatch.GetTimestamp();
             ApiResult result;
             try
             {
@@ -236,6 +237,9 @@ namespace IStripperQuickPlayer
                 result = Error(500, "The request could not be completed.");
             }
 
+            string requestTiming = RestApiTiming("request", requestStarted);
+            result = result with { ServerTiming = string.IsNullOrEmpty(result.ServerTiming)
+                ? requestTiming : result.ServerTiming + ", " + requestTiming };
             await WriteRestApiResponseAsync(context.Response, result,
                 cancellationToken);
         }
@@ -599,8 +603,16 @@ namespace IStripperQuickPlayer
                 parts[2].Equals("actions",
                     StringComparison.OrdinalIgnoreCase))
             {
+                long queuedAt = Stopwatch.GetTimestamp();
                 return await InvokeAsync(
-                    async _ => await ExecuteRestApiActionAsync(parts[3]),
+                    async _ =>
+                    {
+                        string queueTiming = RestApiTiming("ui_queue", queuedAt);
+                        long actionStarted = Stopwatch.GetTimestamp();
+                        ApiResult result = await ExecuteRestApiActionAsync(parts[3]);
+                        return result with { ServerTiming = queueTiming + ", " +
+                            RestApiTiming("action", actionStarted) };
+                    },
                     cancellationToken);
             }
 
@@ -653,6 +665,9 @@ namespace IStripperQuickPlayer
             }
             string state = stateCode switch
             {
+                _ when customPlayer == null && IsRestApiFullscreenActive() &&
+                    Volatile.Read(ref fullscreenBridgeState).Slots.Any(
+                        slot => !string.IsNullOrEmpty(slot.Clip)) => "playing",
                 _ when string.IsNullOrEmpty(animationPath) => "stopped",
                 _ when customPlayer != null && customPlayer.Paused => "paused",
                 _ when customPlayer != null => "playing",
@@ -747,6 +762,11 @@ namespace IStripperQuickPlayer
             return new ApiResult(200, new { nodes });
         }
 
+        private bool IsRestApiFullscreenActive() =>
+            Volatile.Read(ref fullscreenBridgeState).Active ??
+            ReadRegistryInteger(@"Software\Totem\vghd\player",
+                "playingMode") == 3;
+
         private object CreateRestApiFullscreen()
         {
             FullscreenBridgeSnapshot state = Volatile.Read(
@@ -754,8 +774,7 @@ namespace IStripperQuickPlayer
             FullscreenBridgeSlot[] logicalSlots = state.Slots;
             return new
             {
-                active = ReadRegistryInteger(
-                    @"Software\Totem\vghd\player", "playingMode") == 3,
+                active = IsRestApiFullscreenActive(),
                 clips = logicalSlots.Select(slot =>
                 {
                     string clipName = slot.Clip;
@@ -1239,8 +1258,7 @@ namespace IStripperQuickPlayer
                 actSetPlayerLarge(true);
                 return new ApiResult(202, new { accepted = true, animationPath });
             }
-            if (ReadRegistryInteger(@"Software\Totem\vghd\player",
-                    "playingMode") != 3)
+            if (!IsRestApiFullscreenActive())
                 return Error(409, "Fullscreen is not active.");
             if (playbackBridgeClient?.IsConnected != true)
                 return Error(409, "The iStripper bridge is not connected.");
@@ -1278,8 +1296,7 @@ namespace IStripperQuickPlayer
                 return error!;
             if (!TryResolveQueueEntry(entry!, out string animationPath))
                 return Error(409, "No playable clip matches the request.");
-            if (ReadRegistryInteger(@"Software\Totem\vghd\player",
-                    "playingMode") != 3)
+            if (!IsRestApiFullscreenActive())
                 return Error(409, "Fullscreen is not active.");
             if (playbackBridgeClient?.IsConnected != true)
                 return Error(409, "The iStripper bridge is not connected.");
@@ -1548,53 +1565,22 @@ namespace IStripperQuickPlayer
                     if (!RestApiPlaybackControlAvailable(false,
                             out ApiResult? playPauseError))
                         return playPauseError!;
-                    if (apiOnlyMode)
-                    {
-                        if (!await RunPlaybackOperationAsync(_ =>
-                        {
-                            int state = RequirePlaybackResult(
-                                "IStripperGetState");
-                            RequirePlaybackResult(state == 3
-                                ? "IStripperPause"
-                                : state == 4
-                                    ? "IStripperResume"
-                                    : throw new InvalidOperationException(
-                                        "There is no controllable video."));
-                            return Task.CompletedTask;
-                        }, prepareFastDecode: false))
-                            return Error(409,
-                                "Play/pause could not be completed.");
-                    }
-                    else
-                        cmdPlayPause.PerformClick();
+                    if (!await TogglePlaybackPauseAsync())
+                        return Error(409, "Play/pause could not be completed.");
                     break;
                 case "back-10-percent":
                     if (!RestApiPlaybackControlAvailable(true,
                             out ApiResult? rewindError))
                         return rewindError!;
-                    if (apiOnlyMode)
-                    {
-                        if (!await RunPlaybackOperationAsync(token =>
-                                SeekRelativeAsync(-0.1, token)))
-                            return Error(409,
-                                "The seek could not be completed.");
-                    }
-                    else
-                        cmdRewind.PerformClick();
+                    if (!await SeekPlaybackRelativeAsync(-0.1))
+                        return Error(409, "The seek could not be completed.");
                     break;
                 case "forward-10-percent":
                     if (!RestApiPlaybackControlAvailable(true,
                             out ApiResult? forwardError))
                         return forwardError!;
-                    if (apiOnlyMode)
-                    {
-                        if (!await RunPlaybackOperationAsync(token =>
-                                SeekRelativeAsync(0.1, token)))
-                            return Error(409,
-                                "The seek could not be completed.");
-                    }
-                    else
-                        cmdFastForward.PerformClick();
+                    if (!await SeekPlaybackRelativeAsync(0.1))
+                        return Error(409, "The seek could not be completed.");
                     break;
                 case "restart":
                     if (!RestApiPlaybackControlAvailable(true,
@@ -2284,6 +2270,10 @@ namespace IStripperQuickPlayer
         }
 
         private static ApiResult Ok(object body) => new(200, body);
+
+        private static string RestApiTiming(string name, long started) =>
+            name + ";dur=" + Stopwatch.GetElapsedTime(started).TotalMilliseconds
+                .ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 
         private static ApiResult Accepted() =>
             new(202, new { accepted = true });

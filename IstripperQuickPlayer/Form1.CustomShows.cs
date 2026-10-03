@@ -1912,8 +1912,9 @@ public partial class Form1
     }
 
     private bool IsFullscreenModeActive() =>
-        Volatile.Read(ref playerMode) == 3 ||
-        ReadRegistryInteger(@"Software\Totem\vghd\player", "playingMode") == 3;
+        Volatile.Read(ref fullscreenBridgeState).Active ??
+        (Volatile.Read(ref playerMode) == 3 ||
+         ReadRegistryInteger(@"Software\Totem\vghd\player", "playingMode") == 3);
 
     internal static bool PlaybackSourceAllowed(bool fullscreen, bool custom) =>
         !fullscreen || !custom;

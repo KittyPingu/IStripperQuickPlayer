@@ -32,6 +32,18 @@
 // layouts from the loaded image. The INI is an audit trail, never trusted input.
 namespace
 {
+    bool UsesQt6()
+    {
+        return GetModuleHandleW(L"Qt6Core.dll") != nullptr &&
+            GetModuleHandleW(L"Qt5Core.dll") == nullptr;
+    }
+
+    HMODULE QtCoreModule()
+    {
+        const HMODULE legacy = GetModuleHandleW(L"Qt5Core.dll");
+        return legacy != nullptr ? legacy : GetModuleHandleW(L"Qt6Core.dll");
+    }
+
     void DressingRoomLog(const char* format, ...)
     {
         char message[1024] = {};
@@ -65,6 +77,7 @@ namespace
 
     using AvformatOpenInput = int(__cdecl*)(void**, const char*, void*, void*);
     AvformatOpenInput g_originalAvformatOpenInput = nullptr;
+    AvformatOpenInput g_originalModernAvformatOpenInput = nullptr;
     SRWLOCK g_dressingRoomUrlLock = SRWLOCK_INIT;
     std::string g_dressingRoomUrl;
     std::string g_selectedDressingRoomResource;
@@ -105,6 +118,7 @@ namespace
     std::uintptr_t CardSequencerInsertNextRva = 0;
     std::uintptr_t CardSequencerTakeNextAtRva = 0;
     std::uintptr_t VghdOperatorNewRva = 0;
+    std::uintptr_t VghdOperatorDeleteRva = 0;
     std::uintptr_t WmvClearQueuesRva = 0;
     std::uintptr_t WmvPeekFrameRva = 0;
 
@@ -123,6 +137,7 @@ namespace
     std::size_t AnimationAlphaFrameOffset = 0;
     std::size_t AnimationSsvOffset = 0;
     std::size_t AnimationInfoOffset = 0;
+    std::size_t AnimationAlphaEncodingOffset = 0;
     std::size_t AnimationTotalFramesOffset = 0;
     std::size_t AnimationFramesPerSecondOffset = 0;
     // Current high-resolution cards can carry a 6016x3172 alpha plane
@@ -169,6 +184,7 @@ namespace
     std::size_t PlayableCardSize = 0;
     std::size_t CardSequencerNextOffset = 0;
     std::size_t NextCardPlayableCardOffset = 0;
+    bool SharedPlayableCards = false;
     std::size_t SceneExpectedPendingOffset = 0;
     std::size_t SceneExpectedSelectionOffset = 0;
     std::size_t SceneExpectedCardOffset = 0;
@@ -238,6 +254,32 @@ namespace
         0x48, 0x89, 0x5C, 0x24, 0x10, 0x55, 0x56, 0x57,
         0x41, 0x56, 0x41, 0x57, 0x48, 0x8B, 0xEC, 0x48,
         0x83, 0xEC, 0x40
+    };
+
+    constexpr unsigned char Qt6FsClipNodeStartNextShowSignature[] = {
+        0x48,0x89,0x54,0x24,0x10,0x55,0x53,0x56,0x57,0x41,0x54,
+        0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x8D,0x6C,0x24,0xB8,
+        0x48,0x81,0xEC,0x48,0x01,0,0
+    };
+    constexpr unsigned char Qt6CardSequencerInsertNextSignature[] = {
+        0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x4C,0x24,0x08,
+        0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,
+        0x48,0x8D,0x6C,0x24,0x80,0x48,0x81,0xEC,0x80,0x01,0,0
+    };
+    constexpr unsigned char Qt6PlayableCardExactConstructorSignature[] = {
+        0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,0x24,0x20,
+        0x4C,0x89,0x44,0x24,0x18,0x48,0x89,0x4C,0x24,0x08,
+        0x57,0x48,0x83,0xEC,0x60,0x49,0x8B,0xF0
+    };
+    constexpr unsigned char Qt6CardSequencerTakeNextAtSignature[] = {
+        0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x6C,0x24,0x18,
+        0x48,0x89,0x54,0x24,0x10,0x56,0x57,0x41,0x56,
+        0x48,0x83,0xEC,0x50,0x49,0x63,0xF0
+    };
+    constexpr unsigned char Qt6FsClipNodeNextShowClipSignature[] = {
+        0x44,0x88,0x44,0x24,0x18,0x48,0x89,0x54,0x24,0x10,
+        0x55,0x53,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,
+        0x41,0x57,0x48,0x8D,0x6C,0x24,0xE1,0x48,0x81,0xEC,0xE8,0,0,0
     };
 
     constexpr unsigned char FsClipNodeStartNextShowSignature[] = {
@@ -725,6 +767,18 @@ namespace
         bool captured = false;
     };
 
+    constexpr unsigned char Qt6MovieActionSignature[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74,
+        0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48,
+        0x8B, 0xD9, 0x48, 0x8D, 0xB1
+    };
+
+    constexpr unsigned char Qt6MovieRateSignature[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83,
+        0xEC, 0x40, 0x0F, 0x29, 0x74, 0x24, 0x30, 0x0F,
+        0x28, 0xF1, 0x48, 0x8B, 0xF9, 0x48, 0x8D, 0x99
+    };
+
     struct FullScreenClipBoundsCapture
     {
         int channel = -1;
@@ -924,7 +978,7 @@ namespace
     std::vector<FullScreenSlot> g_fullScreenSlots;
     DWORD g_nextFullScreenSlotId = 1;
     void* g_fullScreenSceneParent = nullptr;
-    FullScreenReplacement g_fullScreenReplacement;
+    std::vector<FullScreenReplacement> g_fullScreenReplacements;
     enum class FullScreenQueueOperationKind
     {
         None,
@@ -1178,7 +1232,7 @@ namespace
         const char* decoratedClassName, const char* className);
     int RefreshDressingRoomDataUrls(const QtObjectFunctions& qt);
 
-    int __cdecl DressingRoomAvformatOpenInput(void** context,
+    int CaptureDressingRoomInput(AvformatOpenInput original, void** context,
         const char* url, void* format, void* options)
     {
         if (url != nullptr &&
@@ -1189,38 +1243,50 @@ namespace
             g_dressingRoomUrl.assign(url);
             ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
         }
-        return g_originalAvformatOpenInput(context, url, format, options);
+        return original(context, url, format, options);
+    }
+
+    int __cdecl DressingRoomAvformatOpenInput(void** context,
+        const char* url, void* format, void* options)
+    {
+        return CaptureDressingRoomInput(g_originalAvformatOpenInput, context, url, format, options);
+    }
+
+    int __cdecl ModernDressingRoomAvformatOpenInput(void** context,
+        const char* url, void* format, void* options)
+    {
+        return CaptureDressingRoomInput(g_originalModernAvformatOpenInput, context, url, format, options);
     }
 
     HRESULT InstallDressingRoomUrlHook()
     {
-        if (InterlockedCompareExchange(&g_dressingRoomHookInstalled, 0, 0) != 0)
-        {
-            DressingRoomLog("FFmpeg hook already installed");
-            return BridgeSuccess;
-        }
-        HMODULE avformat = GetModuleHandleW(L"avformat-57.dll");
-        void* target = avformat == nullptr ? nullptr :
-            reinterpret_cast<void*>(GetProcAddress(avformat, "avformat_open_input"));
-        if (target == nullptr)
-        {
-            DressingRoomLog("FFmpeg target unavailable module=%p target=%p",
-                avformat, target);
-            return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
-        }
+        static std::mutex installLock;
+        const std::lock_guard<std::mutex> guard(installLock);
         MH_STATUS status = MH_Initialize();
-        if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED)
-            return E_FAIL;
-        status = MH_CreateHook(target,
-            reinterpret_cast<void*>(&DressingRoomAvformatOpenInput),
-            reinterpret_cast<void**>(&g_originalAvformatOpenInput));
-        if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED)
-            return E_FAIL;
-        status = MH_EnableHook(target);
-        if (status != MH_OK && status != MH_ERROR_ENABLED)
-            return E_FAIL;
+        if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) return E_FAIL;
+        struct Target { const wchar_t* module; void* hook; AvformatOpenInput* original; };
+        const Target targets[] = {
+            { L"avformat-57.dll", reinterpret_cast<void*>(&DressingRoomAvformatOpenInput), &g_originalAvformatOpenInput },
+            { L"avformat-61.dll", reinterpret_cast<void*>(&ModernDressingRoomAvformatOpenInput), &g_originalModernAvformatOpenInput }
+        };
+        int installed = 0;
+        for (const auto& item : targets)
+        {
+            const auto module = GetModuleHandleW(item.module);
+            void* target = module == nullptr ? nullptr : GetProcAddress(module, "avformat_open_input");
+            if (target == nullptr) continue;
+            if (*item.original == nullptr)
+            {
+                status = MH_CreateHook(target, item.hook, reinterpret_cast<void**>(item.original));
+                if (status != MH_OK) return E_FAIL;
+            }
+            status = MH_EnableHook(target);
+            if (status != MH_OK && status != MH_ERROR_ENABLED) return E_FAIL;
+            ++installed;
+        }
+        if (installed == 0) return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
         InterlockedExchange(&g_dressingRoomHookInstalled, 1);
-        DressingRoomLog("FFmpeg hook installed");
+        DressingRoomLog("FFmpeg URL hooks installed=%d", installed);
         return BridgeSuccess;
     }
 
@@ -1435,7 +1501,7 @@ namespace
         InterlockedExchange64(&g_dressingRoomLastScanStarted, 0);
         InterlockedExchange(&g_dressingRoomCacheScanPending, 1);
 
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const QtObjectFunctions qt = {
             reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
                 GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
@@ -1491,7 +1557,10 @@ namespace
         std::size_t sequenceLength);
     unsigned char* FindUniqueFunction(const unsigned char* signature,
         std::size_t signatureLength, int kind);
+    unsigned char* FindFullScreenStartNextShow();
+    bool ValidFunctionCandidate(const unsigned char* candidate, int kind);
     bool ResolveFullScreenLayout(unsigned char* startNextShow);
+    std::size_t FunctionCodeLength(const unsigned char* function, std::size_t maximum);
     bool CompleteFullScreenQueueOperation(void* sequencer);
     bool OffsetProfilePath(wchar_t (&path)[MAX_PATH]);
     void SaveResolvedOffsets(const wchar_t* profilePath);
@@ -1641,7 +1710,8 @@ namespace
         return nullptr;
     }
 
-    struct QtByteArray { void* data = nullptr; };
+    // Qt 5 returns one pointer; Qt 6 returns a three-word QArrayDataPointer.
+    struct QtByteArray { void* data = nullptr; void* begin = nullptr; std::intptr_t size = 0; };
     using QMetaActivate = void(__cdecl*)(void*, const void*, int, void**);
     using QMetaClassName = const char*(__cdecl*)(const void*);
     using QMetaIndexOfSignal = int(__cdecl*)(const void*, const char*);
@@ -1653,7 +1723,7 @@ namespace
     bool IsSignal(const void* metaObject, int localSignalIndex,
         const char* signature)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto indexOfSignal = core == nullptr ? nullptr :
             reinterpret_cast<QMetaIndexOfSignal>(GetProcAddress(core,
                 "?indexOfSignal@QMetaObject@@QEBAHPEBD@Z"));
@@ -1667,9 +1737,10 @@ namespace
 
     std::string QtStringUtf8(const void* value)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto toUtf8 = core == nullptr ? nullptr :
             reinterpret_cast<QStringToUtf8>(GetProcAddress(core,
+                UsesQt6() ? "?toUtf8@QString@@QEGBA?AVQByteArray@@XZ" :
                 "?toUtf8@QString@@QEBA?AVQByteArray@@XZ"));
         const auto constData = core == nullptr ? nullptr :
             reinterpret_cast<QByteArrayConstData>(GetProcAddress(core,
@@ -1690,7 +1761,7 @@ namespace
 
     std::string QtObjectName(const void* object)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         using QObjectObjectName = void*(__fastcall*)(const void*, void*);
         using QStringDestroy = void(__fastcall*)(void*);
         const auto objectName = core == nullptr ? nullptr :
@@ -1701,7 +1772,7 @@ namespace
                 "??1QString@@QEAA@XZ"));
         if (object == nullptr || objectName == nullptr || destroy == nullptr)
             return {};
-        void* name = nullptr;
+        QtByteArray name;
         objectName(object, &name);
         std::string result = QtStringUtf8(&name);
         destroy(&name);
@@ -1709,13 +1780,27 @@ namespace
     }
 
     bool ReadQtPointerList(void* list, std::size_t maximum,
-        std::vector<void*>& values)
+        std::vector<void*>& values, bool qt6 = UsesQt6())
     {
         values.clear();
         __try
         {
             if (list == nullptr || !IsReadable(list, sizeof(void*)))
                 return false;
+            if (qt6)
+            {
+                struct Qt6PointerList { void* allocation; void** begin; std::intptr_t size; };
+                if (!IsReadable(list, sizeof(Qt6PointerList)))
+                    return false;
+                const auto& data = *reinterpret_cast<const Qt6PointerList*>(list);
+                if (data.size < 0 || static_cast<std::size_t>(data.size) > maximum ||
+                    (data.size > 0 && !IsReadable(data.begin,
+                        sizeof(void*) * static_cast<std::size_t>(data.size))))
+                    return false;
+                for (std::intptr_t index = 0; index < data.size; ++index)
+                    values.push_back(data.begin[index]);
+                return true;
+            }
             const auto data = *reinterpret_cast<QtListData**>(list);
             if (!IsReadable(data, offsetof(QtListData, values)) ||
                 data->begin < 0 || data->end < data->begin ||
@@ -1735,6 +1820,22 @@ namespace
             values.clear();
             return false;
         }
+    }
+
+    bool ReadQtValueList(void* list, std::size_t stride, std::size_t maximum,
+        std::vector<void*>& values, bool qt6 = UsesQt6())
+    {
+        if (!qt6) return ReadQtPointerList(list, maximum, values, false);
+        values.clear();
+        if (stride == 0 || maximum > SIZE_MAX / stride ||
+            !IsReadable(list, sizeof(QtByteArray))) return false;
+        const auto data = reinterpret_cast<const QtByteArray*>(list);
+        if (data->size < 0 || static_cast<std::size_t>(data->size) > maximum ||
+            (data->size > 0 && !IsReadable(data->begin, static_cast<std::size_t>(data->size) * stride)))
+            return false;
+        for (std::intptr_t index = 0; index < data->size; ++index)
+            values.push_back(reinterpret_cast<unsigned char*>(data->begin) + index * stride);
+        return true;
     }
 
     std::string CardTag(const std::string& clip);
@@ -1759,17 +1860,17 @@ namespace
         if (card == nullptr || PlayableCardClipsOffset == 0)
             return {};
         std::vector<void*> clips;
-        if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(card) +
-                PlayableCardClipsOffset, 4096, clips) ||
+        if (!ReadQtValueList(reinterpret_cast<unsigned char*>(card) +
+                PlayableCardClipsOffset, sizeof(QtByteArray), 4096, clips) ||
             clips.empty())
             return {};
         void* clip = clips.front();
-        return QtStringUtf8(&clip);
+        return QtStringUtf8(UsesQt6() ? clip : &clip);
     }
 
     void* FindCardSequencer()
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const QtObjectFunctions qt = {
             reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
                 GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
@@ -1782,7 +1883,7 @@ namespace
 
     void* FindFullScreen()
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const QtObjectFunctions qt = {
             reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
                 GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
@@ -1880,7 +1981,7 @@ namespace
 
     bool SynchronizeCurrentFullScreenScene()
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const QtObjectFunctions qt = {
             reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
                 GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
@@ -1935,8 +2036,45 @@ namespace
         return false;
     }
 
+    bool ReadQt6BoolProperty(void* object, const char* name, bool& value)
+    {
+        const auto core = QtCoreModule();
+        using MetaObject = const void*(__fastcall*)(const void*);
+        using IndexOfProperty = int(__fastcall*)(const void*, const char*);
+        using MetaCall = int(__cdecl*)(void*, int, int, void**);
+        const auto indexOfProperty = core == nullptr ? nullptr :
+            reinterpret_cast<IndexOfProperty>(GetProcAddress(core,
+                "?indexOfProperty@QMetaObject@@QEBAHPEBD@Z"));
+        const auto metacall = core == nullptr ? nullptr :
+            reinterpret_cast<MetaCall>(GetProcAddress(core,
+                "?metacall@QMetaObject@@SAHPEAVQObject@@W4Call@1@HPEAPEAX@Z"));
+        if (!UsesQt6() || object == nullptr || indexOfProperty == nullptr ||
+            metacall == nullptr || !IsReadable(object, sizeof(void*)))
+            return false;
+        const auto vtable = *reinterpret_cast<void***>(object);
+        if (!IsReadable(vtable, sizeof(void*)) || vtable[0] == nullptr)
+            return false;
+        const auto meta = reinterpret_cast<MetaObject>(vtable[0])(object);
+        if (meta == nullptr) return false;
+        const int index = indexOfProperty(meta, name);
+        if (index < 0) return false;
+        // QMetaObject::ReadProperty writes the known bool property directly,
+        // avoiding version-dependent QVariant layouts.
+        value = false;
+        void* arguments[] = { &value, nullptr, nullptr, nullptr };
+        return metacall(object, 1, index, arguments) < 0;
+    }
+
     bool IsFullScreenModeActive()
     {
+        if (UsesQt6())
+        {
+            // FullScreen can be hidden while separate renderer windows run.
+            // Its Qt property is live; the registry mode is persisted state.
+            void* fullScreen = FindFullScreen();
+            bool running = false;
+            return ReadQt6BoolProperty(fullScreen, "running", running) && running;
+        }
         DWORD mode = 0;
         DWORD size = sizeof(mode);
         return RegGetValueW(HKEY_CURRENT_USER,
@@ -1954,8 +2092,8 @@ namespace
         if (sequencer == nullptr)
             return false;
         std::vector<void*> nextCards;
-        if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(sequencer) +
-                CardSequencerNextOffset, 4096, nextCards))
+        if (!ReadQtValueList(reinterpret_cast<unsigned char*>(sequencer) +
+                CardSequencerNextOffset, 32, 4096, nextCards))
             return false;
         std::vector<FullScreenQueueEntry> queue;
         queue.reserve(nextCards.size());
@@ -1987,7 +2125,7 @@ namespace
     using QStringAnsiConstructor = void*(__fastcall*)(void*, const char*);
     using QStringDestructor = void(__fastcall*)(void*);
     using QObjectThread = void*(__fastcall*)(const void*);
-    using QObjectMoveToThread = void(__fastcall*)(void*, void*);
+    using QObjectMoveToThread = void(__fastcall*)(void*, void*, int);
     using QObjectDeleteLater = void(__fastcall*)(void*);
     using QStringAnsiAssignment = void*(__fastcall*)(void*, const char*);
 
@@ -1996,14 +2134,17 @@ namespace
         if (card == nullptr || !IsReadable(card, sizeof(void*)))
             return;
         auto vtable = *reinterpret_cast<void***>(card);
-        if (IsReadable(vtable, sizeof(void*)) && vtable[0] != nullptr)
+        // PlayableCard inherits QObject: metaObject/qt_metacast/qt_metacall
+        // precede the deleting destructor in both supported Qt versions.
+        constexpr std::size_t slot = 3;
+        if (IsReadable(vtable, (slot + 1) * sizeof(void*)) && vtable[slot] != nullptr)
             reinterpret_cast<void(__fastcall*)(void*, unsigned)>(
-                vtable[0])(card, 1);
+                vtable[slot])(card, 1);
     }
 
     void DeletePlayableCardLater(void* card)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto deleteLater = core == nullptr ? nullptr :
             reinterpret_cast<QObjectDeleteLater>(GetProcAddress(core,
                 "?deleteLater@QObject@@QEAAXXZ"));
@@ -2013,12 +2154,13 @@ namespace
 
     bool MovePlayableCardToNodeThread(void* card, void* node)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto thread = core == nullptr ? nullptr :
             reinterpret_cast<QObjectThread>(GetProcAddress(core,
                 "?thread@QObject@@QEBAPEAVQThread@@XZ"));
         const auto moveToThread = core == nullptr ? nullptr :
             reinterpret_cast<QObjectMoveToThread>(GetProcAddress(core,
+                UsesQt6() ? "?moveToThread@QObject@@QEAA_NPEAVQThread@@UDisambiguated_t@Qt@@@Z" :
                 "?moveToThread@QObject@@QEAAXPEAVQThread@@@Z"));
         if (card == nullptr || node == nullptr || thread == nullptr ||
             moveToThread == nullptr)
@@ -2026,14 +2168,14 @@ namespace
         void* targetThread = thread(node);
         if (targetThread == nullptr)
             return false;
-        moveToThread(card, targetThread);
+        moveToThread(card, targetThread, 0);
         return thread(card) == targetThread;
     }
 
     void* CreatePlayableCard(const std::string& card,
         const std::string& clip)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto constructString = core == nullptr ? nullptr :
             reinterpret_cast<QStringAnsiConstructor>(GetProcAddress(core,
                 "??0QString@@QEAA@PEBD@Z"));
@@ -2046,8 +2188,8 @@ namespace
             VghdOperatorNewRva == 0 || PlayableCardSize == 0)
             return nullptr;
 
-        void* tag = nullptr;
-        void* candidate = nullptr;
+        QtByteArray tag;
+        QtByteArray candidate;
         constructString(&tag, card.c_str());
         constructString(&candidate, clip.c_str());
         void* memory = reinterpret_cast<VghdOperatorNew>(
@@ -2062,6 +2204,44 @@ namespace
         return result;
     }
 
+    // QSharedPointer stores value/control separately. Allocate controls
+    // with the host's allocator because the host releases its final weak ref.
+    struct QtSharedControl
+    {
+        volatile LONG weak, strong;
+        void(__cdecl* destroy)(QtSharedControl*);
+        void* card;
+    };
+    struct QtSharedCard { void* card = nullptr; QtSharedControl* control = nullptr; };
+
+    void __cdecl DestroySharedCard(QtSharedControl* control)
+    {
+        DestroyPlayableCard(control->card);
+    }
+
+    QtSharedCard SharePlayableCard(void* card)
+    {
+        if (card == nullptr || VghdOperatorNewRva == 0 ||
+            VghdOperatorDeleteRva == 0 || PinBridge() < 0) return {};
+        auto control = reinterpret_cast<QtSharedControl*>(
+            reinterpret_cast<VghdOperatorNew>(ImageBase() + VghdOperatorNewRva)(sizeof(QtSharedControl)));
+        if (control == nullptr) return {};
+        control->weak = 1;
+        control->strong = 1;
+        control->destroy = &DestroySharedCard;
+        control->card = card;
+        return { card, control };
+    }
+
+    void ReleaseSharedCard(QtSharedCard card)
+    {
+        auto control = card.control;
+        if (control == nullptr) return;
+        if (InterlockedDecrement(&control->strong) == 0) control->destroy(control);
+        if (InterlockedDecrement(&control->weak) == 0)
+            reinterpret_cast<void(__fastcall*)(void*)>(ImageBase() + VghdOperatorDeleteRva)(control);
+    }
+
     bool SetSceneExpectedCard(void* scene, void* playableCard)
     {
         __try
@@ -2069,15 +2249,24 @@ namespace
             const std::size_t required = std::max({
                 SceneExpectedPendingOffset + 1,
                 SceneExpectedSelectionOffset + 1,
-                SceneExpectedCardOffset + sizeof(void*),
+                SceneExpectedCardOffset + (SharedPlayableCards ? sizeof(QtSharedCard) : sizeof(void*)),
                 SceneExpectedModeOffset + sizeof(int) });
             if (!IsReadable(scene, required))
                 return false;
             auto bytes = reinterpret_cast<unsigned char*>(scene);
+            if (SharedPlayableCards)
+            {
+                auto shared = SharePlayableCard(playableCard);
+                if (shared.control == nullptr) return false;
+                auto field = reinterpret_cast<QtSharedCard*>(bytes + SceneExpectedCardOffset);
+                const auto previous = *field;
+                *field = shared;
+                ReleaseSharedCard(previous);
+            }
+            else
+                *reinterpret_cast<void**>(bytes + SceneExpectedCardOffset) = playableCard;
             bytes[SceneExpectedPendingOffset] = 1;
             bytes[SceneExpectedSelectionOffset] = 1;
-            *reinterpret_cast<void**>(bytes + SceneExpectedCardOffset) =
-                playableCard;
             *reinterpret_cast<int*>(bytes + SceneExpectedModeOffset) = 0;
             return true;
         }
@@ -2089,36 +2278,41 @@ namespace
 
     std::string PrepareFullScreenReplacement(void* node)
     {
-        void* playableCard = nullptr;
-        void* expiredCard = nullptr;
-        std::string clip;
+        FullScreenReplacement replacement;
+        std::vector<void*> expiredCards;
         AcquireSRWLockExclusive(&g_fullScreenStateLock);
-        if (g_fullScreenReplacement.deadline < GetTickCount64())
+        for (auto entry = g_fullScreenReplacements.begin();
+            entry != g_fullScreenReplacements.end();)
         {
-            expiredCard = g_fullScreenReplacement.playableCard;
-            g_fullScreenReplacement = {};
-        }
-        if (g_fullScreenReplacement.node == node)
-        {
-            playableCard = g_fullScreenReplacement.playableCard;
-            clip = std::move(g_fullScreenReplacement.clip);
-            g_fullScreenReplacement = {};
+            if (entry->deadline < GetTickCount64())
+            {
+                expiredCards.push_back(entry->playableCard);
+                entry = g_fullScreenReplacements.erase(entry);
+            }
+            else if (entry->node == node)
+            {
+                replacement = std::move(*entry);
+                entry = g_fullScreenReplacements.erase(entry);
+            }
+            else
+                ++entry;
         }
         ReleaseSRWLockExclusive(&g_fullScreenStateLock);
-        DeletePlayableCardLater(expiredCard);
-        if (playableCard == nullptr)
+        for (void* card : expiredCards)
+            DeletePlayableCardLater(card);
+        if (replacement.playableCard == nullptr)
             return {};
-        if (!SetSceneExpectedCard(FullScreenScene(node), playableCard))
+        if (!SetSceneExpectedCard(FullScreenScene(node), replacement.playableCard))
         {
-            DeletePlayableCardLater(playableCard);
+            DeletePlayableCardLater(replacement.playableCard);
             return {};
         }
-        return clip;
+        return replacement.clip;
     }
 
     void SetQtString(void* value, const std::string& text)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto assign = core == nullptr ? nullptr :
             reinterpret_cast<QStringAnsiAssignment>(GetProcAddress(core,
                 "??4QString@@QEAAAEAV0@PEBD@Z"));
@@ -3087,7 +3281,9 @@ namespace
         if (discoverScene && missingScene && IsFullScreenModeActive())
             SynchronizeCurrentFullScreenScene();
         RefreshFullScreenQueue();
-        std::string json = "{\"clips\":[";
+        std::string json = IsFullScreenModeActive()
+            ? "{\"active\":true,\"clips\":["
+            : "{\"active\":false,\"clips\":[";
         AcquireSRWLockShared(&g_fullScreenStateLock);
         for (std::size_t index = 0; index < g_fullScreenClips.size(); ++index)
         {
@@ -3140,7 +3336,7 @@ namespace
     void __cdecl CapturingQMetaActivate(void* sender,
         const void* metaObject, int signalIndex, void** arguments)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto className = core == nullptr ? nullptr :
             reinterpret_cast<QMetaClassName>(GetProcAddress(core,
                 "?className@QMetaObject@@QEBAPEBDXZ"));
@@ -3179,18 +3375,18 @@ namespace
         {
             if (IsSignal(metaObject, signalIndex, "stopped()"))
             {
-                void* pendingCard = nullptr;
+                std::vector<FullScreenReplacement> pendingCards;
                 AcquireSRWLockExclusive(&g_fullScreenStateLock);
                 changed = !g_fullScreenClips.empty() ||
                     !g_fullScreenSlots.empty();
                 g_fullScreenClips.clear();
                 g_fullScreenSlots.clear();
-                pendingCard = g_fullScreenReplacement.playableCard;
-                g_fullScreenReplacement = {};
+                pendingCards.swap(g_fullScreenReplacements);
                 g_fullScreenSceneParent = nullptr;
                 g_nextFullScreenSlotId = 1;
                 ReleaseSRWLockExclusive(&g_fullScreenStateLock);
-                DeletePlayableCardLater(pendingCard);
+                for (const auto& pending : pendingCards)
+                    DeletePlayableCardLater(pending.playableCard);
             }
             else if (IsSignal(metaObject, signalIndex,
                          "currentSceneChanged(Scene*)") &&
@@ -3198,6 +3394,11 @@ namespace
             {
                 changed = SynchronizeFullScreenScene(
                     *reinterpret_cast<void**>(arguments[1]));
+            }
+            else if (IsSignal(metaObject, signalIndex, "started()") ||
+                IsSignal(metaObject, signalIndex, "runningChanged(bool)"))
+            {
+                changed = true;
             }
         }
         else if (senderClass != nullptr &&
@@ -3231,8 +3432,8 @@ namespace
             ReleaseSRWLockExclusive(&g_fullScreenHookLock);
             return BridgeSuccess;
         }
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
-        const HMODULE gui = GetModuleHandleW(L"Qt5Gui.dll");
+        const HMODULE core = QtCoreModule();
+        const HMODULE gui = GetModuleHandleW(UsesQt6() ? L"Qt6OpenGL.dll" : L"Qt5Gui.dll");
         const HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
         void* target = core == nullptr ? nullptr : GetProcAddress(core,
             "?activate@QMetaObject@@SAXPEAVQObject@@PEBU1@HPEAPEAX@Z");
@@ -3283,9 +3484,7 @@ namespace
         g_glTexSubImage2D = openGl == nullptr ? nullptr :
             reinterpret_cast<GlTexSubImage2D>(GetProcAddress(openGl,
                 "glTexSubImage2D"));
-        void* startNextShow = FindUniqueFunction(
-            FsClipNodeStartNextShowSignature,
-            sizeof(FsClipNodeStartNextShowSignature), -1);
+        void* startNextShow = FindFullScreenStartNextShow();
         const bool layoutResolved = startNextShow != nullptr &&
             ResolveFullScreenLayout(
                 reinterpret_cast<unsigned char*>(startNextShow));
@@ -3312,9 +3511,7 @@ namespace
             g_glTexParameteri == nullptr ||
             g_glTexImage2D == nullptr ||
             g_glTexSubImage2D == nullptr ||
-            startNextShow == nullptr ||
-            nextShowClip == nullptr ||
-            !layoutResolved ||
+            (startNextShow == nullptr || nextShowClip == nullptr || !layoutResolved) ||
             PinBridge() < 0)
         {
             ReleaseSRWLockExclusive(&g_fullScreenHookLock);
@@ -3421,7 +3618,7 @@ namespace
         PVOID volatile* cachedObject, const char* decoratedClassName,
         const char* className, const char* method)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         if (core == nullptr)
             return E_NOINTERFACE;
         const QtObjectFunctions qt = {
@@ -3444,7 +3641,7 @@ namespace
 
     HRESULT InvokeDesktopActorAction(const char* method)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         using QObjectChildren = const void*(__fastcall*)(const void*);
         const QtObjectFunctions qt = {
             reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
@@ -3494,7 +3691,7 @@ namespace
 
     HRESULT DumpFullScreenObjectTree()
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         if (core == nullptr)
             return E_NOINTERFACE;
         using QObjectChildren = const void*(__fastcall*)(const void*);
@@ -3524,16 +3721,20 @@ namespace
         const void* list = children(sceneParent);
         if (!IsReadable(list, sizeof(void*)))
             return E_UNEXPECTED;
-        const auto data = *reinterpret_cast<QtListData* const*>(list);
-        if (!IsReadable(data, sizeof(QtListData)) || data->begin < 0 ||
-            data->end < data->begin || data->alloc < data->end ||
-            data->end > 4096 || !IsReadable(data,
-                offsetof(QtListData, values) + sizeof(void*) * data->end))
+        std::vector<void*> childObjects;
+        if (!ReadQtPointerList(const_cast<void*>(list), 4096, childObjects))
             return E_UNEXPECTED;
-        for (int index = data->begin; index < data->end; ++index)
-            if (data->values[index] != nullptr &&
-                IsReadable(data->values[index], sizeof(void*)))
-                objects.push_back(data->values[index]);
+        for (void* child : childObjects)
+            if (child != nullptr && IsReadable(child, sizeof(void*)))
+                objects.push_back(child);
+
+        // Qt6 scene clip nodes are held by the scene's node list rather
+        // than QObject parenting. Include the validated active nodes too.
+        for (const FullScreenSlot& slot : trackedSlots)
+            if (slot.node != nullptr && IsReadable(slot.node, sizeof(void*)) &&
+                std::find(objects.begin(), objects.end(), slot.node) ==
+                    objects.end())
+                objects.push_back(slot.node);
 
         std::string json = "[";
         const char* knownClasses[] = {
@@ -3594,7 +3795,7 @@ namespace
 
     bool StopFullScreenNode(void* node)
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto invoke = core == nullptr ? nullptr :
             reinterpret_cast<QMetaInvoke>(GetProcAddress(core,
                 "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
@@ -3657,21 +3858,31 @@ namespace
         }
         void* replacedCard = nullptr;
         AcquireSRWLockExclusive(&g_fullScreenStateLock);
-        replacedCard = g_fullScreenReplacement.playableCard;
-        g_fullScreenReplacement = { node, playableCard,
-            "models:" + card + "\\" + clip,
-            GetTickCount64() + 15'000 };
+        const auto pending = std::find_if(g_fullScreenReplacements.begin(),
+            g_fullScreenReplacements.end(), [node](const FullScreenReplacement& value)
+            { return value.node == node; });
+        FullScreenReplacement replacement = { node, playableCard,
+            "models:" + card + "\\" + clip, GetTickCount64() + 15'000 };
+        if (pending == g_fullScreenReplacements.end())
+            g_fullScreenReplacements.push_back(std::move(replacement));
+        else
+        {
+            replacedCard = pending->playableCard;
+            *pending = std::move(replacement);
+        }
         ReleaseSRWLockExclusive(&g_fullScreenStateLock);
         DeletePlayableCardLater(replacedCard);
         if (StopFullScreenNode(node))
             return BridgeSuccess;
         void* failedCard = nullptr;
         AcquireSRWLockExclusive(&g_fullScreenStateLock);
-        if (g_fullScreenReplacement.node == node &&
-            g_fullScreenReplacement.playableCard == playableCard)
+        const auto failed = std::find_if(g_fullScreenReplacements.begin(),
+            g_fullScreenReplacements.end(), [node, playableCard](const FullScreenReplacement& value)
+            { return value.node == node && value.playableCard == playableCard; });
+        if (failed != g_fullScreenReplacements.end())
         {
             failedCard = playableCard;
-            g_fullScreenReplacement = {};
+            g_fullScreenReplacements.erase(failed);
         }
         ReleaseSRWLockExclusive(&g_fullScreenStateLock);
         DeletePlayableCardLater(failedCard);
@@ -3760,7 +3971,51 @@ namespace
             return E_FAIL;
         }
 
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        if (UsesQt6())
+        {
+            using Allocate = void*(__cdecl*)(void**, std::intptr_t, std::intptr_t,
+                std::intptr_t, int);
+            using Deallocate = void(__cdecl*)(void*, std::intptr_t, std::intptr_t);
+            const auto core = QtCoreModule();
+            const auto allocate = reinterpret_cast<Allocate>(GetProcAddress(core,
+                "?allocate@QArrayData@@SAPEAXPEAPEAU1@_J11W4AllocationOption@1@@Z"));
+            const auto deallocate = reinterpret_cast<Deallocate>(GetProcAddress(core,
+                "?deallocate@QArrayData@@SAXPEAU1@_J1@Z"));
+            std::vector<void*> nextCards;
+            if (allocate == nullptr || deallocate == nullptr ||
+                !ReadQtValueList(reinterpret_cast<unsigned char*>(sequencer) +
+                    CardSequencerNextOffset, 32, 4096, nextCards))
+            {
+                DeletePlayableCardLater(playableCard);
+                return E_NOINTERFACE;
+            }
+            const auto shared = SharePlayableCard(playableCard);
+            if (shared.control == nullptr)
+            {
+                DeletePlayableCardLater(playableCard);
+                return E_OUTOFMEMORY;
+            }
+            QtByteArray cards;
+            cards.begin = allocate(&cards.data, sizeof(QtSharedCard), alignof(QtSharedCard), 1, 0);
+            if (cards.begin == nullptr)
+            {
+                ReleaseSharedCard(shared);
+                return E_OUTOFMEMORY;
+            }
+            *reinterpret_cast<QtSharedCard*>(cards.begin) = shared;
+            cards.size = 1;
+            const int index = prepend ? 0 : static_cast<int>(nextCards.size());
+            reinterpret_cast<CardSequencerInsertNext>(base + CardSequencerInsertNextRva)(
+                sequencer, index, &cards, 0, 0);
+            if (InterlockedDecrement(reinterpret_cast<volatile LONG*>(cards.data)) == 0)
+            {
+                ReleaseSharedCard(shared);
+                deallocate(cards.data, sizeof(QtSharedCard), alignof(QtSharedCard));
+            }
+            return BridgeSuccess;
+        }
+
+        const HMODULE core = QtCoreModule();
         void* const sharedNull = core == nullptr ? nullptr :
             reinterpret_cast<void*>(GetProcAddress(core,
                 "?shared_null@QListData@@2UData@1@B"));
@@ -3777,13 +4032,29 @@ namespace
             return E_NOINTERFACE;
         }
 
+        std::vector<void*> nextCards;
+        if (!ReadQtValueList(reinterpret_cast<unsigned char*>(sequencer) +
+                CardSequencerNextOffset, 32, 4096, nextCards))
+        {
+            DeletePlayableCardLater(playableCard);
+            return E_UNEXPECTED;
+        }
         void* cards = sharedNull;
-        const auto releaseCards = [&cards, disposeData]()
+        QtSharedCard* sharedEntry = nullptr;
+        const auto releaseCards = [&cards, &sharedEntry, disposeData]()
         {
             auto data = reinterpret_cast<QtListData*>(cards);
             if (data != nullptr && data->ref != -1 &&
                 InterlockedDecrement(&data->ref) == 0)
+            {
+                if (sharedEntry != nullptr)
+                {
+                    ReleaseSharedCard(*sharedEntry);
+                    reinterpret_cast<void(__fastcall*)(void*)>(
+                        ImageBase() + VghdOperatorDeleteRva)(sharedEntry);
+                }
                 disposeData(data);
+            }
         };
         detach(&cards, 1);
         auto data = reinterpret_cast<QtListData*>(cards);
@@ -3795,16 +4066,29 @@ namespace
             DeletePlayableCardLater(playableCard);
             return E_OUTOFMEMORY;
         }
-        data->values[data->end++] = playableCard;
-
-        std::vector<void*> nextCards;
-        if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(sequencer) +
-                CardSequencerNextOffset, 4096, nextCards))
+        if (SharedPlayableCards)
         {
-            releaseCards();
-            DeletePlayableCardLater(playableCard);
-            return E_UNEXPECTED;
+            const auto shared = SharePlayableCard(playableCard);
+            if (shared.control == nullptr)
+            {
+                releaseCards();
+                DeletePlayableCardLater(playableCard);
+                return E_OUTOFMEMORY;
+            }
+            sharedEntry = reinterpret_cast<QtSharedCard*>(
+                reinterpret_cast<VghdOperatorNew>(base + VghdOperatorNewRva)(sizeof(QtSharedCard)));
+            if (sharedEntry == nullptr)
+            {
+                ReleaseSharedCard(shared);
+                releaseCards();
+                return E_OUTOFMEMORY;
+            }
+            *sharedEntry = shared;
+            data->values[data->end++] = sharedEntry;
         }
+        else
+            data->values[data->end++] = playableCard;
+
         const int index = prepend ? 0 : static_cast<int>(nextCards.size());
         reinterpret_cast<CardSequencerInsertNext>(
             base + CardSequencerInsertNextRva)(sequencer, index, &cards, 0, 0);
@@ -3820,11 +4104,21 @@ namespace
             CardSequencerTakeNextAtRva == 0)
             return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
         std::vector<void*> nextCards;
-        if (!ReadQtPointerList(reinterpret_cast<unsigned char*>(sequencer) +
-                CardSequencerNextOffset, 4096, nextCards))
+        if (!ReadQtValueList(reinterpret_cast<unsigned char*>(sequencer) +
+                CardSequencerNextOffset, 32, 4096, nextCards))
             return E_UNEXPECTED;
         if (index >= nextCards.size() || index > MAXINT)
             return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        if (SharedPlayableCards)
+        {
+            using Take = void*(__fastcall*)(void*, QtSharedCard*, int, bool);
+            QtSharedCard result;
+            reinterpret_cast<Take>(base + CardSequencerTakeNextAtRva)(sequencer,
+                &result, static_cast<int>(index), false);
+            const bool removed = result.card != nullptr;
+            ReleaseSharedCard(result);
+            return removed ? BridgeSuccess : E_FAIL;
+        }
         void* playableCard = reinterpret_cast<CardSequencerTakeNextAt>(
             base + CardSequencerTakeNextAtRva)(sequencer,
                 static_cast<int>(index), false);
@@ -3928,7 +4222,7 @@ namespace
             return false;
         }
 
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         if (core == nullptr)
         {
             return false;
@@ -4805,16 +5099,16 @@ namespace
         }
         if (previous == 3 && mode != 3)
         {
-            void* pendingCard = nullptr;
+            std::vector<FullScreenReplacement> pendingCards;
             AcquireSRWLockExclusive(&g_fullScreenStateLock);
             g_fullScreenClips.clear();
             g_fullScreenSlots.clear();
-            pendingCard = g_fullScreenReplacement.playableCard;
-            g_fullScreenReplacement = {};
+            pendingCards.swap(g_fullScreenReplacements);
             g_fullScreenSceneParent = nullptr;
             g_nextFullScreenSlotId = 1;
             ReleaseSRWLockExclusive(&g_fullScreenStateLock);
-            DeletePlayableCardLater(pendingCard);
+            for (const auto& pending : pendingCards)
+                    DeletePlayableCardLater(pending.playableCard);
             PublishFullScreenState();
         }
         return BridgeSuccess;
@@ -5126,6 +5420,7 @@ namespace
         PlayableCardSize = 0;
         CardSequencerNextOffset = 0;
         NextCardPlayableCardOffset = 0;
+        SharedPlayableCards = UsesQt6();
         SceneExpectedPendingOffset = 0;
         SceneExpectedSelectionOffset = 0;
         SceneExpectedCardOffset = 0;
@@ -5139,15 +5434,32 @@ namespace
             ".?AVPlayableCard@Model@@");
         g_cardSequencerVtableRva = FindVtableRva(
             ".?AVCardSequencer@Model@@");
-        auto insertNext = FindUniqueFunction(
+        auto insertNext = UsesQt6() ? FindUniqueFunction(
+            Qt6CardSequencerInsertNextSignature,
+            sizeof(Qt6CardSequencerInsertNextSignature), 10) : FindUniqueFunction(
             CardSequencerInsertNextSignature,
             sizeof(CardSequencerInsertNextSignature), 5);
-        auto exactConstructor = FindUniqueFunction(
+        if (!UsesQt6() && insertNext == nullptr)
+            insertNext = FindUniqueFunction(CardSequencerInsertNextSignature,
+                sizeof(CardSequencerInsertNextSignature), 10);
+        auto exactConstructor = UsesQt6() ? FindUniqueFunction(
+            Qt6PlayableCardExactConstructorSignature,
+            sizeof(Qt6PlayableCardExactConstructorSignature), -1) : FindUniqueFunction(
             PlayableCardExactConstructorSignature,
             sizeof(PlayableCardExactConstructorSignature), -1);
-        auto takeNextAt = FindUniqueFunction(
+        auto takeNextAt = UsesQt6() ? FindUniqueFunction(
+            Qt6CardSequencerTakeNextAtSignature,
+            sizeof(Qt6CardSequencerTakeNextAtSignature), -1) : FindUniqueFunction(
             CardSequencerTakeNextAtSignature,
             sizeof(CardSequencerTakeNextAtSignature), -1);
+        if (!UsesQt6() && takeNextAt == nullptr)
+        {
+            const unsigned char sharedTake[] = {
+                0x4C,0x8B,0xDC,0x49,0x89,0x5B,0x08,0x49,0x89,0x6B,0x18,
+                0x49,0x89,0x73,0x20,0x49,0x89,0x53,0x10,0x57,0x41,0x56,
+                0x41,0x57,0x48,0x83,0xEC,0x50,0x49,0x63,0xF0 };
+            takeNextAt = FindUniqueFunction(sharedTake, sizeof(sharedTake), -1);
+        }
         if (startNextShow == nullptr || insertNext == nullptr ||
             exactConstructor == nullptr ||
             !IsReadable(startNextShow, 1024) ||
@@ -5329,6 +5641,134 @@ namespace
             }
         }
 
+        if (!UsesQt6() && FsClipNodeSceneOffset == 0 && takeNextAt != nullptr)
+        {
+            // Qt5 shared-card builds keep the node in R14 and return a
+            // QSharedPointer from takeNextAt. Validate each field from code.
+            const unsigned char nodes[] = { 0x49,0x8B,0x56 };
+            const auto list = FindSequence(startNextShow, 512, nodes, sizeof(nodes));
+            if (list != nullptr && list[4] == 0x48 && list[5] == 0x81 && list[6] == 0xC2)
+            {
+                FsClipNodeSceneOffset = list[3];
+                SceneNodesOffset = *reinterpret_cast<const std::uint32_t*>(list + 7);
+            }
+            const unsigned char pending[] = { 0x80,0xBB };
+            const auto flag = FindSequence(startNextShow, 768, pending, sizeof(pending));
+            if (flag != nullptr && flag[6] == 0 && flag[7] == 0x0F && flag[8] == 0x84 &&
+                flag[13] == 0x48 && flag[14] == 0x8B && flag[15] == 0x83 &&
+                flag[24] == 0x48 && flag[25] == 0x8B && flag[26] == 0x83)
+            {
+                SceneExpectedPendingOffset = *reinterpret_cast<const std::uint32_t*>(flag + 2);
+                SceneExpectedCardOffset = *reinterpret_cast<const std::uint32_t*>(flag + 16);
+                SharedPlayableCards = *reinterpret_cast<const std::uint32_t*>(flag + 27) ==
+                    SceneExpectedCardOffset + sizeof(void*);
+            }
+            const unsigned char mode[] = { 0x83,0xB8 };
+            const auto selectionMode = FindSequence(startNextShow, 768, mode, sizeof(mode));
+            if (selectionMode != nullptr && selectionMode[6] == 1 &&
+                selectionMode[7] == 0x0F && selectionMode[8] == 0x44)
+                SceneExpectedModeOffset = *reinterpret_cast<const std::uint32_t*>(selectionMode + 2);
+            const unsigned char selection[] = { 0x49,0x8B,0x4E };
+            const auto selected = FindSequence(startNextShow, 1200, selection, sizeof(selection));
+            if (selected != nullptr && selected[3] == FsClipNodeSceneOffset &&
+                selected[4] == 0x0F && selected[5] == 0xB6 && selected[6] == 0x99 &&
+                selected[16] == 0x44 && selected[17] == 0x0F && selected[18] == 0xB6 &&
+                selected[26] == 0xE8)
+            {
+                SceneExpectedSelectionOffset = *reinterpret_cast<const std::uint32_t*>(selected + 7);
+                auto target = const_cast<unsigned char*>(selected + 31 +
+                    *reinterpret_cast<const std::int32_t*>(selected + 27));
+                if (ValidFunctionCandidate(target, 13))
+                    FsClipNodeNextShowClipRva = RvaFromAddress(target);
+            }
+            const unsigned char card[] = { 0x4C,0x8B,0x78 };
+            const auto load = FindSequence(takeNextAt, 128, card, sizeof(card));
+            if (load != nullptr && load[8] == 0x48 && load[9] == 0x8B && load[10] == 0x58 &&
+                load[11] == load[3] + sizeof(void*))
+                NextCardPlayableCardOffset = load[3];
+            const unsigned char release[] = { 0x48,0x8B,0xCB,0xE8 };
+            const auto destroy = FindSequence(takeNextAt + 240, 64, release, sizeof(release));
+            if (destroy != nullptr)
+                VghdOperatorDeleteRva = RvaFromAddress(destroy + 8 +
+                    *reinterpret_cast<const std::int32_t*>(destroy + 4));
+        }
+
+        if (UsesQt6())
+        {
+            auto clip = FindUniqueFunction(Qt6FsClipNodeNextShowClipSignature,
+                sizeof(Qt6FsClipNodeNextShowClipSignature), 13);
+            if (clip != nullptr)
+            {
+                FsClipNodeNextShowClipRva = RvaFromAddress(clip);
+                const unsigned char card[] = { 0x48,0x8D,0xB1 };
+                const auto load = FindSequence(clip, 96, card, sizeof(card));
+                if (load != nullptr)
+                    FsClipNodePlayableCardOffset = *reinterpret_cast<const std::uint32_t*>(load + 3);
+            }
+            PlayableCardTagOffset = constructorTagOffset;
+            const std::size_t length = FunctionCodeLength(startNextShow, 0x2000);
+            for (std::size_t offset = 0; offset + 24 < length; ++offset)
+            {
+                const auto c = startNextShow + offset;
+                if (c[0] == 0x48 && c[1] == 0x8B && c[2] == 0x4E &&
+                    c[4] == 0x0F && c[5] == 0xB6 && c[6] == 0x99)
+                {
+                    FsClipNodeSceneOffset = c[3];
+                    SceneExpectedSelectionOffset = *reinterpret_cast<const std::uint32_t*>(c + 7);
+                }
+                if (c[0] == 0x80 && c[1] == 0xBB && c[6] == 0 &&
+                    c[7] == 0x0F && c[8] == 0x84 && c[13] == 0x48 &&
+                    c[14] == 0x8B && c[15] == 0x8B)
+                {
+                    SceneExpectedPendingOffset = *reinterpret_cast<const std::uint32_t*>(c + 2);
+                    SceneExpectedCardOffset = *reinterpret_cast<const std::uint32_t*>(c + 16);
+                }
+                if (c[0] == 0x48 && c[1] == 0x8B && c[2] == 0x8A &&
+                    c[7] == 0x48 && c[8] == 0x8B && c[9] == 0x82 &&
+                    c[14] == 0x48 && c[15] == 0x8B && c[16] == 0x52)
+                {
+                    const auto count = *reinterpret_cast<const std::uint32_t*>(c + 3);
+                    const auto data = *reinterpret_cast<const std::uint32_t*>(c + 10);
+                    const auto allocation = static_cast<std::uint32_t>(c[17]);
+                    if (count == data + 8 && data == allocation + 8)
+                        SceneNodesOffset = allocation;
+                }
+                if (c[0] == 0x48 && c[1] == 0x8B && c[2] == 0x8A &&
+                    c[7] == 0x48 && c[8] == 0x8B && c[9] == 0x82 &&
+                    c[14] == 0x48 && c[15] == 0x8B && c[16] == 0x92)
+                {
+                    const auto count = *reinterpret_cast<const std::uint32_t*>(c + 3);
+                    const auto data = *reinterpret_cast<const std::uint32_t*>(c + 10);
+                    const auto allocation = *reinterpret_cast<const std::uint32_t*>(c + 17);
+                    if (count == data + 8 && data == allocation + 8)
+                        SceneNodesOffset = allocation;
+                }
+            }
+            // The queue's value stride and card field are independently checked
+            // against takeNextAt before interpreting its inline NextCard values.
+            if (takeNextAt != nullptr)
+            {
+                const unsigned char cardLoad[] = { 0x4C,0x8B,0x74,0x01 };
+                const auto load = FindSequence(takeNextAt, 192, cardLoad, sizeof(cardLoad));
+                const unsigned char count[] = { 0x48,0x3B,0x71 };
+                const auto size = FindSequence(takeNextAt, 96, count, sizeof(count));
+                const unsigned char stride[] = { 0x48,0xC1,0xE1,0x05 };
+                if (load != nullptr && size != nullptr &&
+                    FindSequence(takeNextAt, 96, stride, sizeof(stride)) != nullptr)
+                {
+                    const unsigned char release[] = { 0xF0,0x0F,0xC1,0x33,0x83,0xFE,1 };
+                    const auto decrement = FindSequence(takeNextAt, 384, release, sizeof(release));
+                    if (decrement != nullptr && decrement[7] == 0x75 &&
+                        decrement[9] == 0x48 && decrement[10] == 0x8B &&
+                        decrement[11] == 0xCB && decrement[12] == 0xE8)
+                        VghdOperatorDeleteRva = RvaFromAddress(decrement + 17 +
+                            *reinterpret_cast<const std::int32_t*>(decrement + 13));
+                    NextCardPlayableCardOffset = load[4];
+                    CardSequencerNextOffset = size[3] - 16;
+                }
+            }
+        }
+
         return FsClipNodeSceneOffset > 0 &&
             FsClipNodeSceneOffset <= 0x100 && SceneNodesOffset > 0 &&
             SceneNodesOffset <= 0x400 &&
@@ -5347,12 +5787,28 @@ namespace
             SceneExpectedCardOffset > 0 && SceneExpectedModeOffset > 0 &&
             FsClipNodeNextShowClipRva > 0 &&
             PlayableCardExactConstructorRva > 0 &&
-            VghdOperatorNewRva > 0;
+            VghdOperatorNewRva > 0 && (!SharedPlayableCards || VghdOperatorDeleteRva > 0);
     }
 
     bool IsCompatibleBpkSoundRawWrite(const unsigned char* call,
         const unsigned char* write)
     {
+        if (UsesQt6())
+        {
+            const unsigned char prologue[] = {
+                0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x74,0x24,0x10,
+                0x48,0x89,0x7C,0x24,0x18,0x4C,0x89,0x64,0x24,0x20,
+                0x55,0x41,0x56,0x41,0x57,0x48,0x8B,0xEC,0x48,0x83,0xEC,0x70
+            };
+            const unsigned char arguments[] = {
+                0x4D,0x63,0xF0,0x4C,0x8B,0xE2,0x48,0x8B,0xF1
+            };
+            return IsReadable(write, 96) && IsReadable(call - 20, 25) &&
+                std::memcmp(write, prologue, sizeof(prologue)) == 0 &&
+                FindSequence(write, 64, arguments, sizeof(arguments)) != nullptr &&
+                call[-4] == 0x48 && call[-3] == 0x8B && call[-2] == 0x49 &&
+                call[-1] == VideoSoundOffset;
+        }
         if (!IsReadable(write, 64) ||
             std::memcmp(write, BpkSoundRawWriteSignature,
                 sizeof(BpkSoundRawWriteSignature) - 1) != 0)
@@ -5389,6 +5845,42 @@ namespace
         if (!IsReadable(candidate, 128))
         {
             return false;
+        }
+        if (kind == 9 || kind == 10 || kind == 13)
+        {
+            const char* name = kind == 9 ? "FsClipNode::startNextShow" :
+                kind == 10 ? "Model::CardSequencer::insertNext" : "FsClipNode::nextShowClip";
+            const auto length = FunctionCodeLength(candidate, 0x2000);
+            for (std::size_t offset = 0; offset + 7 < length; ++offset)
+            {
+                const auto instruction = candidate + offset;
+                if ((instruction[0] == 0x48 || instruction[0] == 0x4C) &&
+                    instruction[1] == 0x8D && (instruction[2] & 0xC7) == 5)
+                {
+                    const auto text = instruction + 7 +
+                        *reinterpret_cast<const std::int32_t*>(instruction + 3);
+                    if (IsReadable(text, 256) && std::memchr(text, 0, 256) != nullptr &&
+                        std::strstr(reinterpret_cast<const char*>(text), name) != nullptr)
+                        return true;
+                }
+            }
+            return false;
+        }
+        if (kind == 6 || kind == 7)
+        {
+            const unsigned char state[] = { 0x8B, 0x43 };
+            const auto load = FindSequence(candidate, 96, state, sizeof(state));
+            if (load == nullptr || load[3] != 0x83 || load[4] != 0xF8 ||
+                load[5] != (kind == 6 ? 1 : 4))
+                return false;
+            const unsigned char store[] = { 0xC7, 0x43, load[2],
+                static_cast<unsigned char>(kind == 6 ? 4 : 3), 0, 0, 0 };
+            return FindSequence(candidate, 128, store, sizeof(store)) != nullptr;
+        }
+        if (kind == 8)
+        {
+            const unsigned char store[] = { 0xF2, 0x0F, 0x11, 0x77 };
+            return FindSequence(candidate, 96, store, sizeof(store)) != nullptr;
         }
         if (kind == 0)
         {
@@ -5553,6 +6045,19 @@ namespace
         return result;
     }
 
+    unsigned char* FindFullScreenStartNextShow()
+    {
+        if (UsesQt6())
+            return FindUniqueFunction(Qt6FsClipNodeStartNextShowSignature,
+                sizeof(Qt6FsClipNodeStartNextShowSignature), 9);
+        auto result = FindUniqueFunction(FsClipNodeStartNextShowSignature,
+            sizeof(FsClipNodeStartNextShowSignature), -1);
+        // Qt5 builds also save R13 and use a larger stack frame. Validate
+        // the function's own diagnostic name before accepting that prologue.
+        return result != nullptr ? result : FindUniqueFunction(
+            FsClipNodeStartNextShowSignature, 11, 9);
+    }
+
     std::uintptr_t FindVtableRva(const char* decoratedClassName)
     {
         const auto headers = ImageHeaders();
@@ -5669,6 +6174,33 @@ namespace
         return IsExecutableAddress(target) ? target : nullptr;
     }
 
+    std::size_t FunctionCodeLength(const unsigned char* function,
+        std::size_t maximum)
+    {
+        if (!UsesQt6())
+            return maximum;
+        const auto headers = ImageHeaders();
+        if (headers == nullptr)
+            return 0;
+        const auto& directory = headers->OptionalHeader.DataDirectory[
+            IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        if (!IsRvaInImage(directory.VirtualAddress, directory.Size))
+            return 0;
+        const auto entries = reinterpret_cast<const RUNTIME_FUNCTION*>(
+            ImageBase() + directory.VirtualAddress);
+        const auto rva = RvaFromAddress(function);
+        for (std::size_t index = 0;
+            index < directory.Size / sizeof(RUNTIME_FUNCTION); ++index)
+        {
+            if (entries[index].BeginAddress == rva)
+                return std::min(maximum, static_cast<std::size_t>(
+                    entries[index].EndAddress - entries[index].BeginAddress));
+            if (entries[index].BeginAddress > rva)
+                break;
+        }
+        return 0;
+    }
+
     bool HasAnimationRenderCall(const unsigned char* wrapper)
     {
         if (!IsReadable(wrapper, 96))
@@ -5676,14 +6208,16 @@ namespace
             return false;
         }
 
-        for (std::size_t callOffset = 0; callOffset + 5 <= 96; callOffset++)
+        const std::size_t wrapperLength = FunctionCodeLength(wrapper, 96);
+        for (std::size_t callOffset = 0; callOffset + 5 <= wrapperLength; callOffset++)
         {
             const auto target = DirectCallTarget(wrapper + callOffset);
             if (target == nullptr || !IsReadable(target, 512))
             {
                 continue;
             }
-            for (std::size_t offset = 0; offset + 12 <= 480; offset++)
+            const std::size_t renderLength = FunctionCodeLength(target, 480);
+            for (std::size_t offset = 0; offset + 12 <= renderLength; offset++)
             {
                 const auto candidate = target + offset;
                 if (candidate[0] == 0x44 && candidate[1] == 0x8B &&
@@ -5731,15 +6265,16 @@ namespace
     bool FindAnimationCallPath(unsigned char* advance,
         AnimationCallPath& path)
     {
-        if (FindDirectAnimationCall(advance, 1024, path))
+        const std::size_t advanceLength = UsesQt6() ? 3072 : 1024;
+        if (FindDirectAnimationCall(advance, advanceLength, path))
         {
             return true;
         }
-        if (!IsReadable(advance, 1024))
+        if (!IsReadable(advance, advanceLength))
         {
             return false;
         }
-        for (std::size_t offset = 0; offset + 5 <= 1024; offset++)
+        for (std::size_t offset = 0; offset + 5 <= advanceLength; offset++)
         {
             auto helper = DirectCallTarget(advance + offset);
             if (helper != nullptr &&
@@ -5830,6 +6365,28 @@ namespace
                 animationOffset = field;
             }
         }
+        if (animationOffset == 0 && UsesQt6())
+        {
+            // Qt 6 retains a pointer to the CAnim member in r14 across the call.
+            for (std::size_t offset = 0; offset + 7 < callOffset; ++offset)
+            {
+                const auto lea = path.MemberFunction + offset;
+                if (lea[0] != 0x4C || lea[1] != 0x8D || lea[2] != 0xB7)
+                    continue;
+                const std::size_t field =
+                    *reinterpret_cast<const std::uint32_t*>(lea + 3);
+                const unsigned char load[] = { 0x49, 0x8B, 0x0E };
+                if (field > MovieStateOffset && field < MovieMutexOffset &&
+                    (field & 7) == 0 && callOffset >= 3 &&
+                    std::memcmp(path.Call - 3, load, sizeof(load)) == 0)
+                {
+                    if (animationOffset != 0 && animationOffset != field)
+                        return false;
+                    movieRegister = 7;
+                    animationOffset = field;
+                }
+            }
+        }
         if (animationOffset == 0)
         {
             return false;
@@ -5879,6 +6436,32 @@ namespace
         std::size_t& pointer1, std::size_t& pointer2,
         std::size_t& generation)
     {
+        if (UsesQt6())
+        {
+            const std::size_t length = FunctionCodeLength(function, 384);
+            const unsigned char pointer[] = { 0x49, 0x8D, 0xB5 };
+            const unsigned char first[] = { 0x4D, 0x8D, 0x4D };
+            const unsigned char second[] = { 0x49, 0x8D, 0x85 };
+            const unsigned char state[] = { 0x41, 0x89, 0x8D };
+            const auto p = FindSequence(function, length, pointer, sizeof(pointer));
+            const auto a = FindSequence(function, length, first, sizeof(first));
+            const auto b = FindSequence(function, length, second, sizeof(second));
+            const auto g = FindSequence(function, length, state, sizeof(state));
+            if (p == nullptr || a == nullptr || b == nullptr || g == nullptr ||
+                !(p < a && a < b && b < g) ||
+                a[4] != 0x4C || a[5] != 0x89 || a[6] != 0x0E ||
+                b[7] != 0x49 || b[8] != 0x89 || b[9] != 0x85)
+                return false;
+            pointer1 = *reinterpret_cast<const std::uint32_t*>(p + 3);
+            scratch1 = a[3];
+            scratch2 = *reinterpret_cast<const std::uint32_t*>(b + 3);
+            pointer2 = *reinterpret_cast<const std::uint32_t*>(b + 10);
+            generation = *reinterpret_cast<const std::uint32_t*>(g + 3);
+            return scratch1 > 0 && scratch2 > scratch1 &&
+                pointer1 > scratch2 && pointer2 == pointer1 + sizeof(void*) &&
+                generation == pointer2 + sizeof(void*) &&
+                scratch2 - scratch1 == pointer1 - scratch2;
+        }
         constexpr std::size_t ScanLength = 384;
         if (!IsReadable(function, ScanLength))
         {
@@ -6181,6 +6764,30 @@ namespace
             return false;
         }
 
+        AnimationAlphaEncodingOffset = 0;
+        if (UsesQt6())
+        {
+            // The alpha dispatch reads the encoding, tests zero, then skips
+            // decoding for encoding 8. Derive its field from that dispatch.
+            for (std::size_t offset = 0; offset + 17 <= 512; offset++)
+            {
+                const auto dispatch = prepare + offset;
+                if (dispatch[0] == 0x8B && dispatch[1] == 0x88 &&
+                    dispatch[6] == 0x85 && dispatch[7] == 0xC9 &&
+                    dispatch[8] == 0x0F && dispatch[9] == 0x84 &&
+                    dispatch[14] == 0x83 && dispatch[15] == 0xF9 &&
+                    dispatch[16] == 8)
+                {
+                    const auto field = *reinterpret_cast<const std::uint32_t*>(
+                        dispatch + 2);
+                    if (field > AnimationTotalFramesOffset && field < 0x1000)
+                        AnimationAlphaEncodingOffset = field;
+                }
+            }
+            if (AnimationAlphaEncodingOffset == 0)
+                return false;
+        }
+
         AnimationAlphaFrameOffset = 0;
         for (std::size_t offset = 0; offset + 7 <= 512; offset++)
         {
@@ -6270,6 +6877,17 @@ namespace
         mask |= resume != nullptr ? 2 : 0;
         auto setRate = FindUniqueFunction(MovieSetPlayRateSignature,
             sizeof(MovieSetPlayRateSignature), 2);
+        const bool qt6 = UsesQt6();
+        if (qt6)
+        {
+            pause = FindUniqueFunction(Qt6MovieActionSignature,
+                sizeof(Qt6MovieActionSignature), 6);
+            resume = FindUniqueFunction(Qt6MovieActionSignature,
+                sizeof(Qt6MovieActionSignature), 7);
+            setRate = FindUniqueFunction(Qt6MovieRateSignature,
+                sizeof(Qt6MovieRateSignature), 8);
+            mask = (pause != nullptr ? 1 : 0) | (resume != nullptr ? 2 : 0);
+        }
         mask |= setRate != nullptr ? 4 : 0;
         MovieVtableRva = FindVtableRva(".?AVMovie@@");
         mask |= MovieVtableRva > 0 ? 256 : 0;
@@ -6281,14 +6899,16 @@ namespace
         }
 
         const unsigned char addMutex[] = { 0x48, 0x81, 0xC1 };
+        const unsigned char qt6Mutex[] = { 0x48, 0x8D, 0xB1 };
         const unsigned char loadState[] = { 0x8B, 0x43 };
         const unsigned char storeRate[] = { 0xF2, 0x0F, 0x11, 0x73 };
+        const unsigned char qt6Rate[] = { 0xF2, 0x0F, 0x11, 0x77 };
         const auto pauseMutex = FindSequence(pause, 48,
-            addMutex, sizeof(addMutex));
+            qt6 ? qt6Mutex : addMutex, sizeof(addMutex));
         const auto pauseState = FindSequence(pause, 96,
             loadState, sizeof(loadState));
         const auto rateStore = FindSequence(setRate, 96,
-            storeRate, sizeof(storeRate));
+            qt6 ? qt6Rate : storeRate, sizeof(storeRate));
         if (pauseMutex == nullptr || pauseState == nullptr ||
             rateStore == nullptr)
         {
@@ -6572,7 +7192,7 @@ namespace
                 auto call = onSample + offset;
                 if (call[0] != 0xE8 ||
                     call[-4] != 0x48 || call[-3] != 0x8B ||
-                    call[-2] != 0x48 ||
+                    call[-2] != (UsesQt6() ? 0x49 : 0x48) ||
                     call[-1] != static_cast<unsigned char>(VideoSoundOffset))
                 {
                     continue;
@@ -6604,6 +7224,27 @@ namespace
         if (!IsReadable(load, 14))
         {
             return false;
+        }
+
+        if (UsesQt6() && load[0] == 0x44 && load[1] == 0x8B &&
+            load[2] == 0xBB && load[7] == 0x41 && load[8] == 0x8B &&
+            load[9] == 0xD7 && load[10] == 0x48 && load[11] == 0x8B &&
+            load[12] == 0xCB && load[13] == 0xE8)
+        {
+            frameOffset = *reinterpret_cast<const std::uint32_t*>(load + 3);
+            length = 7;
+            mutexOffset = 0;
+            for (std::size_t offset = 14; offset + 4 <= 160; ++offset)
+            {
+                const auto candidate = load + offset;
+                if (candidate[0] == 0x4C && candidate[1] == 0x8B &&
+                    candidate[2] == 0x6B)
+                {
+                    mutexOffset = candidate[3];
+                    break;
+                }
+            }
+            return frameOffset > 0 && frameOffset < 0x400 && mutexOffset > 0;
         }
 
         std::size_t frameLoadLength = 0;
@@ -6739,13 +7380,46 @@ namespace
             }
         }
 
+        if (UsesQt6())
+        {
+            const unsigned char queue[] = { 0x48, 0x8B, 0x43 };
+            const unsigned char stride[] = { 0x48, 0x83, 0xC6, 0x18 };
+            const unsigned char ready[] = { 0xC6, 0x44, 0xC8 };
+            const auto allocation = FindSequence(worker, 512, queue, sizeof(queue));
+            const auto step = FindSequence(worker, 512, stride, sizeof(stride));
+            const auto readyStore = FindSequence(worker, 512, ready, sizeof(ready));
+            if (allocation == nullptr || step == nullptr || readyStore == nullptr ||
+                readyStore[4] != 0)
+                return false;
+            VideoFrameQueueOffset = allocation[3];
+            QueueBeginOffset = 0;
+            QueueEndOffset = 16;
+            QueueEntriesOffset = 8;
+            VideoQueueEntryReadyOffset = readyStore[3];
+        }
+
         const unsigned char seekSuffix[] = {
             0x41, 0xB9, 0x04, 0x00, 0x00, 0x00,
             0x45, 0x33, 0xC0, 0x41, 0x8D, 0x51, 0xFB,
             0x48, 0x8B, 0x4B
         };
-        const auto suffix = FindSequence(seek, 512,
+        const unsigned char modernSeek[] = {
+            0x41, 0xB9, 4, 0, 0, 0, 0x45, 0x33, 0xC0,
+            0xBA, 0xFF, 0xFF, 0xFF, 0xFF, 0x48, 0x8B, 0x4F
+        };
+        const auto suffix = UsesQt6() ? FindSequence(seek, 512,
+            modernSeek, sizeof(modernSeek)) : FindSequence(seek, 512,
             seekSuffix, sizeof(seekSuffix));
+        if (UsesQt6())
+        {
+            if (suffix == nullptr || suffix[18] != 0xFF || suffix[19] != 0x15)
+                return false;
+            AvSeekFrameSlotRva = RvaFromAddress(suffix + 24 +
+                *reinterpret_cast<const std::int32_t*>(suffix + 20));
+            VideoFormatContextOffset = suffix[17];
+        }
+        else
+        {
         if (suffix == nullptr || suffix < seek + 7 ||
             suffix[-7] != 0x48 || suffix[-6] != 0x8B ||
             suffix[-5] != 0x05)
@@ -6758,20 +7432,21 @@ namespace
         AvSeekFrameSlotRva = RvaFromAddress(
             slotInstruction + 7 + slotDisplacement);
         VideoFormatContextOffset = suffix[16];
+        }
 
         const unsigned char* currentClear = nullptr;
         std::size_t clearedFrameOffset = 0;
         for (std::size_t offset = 0; offset + 10 <= 96; offset++)
         {
             const auto candidate = suffix + offset;
-            if (candidate[0] == 0xC7 && candidate[1] == 0x43 &&
+            if (candidate[0] == 0xC7 && candidate[1] == (UsesQt6() ? 0x47 : 0x43) &&
                 *reinterpret_cast<const std::uint32_t*>(candidate + 3) == 0)
             {
                 currentClear = candidate;
                 clearedFrameOffset = candidate[2];
                 break;
             }
-            if (candidate[0] == 0xC7 && candidate[1] == 0x83 &&
+            if (candidate[0] == 0xC7 && candidate[1] == (UsesQt6() ? 0x87 : 0x83) &&
                 *reinterpret_cast<const std::uint32_t*>(candidate + 6) == 0)
             {
                 currentClear = candidate;
@@ -6929,13 +7604,61 @@ namespace
             }
         }
 
-        auto clearQueues = FindUniqueFunction(WmvClearQueuesSignature,
+        if (UsesQt6())
+        {
+            const unsigned char mutex[] = { 0x48, 0x8D, 0x71 };
+            const unsigned char counter[] = { 0x8B, 0x43 };
+            const unsigned char color[] = { 0x4C, 0x8D, 0xB3 };
+            const unsigned char interfaceLoad[] = { 0x48, 0x8B, 0x4B };
+            const unsigned char paused[] = { 0x80, 0x7B };
+            const auto lock = FindSequence(onSample, 64, mutex, sizeof(mutex));
+            const unsigned char* count = nullptr;
+            for (std::size_t offset = 0; offset + 6 <= 256; ++offset)
+            {
+                const auto candidate = onSample + offset;
+                if (std::memcmp(candidate, counter, sizeof(counter)) == 0 &&
+                    candidate[3] == 0x89 && candidate[4] == 0x41 && candidate[5] == 0x20)
+                    count = candidate;
+            }
+            const auto completed = FindSequence(onSample, 256, color, sizeof(color));
+            const auto pauseCheck = FindSequence(onSample, 384, paused, sizeof(paused));
+            if (lock == nullptr || count == nullptr || completed == nullptr ||
+                pauseCheck == nullptr || count[3] != 0x89 || count[4] != 0x41 ||
+                count[5] != 0x20 || pauseCheck[3] != 0)
+                return false;
+            WmvQueueMutexOffset = lock[3];
+            WmvSampleCounterOffset = count[2];
+            WmvColorQueueOffset = *reinterpret_cast<const std::uint32_t*>(completed + 3);
+            WmvReaderPausedOffset = pauseCheck[2];
+            for (std::size_t offset = 0; offset + 10 <= 384; ++offset)
+            {
+                const auto candidate = onSample + offset;
+                if (std::memcmp(candidate, interfaceLoad, sizeof(interfaceLoad)) == 0 &&
+                    candidate[4] == 0x48 && candidate[5] == 0x8B &&
+                    candidate[6] == 0x01 && candidate[7] == 0xFF &&
+                    candidate[8] == 0x50 && candidate[9] == 0x60)
+                    WmvReaderInterfaceOffset = candidate[3];
+            }
+        }
+        const unsigned char modernClear[] = {
+            0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57,
+            0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+            0x48, 0x8B, 0xEC, 0x48, 0x83, 0xEC, 0x60, 0x4C, 0x8B, 0xF1
+        };
+        const unsigned char modernPeek[] = {
+            0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83,
+            0xEC, 0x30, 0x48, 0x8B, 0xD9, 0x48, 0x8D, 0x79,
+            0x68, 0x32, 0xD2, 0x88, 0x54, 0x24, 0x28
+        };
+        auto clearQueues = UsesQt6() ? FindUniqueFunction(modernClear,
+            sizeof(modernClear), -1) : FindUniqueFunction(WmvClearQueuesSignature,
             sizeof(WmvClearQueuesSignature), -1);
         WmvClearQueuesRva = clearQueues == nullptr
             ? 0
             : RvaFromAddress(clearQueues);
 
-        auto peekFrame = FindUniqueFunction(WmvPeekFrameSignature,
+        auto peekFrame = UsesQt6() ? FindUniqueFunction(modernPeek,
+            sizeof(modernPeek), -1) : FindUniqueFunction(WmvPeekFrameSignature,
             sizeof(WmvPeekFrameSignature), 4);
         WmvPeekFrameRva = peekFrame == nullptr
             ? 0
@@ -6943,9 +7666,9 @@ namespace
 
         return VideoFrameQueueOffset > 0 &&
             VideoFrameQueueMutexOffset > 0 &&
-            QueueBeginOffset > 0 &&
-            QueueEndOffset > QueueBeginOffset &&
-            QueueEntriesOffset > QueueEndOffset &&
+            (UsesQt6() ? QueueBeginOffset == 0 && QueueEndOffset == 16 &&
+                QueueEntriesOffset == 8 : QueueBeginOffset > 0 &&
+                QueueEndOffset > QueueBeginOffset && QueueEntriesOffset > QueueEndOffset) &&
             VideoQueueEntryReadyOffset > 0 &&
             VideoFormatContextOffset > 0 &&
             IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)) &&
@@ -7140,6 +7863,8 @@ namespace
         WriteResolvedValue(profilePath, section,
             L"AnimationInfoOffset", AnimationInfoOffset);
         WriteResolvedValue(profilePath, section,
+            L"AnimationAlphaEncodingOffset", AnimationAlphaEncodingOffset);
+        WriteResolvedValue(profilePath, section,
             L"AnimationTotalFramesOffset", AnimationTotalFramesOffset);
         WriteResolvedValue(profilePath, section,
             L"AnimationFramesPerSecondOffset",
@@ -7308,6 +8033,26 @@ namespace
             base + VideoFfmpegVtableRva);
         auto scaleFunction = vtable[3];
         auto openFunction = vtable[12];
+        if (UsesQt6())
+        {
+            const unsigned char arguments[] = {
+                0x4C,0x8B,0xC0,0x41,0x8B,0xD7,0x48,0x8B,0xCB,0xE8
+            };
+            const auto call = FindSequence(vtable[11], 128, arguments, sizeof(arguments));
+            if (call == nullptr) return finish(mask, false);
+            const auto decode = DirectCallTarget(call + 9);
+            const unsigned char videoArguments[] = {
+                0x4C,0x8B,0xC6,0x48,0x8D,0x54,0x24,0x40,0x48,0x8B,0xCF,0xE8
+            };
+            const auto videoCall = decode == nullptr ? nullptr :
+                FindSequence(decode, 128, videoArguments, sizeof(videoArguments));
+            if (videoCall == nullptr) return finish(mask, false);
+            scaleFunction = DirectCallTarget(videoCall + 11);
+            const unsigned char registers[] = { 0x4D,0x8B,0xF8,0x48,0x8B,0xFA,0x48,0x8B,0xE9 };
+            if (scaleFunction == nullptr ||
+                FindSequence(scaleFunction, 64, registers, sizeof(registers)) == nullptr)
+                return finish(mask, false);
+        }
         if (!IsExecutableAddress(scaleFunction) ||
             !IsExecutableAddress(openFunction))
         {
@@ -7331,7 +8076,8 @@ namespace
             return static_cast<std::size_t>(end - function);
         };
         const std::size_t openLength = functionLength(openFunction);
-        const std::size_t scaleLength = functionLength(scaleFunction);
+        const std::size_t scaleLength = UsesQt6() ?
+            FunctionCodeLength(scaleFunction, 0x2000) : functionLength(scaleFunction);
         if (!IsReadable(openFunction, openLength) ||
             !IsReadable(scaleFunction, scaleLength))
         {
@@ -7341,6 +8087,16 @@ namespace
         for (std::size_t offset = 0; offset + 32 < openLength; offset++)
         {
             auto instruction = openFunction + offset;
+            if (UsesQt6() && instruction[0] == 0xFF && instruction[1] == 0x15)
+            {
+                auto slot = instruction + 6 + *reinterpret_cast<const std::int32_t*>(instruction + 2);
+                if (IsReadable(slot, sizeof(void*)) && *reinterpret_cast<void**>(slot) == expectedOpen)
+                {
+                    const auto candidate = RvaFromAddress(slot);
+                    if (openSlot != 0 && openSlot != candidate) return finish(mask, false);
+                    openSlot = candidate;
+                }
+            }
             if (instruction[0] != 0x48 || instruction[1] != 0x8B ||
                 instruction[2] != 0x05)
             {
@@ -7411,6 +8167,18 @@ namespace
     bool HasSignature(std::uintptr_t rva, const unsigned char* signature, std::size_t length)
     {
         const auto base = ImageBase();
+        if (base != nullptr && UsesQt6() && IsRvaInImage(rva, 128))
+        {
+            if (signature == MoviePauseSignature || signature == MovieResumeSignature)
+                return std::memcmp(base + rva, Qt6MovieActionSignature,
+                    sizeof(Qt6MovieActionSignature)) == 0 &&
+                    ValidFunctionCandidate(base + rva,
+                        signature == MoviePauseSignature ? 6 : 7);
+            if (signature == MovieSetPlayRateSignature)
+                return std::memcmp(base + rva, Qt6MovieRateSignature,
+                    sizeof(Qt6MovieRateSignature)) == 0 &&
+                    ValidFunctionCandidate(base + rva, 8);
+        }
         return base != nullptr && IsRvaInImage(rva, length) &&
             std::memcmp(base + rva, signature, length) == 0;
     }
@@ -7438,7 +8206,7 @@ namespace
     {
         if (!IsRvaInImage(DecoderWorkerTargetLoadRva,
                 DecoderWorkerTargetLoadLength) ||
-            DecoderWorkerTargetLoadLength < 8)
+            DecoderWorkerTargetLoadLength < (UsesQt6() ? 7u : 8u))
         {
             return false;
         }
@@ -7745,7 +8513,8 @@ namespace
             return true;
         }
 
-        const HMODULE multimedia = GetModuleHandleW(L"Qt5Multimedia.dll");
+        const HMODULE multimedia = GetModuleHandleW(UsesQt6() ?
+            L"Qt6Multimedia.dll" : L"Qt5Multimedia.dll");
         if (multimedia == nullptr)
         {
             return false;
@@ -7755,10 +8524,12 @@ namespace
         switch (command)
         {
         case AudioCommand::Suspend:
-            exportName = "?suspend@QAudioOutput@@QEAAXXZ";
+            exportName = UsesQt6() ? "?suspend@QAudioSink@@QEAAXXZ" :
+                "?suspend@QAudioOutput@@QEAAXXZ";
             break;
         case AudioCommand::Resume:
-            exportName = "?resume@QAudioOutput@@QEAAXXZ";
+            exportName = UsesQt6() ? "?resume@QAudioSink@@QEAAXXZ" :
+                "?resume@QAudioOutput@@QEAAXXZ";
             break;
         }
 
@@ -7787,7 +8558,7 @@ namespace
         {
             return false;
         }
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const auto clear = core == nullptr
             ? nullptr
             : reinterpret_cast<QByteArrayAction>(GetProcAddress(
@@ -7809,15 +8580,18 @@ namespace
             return true;
         }
 
-        const HMODULE multimedia = GetModuleHandleW(L"Qt5Multimedia.dll");
+        const HMODULE multimedia = GetModuleHandleW(UsesQt6() ?
+            L"Qt6Multimedia.dll" : L"Qt5Multimedia.dll");
         if (multimedia == nullptr)
         {
             return false;
         }
         const auto stop = reinterpret_cast<QAudioAction>(GetProcAddress(
-            multimedia, "?stop@QAudioOutput@@QEAAXXZ"));
+            multimedia, UsesQt6() ? "?stop@QAudioSink@@QEAAXXZ" :
+                "?stop@QAudioOutput@@QEAAXXZ"));
         const auto start = reinterpret_cast<QAudioStart>(GetProcAddress(
-            multimedia, "?start@QAudioOutput@@QEAAPEAVQIODevice@@XZ"));
+            multimedia, UsesQt6() ? "?start@QAudioSink@@QEAAPEAVQIODevice@@XZ" :
+                "?start@QAudioOutput@@QEAAPEAVQIODevice@@XZ"));
         if (stop == nullptr || start == nullptr ||
             !ClearSoundPending(sound))
         {
@@ -7875,7 +8649,20 @@ namespace
         if (output == nullptr)
             return BridgeSuccess;
 
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        if (UsesQt6())
+        {
+            // QAudioSink's setVolume is a public method, not a Qt slot.
+            using SetVolume = void(__fastcall*)(void*, double);
+            const auto multimedia = GetModuleHandleW(L"Qt6Multimedia.dll");
+            const auto setVolume = multimedia == nullptr ? nullptr :
+                reinterpret_cast<SetVolume>(GetProcAddress(multimedia,
+                    "?setVolume@QAudioSink@@QEAAXN@Z"));
+            if (setVolume == nullptr) return E_NOINTERFACE;
+            setVolume(output, static_cast<double>(percent) / 100.0);
+            return BridgeSuccess;
+        }
+
+        const HMODULE core = QtCoreModule();
         const auto invoke = core == nullptr ? nullptr :
             reinterpret_cast<QMetaInvoke>(GetProcAddress(core,
                 "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
@@ -8407,7 +9194,7 @@ namespace
     bool SeekVideoToKeyframe(void* video, int streamIndex, int keyframeFrame,
         std::int64_t timestamp)
     {
-        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE qtCore = QtCoreModule();
         const auto requestInterruption = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<QThreadRequestInterruption>(GetProcAddress(
@@ -8572,15 +9359,17 @@ namespace
     bool IsPointOverVisibleMoviePixel(HWND window, POINT point)
     {
         void* movie = ActiveMovie();
-        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE qtCore = QtCoreModule();
         const auto tryLockMutex = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<MutexTryLock>(GetProcAddress(
-                qtCore, "?tryLock@QMutex@@QEAA_NH@Z"));
+                qtCore, UsesQt6() ? "?tryLock@QRecursiveMutex@@QEAA_NH@Z" :
+                    "?tryLock@QMutex@@QEAA_NH@Z"));
         const auto unlockMutex = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<MutexAction>(GetProcAddress(
-                qtCore, "?unlock@QMutex@@QEAAXXZ"));
+                qtCore, UsesQt6() ? "?unlock@QRecursiveMutex@@QEAAXXZ" :
+                    "?unlock@QMutex@@QEAAXXZ"));
         if (movie == nullptr || tryLockMutex == nullptr ||
             unlockMutex == nullptr)
         {
@@ -9157,10 +9946,19 @@ namespace
         }
 
         auto animationBytes = static_cast<const unsigned char*>(animation);
-        const int alphaFrame = *reinterpret_cast<const int*>(
+        int alphaFrame = *reinterpret_cast<const int*>(
             animationBytes + AnimationAlphaFrameOffset);
         const int alphaGeneration = *reinterpret_cast<const int*>(
             animationBytes + AnimationAlphaGenerationOffset);
+        if (UsesQt6() && AnimationAlphaEncodingOffset != 0 &&
+            IsReadable(info, AnimationAlphaEncodingOffset + sizeof(int)) &&
+            *reinterpret_cast<const int*>(static_cast<unsigned char*>(info) +
+                AnimationAlphaEncodingOffset) == 7)
+        {
+            // RLE7 decodes each mask independently; its delta decoder's frame
+            // and generation stay zero. Observe rendered frame progress instead.
+            alphaFrame = movieFrame;
+        }
 
         AcquireSRWLockExclusive(&g_seekReadinessLock);
         const bool sameIdentity =
@@ -9653,6 +10451,15 @@ namespace
     bool ArmDecoderCatchup(void* video, int targetFrame,
         MutexAction lockMutex, MutexAction unlockMutex, int& droppedFrames)
     {
+        if (UsesQt6())
+        {
+            const HMODULE core = QtCoreModule();
+            lockMutex = reinterpret_cast<MutexAction>(GetProcAddress(core,
+                "?lock@QBasicMutex@@QEAAXXZ"));
+            unlockMutex = reinterpret_cast<MutexAction>(GetProcAddress(core,
+                "?unlock@QBasicMutex@@QEAAXXZ"));
+            if (lockMutex == nullptr || unlockMutex == nullptr) return false;
+        }
         auto videoBytes = reinterpret_cast<unsigned char*>(video);
         void* mutex = *reinterpret_cast<void**>(
             videoBytes + VideoFrameQueueMutexOffset);
@@ -9669,6 +10476,35 @@ namespace
             lockMutex(mutex);
             locked = true;
 
+            if (UsesQt6())
+            {
+                auto queue = videoBytes + VideoFrameQueueOffset;
+                if (IsReadable(queue, 3 * sizeof(void*)))
+                {
+                    auto allocation = *reinterpret_cast<void**>(queue);
+                    auto entries = *reinterpret_cast<unsigned char**>(queue + 8);
+                    const auto count = *reinterpret_cast<const std::intptr_t*>(queue + 16);
+                    valid = count >= 0 && count <= 64 &&
+                        (count == 0 || IsWritable(entries, static_cast<std::size_t>(count) * 24)) &&
+                        (allocation == nullptr || (IsReadable(allocation, sizeof(int)) &&
+                            *reinterpret_cast<const int*>(allocation) <= 1));
+                    for (std::intptr_t index = 0; valid && index < count; ++index)
+                    {
+                        auto entry = entries + index * 24;
+                        auto frame = reinterpret_cast<int*>(entry);
+                        if (*frame >= 0) ++droppedFrames;
+                        *frame = -1;
+                        entry[VideoQueueEntryReadyOffset] = 0;
+                    }
+                    if (valid)
+                    {
+                        InterlockedExchangePointer(&g_decoderCatchupVideo, video);
+                        InterlockedExchange(&g_decoderCatchupTargetFrame, targetFrame);
+                    }
+                }
+            }
+            else
+            {
             void* queue = *reinterpret_cast<void**>(
                 videoBytes + VideoFrameQueueOffset);
             if (IsReadable(queue, QueueEntriesOffset))
@@ -9718,6 +10554,7 @@ namespace
                     }
                 }
             }
+            }
         }
         __finally
         {
@@ -9739,6 +10576,10 @@ namespace
 
     int WmvQueueDepth(void* ssvReader, std::size_t queueOffset)
     {
+        std::vector<void*> entries;
+        if (UsesQt6())
+            return ReadQtPointerList(reinterpret_cast<unsigned char*>(ssvReader) +
+                queueOffset, 1024, entries) ? static_cast<int>(entries.size()) : -1;
         auto queueAddress = reinterpret_cast<unsigned char*>(ssvReader) +
             queueOffset;
         if (!IsReadable(queueAddress, sizeof(void*)))
@@ -9763,15 +10604,17 @@ namespace
 
     bool WmvColorQueuePrimed(void* ssvReader)
     {
-        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE qtCore = QtCoreModule();
         const auto lockMutex = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<MutexAction>(GetProcAddress(
-                qtCore, "?lock@QMutex@@QEAAXXZ"));
+                qtCore, UsesQt6() ? "?lock@QBasicMutex@@QEAAXXZ" :
+                    "?lock@QMutex@@QEAAXXZ"));
         const auto unlockMutex = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<MutexAction>(GetProcAddress(
-                qtCore, "?unlock@QMutex@@QEAAXXZ"));
+                qtCore, UsesQt6() ? "?unlock@QBasicMutex@@QEAAXXZ" :
+                    "?unlock@QMutex@@QEAAXXZ"));
         if (lockMutex == nullptr || unlockMutex == nullptr ||
             !IsReadable(ssvReader, WmvColorQueueOffset + sizeof(void*)))
         {
@@ -10470,7 +11313,8 @@ namespace
         void* queueMutex = *reinterpret_cast<void**>(
             videoBytes + VideoFrameQueueMutexOffset);
         if (!IsReadable(formatContext, 0x38) ||
-            !IsReadable(queue, QueueEntriesOffset) ||
+            !IsReadable(UsesQt6() ? videoBytes + VideoFrameQueueOffset : queue,
+                UsesQt6() ? 3 * sizeof(void*) : QueueEntriesOffset) ||
             queueMutex == nullptr)
         {
             return false;
@@ -10918,7 +11762,7 @@ namespace
             return EngineError();
         }
 
-        unsigned char* thunk = AllocateNear(call + 5, 64);
+        unsigned char* thunk = AllocateNear(call + 5, 80);
         if (thunk == nullptr)
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
@@ -10965,7 +11809,20 @@ namespace
         std::memcpy(thunk + 54, &originalScaleAddress,
             sizeof(originalScaleAddress));
         thunk[33] = static_cast<unsigned char>(VideoCurrentFrameOffset);
-        FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
+        std::size_t codeSize = sizeof(code);
+        if (UsesQt6())
+        {
+            // Qt6's scaling helper keeps Video in rbp and uses a disp32 frame field.
+            std::memmove(thunk + 37, thunk + 34, sizeof(code) - 34);
+            thunk[12] = 0x28; // cmp rbp,[rax]
+            thunk[14] += 3;
+            thunk[30] += 3;
+            thunk[32] = 0x85; // cmp [rbp+disp32],eax
+            const auto frameOffset = static_cast<std::uint32_t>(VideoCurrentFrameOffset);
+            std::memcpy(thunk + 33, &frameOffset, sizeof(frameOffset));
+            codeSize += 3;
+        }
+        FlushInstructionCache(GetCurrentProcess(), thunk, codeSize);
 
         const std::intptr_t relative =
             reinterpret_cast<std::intptr_t>(thunk) -
@@ -11080,6 +11937,22 @@ namespace
             VideoFrameQueueMutexOffset);
         std::memcpy(thunk + 5, &frameOffset, sizeof(frameOffset));
         std::memcpy(thunk + 54, &mutexOffset, sizeof(mutexOffset));
+        if (UsesQt6())
+        {
+            const unsigned char modern[] = {
+                0x9C, 0x50, 0x44, 0x8B, 0xBB, 0, 0, 0, 0,
+                0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
+                0x48, 0x3B, 0x18, 0x75, 0x1D,
+                0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,
+                0xB9, 0xFF, 0xFF, 0xFF, 0xFF, 0x87, 0x08,
+                0x85, 0xC9, 0x78, 0x08, 0x44, 0x3B, 0xF9,
+                0x7D, 0x03, 0x44, 0x8B, 0xF9, 0x58, 0x9D, 0xC3
+            };
+            std::memcpy(thunk, modern, sizeof(modern));
+            std::memcpy(thunk + 5, &frameOffset, sizeof(frameOffset));
+            std::memcpy(thunk + 11, &videoAddress, sizeof(videoAddress));
+            std::memcpy(thunk + 26, &targetAddress, sizeof(targetAddress));
+        }
         FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
 
         const std::intptr_t relative =
@@ -11763,7 +12636,7 @@ IStripperWarmDressingRoomCache()
 {
     __try
     {
-        const HMODULE core = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE core = QtCoreModule();
         const QtObjectFunctions qt = {
             reinterpret_cast<QObjectInherits>(core == nullptr ? nullptr :
                 GetProcAddress(core, "?inherits@QObject@@QEBA_NPEBD@Z")),
@@ -11864,7 +12737,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 124;
+    return 132;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
@@ -12570,15 +13443,17 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperCaptureAlphaCheckpoint(
         }
 
         void* movie = ActiveMovie();
-        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE qtCore = QtCoreModule();
         const auto tryLockMutex = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<MutexTryLock>(GetProcAddress(
-                qtCore, "?tryLock@QMutex@@QEAA_NH@Z"));
+                qtCore, UsesQt6() ? "?tryLock@QRecursiveMutex@@QEAA_NH@Z" :
+                    "?tryLock@QMutex@@QEAA_NH@Z"));
         const auto unlockMutex = qtCore == nullptr
             ? nullptr
             : reinterpret_cast<MutexAction>(GetProcAddress(
-                qtCore, "?unlock@QMutex@@QEAAXXZ"));
+                qtCore, UsesQt6() ? "?unlock@QRecursiveMutex@@QEAAXXZ" :
+                    "?unlock@QMutex@@QEAAXXZ"));
         if (movie == nullptr || tryLockMutex == nullptr ||
             unlockMutex == nullptr)
         {
@@ -12742,7 +13617,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperGetSeekReadinessMask()
         {
             mask |= 0x10;
         }
-        if (IsReadable(queue, QueueEntriesOffset))
+        if (IsReadable(UsesQt6() ? videoBytes + VideoFrameQueueOffset : queue,
+                UsesQt6() ? 3 * sizeof(void*) : QueueEntriesOffset))
         {
             mask |= 0x20;
         }
@@ -12812,18 +13688,21 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
             return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
         }
 
-        const HMODULE qtCore = GetModuleHandleW(L"Qt5Core.dll");
+        const HMODULE qtCore = QtCoreModule();
         if (qtCore == nullptr)
         {
             return EngineError();
         }
 
         const auto lockMutex = reinterpret_cast<MutexAction>(GetProcAddress(
-            qtCore, "?lock@QMutex@@QEAAXXZ"));
+            qtCore, UsesQt6() ? "?lock@QRecursiveMutex@@QEAAXXZ" :
+                    "?lock@QMutex@@QEAAXXZ"));
         const auto tryLockMutex = reinterpret_cast<MutexTryLock>(GetProcAddress(
-            qtCore, "?tryLock@QMutex@@QEAA_NH@Z"));
+            qtCore, UsesQt6() ? "?tryLock@QRecursiveMutex@@QEAA_NH@Z" :
+                    "?tryLock@QMutex@@QEAA_NH@Z"));
         const auto unlockMutex = reinterpret_cast<MutexAction>(GetProcAddress(
-            qtCore, "?unlock@QMutex@@QEAAXXZ"));
+            qtCore, UsesQt6() ? "?unlock@QRecursiveMutex@@QEAAXXZ" :
+                    "?unlock@QMutex@@QEAAXXZ"));
         if (lockMutex == nullptr || tryLockMutex == nullptr ||
             unlockMutex == nullptr)
         {

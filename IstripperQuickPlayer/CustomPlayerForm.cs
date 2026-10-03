@@ -476,6 +476,15 @@ internal sealed class CustomPlayerForm : Form
         previous.Left + (previous.Width - size.Width) / 2,
         workArea.Bottom - size.Height);
 
+    void ResizeAtBottom(Size requested, Rectangle workArea)
+    {
+        Rectangle previous = Bounds;
+        Size = requested;
+        // Windows can constrain the requested size. Anchor the actual bounds,
+        // just as releasing a dragged player does.
+        Location = AnchoredLocation(Size, previous, workArea);
+    }
+
     internal void TogglePause() => paused = !paused;
     internal void SetPaused(bool value) => paused = value;
     internal void SeekTo(double seconds)
@@ -614,7 +623,7 @@ internal sealed class CustomPlayerForm : Form
     {
         settleTimer.Stop();
         int next = Math.Clamp(percent, minimumPercent, 200);
-        if (next == sizePercent) return;
+        bool changed = next != sizePercent;
         sizePercent = next;
         if (renderer != null)
         {
@@ -625,12 +634,11 @@ internal sealed class CustomPlayerForm : Form
             CustomRtxDiagnostics.Write("player", diagnosticId,
                 "size-request", $"percent={next} output={width}x{height} " +
                 $"renderer={renderer.DiagnosticId}");
-            SetWindowPos(Handle, new IntPtr(-1), Left + (Width - width) / 2,
-                work.Bottom - height, width, height, 0x10 | 0x40);
-            renderer.ResizeOutput(width, height);
+            ResizeAtBottom(new Size(width, height), work);
+            renderer.ResizeOutput(ClientSize.Width, ClientSize.Height);
             LockStateOverlay.ShowTextForWindow(this, $"{sizePercent}%");
         }
-        if (notifyChange)
+        if (notifyChange && changed)
             SizePercentChanged?.Invoke(sizePercent);
     }
     internal void ClosePlayer() { if (!IsDisposed) BeginInvoke(Close); }
@@ -1231,6 +1239,7 @@ internal sealed class CustomPlayerForm : Form
     }
 
     internal static bool VerifyHitTesting() =>
+        VerifyBottomAnchoredResize() &&
         HitTest(false, false, false, false) == HtTransparent &&
         HitTest(false, false, false, true) == HtCaption &&
         HitTest(true, false, false, true) == HtClient &&
@@ -1275,6 +1284,25 @@ internal sealed class CustomPlayerForm : Form
             AnchoredLocation(new Size(100, 200),
             new Rectangle(300, 400, 200, 300),
             new Rectangle(0, 0, 1920, 1080)) == new Point(350, 880);
+
+    static bool VerifyBottomAnchoredResize()
+    {
+        using CustomPlayerForm player = new("", null);
+        try
+        {
+            Rectangle work = new(0, 0, 1920, 1080);
+            player.Bounds = new Rectangle(500, 300, 200, 100);
+            player.MaximumSize = new Size(400, 300);
+            player.SetLocked(true);
+            player.ResizeAtBottom(new Size(800, 600), work);
+            if (player.Bottom != work.Bottom || player.Left + player.Width / 2 != 600 ||
+                player.Size != new Size(400, 300)) return false;
+            player.Top = 100;
+            player.ResizeAtBottom(player.Size, work);
+            return player.Bottom == work.Bottom;
+        }
+        finally { player.settleTimer.Dispose(); }
+    }
 
     static bool IsEstablishedWindow(bool configured, int width, int height) =>
         configured && width > 15 && height > 15;

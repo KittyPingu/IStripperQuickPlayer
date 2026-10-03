@@ -31,6 +31,9 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(VerifyCompatibility)' == 'true'">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
     <OutDir>$(ProjectDir)..\..\IstripperQuickPlayer\dependencies\</OutDir>
@@ -76,7 +79,8 @@
   <ItemGroup>
     <ClCompile Include="BridgeIpc.cpp" />
     <ClCompile Include="OpenGlHdr.cpp" />
-    <ClCompile Include="PlaybackBridge.cpp" />
+    <ClCompile Include="PlaybackBridge.cpp" Condition="'$(VerifyCompatibility)' != 'true'" />
+    <ClCompile Include="PlaybackBridgeCompatibilityTests.cpp" Condition="'$(VerifyCompatibility)' == 'true'" />
     <ClCompile Include="..\..\third_party\minhook\src\buffer.c">
       <DisableSpecificWarnings>4201;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
@@ -90,5 +94,17 @@
       <DisableSpecificWarnings>4701;4706;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
   </ItemGroup>
+  <PropertyGroup Condition="'$(VerifyCompatibility)' == 'true'">
+    <ConfigurationType>Application</ConfigurationType>
+    <TargetName>PlaybackBridgeCompatibilityTests</TargetName>
+    <TargetExt>.exe</TargetExt>
+    <OutDir>$(ProjectDir)obj\verification\</OutDir>
+    <IntDir>$(ProjectDir)obj\verification\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(VerifyCompatibility)' == 'true'">
+    <Link>
+      <SubSystem>Console</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed baseline. Bridge v89
+supported Totem API. Version 2.4.0.0 is the analysed Qt5 baseline. Bridge v132
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -15,6 +15,46 @@ The same resolver has also been run successfully against downgraded iStripper
 2.3.0.3 (`C2C24A3DAEC4C2F2258A5B1364808D683D3A52F77F3DD9FBED4F628DFD227693`).
 Its code RVAs moved while the resolver independently recovered the complete
 layout.
+
+## Qt6 compatibility
+
+iStripper 2.5.0 uses Qt6. The bridge selects separate validated instruction
+patterns for its movie, decoder, WMV, and fullscreen layouts while retaining
+the Qt5 resolver for 2.4.x. Qt6 strings and arrays contain three words; lists
+of strings, decoder frames, and fullscreen queue records store values inline.
+Fullscreen cards use Qt shared ownership. Their control blocks use the host's
+allocator and deallocator, and the bridge stays pinned while its deleter can
+be called. Movie locks use Qt6 `QRecursiveMutex`; decoder queues use
+`QBasicMutex`. PCM output uses `QAudioSink`, including its public volume
+method. Dressing Room URL capture covers both loaded FFmpeg 57 and 61 engines.
+Fullscreen activity comes from the live Qt6 running property rather than its persisted
+desktop mode. The Qt5 path retains the registry mode; older state packets
+without an activity field also retain that fallback in the API.
+Qt6 RLE7 masks are decoded independently and leave the delta decoder's counters
+at zero. Seek readiness observes rendered frame progress for that encoding;
+delta masks and the Qt5 path keep their existing decoder progress checks.
+
+The newer 2.4.0.0 Qt5 executable also uses shared fullscreen cards. The resolver
+detects that ownership independently of the Qt major version, retaining the
+older Qt5 raw-card path and Qt5 QList storage. Pending fullscreen replacements
+are retained per node so requests for different slots can be issued together.
+REST pause and relative seeks call the same playback helpers as the UI, including
+when QuickPlayer is hidden. REST status recognizes active fullscreen clips;
+individual clip identities are available through the fullscreen endpoint.
+
+Build the isolated compatibility test with `VerifyCompatibility=true` on the
+native project, using the same Release/x64 settings and Windows SDK override
+as the bridge. Run `obj\verification\PlaybackBridgeCompatibilityTests.exe`
+with the absolute path to the installed `vghd.exe`. It maps the executable
+without running it, validates both list layouts, exercises the installed Qt
+string/array exports, resolves playback/audio/seek/fullscreen layouts, and
+executes the Qt6 seek thunks against synthetic frames. It does not inject
+into the running iStripper process. Exit code zero is required. Run it again
+after switching installations to verify the actual 2.4.x binary as well.
+
+Live verification remains separate: restart iStripper to unload a previously
+pinned bridge before replacing the DLL, then test playback, seeking, audio,
+fullscreen slot replacement and queue edits through QuickPlayer and its API.
 
 ## How the transparent desktop movie is built
 
@@ -90,7 +130,8 @@ injected bridge cannot leave iStripper waiting on the UI process.
 
 Fullscreen shader data and textures do not use a fixed vghd RVA or object
 offset. At startup the bridge resolves `QOpenGLShaderProgram::bind`,
-`uniformLocation`, and `setUniformValue` from the loaded `Qt5Gui.dll` export
+`uniformLocation`, and `setUniformValue` from the loaded `Qt5Gui.dll` or
+`Qt6OpenGL.dll` export
 table, and resolves core texture calls from `opengl32.dll`. The current
 context's `glActiveTexture` entry point is obtained dynamically through
 `wglGetProcAddress` on the render thread. The bind hook sets

@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 124;
+        private const int PlaybackBridgeVersion = 132;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -242,8 +242,6 @@ namespace IStripperQuickPlayer
         private readonly ToolStripMenuItem restoreToolStripMenuItem =
             new("Restore QuickPlayer Data...");
         private readonly object playbackHistoryLock = new();
-        private static readonly object playbackRegistryLock = new();
-        private static RegistryKey? playbackParametersKey;
         private bool playbackTimelinePolling;
         private int nowPlayingUiUpdatePending;
         private string displayedNowPlayingCardTag = "";
@@ -3393,7 +3391,6 @@ namespace IStripperQuickPlayer
 
         private void ResetVghdAttachment()
         {
-            DisposePlaybackRegistryCache();
             lock (playbackApiLock)
             {
                 playbackBridgeClient?.Dispose();
@@ -3910,15 +3907,15 @@ namespace IStripperQuickPlayer
             RequirePlaybackResult("IStripperSetPlayRate", bits);
         }
 
-        private async Task TogglePlaybackPauseAsync()
+        private async Task<bool> TogglePlaybackPauseAsync()
         {
             if (customPlayer != null)
             {
                 customPlayer.TogglePause();
                 SetPlaybackStatus(customPlayer.Paused ? "Paused." : "Playing.");
-                return;
+                return true;
             }
-            await RunPlaybackOperationAsync(_ =>
+            return await RunPlaybackOperationAsync(_ =>
             {
                 int state = RequirePlaybackResult("IStripperGetState");
                 if (state == 3)
@@ -3944,14 +3941,14 @@ namespace IStripperQuickPlayer
         private async void cmdPlayPause_Click(object sender, EventArgs e) =>
             await TogglePlaybackPauseAsync();
 
-        private async Task SeekPlaybackRelativeAsync(double fraction)
+        private async Task<bool> SeekPlaybackRelativeAsync(double fraction)
         {
             if (customPlayer != null)
             {
                 customPlayer.SeekBy(customPlayer.DurationSeconds * fraction);
-                return;
+                return true;
             }
-            await RunPlaybackOperationAsync(token =>
+            return await RunPlaybackOperationAsync(token =>
                 SeekRelativeAsync(fraction, token));
         }
 
@@ -4945,30 +4942,17 @@ namespace IStripperQuickPlayer
 
         private static string GetPlaybackRegistryValue(string valueName)
         {
-            lock (playbackRegistryLock)
+            try
             {
-                try
-                {
-                    playbackParametersKey ??= Registry.CurrentUser.OpenSubKey(
-                        @"Software\Totem\vghd\parameters", false);
-                    return playbackParametersKey?.GetValue(
-                        valueName, "")?.ToString() ?? "";
-                }
-                catch
-                {
-                    playbackParametersKey?.Dispose();
-                    playbackParametersKey = null;
-                    return "";
-                }
+                // Installers can replace this key while QuickPlayer is running.
+                // A handle to a deleted key returns the default without throwing.
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Totem\vghd\parameters", false);
+                return key?.GetValue(valueName, "")?.ToString() ?? "";
             }
-        }
-
-        private static void DisposePlaybackRegistryCache()
-        {
-            lock (playbackRegistryLock)
+            catch
             {
-                playbackParametersKey?.Dispose();
-                playbackParametersKey = null;
+                return "";
             }
         }
 
@@ -5786,7 +5770,6 @@ namespace IStripperQuickPlayer
             directCompositionCardOverlays?.Dispose();
             directCompositionCardOverlays = null;
             playbackTimelineTimer.Stop();
-            DisposePlaybackRegistryCache();
             if (panicActive)
             {
                 try
@@ -5973,7 +5956,6 @@ namespace IStripperQuickPlayer
         {
             formIsClosing = true;
             StopRestApi();
-            DisposePlaybackRegistryCache();
             playbackLifetime.Cancel();
             timerhook?.Dispose();
             DisableMovieCapture();
