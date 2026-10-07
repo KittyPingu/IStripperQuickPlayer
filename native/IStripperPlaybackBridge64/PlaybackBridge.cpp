@@ -4725,6 +4725,15 @@ namespace
         {
             ReleaseCapture();
         }
+        if (message == WM_WINDOWPOSCHANGING && lParam != 0 &&
+            InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
+        {
+            // Qt can lower the desktop movie when another application gains
+            // focus. Preserve its topmost band while the player is locked.
+            auto* position = reinterpret_cast<WINDOWPOS*>(lParam);
+            if ((position->flags & SWP_NOZORDER) == 0)
+                position->hwndInsertAfter = HWND_TOPMOST;
+        }
         if (message == WM_STYLECHANGING &&
             static_cast<int>(wParam) == GWL_EXSTYLE && lParam != 0 &&
             InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
@@ -4754,6 +4763,17 @@ namespace
         if (!IsMovieWindow(window))
         {
             return false;
+        }
+
+        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+            IsWindowVisible(window) &&
+            (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0)
+        {
+            // Apply on lock/new HWND and repair a lost topmost state through
+            // the existing health watcher without continually raising it.
+            SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                SWP_NOSENDCHANGING);
         }
 
         const bool clickThrough =
