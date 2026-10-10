@@ -5,6 +5,9 @@ namespace IStripperQuickPlayer;
 
 public partial class Form1
 {
+    internal static bool DesktopPlaybackModeChanged(int previous, int current) =>
+        current is >= 1 and <= 3 && previous != current;
+
     async Task<int> RunDesktopControlAsync(Func<int> command)
     {
         try { return await Task.Run(command); }
@@ -60,6 +63,8 @@ public partial class Form1
             DateTime discoverAfter = DateTime.UtcNow.AddSeconds(1);
             ulong lastInstance = 0;
             int checkpointBucket = -1;
+            DesktopBridgeSnapshot? loggedSnapshot = null;
+            DateTime heartbeatAfter = DateTime.MinValue;
             while (!formIsClosing && attachment == Volatile.Read(ref desktopAttachment) && client.IsConnected)
             {
                 try
@@ -80,6 +85,15 @@ public partial class Form1
                         attachment == Volatile.Read(ref desktopAttachment))
                     {
                         DesktopBridgeSnapshot snapshot = DesktopBridgeSnapshot.Parse(packet);
+                        if (loggedSnapshot == null || snapshot.Instance != loggedSnapshot.Instance ||
+                            snapshot.CompletedInstance != loggedSnapshot.CompletedInstance ||
+                            snapshot.Request != loggedSnapshot.Request || snapshot.Path != loggedSnapshot.Path ||
+                            snapshot.State != loggedSnapshot.State || DateTime.UtcNow >= heartbeatAfter)
+                        {
+                            DesktopPlaybackLog.Record("native-snapshot", new { attachment, snapshot });
+                            loggedSnapshot = snapshot;
+                            heartbeatAfter = DateTime.UtcNow.AddSeconds(10);
+                        }
                         if (snapshot.Path.Length != 0) discovered = true;
                         else if (!captureArmed)
                         {
@@ -115,6 +129,7 @@ public partial class Form1
                 }
                 catch (Exception exception)
                 {
+                    DesktopPlaybackLog.Record("observation-failed", new { attachment, error = exception.Message });
                     if (attachment == Volatile.Read(ref desktopAttachment))
                         Volatile.Write(ref desktopSnapshot, null);
                     SetPlaybackStatus("Desktop observation failed: " + exception.Message);
@@ -143,7 +158,20 @@ public partial class Form1
         var prepared = desktopPlayback.Prepared;
         string previousPath = desktopPlayback.Confirmed?.Path ?? "";
         ulong previousInstance = desktopPlayback.Confirmed?.Instance ?? 0;
+        var pending = desktopPlayback.Pending;
+        ulong previousCompletion = desktopPlayback.Confirmed?.CompletedInstance ?? 0;
         if (!desktopPlayback.Observe(observation, out var accepted, out bool manual, out bool completed)) return;
+        if (previousInstance != snapshot.Instance || previousPath != snapshot.Path ||
+            previousCompletion != snapshot.CompletedInstance || accepted != null || manual || completed)
+            DesktopPlaybackLog.Record("transition-decision", new
+            {
+                observation, previousInstance, previousPath, previousCompletion, prepared, pending,
+                accepted, manual, completed, desktopManualTakeover,
+                desktopPlayback.ActiveQueuedCard, desktopPlayback.ActiveManualQueueEntry,
+                desktopPlayback.ActiveAutomaticQueueEntry,
+                queueEnabled = Properties.Settings.Default.EnablePlayQueue,
+                manualQueue = manualPlayQueue.ToArray(), automaticQueue = automaticPlayQueue.ToArray()
+            });
         if (snapshot.Window != 0 && snapshot.Bounds.Width > 15 && snapshot.Bounds.Height > 15)
             lastDesktopPlacement = snapshot.Bounds;
         if (accepted?.Reservation is DesktopQueueReservation reservation)
@@ -270,13 +298,18 @@ public partial class Form1
             {
                 if (attachment != Volatile.Read(ref desktopAttachment)) return;
                 int result = client.CallRoundTrip("IStripperPrepareDesktopSelection", packet);
+                DesktopPlaybackLog.Record("prepare-result", new { attachment, selection, result });
                 if (result < 0 && !formIsClosing)
                     BeginInvoke((Action)(() =>
                     {
                         if (attachment == Volatile.Read(ref desktopAttachment)) desktopPlayback.Cancel(selection.Id);
                     }));
             }
-            catch (Exception exception) { SetPlaybackStatus(exception.Message); }
+            catch (Exception exception)
+            {
+                DesktopPlaybackLog.Record("prepare-failed", new { attachment, selection, error = exception.Message });
+                SetPlaybackStatus(exception.Message);
+            }
         });
     }
 
@@ -346,6 +379,8 @@ public partial class Form1
 
     void ConfirmDesktopReservation(DesktopQueueReservation reservation, string path)
     {
+        DesktopPlaybackLog.Record("reservation-confirming", new { reservation, path,
+            desktopPlayback.ActiveQueuedCard, manualQueue = manualPlayQueue.ToArray(), automaticQueue = automaticPlayQueue.ToArray() });
         if (!reservation.Continuation)
         {
             List<PlayQueueEntry> queue = reservation.Manual ? manualPlayQueue : automaticPlayQueue;
@@ -355,7 +390,11 @@ public partial class Form1
                 CompleteActiveManualQueueEntry();
             }
             int index = queue.FindIndex(entry => ReferenceEquals(entry, reservation.Entry));
-            if (index < 0) return;
+            if (index < 0)
+            {
+                DesktopPlaybackLog.Record("reservation-missing", new { reservation, path });
+                return;
+            }
             queue.RemoveAt(index);
             CompleteActiveManualQueueEntry();
             StartQueuedCardSession(reservation.Entry, path, reservation.SmartRules);
@@ -366,6 +405,8 @@ public partial class Form1
         desktopPlayback.ActiveQueuedCardLastAnimationPath = path;
         SavePreviousQueue();
         RenderPlayQueues();
+        DesktopPlaybackLog.Record("reservation-confirmed", new { path, desktopPlayback.ActiveQueuedCard,
+            desktopPlayback.ActiveManualQueueEntry, desktopPlayback.ActiveAutomaticQueueEntry });
     }
 
     bool RequestDesktopAnimation(string path)
@@ -391,6 +432,7 @@ public partial class Form1
             {
                 if (attachment != Volatile.Read(ref desktopAttachment)) return;
                 int result = client.CallRoundTrip("IStripperRequestDesktopSelection", packet);
+                DesktopPlaybackLog.Record("request-result", new { attachment, request, result });
                 if (result < 0 && !formIsClosing)
                     BeginInvoke((Action)(() =>
                     {
@@ -400,6 +442,7 @@ public partial class Form1
             }
             catch (Exception exception)
             {
+                DesktopPlaybackLog.Record("request-failed", new { attachment, request, error = exception.Message });
                 SetPlaybackStatus(exception.Message);
                 if (!formIsClosing) BeginInvoke((Action)(() => desktopPlayback.Cancel(request.Id)));
             }

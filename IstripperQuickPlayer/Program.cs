@@ -494,6 +494,13 @@ namespace IStripperQuickPlayer
                         new System.Drawing.Size(216, 323) ||
                     !CardRenderer.VerifyRelativeMetrics() ||
                     !Form1.VerifyQueueEntryRemoval() ||
+                    Form1.DesktopPlaybackModeChanged(1, 1) ||
+                    Form1.DesktopPlaybackModeChanged(2, 2) ||
+                    Form1.DesktopPlaybackModeChanged(3, 3) ||
+                    Form1.DesktopPlaybackModeChanged(1, 0) ||
+                    !Form1.DesktopPlaybackModeChanged(1, 2) ||
+                    !Form1.DesktopPlaybackModeChanged(2, 3) ||
+                    !Form1.DesktopPlaybackModeChanged(3, 1) ||
                     !Wallpaper.VerifyBlurBufferReuse())
                 {
                     Environment.ExitCode = 1;

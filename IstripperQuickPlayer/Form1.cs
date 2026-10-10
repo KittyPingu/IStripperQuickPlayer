@@ -4705,7 +4705,10 @@ namespace IStripperQuickPlayer
                 uint mode = BitConverter.ToUInt32(data);
                 if (mode is >= 1 and <= 3)
                 {
-                    Volatile.Write(ref playerMode, (int)mode);
+                    int previousMode = Interlocked.Exchange(ref playerMode, (int)mode);
+                    DesktopPlaybackLog.Record("mode-notification", new { mode, previousMode });
+                    // The host repeats this value; resizing again can recreate its current movie.
+                    if (!DesktopPlaybackModeChanged(previousMode, (int)mode)) return false;
                     BeginInvoke((Action)(() =>
                     {
                         RebuildAutomaticQueue();

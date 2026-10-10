@@ -2644,6 +2644,9 @@ private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
             bool clearManualQueueEntry = true,
             bool discardManualQueueEntry = false)
         {
+            DesktopPlaybackLog.Record("queue-owner-cleared", new { clearManualQueueEntry, discardManualQueueEntry,
+                desktopPlayback.ActiveQueuedCard, desktopPlayback.ActiveManualQueueEntry,
+                desktopPlayback.ActiveAutomaticQueueEntry, caller = new System.Diagnostics.StackTrace(1, false).ToString() });
             desktopPlayback.ActiveQueuedCard = null;
             desktopPlayback.ActiveAutomaticQueueEntry = null;
             desktopPlayback.ActiveQueuedCardStartedAt = -1;

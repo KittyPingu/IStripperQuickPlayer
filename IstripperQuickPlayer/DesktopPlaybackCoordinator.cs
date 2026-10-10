@@ -32,6 +32,7 @@ internal sealed class DesktopPlaybackCoordinator
 
     internal void Attach(long attachment)
     {
+        DesktopPlaybackLog.Record("attachment", new { attachment, version = typeof(DesktopPlaybackCoordinator).Assembly.GetName().Version?.ToString() });
         Attachment = attachment;
         Confirmed = null;
         Pending = Prepared = null;
@@ -44,18 +45,21 @@ internal sealed class DesktopPlaybackCoordinator
         // Custom playback can leave the last observed native movie behind the cached snapshot.
         if (baseline != null) Observe(baseline, out _, out _, out _);
         Prepared = null;
-        return Pending = new(++nextRequest, path, reservation, false,
-            (long)lastPlaybackInstance);
+        Pending = new(++nextRequest, path, reservation, false, (long)lastPlaybackInstance);
+        DesktopPlaybackLog.Record("request", new { Attachment, Pending, ActiveQueuedCard });
+        return Pending;
     }
 
     internal Selection Prepare(string path, object? reservation)
     {
-        return Prepared = new(++nextRequest, path, reservation, true,
-            (long)lastPlaybackInstance);
+        Prepared = new(++nextRequest, path, reservation, true, (long)lastPlaybackInstance);
+        DesktopPlaybackLog.Record("prepare", new { Attachment, Prepared, ActiveQueuedCard });
+        return Prepared;
     }
 
     internal void Cancel(long id)
     {
+        DesktopPlaybackLog.Record("cancel", new { id, Pending, Prepared, ActiveQueuedCard });
         if (Pending?.Id == id) Pending = null;
         if (Prepared?.Id == id) Prepared = null;
     }
@@ -66,6 +70,7 @@ internal sealed class DesktopPlaybackCoordinator
                 StringComparison.OrdinalIgnoreCase)) return null;
         Selection accepted = Pending;
         Pending = null;
+        DesktopPlaybackLog.Record("custom-confirmed", accepted);
         return accepted;
     }
 
