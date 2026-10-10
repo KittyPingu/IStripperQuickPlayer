@@ -1903,11 +1903,10 @@ public partial class Form1
         if (animationPath.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
         {
             if (!PlaybackSourceAllowed(IsFullscreenModeActive(), custom: true)) return false;
-            DesktopQueueReservation? reservation = desktopPlayback.Pending?.Path == animationPath
-                ? desktopPlayback.Pending.Reservation as DesktopQueueReservation : null;
+            if (desktopPlayback.Pending?.Path != animationPath)
+                desktopPlayback.Request(animationPath);
             bool started = StartCustomPlayback(animationPath);
-            if (started && reservation != null) ConfirmDesktopReservation(reservation, animationPath);
-            ReleaseDesktopReservation();
+            if (!started) ReleaseDesktopReservation();
             ClearNativeDesktopSelection();
             return started;
         }
@@ -2086,10 +2085,26 @@ public partial class Form1
                 previous.ClosePlayer();
             };
         }
+        var playbackRequest = desktopPlayback.Pending;
         player.FirstFramePresented += (_, _) =>
+        {
+            if (customPlayer != player) return;
+            ShowNowPlaying(animationPath, doWallpaper: true);
+            if (playbackRequest != null && desktopPlayback.ConfirmCustom(playbackRequest.Id,
+                    animationPath) is { } accepted)
+            {
+                if (accepted.Reservation is DesktopQueueReservation reservation)
+                    ConfirmDesktopReservation(reservation, animationPath);
+                else
+                {
+                    ClearQueuedCardSession();
+                    ObserveUnqueuedCardPlayback(animationPath);
+                }
+            }
             CustomRtxDiagnostics.Write("handoff", 0, "first-frame",
                 $"player={player.DiagnosticId} previous={previous?.DiagnosticId} " +
                 $"elapsedMs={CustomRtxDiagnostics.ElapsedMilliseconds(handoffStarted):F3}");
+        };
         player.PreloadRequested += (_, _) => BeginInvoke(() =>
             PreloadNextCustomClip(card!, clip));
         player.PlaybackCompleted += (_, _) =>
@@ -2098,6 +2113,7 @@ public partial class Form1
             BeginInvoke(() =>
             {
                 if (customPlayer != player) return;
+                if (playbackRequest != null) desktopPlayback.Cancel(playbackRequest.Id);
                 customPlayerBounds = playerBounds;
                 GetNextClip(null, animationPath);
                 if (customPlayer == player)
@@ -2115,6 +2131,7 @@ public partial class Form1
         };
         player.PlaybackFailed += (_, error) => BeginInvoke(() =>
         {
+            if (playbackRequest != null) desktopPlayback.Cancel(playbackRequest.Id);
             CustomRtxDiagnostics.Write("handoff", 0, "player-failed",
                 $"animation=\"{animationPath}\" player={player.DiagnosticId} " +
                 $"previous={previous?.DiagnosticId}", error);
@@ -2127,6 +2144,7 @@ public partial class Form1
             BeginInvoke(() =>
             {
                 if (customPlayer != player) return;
+                if (playbackRequest != null) desktopPlayback.Cancel(playbackRequest.Id);
                 customPlayerBounds = playerBounds;
                 customPlayer = null;
                 customPlayerCard = null;
@@ -2136,7 +2154,6 @@ public partial class Form1
             });
         };
         BeginAnimationReplacement(animationPath);
-        ShowNowPlaying(animationPath, doWallpaper: true);
         // Keep the always-on-top playback surface independent from the library
         // window. An owned Win32 window is minimized automatically with its
         // owner, which is not appropriate for desktop-style custom playback.

@@ -1803,7 +1803,6 @@ private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
             List<PlayQueueEntry> queue = manual
                 ? manualPlayQueue : automaticPlayQueue;
             if (!TryResolveQueueEntry(entry, out string animationPath, useSmartRules: manual)) return;
-            ClearQueuedCardSession();
             desktopPlayback.Request(animationPath, new DesktopQueueReservation(entry, manual, false, manual));
             if (!RequestAnimationPlayback(animationPath)) ReleaseDesktopReservation();
             BeginInvoke((Action)TaskbarThumbnail);
@@ -2737,10 +2736,11 @@ private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
                 out int value) ? value : 0;
         }
 
-        private bool TryPlayNextQueuedAnimation()
+        private bool TryPlayNextQueuedAnimation(bool continueCard = true)
         {
             if (panicActive) return false;
-            if (!TryReserveDesktopQueue(out string path, out DesktopQueueReservation? reservation)) return false;
+            if (!TryReserveDesktopQueue(out string path, out DesktopQueueReservation? reservation,
+                    continueCard: continueCard)) return false;
             desktopPlayback.Request(path, reservation);
             bool requested = RequestAnimationPlayback(path);
             if (!requested) ReleaseDesktopReservation();

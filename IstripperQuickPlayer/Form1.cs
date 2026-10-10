@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 145;
+        private const int PlaybackBridgeVersion = 152;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -5354,8 +5354,8 @@ namespace IStripperQuickPlayer
             if (panicActive)
                 return;
 
-            if (!useQueue || model != null)
-                ClearQueuedCardSession();
+            PlayQueueEntry? nextClipOwner = !useQueue && model == null
+                ? desktopPlayback.ActiveQueuedCard : null;
 
             bool continueUnqueuedCard = useQueue && model == null &&
                 desktopPlayback.ActiveQueuedCard == null &&
@@ -5445,7 +5445,13 @@ namespace IStripperQuickPlayer
 
                 if (mnew != null && mnew.clipName != null)
                 {
-                    RequestAnimationPlayback(GetAnimationPath(mnew));
+                    string nextPath = GetAnimationPath(mnew);
+                    if (nextClipOwner != null && string.Equals(nextClipOwner.CardTag,
+                            GetCardTagFromAnimationPath(nextPath), StringComparison.OrdinalIgnoreCase))
+                        desktopPlayback.Request(nextPath, new DesktopQueueReservation(nextClipOwner,
+                            desktopPlayback.ActiveManualQueueEntry != null, true,
+                            desktopPlayback.ActiveQueuedCardUsesSmartRules));
+                    RequestAnimationPlayback(nextPath);
                 }
             }
         }
@@ -5460,8 +5466,7 @@ namespace IStripperQuickPlayer
 
             ClearUnqueuedCardSession();
 
-            ClearQueuedCardSession(clearManualQueueEntry: false);
-            if (TryPlayNextQueuedAnimation())
+            if (TryPlayNextQueuedAnimation(continueCard: false))
                 return;
 
             //find a new model from the filtered cards

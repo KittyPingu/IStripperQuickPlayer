@@ -14,7 +14,7 @@ internal static class DesktopPlaybackVerification
         using var bridge = PlaybackBridgeClient.Attach(host.Id,
             Path.Combine(AppContext.BaseDirectory, "IStripperPlaybackBridge64.dll"), (_, _) => false);
         int version = bridge.Call("IStripperPlaybackBridgeVersion");
-        if (version != 145) return 3;
+        if (version != 152) return 3;
         foreach (string operation in new[] { "IStripperBeginDesktopAttachment", "IStripperStartRegistryHook", "IStripperStartFullscreenHook",
             "IStripperInstallMovieCaptureHook", "IStripperDiscoverMovie", "IStripperSetPlayerLocked" })
         {

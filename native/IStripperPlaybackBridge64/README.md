@@ -2,10 +2,10 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed Qt5 baseline. Bridge v145
+supported Totem API. Version 2.4.0.0 is the analysed Qt5 baseline. Bridge v152
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
-loading fixed values.
+ loading fixed values.
 
 The 2.4.0.0 baseline has SHA-256:
 
@@ -608,3 +608,19 @@ ready seek to 60 s on a 222 s clip completed in approximately 117 ms. Non-invasi
 inspection confirmed a populated mask at the current movie frame. These tests
 exercise the shared seek path through REST; direct timebar and desktop pointer
 interaction await user verification. Live Qt5 remains unavailable.
+
+Bridge v152 resets seek readiness locally on Movie::playing() and on snapshot
+identity replacement, before reporting the new clip. Reused decoder addresses
+cannot inherit the preceding playback's alpha or WMV progress. The reset performs
+no checkpoint I/O or UI communication. Fixtures cover the native event reset and
+fresh RLE7 progress using the same animation and output addresses.
+
+Bridge v152 primes Qt6 RLE7 startup masks with the native decoder before direct
+seeking. Its startup guard, bit-depth field and decoder are derived from the
+validated native alpha dispatch; Qt5 is unchanged. Live inspection found 3,873
+compressed-mask index entries changed during native startup (frame 98 shifted
+from byte 987132 to 987984). Jumping before these corrections bypasses native
+index repair. The first early 1.033 s to 60 s seek with priming took 1.880 s.
+Visual acceptance is pending. Fixtures cover short clips, repeated priming and
+skipping priming after startup. The previous blanket slow-forward workaround
+and unsuccessful conversion/worker diagnostics were removed.

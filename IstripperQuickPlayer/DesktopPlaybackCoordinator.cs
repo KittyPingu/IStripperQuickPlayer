@@ -60,6 +60,15 @@ internal sealed class DesktopPlaybackCoordinator
         if (Prepared?.Id == id) Prepared = null;
     }
 
+    internal Selection? ConfirmCustom(long id, string path)
+    {
+        if (Pending?.Id != id || !string.Equals(Pending.Path, path,
+                StringComparison.OrdinalIgnoreCase)) return null;
+        Selection accepted = Pending;
+        Pending = null;
+        return accepted;
+    }
+
     internal long NextCommandId() => ++nextRequest;
 
     internal static bool CardSessionContinues(long startedAt, long now, int durationMinutes) =>
@@ -91,6 +100,11 @@ internal sealed class DesktopPlaybackCoordinator
             observation.Request == (ulong)selection.Id &&
             observation.Instance != (ulong)selection.Instance)
             accepted = selection;
+        else if (selection == Prepared && selection != null &&
+            previousInstance != 0 && observation.CompletedInstance == previousInstance &&
+            observation.Request == 0)
+            // The host's own next movie is not an explicit takeover at a natural boundary.
+            return true;
         else manual = previousInstance != 0 &&
             observation.CompletedInstance != previousInstance;
         Pending = Prepared = null;
@@ -156,6 +170,21 @@ internal sealed class DesktopPlaybackCoordinator
         handoff.Observe(O(7, 0, "", 1), out _, out _, out _);
         if (!handoff.Observe(O(8, 3, "manual", 1), out accepted, out manual, out _) ||
             accepted != null || !manual || handoff.Pending != null) return false;
+        var interposed = new DesktopPlaybackCoordinator();
+        interposed.Attach(1);
+        interposed.Observe(O(1, 10, "finishing"), out _, out _, out _);
+        var reserved = interposed.Prepare("queued", token);
+        if (!interposed.Observe(O(2, 11, "host-next", 10), out accepted, out manual, out ended) ||
+            accepted != null || manual || !ended || interposed.Prepared != reserved) return false;
+        var recovery = interposed.Request(reserved.Path, reserved.Reservation);
+        if (recovery.Instance != 11 || recovery.Reservation != token ||
+            !interposed.Observe(O(3, 12, "queued", 10, request: (ulong)recovery.Id),
+                out accepted, out manual, out ended) || accepted != recovery || manual || ended ||
+            !interposed.Observe(O(4, 12, "queued", 10, request: (ulong)recovery.Id),
+                out accepted, out _, out _) || accepted != null) return false;
+        reserved = interposed.Prepare("following", token);
+        if (!interposed.Observe(O(5, 13, "explicit", 10), out accepted, out manual, out _) ||
+            accepted != null || !manual || interposed.Prepared != null) return false;
         var customHandoff = new DesktopPlaybackCoordinator();
         customHandoff.Attach(1);
         customHandoff.Observe(O(1, 1, "before-custom"), out _, out _, out _);
@@ -178,6 +207,32 @@ internal sealed class DesktopPlaybackCoordinator
             !customHandoff.Observe(O(3, 5, "after-custom", attachment: 2, request: (ulong)queuedHandoff.Id),
                 out accepted, out manual, out _) || accepted != queuedHandoff || manual) return false;
         player.Attach(2);
+        var custom = player.Request("custom:one", token);
+        var replacement = player.Request("custom:two", token);
+        if (player.ConfirmCustom(custom.Id, custom.Path) != null ||
+            player.Pending != replacement || player.ConfirmCustom(replacement.Id, custom.Path) != null ||
+            player.ConfirmCustom(replacement.Id, replacement.Path) != replacement ||
+            player.ConfirmCustom(replacement.Id, replacement.Path) != null) return false;
+        custom = player.Request("custom:failure", token);
+        player.Cancel(custom.Id);
+        if (player.ConfirmCustom(custom.Id, custom.Path) != null) return false;
+        var cardOwner = new DesktopPlaybackCoordinator();
+        cardOwner.Attach(1);
+        var cardEntry = new PlayQueueEntry("card");
+        cardOwner.ActiveQueuedCard = cardOwner.ActiveAutomaticQueueEntry = cardEntry;
+        cardOwner.Observe(O(1, 1, "card/first"), out _, out _, out _);
+        var automaticNext = cardOwner.Prepare("other-card", token);
+        var nextClip = cardOwner.Request("card/second", token);
+        if (!cardOwner.Observe(O(2, 2, "other-card", request: (ulong)automaticNext.Id),
+                out accepted, out manual, out _) || accepted != null || manual ||
+            cardOwner.Pending != nextClip || cardOwner.ActiveAutomaticQueueEntry != cardEntry ||
+            !cardOwner.Observe(O(3, 3, "card/second", request: (ulong)nextClip.Id),
+                out accepted, out manual, out _) || accepted != nextClip || accepted.Reservation != token ||
+            manual || cardOwner.ActiveQueuedCard != cardEntry) return false;
+        var failedNext = cardOwner.Request("card/third", token);
+        cardOwner.Cancel(failedNext.Id);
+        if (cardOwner.ActiveQueuedCard != cardEntry || cardOwner.ActiveAutomaticQueueEntry != cardEntry)
+            return false;
         return !player.Observe(O(7, 5, "old"), out _, out _, out _) &&
             player.Confirmed == null && player.Pending == null;
     }

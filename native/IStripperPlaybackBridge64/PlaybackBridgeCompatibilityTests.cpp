@@ -2,6 +2,14 @@
 #include "PlaybackBridge.cpp"
 
 int __cdecl TestScale() { return 777; }
+int startupMaskReads = 0;
+void* __fastcall TestStartupMask(void*, int frame)
+{
+    static unsigned char emptyMask[8] = {};
+    if (frame != startupMaskReads++) return nullptr;
+    return emptyMask;
+}
+void __fastcall TestStartupCorrection(void*, int) {}
 
 int RunTestThunk(void* thunk, void* video, bool worker)
 {
@@ -361,6 +369,10 @@ int wmain(int argc, wchar_t** argv)
         MarkMovieConsumed(outgoing.data());
         InterlockedExchange(&g_movieCaptureArmed, 1);
         ObserveDesktopMovie(incoming.data());
+        g_seekReadinessAlphaProgress = RequiredAlphaProgressObservations;
+        g_seekReadinessWmvProgress = RequiredAlphaProgressObservations;
+        ObserveDesktopMovie(incoming.data());
+        if (g_seekReadinessAlphaProgress != 0 || g_seekReadinessWmvProgress != 0) return 45;
         CapturingMovieAdvance(outgoing.data());
         if (ActiveMovie() != incoming.data() || g_movieCaptureArmed != 0) return 37;
         *reinterpret_cast<int*>(incoming.data() + MovieStateOffset) = PlayingState;
@@ -422,6 +434,10 @@ int wmain(int argc, wchar_t** argv)
             if (ObserveDecodedAlphaProgress(animation.data(), frame)) return 31;
         if (!ObserveDecodedAlphaProgress(animation.data(), 14) ||
             CaptureAlphaCheckpoint(animation.data(), 14, 30) != 1) return 32;
+        ResetSeekReadiness();
+        for (int frame = 0; frame < 4; frame++)
+            if (ObserveDecodedAlphaProgress(animation.data(), frame)) return 45;
+        if (!ObserveDecodedAlphaProgress(animation.data(), 4)) return 45;
         ClearAlphaCheckpoints();
         *reinterpret_cast<int*>(info + AnimationAlphaEncodingOffset) = 5;
         for (int frame = 10; frame < 15; frame++)
@@ -433,6 +449,20 @@ int wmain(int argc, wchar_t** argv)
             if (ready != (frame == 4)) return 34;
         }
         ClearAlphaCheckpoints();
+        unsigned char ssv[256] = {};
+        void* vtable[10] = {};
+        vtable[8] = reinterpret_cast<void*>(&TestStartupMask);
+        vtable[9] = reinterpret_cast<void*>(&TestStartupCorrection);
+        *reinterpret_cast<void***>(ssv) = vtable;
+        ssv[AnimationAlphaStartupFlagOffset] = 1;
+        *reinterpret_cast<void**>(animation.data() + AnimationSsvOffset) = ssv;
+        *reinterpret_cast<int*>(info + AnimationAlphaEncodingOffset) = 7;
+        if (!PrimeAnimationAlphaIndex(animation.data(), 1) || startupMaskReads != 120) return 46;
+        startupMaskReads = 0;
+        if (!PrimeAnimationAlphaIndex(animation.data(), 1) || startupMaskReads != 120) return 46;
+        startupMaskReads = 0;
+        if (!PrimeAnimationAlphaIndex(animation.data(), AnimationAlphaStartupFrameLimit + 1) ||
+            startupMaskReads != 0) return 46;
     }
     if (!ResolveVideoOffsets())
     {

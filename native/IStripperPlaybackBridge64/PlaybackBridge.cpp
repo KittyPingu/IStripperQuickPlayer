@@ -67,6 +67,7 @@ namespace
         }
     }
     void ObserveDesktopMovie(void* movie);
+    void ResetSeekReadiness();
     void MarkMovieConsumed(void* movie);
     void DesktopNaturalEnd();
     bool UsesQt6()
@@ -175,6 +176,10 @@ namespace
     std::size_t AnimationSsvOffset = 0;
     std::size_t AnimationInfoOffset = 0;
     std::size_t AnimationAlphaEncodingOffset = 0;
+    std::uintptr_t AnimationAlphaStartupDecoderRva = 0;
+    std::size_t AnimationAlphaStartupFlagOffset = 0;
+    std::size_t AnimationAlphaBitsOffset = 0;
+    int AnimationAlphaStartupFrameLimit = 0;
     std::size_t AnimationTotalFramesOffset = 0;
     std::size_t AnimationFramesPerSecondOffset = 0;
     // Current high-resolution cards can carry a 6016x3172 alpha plane
@@ -6864,6 +6869,26 @@ namespace
             }
             if (AnimationAlphaEncodingOffset == 0)
                 return false;
+            for (std::size_t offset = 6; offset + 31 <= 640; offset++)
+            {
+                const auto guard = prepare + offset;
+                if (!IsReadable(guard - 6, 37)) break;
+                if (guard[0] != 0x81 || guard[1] != 0xFE || guard[6] != 0x7F ||
+                    guard[-6] != 0x40 || guard[-5] != 0x38 || guard[-4] != 0x78 ||
+                    guard[8] != 0x44 || guard[9] != 0x0F || guard[10] != 0xB6 || guard[11] != 0x8A)
+                    continue;
+                const auto decoder = DirectCallTarget(guard + 26);
+                const int limit = *reinterpret_cast<const int*>(guard + 2);
+                const auto bits = *reinterpret_cast<const std::uint32_t*>(guard + 12);
+                if (decoder == nullptr || !IsReadable(decoder, 64) || limit <= 0 ||
+                    limit > 1024 || bits >= 0x1000) return false;
+                AnimationAlphaStartupDecoderRva = RvaFromAddress(decoder);
+                AnimationAlphaStartupFlagOffset = guard[-3];
+                AnimationAlphaBitsOffset = bits;
+                AnimationAlphaStartupFrameLimit = limit;
+                break;
+            }
+            if (AnimationAlphaStartupDecoderRva == 0) return false;
         }
 
         AnimationAlphaFrameOffset = 0;
@@ -8454,6 +8479,7 @@ namespace
         if (!IsReadable(animation, AnimationInfoOffset + sizeof(void*))) return;
         void* info = *reinterpret_cast<void**>(
             reinterpret_cast<unsigned char*>(animation) + AnimationInfoOffset);
+        ResetSeekReadiness();
         std::atomic_store(&g_movieHitMask, std::shared_ptr<const MovieHitMask>{});
         AcquireSRWLockExclusive(&g_desktopLock);
         ++g_desktopInstance;
@@ -9583,6 +9609,39 @@ namespace
             &bounds, sizeof(bounds))) && HitMovieMask(*mask, bounds, point);
     }
 
+    bool PrimeAnimationAlphaIndex(void* animation, int currentFrame)
+    {
+        if (!UsesQt6() || currentFrame > AnimationAlphaStartupFrameLimit) return true;
+        auto bytes = static_cast<unsigned char*>(animation);
+        auto info = *reinterpret_cast<unsigned char**>(bytes + AnimationInfoOffset);
+        auto ssv = *reinterpret_cast<unsigned char**>(bytes + AnimationSsvOffset);
+        if (!IsReadable(info, AnimationAlphaBitsOffset + 1) ||
+            !IsReadable(ssv, AnimationAlphaStartupFlagOffset + 1)) return false;
+        if (*reinterpret_cast<const int*>(info + AnimationAlphaEncodingOffset) != 7 ||
+            ssv[AnimationAlphaStartupFlagOffset] == 0) return true;
+        const auto table = *reinterpret_cast<unsigned char***>(ssv);
+        if (!IsReadable(table, 0x50)) return false;
+        using GetAlpha = void*(__fastcall*)(void*, int);
+        using CorrectIndex = void(__fastcall*)(void*, int);
+        using DecodeStartup = int(__fastcall*)(void*, void*, void*, unsigned char);
+        const auto getAlpha = reinterpret_cast<GetAlpha>(table[8]);
+        const auto correctIndex = reinterpret_cast<CorrectIndex>(table[9]);
+        const auto decode = reinterpret_cast<DecodeStartup>(ImageBase() + AnimationAlphaStartupDecoderRva);
+        if (!getAlpha || !correctIndex || !decode || !CanResetAnimationAlpha(animation)) return false;
+        void* output = *reinterpret_cast<void**>(bytes + AnimationAlphaOutputOffset);
+        // Startup masks contain corrections to later compressed-data offsets; replaying them is idempotent.
+        const int lastFrame = std::min(AnimationAlphaStartupFrameLimit,
+            *reinterpret_cast<const int*>(info + AnimationTotalFramesOffset) - 1);
+        for (int frame = 0; frame <= lastFrame; ++frame)
+        {
+            void* data = getAlpha(ssv, frame);
+            if (data == nullptr) return false;
+            const int correction = decode(animation, output, data, info[AnimationAlphaBitsOffset]);
+            if (correction != 0) correctIndex(ssv, correction);
+        }
+        return true;
+    }
+
     bool ResetAnimationAlpha(void* animation)
     {
         if (!CanResetAnimationAlpha(animation))
@@ -9646,12 +9705,8 @@ namespace
         g_alphaCheckpointHeight = 0;
     }
 
-    void ClearAlphaCheckpoints()
+    void ResetSeekReadiness()
     {
-        AcquireSRWLockExclusive(&g_alphaCheckpointLock);
-        ClearAlphaCheckpointsLocked();
-        ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
-
         AcquireSRWLockExclusive(&g_seekReadinessLock);
         g_seekReadinessAnimation = nullptr;
         g_seekReadinessSsv = nullptr;
@@ -9665,6 +9720,14 @@ namespace
         g_seekReadinessWmvFrame = -1;
         g_seekReadinessWmvProgress = 0;
         ReleaseSRWLockExclusive(&g_seekReadinessLock);
+    }
+
+    void ClearAlphaCheckpoints()
+    {
+        AcquireSRWLockExclusive(&g_alphaCheckpointLock);
+        ClearAlphaCheckpointsLocked();
+        ReleaseSRWLockExclusive(&g_alphaCheckpointLock);
+        ResetSeekReadiness();
     }
 
     bool AlphaCacheDirectory(wchar_t (&path)[MAX_PATH])
@@ -12937,7 +13000,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 145;
+    return 152;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
@@ -14051,7 +14114,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPrepareFastForwardMilli
                                     CancelMovieAudioSeek(movie);
                                 }
                             }
-                            else if (!CanResetAnimationAlpha(animation))
+                            else if (!CanResetAnimationAlpha(animation) ||
+                                !PrimeAnimationAlphaIndex(animation, currentFrame))
                             {
                                 result = E_FAIL;
                             }
@@ -14375,6 +14439,7 @@ namespace
             AcquireSRWLockExclusive(&g_desktopLock);
             if (g_desktopMovie != movie || g_desktopAnimation != animation || g_desktopInfo != info)
             {
+                ResetSeekReadiness();
                 ++g_desktopInstance;
                 g_desktopMovie = movie;
                 g_desktopAnimation = animation;

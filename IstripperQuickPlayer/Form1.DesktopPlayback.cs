@@ -148,6 +148,11 @@ public partial class Form1
             lastDesktopPlacement = snapshot.Bounds;
         if (accepted?.Reservation is DesktopQueueReservation reservation)
             ConfirmDesktopReservation(reservation, accepted.Path);
+        else if (accepted != null && !ReferenceEquals(accepted.Reservation, unqueuedDesktopContinuation))
+        {
+            ClearQueuedCardSession();
+            if (!IsUnqueuedCardSession(accepted.Path)) ClearUnqueuedCardSession();
+        }
         else if (manual)
         {
             desktopManualTakeover = true;
@@ -187,6 +192,16 @@ public partial class Form1
             ReleaseDesktopReservation();
             playbackRequestedAnimationPath = "";
             SetPlaybackStatus("Playback was not confirmed. The queue item has been retained.");
+        }
+        if (prepared != null && ReferenceEquals(desktopPlayback.Prepared, prepared) &&
+            snapshot.Instance != 0 && snapshot.Instance != (ulong)prepared.Instance &&
+            snapshot.Path.Length != 0 && snapshot.State is 3 or 4 &&
+            snapshot.Request == 0 && snapshot.CompletedInstance == (ulong)prepared.Instance)
+        {
+            // Supersede a confirmed host selection; never retry an uncertain transport command.
+            desktopPlayback.Request(prepared.Path, prepared.Reservation);
+            if (!RequestAnimationPlayback(prepared.Path)) ReleaseDesktopReservation();
+            return;
         }
         if (completed && prepared?.Path.StartsWith("custom:", StringComparison.OrdinalIgnoreCase) == true)
         {
@@ -300,12 +315,13 @@ public partial class Form1
         }
     }
 
-    bool TryReserveDesktopQueue(out string path, out DesktopQueueReservation? reservation, long? selectionAt = null)
+    bool TryReserveDesktopQueue(out string path, out DesktopQueueReservation? reservation,
+        long? selectionAt = null, bool continueCard = true)
     {
         path = "";
         reservation = null;
         if (!Properties.Settings.Default.EnablePlayQueue) return false;
-        if (desktopPlayback.ActiveQueuedCard != null && ShouldContinueQueuedCard(desktopPlayback.ActiveQueuedCardStartedAt,
+        if (continueCard && desktopPlayback.ActiveQueuedCard != null && ShouldContinueQueuedCard(desktopPlayback.ActiveQueuedCardStartedAt,
             selectionAt ?? Environment.TickCount64, ReadShowDurationMinutes()) &&
             TryResolveQueueEntry(desktopPlayback.ActiveQueuedCard, out path, desktopPlayback.ActiveQueuedCardLastAnimationPath, desktopPlayback.ActiveQueuedCardUsesSmartRules))
         {
