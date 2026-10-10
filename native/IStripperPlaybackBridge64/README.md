@@ -2,7 +2,7 @@
 
 This directory contains the x64 bridge used by the original WinForms application
 to control the desktop movie owned by `vghd.exe`. The private ABI is not a
-supported Totem API. Version 2.4.0.0 is the analysed Qt5 baseline. Bridge v132
+supported Totem API. Version 2.4.0.0 is the analysed Qt5 baseline. Bridge v145
 discovers and validates every vghd-owned function, vtable, hook site, and
 object-layout field against the loaded executable rather than compiling or
 loading fixed values.
@@ -15,6 +15,52 @@ The same resolver has also been run successfully against downgraded iStripper
 2.3.0.3 (`C2C24A3DAEC4C2F2258A5B1364808D683D3A52F77F3DD9FBED4F628DFD227693`).
 Its code RVAs moved while the resolver independently recovered the complete
 layout.
+
+## Desktop coordination
+
+QuickPlayer reduces desktop playback through `DesktopPlaybackCoordinator`.
+Requests reserve queue entries; native confirmation consumes them. Registry
+notifications are asynchronous observations and cannot confirm playback or block
+the host on a WinForms decision. `Movie::playing()` identifies playback instances;
+`LiveActor::clipEndedNaturally()` applies the prepared selection locally at the
+natural boundary. The bridge validates these signal names against the executable
+metadata before enabling capture, using the installed Qt5 or Qt6 exports.
+
+`IStripperBeginDesktopAttachment` clears selections and request correlation for a
+new client. `IStripperPrepareDesktopSelection` and
+`IStripperRequestDesktopSelection` accept the bounded packets in `DesktopPlayback.h`.
+`IStripperGetDesktopSnapshot` returns playback, request correlation, readiness and
+placement together. Clip identity comes from the decoded HD2/HD3 animation header;
+validated Qt string layouts are a fallback. Window placement is unknown while
+there is no uniquely associated visible movie window. Coordinates are physical
+desktop coordinates, including negative origins, with the window's actual DPI.
+Resizing and display recovery use iStripper's own actor methods to retain its pose
+anchor. No timer restores saved coordinates during dragging.
+
+The client gives ordinary commands a two-second budget, including command queue
+waits. Seek preparation retains a thirty-second transport budget and the existing
+explicit operation deadline. A transport timeout discards the connection and
+never resends the uncertain command. Native frame capture handles attachment and
+normal transitions. A bounded recovery scan is attempted only if late attachment
+has no captured clip. Existing validated movies bypass discovery, and fallback
+scans have a one-second budget.
+
+Run the Release application with `--verify-desktop-playback` for reducer and
+stalled-pipe checks. `--verify-desktop-live` injects the current bridge and exercises
+same-clip replay, pause/resume, and a prepared natural transition; it changes live
+playback and temporarily uses 4x speed, then restores 1x. Restart iStripper to
+replace a pinned bridge before running this check.
+
+The October 2026 v134 verification passed against installed Qt6 iStripper 2.5.0.0,
+including a natural transition and a 144-DPI monitor snapshot. Synthetic Qt5 and
+Qt6 container/string checks pass. No Qt5 binary was available for this run;
+historical Qt5 resolver results below are not a live acceptance pass for v135.
+Dragging/hanging poses, display removal, and comparative CPU/UI latency benchmarks
+still require desktop acceptance before publishing.
+
+The v135 discovery regression and running-app status checks passed without
+reconnection. Its accelerated completion check on a 348-second clip did not
+observe a transition within the 90-second verification budget.
 
 ## Qt6 compatibility
 
@@ -439,3 +485,126 @@ bridge to the WinForms `dependencies` directory; the WinForms post-build step
 copies dependencies to its output directory. The runtime creates its diagnostic
 INI under `%LOCALAPPDATA%\IStripperQuickPlayer`. The bridge is x64-only because
 `vghd.exe` is x64.
+
+The v136 regression confirms that an outgoing movie frame cannot replace a movie
+already confirmed by Movie::playing. Confirmation disarms attachment capture;
+the capture and confirmation paths serialize ownership changes under the desktop
+lock. This prevents input hit-testing from borrowing an outgoing alpha mask.
+
+The v137 regression checks native opaque/transparent window hit-testing without
+a decoder. Unlocked standard rendering uses Windows' layered-window hit-test;
+HDR and locked rendering retain decoded-alpha handling. The watcher uses physical
+coordinates on mixed-DPI displays. Managed custom-player checks reproduce a DPI
+message shrinking a configured player to its startup bounds and verify that DPI
+updates retain the physical video bounds. Custom handoffs use the last validated
+native placement when no custom placement exists. Live gesture and custom-video
+acceptance for these fixes remains pending. The live v137 input check failed when
+Qt recreated its native HWND with `WS_EX_TRANSPARENT` while unlocked. The v138
+fixture reproduces that case; standard unlocked hit-testing clears this style
+before asking User32 to test the layered alpha. A reported native clip temporarily
+disappeared and reappeared after a transition; that rendering symptom remains
+unresolved.
+
+The v139 hit-test only changes a candidate window containing the physical pointer;
+the fixture uses the watcher's per-monitor DPI context. The live custom handoff
+recorded 144-to-288 DPI with a stale 22-by-22 suggested rectangle and retained its
+configured 1425-by-802 bounds after the message. Subsequent unlocked gesture checks
+and the transient native disappearance still need live verification.
+
+The custom-to-native v139 reproduction restored an 8114-by-4284 native HWND;
+the existing size hotkeys recalculated it to normal geometry. The v140 live
+repetitions showed that forcing `doLarge`/`doSmall` can change playback mode and
+does not consistently repair geometry. V141 synchronizes the desktop mode only
+when needed, then invokes `updateHeightWithoutAnimation` before configured
+sizing. The method is validated against the loaded Qt5/Qt6 meta-object, and the
+installed Qt6 compatibility fixture confirms it. No saved coordinates or placement
+timer are added. Restoration runs in the background with the ordinary transport
+budget; superseded attachments/custom handoffs skip follow-up sizing. The v141
+desktop repetition was blocked by active fullscreen playback, so live handoff
+acceptance remains pending.
+
+### Desktop startup recovery (v143)
+
+Attachment preserves a validated active movie when resetting transient controls.
+Late-attach discovery retains its address cursor across one-second scan budgets;
+failed attempts back off from two seconds to thirty seconds and stop after a
+confirmed identity. Normal transitions do not trigger these scans. Compatibility
+pattern searches use `memchr` to skip nonmatching prefixes without changing the
+Qt5/Qt6 validation rules.
+
+QuickPlayer creates the event pipe before scheduling its reader, and cancellation
+closes the pipe even if the thread pool has not scheduled that reader. Startup no
+longer prefetches Dressing Rooms data: that optional native-object scan exceeded
+the two-second command budget and caused repeated disconnects. Explicit Dressing
+Rooms requests retain their on-demand discovery.
+
+The October 10 live Qt6 cold-attachment check detected an already-playing clip
+about 5.4 seconds after QuickPlayer launch (about 0.8 seconds after its first REST
+response), with one attachment, versus about 15.8 seconds with repeated
+attachments before removing the prefetch. Natural completion selected the
+prepared clip and confirmed its queue entry; playback speed was restored to 1x.
+These are local observations, not a controlled CPU or latency benchmark. Offline
+checks cover stalled thread-pool startup, pipe reuse, invalid versus retained
+movies, scan resumption, and pattern boundaries. Live Qt5 verification remains
+unavailable.
+
+
+## Prompt desktop handoff (v144)
+
+At natural completion, the bridge writes the already prepared `ForceAnim` request
+and queues `Live::checkForcedActor()` on iStripper's own thread. This wakes its
+forced-playback consumer without waiting for the next timer or re-entering the
+finishing actor. The Live singleton is resolved while preparing the selection,
+so completion does not scan memory or wait for QuickPlayer. Missing Qt exports
+or an invalid cached singleton retain the existing registry/timer fallback.
+Late preparations for an already completed instance are dispatched immediately,
+rather than being accepted for a boundary that has already passed. Confirmed
+snapshots are published before optional checkpoint and speed commands.
+Duplicate completion signals are ignored per playback instance. Queue entries
+still require movie confirmation before consumption.
+
+The installed Qt6 fixture checks the forced-playback slot and queued invocation
+export, and the native regression checks duplicate completion. Live timing is
+measured from cached REST status, so it bounds observable gaps rather than
+measuring the first rendered frame. Qt5 uses the same legacy QGenericArgument
+queued-invocation ABI; a live Qt5 run remains unavailable on this machine.
+
+Final v144 live acceptance covered native-to-custom and native-to-native natural
+completion, with 4x speed used to shorten playback and restored to 1x afterward.
+Both started the exact prepared QuickPlayer item, updated the active queue card,
+and showed no blank state in approximately 50 ms REST polling. Attachment stayed
+at 1 for the native handoff. An earlier intermediate build showed an approximately
+8 s gap, so these two samples do not establish a maximum load latency for all
+clips. Release build, desktop/transport, controls, API options, custom-show and
+installed Qt6 native compatibility checks passed; `git diff --check` passed.
+
+
+## Early seek and alpha hit detection (v145)
+
+Desktop seeking rechecks current native decoder readiness before pausing. Native
+preparation also rejects an unready movie before taking its mutex, and rechecks
+while holding it before modifying decoder or audio state. The legacy rate-scan
+fallback now applies only to the FFmpeg unsupported-operation result; readiness
+and decoder failures are surfaced instead of triggering a scan.
+
+Unlocked hit detection no longer treats `WindowFromPoint` as proof of an opaque
+model pixel. The bridge publishes an immutable alpha mask, up to 256 by 256,
+from the native render/advance callbacks, once per movie frame. It uses a zero-wait
+movie lock while producing the mask. The mouse hook reads the latest mask without
+taking that lock. Cache identity includes movie and animation, and new playback
+clears the mask. Physical window bounds map the mirrored alpha plane to desktop
+coordinates; positions outside the window are excluded. The compact mask retains
+the existing alpha threshold of 128; fine edges have its sampling resolution.
+
+Regression checks cover transparent pixels inside a fully opaque layered window,
+mirrored coordinates, negative desktop origins, outside bounds, missing masks,
+unready native preparation and permitted legacy fallback results. The synthetic
+movie fixture now allocates through the resolved state member as well as the
+animation, frame and mutex members.
+
+Live Qt6 checks rejected a seek at clip elapsed 133 ms while unready, then completed
+a ready 40 s seek in approximately 300 ms with subsequent playback progress. A
+ready seek to 60 s on a 222 s clip completed in approximately 117 ms. Non-invasive
+inspection confirmed a populated mask at the current movie frame. These tests
+exercise the shared seek path through REST; direct timebar and desktop pointer
+interaction await user verification. Live Qt5 remains unavailable.

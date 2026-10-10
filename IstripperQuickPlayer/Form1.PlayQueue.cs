@@ -12,12 +12,8 @@ namespace IStripperQuickPlayer
             "IStripperQuickPlayer.PlayQueueItem";
         private const int DefaultPlayQueueExpandedHeight = 330;
         private const int PlayQueueCollapsedHeight = 34;
-        private const int QueueStartProtectionMilliseconds = 3_000;
 
-        private sealed record PlayQueueEntry(string CardTag,
-            string? ClipName = null);
-
-        private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
+private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
             int Relaxation);
 
         private sealed record PlayQueueDrag(string Source, int Index,
@@ -150,18 +146,6 @@ namespace IStripperQuickPlayer
         private Panel? highlightedPlayQueueCard;
         private Point libraryQueueDragStart;
         private PlayQueueEntry? libraryQueueDragEntry;
-        private string queuedAnimationPendingPath = "";
-        private bool queuedAnimationPendingConfirmed;
-        private DateTime queuedAnimationProtectedUntil = DateTime.MinValue;
-        private PlayQueueEntry? activeQueuedCard;
-        private PlayQueueEntry? activeManualQueueEntry;
-        private PlayQueueEntry? activeAutomaticQueueEntry;
-        private long activeQueuedCardStartedAt = -1;
-        private string activeQueuedCardLastAnimationPath = "";
-        private bool activeQueuedCardUsesSmartRules;
-        private long activeUnqueuedCardStartedAt = -1;
-        private string activeUnqueuedCardTag = "";
-        private bool activeUnqueuedCardSequential;
         private readonly System.Windows.Forms.Timer clipSelectionPlaybackTimer =
             new() { Interval = 15 };
         private readonly System.Windows.Forms.Timer playQueueResizeTimer =
@@ -188,9 +172,6 @@ namespace IStripperQuickPlayer
                     enablePlayQueueToolStripMenuItem.Checked;
                 if (!enablePlayQueueToolStripMenuItem.Checked)
                 {
-                    queuedAnimationPendingPath = "";
-                    queuedAnimationPendingConfirmed = false;
-                    queuedAnimationProtectedUntil = DateTime.MinValue;
                     ClearQueuedCardSession();
                 }
                 RefreshPlayQueueVisibility();
@@ -623,9 +604,6 @@ namespace IStripperQuickPlayer
         private void ClearManualQueue()
         {
             manualPlayQueue.Clear();
-            queuedAnimationPendingPath = "";
-            queuedAnimationPendingConfirmed = false;
-            queuedAnimationProtectedUntil = DateTime.MinValue;
             ClearQueuedCardSession(discardManualQueueEntry: true);
             RebuildAutomaticQueue();
             SavePreviousQueue();
@@ -685,7 +663,7 @@ namespace IStripperQuickPlayer
             try
             {
                 Persistence.Save(PreviousQueuePath, QueueForPersistence(
-                    manualPlayQueue, activeManualQueueEntry,
+                    manualPlayQueue, desktopPlayback.ActiveManualQueueEntry,
                     Properties.Settings.Default.RequeueCompletedManualItems));
             }
             catch { }
@@ -1045,6 +1023,8 @@ namespace IStripperQuickPlayer
             int? mode = null)
         {
             string path = animationPath ?? GetCurrentAnimationPath();
+            if (string.IsNullOrEmpty(path)) return;
+            if (Volatile.Read(ref desktopSnapshot)?.Moving == true) return;
             int requestedMode = mode ?? Volatile.Read(ref playerMode);
             long request = Interlocked.Increment(
                 ref playerSizeRequestVersion);
@@ -1339,9 +1319,9 @@ namespace IStripperQuickPlayer
             playQueueHeader.Text =
                 $"{(playQueueExpanded ? "▼" : "▶")}  Play next queue" +
                 $"  —  {manualPlayQueue.Count +
-                    (activeManualQueueEntry == null ? 0 : 1)} manual · " +
+                    (desktopPlayback.ActiveManualQueueEntry == null ? 0 : 1)} manual · " +
                 $"{automaticPlayQueue.Count +
-                    (activeAutomaticQueueEntry == null ? 0 : 1)} automatic";
+                    (desktopPlayback.ActiveAutomaticQueueEntry == null ? 0 : 1)} automatic";
             int headerHeight = playQueueHeader.Font.Height +
                 playQueueHeader.Padding.Vertical + 6;
             int gripHeight = Math.Max(5, 7 * DeviceDpi / 96);
@@ -1415,18 +1395,20 @@ namespace IStripperQuickPlayer
             if (manualQueueFlow == null)
                 return;
 
+            ValidateDesktopQueueReservation();
+
             RenderPlayQueue(manualQueueFlow, manualPlayQueue, "manual",
-                activeManualQueueEntry);
+                desktopPlayback.ActiveManualQueueEntry);
             RenderPlayQueue(automaticQueueFlow, automaticPlayQueue,
-                "automatic", activeAutomaticQueueEntry);
+                "automatic", desktopPlayback.ActiveAutomaticQueueEntry);
             manualQueueLabel.Text =
                 $"Manual ({manualPlayQueue.Count +
-                    (activeManualQueueEntry == null ? 0 : 1)}) — " +
+                    (desktopPlayback.ActiveManualQueueEntry == null ? 0 : 1)}) — " +
                 "drop cards or clips here";
             automaticQueueLabel.Text =
                 Properties.Settings.Default.EnforceCardFilter
                     ? $"Automatic ({automaticPlayQueue.Count +
-                        (activeAutomaticQueueEntry == null ? 0 : 1)}) — " +
+                        (desktopPlayback.ActiveAutomaticQueueEntry == null ? 0 : 1)}) — " +
                       "filtered cards"
                     : "Automatic — disabled while card filter enforcement is off";
             UpdatePlayQueueHeader();
@@ -1440,9 +1422,7 @@ namespace IStripperQuickPlayer
             bool dark = Properties.Settings.Default.DarkMode;
             List<PlayQueueDrag> cards = [];
             if (active != null)
-                cards.Add(new(source, -1, active,
-                    customPlayer != null || queuedAnimationPendingConfirmed ||
-                    string.IsNullOrEmpty(queuedAnimationPendingPath)));
+                cards.Add(new(source, -1, active, true));
             cards.AddRange(entries.Select((entry, index) =>
                 new PlayQueueDrag(source, index, entry)));
             if (QueueRenderIsCurrent(flow, cards, dark))
@@ -1822,34 +1802,10 @@ namespace IStripperQuickPlayer
             bool manual = drag.Source == "manual";
             List<PlayQueueEntry> queue = manual
                 ? manualPlayQueue : automaticPlayQueue;
-            if (!TryResolveQueueEntry(entry, out string animationPath,
-                    useSmartRules: manual) ||
-                !TryRemoveQueueEntry(queue, drag))
-                return;
-
+            if (!TryResolveQueueEntry(entry, out string animationPath, useSmartRules: manual)) return;
             ClearQueuedCardSession();
-            StartQueuedCardSession(entry, animationPath,
-                useSmartRules: manual);
-            if (manual)
-            {
-                activeManualQueueEntry = entry;
-                SavePreviousQueue();
-            }
-            else
-            {
-                activeAutomaticQueueEntry = entry;
-                FillAutomaticQueue(entry.CardTag);
-            }
-            RenderPlayQueues();
-            queuedAnimationPendingPath = animationPath;
-            queuedAnimationPendingConfirmed = false;
-            queuedAnimationProtectedUntil = DateTime.MinValue;
-            if (!RequestAnimationPlayback(animationPath))
-            {
-                queue.Insert(Math.Min(drag.Index, queue.Count), entry);
-                return;
-            }
-            SelectQueuedCard(entry.CardTag, animationPath);
+            desktopPlayback.Request(animationPath, new DesktopQueueReservation(entry, manual, false, manual));
+            if (!RequestAnimationPlayback(animationPath)) ReleaseDesktopReservation();
             BeginInvoke((Action)TaskbarThumbnail);
         }
 
@@ -1963,13 +1919,10 @@ namespace IStripperQuickPlayer
         private void RemovePlayingQueueEntry(PlayQueueDrag drag)
         {
             PlayQueueEntry? active = drag.Source == "manual"
-                ? activeManualQueueEntry : activeAutomaticQueueEntry;
+                ? desktopPlayback.ActiveManualQueueEntry : desktopPlayback.ActiveAutomaticQueueEntry;
             if (active != drag.Entry)
                 return;
 
-            queuedAnimationPendingPath = "";
-            queuedAnimationPendingConfirmed = false;
-            queuedAnimationProtectedUntil = DateTime.MinValue;
             ClearQueuedCardSession(discardManualQueueEntry: true);
             SavePreviousQueue();
             if (!TryPlayNextQueuedAnimation())
@@ -2176,7 +2129,7 @@ namespace IStripperQuickPlayer
             if (apiOnlyMode)
             {
                 automaticPlayQueue.Clear();
-                activeAutomaticQueueEntry = null;
+                desktopPlayback.ActiveAutomaticQueueEntry = null;
                 return;
             }
             if (automaticQueueFlow == null)
@@ -2564,85 +2517,6 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private bool TryTakeQueuedAnimation(out string animationPath,
-            out string cardTag)
-        {
-            animationPath = "";
-            cardTag = "";
-            if (!Properties.Settings.Default.EnablePlayQueue)
-            {
-                ClearQueuedCardSession();
-                return false;
-            }
-
-            bool completedManualItemRequeued = false;
-            if (activeManualQueueEntry != null && activeQueuedCard == null)
-                completedManualItemRequeued =
-                    CompleteActiveManualQueueEntry();
-            if (activeAutomaticQueueEntry != null &&
-                activeQueuedCard == null)
-                activeAutomaticQueueEntry = null;
-            if (TryContinueQueuedCard(out animationPath, out cardTag))
-                return true;
-            completedManualItemRequeued |= CompleteActiveManualQueueEntry();
-
-            while (manualPlayQueue.Count > 0)
-            {
-                int selectableCount = ManualQueueSelectableCount(
-                    manualPlayQueue.Count, completedManualItemRequeued);
-                if (selectableCount == 0)
-                    break;
-                List<int> selectableIndexes = Enumerable.Range(0,
-                        selectableCount)
-                    .Where(index => QueueEntryAllowedForPlayback(
-                        manualPlayQueue[index])).ToList();
-                if (selectableIndexes.Count == 0)
-                    break;
-                int index = Properties.Settings.Default
-                    .RandomManualQueueSelection
-                        ? selectableIndexes[Random.Shared.Next(
-                            selectableIndexes.Count)]
-                        : selectableIndexes[0];
-                PlayQueueEntry entry = manualPlayQueue[index];
-                manualPlayQueue.RemoveAt(index);
-                if (TryResolveQueueEntry(entry, out animationPath,
-                        useSmartRules: true))
-                {
-                    cardTag = entry.CardTag;
-                    StartQueuedCardSession(
-                        entry, animationPath, useSmartRules: true);
-                    activeManualQueueEntry = entry;
-                    SavePreviousQueue();
-                    RenderPlayQueues();
-                    return true;
-                }
-            }
-
-            while (!apiOnlyMode &&
-                Properties.Settings.Default.EnforceCardFilter &&
-                automaticPlayQueue.Count > 0)
-            {
-                int index = automaticPlayQueue.FindIndex(
-                    QueueEntryAllowedForPlayback);
-                if (index < 0)
-                    break;
-                PlayQueueEntry entry = automaticPlayQueue[index];
-                automaticPlayQueue.RemoveAt(index);
-                FillAutomaticQueue(entry.CardTag);
-                if (TryResolveQueueEntry(entry, out animationPath))
-                {
-                    cardTag = entry.CardTag;
-                    StartQueuedCardSession(entry, animationPath);
-                    activeAutomaticQueueEntry = entry;
-                    RenderPlayQueues();
-                    return true;
-                }
-            }
-
-            RenderPlayQueues();
-            return false;
-        }
-
         private bool TryResolveQueueEntry(PlayQueueEntry entry,
             out string animationPath, string previousAnimationPath = "",
             bool useSmartRules = false)
@@ -2725,29 +2599,6 @@ namespace IStripperQuickPlayer
         private bool QueueEntryAllowedForPlayback(PlayQueueEntry entry) =>
             PlaybackCardAllowed(Datastore.findCardByTag(entry.CardTag));
 
-        private bool TryContinueQueuedCard(out string animationPath,
-            out string cardTag)
-        {
-            animationPath = "";
-            cardTag = "";
-            if (activeQueuedCard == null)
-                return false;
-            if (!QueueEntryAllowedForPlayback(activeQueuedCard) ||
-                !ShouldContinueQueuedCard(activeQueuedCardStartedAt,
-                    Environment.TickCount64, ReadShowDurationMinutes()) ||
-                !TryResolveQueueEntry(activeQueuedCard, out animationPath,
-                    activeQueuedCardLastAnimationPath,
-                    activeQueuedCardUsesSmartRules))
-            {
-                ClearQueuedCardSession(clearManualQueueEntry: false);
-                return false;
-            }
-
-            cardTag = activeQueuedCard.CardTag;
-            activeQueuedCardLastAnimationPath = animationPath;
-            return true;
-        }
-
         private void StartQueuedCardSession(PlayQueueEntry entry,
             string animationPath, bool useSmartRules = false)
         {
@@ -2757,20 +2608,20 @@ namespace IStripperQuickPlayer
                 return;
             }
 
-            activeQueuedCard = entry;
-            activeQueuedCardStartedAt = Environment.TickCount64;
-            activeQueuedCardLastAnimationPath = animationPath;
-            activeQueuedCardUsesSmartRules = useSmartRules;
+            desktopPlayback.ActiveQueuedCard = entry;
+            desktopPlayback.ActiveQueuedCardStartedAt = Environment.TickCount64;
+            desktopPlayback.ActiveQueuedCardLastAnimationPath = animationPath;
+            desktopPlayback.ActiveQueuedCardUsesSmartRules = useSmartRules;
         }
 
         private bool CompleteActiveManualQueueEntry()
         {
             bool requeue = Properties.Settings.Default
                 .RequeueCompletedManualItems &&
-                activeManualQueueEntry != null &&
-                IsAvailableQueueEntry(activeManualQueueEntry);
+                desktopPlayback.ActiveManualQueueEntry != null &&
+                IsAvailableQueueEntry(desktopPlayback.ActiveManualQueueEntry);
             FinishManualQueueEntry(manualPlayQueue,
-                ref activeManualQueueEntry, requeue);
+                ref desktopPlayback.ActiveManualQueueEntry, requeue);
             SavePreviousQueue();
             return requeue;
         }
@@ -2794,19 +2645,19 @@ namespace IStripperQuickPlayer
             bool clearManualQueueEntry = true,
             bool discardManualQueueEntry = false)
         {
-            activeQueuedCard = null;
-            activeAutomaticQueueEntry = null;
-            activeQueuedCardStartedAt = -1;
-            activeQueuedCardLastAnimationPath = "";
-            activeQueuedCardUsesSmartRules = false;
+            desktopPlayback.ActiveQueuedCard = null;
+            desktopPlayback.ActiveAutomaticQueueEntry = null;
+            desktopPlayback.ActiveQueuedCardStartedAt = -1;
+            desktopPlayback.ActiveQueuedCardLastAnimationPath = "";
+            desktopPlayback.ActiveQueuedCardUsesSmartRules = false;
             if (clearManualQueueEntry)
             {
                 bool requeue = !discardManualQueueEntry &&
                     Properties.Settings.Default.RequeueCompletedManualItems &&
-                    activeManualQueueEntry != null &&
-                    IsAvailableQueueEntry(activeManualQueueEntry);
+                    desktopPlayback.ActiveManualQueueEntry != null &&
+                    IsAvailableQueueEntry(desktopPlayback.ActiveManualQueueEntry);
                 FinishManualQueueEntry(manualPlayQueue,
-                    ref activeManualQueueEntry, requeue);
+                    ref desktopPlayback.ActiveManualQueueEntry, requeue);
                 SavePreviousQueue();
             }
             RenderPlayQueues();
@@ -2814,64 +2665,63 @@ namespace IStripperQuickPlayer
 
         private static bool ShouldContinueQueuedCard(long startedAt,
             long now, int durationMinutes) =>
-            startedAt >= 0 && durationMinutes > 0 &&
-            now - startedAt <= durationMinutes * 60_000L;
+            DesktopPlaybackCoordinator.CardSessionContinues(startedAt, now, durationMinutes);
 
         private static int ReadShowDurationMinutes() =>
             ReadRegistryInteger(@"Software\Totem\vghd\player", "duration");
 
         private void ObserveUnqueuedCardPlayback(string animationPath)
         {
-            if (activeQueuedCard != null ||
+            if (desktopPlayback.ActiveQueuedCard != null ||
                 string.IsNullOrEmpty(animationPath))
                 return;
             string cardTag = GetCardTagFromAnimationPath(animationPath);
-            if (string.Equals(activeUnqueuedCardTag, cardTag,
+            if (string.Equals(desktopPlayback.ActiveUnqueuedCardTag, cardTag,
                     StringComparison.OrdinalIgnoreCase))
                 return;
-            activeUnqueuedCardTag = cardTag;
-            activeUnqueuedCardStartedAt = Environment.TickCount64;
-            activeUnqueuedCardSequential = false;
+            desktopPlayback.ActiveUnqueuedCardTag = cardTag;
+            desktopPlayback.ActiveUnqueuedCardStartedAt = Environment.TickCount64;
+            desktopPlayback.ActiveUnqueuedCardSequential = false;
         }
 
         private void StartUnqueuedCardSession(string animationPath,
             bool sequential)
         {
-            activeUnqueuedCardTag = GetCardTagFromAnimationPath(animationPath);
-            activeUnqueuedCardStartedAt = Environment.TickCount64;
-            activeUnqueuedCardSequential = sequential;
+            desktopPlayback.ActiveUnqueuedCardTag = GetCardTagFromAnimationPath(animationPath);
+            desktopPlayback.ActiveUnqueuedCardStartedAt = Environment.TickCount64;
+            desktopPlayback.ActiveUnqueuedCardSequential = sequential;
         }
 
         private bool CanContinueUnqueuedCard(string animationPath)
         {
             return IsUnqueuedCardSession(animationPath) &&
-                ShouldContinueQueuedCard(activeUnqueuedCardStartedAt,
+                ShouldContinueQueuedCard(desktopPlayback.ActiveUnqueuedCardStartedAt,
                     Environment.TickCount64, ReadShowDurationMinutes());
         }
 
         private bool IsUnqueuedCardSession(string animationPath) =>
-            activeUnqueuedCardStartedAt >= 0 && string.Equals(
-                activeUnqueuedCardTag,
+            desktopPlayback.ActiveUnqueuedCardStartedAt >= 0 && string.Equals(
+                desktopPlayback.ActiveUnqueuedCardTag,
                 GetCardTagFromAnimationPath(animationPath),
                 StringComparison.OrdinalIgnoreCase);
 
         private bool CanPreloadCurrentCard(string animationPath) =>
-            activeQueuedCard != null
-                ? ShouldContinueQueuedCard(activeQueuedCardStartedAt,
+            desktopPlayback.ActiveQueuedCard != null
+                ? ShouldContinueQueuedCard(desktopPlayback.ActiveQueuedCardStartedAt,
                     Environment.TickCount64, ReadShowDurationMinutes())
                 : CanContinueUnqueuedCard(animationPath);
 
         private bool UnqueuedCardContinuesSequentially(string animationPath) =>
-            activeUnqueuedCardSequential && string.Equals(
-                activeUnqueuedCardTag,
+            desktopPlayback.ActiveUnqueuedCardSequential && string.Equals(
+                desktopPlayback.ActiveUnqueuedCardTag,
                 GetCardTagFromAnimationPath(animationPath),
                 StringComparison.OrdinalIgnoreCase);
 
         private void ClearUnqueuedCardSession()
         {
-            activeUnqueuedCardStartedAt = -1;
-            activeUnqueuedCardTag = "";
-            activeUnqueuedCardSequential = false;
+            desktopPlayback.ActiveUnqueuedCardStartedAt = -1;
+            desktopPlayback.ActiveUnqueuedCardTag = "";
+            desktopPlayback.ActiveUnqueuedCardSequential = false;
         }
 
         private static bool IsProgressiveHotnessEnabled() =>
@@ -2889,121 +2739,13 @@ namespace IStripperQuickPlayer
 
         private bool TryPlayNextQueuedAnimation()
         {
-            if (panicActive)
-                return false;
-
-            if (!TryTakeQueuedAnimation(
-                    out string animationPath, out string cardTag))
-                return false;
-
-            queuedAnimationPendingPath = animationPath;
-            queuedAnimationPendingConfirmed = false;
-            queuedAnimationProtectedUntil = DateTime.MinValue;
-            if (!RequestAnimationPlayback(animationPath))
-                return false;
-            SelectQueuedCard(cardTag, animationPath);
-            return true;
+            if (panicActive) return false;
+            if (!TryReserveDesktopQueue(out string path, out DesktopQueueReservation? reservation)) return false;
+            desktopPlayback.Request(path, reservation);
+            bool requested = RequestAnimationPlayback(path);
+            if (!requested) ReleaseDesktopReservation();
+            return requested;
         }
-
-        private bool TryApplyQueueToAnimationProposal(string proposed,
-            out string selected, out bool forceAnimation)
-        {
-            selected = proposed;
-            forceAnimation = false;
-            if (panicActive ||
-                !Properties.Settings.Default.EnablePlayQueue)
-                return false;
-
-            if (!string.IsNullOrEmpty(playbackRequestedAnimationPath) &&
-                string.Equals(proposed, playbackRequestedAnimationPath,
-                    StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(proposed, queuedAnimationPendingPath,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                queuedAnimationPendingPath = "";
-                queuedAnimationPendingConfirmed = false;
-                queuedAnimationProtectedUntil = DateTime.MinValue;
-                ClearQueuedCardSession();
-                return false;
-            }
-
-            if (!string.IsNullOrEmpty(queuedAnimationPendingPath))
-            {
-                selected = queuedAnimationPendingPath;
-                if (string.Equals(proposed, queuedAnimationPendingPath,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!queuedAnimationPendingConfirmed)
-                    {
-                        queuedAnimationPendingConfirmed = true;
-                        queuedAnimationProtectedUntil =
-                            DateTime.UtcNow.AddMilliseconds(
-                                QueueStartProtectionMilliseconds);
-                    }
-                }
-                else if (ShouldKeepQueuedAnimationPending(
-                    queuedAnimationPendingConfirmed,
-                    queuedAnimationProtectedUntil, DateTime.UtcNow,
-                    CurrentAnimationReachedQueueAdvancePoint()))
-                {
-                    forceAnimation = true;
-                }
-                else
-                {
-                    queuedAnimationPendingPath = "";
-                    queuedAnimationPendingConfirmed = false;
-                    queuedAnimationProtectedUntil = DateTime.MinValue;
-                }
-                if (!string.IsNullOrEmpty(queuedAnimationPendingPath) ||
-                    string.Equals(proposed, selected,
-                        StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-
-            if (string.Equals(proposed, playbackRequestedAnimationPath,
-                    StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            if (string.Equals(proposed, nowPlayingPath,
-                    StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            if (!apiOnlyMode && !CurrentAnimationReachedQueueAdvancePoint())
-            {
-                if (string.IsNullOrEmpty(nowPlayingPath))
-                    return false;
-                selected = nowPlayingPath;
-                forceAnimation = true;
-                return true;
-            }
-
-            if (!TryTakeQueuedAnimation(out selected, out string cardTag))
-                return false;
-            BeginAnimationReplacement(selected);
-            forceAnimation = !string.Equals(proposed, selected,
-                StringComparison.OrdinalIgnoreCase);
-            queuedAnimationPendingPath = selected;
-            queuedAnimationPendingConfirmed = false;
-            queuedAnimationProtectedUntil = DateTime.MinValue;
-            SelectQueuedCard(cardTag, selected);
-            return true;
-        }
-
-        private bool CurrentAnimationReachedQueueAdvancePoint()
-        {
-            if (!string.IsNullOrEmpty(playbackCompletedAnimationPath))
-                return true;
-
-            return !string.IsNullOrEmpty(playbackTimelineAnimationPath) &&
-                string.Equals(playbackTimelineAnimationPath, nowPlayingPath,
-                    StringComparison.OrdinalIgnoreCase) &&
-                PlaybackReachedEnd(playbackLastKnownElapsedMilliseconds,
-                    playbackTimelineDurationMilliseconds);
-        }
-
-        private static bool ShouldKeepQueuedAnimationPending(bool confirmed,
-            DateTime protectedUntil, DateTime now, bool currentReachedEnd) =>
-            !confirmed || now < protectedUntil || !currentReachedEnd;
 
         private void SelectQueuedCard(string cardTag, string animationPath)
         {

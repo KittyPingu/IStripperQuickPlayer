@@ -169,6 +169,13 @@ The response contains:
 - `queue`: enabled state, active entry, manual entries, and automatic entries.
 
 Playback state is `playing`, `paused`, `stopped`, or `unavailable`.
+
+Desktop status also includes `desktop`: attachment and playback instance IDs,
+`pendingAnimationPath`, `preparedAnimationPath`, `confirmed`, `monitor`, physical
+desktop `bounds` (`x`, `y`, `width`, `height`), `dpi`, and `moving`. Bounds can have
+negative coordinates and are null until the native window association is known.
+Status reads the cached native snapshot; a playback request or registry proposal
+does not confirm the playing clip. This object is null during custom playback.
 Library, status, and queue entries include `source` (`istripper` or `custom`)
 and nullable `showId`. A playing custom show uses
 `animationPath: "custom:<32-character-show-id>"`.

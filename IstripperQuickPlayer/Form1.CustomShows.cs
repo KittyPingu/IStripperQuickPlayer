@@ -81,6 +81,9 @@ public partial class Form1
     IntPtr customHiddenMovieWindow;
     Rectangle? customPlayerBounds;
     bool customResumeIstripper;
+    long customSuspendAttachment;
+    ulong customSuspendInstance;
+    bool customSuspendConfirmed;
     bool customIstripperSuspended;
     int customSuspendRetryActive;
     string customPendingIstripperAnimation = "";
@@ -602,7 +605,7 @@ public partial class Form1
             customPlayerFullOpacitySlider) { AutoSize = false, Size = new(260, 34) });
     }
 
-    void SetCustomPlayerAlphaAntialiasing(bool enabled)
+    async void SetCustomPlayerAlphaAntialiasing(bool enabled)
     {
         Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing = enabled;
         Properties.Settings.Default.Save();
@@ -612,10 +615,14 @@ public partial class Form1
         customPlayer?.SetAlphaAntialiasing(enabled);
         if (playbackBridgeClient != null)
         {
-            CallPlaybackBridgeApi(
-                "IStripperSetOpenGlHdrAlphaAntialiasing", enabled ? 1UL : 0UL);
-            CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
-                IStripperVideoBridgeEnabled ? 1UL : 0UL);
+            try
+            {
+                await Task.Run(() => CallPlaybackBridgeApi(
+                    "IStripperSetOpenGlHdrAlphaAntialiasing", enabled ? 1UL : 0UL));
+                await Task.Run(() => CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
+                    IStripperVideoBridgeEnabled ? 1UL : 0UL));
+            }
+            catch (Exception exception) { SetPlaybackStatus(exception.Message); }
         }
         SetPlaybackStatus($"Player alpha antialiasing: " +
             (enabled ? "On" : "Off") + " (custom player and iStripper).");
@@ -625,13 +632,17 @@ public partial class Form1
         Properties.Settings.Default.EnableIStripperRtxHdr ||
         Properties.Settings.Default.EnableCustomPlayerAlphaAntialiasing;
 
-    void ApplyIStripperVideoBridgeMode()
+    async void ApplyIStripperVideoBridgeMode()
     {
         if (playbackBridgeClient == null) return;
-        CallPlaybackBridgeApi("IStripperSetOpenGlHdrEnabled",
-            Properties.Settings.Default.EnableIStripperRtxHdr ? 1UL : 0UL);
-        CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
-            IStripperVideoBridgeEnabled ? 1UL : 0UL);
+        try
+        {
+            await Task.Run(() => CallPlaybackBridgeApi("IStripperSetOpenGlHdrEnabled",
+                Properties.Settings.Default.EnableIStripperRtxHdr ? 1UL : 0UL));
+            await Task.Run(() => CallPlaybackBridgeApi("IStripperSetOpenGlPresentProbe",
+                IStripperVideoBridgeEnabled ? 1UL : 0UL));
+        }
+        catch (Exception exception) { SetPlaybackStatus(exception.Message); }
     }
 
     int CustomPlayerVolume(bool large) => Math.Clamp(large
@@ -1853,13 +1864,13 @@ public partial class Form1
                 StringComparison.OrdinalIgnoreCase));
         manualPlayQueue.RemoveAll(entry => Matches(entry));
         automaticPlayQueue.RemoveAll(entry => Matches(entry));
-        if (activeManualQueueEntry != null && Matches(activeManualQueueEntry))
-            activeManualQueueEntry = null;
-        if (activeAutomaticQueueEntry != null &&
-            Matches(activeAutomaticQueueEntry))
-            activeAutomaticQueueEntry = null;
-        if (activeQueuedCard != null && Matches(activeQueuedCard))
-            activeQueuedCard = null;
+        if (desktopPlayback.ActiveManualQueueEntry != null && Matches(desktopPlayback.ActiveManualQueueEntry))
+            desktopPlayback.ActiveManualQueueEntry = null;
+        if (desktopPlayback.ActiveAutomaticQueueEntry != null &&
+            Matches(desktopPlayback.ActiveAutomaticQueueEntry))
+            desktopPlayback.ActiveAutomaticQueueEntry = null;
+        if (desktopPlayback.ActiveQueuedCard != null && Matches(desktopPlayback.ActiveQueuedCard))
+            desktopPlayback.ActiveQueuedCard = null;
         SavePreviousQueue();
         RenderPlayQueues();
     }
@@ -1890,8 +1901,16 @@ public partial class Form1
     bool RequestAnimationPlayback(string animationPath)
     {
         if (animationPath.StartsWith("custom:", StringComparison.OrdinalIgnoreCase))
-            return PlaybackSourceAllowed(IsFullscreenModeActive(), custom: true) &&
-                StartCustomPlayback(animationPath);
+        {
+            if (!PlaybackSourceAllowed(IsFullscreenModeActive(), custom: true)) return false;
+            DesktopQueueReservation? reservation = desktopPlayback.Pending?.Path == animationPath
+                ? desktopPlayback.Pending.Reservation as DesktopQueueReservation : null;
+            bool started = StartCustomPlayback(animationPath);
+            if (started && reservation != null) ConfirmDesktopReservation(reservation, animationPath);
+            ReleaseDesktopReservation();
+            ClearNativeDesktopSelection();
+            return started;
+        }
         bool customTransition = customIstripperSuspended;
         StopCustomPlayback(restoreIstripper: !customTransition);
         using RegistryKey? key = Registry.CurrentUser.OpenSubKey(
@@ -1902,8 +1921,11 @@ public partial class Form1
             return false;
         }
         customPendingIstripperAnimation = customTransition ? animationPath : "";
-        BeginAnimationReplacement(animationPath);
-        key.SetValue("ForceAnim", animationPath);
+        if (!RequestDesktopAnimation(animationPath))
+        {
+            if (customTransition) RestoreIStripperAfterCustomPlayback();
+            return false;
+        }
         if (customTransition)
             ResumeHiddenIStripperForTransition();
         if (customTransition)
@@ -1956,7 +1978,7 @@ public partial class Form1
         if (previous == null && !customIstripperSuspended)
             SuspendIStripperForCustomPlayback();
         if (previous != null) RememberCustomPlayerBounds(previous);
-        Rectangle? initialBounds = customPlayerBounds;
+        Rectangle? initialBounds = customPlayerBounds ?? lastDesktopPlacement;
         LogCustomPlayerPosition("handoff initial=" +
             FormatCustomPlayerBounds(initialBounds));
         int mode = Volatile.Read(ref playerMode);
@@ -2023,6 +2045,10 @@ public partial class Form1
                     player.HasEstablishedBounds);
             if (customPlayer == player) RememberCustomPlayerBounds(player);
         };
+        player.DpiChanged += (_, e) => LogCustomPlayerPosition(
+            $"dpi {e.DeviceDpiOld}->{e.DeviceDpiNew}; suggested=" +
+            FormatCustomPlayerBounds(e.SuggestedRectangle) + "; actual=" +
+            FormatCustomPlayerBounds(player.Bounds) + "; cancelled=" + e.Cancel);
         customPlayer = player;
         CustomRtxDiagnostics.Write("handoff", 0, "new-player",
             $"animation=\"{animationPath}\" player={player.DiagnosticId} " +
@@ -2232,27 +2258,45 @@ public partial class Form1
         catch { }
     }
 
-    void SuspendIStripperForCustomPlayback()
+    async void SuspendIStripperForCustomPlayback()
     {
         bool firstAttempt = !customIstripperSuspended;
         customIstripperSuspended = true;
-        if (firstAttempt) customResumeIstripper = false;
-        IntPtr visibleMovieWindow =
-            LockStateOverlay.HideMovieWindowForProcess(vghd_procID);
-        if (visibleMovieWindow != IntPtr.Zero)
+        if (firstAttempt)
         {
-            customHiddenMovieWindow = visibleMovieWindow;
+            customResumeIstripper = false;
+            customSuspendAttachment = 0;
+            customSuspendInstance = 0;
+            customSuspendConfirmed = false;
+        }
+        DesktopBridgeSnapshot? snapshot = Volatile.Read(ref desktopSnapshot);
+        if (firstAttempt || snapshot?.Window is > 0)
+        {
+            IntPtr visibleMovieWindow =
+                LockStateOverlay.HideMovieWindowForProcess(vghd_procID);
+            if (visibleMovieWindow != IntPtr.Zero)
+                customHiddenMovieWindow = visibleMovieWindow;
         }
         if (!playbackBridgeLoaded) return;
         try
         {
-            if (!playbackMovieRegistered)
-                playbackMovieRegistered = CallPlaybackBridgeApi(
-                    "IStripperDiscoverMovie") >= 0;
-            if (!playbackMovieRegistered ||
-                RequirePlaybackResult("IStripperGetState") != 3) return;
+            if (snapshot == null) return;
+            long attachment = Volatile.Read(ref desktopAttachment);
+            if (snapshot.State == 4 && attachment == customSuspendAttachment &&
+                snapshot.Instance == customSuspendInstance)
+                customSuspendConfirmed = true;
+            if (!ShouldPauseHiddenDesktop(attachment, snapshot.Instance, snapshot.State,
+                    customSuspendAttachment, customSuspendInstance, customSuspendConfirmed)) return;
+            customSuspendAttachment = attachment;
+            customSuspendInstance = snapshot.Instance;
+            customSuspendConfirmed = false;
             customResumeIstripper = true;
-            RequirePlaybackResult("IStripperPause");
+            var client = playbackBridgeClient;
+            if (client?.IsConnected != true) return;
+            int result = await RunDesktopControlAsync(() => client.Call("IStripperPause"));
+            if (result < 0 && attachment == Volatile.Read(ref desktopAttachment) &&
+                customIstripperSuspended)
+                SetPlaybackStatus($"Hidden iStripper pause failed (0x{result:X8}).");
         }
         catch { }
     }
@@ -2304,7 +2348,7 @@ public partial class Form1
         if (restoreIstripper) RestoreIStripperAfterCustomPlayback();
     }
 
-    void RestoreIStripperAfterCustomPlayback()
+    async void RestoreIStripperAfterCustomPlayback()
     {
         if (!customIstripperSuspended) return;
         customIstripperSuspended = false;
@@ -2319,13 +2363,27 @@ public partial class Form1
         {
             try
             {
-                if (RequirePlaybackResult("IStripperGetState") == 4)
-                    RequirePlaybackResult("IStripperResume");
+                _ = Task.Run(() => { try { RequirePlaybackResult("IStripperResume"); } catch { } });
             }
             catch { }
         }
         customResumeIstripper = false;
-        QueueConfiguredPlayerSize(mode: Volatile.Read(ref playerMode));
+        int mode = Volatile.Read(ref playerMode);
+        long attachment = Volatile.Read(ref desktopAttachment);
+        var client = playbackBridgeClient;
+        if (mode is 1 or 2 && client?.IsConnected == true)
+        {
+            int result = await RunDesktopControlAsync(() =>
+                client.Call("IStripperRestoreDesktopPlayer", (ulong)mode));
+            if (attachment != Volatile.Read(ref desktopAttachment) ||
+                customIstripperSuspended || formIsClosing) return;
+            if (result < 0)
+            {
+                SetPlaybackStatus($"Desktop restoration failed (0x{result:X8}).");
+                return;
+            }
+        }
+        QueueConfiguredPlayerSize(mode: mode);
     }
 
     void ResumeHiddenIStripperForTransition()
@@ -2334,8 +2392,7 @@ public partial class Form1
             !playbackMovieRegistered) return;
         try
         {
-            if (RequirePlaybackResult("IStripperGetState") == 4)
-                RequirePlaybackResult("IStripperResume");
+            _ = Task.Run(() => { try { RequirePlaybackResult("IStripperResume"); } catch { } });
         }
         catch { }
     }
@@ -2387,10 +2444,22 @@ public partial class Form1
     static bool IStripperTransitionPending(string pendingAnimationPath) =>
         !string.IsNullOrWhiteSpace(pendingAnimationPath);
 
+    static bool ShouldPauseHiddenDesktop(long attachment, ulong instance, int state,
+        long attemptedAttachment, ulong attemptedInstance, bool confirmed) =>
+        state == 3 && instance != 0 &&
+        (attachment != attemptedAttachment || instance != attemptedInstance || confirmed);
+
     internal static bool VerifyCustomPlaybackHandoff()
     {
         DateTime now = DateTime.UtcNow;
-        return IStripperTransitionSettled("card\\clip", "CARD\\CLIP",
+        return ShouldPauseHiddenDesktop(1, 10, 3, 0, 0, false) &&
+            !ShouldPauseHiddenDesktop(1, 10, 3, 1, 10, false) &&
+            ShouldPauseHiddenDesktop(1, 11, 3, 1, 10, false) &&
+            ShouldPauseHiddenDesktop(2, 10, 3, 1, 10, false) &&
+            ShouldPauseHiddenDesktop(1, 10, 3, 1, 10, true) &&
+            !ShouldPauseHiddenDesktop(1, 10, 4, 1, 10, true) &&
+            !ShouldPauseHiddenDesktop(1, 0, 0, 1, 10, false) &&
+            IStripperTransitionSettled("card\\clip", "CARD\\CLIP",
                    now.AddMilliseconds(-301), now) &&
             !IStripperTransitionSettled("card\\clip", "other\\clip",
                 now.AddSeconds(-1), now) &&

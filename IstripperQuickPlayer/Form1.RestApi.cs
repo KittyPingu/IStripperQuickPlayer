@@ -622,7 +622,8 @@ namespace IStripperQuickPlayer
         private object CreateRestApiStatus()
         {
             RefreshApiOnlyPlaybackState();
-            string animationPath = GetCurrentAnimationPath();
+            DesktopBridgeSnapshot? desktop = Volatile.Read(ref desktopSnapshot);
+            string animationPath = customPlayer != null ? customPlayerAnimationPath : desktop?.Path ?? "";
             string[] animationParts = animationPath.Split('\\', 2);
             string cardTag = string.IsNullOrEmpty(animationPath) ? "" :
                 GetCardTagFromAnimationPath(animationPath);
@@ -633,13 +634,11 @@ namespace IStripperQuickPlayer
             ModelCard? card = string.IsNullOrEmpty(cardTag)
                 ? null : Datastore.findCardByTag(
                     cardTag.Split('-')[0]);
-            int stateCode = playbackBridgeLoaded &&
-                playbackMovieRegistered
-                    ? CallPlaybackBridgeApi("IStripperGetState") : -1;
+            int stateCode = desktop?.State ?? -1;
             int elapsedMilliseconds =
-                playbackLastKnownElapsedMilliseconds;
+                desktop?.Elapsed ?? 0;
             int durationMilliseconds =
-                playbackTimelineDurationMilliseconds;
+                desktop?.Duration ?? 0;
             if (customPlayer != null)
             {
                 elapsedMilliseconds = (int)Math.Min(int.MaxValue,
@@ -647,27 +646,13 @@ namespace IStripperQuickPlayer
                 durationMilliseconds = (int)Math.Min(int.MaxValue,
                     customPlayer.DurationSeconds * 1000);
             }
-            if (customPlayer == null && apiOnlyMode && playbackBridgeLoaded &&
-                playbackMovieRegistered)
-            {
-                int elapsed = CallPlaybackBridgeApi(
-                    "IStripperGetElapsedMilliseconds");
-                int duration = CallPlaybackBridgeApi(
-                    "IStripperGetTotalMilliseconds");
-                if (elapsed >= 0)
-                    elapsedMilliseconds = elapsed;
-                if (duration >= 0)
-                    durationMilliseconds = duration;
-                playbackLastKnownElapsedMilliseconds =
-                    elapsedMilliseconds;
-                playbackTimelineDurationMilliseconds =
-                    durationMilliseconds;
-            }
             string state = stateCode switch
             {
                 _ when customPlayer == null && IsRestApiFullscreenActive() &&
                     Volatile.Read(ref fullscreenBridgeState).Slots.Any(
                         slot => !string.IsNullOrEmpty(slot.Clip)) => "playing",
+                _ when customPlayer == null && string.IsNullOrEmpty(animationPath) &&
+                    (stateCode is 3 or 4 || desktop == null && playbackBridgeClient?.IsConnected == true) => "unavailable",
                 _ when string.IsNullOrEmpty(animationPath) => "stopped",
                 _ when customPlayer != null && customPlayer.Paused => "paused",
                 _ when customPlayer != null => "playing",
@@ -703,10 +688,11 @@ namespace IStripperQuickPlayer
                         customPlayer != null || PlaybackControlEnabled &&
                         playbackControlsAvailableForAccount &&
                         playbackBridgeLoaded,
-                    seekReady = playbackSeekReady,
-                    movieRegistered = playbackMovieRegistered,
-                    decoderKind = playbackDecoderKind,
-                    seekReadinessMask = playbackSeekReadinessMask,
+                    seekReady = customPlayer != null ? customPlayer.DurationSeconds > 0 : desktop?.SeekReady == 1,
+                    movieRegistered = customPlayer != null ? playbackMovieRegistered :
+                        desktop?.Path.Length > 0 && desktop.State is 3 or 4,
+                    decoderKind = customPlayer != null ? playbackDecoderKind : desktop?.Decoder ?? 0,
+                    seekReadinessMask = customPlayer != null ? playbackSeekReadinessMask : desktop?.ReadinessMask ?? 0,
                     readinessElapsedMilliseconds =
                         PlaybackReadinessElapsedMilliseconds(),
                     movieRegistrationMilliseconds =
@@ -717,6 +703,19 @@ namespace IStripperQuickPlayer
                         playbackSeekReadinessMilliseconds >= 0
                             ? (int?)playbackSeekReadinessMilliseconds
                             : null
+                },
+                desktop = customPlayer != null ? null : new
+                {
+                    attachment = Volatile.Read(ref desktopAttachment),
+                    instance = desktop?.Instance,
+                    pendingAnimationPath = desktopPlayback.Pending?.Path,
+                    preparedAnimationPath = desktopPlayback.Prepared?.Path,
+                    confirmed = desktop?.Path.Length > 0 && desktop.State is 3 or 4,
+                    monitor = desktop?.Monitor,
+                    bounds = desktop == null || desktop.Window == 0 ? null : new
+                    { x = desktop.Bounds.X, y = desktop.Bounds.Y, width = desktop.Bounds.Width, height = desktop.Bounds.Height },
+                    dpi = desktop?.Dpi,
+                    moving = desktop?.Moving
                 },
                 queue = CreateRestApiQueue()
             };
@@ -1377,9 +1376,9 @@ namespace IStripperQuickPlayer
         private object CreateRestApiQueue() => new
         {
             enabled = Properties.Settings.Default.EnablePlayQueue,
-            active = (activeManualQueueEntry ??
-                (apiOnlyMode ? null : activeAutomaticQueueEntry) ??
-                activeQueuedCard) is { } active
+            active = (desktopPlayback.ActiveManualQueueEntry ??
+                (apiOnlyMode ? null : desktopPlayback.ActiveAutomaticQueueEntry) ??
+                desktopPlayback.ActiveQueuedCard) is { } active
                     ? CreateRestApiQueueEntry(active, -1) : null,
             manual = manualPlayQueue.Select(
                 CreateRestApiQueueEntry).ToList(),
@@ -1551,12 +1550,12 @@ namespace IStripperQuickPlayer
                     break;
                 case "next-card":
                     if (apiOnlyMode)
-                        return PlayNextApiOnlyCard();
+                        return await PlayNextApiOnlyCardAsync();
                     GetNextCard();
                     break;
                 case "toggle-lock":
                     if (apiOnlyMode)
-                        return ToggleApiOnlyPlayerLock();
+                        return await ToggleApiOnlyPlayerLockAsync();
                     lockPlayerToolStripMenuItem.Checked =
                         !lockPlayerToolStripMenuItem.Checked;
                     setPlayerLocked();
@@ -1653,11 +1652,11 @@ namespace IStripperQuickPlayer
             return ForceApiOnlyAnimation(GetAnimationPath(next));
         }
 
-        private ApiResult PlayNextApiOnlyCard()
+        private async Task<ApiResult> PlayNextApiOnlyCardAsync()
         {
             if (playbackBridgeClient?.IsConnected != true)
                 return Error(409, "The iStripper bridge is not connected.");
-            int result = playbackBridgeClient.Call("IStripperDesktopNext");
+            int result = await Task.Run(() => CallPlaybackBridgeApi("IStripperDesktopNext"));
             return result < 0
                 ? Error(409,
                     $"Native next card is unavailable (0x{result:X8}).")
@@ -1679,13 +1678,13 @@ namespace IStripperQuickPlayer
             });
         }
 
-        private ApiResult ToggleApiOnlyPlayerLock()
+        private async Task<ApiResult> ToggleApiOnlyPlayerLockAsync()
         {
             if (!playerLockBridgeLoaded)
                 return Error(409,
                     "Player locking is not currently available.");
             bool requested = !playerlocked;
-            int result = SetVghdPlayerLocked(requested);
+            int result = await Task.Run(() => SetVghdPlayerLocked(requested));
             if (result < 0)
                 return Error(409,
                     $"Player locking is unavailable (0x{result:X8}).");
@@ -1696,6 +1695,12 @@ namespace IStripperQuickPlayer
         private bool RestApiPlaybackControlAvailable(bool seek,
             out ApiResult? error)
         {
+            if (customPlayer != null)
+            {
+                error = seek && customPlayer.DurationSeconds <= 0
+                    ? Error(409, "Seeking is not currently ready.") : null;
+                return error == null;
+            }
             RefreshApiOnlyPlaybackState();
             if (!PlaybackControlEnabled ||
                 !playbackControlsAvailableForAccount ||
@@ -1717,114 +1722,7 @@ namespace IStripperQuickPlayer
 
         private void RefreshApiOnlyPlaybackState()
         {
-            if (!apiOnlyMode || !playbackBridgeLoaded)
-                return;
-
-            try
-            {
-                if (!playbackMovieRegistered)
-                {
-                    playbackMovieRegistered = movieCaptureHookInstalled &&
-                        CallPlaybackBridgeApi(
-                            "IStripperConsumeCapturedMovie") >= 0;
-                    bool allowFallbackDiscovery =
-                        !movieCaptureHookInstalled ||
-                        playbackMovieCaptureFallbackAt ==
-                            DateTime.MinValue ||
-                        DateTime.UtcNow >= playbackMovieCaptureFallbackAt;
-                    if (!playbackMovieRegistered && allowFallbackDiscovery)
-                    {
-                        DisableMovieCapture();
-                        playbackMovieRegistered = CallPlaybackBridgeApi(
-                            "IStripperDiscoverMovie") >= 0;
-                    }
-                    if (playbackMovieRegistered)
-                    {
-                        DisableMovieCapture();
-                        playbackDecoderKind = CallPlaybackBridgeApi(
-                            "IStripperGetDecoderKind");
-                        playbackSeekingSupported =
-                            playbackDecoderKind is 1 or 2;
-                        RecordPlaybackMovieRegistration();
-                    }
-                }
-                if (!playbackMovieRegistered)
-                    return;
-
-                int state = CallPlaybackBridgeApi("IStripperGetState");
-                if (state is not 3 and not 4)
-                {
-                    playbackMovieRegistered = false;
-                    playbackSeekReady = false;
-                    ResetPlaybackReadinessDiagnostics(
-                        GetCurrentAnimationPath());
-                    playbackLastKnownElapsedMilliseconds = 0;
-                    playbackTimelineDurationMilliseconds = 0;
-                    if (CallPlaybackBridgeApi(
-                            "IStripperDiscoverMovie") < 0 ||
-                        CallPlaybackBridgeApi(
-                            "IStripperGetState") is not 3 and not 4)
-                        return;
-                    playbackMovieRegistered = true;
-                    playbackDecoderKind = CallPlaybackBridgeApi(
-                        "IStripperGetDecoderKind");
-                    playbackSeekingSupported =
-                        playbackDecoderKind is 1 or 2;
-                    RecordPlaybackMovieRegistration();
-                }
-
-                int elapsed = CallPlaybackBridgeApi(
-                    "IStripperGetElapsedMilliseconds");
-                int total = CallPlaybackBridgeApi(
-                    "IStripperGetTotalMilliseconds");
-                if (elapsed >= 0)
-                    playbackLastKnownElapsedMilliseconds = elapsed;
-                if (total >= 0)
-                    playbackTimelineDurationMilliseconds = total;
-
-                if (!playbackSeekReady && playbackSeekingSupported)
-                {
-                    bool wasSeekReady = playbackSeekReady;
-                    int ready = CallPlaybackBridgeApi(
-                        "IStripperIsSeekReady");
-                    if (playbackDecoderKind == 1)
-                    {
-                        int readinessMask = CallPlaybackBridgeApi(
-                            "IStripperGetSeekReadinessMask");
-                        if (readinessMask >= 0)
-                            playbackSeekReadinessMask = readinessMask;
-                    }
-                    if (ready == 1 && playbackDecoderKind == 1)
-                    {
-                        int checkpoint = CallPlaybackBridgeApi(
-                            "IStripperCaptureAlphaCheckpoint");
-                        if (checkpoint >= 0)
-                        {
-                            playbackAlphaCheckpointBucket = elapsed / 5_000;
-                            ready = 1;
-                        }
-                        else
-                            ready = 0;
-                    }
-                    playbackSeekReady = ready == 1 || elapsed >=
-                        PlaybackForcedReadyMilliseconds;
-                    if (!wasSeekReady && playbackSeekReady)
-                        RecordPlaybackSeekReady();
-                }
-                int checkpointBucket = elapsed / 5_000;
-                if (playbackDecoderKind == 1 && playbackSeekReady &&
-                    checkpointBucket != playbackAlphaCheckpointBucket &&
-                    CallPlaybackBridgeApi(
-                        "IStripperCaptureAlphaCheckpoint") >= 0)
-                {
-                    playbackAlphaCheckpointBucket = checkpointBucket;
-                }
-            }
-            catch
-            {
-                playbackMovieRegistered = false;
-                playbackSeekReady = false;
-            }
+            // The background observer owns discovery and status sampling.
         }
 
         private static bool TryCreateRestApiQueueEntry(

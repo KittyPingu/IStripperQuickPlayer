@@ -447,3 +447,7 @@ FodyWeavers.xsd
 /third_party/nvidia/
 /native/IStripperRtxVideoBridge64/obj/
 /tmp/
+!/IstripperQuickPlayer/DesktopPlaybackCoordinator.cs
+!/IstripperQuickPlayer/DesktopBridgeSnapshot.cs
+!/IstripperQuickPlayer/Form1.DesktopPlayback.cs
+!/IstripperQuickPlayer/DesktopPlaybackVerification.cs

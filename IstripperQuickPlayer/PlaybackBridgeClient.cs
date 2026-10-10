@@ -42,7 +42,7 @@ public sealed class PlaybackBridgeClient : IDisposable
     private readonly int processId;
     private readonly Func<string, byte[], bool> registryWrite;
     private readonly CancellationTokenSource lifetime = new();
-    private readonly ManualResetEventSlim eventReady = new();
+    private readonly NamedPipeServerStream initialEventPipe;
     private readonly object commandLock = new();
     private readonly Task eventTask;
     private NamedPipeClientStream? commandPipe;
@@ -51,16 +51,19 @@ public sealed class PlaybackBridgeClient : IDisposable
     private nint bufferProcess;
     private nint remoteBuffer;
     private int remoteBufferCapacity;
+    private bool executionUncertain;
 
     private PlaybackBridgeClient(int processId,
         Func<string, byte[], bool> registryWrite)
     {
         this.processId = processId;
         this.registryWrite = registryWrite;
-        eventTask = Task.Run(EventLoop);
-        if (!eventReady.Wait(ConnectTimeoutMilliseconds))
-            throw new IOException(
-                "The iStripper bridge event channel did not start.");
+        try
+        {
+            initialEventPipe = CreateEventPipe();
+        }
+        catch { lifetime.Dispose(); throw; }
+        eventTask = Task.Run(() => EventLoop(initialEventPipe));
     }
 
     public bool IsConnected => commandPipe?.IsConnected == true;
@@ -104,13 +107,19 @@ public sealed class PlaybackBridgeClient : IDisposable
     }
 
     public int Call(string apiName, ulong? parameter = null)
+        => Call(apiName, parameter, Stopwatch.GetTimestamp());
+
+    private int Call(string apiName, ulong? parameter, long started)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(apiName);
         byte[] name = Encoding.UTF8.GetBytes(apiName);
         if (name.Length > 512)
             throw new ArgumentOutOfRangeException(nameof(apiName));
 
-        lock (commandLock)
+        int remaining = Math.Max(0, CommandTimeout(apiName) - (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        if (!Monitor.TryEnter(commandLock, remaining))
+            throw new TimeoutException("The iStripper command queue deadline expired; the command was not sent.");
+        try
         {
             if (commandPipe?.IsConnected != true ||
                 commandReader == null || commandWriter == null)
@@ -118,15 +127,44 @@ public sealed class PlaybackBridgeClient : IDisposable
 
             try
             {
-                WriteCommand(commandWriter, name, parameter);
-                commandWriter.Flush();
-                return commandReader.ReadInt32();
+                remaining = Math.Max(0, CommandTimeout(apiName) - (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                if (remaining == 0) throw new TimeoutException("The command deadline expired before transport.");
+                return ExchangeAsync(commandPipe, name, parameter,
+                    remaining, lifetime.Token).GetAwaiter().GetResult();
             }
             catch
             {
+                executionUncertain = true;
                 DisconnectCommands();
                 throw;
             }
+        }
+        finally { Monitor.Exit(commandLock); }
+    }
+
+    private static int CommandTimeout(string apiName) => apiName is
+        "IStripperDecodeTargetMilliseconds" or "IStripperPrepareFastForwardMilliseconds"
+            ? 30_000 : 2_000;
+
+    private static async Task<int> ExchangeAsync(Stream pipe, byte[] name,
+        ulong? parameter, int timeout, CancellationToken lifetime)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
+        deadline.CancelAfter(timeout);
+        using var request = new MemoryStream();
+        using (var writer = new BinaryWriter(request, Encoding.UTF8, true))
+            WriteCommand(writer, name, parameter);
+        try
+        {
+            await pipe.WriteAsync(request.ToArray(), deadline.Token).ConfigureAwait(false);
+            await pipe.FlushAsync(deadline.Token).ConfigureAwait(false);
+            byte[] response = new byte[sizeof(int)];
+            await pipe.ReadExactlyAsync(response, deadline.Token).ConfigureAwait(false);
+            return BitConverter.ToInt32(response);
+        }
+        catch (OperationCanceledException) when (!lifetime.IsCancellationRequested)
+        {
+            throw new TimeoutException("The iStripper command response deadline expired; execution is uncertain.");
         }
     }
 
@@ -280,7 +318,10 @@ public sealed class PlaybackBridgeClient : IDisposable
         if (payloadLength < 0 || (payloadLength > 0) != (payload != 0))
             throw new ArgumentOutOfRangeException(nameof(payloadLength));
 
-        lock (commandLock)
+        long started = Stopwatch.GetTimestamp();
+        if (!Monitor.TryEnter(commandLock, CommandTimeout(apiName)))
+            throw new TimeoutException("The iStripper command queue deadline expired; the command was not sent.");
+        try
         {
             try
             {
@@ -298,7 +339,7 @@ public sealed class PlaybackBridgeClient : IDisposable
                     throw new Win32Exception(Marshal.GetLastWin32Error());
                 long commandStarted = Stopwatch.GetTimestamp();
                 int result = Call(apiName,
-                    (ulong)(nuint)remoteBuffer);
+                    (ulong)(nuint)remoteBuffer, started);
                 long readBackStarted = Stopwatch.GetTimestamp();
                 if (result >= 0 && readBackLength > 0 &&
                     (!ReadProcessMemory(bufferProcess, remoteBuffer, data,
@@ -321,6 +362,7 @@ public sealed class PlaybackBridgeClient : IDisposable
                 throw;
             }
         }
+        finally { Monitor.Exit(commandLock); }
     }
 
     private void EnsureRemoteBuffer(int requiredLength)
@@ -355,7 +397,8 @@ public sealed class PlaybackBridgeClient : IDisposable
 
     private void ReleaseRemoteBuffer()
     {
-        if (remoteBuffer != 0 && bufferProcess != 0)
+        // A timed-out native call may still access this allocation. The host frees it on exit.
+        if (!executionUncertain && remoteBuffer != 0 && bufferProcess != 0)
             VirtualFreeEx(bufferProcess, remoteBuffer, 0, 0x8000);
         remoteBuffer = 0;
         remoteBufferCapacity = 0;
@@ -420,6 +463,76 @@ public sealed class PlaybackBridgeClient : IDisposable
             InjectionThreadMayStillRun(WaitFailed);
     }
 
+    internal static async Task<bool> VerifyDeadlineAsync()
+    {
+        if (!VerifyEventStartup()) return false;
+        string name = "QuickPlayer.DeadlineTest." + Guid.NewGuid().ToString("N");
+        using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        Task connected = server.WaitForConnectionAsync();
+        await client.ConnectAsync(1000);
+        await connected;
+        long started = Stopwatch.GetTimestamp();
+        try
+        {
+            await ExchangeAsync(client, Encoding.UTF8.GetBytes("Test"), null, 80, CancellationToken.None);
+            return false;
+        }
+        catch (TimeoutException)
+        {
+            double elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            if (elapsed < 60 || elapsed > 2000) return false;
+        }
+        client.Dispose();
+        int fakeProcess = Environment.ProcessId + 1_000_000;
+        using var stalledServer = new NamedPipeServerStream(CommandPipeName(fakeProcess),
+            PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        using var bridge = new PlaybackBridgeClient(fakeProcess, (_, _) => false);
+        Task accepted = stalledServer.WaitForConnectionAsync();
+        bridge.ConnectCommands(1000);
+        await accepted;
+        started = Stopwatch.GetTimestamp();
+        Task request = Task.Run(() => bridge.Call("Test"));
+        using var readDeadline = new CancellationTokenSource(5000);
+        await stalledServer.ReadExactlyAsync(new byte[28], readDeadline.Token);
+        try { await request; return false; }
+        catch (TimeoutException) { }
+        if (!bridge.executionUncertain || bridge.IsConnected ||
+            Stopwatch.GetElapsedTime(started).TotalMilliseconds > 3000) return false;
+        try { bridge.Call("Test"); return false; }
+        catch (IOException) { return !bridge.IsConnected; }
+    }
+
+    private static bool VerifyEventStartup()
+    {
+        ThreadPool.GetMinThreads(out int minWorkers, out int minIo);
+        ThreadPool.GetMaxThreads(out int maxWorkers, out int maxIo);
+        using var blocked = new ManualResetEventSlim();
+        using var entered = new ManualResetEventSlim();
+        Task? worker = null;
+        try
+        {
+            if (!ThreadPool.SetMinThreads(1, minIo) || !ThreadPool.SetMaxThreads(1, maxIo)) return false;
+            worker = Task.Run(() => { entered.Set(); blocked.Wait(); });
+            if (!entered.Wait(2000)) return false;
+            long started = Stopwatch.GetTimestamp();
+            int fakeProcess = Environment.ProcessId + 2_000_000;
+            using (var bridge = new PlaybackBridgeClient(fakeProcess, (_, _) => false))
+                if (bridge.initialEventPipe.SafePipeHandle.IsClosed || Stopwatch.GetElapsedTime(started).TotalMilliseconds > 500) return false;
+            using var replacement = new PlaybackBridgeClient(fakeProcess, (_, _) => false);
+            return !replacement.initialEventPipe.SafePipeHandle.IsClosed;
+        }
+        catch (IOException) { return false; }
+        finally
+        {
+            blocked.Set();
+            ThreadPool.SetMaxThreads(maxWorkers, maxIo);
+            ThreadPool.SetMinThreads(minWorkers, minIo);
+            worker?.Wait(2000);
+        }
+    }
+
     private static byte[] CreateFullscreenShaderDataPacket(float[] values)
     {
         byte[] packet = new byte[20];
@@ -473,7 +586,7 @@ public sealed class PlaybackBridgeClient : IDisposable
     private void ConnectCommands(int timeoutMilliseconds)
     {
         var pipe = new NamedPipeClientStream(".", CommandPipeName(processId),
-            PipeDirection.InOut, PipeOptions.None);
+            PipeDirection.InOut, PipeOptions.Asynchronous);
         try
         {
             pipe.Connect(timeoutMilliseconds);
@@ -497,16 +610,21 @@ public sealed class PlaybackBridgeClient : IDisposable
                 StringComparison.OrdinalIgnoreCase));
     }
 
-    private async Task EventLoop()
+    private NamedPipeServerStream CreateEventPipe() => new(
+        EventPipeName(processId), PipeDirection.InOut, 1,
+        PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+
+    private async Task EventLoop(NamedPipeServerStream firstPipe)
     {
+        using var initial = firstPipe;
+        bool first = true;
         while (!lifetime.IsCancellationRequested)
         {
             try
             {
-                using var pipe = new NamedPipeServerStream(
-                    EventPipeName(processId), PipeDirection.InOut, 1,
-                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-                eventReady.Set();
+                using var pipe = first ? firstPipe : CreateEventPipe();
+                first = false;
+                using var cancellation = lifetime.Token.Register(pipe.Dispose);
                 await pipe.WaitForConnectionAsync(lifetime.Token)
                     .ConfigureAwait(false);
                 using var reader = new BinaryReader(pipe, Encoding.Unicode, true);
@@ -533,6 +651,7 @@ public sealed class PlaybackBridgeClient : IDisposable
                 }
             }
             catch (OperationCanceledException) { }
+            catch (Exception) when (lifetime.IsCancellationRequested) { }
             catch (Exception) when (!lifetime.IsCancellationRequested)
             {
                 await Task.Delay(100, lifetime.Token).ConfigureAwait(false);
@@ -660,13 +779,13 @@ public sealed class PlaybackBridgeClient : IDisposable
     public void Dispose()
     {
         lifetime.Cancel();
+        initialEventPipe.Dispose();
         lock (commandLock)
         {
             ReleaseRemoteBuffer();
             DisconnectCommands();
         }
         try { eventTask.Wait(500); } catch { }
-        eventReady.Dispose();
         lifetime.Dispose();
     }
 

@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 132;
+        private const int PlaybackBridgeVersion = 145;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -96,13 +96,11 @@ namespace IStripperQuickPlayer
             Text = "Card size: 100%",
             Visible = false
         };
-        private bool isAutoSelecting = false;
         private string nowPlayingPath = "";
         private string nowPlayingTag = "";
         private string nowPlayingFilterMatch = "";
         private string nowPlayingTagShort = "";
         private string nowPlaying = "";
-        private string wallpaperTag = "";
         private int nowPlayingClipNumber;
         private string clipListTag = "";
         private MyData? myData = null;
@@ -148,7 +146,6 @@ namespace IStripperQuickPlayer
         private int playerMode = 2;
         private volatile bool playerLockBridgeLoaded;
         private volatile bool playbackBridgeLoaded;
-        private bool playbackCapturedAnimationSupported = true;
         private volatile bool playbackMovieRegistered;
         private volatile bool playbackFastDecodeEnabled;
         private int playbackFastDecodeRetryPending;
@@ -242,22 +239,14 @@ namespace IStripperQuickPlayer
         private readonly ToolStripMenuItem restoreToolStripMenuItem =
             new("Restore QuickPlayer Data...");
         private readonly object playbackHistoryLock = new();
-        private bool playbackTimelinePolling;
         private int nowPlayingUiUpdatePending;
         private string displayedNowPlayingCardTag = "";
         private bool playbackTimelineDragging;
         private int playbackTimelineDurationMilliseconds;
         private int playbackLastKnownElapsedMilliseconds;
-        private int playbackAlphaCheckpointBucket = -1;
         private string playbackTimelineAnimationPath = "";
-        private string playbackCompletedAnimationPath = "";
         private string playbackRequestedAnimationPath = "";
         private DateTime playbackRequestedAnimationAt = DateTime.MinValue;
-        private DateTime playbackNextMovieDiscoveryAt = DateTime.MinValue;
-        private DateTime playbackMovieCaptureFallbackAt = DateTime.MinValue;
-        private DateTime playbackNextClipRetryAt = DateTime.MinValue;
-        private DateTime playbackReplacementStableAt = DateTime.MinValue;
-        private DateTime playbackSpeedReapplyUntil = DateTime.MinValue;
         private DateTime playbackLastProgressAt = DateTime.UtcNow;
         private long playbackInputQuietUntilTicks;
         private bool formIsClosing;
@@ -318,7 +307,7 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private void actSetPlayerLarge(bool large)
+        private async void actSetPlayerLarge(bool large)
         {
             if (customPlayer != null)
             {
@@ -333,7 +322,7 @@ namespace IStripperQuickPlayer
             if (!playerLockBridgeLoaded)
                 return;
 
-            int result = SetVghdPlayerLarge(large);
+            int result = await RunDesktopControlAsync(() => SetVghdPlayerLarge(large));
             if (result < 0)
             {
                 SetPlaybackStatus(
@@ -376,17 +365,12 @@ namespace IStripperQuickPlayer
             panicCustomPlayerWasPlaying = panicCustomPlayer is { Paused: false };
             panicCustomPlayer?.SetPaused(true);
             panicCustomPlayer?.HidePlayer();
-            playbackCompletedAnimationPath = "";
             playbackRequestedAnimationPath = "";
             playbackRequestedAnimationAt = DateTime.MinValue;
-            playbackNextClipRetryAt = DateTime.MinValue;
-            queuedAnimationPendingPath = "";
-            queuedAnimationPendingConfirmed = false;
-            queuedAnimationProtectedUntil = DateTime.MinValue;
             if (!apiOnlyMode)
                 panicResumeButton.Visible = true;
             if (IStripperVideoBridgeEnabled && playbackBridgeClient != null)
-                CallPlaybackBridgeApi("IStripperSuspendOpenGlHdrSurface");
+                await RunDesktopControlAsync(() => CallPlaybackBridgeApi("IStripperSuspendOpenGlHdrSurface"));
             panicMovieWindow =
                 LockStateOverlay.HideMovieWindowForProcess(vghd_procID);
             LockStateOverlay.HideRtxHdrWindowForProcess(vghd_procID);
@@ -550,15 +534,7 @@ namespace IStripperQuickPlayer
                 replacementCheck, replacementCheck.AddMilliseconds(14_999)));
             System.Diagnostics.Debug.Assert(PlaybackReplacementExpired("clip",
                 replacementCheck, replacementCheck.AddMilliseconds(15_000)));
-            DateTime queueCheck = DateTime.UtcNow;
-            System.Diagnostics.Debug.Assert(ShouldKeepQueuedAnimationPending(
-                false, DateTime.MinValue, queueCheck, true));
-            System.Diagnostics.Debug.Assert(ShouldKeepQueuedAnimationPending(
-                true, queueCheck.AddSeconds(1), queueCheck, true));
-            System.Diagnostics.Debug.Assert(ShouldKeepQueuedAnimationPending(
-                true, DateTime.MinValue, queueCheck, false));
-            System.Diagnostics.Debug.Assert(!ShouldKeepQueuedAnimationPending(
-                true, DateTime.MinValue, queueCheck, true));
+            System.Diagnostics.Debug.Assert(DesktopPlaybackCoordinator.Verify());
             System.Diagnostics.Debug.Assert(ShouldContinueQueuedCard(
                 1_000, 61_000, 1));
             System.Diagnostics.Debug.Assert(!ShouldContinueQueuedCard(
@@ -2469,6 +2445,11 @@ namespace IStripperQuickPlayer
 
         private void FilterClips()
         {
+            if (desktopPlayback.Prepared is { } prepared)
+            {
+                desktopPlayback.Cancel(prepared.Id);
+                ClearNativeDesktopSelection();
+            }
             var col = listModelsNew.SelectedItems;
             if (col.Count > 0)
                 loadListClips(listModelsNew.SelectedItems[0].Tag);
@@ -3195,19 +3176,7 @@ namespace IStripperQuickPlayer
                         animationPath, mode, mode == 1 ? 100 : 30);
                     int percent = Math.Clamp(
                         current + steps * 2, mode == 1 ? 60 : 10, 200);
-                    int result = SetVghdPlayerSizePercent(mode, percent);
-                    if (result >= 0)
-                    {
-                        RememberManualPlayerSize(
-                            animationPath, mode, percent);
-                        LockStateOverlay.ShowTextForProcess(
-                            vghd_procID, $"{percent}%");
-                    }
-                    else
-                    {
-                        SetPlaybackStatus(
-                            $"Player size update failed (0x{result:X8}).");
-                    }
+                    ApplyWheelPlayerSize(animationPath, mode, percent);
                 }
                 return;
             }
@@ -3393,12 +3362,13 @@ namespace IStripperQuickPlayer
         {
             lock (playbackApiLock)
             {
+                Interlocked.Increment(ref desktopAttachment);
+                Volatile.Write(ref desktopSnapshot, null);
                 playbackBridgeClient?.Dispose();
                 playbackBridgeClient = null;
                 vghd_procID = 0;
                 playerLockBridgeLoaded = false;
                 playbackBridgeLoaded = false;
-                playbackCapturedAnimationSupported = true;
                 movieCaptureHookInstalled = false;
                 playbackMovieRegistered = false;
                 playbackFastDecodeEnabled = false;
@@ -3409,18 +3379,16 @@ namespace IStripperQuickPlayer
                 playbackTimelineAnimationPath = "";
                 playbackTimelineDurationMilliseconds = 0;
                 playbackLastKnownElapsedMilliseconds = 0;
-                playbackAlphaCheckpointBucket = -1;
-                playbackNextMovieDiscoveryAt = DateTime.MinValue;
-                playbackMovieCaptureFallbackAt = DateTime.MinValue;
-                playbackCompletedAnimationPath = "";
                 playbackRequestedAnimationPath = "";
                 playbackRequestedAnimationAt = DateTime.MinValue;
-                queuedAnimationPendingPath = "";
-                queuedAnimationPendingConfirmed = false;
-                queuedAnimationProtectedUntil = DateTime.MinValue;
-                ClearQueuedCardSession();
-                playbackNextClipRetryAt = DateTime.MinValue;
-                playbackReplacementStableAt = DateTime.MinValue;
+                if (!formIsClosing && IsHandleCreated)
+                    BeginInvoke((Action)(() =>
+                    {
+                        ClearQueuedCardSession();
+                        ClearUnqueuedCardSession();
+                        ReleaseDesktopReservation();
+                        ShowNowPlaying("");
+                    }));
                 Volatile.Write(ref playerMode, 2);
                 Volatile.Write(ref playbackInputQuietUntilTicks, 0);
             }
@@ -3438,7 +3406,6 @@ namespace IStripperQuickPlayer
             playbackSeekReady = false;
             playbackDecoderKind = 0;
             ResetPlaybackReadinessDiagnostics("");
-            playbackNextMovieDiscoveryAt = DateTime.MinValue;
             playbackFastDecodeEnabled = false;
 
             try
@@ -3545,40 +3512,22 @@ namespace IStripperQuickPlayer
                     CaptureNormalPlayerSizes();
                     QueueConfiguredPlayerSize();
                 }
+                ConfigureMovieCaptureHook();
                 if (!PlaybackControlEnabled)
                 {
-                    WarmDressingRoomCache();
+                    StartDesktopObservation(playbackBridgeClient);
                     return;
                 }
 
                 ConfigureMovieCaptureHook();
                 ConfigurePlaybackFunctions();
-                WarmDressingRoomCache();
+                StartDesktopObservation(playbackBridgeClient);
             }
             catch (Exception exception)
             {
                 playbackBridgeLoaded = false;
                 SetPlaybackStatus("Playback controls could not attach: " + exception.Message);
             }
-        }
-
-        private void WarmDressingRoomCache()
-        {
-            PlaybackBridgeClient? bridge = playbackBridgeClient;
-            if (bridge == null)
-                return;
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    int result = bridge.Call("IStripperWarmDressingRoomCache");
-                    Debug.WriteLine($"Dressing Room cache warm-up result: 0x{result:X8}");
-                }
-                catch (Exception exception)
-                {
-                    Debug.WriteLine("Dressing Room cache warm-up failed: " + exception.Message);
-                }
-            });
         }
 
         private void ConfigureMovieCaptureHook()
@@ -3785,11 +3734,7 @@ namespace IStripperQuickPlayer
         private int CallPlaybackBridgeApi(string apiName,
             ulong? parameter = null)
         {
-            lock (playbackApiLock)
-            {
-                return playbackBridgeClient?.Call(apiName, parameter) ??
-                    unchecked((int)0x80070015);
-            }
+            return playbackBridgeClient?.Call(apiName, parameter) ?? unchecked((int)0x80070015);
         }
 
         private int CallPlaybackApi(string apiName, ulong? parameter = null)
@@ -3837,15 +3782,6 @@ namespace IStripperQuickPlayer
                 return Task.FromResult(true);
             }
 
-            playbackMovieRegistered =
-                CallPlaybackApi("IStripperDiscoverMovie") >= 0;
-            if (playbackMovieRegistered)
-            {
-                playbackDecoderKind =
-                    CallPlaybackApi("IStripperGetDecoderKind");
-                playbackSeekingSupported =
-                    playbackDecoderKind is 1 or 2;
-            }
             if (!playbackMovieRegistered)
             {
                 SetPlaybackStatus("No active desktop video was found. Start a clip in iStripper and try again.");
@@ -4021,7 +3957,7 @@ namespace IStripperQuickPlayer
                 trkPlaybackPosition.Enabled = true;
                 return;
             }
-            if (formIsClosing || panicActive || playbackTimelinePolling ||
+            if (formIsClosing || panicActive ||
                 playbackBusy ||
                 !Properties.Settings.Default.EnablePlaybackControl ||
                 !playbackControlsAvailableForAccount || !playbackBridgeLoaded)
@@ -4029,368 +3965,8 @@ namespace IStripperQuickPlayer
                 return;
             }
 
-            DateTime now = DateTime.UtcNow;
-            if ((GetAsyncKeyState(VirtualKeyLeftButton) & 0x8000) != 0)
-            {
-                Volatile.Write(ref playbackInputQuietUntilTicks,
-                    now.AddSeconds(1).Ticks);
-                return;
-            }
-            if (now.Ticks < Volatile.Read(ref playbackInputQuietUntilTicks))
-                return;
-
-            playbackTimelinePolling = true;
-            try
-            {
-                string animationPath = GetCurrentAnimationPath();
-                if (string.IsNullOrEmpty(animationPath) &&
-                    PlaybackReplacementExpired(playbackRequestedAnimationPath,
-                        playbackRequestedAnimationAt, now))
-                {
-                    playbackRequestedAnimationPath = "";
-                    playbackRequestedAnimationAt = DateTime.MinValue;
-                    queuedAnimationPendingPath = "";
-                    queuedAnimationPendingConfirmed = false;
-                    queuedAnimationProtectedUntil = DateTime.MinValue;
-                    if (activeQueuedCard == null &&
-                        activeManualQueueEntry != null)
-                    {
-                        manualPlayQueue.Add(activeManualQueueEntry);
-                        activeManualQueueEntry = null;
-                        SavePreviousQueue();
-                    }
-                    GetNextClip();
-                    return;
-                }
-                if (!string.Equals(animationPath, playbackTimelineAnimationPath,
-                        StringComparison.Ordinal))
-                {
-                    ShowNowPlaying(animationPath, doWallpaper: true);
-                    ArmMovieCapture();
-                    string previousAnimationPath = playbackTimelineAnimationPath;
-                    bool previousAnimationReachedEnd = PlaybackReachedEnd(
-                        playbackLastKnownElapsedMilliseconds,
-                        playbackTimelineDurationMilliseconds);
-                    playbackTimelineAnimationPath = animationPath;
-                    playbackLastProgressAt = DateTime.UtcNow;
-                    playbackAlphaCheckpointBucket = -1;
-                    try
-                    {
-                        CallPlaybackApi("IStripperClearAlphaCheckpoints");
-                        CallPlaybackApi("IStripperSetAlphaCheckpointCacheKey",
-                            Properties.Settings.Default.EnableAlphaCheckpointCache
-                                ? AlphaCheckpointClipKey(animationPath)
-                                : 0);
-                    }
-                    catch { }
-                    playbackMovieRegistered = false;
-                    playbackSeekingSupported = true;
-                    playbackSeekReady = false;
-                    playbackDecoderKind = 0;
-                    ResetPlaybackReadinessDiagnostics(animationPath);
-                    UpdatePlaybackControlsEnabled();
-                    playbackNextMovieDiscoveryAt = DateTime.MinValue;
-                    playbackSpeedReapplyUntil = DateTime.UtcNow.AddSeconds(30);
-                    if (!string.IsNullOrEmpty(animationPath) &&
-                        !playbackTimelineDragging)
-                    {
-                        playbackLastKnownElapsedMilliseconds = 0;
-                        trkPlaybackPosition.Maximum = 1;
-                        trkPlaybackPosition.Value = 0;
-                        playbackTimelineDurationMilliseconds = 0;
-                        UpdatePlaybackTime(0, 0);
-                    }
-                    if (string.IsNullOrEmpty(animationPath) &&
-                        !string.IsNullOrEmpty(previousAnimationPath))
-                    {
-                        if (string.IsNullOrEmpty(playbackRequestedAnimationPath) &&
-                            string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
-                            previousAnimationReachedEnd)
-                        {
-                            playbackCompletedAnimationPath = previousAnimationPath;
-                            playbackNextClipRetryAt =
-                                DateTime.UtcNow.AddSeconds(1);
-                        }
-                        playbackReplacementStableAt = DateTime.MinValue;
-                    }
-                    else if (!string.IsNullOrEmpty(animationPath) &&
-                        !string.IsNullOrEmpty(playbackCompletedAnimationPath))
-                    {
-                        playbackReplacementStableAt =
-                            DateTime.UtcNow.AddSeconds(2);
-                    }
-                    if (!string.IsNullOrEmpty(animationPath) &&
-                        string.Equals(animationPath,
-                            playbackRequestedAnimationPath,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        playbackRequestedAnimationPath = "";
-                        playbackRequestedAnimationAt = DateTime.MinValue;
-                        playbackCompletedAnimationPath = "";
-                        playbackReplacementStableAt = DateTime.MinValue;
-                    }
-                }
-
-                if (!string.IsNullOrEmpty(animationPath) &&
-                    !string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
-                    playbackReplacementStableAt != DateTime.MinValue &&
-                    DateTime.UtcNow >= playbackReplacementStableAt)
-                {
-                    playbackCompletedAnimationPath = "";
-                    playbackReplacementStableAt = DateTime.MinValue;
-                }
-
-                if (string.IsNullOrEmpty(animationPath) &&
-                    !string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
-                    DateTime.UtcNow >= playbackNextClipRetryAt)
-                {
-                    playbackNextClipRetryAt = DateTime.UtcNow.AddSeconds(1);
-                    GetNextClip(null, playbackCompletedAnimationPath);
-                    return;
-                }
-
-                if (string.IsNullOrEmpty(animationPath))
-                {
-                    SetTimerInterval(playbackTimelineTimer,
-                        PlaybackIdleIntervalMilliseconds);
-                    trkPlaybackPosition.Enabled = false;
-                    return;
-                }
-
-                SetTimerInterval(playbackTimelineTimer,
-                    playbackSeekReady
-                        ? PlaybackTimelineIntervalMilliseconds
-                        : PlaybackTransitionIntervalMilliseconds);
-
-                if (!playbackMovieRegistered &&
-                    DateTime.UtcNow >= playbackNextMovieDiscoveryAt)
-                {
-                    int discoveredDecoderKind = 0;
-                    bool allowFallbackDiscovery =
-                        !movieCaptureHookInstalled ||
-                        playbackMovieCaptureFallbackAt ==
-                            DateTime.MinValue ||
-                        DateTime.UtcNow >=
-                            playbackMovieCaptureFallbackAt;
-                    if (allowFallbackDiscovery)
-                        DisableMovieCapture();
-                    playbackMovieRegistered = await Task.Run(() =>
-                    {
-                        bool registered = movieCaptureHookInstalled &&
-                            CallPlaybackApi(
-                                "IStripperConsumeCapturedMovie") >= 0;
-                        if (!registered && allowFallbackDiscovery)
-                        {
-                            registered =
-                                CallPlaybackApi(
-                                    "IStripperDiscoverMovie") >= 0;
-                        }
-                        if (registered)
-                        {
-                            discoveredDecoderKind =
-                                CallPlaybackApi("IStripperGetDecoderKind");
-                        }
-                        return registered;
-                    });
-                    if (playbackMovieRegistered)
-                    {
-                        DisableMovieCapture();
-                        SetTimerInterval(playbackTimelineTimer,
-                            PlaybackTransitionIntervalMilliseconds);
-                        playbackDecoderKind = discoveredDecoderKind;
-                        playbackSeekingSupported =
-                            playbackDecoderKind is 1 or 2;
-                        RecordPlaybackMovieRegistration();
-                        ApplyIStripperPlayerVolume(
-                            Volatile.Read(ref playerMode));
-                        SetPlaybackBusy(playbackBusy);
-                    }
-                    playbackNextMovieDiscoveryAt = playbackMovieRegistered
-                        ? DateTime.MinValue
-                        : DateTime.UtcNow.AddMilliseconds(
-                            PlaybackMovieDiscoveryRetryMilliseconds);
-                }
-                if (!playbackMovieRegistered)
-                {
-                    trkPlaybackPosition.Enabled = false;
-                    return;
-                }
-
-                now = DateTime.UtcNow;
-                int cachedTotal = playbackTimelineDurationMilliseconds;
-                int cachedDecoderKind = playbackDecoderKind;
-                bool cachedSeekReady = playbackSeekReady;
-                int previousElapsed = playbackLastKnownElapsedMilliseconds;
-                DateTime previousProgressAt = playbackLastProgressAt;
-                PlaybackPollSnapshot snapshot = await Task.Run(() =>
-                {
-                    int elapsed = RequirePlaybackResult(
-                        "IStripperGetElapsedMilliseconds");
-                    int total = cachedTotal > 0
-                        ? cachedTotal
-                        : RequirePlaybackResult(
-                            "IStripperGetTotalMilliseconds");
-                    int decoderKind = cachedDecoderKind != 0
-                        ? cachedDecoderKind
-                        : CallPlaybackApi("IStripperGetDecoderKind");
-                    int state = decoderKind == 2 &&
-                        elapsed <= previousElapsed &&
-                        PlaybackReachedEnd(elapsed, total) &&
-                        now - previousProgressAt >= TimeSpan.FromSeconds(2)
-                            ? CallPlaybackApi("IStripperGetState")
-                            : 0;
-                    int seekReady = !cachedSeekReady &&
-                        decoderKind is 1 or 2
-                            ? CallPlaybackApi("IStripperIsSeekReady")
-                            : cachedSeekReady ? 1 : 0;
-                    int readinessMask = !cachedSeekReady &&
-                        decoderKind == 1 &&
-                        elapsed < PlaybackForcedReadyMilliseconds
-                            ? CallPlaybackApi(
-                                "IStripperGetSeekReadinessMask")
-                            : -1;
-                    return new PlaybackPollSnapshot(elapsed, total,
-                        decoderKind, state, seekReady, readinessMask);
-                });
-                int elapsed = snapshot.Elapsed;
-                int total = snapshot.Total;
-                if (formIsClosing || IsDisposed ||
-                    !string.Equals(animationPath, GetCurrentAnimationPath(),
-                        StringComparison.Ordinal) || playbackBusy)
-                {
-                    return;
-                }
-
-                if (playbackDecoderKind == 0 &&
-                    snapshot.DecoderKind is 1 or 2)
-                {
-                    playbackDecoderKind = snapshot.DecoderKind;
-                    playbackSeekingSupported = true;
-                }
-
-                if (elapsed > playbackLastKnownElapsedMilliseconds)
-                {
-                    playbackLastProgressAt = now;
-                }
-                if (Properties.Settings.Default.EnablePlayQueue &&
-                    string.IsNullOrEmpty(playbackCompletedAnimationPath) &&
-                    PlaybackReachedEnd(elapsed, total))
-                {
-                    playbackCompletedAnimationPath = animationPath;
-                    playbackNextClipRetryAt = now.AddSeconds(1);
-                    GetNextClip(null, animationPath);
-                    return;
-                }
-                else if (playbackDecoderKind == 2 &&
-                    LegacyPlaybackStalledNearEnd(elapsed, total,
-                        playbackLastProgressAt, now,
-                        snapshot.State))
-                {
-                    playbackCompletedAnimationPath = animationPath;
-                    playbackNextClipRetryAt = now.AddSeconds(1);
-                    GetNextClip(null, animationPath);
-                    return;
-                }
-
-                if (snapshot.SeekReadinessMask >= 0 &&
-                    snapshot.SeekReadinessMask != playbackSeekReadinessMask)
-                {
-                    playbackSeekReadinessMask = snapshot.SeekReadinessMask;
-                    Debug.WriteLine(
-                        $"Playback seek readiness mask 0x{snapshot.SeekReadinessMask:X} " +
-                        $"after {PlaybackReadinessElapsedMilliseconds()} ms.");
-                }
-
-                int seekReadyResult = snapshot.SeekReady;
-                bool wasSeekReady = playbackSeekReady;
-                if (!playbackSeekReady && playbackDecoderKind is 1 or 2 &&
-                    seekReadyResult == 1 &&
-                    (playbackDecoderKind != 2 || elapsed >= 3_500))
-                {
-                    if (playbackDecoderKind == 1)
-                    {
-                        int checkpointResult = await Task.Run(() =>
-                            CallPlaybackApi(
-                                "IStripperCaptureAlphaCheckpoint"));
-                        if (checkpointResult >= 0)
-                        {
-                            playbackAlphaCheckpointBucket = elapsed / 5_000;
-                            playbackSeekReady = true;
-                        }
-                    }
-                    else
-                    {
-                        playbackSeekReady = true;
-                    }
-                }
-                if (!playbackSeekReady && playbackDecoderKind is 1 or 2 &&
-                    elapsed >= PlaybackForcedReadyMilliseconds)
-                {
-                    playbackSeekReady = true;
-                }
-                else if (!playbackSeekReady && playbackDecoderKind == 1)
-                {
-                    trkPlaybackPosition.AccessibleDescription =
-                        $"Seek readiness 0x{snapshot.SeekReadinessMask:X}";
-                }
-                if (!wasSeekReady && playbackSeekReady)
-                    RecordPlaybackSeekReady();
-
-                int reapplyAfter = playbackDecoderKind == 2 ? 3_500 : 500;
-                if (Math.Abs(requestedPlaybackSpeed - 1.0) > 0.001 &&
-                    now < playbackSpeedReapplyUntil &&
-                    elapsed >= reapplyAfter &&
-                    (playbackDecoderKind != 2 || playbackSeekReady))
-                {
-                    await Task.Run(() => SetPlaybackRate(requestedPlaybackSpeed));
-                    playbackSpeedReapplyUntil = DateTime.MinValue;
-                }
-                else if (Math.Abs(requestedPlaybackSpeed - 1.0) <= 0.001)
-                {
-                    playbackSpeedReapplyUntil = DateTime.MinValue;
-                }
-
-                playbackLastKnownElapsedMilliseconds = elapsed;
-                int checkpointBucket = elapsed / 5_000;
-                if (playbackDecoderKind == 1 &&
-                    playbackSeekReady &&
-                    checkpointBucket != playbackAlphaCheckpointBucket)
-                {
-                    int checkpointResult = await Task.Run(() =>
-                        CallPlaybackApi("IStripperCaptureAlphaCheckpoint"));
-                    if (checkpointResult >= 0)
-                        playbackAlphaCheckpointBucket = checkpointBucket;
-                }
-                playbackTimelineDurationMilliseconds = Math.Max(0, total);
-                if (!playbackTimelineDragging)
-                {
-                    int maximum = Math.Max(1, playbackTimelineDurationMilliseconds);
-                    if (trkPlaybackPosition.Maximum != maximum)
-                    {
-                        trkPlaybackPosition.Maximum = maximum;
-                        trkPlaybackPosition.SmallChange = Math.Min(1_000, maximum);
-                        trkPlaybackPosition.LargeChange = Math.Min(10_000, maximum);
-                    }
-                    int value = Math.Clamp(elapsed, 0, maximum);
-                    if (trkPlaybackPosition.Value != value)
-                        trkPlaybackPosition.Value = value;
-                    UpdatePlaybackTime(elapsed, playbackTimelineDurationMilliseconds);
-                }
-                UpdatePlaybackControlsEnabled();
-                SetTimerInterval(playbackTimelineTimer,
-                    playbackSeekReady
-                        ? PlaybackTimelineIntervalMilliseconds
-                        : PlaybackTransitionIntervalMilliseconds);
-            }
-            catch
-            {
-                // Clip transitions briefly invalidate the movie pointer. The next
-                // timer tick retries without replacing the useful operation status.
-            }
-            finally
-            {
-                playbackTimelinePolling = false;
-            }
+            // Desktop sampling and queue advancement belong to the coordinator.
+            await Task.CompletedTask;
         }
 
         private void UpdatePlaybackTime(int elapsedMilliseconds, int totalMilliseconds)
@@ -4586,6 +4162,9 @@ namespace IStripperQuickPlayer
                     "This clip's decoder does not support seeking or speed changes.");
             }
 
+            if (Volatile.Read(ref desktopSnapshot)?.SeekReady != 1 ||
+                RequirePlaybackResult("IStripperIsSeekReady") != 1)
+                throw new InvalidOperationException("The clip's decoders are not ready to seek yet.");
             int state = RequirePlaybackResult("IStripperGetState");
             if (state != 3 && state != 4)
             {
@@ -4783,10 +4362,10 @@ namespace IStripperQuickPlayer
                 unchecked((ulong)target));
             if (prepared < 0)
             {
-                if (playbackDecoderKind == 2)
+                if (!CanUseLegacySeekFallback(playbackDecoderKind, prepared))
                 {
                     throw new COMException(
-                        $"The WMV reader could not seek (0x{prepared:X8}).",
+                        $"The decoder could not prepare the seek (0x{prepared:X8}).",
                         prepared);
                 }
                 return null;
@@ -4914,30 +4493,8 @@ namespace IStripperQuickPlayer
 
         private string GetCurrentAnimationPath()
         {
-            if (customPlayer != null)
-                return customPlayerAnimationPath;
-            string current = GetPlaybackRegistryValue("CurrentAnim");
-            if (!string.IsNullOrEmpty(current) || !playbackMovieRegistered ||
-                playbackBridgeClient?.IsConnected != true ||
-                !playbackCapturedAnimationSupported)
-                return current;
-            try
-            {
-                int state = CallPlaybackBridgeApi("IStripperGetState");
-                if (state is not 3 and not 4)
-                    return current;
-                int result = playbackBridgeClient.GetLastCurrentAnimation(
-                    out string captured);
-                if (result == unchecked((int)0x8007007F))
-                    playbackCapturedAnimationSupported = false;
-                if (result < 0)
-                    return current;
-                return captured;
-            }
-            catch
-            {
-                return current;
-            }
+            if (customPlayer != null) return customPlayerAnimationPath;
+            return Volatile.Read(ref desktopSnapshot)?.Path ?? "";
         }
 
         private static string GetPlaybackRegistryValue(string valueName)
@@ -4990,9 +4547,6 @@ namespace IStripperQuickPlayer
         {
             playbackRequestedAnimationPath = animationPath;
             playbackRequestedAnimationAt = DateTime.UtcNow;
-            playbackCompletedAnimationPath = "";
-            playbackNextClipRetryAt = DateTime.MinValue;
-            playbackReplacementStableAt = DateTime.MinValue;
         }
 
         private static bool PlaybackReplacementExpired(string requestedPath,
@@ -5144,230 +4698,51 @@ namespace IStripperQuickPlayer
 
         private bool OnRegistryValueWrite(string keyname, byte[] data)
         {
-            if (formIsClosing || IsDisposed || !IsHandleCreated)
-                return false;
+            if (formIsClosing || IsDisposed || !IsHandleCreated) return false;
+            // Registry notifications are observations, never playback proposals.
             if (keyname == "playingMode" && data.Length >= sizeof(uint))
             {
-                try
+                uint mode = BitConverter.ToUInt32(data);
+                if (mode is >= 1 and <= 3)
                 {
-                    uint mode = BitConverter.ToUInt32(data);
-                    if (mode is >= 1 and <= 3)
-                    {
-                        Volatile.Write(ref playerMode, (int)mode);
-                        if (!apiOnlyMode)
-                        {
-                            if (IsHandleCreated)
-                                BeginInvoke((Action)RebuildAutomaticQueue);
-                            ThreadPool.QueueUserWorkItem(_ =>
-                            {
-                                try
-                                {
-                                    SetVghdPlayerMode((int)mode);
-                                    if (mode != 3)
-                                    {
-                                        QueueConfiguredPlayerSize(
-                                            mode: (int)mode);
-                                        ApplyIStripperPlayerVolume((int)mode);
-                                    }
-                                }
-                                catch { }
-                            });
-                        }
-                    }
-                }
-                catch { }
-                return false;
-            }
-            string str = data.Length < 1 ? "" :
-                Encoding.Unicode.GetString(data)
-                    .Replace("\0", string.Empty);
-            if (keyname == "CurrentAnim" && !apiOnlyMode)
-                QueueConfiguredPlayerSize(str);
-            if (keyname == "CurrentAnim" && !string.IsNullOrEmpty(str))
-                QueueFastDecodeRetry();
-            if (data.Length < 1)
-            {
-                if (apiOnlyMode && keyname == "CurrentAnim")
-                {
-                    nowPlayingPath = "";
-                    playbackTimelineAnimationPath = "";
-                    playbackMovieRegistered = false;
-                    playbackSeekReady = false;
-                    ResetPlaybackReadinessDiagnostics("");
-                    playbackLastKnownElapsedMilliseconds = 0;
-                    playbackTimelineDurationMilliseconds = 0;
-                }
-                else if (keyname == "CurrentAnim")
-                {
+                    Volatile.Write(ref playerMode, (int)mode);
                     BeginInvoke((Action)(() =>
-                        ShowNowPlaying("", doWallpaper: false)));
+                    {
+                        RebuildAutomaticQueue();
+                        QueueConfiguredPlayerSize(mode: (int)mode);
+                    }));
                 }
-                return false;
             }
-            if (keyname == "PreviousUserLevel")
+            else if (keyname == "PreviousUserLevel")
             {
-                if (apiOnlyMode)
-                {
-                    RefreshPlaybackControlVisibility(str);
-                }
-                else if (!formIsClosing && IsHandleCreated)
-                {
-                    BeginInvoke((Action)(() => RefreshPlaybackControlVisibility(str)));
-                }
-                return false;
+                string level = Encoding.Unicode.GetString(data).TrimEnd('\0');
+                BeginInvoke((Action)(() => RefreshPlaybackControlVisibility(level)));
             }
-            if (keyname == "CurrentAnim" && customIstripperSuspended)
-            {
-                if (!formIsClosing && IsHandleCreated)
-                    BeginInvoke(string.IsNullOrEmpty(
-                        customPendingIstripperAnimation)
-                            ? SuspendIStripperForCustomPlayback
-                            : RefreshHiddenIStripperWindow);
-                return false;
-            }
-            if (keyname != "CurrentAnim" || panicActive)
-                return false;
-            System.Diagnostics.Debug.WriteLine("vghd.exe setting " + keyname + " to " + str);
-                bool skipOriginal = false;
-
-                //check if this propsed card is in the filterd list
-                string newcardstring = str ?? "";
-                bool found = true;
-                bool queuedSelection = false;
-                bool forceQueuedAnimation = false;
-                if (!string.IsNullOrEmpty(newcardstring))
+            else if (keyname == "CurrentAnim" && customIstripperSuspended)
+                BeginInvoke((Action)(() =>
                 {
-                    this.Invoke((Action)(() =>
-                        queuedSelection = TryApplyQueueToAnimationProposal(
-                            newcardstring, out newcardstring,
-                            out forceQueuedAnimation)));
-                }
-                if (!apiOnlyMode && !queuedSelection &&
-                    !string.Equals(newcardstring,
-                        playbackRequestedAnimationPath,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    (Properties.Settings.Default.EnforceCardFilter ||
-                    Properties.Settings.Default.AvoidRecentRepeats)
-                    )
-                {
-                    if (string.IsNullOrEmpty(newcardstring) && !isAutoSelecting)
-                    {
-                        if (lblNowPlaying != null) this.Invoke((Action)(() => lblNowPlaying.Text = ""));
-                        return false;
-                    }
-                    else if (string.IsNullOrEmpty(newcardstring) && isAutoSelecting)
-                    {
-                        isAutoSelecting = false;
-                    }
-                    else
-                    {
-                        isAutoSelecting = true;
-                        ModelCard? model = Datastore.findCardByTag(newcardstring.Split("\\")[0]);
-                        ListViewItem? res = null;
-                        if (model == null) return false;
-                        this.Invoke((Action)(() => res = items.Where(x => x.Text == model.modelName + "\r\n" + model.outfit).FirstOrDefault()));
-
-                        //does the new clip match the clip filter?
-                        ModelClip? res2 = null;
-                        if (res != null)
-                        {
-                            var clipstest = FilterClipList(model.clips);
-                            string clipstring = newcardstring.Split("\\")[1];
-                            res2 = clipstest.Where(c => c.clipName == clipstring).FirstOrDefault();
-                        }
-                        bool rejectedByFilter =
-                            Properties.Settings.Default.EnforceCardFilter &&
-                            (res == null || res2 == null);
-                        bool rejectedAsRecent =
-                            Properties.Settings.Default.AvoidRecentRepeats &&
-                            !string.Equals(newcardstring, nowPlayingPath,
-                                StringComparison.OrdinalIgnoreCase) &&
-                            GetRecentPlaybackPaths().Contains(newcardstring);
-                        found = !rejectedByFilter && !rejectedAsRecent;
-                        if (!found)
-                        {
-                            string selectedCardTag = "";
-                            bool selected = false;
-                            this.Invoke((Action)(() =>
-                            {
-                                selected = TryChooseRandomAnimation(
-                                    out newcardstring, out selectedCardTag);
-                                if (selected)
-                                {
-                                    listModelsNew.ClearSelection();
-                                    listModelsNew.SelectWhere(item =>
-                                        string.Equals(item.Tag?.ToString(),
-                                            selectedCardTag,
-                                            StringComparison.OrdinalIgnoreCase));
-                                }
-                            }));
-                            found = selected;
-                        }
-
-                    }
-                }
-
-                isAutoSelecting = false;
-                if (!string.Equals(str, newcardstring,
-                        StringComparison.OrdinalIgnoreCase) &&
-                    (forceQueuedAnimation || newcardstring != wallpaperTag))
-                {
-                    if (RequestAnimationPlayback(newcardstring))
-                    {
-                        wallpaperTag = newcardstring;
-                        skipOriginal = true;
-                    }
-                }
-                //if (found) this.BeginInvoke((Action)(() => TaskbarThumbnail()));
-                isAutoSelecting = true;
-                if (apiOnlyMode && !string.Equals(nowPlayingPath,
-                        newcardstring, StringComparison.OrdinalIgnoreCase))
-                {
-                    nowPlayingPath = newcardstring;
-                    playbackTimelineAnimationPath = newcardstring;
-                    playbackAlphaCheckpointBucket = -1;
-                    try
-                    {
-                        CallPlaybackApi("IStripperClearAlphaCheckpoints");
-                        CallPlaybackApi("IStripperSetAlphaCheckpointCacheKey",
-                            Properties.Settings.Default.EnableAlphaCheckpointCache
-                                ? AlphaCheckpointClipKey(newcardstring)
-                                : 0);
-                    }
-                    catch { }
-                    playbackMovieRegistered = false;
-                    playbackSeekingSupported = true;
-                    playbackSeekReady = false;
-                    playbackDecoderKind = 0;
-                    ResetPlaybackReadinessDiagnostics(newcardstring);
-                    playbackLastKnownElapsedMilliseconds = 0;
-                    playbackTimelineDurationMilliseconds = 0;
-                    ArmMovieCapture();
-                    if (!string.IsNullOrWhiteSpace(newcardstring))
-                    {
-                        lock (playbackHistoryLock)
-                            myData?.AddPlayback(newcardstring,
-                                DateTime.UtcNow);
-                    }
-                }
-                if (!apiOnlyMode)
-                {
-                    QueueConfiguredPlayerSize(newcardstring);
-                    string acceptedAnimationPath = newcardstring;
-                    BeginInvoke((Action)(() => ShowNowPlaying(
-                        acceptedAnimationPath,
-                        doWallpaper: !string.IsNullOrEmpty(
-                            acceptedAnimationPath))));
-                }
-                return skipOriginal;
+                    if (string.IsNullOrEmpty(customPendingIstripperAnimation))
+                        SuspendIStripperForCustomPlayback();
+                    else RefreshHiddenIStripperWindow();
+                }));
+            return false;
         }
 
         private List<ModelClip> FilterClipList(List<ModelClip> clips)
         {
-            var currentClips = clips.Where(
-                CustomClipAllowedDuringProcessing).ToList();
+            var policy = new DesktopPlaybackCoordinator.ClipPolicy(txtClipType.Text,
+                chkPublic.Checked, chkNoNudity.Checked, chkTopless.Checked,
+                chkNudity.Checked, chkFullNudity.Checked, chkXXX.Checked,
+                chkDemo.Checked, Properties.Settings.Default.MinSizeMB);
+            return FilterClipList(clips.Where(CustomClipAllowedDuringProcessing).ToList(), policy);
+        }
 
-            string[] parts = txtClipType.Text.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
+        private static List<ModelClip> FilterClipList(List<ModelClip> clips,
+            DesktopPlaybackCoordinator.ClipPolicy policy)
+        {
+            var currentClips = clips;
+
+            string[] parts = policy.Types.ToLower().Split(" and ").Select(p => p.Trim()).ToArray();
             foreach (string p in parts)
             {
 
@@ -5407,34 +4782,34 @@ namespace IStripperQuickPlayer
                 switch (clip.hotnessCode)
                 {
                     case Enums.HotnessCode.publ:
-                        if (chkPublic.Checked)
+                        if (policy.Public)
                             addThis = true;
                         break;
                     case Enums.HotnessCode.nonudity:
-                        if (chkNoNudity.Checked)
+                        if (policy.NoNudity)
                             addThis = true;
                         break;
                     case Enums.HotnessCode.topless:
-                        if (chkTopless.Checked)
+                        if (policy.Topless)
                             addThis = true;
                         break;
                     case Enums.HotnessCode.nudity:
-                        if (chkNudity.Checked)
+                        if (policy.Nudity)
                             addThis = true;
                         break;
                     case Enums.HotnessCode.fullnudity:
-                        if (chkFullNudity.Checked)
+                        if (policy.FullNudity)
                             addThis = true;
                         break;
                     case Enums.HotnessCode.xxx:
-                        if (chkXXX.Checked)
+                        if (policy.Xxx)
                             addThis = true;
                         break;
                     default:
                         break;
                 }
-                if (Properties.Settings.Default.MinSizeMB > 0 && Properties.Settings.Default.MinSizeMB > clip.size / 1024 / 1024) addThis = false;
-                if (clip.clipName != null && clip.clipName.Contains("demo") && !chkDemo.Checked) addThis = false;
+                if (policy.MinimumSizeMb > 0 && policy.MinimumSizeMb > clip.size / 1024 / 1024) addThis = false;
+                if (clip.clipName != null && clip.clipName.Contains("demo") && !policy.Demo) addThis = false;
                 if (addThis)
                 {
                     clipsnew.Add(clip);
@@ -5468,7 +4843,7 @@ namespace IStripperQuickPlayer
         {
             for (int attempt = 0; attempt < 40 && !formIsClosing; attempt++)
             {
-                string current = GetPlaybackRegistryValue("CurrentAnim");
+                string current = GetCurrentAnimationPath();
                 if (!string.IsNullOrEmpty(current))
                 {
                     ShowNowPlaying(current, doWallpaper: true);
@@ -5508,8 +4883,7 @@ namespace IStripperQuickPlayer
                 bool pathChanged = path != nowPlayingPath;
                 nowPlayingPath = path;
                 if (pathChanged) ObserveUnqueuedCardPlayback(path);
-                WakePlaybackTimeline();
-                ArmMovieCapture();
+                if (customPlayer != null) WakePlaybackTimeline();
                 nowPlaying = "";
                 if (path == "")
                 {
@@ -5558,6 +4932,9 @@ namespace IStripperQuickPlayer
             state == 3 && PlaybackReachedEnd(elapsed, total) &&
             now - lastProgress >= TimeSpan.FromSeconds(2);
 
+        internal static bool CanUseLegacySeekFallback(int decoder, int result) =>
+            decoder == 1 && result == unchecked((int)0x80070032);
+
         private static bool SeekTargetReachesEnd(int target, int total) =>
             total > 0 && target >= Math.Max(0, total - 1_000);
 
@@ -5572,7 +4949,6 @@ namespace IStripperQuickPlayer
 
             void Wake()
             {
-                playbackNextMovieDiscoveryAt = DateTime.MinValue;
                 SetTimerInterval(playbackTimelineTimer,
                     PlaybackTransitionIntervalMilliseconds);
                 if (!playbackTimelineTimer.Enabled)
@@ -5583,43 +4959,6 @@ namespace IStripperQuickPlayer
                 BeginInvoke((Action)Wake);
             else
                 Wake();
-        }
-
-        private void ArmMovieCapture()
-        {
-            if (!movieCaptureHookInstalled || !playbackBridgeLoaded ||
-                !IsHandleCreated || IsDisposed)
-            {
-                playbackMovieCaptureFallbackAt = DateTime.MinValue;
-                return;
-            }
-
-            void Arm()
-            {
-                try
-                {
-                    CallPlaybackApi("IStripperArmMovieCapture");
-                    playbackMovieCaptureFallbackAt =
-                        DateTime.UtcNow.AddMilliseconds(750);
-                }
-                catch
-                {
-                    playbackMovieCaptureFallbackAt = DateTime.MinValue;
-                }
-            }
-
-            if (InvokeRequired)
-                BeginInvoke((Action)Arm);
-            else
-                Arm();
-        }
-
-        private void DisableMovieCapture()
-        {
-            if (!movieCaptureHookInstalled || !playbackBridgeLoaded)
-                return;
-            try { CallPlaybackApi("IStripperCancelMovieCapture"); }
-            catch { }
         }
 
         private void RefreshPlayingClipHighlight()
@@ -5744,11 +5083,14 @@ namespace IStripperQuickPlayer
             cmdClearSearch.Visible = false;
         }
 
-        private void Form1_FormClosing(object? sender, FormClosingEventArgs e)
+        private async void Form1_FormClosing(object? sender, FormClosingEventArgs e)
         {
+            if (formIsClosing) return;
             if (apiOnlyMode)
             {
-                CloseApiOnly();
+                e.Cancel = true;
+                await CloseApiOnlyAsync();
+                Close();
                 return;
             }
             if (customShowQueueManager?.HasActiveJob == true)
@@ -5762,6 +5104,7 @@ namespace IStripperQuickPlayer
                 customShowQueueManager.CancelForExit();
             }
 
+            e.Cancel = true;
             formIsClosing = true;
             DisposeDressingRoomStreams();
             StopCustomPlayback(restoreIstripper: true);
@@ -5774,9 +5117,12 @@ namespace IStripperQuickPlayer
             {
                 try
                 {
-                    if (playbackBridgeLoaded && playbackMovieRegistered &&
-                        RequirePlaybackResult("IStripperGetState") == 4)
-                        RequirePlaybackResult("IStripperResume");
+                    await Task.Run(() =>
+                    {
+                        if (playbackBridgeLoaded && playbackMovieRegistered &&
+                            RequirePlaybackResult("IStripperGetState") == 4)
+                            RequirePlaybackResult("IStripperResume");
+                    });
                 }
                 catch { }
                 LockStateOverlay.ShowMovieWindow(panicMovieWindow);
@@ -5787,21 +5133,23 @@ namespace IStripperQuickPlayer
             playbackLifetime.Cancel();
             UnregisterHotKeys();
             timerhook?.Dispose();
-            DisableMovieCapture();
             if (playerLockBridgeLoaded)
             {
-                try { RestoreNormalPlayerSizes(); } catch { }
-                try { SetVghdPlayerWheelResize(false); } catch { }
-                try { SetVghdPlayerLocked(false); } catch { }
+                await Task.Run(() =>
+                {
+                    try { RestoreNormalPlayerSizes(); } catch { }
+                    try { SetVghdPlayerWheelResize(false); } catch { }
+                    try { SetVghdPlayerLocked(false); } catch { }
+                });
                 playerLockBridgeLoaded = false;
             }
             if (playbackBridgeLoaded && playbackMovieRegistered)
             {
                 // If the form closes during an accelerated scan, restore the user's
                 // selected rate before the bridge is released.
-                try { SetPlaybackRate(requestedPlaybackSpeed); } catch { }
+                try { await Task.Run(() => SetPlaybackRate(requestedPlaybackSpeed)); } catch { }
             }
-            playbackBridgeClient?.Dispose();
+            await Task.Run(() => playbackBridgeClient?.Dispose());
             playbackBridgeClient = null;
             SavePreviousQueue();
             SaveMyData();
@@ -5811,7 +5159,10 @@ namespace IStripperQuickPlayer
                 Utils.ToggleDesktopIcons();
             }
             if (restoringBackup)
+            {
+                Close();
                 return;
+            }
             if (WindowState == FormWindowState.Maximized)
             {
                 Properties.Settings.Default.Location = RestoreBounds.Location;
@@ -5836,6 +5187,7 @@ namespace IStripperQuickPlayer
             Properties.Settings.Default.Save();
             customShowQueueForm?.Dispose();
             customShowQueueManager?.Dispose();
+            Close();
         }
 
         private void QueueNowPlayingUiUpdate()
@@ -5927,7 +5279,7 @@ namespace IStripperQuickPlayer
             ApplyIStripperPlayerVolume(mode, percent, showOverlay: true);
         }
 
-        private void ApplyIStripperPlayerVolume(int mode, int? percent = null,
+        private async void ApplyIStripperPlayerVolume(int mode, int? percent = null,
             bool showOverlay = false)
         {
             if (mode is not (1 or 2))
@@ -5940,8 +5292,8 @@ namespace IStripperQuickPlayer
                 key?.SetValue("SoundVolume", value, RegistryValueKind.DWord);
             }
             catch { }
-            int result = CallPlaybackBridgeApi(
-                "IStripperSetPlayerVolume", (ulong)value);
+            int result = await RunDesktopControlAsync(() => CallPlaybackBridgeApi(
+                "IStripperSetPlayerVolume", (ulong)value));
             if (result < 0)
             {
                 SetPlaybackStatus(
@@ -5952,20 +5304,22 @@ namespace IStripperQuickPlayer
                     vghd_procID, $"Volume {value}%");
         }
 
-        private void CloseApiOnly()
+        private async Task CloseApiOnlyAsync()
         {
             formIsClosing = true;
             StopRestApi();
             playbackLifetime.Cancel();
             timerhook?.Dispose();
-            DisableMovieCapture();
             if (panicActive)
             {
                 try
                 {
-                    if (playbackBridgeLoaded && playbackMovieRegistered &&
-                        RequirePlaybackResult("IStripperGetState") == 4)
-                        RequirePlaybackResult("IStripperResume");
+                    await Task.Run(() =>
+                    {
+                        if (playbackBridgeLoaded && playbackMovieRegistered &&
+                            RequirePlaybackResult("IStripperGetState") == 4)
+                            RequirePlaybackResult("IStripperResume");
+                    });
                 }
                 catch { }
                 LockStateOverlay.ShowMovieWindow(panicMovieWindow);
@@ -5973,9 +5327,9 @@ namespace IStripperQuickPlayer
             }
             if (playbackBridgeLoaded && playbackMovieRegistered)
             {
-                try { SetPlaybackRate(requestedPlaybackSpeed); } catch { }
+                try { await Task.Run(() => SetPlaybackRate(requestedPlaybackSpeed)); } catch { }
             }
-            playbackBridgeClient?.Dispose();
+            await Task.Run(() => playbackBridgeClient?.Dispose());
             playbackBridgeClient = null;
             SaveMyData();
             apiOnlyNotifyIcon?.Dispose();
@@ -6004,7 +5358,7 @@ namespace IStripperQuickPlayer
                 ClearQueuedCardSession();
 
             bool continueUnqueuedCard = useQueue && model == null &&
-                activeQueuedCard == null &&
+                desktopPlayback.ActiveQueuedCard == null &&
                 !string.IsNullOrEmpty(completedAnimation) &&
                 IsUnqueuedCardSession(completedAnimation);
             if (continueUnqueuedCard &&
@@ -7565,12 +6919,12 @@ namespace IStripperQuickPlayer
                 playerlocked ? "iStripper is locked" : "");
         }
 
-        private void ChangePlayerLocked()
+        private async void ChangePlayerLocked()
         {
             customPlayer?.SetLocked(playerlocked);
             if (playerLockBridgeLoaded)
             {
-                int result = SetVghdPlayerLocked();
+                int result = await RunDesktopControlAsync(() => SetVghdPlayerLocked());
                 if (result < 0)
                 {
                     SetPlaybackStatus(
@@ -7590,15 +6944,15 @@ namespace IStripperQuickPlayer
             UpdateWindowTitle();
         }
 
-        private void ChangePlayerClickThrough()
+        private async void ChangePlayerClickThrough()
         {
             customPlayer?.SetClickThroughLocked(
                 Properties.Settings.Default.ClickThroughLockedPlayer);
             if (!playerLockBridgeLoaded)
                 return;
 
-            int result = SetVghdPlayerClickThrough(
-                Properties.Settings.Default.ClickThroughLockedPlayer);
+            int result = await RunDesktopControlAsync(() => SetVghdPlayerClickThrough(
+                Properties.Settings.Default.ClickThroughLockedPlayer));
             if (result < 0)
             {
                 SetPlaybackStatus(
@@ -7606,15 +6960,15 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private void ChangePlayerWheelResize()
+        private async void ChangePlayerWheelResize()
         {
             customPlayer?.SetWheelResize(
                 Properties.Settings.Default.EnablePlayerWheelResize);
             if (!playerLockBridgeLoaded)
                 return;
 
-            int result = SetVghdPlayerWheelResize(
-                Properties.Settings.Default.EnablePlayerWheelResize);
+            int result = await RunDesktopControlAsync(() => SetVghdPlayerWheelResize(
+                Properties.Settings.Default.EnablePlayerWheelResize));
             if (result < 0)
             {
                 SetPlaybackStatus(
@@ -7622,7 +6976,7 @@ namespace IStripperQuickPlayer
             }
         }
 
-        private void ChangePlayerWheelWhileLocked()
+        private async void ChangePlayerWheelWhileLocked()
         {
             bool enabled =
                 Properties.Settings.Default.AllowWheelWhileLocked;
@@ -7630,8 +6984,8 @@ namespace IStripperQuickPlayer
             if (!playerLockBridgeLoaded)
                 return;
 
-            int result = SetVghdPlayerWheelResize(
-                Properties.Settings.Default.EnablePlayerWheelResize);
+            int result = await RunDesktopControlAsync(() => SetVghdPlayerWheelResize(
+                Properties.Settings.Default.EnablePlayerWheelResize));
             if (result < 0)
             {
                 SetPlaybackStatus(

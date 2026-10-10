@@ -99,6 +99,12 @@ int wmain(int argc, wchar_t** argv)
     }
 
     // Consuming one slot must leave another slot's pending replacement intact.
+    const unsigned char searched[] = { 1, 1, 2, 1, 2, 3 };
+    const unsigned char pattern[] = { 1, 2, 3 };
+    if (FindSequence(searched, sizeof(searched), pattern, sizeof(pattern)) != searched + 3 ||
+        FindSequence(searched, 5, pattern, sizeof(pattern)) != nullptr ||
+        FindSequence(searched, 2, pattern, sizeof(pattern)) != nullptr ||
+        FindSequence(searched, sizeof(searched), pattern, 0) != nullptr) return 43;
     // Null cards keep this scheduling check independent of the host allocator.
     auto firstNode = reinterpret_cast<void*>(1);
     auto secondNode = reinterpret_cast<void*>(2);
@@ -208,6 +214,35 @@ int wmain(int argc, wchar_t** argv)
     if (decoded != "QuickPlayer compatibility")
         return 11;
 
+    wchar_t desktopPath[1024] = {};
+    construct(&text, "C:/models/e1234/e1234_01234.vghd");
+    bool validDesktopPath = ReadDesktopClipString(&text, desktopPath) &&
+        wcscmp(desktopPath, L"e1234\\e1234_01234.vghd") == 0;
+    destroy(&text);
+    if (!validDesktopPath) return 31;
+    construct(&text, "unrelated text");
+    validDesktopPath = ReadDesktopClipString(&text, desktopPath);
+    destroy(&text);
+    if (validDesktopPath || sizeof(DesktopSnapshot) != 2208 ||
+        offsetof(DesktopSnapshot, path) != 152 || sizeof(DesktopSelection) != 2072) return 32;
+
+    // Exercise both storage layouts even when only one Qt runtime is installed.
+    {
+    struct LegacyString { int refs; int size; unsigned int alloc; unsigned int padding;
+        std::intptr_t offset; wchar_t text[64]; } legacyString = {};
+    wcscpy_s(legacyString.text, L"e1234_01234.vghd");
+    legacyString.size = static_cast<int>(wcslen(legacyString.text));
+    legacyString.offset = offsetof(LegacyString, text);
+    void* legacyStringPointer = &legacyString;
+    QtByteArray modernString = {};
+    modernString.begin = legacyString.text;
+    modernString.size = legacyString.size;
+    if (!ReadDesktopClipString(&legacyStringPointer, desktopPath, false) ||
+        !ReadDesktopClipString(&modernString, desktopPath, true)) return 33;
+    legacyString.size = 1024;
+    if (ReadDesktopClipString(&legacyStringPointer, desktopPath, false)) return 34;
+    }
+
     if (!ResolveMovieOffsets() || !ResolveAnimationLayout())
     {
         std::fprintf(stderr, "Movie/layout resolution failed: 0x%lX\n",
@@ -215,6 +250,161 @@ int wmain(int argc, wchar_t** argv)
         return 12;
     }
     VideoFfmpegVtableRva = FindVtableRva(".?AVVideoFFmpeg@@");
+    if (!HasDesktopTransitionSignals()) return 36;
+    {
+        MovieHitMask mask;
+        mask.width = mask.height = 2;
+        mask.pixels = { 255, 0, 0, 255 };
+        RECT bounds = { -200, 100, 0, 300 };
+        if (HitMovieMask(mask, bounds, POINT{ -190, 110 }) ||
+            !HitMovieMask(mask, bounds, POINT{ -10, 110 }) ||
+            !HitMovieMask(mask, bounds, POINT{ -190, 290 }) ||
+            HitMovieMask(mask, bounds, POINT{ -10, 290 }) ||
+            HitMovieMask(mask, bounds, POINT{ 0, 110 }) ||
+            HitMovieMask(mask, bounds, POINT{ -201, 110 })) return 43;
+        mask.pixels.clear();
+        if (HitMovieMask(mask, bounds, POINT{ -10, 110 })) return 43;
+    }
+
+    {
+        g_desktopInstance = 12;
+        g_desktopCompletedInstance = 0;
+        g_desktopSelection = {};
+        DesktopNaturalEnd();
+        if (g_desktopCompletedInstance != 12) return 41;
+        g_desktopSelection.instance = 12;
+        g_desktopSelection.request = 42;
+        DesktopNaturalEnd();
+        if (g_desktopSelection.request != 42) return 41;
+        DesktopSelection late;
+        late.instance = 12;
+        wcscpy_s(late.path, L"e1234\\e1234_01234.vghd");
+        if (!DesktopSelectionCompleted(late)) return 42;
+        late.instance = 11;
+        if (DesktopSelectionCompleted(late)) return 42;
+        late.instance = 0;
+        if (DesktopSelectionCompleted(late)) return 42;
+        late.instance = 12;
+        late.path[0] = 0;
+        if (DesktopSelectionCompleted(late)) return 42;
+        g_desktopSelection = {};
+        g_desktopInstance = g_desktopCompletedInstance = 0;
+    }
+
+    if (!HasDesktopMethod(".?AVLive@@", "Live", "checkForcedActor()", false)) return 40;
+    if (GetProcAddress(QtCoreModule(), "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+        "W4ConnectionType@Qt@@VQGenericArgument@@333333333@Z") == nullptr) return 40;
+    if (IStripperRestoreDesktopPlayer(0) != E_INVALIDARG ||
+        IStripperRestoreDesktopPlayer(3) != E_INVALIDARG) return 39;
+    if (!HasDesktopMethod(".?AVLiveActor@@", "LiveActor",
+        "updateHeightWithoutAnimation()", false)) return 39;
+    {
+        const wchar_t* windowClass = L"QuickPlayerTestQWindowToolSaveBitsOwnDC";
+        const auto previousDpi = SetThreadDpiAwarenessContext(
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        WNDCLASSW definition = {};
+        definition.lpfnWndProc = DefWindowProcW;
+        definition.hInstance = GetModuleHandleW(nullptr);
+        definition.lpszClassName = windowClass;
+        if (!RegisterClassW(&definition)) return 38;
+        RECT work = {};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+        HWND window = CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
+            WS_EX_NOACTIVATE | WS_EX_TOPMOST, windowClass, L"", WS_POPUP,
+            work.left + 10, work.top + 10, 8, 8, nullptr, nullptr,
+            definition.hInstance, nullptr);
+        if (!window) { UnregisterClassW(windowClass, definition.hInstance); return 38; }
+        SetLayeredWindowAttributes(window, 0, 255, LWA_ALPHA);
+        ShowWindow(window, SW_SHOWNOACTIVATE);
+        g_movieWindows[0].window = window;
+        std::vector<unsigned char> movie(MovieMutexOffset + sizeof(void*));
+        std::vector<unsigned char> animation(AnimationInfoOffset + sizeof(void*));
+        *reinterpret_cast<void**>(movie.data()) = ImageBase() + MovieVtableRva;
+        *reinterpret_cast<void**>(movie.data() + MovieAnimationOffset) = animation.data();
+        StoreActiveMovie(movie.data());
+        auto mask = std::make_shared<MovieHitMask>();
+        mask->movie = movie.data();
+        mask->animation = animation.data();
+        mask->width = mask->height = 2;
+        mask->pixels = { 255, 255, 255, 255 };
+        std::atomic_store(&g_movieHitMask, std::shared_ptr<const MovieHitMask>(mask));
+        POINT point = { work.left + 12, work.top + 12 };
+        auto opaque = FindVisibleMovieWindowAtPoint(point);
+        mask = std::make_shared<MovieHitMask>(*mask);
+        mask->pixels = { 0, 0, 0, 0 };
+        std::atomic_store(&g_movieHitMask, std::shared_ptr<const MovieHitMask>(mask));
+        auto transparent = FindVisibleMovieWindowAtPoint(point);
+        std::atomic_store(&g_movieHitMask, std::shared_ptr<const MovieHitMask>{});
+        InterlockedExchangePointer(&g_activeMovie, nullptr);
+        g_movieWindows[0] = {};
+        DestroyWindow(window);
+        UnregisterClassW(windowClass, definition.hInstance);
+        SetThreadDpiAwarenessContext(previousDpi);
+        if (opaque.window != window || !opaque.visiblePixel ||
+            transparent.window != window || transparent.visiblePixel) return 38;
+    }
+    {
+        const auto movieSize = std::max(MovieAnimationOffset + sizeof(void*),
+            std::max(MovieMutexOffset + sizeof(void*),
+                std::max(MovieCurrentFrameOffset, MovieStateOffset) + sizeof(int)));
+        std::vector<unsigned char> outgoing(movieSize), incoming(movieSize);
+        std::vector<unsigned char> animation(std::max(AnimationInfoOffset,
+            AnimationSsvOffset) + sizeof(void*));
+        unsigned char info[4096] = {};
+        for (auto* movie : { outgoing.data(), incoming.data() })
+        {
+            *reinterpret_cast<void**>(movie) = ImageBase() + MovieVtableRva;
+            *reinterpret_cast<void**>(movie + MovieAnimationOffset) = animation.data();
+        }
+        *reinterpret_cast<void**>(animation.data() + AnimationInfoOffset) = info;
+        StoreActiveMovie(outgoing.data());
+        MarkMovieConsumed(outgoing.data());
+        InterlockedExchange(&g_movieCaptureArmed, 1);
+        ObserveDesktopMovie(incoming.data());
+        CapturingMovieAdvance(outgoing.data());
+        if (ActiveMovie() != incoming.data() || g_movieCaptureArmed != 0) return 37;
+        *reinterpret_cast<int*>(incoming.data() + MovieStateOffset) = PlayingState;
+        *reinterpret_cast<int*>(info + AnimationTotalFramesOffset) = 120;
+        *reinterpret_cast<int*>(info + AnimationFramesPerSecondOffset) = 30;
+        *reinterpret_cast<int*>(incoming.data() + MovieStateOffset) = PausedState;
+        if (IStripperPrepareFastForwardMilliseconds(1000) != HRESULT_FROM_WIN32(ERROR_NOT_READY) ||
+            g_fastForwardTargetFrame != -1) return 44;
+        *reinterpret_cast<int*>(incoming.data() + MovieStateOffset) = PlayingState;
+        const auto instance = g_desktopInstance;
+        if (IStripperResetPlaybackSession() < 0 || ActiveMovie() != incoming.data() ||
+            g_desktopInstance != instance) return 39;
+        *reinterpret_cast<int*>(incoming.data() + MovieStateOffset) = 0;
+        if (IStripperResetPlaybackSession() < 0 || ActiveMovie() != nullptr) return 40;
+        const std::size_t scanSize = 64 * 1024 * 1024;
+        auto scan = static_cast<unsigned char*>(VirtualAlloc(nullptr, scanSize,
+            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+        if (scan == nullptr) return 41;
+        auto lateMovie = scan + scanSize - 4096;
+        std::memcpy(lateMovie, incoming.data(), incoming.size());
+        *reinterpret_cast<int*>(lateMovie + MovieStateOffset) = PlayingState;
+        g_movieDiscoveryCursor = reinterpret_cast<std::uintptr_t>(scan);
+        const bool bounded = DiscoverActiveMovie(1) == nullptr &&
+            g_movieDiscoveryCursor > reinterpret_cast<std::uintptr_t>(scan) &&
+            g_movieDiscoveryCursor < reinterpret_cast<std::uintptr_t>(lateMovie);
+        const bool resumed = DiscoverActiveMovie() == lateMovie && g_movieDiscoveryCursor == 0;
+        VirtualFree(scan, 0, MEM_RELEASE);
+        if (!bounded || !resumed)
+        {
+            std::fprintf(stderr, "Discovery fixture: bounded=%d resumed=%d movieSize=%zu stateOffset=%zu\n",
+                bounded, resumed, movieSize, MovieStateOffset);
+            return 42;
+        }
+        InterlockedExchangePointer(&g_activeMovie, nullptr);
+        InterlockedExchangePointer(&g_activeAnimation, nullptr);
+        InterlockedExchangePointer(&g_consumedMovie, nullptr);
+        InterlockedExchangePointer(&g_consumedAnimation, nullptr);
+        InterlockedExchangePointer(&g_consumedInfo, nullptr);
+        g_desktopMovie = g_desktopAnimation = g_desktopInfo = nullptr;
+    }
+    unsigned char desktopHeader[256] = {};
+    strcpy_s(reinterpret_cast<char*>(desktopHeader), sizeof(desktopHeader), "HD3e1234_01234.vghd");
+    if (!DesktopClipIdentity(desktopHeader, desktopPath) ||
+        wcscmp(desktopPath, L"e1234\\e1234_01234.vghd") != 0) return 35;
     if (UsesQt6())
     {
         std::vector<unsigned char> animation(AnimationInfoOffset + 8);
