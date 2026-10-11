@@ -161,6 +161,10 @@ public partial class Form1
         var pending = desktopPlayback.Pending;
         ulong previousCompletion = desktopPlayback.Confirmed?.CompletedInstance ?? 0;
         if (!desktopPlayback.Observe(observation, out var accepted, out bool manual, out bool completed)) return;
+        if (desktopPlayback.Prepared is { } rebound && prepared != null &&
+            !ReferenceEquals(rebound, prepared) && rebound.Path == prepared.Path &&
+            ReferenceEquals(rebound.Reservation, prepared.Reservation))
+            PublishDesktopSelection(rebound);
         if (previousInstance != snapshot.Instance || previousPath != snapshot.Path ||
             previousCompletion != snapshot.CompletedInstance || accepted != null || manual || completed)
             DesktopPlaybackLog.Record("transition-decision", new

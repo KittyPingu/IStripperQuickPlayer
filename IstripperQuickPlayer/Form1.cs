@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 152;
+        private const int PlaybackBridgeVersion = 153;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -2595,7 +2595,6 @@ namespace IStripperQuickPlayer
         {
             if (panicActive || listClips.SelectedItems.Count == 0)
                 return;
-            ClearQueuedCardSession();
             string r = listClips.SelectedItems[0].SubItems[1].Text;
             ModelCard? card = Datastore.findCardByTag(clipListTag);
             ModelClip? clip = card?.clips?.FirstOrDefault(item =>
@@ -4699,6 +4698,11 @@ namespace IStripperQuickPlayer
         private bool OnRegistryValueWrite(string keyname, byte[] data)
         {
             if (formIsClosing || IsDisposed || !IsHandleCreated) return false;
+            if (keyname.StartsWith("desktop-native-", StringComparison.Ordinal))
+            {
+                DesktopPlaybackLog.Record(keyname, Encoding.Unicode.GetString(data).TrimEnd('\0'));
+                return false;
+            }
             // Registry notifications are observations, never playback proposals.
             if (keyname == "playingMode" && data.Length >= sizeof(uint))
             {
@@ -4706,12 +4710,14 @@ namespace IStripperQuickPlayer
                 if (mode is >= 1 and <= 3)
                 {
                     int previousMode = Interlocked.Exchange(ref playerMode, (int)mode);
-                    DesktopPlaybackLog.Record("mode-notification", new { mode, previousMode });
+                    DesktopPlaybackLog.Record("mode-notification", new { mode, previousMode,
+                        persistedMode = ReadRegistryInteger(@"Software\Totem\vghd\player", "playingMode"),
+                        customIstripperSuspended, customPlayer = customPlayer != null });
                     // The host repeats this value; resizing again can recreate its current movie.
                     if (!DesktopPlaybackModeChanged(previousMode, (int)mode)) return false;
                     BeginInvoke((Action)(() =>
                     {
-                        RebuildAutomaticQueue();
+                        if (mode == 3) desktopPlayback.HostModeLeavingDesktop();
                         QueueConfiguredPlayerSize(mode: (int)mode);
                     }));
                 }

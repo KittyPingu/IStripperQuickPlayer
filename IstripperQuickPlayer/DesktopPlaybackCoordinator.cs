@@ -20,6 +20,14 @@ internal sealed class DesktopPlaybackCoordinator
     long nextRequest;
     ulong lastCompletion;
     ulong lastPlaybackInstance;
+    string lastPlaybackPath = "";
+    string hostModeReturnPath = "";
+
+    internal void HostModeLeavingDesktop()
+    {
+        hostModeReturnPath = lastPlaybackPath;
+        DesktopPlaybackLog.Record("host-mode-leaving-desktop", new { hostModeReturnPath, ActiveQueuedCard, Prepared });
+    }
     internal PlayQueueEntry? ActiveQueuedCard;
     internal PlayQueueEntry? ActiveManualQueueEntry;
     internal PlayQueueEntry? ActiveAutomaticQueueEntry;
@@ -38,6 +46,7 @@ internal sealed class DesktopPlaybackCoordinator
         Pending = Prepared = null;
         lastCompletion = 0;
         lastPlaybackInstance = 0;
+        lastPlaybackPath = hostModeReturnPath = "";
     }
 
     internal Selection Request(string path, object? reservation = null, Observation? baseline = null)
@@ -97,6 +106,7 @@ internal sealed class DesktopPlaybackCoordinator
             observation.Path.Length != 0 && observation.State is 3 or 4;
         if (!changed) return true;
         lastPlaybackInstance = observation.Instance;
+        lastPlaybackPath = observation.Path;
         Selection? selection = Pending ?? Prepared;
         if (selection != null && observation.Request != 0 && observation.Request < (ulong)selection.Id)
             return true;
@@ -105,6 +115,16 @@ internal sealed class DesktopPlaybackCoordinator
             observation.Request == (ulong)selection.Id &&
             observation.Instance != (ulong)selection.Instance)
             accepted = selection;
+        else if (Pending == null && observation.Request == 0 &&
+            string.Equals(hostModeReturnPath, observation.Path, StringComparison.OrdinalIgnoreCase) &&
+            observation.CompletedInstance != previousInstance)
+        {
+            // Returning from a host mode switch recreates the movie without selecting another clip.
+            hostModeReturnPath = "";
+            if (Prepared != null) Prepare(Prepared.Path, Prepared.Reservation);
+            DesktopPlaybackLog.Record("host-mode-returned", new { observation, ActiveQueuedCard, Prepared });
+            return true;
+        }
         else if (selection == Prepared && selection != null &&
             previousInstance != 0 && observation.CompletedInstance == previousInstance &&
             observation.Request == 0)
@@ -113,6 +133,7 @@ internal sealed class DesktopPlaybackCoordinator
         else manual = previousInstance != 0 &&
             observation.CompletedInstance != previousInstance;
         Pending = Prepared = null;
+        hostModeReturnPath = "";
         return true;
     }
 
@@ -238,6 +259,41 @@ internal sealed class DesktopPlaybackCoordinator
         cardOwner.Cancel(failedNext.Id);
         if (cardOwner.ActiveQueuedCard != cardEntry || cardOwner.ActiveAutomaticQueueEntry != cardEntry)
             return false;
+        var modeReturn = new DesktopPlaybackCoordinator();
+        modeReturn.Attach(1);
+        modeReturn.ActiveQueuedCard = modeReturn.ActiveAutomaticQueueEntry = cardEntry;
+        modeReturn.Observe(O(1, 1, "card/first"), out _, out _, out _);
+        var beforeMode = modeReturn.Prepare("next-card", token);
+        modeReturn.HostModeLeavingDesktop();
+        modeReturn.Observe(O(2, 0, ""), out _, out _, out _);
+        if (!modeReturn.Observe(O(3, 2, "card/first"), out accepted, out manual, out ended) ||
+            accepted != null || manual || ended || modeReturn.ActiveQueuedCard != cardEntry ||
+            modeReturn.Prepared?.Path != beforeMode.Path || modeReturn.Prepared.Reservation != token ||
+            modeReturn.Prepared.Instance != 2 || modeReturn.Prepared.Id <= beforeMode.Id) return false;
+        var afterMode = modeReturn.Prepared;
+        // Repeated failed fullscreen attempts must keep the same reservation and card session.
+        ulong modeSequence = 3;
+        ulong modeInstance = 2;
+        modeReturn.ActiveQueuedCardStartedAt = 100;
+        for (int cycle = 0; cycle < 20; cycle++)
+        {
+            modeReturn.HostModeLeavingDesktop();
+            modeReturn.Observe(O(++modeSequence, 0, ""), out _, out _, out _);
+            if (!modeReturn.Observe(O(++modeSequence, ++modeInstance, "card/first"),
+                    out accepted, out manual, out ended) || accepted != null || manual || ended ||
+                modeReturn.ActiveQueuedCard != cardEntry || modeReturn.ActiveAutomaticQueueEntry != cardEntry ||
+                modeReturn.ActiveQueuedCardStartedAt != 100 || modeReturn.Prepared?.Reservation != token ||
+                modeReturn.Prepared.Instance != (long)modeInstance || modeReturn.Prepared.Id <= afterMode.Id)
+                return false;
+            afterMode = modeReturn.Prepared;
+        }
+        if (!modeReturn.Observe(O(++modeSequence, modeInstance + 1, "next-card", modeInstance, request: (ulong)afterMode.Id),
+            out accepted, out manual, out ended) || accepted != afterMode || manual || !ended) return false;
+        if (!modeReturn.Observe(O(++modeSequence, modeInstance + 1, "next-card", modeInstance, request: (ulong)afterMode.Id),
+            out accepted, out _, out ended) || accepted != null || ended) return false;
+        modeReturn.HostModeLeavingDesktop();
+        if (!modeReturn.Observe(O(++modeSequence, modeInstance + 2, "explicit-other", modeInstance), out accepted, out manual, out _) ||
+            accepted != null || !manual) return false;
         return !player.Observe(O(7, 5, "old"), out _, out _, out _) &&
             player.Confirmed == null && player.Pending == null;
     }

@@ -8487,6 +8487,11 @@ namespace
         g_desktopAnimation = animation;
         g_desktopInfo = info;
         ConfirmDesktopRequest(info);
+        wchar_t diagnostic[256] = {};
+        swprintf_s(diagnostic, L"movie-playing instance=%llu completed=%llu request=%llu movie=%p animation=%p info=%p thread=%lu",
+            g_desktopInstance, g_desktopCompletedInstance, g_desktopConfirmedRequest,
+            movie, animation, info, GetCurrentThreadId());
+        QueueBridgeDiagnostic(diagnostic, L"desktop-native-movie");
         // Confirmation ends attachment capture; outgoing frames cannot take ownership back.
         InterlockedExchange(&g_movieCaptureArmed, 0);
         InterlockedExchange(&g_movieCaptureReady, 0);
@@ -8547,6 +8552,10 @@ namespace
             return;
         }
         g_desktopCompletedInstance = g_desktopInstance;
+        wchar_t diagnostic[256] = {};
+        swprintf_s(diagnostic, L"natural-end instance=%llu preparedInstance=%llu preparedRequest=%llu thread=%lu",
+            g_desktopInstance, g_desktopSelection.instance, g_desktopSelection.request, GetCurrentThreadId());
+        QueueBridgeDiagnostic(diagnostic, L"desktop-native-completion");
         if (g_desktopSelection.instance == g_desktopInstance)
         {
             selection = g_desktopSelection;
@@ -13000,7 +13009,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 152;
+    return 153;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

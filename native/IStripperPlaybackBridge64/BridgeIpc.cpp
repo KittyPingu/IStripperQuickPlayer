@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <intrin.h>
+#include <algorithm>
 
 namespace
 {
@@ -177,6 +179,24 @@ namespace
              _wcsicmp(valueName, L"playingMode") == 0);
         if (relevant && !g_insideRegistryHook)
         {
+            if (_wcsicmp(valueName, L"playingMode") == 0 && type == REG_DWORD && dataSize == sizeof(DWORD))
+            {
+                using QueryKey = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
+                static const auto queryKey = reinterpret_cast<QueryKey>(GetProcAddress(
+                    GetModuleHandleW(L"ntdll.dll"), "NtQueryKey"));
+                alignas(wchar_t) BYTE keyName[2048] = {};
+                ULONG required = 0;
+                wchar_t message[1400] = {};
+                DWORD mode = 0;
+                memcpy(&mode, data, sizeof(mode));
+                int nameLength = queryKey != nullptr && queryKey(key, 3, keyName, sizeof(keyName), &required) >= 0
+                    ? static_cast<int>(*reinterpret_cast<ULONG*>(keyName) / sizeof(wchar_t)) : 0;
+                nameLength = (std::min)(nameLength, 1000);
+                swprintf_s(message, L"mode-write value=%lu thread=%lu caller=%p key=%.*s",
+                    mode, GetCurrentThreadId(), _ReturnAddress(), nameLength,
+                    reinterpret_cast<const wchar_t*>(keyName + sizeof(ULONG)));
+                QueueBridgeDiagnostic(message);
+            }
             if (_wcsicmp(valueName, L"CurrentAnim") == 0 &&
                 type == REG_SZ && dataSize >= sizeof(wchar_t))
             {
@@ -298,6 +318,12 @@ namespace
                 return;
         }
     }
+}
+
+void QueueBridgeDiagnostic(const wchar_t* message, const wchar_t* name)
+{
+    QueueEvent(name, reinterpret_cast<const BYTE*>(message),
+        static_cast<DWORD>((wcslen(message) + 1) * sizeof(wchar_t)));
 }
 
 bool SendBridgeEvent(const wchar_t* name, const void* data, DWORD dataSize)

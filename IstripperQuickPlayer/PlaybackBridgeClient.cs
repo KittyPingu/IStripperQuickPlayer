@@ -129,8 +129,15 @@ public sealed class PlaybackBridgeClient : IDisposable
             {
                 remaining = Math.Max(0, CommandTimeout(apiName) - (int)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
                 if (remaining == 0) throw new TimeoutException("The command deadline expired before transport.");
-                return ExchangeAsync(commandPipe, name, parameter,
+                bool diagnostic = !apiName.StartsWith("IStripperGet", StringComparison.Ordinal) &&
+                    !apiName.StartsWith("IStripperIs", StringComparison.Ordinal) &&
+                    apiName != "IStripperCaptureAlphaCheckpoint";
+                if (diagnostic) DesktopPlaybackLog.Record("bridge-command-start", new { processId, apiName, parameter });
+                int result = ExchangeAsync(commandPipe, name, parameter,
                     remaining, lifetime.Token).GetAwaiter().GetResult();
+                if (diagnostic) DesktopPlaybackLog.Record("bridge-command-result", new { processId, apiName, result,
+                    milliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds });
+                return result;
             }
             catch
             {
