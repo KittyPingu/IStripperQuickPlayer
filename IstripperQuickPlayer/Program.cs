@@ -271,8 +271,24 @@ namespace IStripperQuickPlayer
                 return;
             }
 
+            if (args.Length == 1 && args[0] == "--verify-desktop-playback")
+            {
+                bool passed = DesktopPlaybackCoordinator.Verify() &&
+                    PlaybackBridgeClient.VerifyProtocol() &&
+                    PlaybackBridgeClient.VerifyDeadlineAsync().GetAwaiter().GetResult();
+                Console.WriteLine(passed ? "Desktop coordinator and transport checks passed." : "Desktop playback checks failed.");
+                Environment.Exit(passed ? 0 : 1);
+            }
+
+            if (args.Length == 1 && args[0] == "--verify-desktop-live")
+            {
+                try { Environment.Exit(DesktopPlaybackVerification.RunLiveAsync().GetAwaiter().GetResult()); }
+                catch (Exception exception) { Console.Error.WriteLine(exception); Environment.Exit(1); }
+            }
+
             if (args.Length == 1 && args[0] == "--verify-custom-shows")
             {
+                WindowsFormsSynchronizationContext.AutoInstall = false;
                 (string Name, bool Passed)[] checks =
                 [
                     ("core", CustomShowStore.VerifyCoreLogic()),
@@ -449,6 +465,10 @@ namespace IStripperQuickPlayer
                     Form1.PlayerSizeTarget(25, 40, 55) != 55 ||
                     Form1.PlayerSizeTarget(25, 40, null) != 25 ||
                     Form1.PlayerSizeTarget(0, 40, null) != 40 ||
+                    !Form1.CanUseLegacySeekFallback(1, unchecked((int)0x80070032)) ||
+                    Form1.CanUseLegacySeekFallback(1, unchecked((int)0x80070015)) ||
+                    Form1.CanUseLegacySeekFallback(1, unchecked((int)0x80004005)) ||
+                    Form1.CanUseLegacySeekFallback(2, unchecked((int)0x80070032)) ||
                     !PlaybackBridgeClient.VerifyProtocol())
                 {
                     Environment.ExitCode = 1;
@@ -474,6 +494,13 @@ namespace IStripperQuickPlayer
                         new System.Drawing.Size(216, 323) ||
                     !CardRenderer.VerifyRelativeMetrics() ||
                     !Form1.VerifyQueueEntryRemoval() ||
+                    Form1.DesktopPlaybackModeChanged(1, 1) ||
+                    Form1.DesktopPlaybackModeChanged(2, 2) ||
+                    Form1.DesktopPlaybackModeChanged(3, 3) ||
+                    Form1.DesktopPlaybackModeChanged(1, 0) ||
+                    !Form1.DesktopPlaybackModeChanged(1, 2) ||
+                    !Form1.DesktopPlaybackModeChanged(2, 3) ||
+                    !Form1.DesktopPlaybackModeChanged(3, 1) ||
                     !Wallpaper.VerifyBlurBufferReuse())
                 {
                     Environment.ExitCode = 1;

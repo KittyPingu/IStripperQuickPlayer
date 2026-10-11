@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
+#include <intrin.h>
+#include <algorithm>
 
 namespace
 {
@@ -28,6 +31,33 @@ namespace
     thread_local bool g_insideRegistryHook = false;
     SRWLOCK g_animationPathLock = SRWLOCK_INIT;
     std::wstring g_lastCurrentAnimation;
+    SRWLOCK g_pendingEventsLock = SRWLOCK_INIT;
+    std::map<std::wstring, std::vector<BYTE>> g_pendingEvents;
+    HANDLE g_eventWake = nullptr;
+    INIT_ONCE g_eventWorkerOnce = INIT_ONCE_STATIC_INIT;
+
+    DWORD WINAPI DeliverEvents(void*);
+    BOOL CALLBACK StartEventWorker(PINIT_ONCE, PVOID, PVOID*)
+    {
+        g_eventWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!g_eventWake) return FALSE;
+        HANDLE thread = CreateThread(nullptr, 0, DeliverEvents, nullptr, 0, nullptr);
+        if (!thread) { CloseHandle(g_eventWake); g_eventWake = nullptr; return FALSE; }
+        CloseHandle(thread);
+        return TRUE;
+    }
+
+    void QueueEvent(LPCWSTR name, const BYTE* data, DWORD size)
+    {
+        if (!g_eventWake) return;
+        AcquireSRWLockExclusive(&g_pendingEventsLock);
+        // Notifications carry latest state; coalescing bounds memory during a UI stall.
+        if (g_pendingEvents.size() < 16 || g_pendingEvents.count(name))
+            g_pendingEvents[name] = size == 0 ? std::vector<BYTE>{} :
+                std::vector<BYTE>(data, data + size);
+        ReleaseSRWLockExclusive(&g_pendingEventsLock);
+        SetEvent(g_eventWake);
+    }
 
     std::wstring PipeName(const wchar_t* kind)
     {
@@ -149,6 +179,24 @@ namespace
              _wcsicmp(valueName, L"playingMode") == 0);
         if (relevant && !g_insideRegistryHook)
         {
+            if (_wcsicmp(valueName, L"playingMode") == 0 && type == REG_DWORD && dataSize == sizeof(DWORD))
+            {
+                using QueryKey = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
+                static const auto queryKey = reinterpret_cast<QueryKey>(GetProcAddress(
+                    GetModuleHandleW(L"ntdll.dll"), "NtQueryKey"));
+                alignas(wchar_t) BYTE keyName[2048] = {};
+                ULONG required = 0;
+                wchar_t message[1400] = {};
+                DWORD mode = 0;
+                memcpy(&mode, data, sizeof(mode));
+                int nameLength = queryKey != nullptr && queryKey(key, 3, keyName, sizeof(keyName), &required) >= 0
+                    ? static_cast<int>(*reinterpret_cast<ULONG*>(keyName) / sizeof(wchar_t)) : 0;
+                nameLength = (std::min)(nameLength, 1000);
+                swprintf_s(message, L"mode-write value=%lu thread=%lu caller=%p key=%.*s",
+                    mode, GetCurrentThreadId(), _ReturnAddress(), nameLength,
+                    reinterpret_cast<const wchar_t*>(keyName + sizeof(ULONG)));
+                QueueBridgeDiagnostic(message);
+            }
             if (_wcsicmp(valueName, L"CurrentAnim") == 0 &&
                 type == REG_SZ && dataSize >= sizeof(wchar_t))
             {
@@ -156,7 +204,7 @@ namespace
                 std::size_t length = dataSize / sizeof(wchar_t);
                 while (length > 0 && text[length - 1] == L'\0')
                     --length;
-                if (length > 0 && length < AnimationPathCapacity)
+                if (length < AnimationPathCapacity)
                 {
                     AcquireSRWLockExclusive(&g_animationPathLock);
                     g_lastCurrentAnimation.assign(text, length);
@@ -164,10 +212,8 @@ namespace
                 }
             }
             g_insideRegistryHook = true;
-            const bool skip = SendRegistryEvent(valueName, data, dataSize);
+            QueueEvent(valueName, data, dataSize);
             g_insideRegistryHook = false;
-            if (skip)
-                return ERROR_SUCCESS;
         }
         return g_originalRegSetValueExW(
             key, valueName, reserved, type, data, dataSize);
@@ -217,6 +263,21 @@ namespace
         return BridgeSuccess;
     }
 
+    DWORD WINAPI DeliverEvents(void*)
+    {
+        for (;;)
+        {
+            WaitForSingleObject(g_eventWake, INFINITE);
+            std::map<std::wstring, std::vector<BYTE>> events;
+            AcquireSRWLockExclusive(&g_pendingEventsLock);
+            events.swap(g_pendingEvents);
+            ReleaseSRWLockExclusive(&g_pendingEventsLock);
+            for (const auto& event : events)
+                SendRegistryEvent(event.first.c_str(), event.second.data(),
+                    static_cast<DWORD>(event.second.size()));
+        }
+    }
+
     struct CommandHeader
     {
         std::uint32_t magic;
@@ -259,10 +320,18 @@ namespace
     }
 }
 
+void QueueBridgeDiagnostic(const wchar_t* message, const wchar_t* name)
+{
+    QueueEvent(name, reinterpret_cast<const BYTE*>(message),
+        static_cast<DWORD>((wcslen(message) + 1) * sizeof(wchar_t)));
+}
+
 bool SendBridgeEvent(const wchar_t* name, const void* data, DWORD dataSize)
 {
-    return name != nullptr && dataSize <= MaximumEventDataBytes &&
-        SendRegistryEvent(name, static_cast<const BYTE*>(data), dataSize);
+    if (name == nullptr || dataSize > MaximumEventDataBytes ||
+        (dataSize != 0 && data == nullptr)) return false;
+    QueueEvent(name, static_cast<const BYTE*>(data), dataSize);
+    return false;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
@@ -271,6 +340,8 @@ IStripperStartRegistryHook()
     HRESULT result = ConnectEventPipe();
     if (result < 0)
         return result;
+    if (!InitOnceExecuteOnce(&g_eventWorkerOnce, StartEventWorker, nullptr, nullptr))
+        return HRESULT_FROM_WIN32(GetLastError());
     InitOnceExecuteOnce(
         &g_registryHookOnce, &InstallRegistryHook, nullptr, nullptr);
     return g_registryHookResult;

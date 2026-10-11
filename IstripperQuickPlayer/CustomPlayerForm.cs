@@ -1195,6 +1195,13 @@ internal sealed class CustomPlayerForm : Form
         return (target, true);
     }
 
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        // Video sizing uses physical pixels; suggested DPI bounds can still describe the startup placeholder.
+        e.Cancel = true;
+        base.OnDpiChanged(e);
+    }
+
     protected override void WndProc(ref Message message)
     {
         bool recoverDisplay = message.Msg is WmDisplayChange or WmDpiChanged ||
@@ -1239,6 +1246,7 @@ internal sealed class CustomPlayerForm : Form
     }
 
     internal static bool VerifyHitTesting() =>
+        VerifyDpiBounds() &&
         VerifyBottomAnchoredResize() &&
         HitTest(false, false, false, false) == HtTransparent &&
         HitTest(false, false, false, true) == HtCaption &&
@@ -1284,6 +1292,30 @@ internal sealed class CustomPlayerForm : Form
             AnchoredLocation(new Size(100, 200),
             new Rectangle(300, 400, 200, 300),
             new Rectangle(0, 0, 1920, 1080)) == new Point(350, 880);
+
+    static bool VerifyDpiBounds()
+    {
+        using CustomPlayerForm player = new("", null);
+        IntPtr rectangle = Marshal.AllocHGlobal(Marshal.SizeOf<NativeRect>());
+        try
+        {
+            _ = player.Handle;
+            Rectangle expected = new(500, 300, 640, 360);
+            player.Bounds = expected;
+            int dpi = player.DeviceDpi == 96 ? 144 : 96;
+            Marshal.StructureToPtr(new NativeRect
+            { Left = 500, Top = 300, Right = 522, Bottom = 322 }, rectangle, false);
+            Message message = Message.Create(player.Handle, WmDpiChanged,
+                new IntPtr(dpi | dpi << 16), rectangle);
+            player.WndProc(ref message);
+            return player.DeviceDpi == dpi && player.Bounds == expected;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(rectangle);
+            player.settleTimer.Dispose();
+        }
+    }
 
     static bool VerifyBottomAnchoredResize()
     {
