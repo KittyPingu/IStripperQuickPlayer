@@ -271,6 +271,11 @@ namespace IStripperQuickPlayer
                 return;
             }
 
+            if (args.Length == 1 && args[0] == "--verify-fullscreen-scenes")
+            {
+                Environment.Exit(FullscreenSceneCatalog.Verify() ? 0 : 1);
+            }
+
             if (args.Length == 1 && args[0] == "--verify-desktop-playback")
             {
                 bool passed = DesktopPlaybackCoordinator.Verify() &&

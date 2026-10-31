@@ -1,5 +1,20 @@
 # Qt5 / Qt6 compatibility verification
 
+## Bridge 154 / installed 2.5.0.0 (2026-10-29)
+
+The host image `6ACF523D / 00A8F000` inlines sound cleanup in its destructor.
+The old resolver stopped at audio mask `0x3`, preventing video resolution and
+leaving desktop seeking disabled. The fallback identifies the separate close
+function through video cleanup, validating its output load, null test and paired
+pointer resets. Existing destructor-call patterns remain supported.
+
+The new signature checks and installed Qt6 compatibility suite passed. One suite
+run failed the existing 1 ms bounded-discovery timing fixture; a rerun passed.
+Release x64 build, controls, desktop-playback, API-options and diff checks passed.
+After publishing and restarting both apps, live playback reported seek readiness
+`0x1FF`; a forward seek from 20.333 s to 25.333 s reached 25.300 s and resumed playing.
+Live Qt5 and direct mouse-drag verification were not performed.
+
 Target: iStripper 2.5.0.0 on Windows x64. Bridge 128 was published and its
 alpha readiness/checkpoint change passed live verification. Bridge 129 is
 published and its fullscreen diagnostic tree returns all three active nodes.
@@ -218,3 +233,116 @@ UI queue waits below 0.6 ms. Both the installed Qt6 executable and the saved Qt5
 executable passed offline compatibility checks; the saved Qt5 fixture required
 the legacy ffmpeg64 libraries before its decode checks could run. The preexisting
 CustomPlayerForm.cs hash remains unchanged.
+
+
+## Fullscreen scene API (bridge v155, 2026-10-31)
+
+Added scene discovery and launch endpoints. Launch resolves the installed
+`ViewModel::ViewModelFullScreenScenes` object and invokes its Qt
+`launchScene(QString)` method through AutoConnection. The installed 2.5.0.0
+metadata confirms that signature. The view model uses the normal fullscreen
+start path while stopped and the scene-switch path while running.
+
+Release/x64 native and C# builds passed. The isolated native compatibility
+executable passed against the installed vghd.exe, including rejection of empty
+and unterminated scene requests and a UTF-8 scene-path round trip. The Release
+application's `--verify-fullscreen-scenes` check passed for missing directories,
+Unicode names, distinct IDs in different folders, cache exclusion, and JSON
+path omission. `git diff --check` passed.
+
+Live verification subsequently passed on 2026-10-31 after a self-contained
+win-x64 Release publish to the required net10.0-windows directory and an
+iStripper restart. The running QuickPlayer path was checked against that exact
+published executable, and its bridge DLL hash matched the newly built DLL.
+
+The authenticated catalogue returned 28 scenes. Launching Midnight Gallery Club
+returned 202 and produced active fullscreen playback with GirlLeft, GirlCentre,
+and GirlRight. Switching through the API to Whisper Club (Single Standing)
+returned 202 and produced its single Clip source. Both scenes rendered visibly.
+A case-insensitive scene ID switched back to Midnight Gallery Club, which was
+left active with all three sources. Missing IDs and malformed JSON returned 400;
+unknown IDs and traversal-like IDs returned 404; unauthenticated listing returned
+401. All checks passed and both applications remained running.
+
+One initial request was accepted but did not enter fullscreen: iStripper's log
+reported that it could not become the foreground window. Restarting iStripper
+with its visible interface and bringing it forward allowed the same request to
+succeed. The API documentation records this Windows foreground restriction;
+202 confirms dispatch, not successful fullscreen entry.
+
+
+## Automatic fullscreen focus (bridge v156, 2026-10-31)
+
+Scene launch now restores the process-owned iStripper main window and verifies
+foreground ownership before dispatch. If ordinary SetForegroundWindow fails,
+a balanced Alt press/release unlocks foreground activation before retrying.
+This is skipped while a physical modifier is held; partial input submission
+attempts to release Alt. No input queues remain attached, and no system settings
+are changed. Failed activation returns 409 without dispatching the scene.
+Active-scene switching skips focus acquisition.
+
+Live verification passed against installed iStripper 2.5.0.0 using the published
+self-contained win-x64 Release application at the required net10.0-windows
+location. Starting with a hidden iStripper instance and Battle.net in front,
+Midnight Gallery Club started through the API with three active sources.
+After exiting fullscreen and activating Process Lasso, a second API request
+started Whisper Club (Single Standing) with its single Clip source. Switching
+back to Midnight Gallery Club returned 202 and restored three active sources.
+Both applications remained responsive; Midnight Gallery Club was left running.
+
+The isolated native check also tests rejection of null and foreign-process
+focus targets before any window activation or keyboard input. Release/x64
+native and C# builds and the isolated compatibility checks passed. Requests
+from a locked desktop, UAC's secure desktop, or while modifiers are held were
+not exercised live.
+
+
+## Fullscreen stop API (bridge v157, 2026-10-31)
+
+Added POST /api/v1/fullscreen/stop. The bridge queues FullScreen::scheduleStop()
+through the existing Qt singleton invocation, using the host's normal fade-out
+and desktop playback restoration. The installed 2.5.0.0 Qt metadata confirms
+the no-argument method. The API returns 202 with the observed fullscreen snapshot;
+clients poll for active=false because shutdown completes asynchronously.
+
+Release/x64 native and C# builds passed, as did the isolated compatibility
+checks against installed iStripper 2.5.0.0. Published and relaunched the required
+self-contained win-x64 net10.0-windows executable, restarted iStripper to load
+v157, and verified the published bridge DLL hash matches the newly built DLL.
+
+Live checks started Midnight Gallery Club (three slots), stopped it through
+the API, and observed fullscreen inactive plus confirmed desktop playback.
+The desktop clip's elapsed time advanced from 166 to 2200 milliseconds.
+A repeated stop while inactive returned 202. A second cycle started Whisper
+Club (Single Standing), then stopped it and returned to confirmed desktop
+playback. Unauthenticated stop returned 401 without exiting fullscreen, and
+GET on the stop route returned 404. Discovery lists the new endpoint.
+Desktop playback was left running. Older iStripper versions were not live tested.
+
+
+## Stable mask readiness (bridge v158, 2026-10-31)
+
+Initial live status on installed 2.4.0.2 showed playback advancing with readiness
+mask 383: only decoded-alpha progress was missing. Static inspection confirms
+that this Qt5 build also dispatches independent RLE7 masks without advancing the
+delta decoder counters. The resolver now derives its encoding field from the
+validated zero/8 bit test plus the matching encoding-3 dispatch, while retaining
+the existing Qt6 dispatch pattern. Readiness uses rendered-frame progress for
+RLE7 on either Qt generation. Startup index correction is discovered and used
+when present on either generation as well.
+
+The isolated compatibility executable passed against stable 2.4.0.2, including
+RLE7 progress, stationary-frame rejection, delta-mask progress requirements,
+readiness reset, and startup index correction (encoding field 0x15C). Release/x64
+native and C# builds passed. Published the required self-contained Release
+application and restarted the applications to load v158.
+
+The user switched back to beta 2.5 during live testing. Subsequent observations
+showed readiness mask 511 and an editable timeline, but a backward API seek to
+5000 milliseconds left that clip stalled. The user recovered by moving clips
+and reported that the -10 percent control near the beginning could stall while
+dragging the timeline to the beginning worked, then later reported normal
+operation again. No rewind-specific change was made, and no further playback
+commands or restarts were issued after the user began recovering playback.
+Near-start rewind remains an intermittent issue requiring separate diagnosis;
+these observations do not establish a successful live stable-version seek test.

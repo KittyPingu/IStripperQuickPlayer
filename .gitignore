@@ -452,3 +452,5 @@ FodyWeavers.xsd
 !/IstripperQuickPlayer/Form1.DesktopPlayback.cs
 !/IstripperQuickPlayer/DesktopPlaybackVerification.cs
 !/IstripperQuickPlayer/DesktopPlaybackLog.cs
+
+!/IstripperQuickPlayer/FullscreenSceneCatalog.cs

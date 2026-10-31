@@ -48,6 +48,7 @@ namespace IStripperQuickPlayer
             int? ElapsedMilliseconds, double? Position);
         private sealed record ApiSpeedRequest(double? Speed);
         private sealed record ApiShaderDataRequest(double[]? Values);
+        private sealed record ApiFullscreenSceneRequest(string? SceneId);
         private sealed record FullscreenBridgeSlot(
             int Id, string Source, string Card, string Clip);
         private sealed record FullscreenBridgeQueueEntry(
@@ -268,6 +269,8 @@ namespace IStripperQuickPlayer
                         "GET /api/v1/library?search=&limit=",
                         "GET /api/v1/queue",
                         "GET /api/v1/fullscreen",
+                        "GET /api/v1/fullscreen/scenes",
+                        "POST /api/v1/fullscreen/scenes/start",
                         "GET /api/v1/fullscreen/shader-data",
                         "PUT /api/v1/fullscreen/shader-data",
                         "POST /api/v1/fullscreen/shader-clip-bounds/{channel}",
@@ -277,6 +280,7 @@ namespace IStripperQuickPlayer
                         "GET /api/v1/fullscreen/shader-texture/shared-memory",
                         "POST /api/v1/fullscreen/play",
                         "POST /api/v1/fullscreen/next",
+                        "POST /api/v1/fullscreen/stop",
                         "POST /api/v1/fullscreen/slots/{slotId}/next",
                         "POST /api/v1/fullscreen/slots/{slotId}/play",
                         "POST /api/v1/fullscreen/source/{source}/next",
@@ -319,6 +323,18 @@ namespace IStripperQuickPlayer
 
             if (method == "GET" && Matches(parts, "fullscreen"))
                 return Ok(await InvokeAsync(CreateRestApiFullscreen));
+
+            if (method == "GET" && Matches(parts, "fullscreen", "scenes"))
+                return Ok(new { scenes = GetRestApiFullscreenScenes() });
+
+            if (method == "POST" &&
+                Matches(parts, "fullscreen", "scenes", "start"))
+            {
+                ApiFullscreenSceneRequest body =
+                    await ReadRestApiJsonAsync<ApiFullscreenSceneRequest>(
+                        request, cancellationToken);
+                return await InvokeAsync(() => StartRestApiFullscreenScene(body));
+            }
 
             if (method == "GET" &&
                 Matches(parts, "fullscreen", "shader-data"))
@@ -390,6 +406,13 @@ namespace IStripperQuickPlayer
                         request, cancellationToken);
                 return await InvokeAsync(() =>
                     PlayRestApiFullscreenEntry(body));
+            }
+
+            if (method == "POST" &&
+                Matches(parts, "fullscreen", "stop"))
+            {
+                return await InvokeAsync(() =>
+                    RunFullscreenBridgeAction("IStripperFullscreenStop"));
             }
 
             if (method == "POST" &&
@@ -759,6 +782,35 @@ namespace IStripperQuickPlayer
             JsonElement nodes = JsonSerializer.Deserialize<JsonElement>(
                 Volatile.Read(ref fullscreenTreeJson));
             return new ApiResult(200, new { nodes });
+        }
+
+        private static FullscreenSceneCatalog.Scene[] GetRestApiFullscreenScenes()
+        {
+            using RegistryKey? system = Registry.CurrentUser.OpenSubKey(
+                @"Software\Totem\vghd\System");
+            string? dataPath = system?.GetValue("DataPath") as string;
+            return string.IsNullOrWhiteSpace(dataPath) ? [] :
+                FullscreenSceneCatalog.Read(Path.Combine(dataPath, "scenes"));
+        }
+
+        private ApiResult StartRestApiFullscreenScene(ApiFullscreenSceneRequest body)
+        {
+            if (string.IsNullOrWhiteSpace(body.SceneId) || body.SceneId.Contains('\0'))
+                return Error(400, "Supply a sceneId from GET /api/v1/fullscreen/scenes.");
+            FullscreenSceneCatalog.Scene? scene = GetRestApiFullscreenScenes()
+                .FirstOrDefault(scene => scene.Id.Equals(body.SceneId,
+                    StringComparison.OrdinalIgnoreCase));
+            if (scene == null)
+                return Error(404, "The fullscreen scene is not installed.");
+            if (playbackBridgeClient?.IsConnected != true)
+                return Error(409, "The iStripper bridge is not connected.");
+            int result = playbackBridgeClient.CallUtf8(
+                "IStripperStartFullscreenScene", scene.Path.Replace('\\', '/'));
+            if (result == unchecked((int)0x80070005))
+                return Error(409, "Windows could not give iStripper foreground focus. The scene was not dispatched.");
+            return result < 0
+                ? Error(409, $"The fullscreen scene could not be started (0x{result:X8}).")
+                : new ApiResult(202, new { sceneId = scene.Id, status = "accepted" });
         }
 
         private bool IsRestApiFullscreenActive() =>

@@ -122,6 +122,8 @@ Calls are synchronous because `Open` uses `false`. Change the port in
 | `GET` | `/api/v1/status` | Get playback, player, and queue state. |
 | `GET` | `/api/v1/library` | Search the local card and clip library. |
 | `GET` | `/api/v1/queue` | Get manual and automatic queues. |
+| `GET` | `/api/v1/fullscreen/scenes` | List installed fullscreen scenes and their IDs. |
+| `POST` | `/api/v1/fullscreen/scenes/start` | Select and launch one installed fullscreen scene. |
 | `GET` | `/api/v1/fullscreen` | Get active fullscreen clips and iStripper's observed next queue. |
 | `GET` | `/api/v1/fullscreen/shader-data` | Read the current external fullscreen shader values and sequence. |
 | `PUT` | `/api/v1/fullscreen/shader-data` | Publish four external values to fullscreen shaders. |
@@ -136,6 +138,7 @@ Calls are synchronous because `Open` uses `false`. Change the port in
 | `DELETE` | `/api/v1/fullscreen/queue` | Clear iStripper's native next queue. |
 | `DELETE` | `/api/v1/fullscreen/queue/{index}` | Remove one native next-queue entry by its current index. |
 | `POST` | `/api/v1/fullscreen/play` | Replace fullscreen playback with a requested card or clip. |
+| `POST` | `/api/v1/fullscreen/stop` | Stop fullscreen and return to desktop playback. |
 | `POST` | `/api/v1/fullscreen/next` | Advance fullscreen to iStripper's next queued card. |
 | `POST` | `/api/v1/fullscreen/slots/{slotId}/next` | Advance one fullscreen slot. |
 | `POST` | `/api/v1/fullscreen/slots/{slotId}/play` | Replace one fullscreen slot with a requested card or clip. |
@@ -338,6 +341,41 @@ Invoke-RestMethod `
 Automatic rebuilding returns `409 Conflict` in API-only mode because that
 mode intentionally leaves automatic queueing to iStripper.
 
+## Select and start a fullscreen scene
+
+List installed scenes, then pass the returned `id` as `sceneId`:
+
+```powershell
+$scenes = (Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/scenes `
+  -Headers $headers).scenes
+$scenes | Format-Table id, name
+
+$body = @{ sceneId = "Midnight Gallery Club/Midnight Gallery Club.scn" } |
+  ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/scenes/start `
+  -Method Post -Headers $headers -ContentType application/json -Body $body
+```
+
+IDs identify `.scn` files within the installed iStripper scene folders. Only
+IDs returned by the catalogue are accepted; arbitrary paths cannot be launched.
+This uses iStripper's scene launch command to enter fullscreen or switch the
+running scene. It does not change the scene checkboxes saved in iStripper.
+
+The response is `202 Accepted` with `sceneId` and `status: "accepted"`.
+Launching happens on iStripper's UI thread; acceptance does not guarantee the
+scene has loaded or that compatible clips are available. The bridge automatically restores and focuses
+iStripper before starting fullscreen, including when another application is in
+front. If Windows denies that focus transfer, the API returns `409` without
+dispatching the scene. If ordinary activation is denied, the bridge sends a
+brief Alt press/release to unlock foreground activation. It skips that fallback
+while Alt, Ctrl, Shift, or a Windows key is held; release the keys and retry a
+`409` response. Switching an already running scene preserves focus. Query
+`GET /api/v1/fullscreen` for observed playback. Missing/empty IDs return `400`,
+unknown scenes return `404`, and a disconnected or unsupported bridge returns
+`409`. This requires iStripper's `ViewModelFullScreenScenes.launchScene(QString)`
+command (verified against the installed 2.5.0.0 metadata). Older versions that
+lack it return `409`. Restart iStripper after updating the native bridge.
+
 ## Fullscreen playback
 
 Fullscreen can render several clips at once. Query iStripper's logical scene
@@ -347,6 +385,21 @@ slots, source names, and current `CardSequencer` queue:
 Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen `
   -Headers $headers
 ```
+
+Stop fullscreen and return to iStripper's desktop playback:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:17871/api/v1/fullscreen/stop `
+  -Method Post -Headers $headers
+```
+
+No request body is needed. The endpoint uses iStripper's normal fullscreen
+shutdown, including its fade-out and desktop playback restoration. It returns
+`202 Accepted` with the observed fullscreen snapshot; shutdown is asynchronous.
+Poll `GET /api/v1/fullscreen` until `active` is `false`, then use
+`GET /api/v1/status` to observe desktop playback. Calling stop again while
+fullscreen is inactive is safe. A disconnected or unsupported bridge returns
+`409`.
 
 Advance globally, by slot ID, or by source:
 

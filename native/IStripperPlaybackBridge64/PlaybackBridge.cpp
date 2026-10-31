@@ -3700,6 +3700,141 @@ namespace
             empty, empty, empty, empty, empty) ? BridgeSuccess : E_FAIL;
     }
 
+    void* FindFullscreenScenesViewModel(const QtObjectFunctions& qt)
+    {
+        static std::uintptr_t vtableRva = 0;
+        static PVOID volatile cached = nullptr;
+        constexpr auto className = "ViewModel::ViewModelFullScreenScenes";
+        void* object = FindQtObject(qt, vtableRva, &cached,
+            ".?AVViewModelFullScreenScenes@ViewModel@@", className);
+        if (object != nullptr || vtableRva == 0) return object;
+
+        // The scene view model can be owned by a heap-allocated provider.
+        const void* vtable = ImageBase() + vtableRva;
+        const ULONGLONG deadline = GetTickCount64() + 1'000;
+        SYSTEM_INFO system = {};
+        GetSystemInfo(&system);
+        auto cursor = static_cast<unsigned char*>(system.lpMinimumApplicationAddress);
+        const auto maximum = static_cast<unsigned char*>(system.lpMaximumApplicationAddress);
+        while (cursor < maximum && GetTickCount64() < deadline)
+        {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(cursor, &memory, sizeof(memory)) != sizeof(memory)) break;
+            auto next = static_cast<unsigned char*>(memory.BaseAddress) + memory.RegionSize;
+            if (next <= cursor) break;
+            if (memory.State == MEM_COMMIT && memory.Type == MEM_PRIVATE &&
+                (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0 &&
+                (memory.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                    PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0)
+            {
+                auto slots = static_cast<void**>(memory.BaseAddress);
+                __try
+                {
+                    for (std::size_t i = 0; i < memory.RegionSize / sizeof(void*); ++i)
+                    {
+                        if ((i & 4095) == 0 && GetTickCount64() >= deadline) return nullptr;
+                        if (slots[i] == vtable && IsQtObject(qt, slots + i, vtable, className))
+                        {
+                            InterlockedExchangePointer(&cached, slots + i);
+                            return slots + i;
+                        }
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) { }
+            }
+            cursor = next;
+        }
+        return nullptr;
+    }
+
+    bool IsHostForeground()
+    {
+        DWORD process = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &process);
+        return process == GetCurrentProcessId();
+    }
+
+    HRESULT FocusHostWindowForFullscreen(HWND window)
+    {
+        DWORD process = 0;
+        const DWORD target = GetWindowThreadProcessId(window, &process);
+        if (window == nullptr || target == 0 || process != GetCurrentProcessId())
+            return E_INVALIDARG;
+        if (IsHostForeground()) return S_OK;
+        ShowWindowAsync(window, IsIconic(window) ? SW_RESTORE : SW_SHOW);
+        if (SetForegroundWindow(window) && IsHostForeground()) return S_OK;
+
+        // Windows unlocks foreground activation on an Alt gesture. Do not
+        // combine it with a modifier the user is physically holding.
+        for (int key : { VK_MENU, VK_CONTROL, VK_SHIFT, VK_LWIN, VK_RWIN })
+            if (GetAsyncKeyState(key) & 0x8000) return E_ACCESSDENIED;
+        INPUT input[2] = {};
+        input[0].type = input[1].type = INPUT_KEYBOARD;
+        input[0].ki.wVk = input[1].ki.wVk = VK_MENU;
+        input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        const UINT sent = SendInput(_countof(input), input, sizeof(INPUT));
+        if (sent != _countof(input))
+        {
+            if (sent == 1) SendInput(1, &input[1], sizeof(INPUT));
+            return E_ACCESSDENIED;
+        }
+        if (!SetForegroundWindow(window)) return E_ACCESSDENIED;
+        const ULONGLONG deadline = GetTickCount64() + 500;
+        while (!IsHostForeground() && GetTickCount64() < deadline) Sleep(10);
+        return IsHostForeground() ? S_OK : E_ACCESSDENIED;
+    }
+
+    HRESULT FocusHostForFullscreen()
+    {
+        if (IsHostForeground() || IsFullScreenModeActive()) return S_OK;
+        HWND window = nullptr;
+        EnumWindows([](HWND candidate, LPARAM context) -> BOOL
+        {
+            DWORD process = 0;
+            GetWindowThreadProcessId(candidate, &process);
+            wchar_t title[128] = {};
+            GetWindowTextW(candidate, title, _countof(title));
+            if (process != GetCurrentProcessId() || wcscmp(title, L"iStripper") != 0)
+                return TRUE;
+            *reinterpret_cast<HWND*>(context) = candidate;
+            return FALSE;
+        }, reinterpret_cast<LPARAM>(&window));
+        return window == nullptr ? HRESULT_FROM_WIN32(ERROR_NOT_FOUND) :
+            FocusHostWindowForFullscreen(window);
+    }
+
+    HRESULT StartFullscreenScene(const char* path)
+    {
+        const HMODULE core = QtCoreModule();
+        if (core == nullptr) return E_NOINTERFACE;
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(GetProcAddress(core,
+                "?inherits@QObject@@QEBA_NPEBD@Z")),
+            reinterpret_cast<QMetaInvoke>(GetProcAddress(core,
+                "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+                "VQGenericArgument@@222222222@Z"))
+        };
+        const auto construct = reinterpret_cast<QStringAnsiConstructor>(GetProcAddress(core,
+            "??0QString@@QEAA@PEBD@Z"));
+        const auto destroy = reinterpret_cast<QStringDestructor>(GetProcAddress(core,
+            "??1QString@@QEAA@XZ"));
+        if (qt.inherits == nullptr || qt.invoke == nullptr ||
+            construct == nullptr || destroy == nullptr) return E_NOINTERFACE;
+        void* object = FindFullscreenScenesViewModel(qt);
+        if (object == nullptr) return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        const HRESULT foreground = FocusHostForFullscreen();
+        if (FAILED(foreground)) return foreground;
+        QtByteArray scene;
+        construct(&scene, path);
+        const QtGenericArgument argument = { &scene, "QString" };
+        const QtGenericArgument empty = {};
+        // AutoConnection queues a copy on the view model's owning UI thread.
+        const bool invoked = qt.invoke(object, "launchScene", argument, empty,
+            empty, empty, empty, empty, empty, empty, empty, empty);
+        destroy(&scene);
+        return invoked ? BridgeSuccess : E_FAIL;
+    }
+
     HRESULT InvokeDesktopActorAction(const char* method)
     {
         const HMODULE core = QtCoreModule();
@@ -6848,27 +6983,43 @@ namespace
         }
 
         AnimationAlphaEncodingOffset = 0;
-        if (UsesQt6())
+        // Both Qt generations dispatch on the mask encoding; newer Qt5 builds
+        // fold the zero/8 checks into a single bit test.
+        for (std::size_t offset = 0; offset + 17 <= 512; offset++)
         {
-            // The alpha dispatch reads the encoding, tests zero, then skips
-            // decoding for encoding 8. Derive its field from that dispatch.
-            for (std::size_t offset = 0; offset + 17 <= 512; offset++)
+            const auto dispatch = prepare + offset;
+            std::size_t field = 0;
+            if (dispatch[0] == 0x8B && dispatch[1] == 0x88 &&
+                dispatch[6] == 0x85 && dispatch[7] == 0xC9 &&
+                dispatch[8] == 0x0F && dispatch[9] == 0x84 &&
+                dispatch[14] == 0x83 && dispatch[15] == 0xF9 &&
+                dispatch[16] == 8)
+                field = *reinterpret_cast<const std::uint32_t*>(dispatch + 2);
+            else if (dispatch[0] == 0xF7 && dispatch[1] == 0x80 &&
+                *reinterpret_cast<const std::uint32_t*>(dispatch + 6) == 0xFFFFFFF7 &&
+                dispatch[10] == 0x0F && dispatch[11] == 0x84)
             {
-                const auto dispatch = prepare + offset;
-                if (dispatch[0] == 0x8B && dispatch[1] == 0x88 &&
-                    dispatch[6] == 0x85 && dispatch[7] == 0xC9 &&
-                    dispatch[8] == 0x0F && dispatch[9] == 0x84 &&
-                    dispatch[14] == 0x83 && dispatch[15] == 0xF9 &&
-                    dispatch[16] == 8)
+                const auto tested = *reinterpret_cast<const std::uint32_t*>(dispatch + 2);
+                for (std::size_t next = offset + 16; next + 9 <= std::min(offset + 64, std::size_t(512)); ++next)
                 {
-                    const auto field = *reinterpret_cast<const std::uint32_t*>(
-                        dispatch + 2);
-                    if (field > AnimationTotalFramesOffset && field < 0x1000)
-                        AnimationAlphaEncodingOffset = field;
+                    const auto load = prepare + next;
+                    if (load[0] == 0x8B && load[1] == 0x82 &&
+                        *reinterpret_cast<const std::uint32_t*>(load + 2) == tested &&
+                        load[6] == 0x83 && load[7] == 0xF8 && load[8] == 3)
+                        field = tested;
                 }
             }
-            if (AnimationAlphaEncodingOffset == 0)
-                return false;
+            if (field > AnimationTotalFramesOffset && field < 0x1000)
+            {
+                if (AnimationAlphaEncodingOffset != 0 && AnimationAlphaEncodingOffset != field)
+                    return false;
+                AnimationAlphaEncodingOffset = field;
+            }
+        }
+        if (UsesQt6() && AnimationAlphaEncodingOffset == 0) return false;
+        AnimationAlphaStartupDecoderRva = 0;
+        if (AnimationAlphaEncodingOffset != 0)
+        {
             for (std::size_t offset = 6; offset + 31 <= 640; offset++)
             {
                 const auto guard = prepare + offset;
@@ -6888,7 +7039,7 @@ namespace
                 AnimationAlphaStartupFrameLimit = limit;
                 break;
             }
-            if (AnimationAlphaStartupDecoderRva == 0) return false;
+            if (UsesQt6() && AnimationAlphaStartupDecoderRva == 0) return false;
         }
 
         AnimationAlphaFrameOffset = 0;
@@ -7058,6 +7209,22 @@ namespace
         return resolved;
     }
 
+    std::size_t SoundCloseOutputOffset(const unsigned char* code, std::size_t size)
+    {
+        const unsigned char load[] = { 0x48, 0x8B, 0xD9, 0x33, 0xFF, 0x48, 0x8B, 0x49 };
+        const auto found = FindSequence(code, size, load, sizeof(load));
+        if (found == nullptr || found + 14 > code + size ||
+            found[9] != 0x48 || found[10] != 0x85 || found[11] != 0xC9 || found[12] != 0x74)
+            return 0;
+        const unsigned char offset = found[8];
+        if (offset == 0 || offset > 0x70 || offset % sizeof(void*) != 0)
+            return 0;
+        const unsigned char clear[] = { 0x48, 0x89, 0x7B, offset,
+            0x48, 0x89, 0x7B, static_cast<unsigned char>(offset + sizeof(void*)) };
+        return FindSequence(found + 14, code + size - found - 14, clear, sizeof(clear))
+            != nullptr ? offset : 0;
+    }
+
     bool ResolveAudioOffsets(void** videoVtable)
     {
         LONG mask = 0;
@@ -7177,6 +7344,26 @@ namespace
             if (soundClose != nullptr)
             {
                 break;
+            }
+        }
+        // New host builds inline sound cleanup in its destructor; the video destructor still calls close.
+        if (soundClose == nullptr)
+        {
+            for (std::size_t outer = 0; outer + 5 <= 128 && soundClose == nullptr; ++outer)
+            {
+                auto cleanup = DirectCallTarget(videoDestroy + outer);
+                if (cleanup == nullptr || !IsReadable(cleanup, 256)) continue;
+                for (std::size_t inner = 0; inner + 5 <= 256; ++inner)
+                {
+                    auto target = DirectCallTarget(cleanup + inner);
+                    if (target == nullptr || !IsReadable(target, 96)) continue;
+                    const auto field = SoundCloseOutputOffset(target, 96);
+                    if (field == 0) continue;
+                    soundClose = target;
+                    outputCheck = target;
+                    outputOffset = field;
+                    break;
+                }
             }
         }
         if (soundClose == nullptr || outputCheck == nullptr)
@@ -9620,7 +9807,7 @@ namespace
 
     bool PrimeAnimationAlphaIndex(void* animation, int currentFrame)
     {
-        if (!UsesQt6() || currentFrame > AnimationAlphaStartupFrameLimit) return true;
+        if (AnimationAlphaStartupDecoderRva == 0 || currentFrame > AnimationAlphaStartupFrameLimit) return true;
         auto bytes = static_cast<unsigned char*>(animation);
         auto info = *reinterpret_cast<unsigned char**>(bytes + AnimationInfoOffset);
         auto ssv = *reinterpret_cast<unsigned char**>(bytes + AnimationSsvOffset);
@@ -10203,7 +10390,7 @@ namespace
             animationBytes + AnimationAlphaFrameOffset);
         const int alphaGeneration = *reinterpret_cast<const int*>(
             animationBytes + AnimationAlphaGenerationOffset);
-        if (UsesQt6() && AnimationAlphaEncodingOffset != 0 &&
+        if (AnimationAlphaEncodingOffset != 0 &&
             IsReadable(info, AnimationAlphaEncodingOffset + sizeof(int)) &&
             *reinterpret_cast<const int*>(static_cast<unsigned char*>(info) +
                 AnimationAlphaEncodingOffset) == 7)
@@ -12775,6 +12962,21 @@ IStripperGetFullscreenShaderTexture(SIZE_T packetAddress)
     }
 }
 
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperStartFullscreenScene(SIZE_T requestAddress)
+{
+    char path[8192] = {};
+    if (!CopyFullScreenRequest(requestAddress, path, sizeof(path)))
+        return E_INVALIDARG;
+    return StartFullscreenScene(path);
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperFullscreenStop()
+{
+    return InvokeQtSingleton(g_fullScreenVtableRva, &g_fullScreenObject,
+        ".?AVFullScreen@@", "FullScreen", "scheduleStop");
+}
+
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperFullscreenNext()
 {
     return InvokeQtSingleton(g_fullScreenVtableRva, &g_fullScreenObject,
@@ -13009,7 +13211,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 153;
+    return 158;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

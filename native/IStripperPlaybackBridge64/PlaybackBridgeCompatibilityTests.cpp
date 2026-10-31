@@ -106,6 +106,14 @@ int wmain(int argc, wchar_t** argv)
         return 2;
     }
 
+    unsigned char soundClose[] = { 0x48, 0x8B, 0xD9, 0x33, 0xFF, 0x48, 0x8B, 0x49,
+        0x10, 0x48, 0x85, 0xC9, 0x74, 0x17, 0x48, 0x89, 0x7B, 0x10,
+        0x48, 0x89, 0x7B, 0x18 };
+    if (SoundCloseOutputOffset(soundClose, sizeof(soundClose)) != 0x10 ||
+        SoundCloseOutputOffset(soundClose, 13) != 0) return 46;
+    soundClose[21] = 0x20;
+    if (SoundCloseOutputOffset(soundClose, sizeof(soundClose)) != 0) return 46;
+
     // Consuming one slot must leave another slot's pending replacement intact.
     const unsigned char searched[] = { 1, 1, 2, 1, 2, 3 };
     const unsigned char pattern[] = { 1, 2, 3 };
@@ -206,6 +214,18 @@ int wmain(int argc, wchar_t** argv)
         if (IsFullScreenModeActive()) return 27;
     }
 
+    // A focus request must never act on a missing window or another process.
+    if (FocusHostWindowForFullscreen(nullptr) != E_INVALIDARG ||
+        FocusHostWindowForFullscreen(GetDesktopWindow()) != E_INVALIDARG)
+        return 35;
+
+    // Invalid bridge packets must fail before any live object discovery.
+    char unterminatedScene[8192];
+    std::memset(unterminatedScene, 'x', sizeof(unterminatedScene));
+    if (IStripperStartFullscreenScene(0) != E_INVALIDARG ||
+        IStripperStartFullscreenScene(reinterpret_cast<SIZE_T>(unterminatedScene)) != E_INVALIDARG)
+        return 33;
+
     // The exported string constructor/destructor own the runtime's allocation.
     using ConstructString = void(__fastcall*)(void*, const char*);
     using DestroyString = void(__fastcall*)(void*);
@@ -221,6 +241,12 @@ int wmain(int argc, wchar_t** argv)
     destroy(&text);
     if (decoded != "QuickPlayer compatibility")
         return 11;
+
+    const char unicodeScene[] = "C:/scenes/Sc\xC3\xA8ne/Sc\xC3\xA8ne.scn";
+    construct(&text, unicodeScene);
+    const std::string decodedScene = QtStringUtf8(&text);
+    destroy(&text);
+    if (decodedScene != unicodeScene) return 34;
 
     wchar_t desktopPath[1024] = {};
     construct(&text, "C:/models/e1234/e1234_01234.vghd");
@@ -417,7 +443,7 @@ int wmain(int argc, wchar_t** argv)
     strcpy_s(reinterpret_cast<char*>(desktopHeader), sizeof(desktopHeader), "HD3e1234_01234.vghd");
     if (!DesktopClipIdentity(desktopHeader, desktopPath) ||
         wcscmp(desktopPath, L"e1234\\e1234_01234.vghd") != 0) return 35;
-    if (UsesQt6())
+    if (AnimationAlphaEncodingOffset != 0)
     {
         std::vector<unsigned char> animation(AnimationInfoOffset + 8);
         unsigned char info[4096] = {};
@@ -430,6 +456,9 @@ int wmain(int argc, wchar_t** argv)
         *reinterpret_cast<int*>(info + AnimationTotalFramesOffset) = 120;
         *reinterpret_cast<int*>(info + AnimationAlphaEncodingOffset) = 7;
         ClearAlphaCheckpoints();
+        for (int sample = 0; sample < 8; ++sample)
+            if (ObserveDecodedAlphaProgress(animation.data(), 10)) return 47;
+        ResetSeekReadiness();
         for (int frame = 10; frame < 14; frame++)
             if (ObserveDecodedAlphaProgress(animation.data(), frame)) return 31;
         if (!ObserveDecodedAlphaProgress(animation.data(), 14) ||
@@ -449,6 +478,8 @@ int wmain(int argc, wchar_t** argv)
             if (ready != (frame == 4)) return 34;
         }
         ClearAlphaCheckpoints();
+        if (AnimationAlphaStartupDecoderRva != 0)
+        {
         unsigned char ssv[256] = {};
         void* vtable[10] = {};
         vtable[8] = reinterpret_cast<void*>(&TestStartupMask);
@@ -463,6 +494,9 @@ int wmain(int argc, wchar_t** argv)
         startupMaskReads = 0;
         if (!PrimeAnimationAlphaIndex(animation.data(), AnimationAlphaStartupFrameLimit + 1) ||
             startupMaskReads != 0) return 46;
+        }
+        std::printf("Independent/delta alpha readiness and startup checks passed (encoding field %zX).\n",
+            AnimationAlphaEncodingOffset);
     }
     if (!ResolveVideoOffsets())
     {
