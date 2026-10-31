@@ -150,7 +150,10 @@ public sealed class PlaybackBridgeClient : IDisposable
     }
 
     private static int CommandTimeout(string apiName) => apiName is
-        "IStripperDecodeTargetMilliseconds" or "IStripperPrepareFastForwardMilliseconds"
+        "IStripperDecodeTargetMilliseconds" or "IStripperPrepareFastForwardMilliseconds" or
+        "IStripperPrepareDressingRoomUrls" or "IStripperWarmDressingRoomCache" or
+        "IStripperRequestDressingRoomUrl" or "IStripperConsumeDressingRoomUrl"
+            or "IStripperRequestWetRoomUrl"
             ? 30_000 : 2_000;
 
     private static async Task<int> ExchangeAsync(Stream pipe, byte[] name,
@@ -433,6 +436,10 @@ public sealed class PlaybackBridgeClient : IDisposable
 
     internal static bool VerifyProtocol()
     {
+        if (CommandTimeout("IStripperRequestDressingRoomUrl") != 30_000 ||
+            CommandTimeout("IStripperConsumeDressingRoomUrl") != 30_000 ||
+            CommandTimeout("IStripperPlaybackPause") != 2_000)
+            return false;
         using var stream = new MemoryStream();
         using (var writer = new BinaryWriter(stream, Encoding.UTF8, true))
             WriteCommand(writer, Encoding.UTF8.GetBytes("Test"), 42);

@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 159;
+        private const int PlaybackBridgeVersion = 162;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -232,7 +232,7 @@ namespace IStripperQuickPlayer
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Name = "dressingRoomsTestButton",
             Padding = new Padding(6, 2, 6, 3),
-            Text = "Dressing Rooms (test)"
+            Text = "Dressing/Wet Room"
         };
         private readonly ToolStripMenuItem backupToolStripMenuItem =
             new("Backup QuickPlayer Data...");

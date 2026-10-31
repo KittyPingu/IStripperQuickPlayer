@@ -368,3 +368,91 @@ Logs confirmed native mode updates for both changed and repeated observations.
 The hotkey editor was visually inspected: all labels and shortcut fields were
 separated, with all rows and the OK button visible. Physical wheel input and the
 stable iStripper build were not exercised in this verification.
+
+## Dressing Room URL resolution (bridge v160, 2026-10-31)
+
+The current 2.5.0.0 beta keeps DressingRoomData.videoSource as a DOMAIN template.
+Refreshing all room objects did not produce the signed URL expected by the old
+memory search. Preparation and failed whole-process URL searches took 2.8-5.4
+seconds, exceeding the two-second command deadline reported by the user.
+
+The Qt6 path now looks up the selected unlocked room and calls the host's
+PlayableMedia.url(QString), the same helper used by VideoPIP.qml, for a fresh
+authorized URL. Object discovery resumes in 250 ms steps and reuses validated
+objects. It does not open a native preview. Older hosts without PlayableMedia
+retain the legacy URL path. QuickPlayer no longer prepares every room while the
+chooser is open; requests run off the UI thread, with a longer command budget
+for the legacy scans and a bounded wait for a result. Signed URLs remain redacted
+in diagnostics.
+
+Release/x64 C# and native builds, controls verification, and isolated native
+compatibility checks passed on installed 2.5.0.0. Native checks reject mismatched
+take names, unresolved templates, empty resources, and non-HTTP URLs. Live
+QuickPlayer chooser checks opened Georgia Take 4 and Toree Take 4 in the default
+MPC-HC player, which reported Playing with 16:14 and 15:51 durations respectively
+and advancing elapsed time. The warm Toree resolution took about 2 ms in the
+bridge log. A fresh restart of the final published v160 bridge also opened
+Samantha Joiner Take 1, showing Playing and advancing time with a 12:48 duration.
+The test media-player windows were closed and the previous custom show restored.
+Stable Qt5 and older Qt6 hosts were not live tested.
+
+## Dressing / Wet Rooms dialog (bridge v161, 2026-10-31)
+
+The Dressing/Wet Room button now opens separate Dressing Rooms and Wet Rooms
+tabs. Dressing rooms retain their local ownership cache. Wet-room metadata comes
+from staticWetRoomProperties.cds; ownership comes from the host's named
+wetRoomModel feed, including its joined rights. Discovery maintains separate
+model caches and scan cursors for the two room types. Wet-room playback uses
+the same PlayableMedia resolver and loopback relay as dressing-room playback,
+with ownership checked again before obtaining a stream URL. Empty lists disable
+Open; wet-room loading is asynchronous and closing the dialog cancels loading.
+
+Release/x64 C# and native builds, controls/catalogue verification, native
+compatibility checks, and diff whitespace checks passed. URL checks distinguish
+wet-room and dressing-room endpoints. After publishing and restarting both
+applications on installed iStripper 2.5.0.0, the dialog showed three owned
+dressing rooms and only Anabel Busty Take 1 in Wet Rooms. Its listed 8:20 duration
+comes from the host catalogue; the served media reported 6:38 in MPC-HC and
+played with advancing elapsed time. A subsequent Georgia Take 4 check from the
+Dressing Rooms tab also played normally. Test player windows were closed and
+the previously playing desktop clip restored. Wet rooms were not tested on
+stable or older iStripper versions.
+
+## Stable room resolver support (bridge v162, 2026-10-31)
+
+Installed stable iStripper 2.4.0.2 also provides PlayableMedia and the wet-room
+feed. The Qt6-only dispatch incorrectly sent its dressing-room requests to the
+legacy memory search and rejected wet-room requests. Dispatch now detects the
+resolver by capability on either Qt generation. Typed property reads use the
+shared QMetaObject API, and all room-related QString destinations are explicitly
+constructed before assignment, as required by Qt5.
+
+Release/x64 C# and native builds and isolated compatibility checks passed against
+the installed stable executable and Qt5 libraries. A new actual-QObject fixture
+verifies string property assignment, QVariant ownership and video URL reads,
+and rejection of unowned items. Published the self-contained application and
+restarted both applications to load v162. The dialog showed the three owned
+dressing rooms and Anabel Busty Take 1 as the only owned wet room; the wet room
+played in MPC-HC with advancing elapsed time. Georgia Take 4 also played through
+PlayableMedia on stable, showing 00:13 / 16:14 and Playing. Both test-player
+windows were closed; desktop playback remained running. The beta was not
+reinstalled for this follow-up.
+
+## Offline wet-room list cache (2026-10-31)
+
+QuickPlayer saves the fully refreshed owned wet-room list to its local
+wet-room-cache.json using the existing atomic persistence helper. The dialog
+shows the saved list immediately and refreshes it when opened while iStripper
+is attached. Failed or cancelled refreshes preserve the prior file; a completed
+refresh with no owned rooms replaces it with an empty list. Missing or damaged
+cache files do not prevent the dressing-room list from opening. The cache holds
+room details only; playback still obtains a fresh authorized URL from iStripper.
+
+Release/x64 build and controls verification passed, including cache round-trip,
+empty-list replacement, missing-file and malformed-file checks. A live refresh
+on stable iStripper saved Anabel Busty Take 1. After stopping iStripper and
+restarting QuickPlayer alone, the dialog still showed all three dressing rooms
+and the saved wet room. No iStripper process was running during that check.
+The dialog was closed and iStripper relaunched afterward. Buying a new room was
+not exercised; subsequent dialog opens refresh ownership through the same live
+query used before caching was added.

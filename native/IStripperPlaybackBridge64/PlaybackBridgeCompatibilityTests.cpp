@@ -106,6 +106,17 @@ int wmain(int argc, wchar_t** argv)
         return 2;
     }
 
+    // Reject a URL for a different take or an unresolved template.
+    const std::string roomUrl = "https://example.test/fileaccess/dressingroom/model/room_take1?jwt=test";
+    if (!IsDressingRoomStreamUrl(roomUrl, "room_take1") ||
+        !IsDressingRoomStreamUrl("https://example.test/fileaccess/wetroom/model/room_take1?jwt=test", "room_take1", true) ||
+        IsDressingRoomStreamUrl(roomUrl, "room_take1", true) ||
+        IsDressingRoomStreamUrl("https://example.test/fileaccess/wetroom/model/room_take1?jwt=test", "room_take1") ||
+        IsDressingRoomStreamUrl(roomUrl, "room_take10") ||
+        IsDressingRoomStreamUrl("http://DOMAIN/fileaccess/dressingroom/model/room_take1", "room_take1") ||
+        IsDressingRoomStreamUrl("file:///fileaccess/dressingroom/model/room_take1?jwt=test", "room_take1") ||
+        IsDressingRoomStreamUrl(roomUrl, "")) return 49;
+
     unsigned char soundClose[] = { 0x48, 0x8B, 0xD9, 0x33, 0xFF, 0x48, 0x8B, 0x49,
         0x10, 0x48, 0x85, 0xC9, 0x74, 0x17, 0x48, 0x89, 0x7B, 0x10,
         0x48, 0x89, 0x7B, 0x18 };
@@ -182,6 +193,54 @@ int wmain(int argc, wchar_t** argv)
     if (core == nullptr || LoadLibraryExW(fullPath, nullptr,
             DONT_RESOLVE_DLL_REFERENCES) == nullptr)
         return 9;
+
+    // Exercise actual Qt5/Qt6 string assignment and QVariant ownership reads.
+    {
+        const auto constructObject = reinterpret_cast<void(__fastcall*)(void*, void*)>(
+            GetProcAddress(core, "??0QObject@@QEAA@PEAV0@@Z"));
+        const auto destroyObject = reinterpret_cast<void(__fastcall*)(void*)>(
+            GetProcAddress(core, "??1QObject@@UEAA@XZ"));
+        const auto constructString = reinterpret_cast<QStringAnsiConstructor>(
+            GetProcAddress(core, "??0QString@@QEAA@PEBD@Z"));
+        const auto destroyString = reinterpret_cast<QStringDestructor>(
+            GetProcAddress(core, "??1QString@@QEAA@XZ"));
+        const auto setName = reinterpret_cast<void(__fastcall*)(void*, const void*)>(
+            GetProcAddress(core, "?setObjectName@QObject@@QEAAXAEBVQString@@@Z"));
+        const auto boolVariant = reinterpret_cast<void(__fastcall*)(void*, bool)>(
+            GetProcAddress(core, "??0QVariant@@QEAA@_N@Z"));
+        const auto stringVariant = reinterpret_cast<void(__fastcall*)(void*, const void*)>(
+            GetProcAddress(core, "??0QVariant@@QEAA@AEBVQString@@@Z"));
+        const auto destroyVariant = reinterpret_cast<void(__fastcall*)(void*)>(
+            GetProcAddress(core, "??1QVariant@@QEAA@XZ"));
+        const auto setProperty = reinterpret_cast<bool(__fastcall*)(void*, const char*, const void*)>(
+            GetProcAddress(core, "?setProperty@QObject@@QEAA_NPEBDAEBVQVariant@@@Z"));
+        if (!constructObject || !destroyObject || !constructString || !destroyString ||
+            !setName || !boolVariant || !stringVariant || !destroyVariant || !setProperty) return 50;
+        alignas(16) unsigned char object[512] = {}, owned[32] = {}, video[32] = {};
+        constructObject(object, nullptr);
+        QtByteArray name, observed;
+        constructString(&name, "https://example.test/fileaccess/wetroom/model/room_take1?jwt=test");
+        constructString(&observed, "previous");
+        setName(object, &name);
+        const bool propertyRead = ReadQtProperty(object, "objectName", &observed) &&
+            QtStringUtf8(&observed) == QtStringUtf8(&name);
+        boolVariant(owned, true);
+        stringVariant(video, &name);
+        setProperty(object, "owned", owned);
+        setProperty(object, "videoUrl", video);
+        const bool ownedRead = ReadWetRoomProperties(object, &observed) &&
+            QtStringUtf8(&observed) == QtStringUtf8(&name);
+        destroyVariant(owned);
+        boolVariant(owned, false);
+        setProperty(object, "owned", owned);
+        const bool rejected = !ReadWetRoomProperties(object, nullptr);
+        destroyVariant(owned);
+        destroyVariant(video);
+        destroyString(&observed);
+        destroyString(&name);
+        destroyObject(object);
+        if (!propertyRead || !ownedRead || !rejected) return 50;
+    }
 
     if (UsesQt6())
     {

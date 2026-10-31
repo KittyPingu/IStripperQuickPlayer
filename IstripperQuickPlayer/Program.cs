@@ -475,7 +475,8 @@ namespace IStripperQuickPlayer
                     Form1.CanUseLegacySeekFallback(1, unchecked((int)0x80004005)) ||
                     Form1.CanUseLegacySeekFallback(2, unchecked((int)0x80070032)) ||
                     !PlaybackBridgeClient.VerifyProtocol() ||
-                    !Hotkeys.VerifyLayout())
+                    !Hotkeys.VerifyLayout() || !Form1.VerifyWetRoomCatalogue() ||
+                    !Form1.VerifyWetRoomCache())
                 {
                     Environment.ExitCode = 1;
                     return;

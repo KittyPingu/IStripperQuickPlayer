@@ -126,6 +126,7 @@ namespace
     SRWLOCK g_dressingRoomObjectsLock = SRWLOCK_INIT;
     void* g_dressingRoomObjects[256] = {};
     LONG g_dressingRoomObjectCount = 0;
+    bool g_dressingRoomModernRequest = false;
 
     std::uintptr_t AnimationFrameRva = 0;
     std::uintptr_t MovieAdvanceRva = 0;
@@ -1285,6 +1286,8 @@ namespace
         std::uintptr_t& vtableRva, PVOID volatile* cachedObject,
         const char* decoratedClassName, const char* className);
     int RefreshDressingRoomDataUrls(const QtObjectFunctions& qt);
+    HRESULT RequestModernDressingRoomUrl(int dressingRoomId,
+        bool wetRoom = false, bool resolveUrl = true);
 
     int CaptureDressingRoomInput(AvformatOpenInput original, void** context,
         const char* url, void* format, void* options)
@@ -1546,6 +1549,13 @@ namespace
 
     HRESULT RequestDressingRoomUrl(int dressingRoomId)
     {
+        g_dressingRoomModernRequest = false;
+        const HRESULT modern = RequestModernDressingRoomUrl(dressingRoomId);
+        if (modern != E_NOINTERFACE)
+        {
+            g_dressingRoomModernRequest = true;
+            return modern;
+        }
         HRESULT hook = InstallDressingRoomUrlHook();
         if (FAILED(hook))
             return hook;
@@ -2090,7 +2100,7 @@ namespace
         return false;
     }
 
-    bool ReadQt6BoolProperty(void* object, const char* name, bool& value)
+    bool ReadQtProperty(void* object, const char* name, void* value)
     {
         const auto core = QtCoreModule();
         using MetaObject = const void*(__fastcall*)(const void*);
@@ -2102,7 +2112,7 @@ namespace
         const auto metacall = core == nullptr ? nullptr :
             reinterpret_cast<MetaCall>(GetProcAddress(core,
                 "?metacall@QMetaObject@@SAHPEAVQObject@@W4Call@1@HPEAPEAX@Z"));
-        if (!UsesQt6() || object == nullptr || indexOfProperty == nullptr ||
+        if (object == nullptr || indexOfProperty == nullptr ||
             metacall == nullptr || !IsReadable(object, sizeof(void*)))
             return false;
         const auto vtable = *reinterpret_cast<void***>(object);
@@ -2112,11 +2122,15 @@ namespace
         if (meta == nullptr) return false;
         const int index = indexOfProperty(meta, name);
         if (index < 0) return false;
-        // QMetaObject::ReadProperty writes the known bool property directly,
-        // avoiding version-dependent QVariant layouts.
-        value = false;
-        void* arguments[] = { &value, nullptr, nullptr, nullptr };
+        // Read into the property's known type, avoiding QVariant's private layout.
+        void* arguments[] = { value, nullptr, nullptr, nullptr };
         return metacall(object, 1, index, arguments) < 0;
+    }
+
+    bool ReadQt6BoolProperty(void* object, const char* name, bool& value)
+    {
+        value = false;
+        return ReadQtProperty(object, name, &value);
     }
 
     bool IsFullScreenModeActive()
@@ -2372,6 +2386,207 @@ namespace
                 "??4QString@@QEAAAEAV0@PEBD@Z"));
         if (value != nullptr && assign != nullptr)
             assign(value, text.c_str());
+    }
+
+    bool IsDressingRoomStreamUrl(const std::string& url,
+        const std::string& resource, bool wetRoom = false)
+    {
+        const std::string suffix = "/" + resource + "?";
+        return !resource.empty() && url.size() < 8192 &&
+            (url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0) &&
+            url.find(wetRoom ? "/fileaccess/wetroom/" : "/fileaccess/dressingroom/") != std::string::npos &&
+            url.find(suffix) != std::string::npos;
+    }
+
+    bool IsRoomModel(const QtObjectFunctions& qt, void* object,
+        const void* vtable, bool wetRoom)
+    {
+        if (!IsQtObject(qt, object, vtable, wetRoom ?
+                "Sdk::Feed::FeedListModel" : "ViewModel::DressingRoomModel")) return false;
+        if (!wetRoom) return true;
+        const auto construct = reinterpret_cast<QStringAnsiConstructor>(
+            GetProcAddress(QtCoreModule(), "??0QString@@QEAA@PEBD@Z"));
+        const auto destroy = reinterpret_cast<QStringDestructor>(
+            GetProcAddress(QtCoreModule(), "??1QString@@QEAA@XZ"));
+        if (construct == nullptr || destroy == nullptr) return false;
+        QtByteArray name;
+        construct(&name, "");
+        const bool matches = ReadQtProperty(object, "name", &name) &&
+            QtStringUtf8(&name) == "wetRoomModel";
+        destroy(&name);
+        return matches;
+    }
+
+    bool ReadWetRoomProperties(void* room, QtByteArray* source)
+    {
+        const auto core = QtCoreModule();
+        using Property = void*(__fastcall*)(const void*, void*, const char*);
+        const auto property = reinterpret_cast<Property>(GetProcAddress(core,
+            "?property@QObject@@QEBA?AVQVariant@@PEBD@Z"));
+        const auto toBool = reinterpret_cast<bool(__fastcall*)(const void*)>(GetProcAddress(core,
+            "?toBool@QVariant@@QEBA_NXZ"));
+        const auto toString = reinterpret_cast<void*(__fastcall*)(const void*, void*)>(GetProcAddress(core,
+            "?toString@QVariant@@QEBA?AVQString@@XZ"));
+        const auto destroy = reinterpret_cast<void(__fastcall*)(void*)>(GetProcAddress(core,
+            "??1QVariant@@QEAA@XZ"));
+        if (property == nullptr || toBool == nullptr || toString == nullptr || destroy == nullptr)
+            return false;
+        alignas(8) unsigned char owned[32] = {}, video[32] = {};
+        property(room, owned, "owned");
+        const bool unlocked = toBool(owned);
+        destroy(owned);
+        if (unlocked && source != nullptr)
+        {
+            property(room, video, "videoUrl");
+            toString(video, source);
+            destroy(video);
+        }
+        return unlocked;
+    }
+
+    void FindDressingRoomRequestObjects(const QtObjectFunctions& qt,
+        std::uintptr_t modelVtable, PVOID volatile* model,
+        std::uintptr_t mediaVtable, PVOID volatile* media, bool wetRoom)
+    {
+        if (modelVtable == 0 || mediaVtable == 0) return;
+        static std::uintptr_t cursors[2] = {};
+        auto& cursor = cursors[wetRoom ? 1 : 0];
+        const auto base = ImageBase();
+        const void* modelTable = base + modelVtable;
+        const void* mediaTable = base + mediaVtable;
+        const ULONGLONG deadline = GetTickCount64() + 250;
+        SYSTEM_INFO system = {};
+        GetSystemInfo(&system);
+        if (cursor == 0) cursor = reinterpret_cast<std::uintptr_t>(system.lpMinimumApplicationAddress);
+        while (cursor < reinterpret_cast<std::uintptr_t>(system.lpMaximumApplicationAddress) &&
+            GetTickCount64() < deadline)
+        {
+            MEMORY_BASIC_INFORMATION memory = {};
+            if (VirtualQuery(reinterpret_cast<void*>(cursor), &memory, sizeof(memory)) != sizeof(memory)) break;
+            const auto regionEnd = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+            const auto end = (std::min)(regionEnd, cursor + 1024 * 1024);
+            if (memory.State == MEM_COMMIT && memory.Type == MEM_PRIVATE &&
+                (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0 &&
+                (memory.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE)) != 0)
+            {
+                __try
+                {
+                    for (auto slot = reinterpret_cast<void**>(cursor);
+                        reinterpret_cast<std::uintptr_t>(slot + 1) <= end; ++slot)
+                    {
+                        if (*slot == modelTable && IsRoomModel(qt, slot, modelTable, wetRoom))
+                            InterlockedExchangePointer(model, slot);
+                        if (*slot == mediaTable && IsQtObject(qt, slot, mediaTable,
+                                "ViewModel::PlayableMedia"))
+                            InterlockedExchangePointer(media, slot);
+                        if (*model != nullptr && *media != nullptr) return;
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) { }
+                cursor = end;
+            }
+            else cursor = regionEnd;
+        }
+        if (cursor >= reinterpret_cast<std::uintptr_t>(system.lpMaximumApplicationAddress)) cursor = 0;
+    }
+
+    HRESULT RequestModernDressingRoomUrl(int dressingRoomId, bool wetRoom, bool resolveUrl)
+    {
+        const auto core = QtCoreModule();
+        const QtObjectFunctions qt = {
+            reinterpret_cast<QObjectInherits>(GetProcAddress(core,
+                "?inherits@QObject@@QEBA_NPEBD@Z")),
+            reinterpret_cast<QMetaInvoke>(GetProcAddress(core,
+                "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBD"
+                "VQGenericArgument@@222222222@Z"))
+        };
+        using InvokeReturn = bool(__cdecl*)(void*, const char*, int,
+            QtGenericArgument, QtGenericArgument, QtGenericArgument,
+            QtGenericArgument, QtGenericArgument, QtGenericArgument,
+            QtGenericArgument, QtGenericArgument, QtGenericArgument,
+            QtGenericArgument, QtGenericArgument);
+        const auto invokeReturn = reinterpret_cast<InvokeReturn>(GetProcAddress(core,
+            "?invokeMethod@QMetaObject@@SA_NPEAVQObject@@PEBDW4ConnectionType@Qt@@"
+            "VQGenericReturnArgument@@VQGenericArgument@@444444444@Z"));
+        using DestroyString = void(__fastcall*)(void*);
+        const auto destroy = reinterpret_cast<DestroyString>(GetProcAddress(core,
+            "??1QString@@QEAA@XZ"));
+        const auto construct = reinterpret_cast<QStringAnsiConstructor>(GetProcAddress(core,
+            "??0QString@@QEAA@PEBD@Z"));
+        if (qt.inherits == nullptr || qt.invoke == nullptr ||
+            invokeReturn == nullptr || destroy == nullptr || construct == nullptr) return E_NOINTERFACE;
+        static std::uintptr_t modelVtables[2] = {}, mediaVtable = 0;
+        static PVOID volatile modelObjects[2] = {}, mediaObject = nullptr;
+        auto& modelVtable = modelVtables[wetRoom ? 1 : 0];
+        auto& modelObject = modelObjects[wetRoom ? 1 : 0];
+        void* model = nullptr;
+        if (wetRoom)
+        {
+            if (modelVtable == 0) modelVtable = FindVtableRva(".?AVFeedListModel@Feed@Sdk@@");
+            void* cached = InterlockedCompareExchangePointer(&modelObject, nullptr, nullptr);
+            if (modelVtable != 0 && IsRoomModel(qt, cached, ImageBase() + modelVtable, true))
+                model = cached;
+            else InterlockedExchangePointer(&modelObject, nullptr);
+        }
+        else model = FindQtObject(qt, modelVtable, &modelObject,
+            ".?AVDressingRoomModel@ViewModel@@", "ViewModel::DressingRoomModel");
+        void* media = FindQtObject(qt, mediaVtable, &mediaObject,
+            ".?AVPlayableMedia@ViewModel@@", "ViewModel::PlayableMedia");
+        // Detect the resolver by capability; current Qt5 and Qt6 builds both provide it.
+        if (modelVtable == 0 || mediaVtable == 0) return E_NOINTERFACE;
+        if (model == nullptr || media == nullptr)
+        {
+            FindDressingRoomRequestObjects(qt, modelVtable, &modelObject,
+                mediaVtable, &mediaObject, wetRoom);
+            model = InterlockedCompareExchangePointer(&modelObject, nullptr, nullptr);
+            media = InterlockedCompareExchangePointer(&mediaObject, nullptr, nullptr);
+        }
+        DressingRoomLog("Modern room request model=%p playableMedia=%p", model, media);
+        if (model == nullptr || media == nullptr)
+            return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+        void* room = nullptr;
+        const QtGenericArgument empty = {};
+        const QtGenericArgument returned = { &room, wetRoom ? "Sdk::Feed::FeedItem*" : "DressingRoomData*" };
+        const QtGenericArgument id = { &dressingRoomId, "int" };
+        QtByteArray key;
+        construct(&key, wetRoom ? std::to_string(dressingRoomId).c_str() : "");
+        const QtGenericArgument argument = wetRoom ? QtGenericArgument{ &key, "QString" } : id;
+        // The getter only looks up an existing room; it does not mutate the model.
+        const bool found = invokeReturn(model, wetRoom ? "item" : "getDressingRoomDataByDrcId",
+            1, returned, argument, empty, empty, empty, empty, empty, empty, empty, empty, empty);
+        destroy(&key);
+        if (!found || room == nullptr) return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        bool unlocked = false;
+        QtByteArray source, resolved;
+        // Qt5 QString assignment requires a constructed destination, including empty strings.
+        if (resolveUrl) construct(&source, "");
+        if (wetRoom) unlocked = ReadWetRoomProperties(room, resolveUrl ? &source : nullptr);
+        else ReadQt6BoolProperty(room, "isUnlocked", unlocked);
+        if (!unlocked)
+        {
+            if (resolveUrl) destroy(&source);
+            return resolveUrl ? E_ACCESSDENIED : 0;
+        }
+        if (!resolveUrl) return BridgeSuccess;
+        if (!wetRoom && !ReadQtProperty(room, "videoSource", &source))
+        {
+            destroy(&source);
+            return E_NOINTERFACE;
+        }
+        // Use the same resolver as VideoPIP.qml, including the current user's token.
+        construct(&resolved, "");
+        const bool invoked = invokeReturn(media, "url", 1,
+            { &resolved, "QString" }, { &source, "QString" },
+            empty, empty, empty, empty, empty, empty, empty, empty, empty);
+        const std::string url = invoked ? QtStringUtf8(&resolved) : "";
+        destroy(&resolved);
+        destroy(&source);
+        AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+        const bool valid = IsDressingRoomStreamUrl(url, g_selectedDressingRoomResource, wetRoom);
+        g_dressingRoomUrl = valid ? url : "";
+        ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+        DressingRoomLog("PlayableMedia URL resolved invoked=%d valid=%d (redacted)", invoked, valid);
+        return valid ? BridgeSuccess : E_FAIL;
     }
 
     void PublishFullScreenState(bool discoverScene = false);
@@ -13080,6 +13295,7 @@ IStripperPrepareDressingRoomUrls()
 {
     __try
     {
+        if (FindVtableRva(".?AVPlayableMedia@ViewModel@@") != 0) return BridgeSuccess;
         DressingRoomLog("Background Dressing Room URL preparation started");
         const HRESULT requested = RequestDressingRoomUrl(1);
         if (FAILED(requested))
@@ -13148,6 +13364,36 @@ IStripperRequestDressingRoomUrl(SIZE_T packetAddress)
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperIsWetRoomOwned(SIZE_T id)
+{
+    __try
+    {
+        if (id == 0 || id > INT_MAX) return E_INVALIDARG;
+        return RequestModernDressingRoomUrl(static_cast<int>(id), true, false);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return E_UNEXPECTED; }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
+IStripperRequestWetRoomUrl(SIZE_T packetAddress)
+{
+    __try
+    {
+        const auto packet = reinterpret_cast<const int*>(packetAddress);
+        if (!IsReadable(packet, 8192) || *packet <= 0) return E_INVALIDARG;
+        const char* resource = reinterpret_cast<const char*>(packet) + 4;
+        if (strnlen_s(resource, 8188) == 8188) return E_INVALIDARG;
+        AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
+        g_selectedDressingRoomResource = resource;
+        g_dressingRoomUrl.clear();
+        ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+        g_dressingRoomModernRequest = true;
+        return RequestModernDressingRoomUrl(*packet, true);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return E_UNEXPECTED; }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI
 IStripperConsumeDressingRoomUrl(SIZE_T packetAddress)
 {
     __try
@@ -13159,6 +13405,11 @@ IStripperConsumeDressingRoomUrl(SIZE_T packetAddress)
         AcquireSRWLockExclusive(&g_dressingRoomUrlLock);
         if (g_dressingRoomUrl.empty())
         {
+            if (g_dressingRoomModernRequest)
+            {
+                ReleaseSRWLockExclusive(&g_dressingRoomUrlLock);
+                return HRESULT_FROM_WIN32(ERROR_NOT_READY);
+            }
             char selected[256] = {};
             strncpy_s(selected, g_selectedDressingRoomResource.c_str(),
                 _TRUNCATE);
@@ -13199,7 +13450,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 159;
+    return 162;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
