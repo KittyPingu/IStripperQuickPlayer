@@ -5359,20 +5359,8 @@ namespace
 
     HRESULT SetPlayerLarge(bool large)
     {
-        DWORD mode = 0;
-        DWORD modeSize = sizeof(mode);
-        const LSTATUS modeResult = RegGetValueW(HKEY_CURRENT_USER,
-            L"Software\\Totem\\vghd\\player", L"playingMode",
-            RRF_RT_REG_DWORD, nullptr, &mode, &modeSize);
-        if (modeResult != ERROR_SUCCESS)
-        {
-            return HRESULT_FROM_WIN32(modeResult);
-        }
-        if (mode == (large ? 1u : 2u))
-        {
-            return BridgeSuccess;
-        }
-
+        // LiveActor already guards its current size. The persisted mode can
+        // lag behind the live actor after menu changes or host reconnection.
         return InvokeDesktopActorAction(large ? "doLarge" : "doSmall");
     }
 
@@ -13211,7 +13199,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 158;
+    return 159;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

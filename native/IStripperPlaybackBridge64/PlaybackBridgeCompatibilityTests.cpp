@@ -214,6 +214,17 @@ int wmain(int argc, wchar_t** argv)
         if (IsFullScreenModeActive()) return 27;
     }
 
+    // Mode observations must refresh wheel routing without losing same-mode sizes.
+    g_playerMode = 2;
+    g_playerLargeSizePercent = 120;
+    if (SetPlayerMode(1) < 0 || g_playerMode != 1 || g_playerLargeSizePercent != 0)
+        return 48;
+    g_playerLargeSizePercent = 120;
+    if (SetPlayerMode(1) < 0 || g_playerLargeSizePercent != 120 ||
+        SetPlayerMode(0) != E_INVALIDARG || g_playerMode != 1)
+        return 48;
+    SetPlayerMode(2);
+
     // A focus request must never act on a missing window or another process.
     if (FocusHostWindowForFullscreen(nullptr) != E_INVALIDARG ||
         FocusHostWindowForFullscreen(GetDesktopWindow()) != E_INVALIDARG)

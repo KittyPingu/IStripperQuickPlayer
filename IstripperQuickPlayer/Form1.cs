@@ -50,7 +50,7 @@ namespace IStripperQuickPlayer
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern uint RegisterWindowMessage(string message);
 
-        private const int PlaybackBridgeVersion = 158;
+        private const int PlaybackBridgeVersion = 159;
         private const int PlaybackTimelineIntervalMilliseconds = 500;
         private const int PlaybackIdleIntervalMilliseconds = 5_000;
         private const int PlaybackTransitionIntervalMilliseconds = 100;
@@ -3492,6 +3492,10 @@ namespace IStripperQuickPlayer
                             $"Player click-through setup failed (0x{clickThroughResult:X8}).",
                             clickThroughResult);
                     }
+                    int observedMode = ReadRegistryInteger(
+                        @"Software\Totem\vghd\player", "playingMode");
+                    if (observedMode is >= 1 and <= 3)
+                        Volatile.Write(ref playerMode, observedMode);
                     int playerModeResult = SetVghdPlayerMode(
                         Volatile.Read(ref playerMode));
                     if (playerModeResult < 0)
@@ -4713,10 +4717,14 @@ namespace IStripperQuickPlayer
                     DesktopPlaybackLog.Record("mode-notification", new { mode, previousMode,
                         persistedMode = ReadRegistryInteger(@"Software\Totem\vghd\player", "playingMode"),
                         customIstripperSuspended, customPlayer = customPlayer != null });
-                    // The host repeats this value; resizing again can recreate its current movie.
-                    if (!DesktopPlaybackModeChanged(previousMode, (int)mode)) return false;
                     BeginInvoke((Action)(() =>
                     {
+                        // Keep the wheel's native mode current even when the hotkey
+                        // already updated the UI's cached mode before this observation.
+                        if (playerLockBridgeLoaded)
+                            SetVghdPlayerMode((int)mode);
+                        // The host repeats this value; resizing again can recreate its current movie.
+                        if (!DesktopPlaybackModeChanged(previousMode, (int)mode)) return;
                         if (mode == 3) desktopPlayback.HostModeLeavingDesktop();
                         QueueConfiguredPlayerSize(mode: (int)mode);
                     }));

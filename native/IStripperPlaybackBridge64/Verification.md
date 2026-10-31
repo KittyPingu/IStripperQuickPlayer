@@ -346,3 +346,25 @@ operation again. No rewind-specific change was made, and no further playback
 commands or restarts were issued after the user began recovering playback.
 Near-start rewind remains an intermittent issue requiring separate diagnosis;
 these observations do not establish a successful live stable-version seek test.
+
+## Player size synchronization and hotkey layout (bridge v159, 2026-10-31)
+
+The bridge now invokes LiveActor's guarded small/large actions without trusting
+the persisted playingMode value as proof of the actor's current size. QuickPlayer
+initializes the bridge from the observed mode and forwards every valid mode
+notification, including repeats, so native wheel resizing uses the current mode.
+Repeated notifications still skip geometry reapplication.
+
+Release/x64 C# and native builds passed. The isolated compatibility checks passed
+against installed iStripper 2.5.0.0, including mode changes, repeated-mode size
+preservation, and invalid-mode rejection. The controls verification passed with
+hotkey layout checks at 9, 12, and 16 point fonts.
+
+Published the self-contained application to the required net10.0-windows output
+and restarted both applications with user approval. Live API small/large actions
+and the actual Ctrl+Alt+Down / Ctrl+Alt+Up shortcuts switched the same playing
+clip between 1536x811 and 3922x2071. Playback continued and large mode was restored.
+Logs confirmed native mode updates for both changed and repeated observations.
+The hotkey editor was visually inspected: all labels and shortcut fields were
+separated, with all rows and the OK button visible. Physical wheel input and the
+stable iStripper build were not exercised in this verification.

@@ -16,8 +16,78 @@ namespace IStripperQuickPlayer
         {
             InitializeComponent();
             SetSkin();
+            LayoutHotkeyRows();
             _ = TooltipManager.Attach(this,
                 Properties.Settings.Default.TooltipInitialDelay);
+        }
+
+        private void LayoutHotkeyRows()
+        {
+            (CheckBox Label, TextBox Shortcut)[] rows =
+            [
+                (chkNextClip, txtNextClip), (chkNextCard, txtNextCard),
+                (chkToggleLock, txtToggleLock), (chkPause, txtPause),
+                (chkRewind, txtRewind), (chkFastForward, txtFastForward),
+                (chkRestartClip, txtRestartClip), (chkLargePlayer, txtLargePlayer),
+                (chkSmallPlayer, txtSmallPlayer), (chkNowPlayingInfo, txtNowPlayingInfo),
+                (chkPanic, txtPanic), (chkToggleHdr, txtToggleHdr),
+                (chkToggleVsr, txtToggleVsr),
+                (chkToggleAlphaAntialiasing, txtToggleAlphaAntialiasing)
+            ];
+            SuspendLayout();
+            Controls.Clear();
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            Padding = new Padding(LogicalToDeviceUnits(20));
+            TableLayoutPanel table = new()
+            {
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2, RowCount = rows.Length + 1,
+                Dock = DockStyle.Fill, Margin = Padding.Empty
+            };
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            for (int row = 0; row < rows.Length; row++)
+            {
+                var (label, shortcut) = rows[row];
+                label.Anchor = AnchorStyles.Left;
+                label.Margin = new Padding(0, LogicalToDeviceUnits(6), LogicalToDeviceUnits(18), LogicalToDeviceUnits(6));
+                shortcut.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+                shortcut.Width = LogicalToDeviceUnits(240);
+                shortcut.Margin = new Padding(0, LogicalToDeviceUnits(6), 0, LogicalToDeviceUnits(6));
+                table.Controls.Add(label, 0, row);
+                table.Controls.Add(shortcut, 1, row);
+            }
+            cmdOK.Anchor = AnchorStyles.Right;
+            cmdOK.Margin = new Padding(0, LogicalToDeviceUnits(12), 0, 0);
+            table.Controls.Add(cmdOK, 1, rows.Length);
+            AcceptButton = cmdOK;
+            Controls.Add(table);
+            ResumeLayout(true);
+        }
+
+        internal static bool VerifyLayout()
+        {
+            foreach (float size in new[] { 9f, 12f, 16f })
+            {
+                using Hotkeys dialog = new();
+                using Font font = new(dialog.Font.FontFamily, size);
+                dialog.Font = font;
+                dialog.CreateControl();
+                dialog.ClientSize = dialog.GetPreferredSize(Size.Empty);
+                dialog.PerformLayout();
+                TableLayoutPanel table = dialog.Controls.OfType<TableLayoutPanel>().Single();
+                table.PerformLayout();
+                for (int row = 0; row < 14; row++)
+                {
+                    Control label = table.GetControlFromPosition(0, row)!;
+                    Control shortcut = table.GetControlFromPosition(1, row)!;
+                    if (label.Right + label.Margin.Right > shortcut.Left ||
+                        shortcut.Width < 100 || shortcut.Right > table.ClientSize.Width)
+                        return false;
+                }
+            }
+            return true;
         }
 
         private void SetSkin()
