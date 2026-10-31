@@ -131,7 +131,9 @@ public sealed class PlaybackBridgeClient : IDisposable
                 if (remaining == 0) throw new TimeoutException("The command deadline expired before transport.");
                 bool diagnostic = !apiName.StartsWith("IStripperGet", StringComparison.Ordinal) &&
                     !apiName.StartsWith("IStripperIs", StringComparison.Ordinal) &&
-                    apiName != "IStripperCaptureAlphaCheckpoint";
+                    apiName != "IStripperCaptureAlphaCheckpoint" &&
+                    apiName != "IStripperPlaybackBridgeVersion" &&
+                    apiName != "IStripperDiscoverMovie";
                 if (diagnostic) DesktopPlaybackLog.Record("bridge-command-start", new { processId, apiName, parameter });
                 int result = ExchangeAsync(commandPipe, name, parameter,
                     remaining, lifetime.Token).GetAwaiter().GetResult();

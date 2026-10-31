@@ -2,6 +2,69 @@
 #include "PlaybackBridge.cpp"
 
 int __cdecl TestScale() { return 777; }
+const void* slowSceneCandidate = nullptr;
+ULONGLONG sceneLookupDeadline = 0;
+bool __cdecl TestSceneInherits(const void* object, const char* className)
+{
+    if (object == slowSceneCandidate)
+    {
+        while (GetTickCount64() < sceneLookupDeadline) Sleep(1);
+        return false;
+    }
+    return std::strcmp(className, "ViewModel::ViewModelFullScreenScenes") == 0;
+}
+
+bool VerifySceneLookupResume()
+{
+    const auto slots = static_cast<void**>(VirtualAlloc(nullptr, 256 * 1024,
+        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    if (slots == nullptr) return false;
+    const void* vtable = &sceneLookupDeadline;
+    const auto candidate = [&](std::size_t index)
+    {
+        slots[index] = const_cast<void*>(vtable);
+        slots[index + 1] = slots + index + 2;
+        slots[index + 2] = slots + index;
+    };
+    candidate(0);
+    candidate(12'000);
+    slowSceneCandidate = slots;
+    const QtObjectFunctions qt = { &TestSceneInherits, nullptr };
+    const auto begin = reinterpret_cast<std::uintptr_t>(slots);
+    const auto end = begin + 256 * 1024;
+    auto cursor = begin;
+    void* object = reinterpret_cast<void*>(1);
+    sceneLookupDeadline = GetTickCount64() + 20;
+    const HRESULT first = ScanFullscreenScenesViewModel(qt, vtable, cursor,
+        end, sceneLookupDeadline, object);
+    bool passed = first == HRESULT_FROM_WIN32(ERROR_TIMEOUT) && object == nullptr &&
+        cursor > begin && cursor < reinterpret_cast<std::uintptr_t>(slots + 12'000);
+    passed = passed && ScanFullscreenScenesViewModel(qt, vtable, cursor,
+        end, GetTickCount64() + 1'000, object) == S_OK && object == slots + 12'000;
+    // A destroyed controller must be rejected and its replacement discovered.
+    slots[12'000] = nullptr;
+    candidate(20'000);
+    passed = passed && !IsQtObject(qt, object, vtable,
+        "ViewModel::ViewModelFullScreenScenes") &&
+        ScanFullscreenScenesViewModel(qt, vtable, cursor, end,
+            GetTickCount64() + 1'000, object) == S_OK && object == slots + 20'000;
+    slots[20'000] = nullptr;
+    passed = passed && ScanFullscreenScenesViewModel(qt, vtable, cursor, end,
+        GetTickCount64() + 1'000, object) == HRESULT_FROM_WIN32(ERROR_NOT_FOUND) &&
+        object == nullptr && cursor == end;
+    // A wrap to the beginning can find a controller allocated below the old one.
+    candidate(100);
+    cursor = begin;
+    passed = passed && ScanFullscreenScenesViewModel(qt, vtable, cursor, end,
+        GetTickCount64() + 1'000, object) == S_OK && object == slots + 100;
+    const auto saved = cursor;
+    passed = passed && ScanFullscreenScenesViewModel(qt, vtable, cursor, end,
+        0, object) == HRESULT_FROM_WIN32(ERROR_TIMEOUT) && cursor == saved && object == nullptr;
+    VirtualFree(slots, 0, MEM_RELEASE);
+    slowSceneCandidate = nullptr;
+    return passed;
+}
+
 int startupMaskReads = 0;
 void* __fastcall TestStartupMask(void*, int frame)
 {
@@ -100,6 +163,13 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (!VerifySceneLookupResume())
+    {
+        std::fprintf(stderr, "Fullscreen controller lookup resume checks failed\n");
+        return 51;
+    }
+    if (argc == 2 && wcscmp(argv[1], L"--verify-fullscreen-controller-lookup") == 0)
+        return 0;
     if (argc != 2)
     {
         std::fprintf(stderr, "Usage: PlaybackBridgeCompatibilityTests <vghd.exe>\n");
@@ -288,6 +358,9 @@ int wmain(int argc, wchar_t** argv)
     if (FocusHostWindowForFullscreen(nullptr) != E_INVALIDARG ||
         FocusHostWindowForFullscreen(GetDesktopWindow()) != E_INVALIDARG)
         return 35;
+    if (!IsHostForeground() &&
+        FocusHostForFullscreen() != HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE))
+        return 51;
 
     // Invalid bridge packets must fail before any live object discovery.
     char unterminatedScene[8192];

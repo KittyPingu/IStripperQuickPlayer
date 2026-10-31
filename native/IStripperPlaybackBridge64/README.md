@@ -98,6 +98,10 @@ executes the Qt6 seek thunks against synthetic frames. It does not inject
 into the running iStripper process. Exit code zero is required. Run it again
 after switching installations to verify the actual 2.4.x binary as well.
 
+For the isolated fullscreen controller timeout/resume and replacement checks,
+run the same test executable with `--verify-fullscreen-controller-lookup`
+instead of a host executable path. This check requires no iStripper installation.
+
 Live verification remains separate: restart iStripper to unload a previously
 pinned bridge before replacing the DLL, then test playback, seeking, audio,
 fullscreen slot replacement and queue edits through QuickPlayer and its API.

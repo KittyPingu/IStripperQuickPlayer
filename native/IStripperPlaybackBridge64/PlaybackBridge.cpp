@@ -3915,43 +3915,42 @@ namespace
             empty, empty, empty, empty, empty) ? BridgeSuccess : E_FAIL;
     }
 
-    void* FindFullscreenScenesViewModel(const QtObjectFunctions& qt)
+    HRESULT ScanFullscreenScenesViewModel(const QtObjectFunctions& qt,
+        const void* vtable, std::uintptr_t& cursor, std::uintptr_t maximum,
+        ULONGLONG deadline, void*& object)
     {
-        static std::uintptr_t vtableRva = 0;
-        static PVOID volatile cached = nullptr;
         constexpr auto className = "ViewModel::ViewModelFullScreenScenes";
-        void* object = FindQtObject(qt, vtableRva, &cached,
-            ".?AVViewModelFullScreenScenes@ViewModel@@", className);
-        if (object != nullptr || vtableRva == 0) return object;
-
-        // The scene view model can be owned by a heap-allocated provider.
-        const void* vtable = ImageBase() + vtableRva;
-        const ULONGLONG deadline = GetTickCount64() + 1'000;
-        SYSTEM_INFO system = {};
-        GetSystemInfo(&system);
-        auto cursor = static_cast<unsigned char*>(system.lpMinimumApplicationAddress);
-        const auto maximum = static_cast<unsigned char*>(system.lpMaximumApplicationAddress);
-        while (cursor < maximum && GetTickCount64() < deadline)
+        object = nullptr;
+        while (cursor < maximum)
         {
+            if (GetTickCount64() >= deadline) return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
             MEMORY_BASIC_INFORMATION memory = {};
-            if (VirtualQuery(cursor, &memory, sizeof(memory)) != sizeof(memory)) break;
-            auto next = static_cast<unsigned char*>(memory.BaseAddress) + memory.RegionSize;
-            if (next <= cursor) break;
+            if (VirtualQuery(reinterpret_cast<void*>(cursor), &memory, sizeof(memory)) != sizeof(memory))
+                return HRESULT_FROM_WIN32(GetLastError());
+            const auto end = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+            const auto next = (std::min)(end, maximum);
+            if (next <= cursor) return E_UNEXPECTED;
             if (memory.State == MEM_COMMIT && memory.Type == MEM_PRIVATE &&
                 (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0 &&
                 (memory.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
                     PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0)
             {
-                auto slots = static_cast<void**>(memory.BaseAddress);
+                auto slots = reinterpret_cast<void**>(cursor);
+                const auto count = (next - cursor) / sizeof(void*);
                 __try
                 {
-                    for (std::size_t i = 0; i < memory.RegionSize / sizeof(void*); ++i)
+                    for (std::size_t i = 0; i < count; ++i)
                     {
-                        if ((i & 4095) == 0 && GetTickCount64() >= deadline) return nullptr;
+                        if ((i & 4095) == 0 && GetTickCount64() >= deadline)
+                        {
+                            cursor = reinterpret_cast<std::uintptr_t>(slots + i);
+                            return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+                        }
                         if (slots[i] == vtable && IsQtObject(qt, slots + i, vtable, className))
                         {
-                            InterlockedExchangePointer(&cached, slots + i);
-                            return slots + i;
+                            object = slots + i;
+                            cursor = reinterpret_cast<std::uintptr_t>(object);
+                            return S_OK;
                         }
                     }
                 }
@@ -3959,7 +3958,60 @@ namespace
             }
             cursor = next;
         }
-        return nullptr;
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    }
+
+    HRESULT FindFullscreenScenesViewModel(const QtObjectFunctions& qt, void*& object)
+    {
+        const ULONGLONG started = GetTickCount64();
+        static std::mutex mutex;
+        const std::lock_guard<std::mutex> lock(mutex);
+        static std::uintptr_t vtableRva = 0, cursor = 0;
+        static PVOID volatile cached = nullptr;
+        constexpr auto className = "ViewModel::ViewModelFullScreenScenes";
+        const auto cachedBefore = InterlockedCompareExchangePointer(&cached, nullptr, nullptr);
+        auto searchStart = cursor;
+        bool wrapped = false;
+        wchar_t diagnostic[512] = {};
+        swprintf_s(diagnostic,
+            L"scene-controller lookup-start tick=%llu hostPid=%lu thread=%lu cached=%p resume=0x%llx vtableRva=0x%llx",
+            started, GetCurrentProcessId(), GetCurrentThreadId(), cachedBefore, cursor, vtableRva);
+        QueueBridgeDiagnostic(diagnostic, L"desktop-native-scene-controller-start");
+        object = FindQtObject(qt, vtableRva, &cached,
+            ".?AVViewModelFullScreenScenes@ViewModel@@", className);
+        const wchar_t* cacheState = cachedBefore == nullptr ? L"miss" :
+            object == cachedBefore ? L"hit" : L"stale";
+        const auto finish = [&](HRESULT result, const wchar_t* source)
+        {
+            swprintf_s(diagnostic,
+                L"scene-controller lookup-result tick=%llu hostPid=%lu thread=%lu durationMs=%llu cache=%ls source=%ls searchStart=0x%llx resume=0x%llx wrapped=%d object=%p vtableRva=0x%llx result=0x%08lX",
+                started, GetCurrentProcessId(), GetCurrentThreadId(), GetTickCount64() - started,
+                cacheState, source, searchStart, cursor, wrapped, object, vtableRva, result);
+            QueueBridgeDiagnostic(diagnostic, L"desktop-native-scene-controller-result");
+            return result;
+        };
+        if (object != nullptr) return finish(S_OK, cachedBefore == object ? L"cache" : L"image");
+        if (vtableRva == 0) return finish(E_NOINTERFACE, L"unsupported");
+
+        SYSTEM_INFO system = {};
+        GetSystemInfo(&system);
+        const auto minimum = reinterpret_cast<std::uintptr_t>(system.lpMinimumApplicationAddress);
+        const auto maximum = reinterpret_cast<std::uintptr_t>(system.lpMaximumApplicationAddress);
+        if (cursor == 0) cursor = minimum;
+        const auto start = cursor;
+        searchStart = start;
+        const auto vtable = ImageBase() + vtableRva;
+        const ULONGLONG deadline = GetTickCount64() + 1'000;
+        // Resume inside the region on timeout; restarting at zero can starve discovery forever.
+        HRESULT result = ScanFullscreenScenesViewModel(qt, vtable, cursor, maximum, deadline, object);
+        if (result == HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
+        {
+            wrapped = true;
+            cursor = minimum;
+            result = ScanFullscreenScenesViewModel(qt, vtable, cursor, start, deadline, object);
+        }
+        if (object != nullptr) InterlockedExchangePointer(&cached, object);
+        return finish(result, L"heap");
     }
 
     bool IsHostForeground()
@@ -4014,7 +4066,7 @@ namespace
             *reinterpret_cast<HWND*>(context) = candidate;
             return FALSE;
         }, reinterpret_cast<LPARAM>(&window));
-        return window == nullptr ? HRESULT_FROM_WIN32(ERROR_NOT_FOUND) :
+        return window == nullptr ? HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE) :
             FocusHostWindowForFullscreen(window);
     }
 
@@ -4035,8 +4087,9 @@ namespace
             "??1QString@@QEAA@XZ"));
         if (qt.inherits == nullptr || qt.invoke == nullptr ||
             construct == nullptr || destroy == nullptr) return E_NOINTERFACE;
-        void* object = FindFullscreenScenesViewModel(qt);
-        if (object == nullptr) return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        void* object = nullptr;
+        const HRESULT lookup = FindFullscreenScenesViewModel(qt, object);
+        if (FAILED(lookup)) return lookup;
         const HRESULT foreground = FocusHostForFullscreen();
         if (FAILED(foreground)) return foreground;
         QtByteArray scene;
@@ -13450,7 +13503,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 162;
+    return 164;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

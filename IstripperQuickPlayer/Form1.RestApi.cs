@@ -808,6 +808,12 @@ namespace IStripperQuickPlayer
                 "IStripperStartFullscreenScene", scene.Path.Replace('\\', '/'));
             if (result == unchecked((int)0x80070005))
                 return Error(409, "Windows could not give iStripper foreground focus. The scene was not dispatched.");
+            if (result == unchecked((int)0x800705B4))
+                return Error(409, "The fullscreen scene controller lookup timed out (0x800705B4). Retry to continue the search. The scene was not dispatched.");
+            if (result == unchecked((int)0x80070490))
+                return Error(409, "The fullscreen scene controller was not found (0x80070490). The scene was not dispatched.");
+            if (result == unchecked((int)0x80070578))
+                return Error(409, "The iStripper main window was not found (0x80070578). Open the iStripper interface and retry. The scene was not dispatched.");
             return result < 0
                 ? Error(409, $"The fullscreen scene could not be started (0x{result:X8}).")
                 : new ApiResult(202, new { sceneId = scene.Id, status = "accepted" });

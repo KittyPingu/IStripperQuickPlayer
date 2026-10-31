@@ -1,5 +1,70 @@
 # Qt5 / Qt6 compatibility verification
 
+## Managed bridge attachment and quiet diagnostics (2026-10-31)
+
+Corrected QuickPlayer's expected bridge version from 162 to the published native
+164. The mismatch returned from ConfigurePlaybackHooks before StartRegistryHook,
+so controller diagnostics had no event connection and attachment retried. Native
+and managed versions now match. Version/movie-discovery polling no longer emits
+command start/result pairs. Queue-owner clearing logs only when an affected owner
+exists and omits its stack trace; unchanged desktop snapshots no longer emit a
+ten-second heartbeat. Playback polling and queue behavior are unchanged.
+
+Release/x64 build, --verify-controls, --verify-fullscreen-scenes, and whitespace
+checks passed. Published self-contained win-x64 to the required directory and
+relaunched that exact executable; the native bridge hash matched the build.
+Live API requests on installed iStripper produced controller start/result events
+in desktop-playback.jsonl: first lookup timed out at 1078 ms, a retry resumed at
+the saved address and found the controller in 296 ms, and a third request logged
+cache=hit/source=cache/durationMs=0. Successful launch requests returned 202;
+fullscreen stop was requested afterward to restore the initial desktop mode.
+Post-publish observations contained zero version/discovery polling records and
+zero queue-owner-cleared records for the new process. Playback transitions and
+explicit commands continued to log normally; the observation interval included
+active playback, so it was not a zero-write idle measurement.
+
+## Fullscreen controller search diagnostics (bridge v164, 2026-10-31)
+
+Controller lookup now queues start/result diagnostics through the existing
+bridge event logger into desktop-playback.jsonl. Each result includes elapsed
+milliseconds, cache hit/miss/stale status, discovery source, search start and
+next resume addresses, wraparound, object/vtable addresses, and HRESULT. Host
+PID, thread, and start tick correlate the events. All lookup return paths log a
+result; an interrupted lookup leaves its start event. Existing event coalescing
+and log rotation apply; no per-region logging or synchronous disk writes were
+added to discovery.
+
+Release/x64 native build and isolated controller timeout/resume regression
+passed. The full native suite failed twice at the existing movie-discovery
+one-millisecond timing assertion (bounded=0, resumed=1, exit 42). Published the
+self-contained win-x64 Release app to the required net10.0-windows directory;
+published bridge SHA256 matched the build, and published catalogue verification
+returned zero. QuickPlayer was relaunched from that exact directory. The host's
+loaded bridge was retained under a timestamped backup name so publishing could
+finish without stopping iStripper. iStripper still requires a restart to load
+v164; live scene-search log delivery was not exercised. git diff --check passed.
+
+## Resumable fullscreen controller lookup (bridge v163, 2026-10-31)
+
+Fullscreen scene controller heap discovery now retains its exact position across
+one-second lookup deadlines, including inside a memory region. Discovery wraps
+to lower addresses to find replacement controllers; cached pointers retain the
+existing QObject validation. Scene lookup state is serialized. The bridge now
+returns distinct HRESULTs for a lookup timeout (0x800705B4), a completed lookup
+with no controller (0x80070490), and a missing host main window (0x80070578).
+The REST endpoint explains each failure and tells callers to retry a timed-out
+search to continue discovery. No scene is dispatched for these errors.
+
+Native and C# Release/x64 builds passed, as did the isolated controller lookup
+regression, native compatibility checks against installed Qt5 iStripper, and
+the application's --verify-fullscreen-scenes check. The new regression forces
+a timeout inside one allocation, resumes to a later controller, rejects a
+destroyed controller, finds a replacement, and checks exhaustion, lower-address
+rediscovery, and an already-expired deadline. The native suite initially failed
+its existing one-millisecond movie-discovery timing assertion; two subsequent
+runs passed. git diff --check passed. No live scene launches, publishing, or
+application restarts were performed for this change.
+
 ## Bridge 154 / installed 2.5.0.0 (2026-10-29)
 
 The host image `6ACF523D / 00A8F000` inlines sound cleanup in its destructor.

@@ -64,7 +64,6 @@ public partial class Form1
             ulong lastInstance = 0;
             int checkpointBucket = -1;
             DesktopBridgeSnapshot? loggedSnapshot = null;
-            DateTime heartbeatAfter = DateTime.MinValue;
             while (!formIsClosing && attachment == Volatile.Read(ref desktopAttachment) && client.IsConnected)
             {
                 try
@@ -88,11 +87,10 @@ public partial class Form1
                         if (loggedSnapshot == null || snapshot.Instance != loggedSnapshot.Instance ||
                             snapshot.CompletedInstance != loggedSnapshot.CompletedInstance ||
                             snapshot.Request != loggedSnapshot.Request || snapshot.Path != loggedSnapshot.Path ||
-                            snapshot.State != loggedSnapshot.State || DateTime.UtcNow >= heartbeatAfter)
+                            snapshot.State != loggedSnapshot.State)
                         {
                             DesktopPlaybackLog.Record("native-snapshot", new { attachment, snapshot });
                             loggedSnapshot = snapshot;
-                            heartbeatAfter = DateTime.UtcNow.AddSeconds(10);
                         }
                         if (snapshot.Path.Length != 0) discovered = true;
                         else if (!captureArmed)

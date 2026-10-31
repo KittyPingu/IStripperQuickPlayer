@@ -376,6 +376,27 @@ unknown scenes return `404`, and a disconnected or unsupported bridge returns
 command (verified against the installed 2.5.0.0 metadata). Older versions that
 lack it return `409`. Restart iStripper after updating the native bridge.
 
+Bridge v163 distinguishes these launch failures in the `409` error message:
+
+- `0x800705B4`: controller lookup timed out. Retry the request to continue the
+  memory search where it stopped, including within a large memory region.
+- `0x80070490`: a complete controller lookup found no live scene controller.
+- `0x80070578`: iStripper's main window could not be found for focus acquisition.
+  Open the iStripper interface and retry.
+
+These failures occur before scene dispatch. Cached controllers are validated on
+each launch; discovery resumes if iStripper destroys or replaces the controller.
+
+Bridge v164 logs scene-controller lookup start/results to
+`%LOCALAPPDATA%\IStripperQuickPlayer\desktop-playback.jsonl` under
+`desktop-native-scene-controller-start` and `desktop-native-scene-controller-result`.
+Results include `durationMs`, `cache` (`hit`, `miss`, or `stale`), discovery
+`source` (`cache`, `image`, `heap`, or `unsupported`), `searchStart`, the next
+`resume` address, `wrapped`, controller address, vtable RVA, and the HRESULT.
+The host PID, thread, and lookup start tick correlate each start/result pair.
+As with other bridge events, diagnostics are asynchronous and may be coalesced
+while QuickPlayer is stalled. Restart iStripper after updating to load this logger.
+
 ## Fullscreen playback
 
 Fullscreen can render several clips at once. Query iStripper's logical scene
