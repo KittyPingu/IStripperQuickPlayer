@@ -98,6 +98,11 @@ jobs:
           if ($LASTEXITCODE) {
             exit $LASTEXITCODE
           }
+          & .\native\IStripperPlaybackBridge64\obj\verification\PlaybackBridgeCompatibilityTests.exe `
+            --verify-wheel-activation
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
           $nugetRoot = if ($env:NUGET_PACKAGES) {
             $env:NUGET_PACKAGES
           } else {

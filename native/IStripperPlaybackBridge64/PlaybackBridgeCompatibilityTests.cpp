@@ -177,6 +177,115 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-alpha-presentation") == 0)
+    {
+        const HINSTANCE instance = GetModuleHandleW(nullptr);
+        WNDCLASSW cls{};
+        cls.hInstance = instance;
+        cls.style = CS_OWNDC;
+        cls.lpfnWndProc = DefWindowProcW;
+        cls.lpszClassName = L"QuickPlayerAlphaPresentationTest";
+        if (!RegisterClassW(&cls)) return 132;
+        g_movieWindowProbeMessage = RegisterWindowMessageW(L"QuickPlayerAlphaPresentationTest.Probe");
+        HWND windows[3]{};
+        HDC dcs[3]{};
+        HGLRC contexts[3]{};
+        WNDPROC originals[3]{};
+        for (int index = 0; index < 3; ++index)
+        {
+            windows[index] = CreateWindowW(cls.lpszClassName, L"", WS_POPUP,
+                -32000, -32000, 32, 32, nullptr, nullptr, instance, nullptr);
+            if (!windows[index]) return 133;
+            // Qt can retain a visible old HWND after dragging; keep all sources logically visible.
+            ShowWindow(windows[index], SW_SHOWNOACTIVATE);
+            dcs[index] = GetDC(windows[index]);
+            PIXELFORMATDESCRIPTOR pixel{};
+            pixel.nSize = sizeof(pixel);
+            pixel.nVersion = 1;
+            pixel.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+            pixel.iPixelType = PFD_TYPE_RGBA;
+            pixel.cColorBits = 32;
+            pixel.cAlphaBits = 8;
+            const int format = ChoosePixelFormat(dcs[index], &pixel);
+            if (!format || !SetPixelFormat(dcs[index], format, &pixel)) return 134;
+            contexts[index] = wglCreateContext(dcs[index]);
+            if (!contexts[index] || !InstallMovieWindowProc(windows[index], true, false)) return 135;
+            originals[index] = OriginalMovieWindowProc(windows[index]);
+        }
+        if (!wglShareLists(contexts[0], contexts[2])) return 139;
+        if (!wglMakeCurrent(dcs[1], contexts[1])) return 136;
+        // An unrelated object can have the same numeric name in another context.
+        unsigned unrelatedTexture = 0;
+        glGenTextures(1, &unrelatedTexture);
+        glBindTexture(GL_TEXTURE_2D, unrelatedTexture);
+        const unsigned char blue[4] = {0, 0, 255, 255};
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        SetOpenGlHdrAlphaAntialiasing(true);
+        ResumeOpenGlHdr();
+        for (int cycle = 0; cycle < 30; ++cycle)
+        {
+            const int index = cycle % 3;
+            if (!wglMakeCurrent(dcs[index], contexts[index])) return 136;
+            glClearColor(cycle % 2 ? 1.f : 0.f, cycle % 2 ? 0.f : 1.f, 0, 1);
+            glClear(GL_COLOR_BUFFER_BIT);
+            TryEvaluateOpenGlHdr(windows[index], 32, 32);
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+                DispatchMessageW(&message);
+            while (glGetError() != GL_NO_ERROR) {}
+            const long frames = OpenGlHdrFrameCount();
+            const bool presented = TryEvaluateOpenGlHdr(windows[index], 32, 32);
+            const unsigned error = glGetError();
+            if (!presented || frames == OpenGlHdrFrameCount() || error != GL_NO_ERROR)
+            {
+                std::fprintf(stderr, "Alpha cycle %d: presented=%d, frames=%ld->%ld, GL error=0x%x\n",
+                    cycle, presented, frames, OpenGlHdrFrameCount(), error);
+                return 137;
+            }
+            bool active = false;
+            const bool probed = TryHasMovieWindowProc(windows[index], active);
+            if (!InstallMovieWindowProc(windows[index], probed, active)) return 138;
+            if (OriginalMovieWindowProc(windows[index]) != originals[index]) return 140;
+            if (index == 1)
+            {
+                unsigned char pixel[4]{};
+                glBindTexture(GL_TEXTURE_2D, unrelatedTexture);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                if (std::memcmp(pixel, blue, sizeof(blue)) != 0) return 141;
+            }
+            SendMessageW(windows[index], WM_NULL, 0, 0);
+            if (cycle == 14)
+                Sleep(600); // A stopped visible owner must also recover without a drag notification.
+            else
+            {
+                SetOpenGlHdrInteractiveMove(true);
+                SetOpenGlHdrInteractiveMove(false);
+            }
+        }
+        std::printf("30 alpha presentations across independent/shared contexts and drag resets passed.\n");
+        return 0;
+    }
+    if (argc == 2 && wcscmp(argv[1], L"--verify-wheel-activation") == 0)
+    {
+        g_playerHoverDelay = 1000;
+        g_playerHoverWindow = reinterpret_cast<HWND>(1);
+        g_playerHoverStarted = GetTickCount64();
+        g_playerWheelWhileLocked = 0;
+        if (PlayerWheelActivationReady()) return 127;
+        g_playerWheelWhileLocked = 1;
+        if (!PlayerWheelActivationReady()) return 128;
+        g_playerWheelWhileLocked = 0;
+        g_playerHoverStarted = GetTickCount64() - 1001;
+        if (!PlayerWheelActivationReady()) return 129;
+        g_playerHoverWindow = nullptr;
+        if (PlayerWheelActivationReady()) return 130;
+        g_playerHoverDelay = 0;
+        if (!PlayerWheelActivationReady()) return 131;
+        std::printf("Wheel activation checks passed.\n");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-opengl-subclass") == 0)
     {
         const HINSTANCE instance = GetModuleHandleW(nullptr);

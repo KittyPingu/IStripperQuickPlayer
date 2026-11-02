@@ -4848,6 +4848,12 @@ namespace
 
     void SetMovieWindowClickThrough(HWND window, bool enabled);
 
+    bool PlayerWheelActivationReady()
+    {
+        return InterlockedCompareExchange(&g_playerHoverDelay, 0, 0) == 0 ||
+            InterlockedCompareExchange(&g_playerWheelWhileLocked, 0, 0) != 0 || PlayerHoverReady();
+    }
+
     bool HandlePlayerWheelInput(int delta)
     {
         if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
@@ -4856,6 +4862,7 @@ namespace
         {
             return false;
         }
+        if (!PlayerWheelActivationReady()) return false;
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
         {
             const LONG accumulated = InterlockedExchangeAdd(
@@ -5106,6 +5113,9 @@ namespace
     LRESULT CALLBACK MovieWindowProc(HWND window, UINT message,
         WPARAM wParam, LPARAM lParam)
     {
+        LRESULT overlayResult = 0;
+        if (HandleOpenGlHdrWindowMessage(window, message, overlayResult))
+            return overlayResult;
         if (g_movieWindowProbeMessage != 0 &&
             message == g_movieWindowProbeMessage)
         {

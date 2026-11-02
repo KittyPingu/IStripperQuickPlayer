@@ -1,6 +1,7 @@
 #pragma once
 
 bool TryEvaluateOpenGlHdr(HWND window, int width, int height);
+bool HandleOpenGlHdrWindowMessage(HWND window, UINT message, LRESULT& result);
 bool TryEvaluateOpenGlTextureHdr(HWND window, unsigned int sourceTexture,
     int textureWidth, int textureHeight, int targetWidth, int targetHeight);
 void SetOpenGlHdrClickThrough(HWND sourceWindow, bool enabled);

@@ -1134,7 +1134,8 @@ internal sealed class CustomPlayerForm : Form
                 int delta = (short)((mouse.MouseData >> 16) & 0xffff);
                 bool control = (GetKeyState(VkControl) & 0x8000) != 0;
                 if (ShouldHandleHookWheel(player.locked,
-                    player.allowWheelWhileLocked, player.wheelResize, control))
+                    player.allowWheelWhileLocked, player.wheelResize, control,
+                    player.hoverDelayMs > 0 && player.HoverWaiting()))
                 {
                     try { player.BeginInvoke(() => player.HandleWheel(delta, control)); }
                     catch (InvalidOperationException) { }
@@ -1174,8 +1175,9 @@ internal sealed class CustomPlayerForm : Form
     }
 
     static bool ShouldHandleHookWheel(bool locked, bool allowWhileLocked,
-        bool resizeEnabled, bool control) =>
-        (!locked || allowWhileLocked) && (resizeEnabled || control);
+        bool resizeEnabled, bool control, bool hoverWaiting = false) =>
+        (!locked || allowWhileLocked) && (!hoverWaiting || allowWhileLocked) &&
+        (resizeEnabled || control);
 
     static bool IsForwardableMouseMessage(uint message) => message is
         WmMouseMove or WmLeftButtonDown or WmLeftButtonUp or WmRightButtonDown or
@@ -1185,7 +1187,8 @@ internal sealed class CustomPlayerForm : Form
 
     bool HandleWheel(int delta, bool control)
     {
-        if (locked && !allowWheelWhileLocked) return false;
+        if (!ShouldHandleHookWheel(locked, allowWheelWhileLocked, wheelResize, control,
+                hoverDelayMs > 0 && HoverWaiting())) return false;
         if (control)
         {
             volumeWheelDelta += delta;
@@ -1308,6 +1311,12 @@ internal sealed class CustomPlayerForm : Form
             new Rectangle(760, 480, 400, 600) &&
         ResetPositionBounds(new Size(3840, 2160), new Rectangle(-1920, 0, 1920, 1080)) ==
             new Rectangle(-1920, 0, 1920, 1080) &&
+        !ShouldHandleHookWheel(false, false, true, false, hoverWaiting: true) &&
+        !ShouldHandleHookWheel(false, false, true, true, hoverWaiting: true) &&
+        ShouldHandleHookWheel(false, true, true, false, hoverWaiting: true) &&
+        ShouldHandleHookWheel(false, true, false, true, hoverWaiting: true) &&
+        ShouldHandleHookWheel(false, false, true, false, hoverWaiting: false) &&
+        ShouldHandleHookWheel(false, false, false, true, hoverWaiting: false) &&
         VerifyHoverActivation() && VerifyDpiBounds() &&
         VerifyBottomAnchoredResize() &&
         HitTest(false, true, false, true) == HtTransparent &&

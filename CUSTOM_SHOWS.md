@@ -704,3 +704,13 @@ continues to control its cursor.
 Choose **Settings → Reset player position** to recover an offscreen desktop
 player. Custom shows and iStripper models move to the bottom-centre of the
 primary monitor, shrinking proportionally only if needed to fit its working area.
+
+With hover activation enabled, wheel resizing and Ctrl+wheel volume wait for
+the green hand. **Allow Resize while Locked** overrides that hover wait; the
+existing locked-player wheel restriction still applies.
+
+For iStripper playback, **Player alpha antialiasing** uses the existing player
+window hook, validates texture sharing across OpenGL contexts, and rebinds its
+presentation after dragging. A stopped but visible old player window relinquishes
+the presentation after 500 ms without frames. If dragging still freezes playback,
+disable antialiasing while the remaining compatibility issue is investigated.
