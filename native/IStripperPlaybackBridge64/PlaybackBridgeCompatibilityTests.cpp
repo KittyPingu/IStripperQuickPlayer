@@ -169,6 +169,15 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-player-position") == 0)
+    {
+        const RECT normal = ResetPositionBounds({9000, -2000, 9400, -1400}, {0, 0, 1920, 1080});
+        if (normal.left != 760 || normal.top != 480 || normal.right != 1160 || normal.bottom != 1080) return 115;
+        const RECT large = ResetPositionBounds({0, 0, 3840, 2160}, {-1920, 0, 0, 1080});
+        if (large.left != -1920 || large.top != 0 || large.right != 0 || large.bottom != 1080) return 116;
+        std::printf("Player position checks passed.\n");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-hover-activation") == 0)
     {
         ICONINFO cursorInfo{};

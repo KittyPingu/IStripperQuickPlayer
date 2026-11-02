@@ -198,6 +198,7 @@ namespace IStripperQuickPlayer
             new("Click through locked player") { CheckOnClick = true };
         private readonly ToolStripMenuItem hoverActivatePlayerMenu =
             new("Activate player after hovering") { CheckOnClick = true };
+        private readonly ToolStripMenuItem resetPlayerPositionMenu = new("Reset player position");
         private readonly ToolStripMenuItem hoverDelayPlayerMenu = new("Player hover delay");
         private readonly ToolStripMenuItem wheelResizePlayerToolStripMenuItem =
             new("Resize player with mouse wheel") { CheckOnClick = true };
@@ -865,6 +866,7 @@ namespace IStripperQuickPlayer
                 if (clickThroughLockedPlayerToolStripMenuItem.Checked) hoverActivatePlayerMenu.Checked = false;
                 ChangePlayerClickThrough();
             };
+            resetPlayerPositionMenu.Click += async (_, _) => await ResetPlayerPositionAsync();
             hoverActivatePlayerMenu.Checked = Properties.Settings.Default.HoverActivatePlayer;
             hoverActivatePlayerMenu.CheckedChanged += (_, _) =>
             {
@@ -7008,6 +7010,20 @@ namespace IStripperQuickPlayer
             }
             doTaskbarPadlock();
             UpdateWindowTitle();
+        }
+
+        private async Task ResetPlayerPositionAsync()
+        {
+            if (customPlayer != null)
+            {
+                customPlayer.ResetPosition();
+                return;
+            }
+            if (!playerLockBridgeLoaded) return;
+            int result = await RunDesktopControlAsync(() =>
+                CallPlaybackBridgeApi("IStripperResetPlayerPosition"));
+            if (result < 0)
+                SetPlaybackStatus($"Player position reset failed (0x{result:X8}).");
         }
 
         private void SetPlayerHoverDelay(int milliseconds)

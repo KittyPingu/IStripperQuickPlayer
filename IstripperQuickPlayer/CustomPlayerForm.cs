@@ -521,6 +521,23 @@ internal sealed class CustomPlayerForm : Form
         Location = AnchoredLocation(Size, previous, workArea);
     }
 
+    internal void ResetPosition()
+    {
+        Rectangle work = (Screen.PrimaryScreen ?? Screen.FromHandle(Handle)).WorkingArea;
+        Bounds = ResetPositionBounds(Size, work);
+        Show();
+    }
+
+    static Rectangle ResetPositionBounds(Size size, Rectangle work)
+    {
+        double scale = Math.Min(1d, Math.Min(work.Width / (double)Math.Max(1, size.Width),
+            work.Height / (double)Math.Max(1, size.Height)));
+        int width = Math.Max(1, (int)(size.Width * scale));
+        int height = Math.Max(1, (int)(size.Height * scale));
+        return new Rectangle(work.Left + (work.Width - width) / 2,
+            work.Bottom - height, width, height);
+    }
+
     internal void TogglePause() => paused = !paused;
     internal void SetPaused(bool value) => paused = value;
     internal void SeekTo(double seconds)
@@ -1287,6 +1304,10 @@ internal sealed class CustomPlayerForm : Form
 
     internal static bool VerifyHitTesting() =>
         hoverReadyCursor.Handle != Cursors.Hand.Handle && hoverReadyCursor.Size.Width >= 32 &&
+        ResetPositionBounds(new Size(400, 600), new Rectangle(0, 0, 1920, 1080)) ==
+            new Rectangle(760, 480, 400, 600) &&
+        ResetPositionBounds(new Size(3840, 2160), new Rectangle(-1920, 0, 1920, 1080)) ==
+            new Rectangle(-1920, 0, 1920, 1080) &&
         VerifyHoverActivation() && VerifyDpiBounds() &&
         VerifyBottomAnchoredResize() &&
         HitTest(false, true, false, true) == HtTransparent &&

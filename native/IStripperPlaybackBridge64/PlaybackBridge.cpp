@@ -5702,6 +5702,35 @@ namespace
         return BridgeSuccess;
     }
 
+    RECT ResetPositionBounds(const RECT& current, const RECT& work)
+    {
+        const int width = std::max(1L, current.right - current.left);
+        const int height = std::max(1L, current.bottom - current.top);
+        const double scale = std::min(1.0, std::min(
+            static_cast<double>(work.right - work.left) / width,
+            static_cast<double>(work.bottom - work.top) / height));
+        const int newWidth = std::max(1, static_cast<int>(width * scale));
+        const int newHeight = std::max(1, static_cast<int>(height * scale));
+        const LONG left = work.left + (work.right - work.left - newWidth) / 2;
+        return {left, work.bottom - newHeight, left + newWidth, work.bottom};
+    }
+
+    BOOL CALLBACK ResetMovieWindowPosition(HWND window, LPARAM parameter)
+    {
+        if (!IsMovieWindow(window) || !IsWindowVisible(window)) return TRUE;
+        RECT current{};
+        MONITORINFO monitor{sizeof(monitor)};
+        if (!GetWindowRect(window, &current) ||
+            !GetMonitorInfoW(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &monitor))
+            return TRUE;
+        const RECT bounds = ResetPositionBounds(current, monitor.rcWork);
+        if (SetWindowPos(window, HWND_TOP, bounds.left, bounds.top,
+                bounds.right - bounds.left, bounds.bottom - bounds.top,
+                SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS | SWP_SHOWWINDOW))
+            *reinterpret_cast<bool*>(parameter) = true;
+        return TRUE;
+    }
+
     HRESULT SetPlayerLarge(bool large)
     {
         // LiveActor already guards its current size. The persisted mode can
@@ -13104,6 +13133,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerVolume(
     {
         return E_UNEXPECTED;
     }
+}
+
+extern "C" __declspec(dllexport) HRESULT WINAPI IStripperResetPlayerPosition()
+{
+    bool reset = false;
+    EnumWindows(&ResetMovieWindowPosition, reinterpret_cast<LPARAM>(&reset));
+    return reset ? BridgeSuccess : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerSizePercent(

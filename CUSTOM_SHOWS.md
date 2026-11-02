@@ -700,3 +700,7 @@ existing default is unchanged.
 The cursor changes to a bright green hand with a dark outline when hover activation completes, indicating that
 the model accepts mouse input. During the delay, the underlying application
 continues to control its cursor.
+
+Choose **Settings → Reset player position** to recover an offscreen desktop
+player. Custom shows and iStripper models move to the bottom-centre of the
+primary monitor, shrinking proportionally only if needed to fit its working area.
