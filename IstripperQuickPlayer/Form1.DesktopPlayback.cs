@@ -87,7 +87,7 @@ public partial class Form1
                         if (loggedSnapshot == null || snapshot.Instance != loggedSnapshot.Instance ||
                             snapshot.CompletedInstance != loggedSnapshot.CompletedInstance ||
                             snapshot.Request != loggedSnapshot.Request || snapshot.Path != loggedSnapshot.Path ||
-                            snapshot.State != loggedSnapshot.State)
+                            snapshot.State != loggedSnapshot.State || snapshot.Moving != loggedSnapshot.Moving)
                         {
                             DesktopPlaybackLog.Record("native-snapshot", new { attachment, snapshot });
                             loggedSnapshot = snapshot;
@@ -150,7 +150,7 @@ public partial class Form1
         if (IsRestApiFullscreenActive()) return;
         var observation = new DesktopPlaybackCoordinator.Observation(attachment,
             snapshot.Sequence, snapshot.Instance, snapshot.CompletedInstance,
-            snapshot.Path, snapshot.State, snapshot.Elapsed, snapshot.Duration, snapshot.Request);
+            snapshot.Path, snapshot.State, snapshot.Elapsed, snapshot.Duration, snapshot.Request, snapshot.Moving);
         if (desktopPlayback.Prepared?.Instance == (long)snapshot.Instance)
             ValidateDesktopQueueReservation();
         var prepared = desktopPlayback.Prepared;

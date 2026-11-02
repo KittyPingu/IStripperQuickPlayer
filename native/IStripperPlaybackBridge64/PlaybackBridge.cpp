@@ -4913,8 +4913,12 @@ namespace
                     &g_nativeDragWindow, nullptr, nullptr));
             if (leftButtonUp && nativeDrag != nullptr)
             {
-                InterlockedExchangePointer(&g_nativeDragWindow, nullptr);
-                SetOpenGlHdrInteractiveMove(false);
+                // Keep capture protection until Qt has processed the real release.
+                if (!IsWindow(nativeDrag))
+                {
+                    InterlockedExchangePointer(&g_nativeDragWindow, nullptr);
+                    SetOpenGlHdrInteractiveMove(false);
+                }
                 return CallNextHookEx(
                     g_movieMouseHook, code, wParam, lParam);
             }
@@ -5015,6 +5019,7 @@ namespace
 
     void SetMovieWindowClickThrough(HWND window, bool enabled)
     {
+        if (InterlockedCompareExchangePointer(&g_nativeDragWindow, nullptr, nullptr) == window) return;
         SetOpenGlHdrClickThrough(window, enabled);
         const LONG_PTR style = GetWindowLongPtrW(window, GWL_EXSTYLE);
         bool changed = false;
@@ -5217,6 +5222,7 @@ namespace
         }
 
         WNDPROC original = OriginalMovieWindowProc(window);
+        if (original == &MovieWindowProc) original = nullptr;
         const LRESULT result = original == nullptr
             ? DefWindowProcW(window, message, wParam, lParam)
             : CallWindowProcW(original, window, message, wParam, lParam);
@@ -5234,9 +5240,11 @@ namespace
             // a transparent part of the layered show surface.
             SetCapture(window);
         }
-        else if (message == WM_LBUTTONUP && GetCapture() == window)
+        else if (message == WM_LBUTTONUP)
         {
-            ReleaseCapture();
+            if (InterlockedCompareExchangePointer(&g_nativeDragWindow, nullptr, window) == window)
+                SetOpenGlHdrInteractiveMove(false);
+            if (GetCapture() == window) ReleaseCapture();
         }
         if (message == WM_WINDOWPOSCHANGING && lParam != 0 &&
             InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
@@ -5273,6 +5281,77 @@ namespace
         return true;
     }
 
+    bool InstallMovieWindowProc(HWND window, bool probeCompleted, bool alreadySubclassed)
+    {
+        AcquireSRWLockExclusive(&g_movieWindowLock);
+        MovieWindowSubclass* empty = nullptr;
+        MovieWindowSubclass* existing = nullptr;
+        for (auto& entry : g_movieWindows)
+        {
+            if (entry.window != nullptr && !IsWindow(entry.window))
+            {
+                entry = {};
+            }
+            if (entry.window == window)
+            {
+                existing = &entry;
+                break;
+            }
+            if (empty == nullptr && entry.window == nullptr)
+            {
+                empty = &entry;
+            }
+        }
+        // Another installer can win after our unlocked probe. Never save ourselves as the original.
+        if (GetWindowLongPtrW(window, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&MovieWindowProc))
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return existing != nullptr;
+        }
+        if (alreadySubclassed)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return existing != nullptr;
+        }
+        // OpenGL can wrap our procedure and consume the probe message. Rewrapping it creates a cycle.
+        // Only repair a known Qt reset to the class procedure; preserve unknown wrapper chains.
+        if (existing != nullptr && static_cast<ULONG_PTR>(GetWindowLongPtrW(window, GWLP_WNDPROC)) !=
+                GetClassLongPtrW(window, GCLP_WNDPROC))
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return true;
+        }
+        if (existing != nullptr && !probeCompleted)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return false;
+        }
+        if (existing == nullptr && empty == nullptr)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return false;
+        }
+
+        SetLastError(ERROR_SUCCESS);
+        const LONG_PTR previous = SetWindowLongPtrW(window, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(&MovieWindowProc));
+        if (previous == 0 && GetLastError() != ERROR_SUCCESS)
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return false;
+        }
+        if (previous == reinterpret_cast<LONG_PTR>(&MovieWindowProc))
+        {
+            ReleaseSRWLockExclusive(&g_movieWindowLock);
+            return existing != nullptr;
+        }
+        MovieWindowSubclass* entry = existing == nullptr ? empty : existing;
+        entry->window = window;
+        entry->original = reinterpret_cast<WNDPROC>(previous);
+        ReleaseSRWLockExclusive(&g_movieWindowLock);
+        return true;
+    }
+
     bool SubclassMovieWindow(HWND window)
     {
         if (!IsMovieWindow(window))
@@ -5303,54 +5382,7 @@ namespace
         bool alreadySubclassed = false;
         const bool probeCompleted =
             TryHasMovieWindowProc(window, alreadySubclassed);
-        AcquireSRWLockExclusive(&g_movieWindowLock);
-        MovieWindowSubclass* empty = nullptr;
-        MovieWindowSubclass* existing = nullptr;
-        for (auto& entry : g_movieWindows)
-        {
-            if (entry.window != nullptr && !IsWindow(entry.window))
-            {
-                entry = {};
-            }
-            if (entry.window == window)
-            {
-                existing = &entry;
-                break;
-            }
-            if (empty == nullptr && entry.window == nullptr)
-            {
-                empty = &entry;
-            }
-        }
-        if (alreadySubclassed)
-        {
-            ReleaseSRWLockExclusive(&g_movieWindowLock);
-            return existing != nullptr;
-        }
-        if (existing != nullptr && !probeCompleted)
-        {
-            ReleaseSRWLockExclusive(&g_movieWindowLock);
-            return false;
-        }
-        if (existing == nullptr && empty == nullptr)
-        {
-            ReleaseSRWLockExclusive(&g_movieWindowLock);
-            return false;
-        }
-
-        SetLastError(ERROR_SUCCESS);
-        const LONG_PTR previous = SetWindowLongPtrW(window, GWLP_WNDPROC,
-            reinterpret_cast<LONG_PTR>(&MovieWindowProc));
-        if (previous == 0 && GetLastError() != ERROR_SUCCESS)
-        {
-            ReleaseSRWLockExclusive(&g_movieWindowLock);
-            return false;
-        }
-        MovieWindowSubclass* entry = existing == nullptr ? empty : existing;
-        entry->window = window;
-        entry->original = reinterpret_cast<WNDPROC>(previous);
-        ReleaseSRWLockExclusive(&g_movieWindowLock);
-        return true;
+        return InstallMovieWindowProc(window, probeCompleted, alreadySubclassed);
     }
 
     void RemoveMovieWindow(HWND window)
@@ -5440,7 +5472,8 @@ namespace
         {
             if (message.message == WM_TIMER && hoverTimer != 0 && message.wParam == hoverTimer)
             {
-                if (InterlockedCompareExchange(&g_playerHoverDelay, 0, 0) > 0)
+                if (InterlockedCompareExchange(&g_playerHoverDelay, 0, 0) > 0 &&
+                    InterlockedCompareExchangePointer(&g_nativeDragWindow, nullptr, nullptr) == nullptr)
                 {
                     POINT cursor{};
                     if (GetCursorPos(&cursor))

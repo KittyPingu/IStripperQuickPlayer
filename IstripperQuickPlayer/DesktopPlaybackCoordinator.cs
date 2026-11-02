@@ -11,7 +11,7 @@ internal sealed class DesktopPlaybackCoordinator
         bool Prepared, long Instance);
     internal sealed record Observation(long Attachment, ulong Sequence,
         ulong Instance, ulong CompletedInstance, string Path, int State,
-        int Elapsed, int Duration, ulong Request = 0);
+        int Elapsed, int Duration, ulong Request = 0, bool Moving = false);
 
     internal long Attachment { get; private set; }
     internal Observation? Confirmed { get; private set; }
@@ -22,6 +22,7 @@ internal sealed class DesktopPlaybackCoordinator
     ulong lastPlaybackInstance;
     string lastPlaybackPath = "";
     string hostModeReturnPath = "";
+    string interactionOrigin = "";
 
     internal void HostModeLeavingDesktop()
     {
@@ -46,13 +47,14 @@ internal sealed class DesktopPlaybackCoordinator
         Pending = Prepared = null;
         lastCompletion = 0;
         lastPlaybackInstance = 0;
-        lastPlaybackPath = hostModeReturnPath = "";
+        lastPlaybackPath = hostModeReturnPath = interactionOrigin = "";
     }
 
     internal Selection Request(string path, object? reservation = null, Observation? baseline = null)
     {
         // Custom playback can leave the last observed native movie behind the cached snapshot.
         if (baseline != null) Observe(baseline, out _, out _, out _);
+        interactionOrigin = "";
         Prepared = null;
         Pending = new(++nextRequest, path, reservation, false, (long)lastPlaybackInstance);
         DesktopPlaybackLog.Record("request", new { Attachment, Pending, ActiveQueuedCard });
@@ -88,6 +90,23 @@ internal sealed class DesktopPlaybackCoordinator
     internal static bool CardSessionContinues(long startedAt, long now, int durationMinutes) =>
         startedAt >= 0 && durationMinutes > 0 && now - startedAt <= durationMinutes * 60_000L;
 
+    static bool SameCard(string first, string second)
+    {
+        int separator = first.IndexOfAny(['\\', '/']);
+        return separator > 0 && second.Length > separator &&
+            second[separator] is '\\' or '/' &&
+            first.AsSpan(0, separator).Equals(second.AsSpan(0, separator), StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool IsInteractionAnimation(string path)
+    {
+        string file = path[(path.LastIndexOfAny(['\\', '/']) + 1)..];
+        int marker = file.IndexOf("_it", StringComparison.OrdinalIgnoreCase);
+        if (marker < 1) return false;
+        int end = file.IndexOf('_', marker + 3);
+        return end > marker + 3 && file[(marker + 3)..end].All(char.IsAsciiDigit);
+    }
+
     internal bool Observe(Observation observation, out Selection? accepted,
         out bool manual, out bool completed)
     {
@@ -99,6 +118,27 @@ internal sealed class DesktopPlaybackCoordinator
         Confirmed = observation;
         completed = previous != null && observation.CompletedInstance > lastCompletion;
         lastCompletion = Math.Max(lastCompletion, observation.CompletedInstance);
+        if (Pending == null && SameCard(lastPlaybackPath, observation.Path) &&
+            (observation.Moving || IsInteractionAnimation(observation.Path)))
+            interactionOrigin = lastPlaybackPath;
+        if (Pending == null && interactionOrigin.Length != 0)
+        {
+            if (observation.Path.Length == 0 || SameCard(interactionOrigin, observation.Path))
+            {
+                completed = false;
+                if (!observation.Moving && observation.Path.Length != 0 &&
+                    !IsInteractionAnimation(observation.Path) && observation.State is 3 or 4)
+                {
+                    interactionOrigin = "";
+                    lastPlaybackInstance = observation.Instance;
+                    lastPlaybackPath = observation.Path;
+                    if (Prepared != null) Prepare(Prepared.Path, Prepared.Reservation);
+                    DesktopPlaybackLog.Record("interaction-returned", observation);
+                }
+                return true;
+            }
+            interactionOrigin = "";
+        }
         // Temporary unavailability is not a playback transition.
         ulong previousInstance = lastPlaybackInstance;
         bool changed = observation.Instance != 0 &&
@@ -137,8 +177,44 @@ internal sealed class DesktopPlaybackCoordinator
         return true;
     }
 
+    static bool VerifyInteractionPlayback()
+    {
+        var player = new DesktopPlaybackCoordinator();
+        player.Attach(1);
+        var card = new PlayQueueEntry("e1597");
+        player.ActiveQueuedCard = card;
+        player.ActiveAutomaticQueueEntry = card;
+        object token = new();
+        Observation Frame(ulong sequence, ulong instance, string path, ulong completed = 0,
+            bool moving = false, ulong request = 0) => new(1, sequence, instance, completed,
+                path, 3, 0, 1000, request, moving);
+        const string original = "e1597\\e1597_38912402.vghd";
+        const string interaction = "e1597\\e1597_it04_38912301.vghd";
+        player.Observe(Frame(1, 1, original), out _, out _, out _);
+        var prepared = player.Prepare("next/clip", token);
+        if (!player.Observe(Frame(2, 2, interaction), out _, out bool manual, out bool ended) ||
+            manual || ended || player.Prepared != prepared) return false;
+        if (!player.Observe(Frame(3, 2, interaction, 2), out _, out manual, out ended) ||
+            manual || ended || player.Prepared != prepared) return false;
+        if (!player.Observe(Frame(4, 3, original, 2), out _, out manual, out ended) ||
+            manual || ended || player.ActiveQueuedCard != card ||
+            player.Prepared?.Instance != 3 || player.Prepared.Reservation != token ||
+            player.Prepared.Id <= prepared.Id) return false;
+        if (!player.Observe(Frame(5, 3, original, 3), out _, out _, out ended) || !ended) return false;
+        player.Observe(Frame(6, 4, original, 3, moving: true), out _, out _, out _);
+        if (!player.Observe(Frame(7, 5, "e1597/e1597_0403.vghd", 4), out _, out manual, out ended) ||
+            manual || ended || player.Prepared?.Instance != 5) return false;
+        player.Observe(Frame(8, 6, interaction, 4), out _, out _, out _);
+        if (!player.Observe(Frame(9, 7, "other/clip", 4), out _, out manual, out _) || !manual)
+            return false;
+        return IsInteractionAnimation(interaction) &&
+            !IsInteractionAnimation("e1597/e1597_itx_38912301.vghd") &&
+            !IsInteractionAnimation(original);
+    }
+
     internal static bool Verify()
     {
+        if (!VerifyInteractionPlayback()) return false;
         var player = new DesktopPlaybackCoordinator();
         if (!CardSessionContinues(100, 60_100, 1) || CardSessionContinues(100, 60_101, 1) ||
             CardSessionContinues(-1, 0, 1) || CardSessionContinues(0, 0, 0)) return false;

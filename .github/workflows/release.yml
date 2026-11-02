@@ -88,6 +88,16 @@ jobs:
           if ($LASTEXITCODE) {
             exit $LASTEXITCODE
           }
+          & $msbuild native\IStripperPlaybackBridge64\IStripperPlaybackBridge64.vcxproj `
+            /p:Configuration=Release /p:Platform=x64 /p:VerifyCompatibility=true /m
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          & .\native\IStripperPlaybackBridge64\obj\verification\PlaybackBridgeCompatibilityTests.exe `
+            --verify-subclass-race
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
           $nugetRoot = if ($env:NUGET_PACKAGES) {
             $env:NUGET_PACKAGES
           } else {
@@ -159,6 +169,12 @@ jobs:
           $process = Start-Process `
             "$env:GITHUB_WORKSPACE\artifacts\publish\IStripperQuickPlayer.exe" `
             -ArgumentList "--verify-controls" -Wait -PassThru
+          if ($process.ExitCode) {
+            exit $process.ExitCode
+          }
+          $process = Start-Process `
+            "$env:GITHUB_WORKSPACE\artifacts\publish\IStripperQuickPlayer.exe" `
+            -ArgumentList "--verify-desktop-playback" -Wait -PassThru
           if ($process.ExitCode) {
             exit $process.ExitCode
           }

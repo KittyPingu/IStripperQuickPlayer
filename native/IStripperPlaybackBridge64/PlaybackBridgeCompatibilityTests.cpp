@@ -1,10 +1,18 @@
 // Build with /p:VerifyCompatibility=true. No code is injected into iStripper.
 #include "PlaybackBridge.cpp"
+#include <gl/GL.h>
+#pragma comment(lib, "opengl32.lib")
 
 LRESULT CALLBACK TestArrowCursor(HWND, UINT, WPARAM, LPARAM)
 {
     SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     return 0;
+}
+
+LRESULT CALLBACK TestOpenGlWrapper(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == g_movieWindowProbeMessage) return 0;
+    return CallWindowProcW(&MovieWindowProc, window, message, wParam, lParam);
 }
 
 int __cdecl TestScale() { return 777; }
@@ -169,6 +177,110 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-opengl-subclass") == 0)
+    {
+        const HINSTANCE instance = GetModuleHandleW(nullptr);
+        WNDCLASSW cls{};
+        cls.hInstance = instance;
+        cls.style = CS_OWNDC;
+        cls.lpfnWndProc = DefWindowProcW;
+        cls.lpszClassName = L"QuickPlayerOpenGlSubclassTest";
+        if (!RegisterClassW(&cls)) return 120;
+        g_movieWindowProbeMessage = RegisterWindowMessageW(L"QuickPlayerOpenGlSubclassTest.Probe");
+        for (int cycle = 0; cycle < 20; ++cycle)
+        {
+            HWND window = CreateWindowW(cls.lpszClassName, L"", WS_POPUP,
+                0, 0, 32, 32, nullptr, nullptr, instance, nullptr);
+            if (!window) return 121;
+            HDC dc = GetDC(window);
+            PIXELFORMATDESCRIPTOR pixel{};
+            pixel.nSize = sizeof(pixel);
+            pixel.nVersion = 1;
+            pixel.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+            pixel.iPixelType = PFD_TYPE_RGBA;
+            pixel.cColorBits = 32;
+            const int format = ChoosePixelFormat(dc, &pixel);
+            if (!format || !SetPixelFormat(dc, format, &pixel)) return 122;
+            HGLRC context = wglCreateContext(dc);
+            if (!context || !wglMakeCurrent(dc, context)) return 123;
+            if (!InstallMovieWindowProc(window, true, false)) return 124;
+            for (int update = 0; update < 5; ++update)
+            {
+                glClearColor(0, .5f, 0, 1);
+                glClear(GL_COLOR_BUFFER_BIT);
+                SwapBuffers(dc);
+                bool active = false;
+                const bool probed = TryHasMovieWindowProc(window, active);
+                if (!InstallMovieWindowProc(window, probed, active)) return 125;
+                SendMessageW(window, WM_NULL, 0, 0);
+                wglMakeCurrent(nullptr, nullptr);
+                wglDeleteContext(context);
+                context = wglCreateContext(dc);
+                if (!context || !wglMakeCurrent(dc, context)) return 126;
+            }
+            wglMakeCurrent(nullptr, nullptr);
+            wglDeleteContext(context);
+            SetWindowLongPtrW(window, GWLP_WNDPROC,
+                reinterpret_cast<LONG_PTR>(OriginalMovieWindowProc(window)));
+            RemoveMovieWindow(window);
+            ReleaseDC(window, dc);
+            DestroyWindow(window);
+        }
+        UnregisterClassW(cls.lpszClassName, instance);
+        std::printf("20 OpenGL windows with 100 context replacements passed.\n");
+        return 0;
+    }
+    if (argc == 2 && wcscmp(argv[1], L"--verify-subclass-race") == 0)
+    {
+        const HINSTANCE instance = GetModuleHandleW(nullptr);
+        WNDCLASSW testClass{};
+        testClass.hInstance = instance;
+        testClass.lpfnWndProc = DefWindowProcW;
+        testClass.lpszClassName = L"QuickPlayerSubclassRaceTest";
+        if (!RegisterClassW(&testClass)) return 117;
+        HWND window = CreateWindowW(testClass.lpszClassName, L"", WS_POPUP,
+            0, 0, 10, 10, nullptr, nullptr, instance, nullptr);
+        if (!window) return 118;
+        const WNDPROC original = reinterpret_cast<WNDPROC>(GetWindowLongPtrW(window, GWLP_WNDPROC));
+        bool passed = InstallMovieWindowProc(window, true, false) &&
+            OriginalMovieWindowProc(window) == original;
+        // A second thread's probe said "not installed" before the first installer won.
+        passed = passed && InstallMovieWindowProc(window, true, false) &&
+            OriginalMovieWindowProc(window) == original;
+        passed = passed && InstallMovieWindowProc(window, false, false) &&
+            OriginalMovieWindowProc(window) == original;
+        if (passed) SendMessageW(window, WM_NULL, 0, 0);
+        g_movieWindowProbeMessage = RegisterWindowMessageW(L"QuickPlayerSubclassRaceTest.Probe");
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&TestOpenGlWrapper));
+        bool active = true;
+        const bool probed = TryHasMovieWindowProc(window, active);
+        passed = passed && probed && !active && InstallMovieWindowProc(window, probed, active) &&
+            OriginalMovieWindowProc(window) == original &&
+            GetWindowLongPtrW(window, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&TestOpenGlWrapper);
+        if (passed) SendMessageW(window, WM_NULL, 0, 0);
+        // A real reset to the class procedure remains repairable.
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(original));
+        passed = passed && InstallMovieWindowProc(window, true, false) &&
+            OriginalMovieWindowProc(window) == original;
+        g_nativeDragWindow = window;
+        SetMovieWindowClickThrough(window, true);
+        passed = passed && (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TRANSPARENT) == 0;
+        MSLLHOOKSTRUCT mouse{};
+        MovieMouseHook(HC_ACTION, WM_LBUTTONUP, reinterpret_cast<LPARAM>(&mouse));
+        passed = passed && g_nativeDragWindow == window;
+        MovieWindowProc(window, WM_LBUTTONUP, 0, 0);
+        passed = passed && g_nativeDragWindow == nullptr;
+        SetMovieWindowClickThrough(window, true);
+        passed = passed && (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0;
+        SetMovieWindowClickThrough(window, false);
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(original));
+        RemoveMovieWindow(window);
+        DestroyWindow(window);
+        UnregisterClassW(testClass.lpszClassName, instance);
+        if (!passed) return 119;
+        std::printf("Subclass installation race checks passed.\n");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-player-position") == 0)
     {
         const RECT normal = ResetPositionBounds({9000, -2000, 9400, -1400}, {0, 0, 1920, 1080});
