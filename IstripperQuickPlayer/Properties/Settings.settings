@@ -245,6 +245,8 @@
     <Setting Name="DarkMode" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
     </Setting>
+    <Setting Name="HoverActivatePlayer" Type="System.Boolean" Scope="User"><Value Profile="(Default)">False</Value></Setting>
+    <Setting Name="PlayerHoverDelayMs" Type="System.Int32" Scope="User"><Value Profile="(Default)">1000</Value></Setting>
     <Setting Name="ClickThroughLockedPlayer" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">False</Value>
     </Setting>

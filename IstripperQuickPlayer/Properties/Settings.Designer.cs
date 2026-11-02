@@ -914,6 +914,20 @@ namespace IStripperQuickPlayer.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool HoverActivatePlayer {
+            get => (bool)this["HoverActivatePlayer"];
+            set => this["HoverActivatePlayer"] = value;
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("1000")]
+        public int PlayerHoverDelayMs {
+            get => (int)this["PlayerHoverDelayMs"];
+            set => this["PlayerHoverDelayMs"] = value;
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool ClickThroughLockedPlayer {
             get {
                 return ((bool)(this["ClickThroughLockedPlayer"]));

@@ -1,6 +1,12 @@
 // Build with /p:VerifyCompatibility=true. No code is injected into iStripper.
 #include "PlaybackBridge.cpp"
 
+LRESULT CALLBACK TestArrowCursor(HWND, UINT, WPARAM, LPARAM)
+{
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+    return 0;
+}
+
 int __cdecl TestScale() { return 777; }
 const void* slowSceneCandidate = nullptr;
 ULONGLONG sceneLookupDeadline = 0;
@@ -163,6 +169,60 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-hover-activation") == 0)
+    {
+        ICONINFO cursorInfo{};
+        if (!GetIconInfo(HoverReadyCursor(), &cursorInfo)) return 111;
+        const bool customCursor = !cursorInfo.fIcon && cursorInfo.hbmColor != nullptr &&
+            HoverReadyCursor() != LoadCursorW(nullptr, IDC_HAND);
+        if (cursorInfo.hbmColor) DeleteObject(cursorInfo.hbmColor);
+        if (cursorInfo.hbmMask) DeleteObject(cursorInfo.hbmMask);
+        if (!customCursor) return 112;
+        g_playerLocked = 1;
+        g_playerClickThrough = 0;
+        g_playerHoverDelay = 1000;
+        UpdatePlayerHover(reinterpret_cast<HWND>(1), true);
+        if (!PlayerClickThrough() || PlayerHoverReady()) return 101;
+        g_playerHoverStarted = GetTickCount64() - 1001;
+        if (PlayerClickThrough() || !PlayerHoverReady()) return 102;
+        UpdatePlayerHover(nullptr, false);
+        if (!PlayerClickThrough() || PlayerHoverReady()) return 103;
+        UpdatePlayerHover(reinterpret_cast<HWND>(2), true);
+        if (!PlayerClickThrough()) return 104;
+        g_playerLocked = 0;
+        if (!PlayerClickThrough()) return 105;
+        g_playerHoverStarted = GetTickCount64() - 1001;
+        if (PlayerClickThrough() || !PlayerHoverReady()) return 108;
+        UpdatePlayerHover(nullptr, false);
+        if (!PlayerClickThrough() || PlayerHoverReady()) return 109;
+        g_playerHoverDelay = 0;
+        g_playerLocked = 1;
+        if (PlayerClickThrough()) return 106;
+        g_playerClickThrough = 1;
+        if (!PlayerClickThrough()) return 107;
+        g_playerLocked = 0;
+        if (PlayerClickThrough() || PlayerHoverReady()) return 110;
+        // Simulate Qt restoring the arrow after WM_SETCURSOR in its move handler.
+        g_playerHoverDelay = 1000;
+        g_playerClickThrough = 0;
+        const HWND movie = reinterpret_cast<HWND>(1);
+        g_movieWindows[0] = { movie, &TestArrowCursor };
+        g_playerHoverWindow = movie;
+        for (LONG locked : {0L, 1L})
+        {
+            g_playerLocked = locked;
+            g_playerHoverStarted = GetTickCount64() - 1001;
+            MovieWindowProc(movie, WM_MOUSEMOVE, 0, 0);
+            if (GetCursor() != HoverReadyCursor()) return 113;
+            g_playerHoverStarted = GetTickCount64();
+            MovieWindowProc(movie, WM_MOUSEMOVE, 0, 0);
+            if (GetCursor() != LoadCursorW(nullptr, IDC_ARROW)) return 114;
+        }
+        g_movieWindows[0] = {};
+        std::printf("Hover activation checks passed.\n");
+        return 0;
+    }
+
     if (!VerifySceneLookupResume())
     {
         std::fprintf(stderr, "Fullscreen controller lookup resume checks failed\n");

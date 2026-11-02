@@ -125,13 +125,17 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     readonly TextBox foregroundConcepts = new()
     {
         Multiline = true, AcceptsReturn = true, Height = 96, Width = 620,
-        ScrollBars = ScrollBars.Vertical, Text = "person"
+        ScrollBars = ScrollBars.Vertical, Text = Sam3PipelineSupport.DefaultConcepts,
+        MaxLength = 4096, AccessibleName = "SAM3 foreground concepts and confidence",
+        AccessibleDescription = "One prompt per line, for example hand equals 0.20. Bare prompts use 0.35."
     };
     readonly Label conceptHelp = new()
     {
         AutoSize = true,
-        Text = "One independent foreground concept per line. Multi-word phrases are supported."
+        Text = "One concept per line, for example hand = 0.20. Confidence is 0–1; omit the value to use 0.35.\nLower confidence can retain more foreground and background. Repair adds work only when coverage is lost."
     };
+    readonly CheckBox sam3BackwardRepair = new()
+        { Text = "Selective backward repair", AutoSize = true, Checked = true };
     readonly Label sam2MattingStatus = new() { AutoSize = true, Padding = new Padding(6, 7, 0, 0) };
     readonly Label sceneMaskSummary = new()
     {
@@ -250,6 +254,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     string? originalCoverTitleFont;
     bool loadingPerformerSelection;
     bool reprocessLayoutChanged;
+    readonly string? initialReprocessClipId;
     bool? deleteSourceCopyAfterSplit;
 
     internal string? SavedShowId { get; private set; }
@@ -265,12 +270,14 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         string? initialSourcePath = null, string? initialTitle = null,
         string? initialSourceUrl = null, bool retainInitialSource = false,
         bool forceRvmOnnx = false, bool startWithWizard = false,
-        Func<IWin32Window?, string, string?>? wizardInstallTools = null)
+        Func<IWin32Window?, string, string?>? wizardInstallTools = null,
+        string? initialReprocessClipId = null)
     {
         this.store = store;
         this.configuration = configuration;
         this.showId = showId;
         this.reprocess = reprocess && showId != null;
+        this.initialReprocessClipId = initialReprocessClipId;
         this.queueManager = queueManager;
         this.queueJobId = queueJobId;
         this.queueDraft = queueDraft;
@@ -288,7 +295,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             configuration.DefaultAlphaThreshold;
         metadataOnly = showId != null && !this.reprocess &&
             queueJobId == null;
-        Text = showId == null ? "Create Custom Show" : this.reprocess
+        Text = initialReprocessClipId != null ? "Reprocess Custom Clip" :
+            showId == null ? "Create Custom Show" : this.reprocess
             ? "Reprocess Custom Show" : "Edit Custom Show Metadata";
         ClientSize = new Size(900, 760);
         MinimumSize = new Size(760, 650);
@@ -396,7 +404,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             FillRow(sam2MattingTracker, sam2MattingStatus,
                 openSam2MattingSetup));
         foregroundConceptsRow = AddRow(processingTable, "Foreground concepts",
-            FlowVertical(foregroundConcepts, conceptHelp));
+            FlowVertical(foregroundConcepts, conceptHelp, sam3BackwardRepair));
         sceneMaskSummaryRow = AddRow(processingTable, "Scene prompts", sceneMaskSummary);
         PopulateMaskChoices();
         maskEngineRow = AddRow(processingTable, "Mask generation", maskEngine);
@@ -542,6 +550,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             UpdateProcessingOptions();
         };
         foregroundConcepts.TextChanged += (_, _) => UpdateProcessingOptions();
+        sam3BackwardRepair.CheckedChanged += (_, _) => UpdateProcessingOptions();
         openSam2MattingSetup.Click += (_, _) => OpenSam2MattingSetup();
         openRvmOnnxSetup.Click += (_, _) =>
         {
@@ -572,6 +581,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             NotifyWizardStateChanged();
         };
         LoadData();
+        if (initialReprocessClipId != null && this.reprocess)
+            keepMasks.Checked = false;
         if (restoredSetup != null) RestoreIncompleteSetup(restoredSetup);
         if (queueJobId != null) LoadQueueJob(queueJobId);
         else if (queueDraft != null) LoadQueueDraft(queueDraft);
@@ -591,6 +602,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         Shown += (_, _) =>
         {
             if (startWithWizard) ShowWizard();
+            else if (initialReprocessClipId != null)
+                NavigateWizardTo(CustomShowWizardArea.Processing);
         };
         FormClosed += (_, _) =>
         {
@@ -625,6 +638,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         if (metadataOnly ||
             CustomShowProcessor.IsViTMatteBaseInstalled(configuration))
             preset.Items.Add("ViTMatte B (editable SAM2 masks, higher quality)");
+        if (metadataOnly || Sam3PipelineSupport.IsInstalled(configuration))
+            preset.Items.Add(Sam3PipelineSupport.DisplayName);
         preset.Items.Add("SAM2Matting");
         preset.Items.Add("RVM ONNX (real-time playback)");
         preset.EndUpdate();
@@ -686,6 +701,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             "matanyone2" => "MatAnyone",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
+            Sam3PipelineSupport.Algorithm => "SAM3 foreground",
             Sam2MattingSupport.Algorithm => "SAM2Matting",
             CustomClipMedia.RvmOnnxMode => "RVM ONNX",
             _ => "RVM Quality"
@@ -774,6 +790,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             available.Add(CustomShowWizardRecommendations.VitMatteSmall);
         if (Sam2MattingSupport.IsInstalled(configuration))
             available.Add(Sam2MattingSupport.Algorithm);
+        if (Sam3PipelineSupport.IsInstalled(configuration))
+            available.Add(Sam3PipelineSupport.Algorithm);
         if (RvmOnnxSupport.IsInstalled())
             available.Add(RvmOnnxSupport.Algorithm);
         int included = showClips.Count(clip => clip.Included);
@@ -791,6 +809,9 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         string selected = SelectedPreset();
         string detail = selected switch
         {
+            Sam3PipelineSupport.Algorithm =>
+                "Concepts: " + foregroundConcepts.Text.ReplaceLineEndings(", ") +
+                (sam3BackwardRepair.Checked ? "; selective repair" : "; no repair"),
             CustomClipMedia.RvmOnnxMode =>
                 $"{rvmOnnxQuality.SelectedItem}; " +
                 (rvmOnnxTemporal.Checked ? "temporal memory on" :
@@ -1133,6 +1154,9 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         }
         bool rvm = selected is "quality" or "fast";
         bool sam2Matting = selected == Sam2MattingSupport.Algorithm;
+        bool sam3 = selected == Sam3PipelineSupport.Algorithm;
+        foregroundConcepts.Enabled = sam3 && CanProcess;
+        sam3BackwardRepair.Enabled = sam3 && CanProcess;
         bool rvmOnnx = selected == CustomClipMedia.RvmOnnxMode;
         bool realtime = rvmOnnx;
         string sam2MattingPromptMode = SelectedSam2MattingPromptMode();
@@ -1227,7 +1251,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                 processingDetails.Text !=
                     "Recorded in show.json after processing completes.");
             SetRowVisible(processingTable, sam2MattingTrackerRow, sam2Matting);
-            SetRowVisible(processingTable, foregroundConceptsRow, false);
+            SetRowVisible(processingTable, foregroundConceptsRow, sam3);
             SetRowVisible(processingTable, sceneMaskSummaryRow,
                 sam2Matting);
             SetRowVisible(processingTable, autoAcceptRow,
@@ -1363,6 +1387,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         if (selected.StartsWith("MatAnyone", StringComparison.Ordinal)) return "matanyone2";
         if (selected.StartsWith("ViTMatte S", StringComparison.Ordinal)) return "vitmatte-s";
         if (selected.StartsWith("ViTMatte B", StringComparison.Ordinal)) return "vitmatte-b";
+        if (selected.StartsWith("SAM3 foreground", StringComparison.Ordinal))
+            return Sam3PipelineSupport.Algorithm;
         if (selected.StartsWith("SAM2Matting", StringComparison.Ordinal))
             return Sam2MattingSupport.Algorithm;
         if (selected.StartsWith("RVM ONNX", StringComparison.Ordinal))
@@ -1377,7 +1403,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         algorithm is "sam2matting" or "rvm-onnx"
             ? "Queue" : !autoAccept ? null : algorithm switch
         {
-            "quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" => "Queue",
+            "quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" or "sam3-person" => "Queue",
             "matanyone2" => "Mask and Queue",
             _ => null
         };
@@ -1565,8 +1591,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     void PopulateReprocessClips(IReadOnlyCollection<string>? selectedIds = null)
     {
         if (!reprocess) return;
-        selectedIds ??= showClips.Where(clip => clip.Included)
-            .Select(clip => clip.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        selectedIds ??= InitialReprocessClipSelection(showClips, initialReprocessClipId);
         reprocessClips.Items.Clear();
         int playable = 0;
         for (int index = 0; index < showClips.Length; index++)
@@ -1603,6 +1628,31 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
         public override string ToString() => Label;
     }
 
+    static HashSet<string> InitialReprocessClipSelection(CustomShowClip[] clips,
+        string? requestedClipId)
+    {
+        HashSet<string> included = clips.Where(clip => clip.Included)
+            .Select(clip => clip.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requestedClipId == null) return included;
+        if (!included.Contains(requestedClipId))
+            throw new InvalidDataException("The selected clip is no longer available for reprocessing.");
+        return new HashSet<string>(StringComparer.OrdinalIgnoreCase) { requestedClipId };
+    }
+
+    internal static bool VerifyInitialReprocessClipSelection()
+    {
+        CustomShowClip[] clips = [new() { Id = "first", Included = true },
+            new() { Id = "skipped", Included = false }, new() { Id = "last", Included = true }];
+        if (!InitialReprocessClipSelection(clips, null).SetEquals(["first", "last"]) ||
+            !InitialReprocessClipSelection(clips, "LAST").SetEquals(["last"])) return false;
+        foreach (string invalid in new[] { "skipped", "missing" })
+        {
+            try { InitialReprocessClipSelection(clips, invalid); return false; }
+            catch (InvalidDataException) { }
+        }
+        return true;
+    }
+
     sealed record PropSegmenterChoice(PropSegmenterPackage? Package, string Label)
     {
         public override string ToString() => Label;
@@ -1633,6 +1683,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             "rvm-vitmatte-b" => "RVM-ViTMatte B",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B", "sam2matting" => "SAM2Matting",
+            "sam3-person" => "SAM3 foreground",
             "rvm-onnx" => "RVM ONNX",
             _ => "RVM Quality"
         };
@@ -1652,9 +1703,12 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                 // Retired/unknown trackers reopen on the automatic Base+ path.
                 _ => 3
             };
-        if (processing.Algorithm == "sam2matting")
-            foregroundConcepts.Text = string.Join(Environment.NewLine,
-                processing.ForegroundConcepts);
+        if (processing.Algorithm == Sam3PipelineSupport.Algorithm)
+        {
+            foregroundConcepts.Text = Sam3PipelineSupport.FormatPrompts(
+                processing.ForegroundConcepts, processing.ForegroundConfidences);
+            sam3BackwardRepair.Checked = processing.Sam3SelectiveBackwardRepair ?? true;
+        }
         string? selectedMaskEngine = realtimeSource
             ? configuration.LastMaskEngine : processing.MaskEngine;
         SelectStartingWith(maskEngine, selectedMaskEngine switch
@@ -1766,6 +1820,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
 
     void RestoreProcessingOptions()
     {
+        foregroundConcepts.Text = configuration.LastSam3ForegroundConcepts;
+        sam3BackwardRepair.Checked = configuration.LastSam3SelectiveBackwardRepair;
         string prefix = configuration.LastProcessingAlgorithm switch
         {
             "fast" => "RVM Fast",
@@ -1776,6 +1832,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
             "sam2matting" => "SAM2Matting",
+            "sam3-person" => "SAM3 foreground",
             "rvm-onnx" => "RVM ONNX",
             _ => "RVM Quality"
         };
@@ -1845,6 +1902,11 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
     void RememberProcessingOptions()
     {
         configuration.LastProcessingAlgorithm = SelectedPreset();
+        if (SelectedPreset() == Sam3PipelineSupport.Algorithm)
+        {
+            configuration.LastSam3ForegroundConcepts = foregroundConcepts.Text;
+            configuration.LastSam3SelectiveBackwardRepair = sam3BackwardRepair.Checked;
+        }
         configuration.LastRvmOnnxModel = rvmOnnxModel.SelectedIndex == 1
             ? RvmOnnxSupport.ResNet50 : RvmOnnxSupport.MobileNetV3;
         configuration.LastRvmOnnxQuality = RvmOnnxSupport.QualityFromIndex(
@@ -1939,6 +2001,10 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             "rvm-vitmatte-b" => "RVM-ViTMatte B (automatic)",
             "vitmatte-s" => "ViTMatte S",
             "vitmatte-b" => "ViTMatte B",
+            "sam3-person" => Sam3PipelineSupport.DisplayName +
+                ": " + Sam3PipelineSupport.FormatPrompts(value.ForegroundConcepts,
+                    value.ForegroundConfidences).ReplaceLineEndings(", ") +
+                (value.Sam3SelectiveBackwardRepair ?? true ? "; selective repair" : "; no repair"),
             "sam2matting" => $"SAM2Matting ({Sam2MattingSupport.DisplayName(value.Tracker)})",
             "rvm-onnx" => "RVM ONNX (real-time playback)",
             _ => value.Algorithm
@@ -2252,6 +2318,10 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                 Dictionary<string, string> sam2Masks = [];
                 Dictionary<string, string> maskDraftFolders = [];
                 string selectedPreset = SelectedPreset();
+                (string[] sam3Concepts, double[] sam3Confidences) =
+                    selectedPreset == Sam3PipelineSupport.Algorithm
+                        ? Sam3PipelineSupport.ParsePrompts(foregroundConcepts.Text) : ([], []);
+                bool sam3Repair = sam3BackwardRepair.Checked;
                 string selectedSam2Model = SelectedSam2Model();
                 string selectedMaskEngine = UsesSam2(selectedPreset) ?
                     SelectedMaskEngine() : "sam2";
@@ -2676,8 +2746,11 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                                         "rvm-matanyone2" or
                                         "rvm-vitmatte-s" or "rvm-vitmatte-b"
                                         ? SelectedPropSegmenterPackage()?.Folder
-                                        : null);
-                            if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b" &&
+                                        : null,
+                                 foregroundConcepts: sam3Concepts,
+                                 foregroundConfidences: sam3Confidences,
+                                 sam3SelectiveBackwardRepair: sam3Repair);
+                            if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b" or "sam3-person" &&
                                 !sam2Masks.ContainsKey(clip.Id))
                             {
                                 string generatedMasks = Path.Combine(output,
@@ -2708,6 +2781,11 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                             };
                             completedDuration += clipDuration;
                             first ??= result;
+                        }
+                        if (selectedPreset == Sam3PipelineSupport.Algorithm)
+                        {
+                            first!.DurationMs = showClips[^1].EndMs;
+                            return first;
                         }
                         return new CustomShowProcessResult
                         {
@@ -2746,7 +2824,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                                 MessageBoxButtons.OK, MessageBoxIcon.Information);
                         return;
                     }
-                    if (Appending && selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b")
+                    if (Appending && selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b" or "sam3-person")
                     {
                         string saveText = save.Text;
                         save.Text = "Compressing retained masks…";
@@ -2770,7 +2848,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                         }
                         finally { save.Text = saveText; }
                     }
-                    if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b")
+                    if (selectedPreset is "rvm-vitmatte-s" or "rvm-vitmatte-b" or "sam3-person")
                         foreach (string generated in GeneratedRvmMaskFolders(
                             staging, sam2Masks))
                             try { Directory.Delete(generated, true); } catch { }
@@ -2907,6 +2985,9 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                                     selectedMaskEngine is "sam2" or "rvm-sam2"
                             })).ToArray()
                     };
+                    if (selectedPreset == Sam3PipelineSupport.Algorithm)
+                        Sam3PipelineSupport.ApplyRecipe(show.Processing, sam3Concepts,
+                            sam3Confidences, sam3Repair);
                     ApplyTemporalCleanupOptions(show.Processing);
                     ApplyPropSegmenter(show.Processing,
                         selectedPreset is "matanyone2" or "rvm-matanyone2" or
@@ -3192,7 +3273,8 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                         "Scene detection did not return a processing plan.");
                 }
             }
-            string[] concepts = [];
+            (string[] concepts, double[] confidences) = algorithm == Sam3PipelineSupport.Algorithm
+                ? Sam3PipelineSupport.ParsePrompts(foregroundConcepts.Text) : ([], []);
             CustomShowProcessing processingOptions = new()
             {
                 Algorithm = algorithm,
@@ -3283,6 +3365,9 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
                     promptMode == "rvm-initial-mask" ||
                 algorithm is ("vitmatte-s" or "vitmatte-b") &&
                     SelectedMaskEngine() == "rvm-sam2");
+            if (algorithm == Sam3PipelineSupport.Algorithm)
+                Sam3PipelineSupport.ApplyRecipe(processingOptions, concepts,
+                    confidences, sam3BackwardRepair.Checked);
             manifest.Processing = processingOptions;
             FileInfo sourceInfo = new(source.Text);
             CustomShowQueueJob job = existing ?? new();
@@ -4161,6 +4246,7 @@ internal sealed class CustomShowEditorForm : Form, ICustomShowWizardHost
             "rvm-matanyone2" => ["MATANYONE2_COMMIT", "RVM_COMMIT"],
             "rvm-vitmatte-s" => ["VITMATTE_S_REVISION", "RVM_COMMIT"],
             "rvm-vitmatte-b" => ["VITMATTE_B_REVISION", "RVM_COMMIT"],
+            "sam3-person" => ["VITMATTE_S_REVISION", "SAM2_COMMIT"],
             "sam2matting" when maskEngine == "rvm-sam2" => ["RVM_COMMIT"],
             "vitmatte-s" => ["VITMATTE_S_REVISION", "SAM2_COMMIT"],
             "vitmatte-b" => ["VITMATTE_B_REVISION", "SAM2_COMMIT"],
@@ -5703,6 +5789,8 @@ internal sealed class CustomShowSettingsForm : Form
             VitMatteSmallPreferredBatchSize = current.VitMatteSmallPreferredBatchSize,
             VitMatteBasePreferredBatchSize = current.VitMatteBasePreferredBatchSize,
             LastProcessingAlgorithm = current.LastProcessingAlgorithm,
+            LastSam3ForegroundConcepts = current.LastSam3ForegroundConcepts,
+            LastSam3SelectiveBackwardRepair = current.LastSam3SelectiveBackwardRepair,
             LastRvmOnnxModel = current.LastRvmOnnxModel,
             LastRvmOnnxQuality = current.LastRvmOnnxQuality,
             LastRvmOnnxTemporal = current.LastRvmOnnxTemporal,
@@ -7082,6 +7170,8 @@ internal sealed class SetupProcessOutput
 internal sealed class CustomShowSam2MattingSetupForm : Form
 {
     readonly string script;
+    readonly bool installSam3;
+    readonly bool repair;
     readonly TextBox output = new()
     {
         Dock = DockStyle.Fill, Multiline = true, ReadOnly = true,
@@ -7093,11 +7183,14 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
     Process? process;
     bool complete;
 
-    internal CustomShowSam2MattingSetupForm(string script)
+    internal CustomShowSam2MattingSetupForm(string script,
+        bool installSam3 = false, bool repair = false)
     {
         this.script = script;
+        this.installSam3 = installSam3;
+        this.repair = repair;
         outputWriter = new(output);
-        Text = "Install SAM2Matting Trackers";
+        Text = installSam3 ? "Install / Repair SAM3 Foreground" : "Install SAM2Matting Trackers";
         ClientSize = new Size(900, 520);
         Controls.Add(output);
         Controls.Add(close);
@@ -7109,7 +7202,9 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
 
     async Task Run()
     {
-        Append("Installing the pinned SAM2Matting environment and all three checkpoints...");
+        Append(installSam3
+            ? "Installing the pinned SAM3 environment and foreground detector checkpoint..."
+            : "Installing the pinned SAM2Matting environment and both tracker checkpoints...");
         try
         {
             ProcessStartInfo start = new("powershell.exe")
@@ -7122,6 +7217,8 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
             {
                 "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script
             }) start.ArgumentList.Add(argument);
+            if (installSam3) start.ArgumentList.Add("-InstallSam3");
+            if (repair) start.ArgumentList.Add("-Repair");
             process = Process.Start(start) ??
                 throw new InvalidOperationException("PowerShell could not be started.");
             Task standardOutput = outputWriter.PumpAsync(process.StandardOutput);
@@ -7131,7 +7228,8 @@ internal sealed class CustomShowSam2MattingSetupForm : Form
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
                     $"Setup failed with exit code {process.ExitCode}.");
-            Append("SAM2Matting setup completed successfully.");
+            Append(installSam3 ? "SAM3 setup completed successfully." :
+                "SAM2Matting setup completed successfully.");
             DialogResult = DialogResult.OK;
         }
         catch (Exception error)
@@ -7170,6 +7268,12 @@ internal sealed class CustomShowSetupOptionsForm : Form
     readonly CheckBox sam2Matting = new() { Text =
         "SAM2Matting with SAM2.1-T and SAM2.1-B+ (~600 MB, NVIDIA CUDA required)",
         AutoSize = true, Checked = true };
+    readonly CheckBox sam3 = new() { Text =
+        "SAM3 foreground + SAM2 / ViTMatte dependencies (~3.5 GB detector, NVIDIA CUDA required)",
+        AutoSize = true };
+    readonly CheckBox repairSam3 = new() { Text =
+        "Repair SAM3: recreate its Python environment and keep downloaded models",
+        AutoSize = true, Enabled = false, Margin = new Padding(24, 3, 3, 3) };
     readonly CheckBox transNet = new() { Text = "TransNetV2 automatic clip detection",
         AutoSize = true, Checked = true };
     readonly CheckBox omniShotCut = new() { Text =
@@ -7192,12 +7296,14 @@ internal sealed class CustomShowSetupOptionsForm : Form
     internal bool InstallTransNetV2 => transNet.Checked;
     internal bool InstallOmniShotCut => omniShotCut.Checked;
     internal bool InstallMatAnyone2 => matAnyone.Checked;
-    internal bool InstallViTMatte => vitMatte.Checked;
+    internal bool InstallViTMatte => vitMatte.Checked || sam3.Checked;
     internal bool InstallEdgeTam => edgeTam.Checked;
     internal bool InstallStabilo => stabilo.Checked;
     internal bool InstallProPainter => proPainter.Checked;
     internal bool InstallSam2Matting => sam2Matting.Checked;
-    internal bool InstallOfflineProcessing => offline.Checked;
+    internal bool InstallSam3 => sam3.Checked;
+    internal bool RepairSam3 => sam3.Checked && repairSam3.Checked;
+    internal bool InstallOfflineProcessing => offline.Checked || sam3.Checked;
     internal bool InstallRvmOnnx => rvmOnnx.Checked;
     internal bool InstallYtDlp => ytDlp.Checked;
 
@@ -7213,10 +7319,19 @@ internal sealed class CustomShowSetupOptionsForm : Form
                 "matanyone2" or "rvm-matanyone2";
             sam2Matting.Checked = requestedAlgorithm ==
                 Sam2MattingSupport.Algorithm;
+            sam3.Checked = requestedAlgorithm == Sam3PipelineSupport.Algorithm;
             vitMatte.Checked = requestedAlgorithm is
                 "vitmatte-s" or "vitmatte-b" or "rvm-vitmatte-s" or
                 "rvm-vitmatte-b";
         }
+        void UpdateSam3Dependencies()
+        {
+            if (sam3.Checked) offline.Checked = vitMatte.Checked = true;
+            offline.Enabled = vitMatte.Enabled = !sam3.Checked;
+            repairSam3.Enabled = sam3.Checked;
+        }
+        sam3.CheckedChanged += (_, _) => UpdateSam3Dependencies();
+        UpdateSam3Dependencies();
         Text = "Choose Custom Show Processing Tools";
         ClientSize = new Size(860, 650);
         MinimumSize = new Size(760, 560);
@@ -7239,12 +7354,14 @@ internal sealed class CustomShowSetupOptionsForm : Form
         layout.Controls.Add(omniShotCut);
         layout.Controls.Add(matAnyone);
         layout.Controls.Add(sam2Matting);
+        layout.Controls.Add(sam3);
+        layout.Controls.Add(repairSam3);
         layout.Controls.Add(vitMatte);
         layout.Controls.Add(edgeTam);
         layout.Controls.Add(stabilo);
         layout.Controls.Add(proPainter);
         layout.Controls.Add(new Label { Text =
-            "SAM2Matting, MatAnyone 2, and ProPainter are non-commercial; " +
+            "Fudan SAM2Matting / SAM3, MatAnyone 2, and ProPainter are non-commercial; " +
             "ViTMatte, SAM2, EdgeTAM, and Stabilo permit commercial use.",
             AutoSize = true, MaximumSize = new Size(810, 0) });
         LinkLabel ytDlpLicence = new()
@@ -7318,7 +7435,24 @@ internal sealed class CustomShowSetupOptionsForm : Form
             new("rvm-vitmatte-s");
         using CustomShowSetupOptionsForm onnxRecommendation =
             new(CustomClipMedia.RvmOnnxMode);
+        using CustomShowSetupOptionsForm sam3Recommendation =
+            new(Sam3PipelineSupport.Algorithm);
+        if (!sam3Recommendation.InstallSam3 ||
+            !sam3Recommendation.InstallOfflineProcessing ||
+            !sam3Recommendation.InstallViTMatte ||
+            sam3Recommendation.InstallSam2Matting ||
+            sam3Recommendation.InstallMatAnyone2 ||
+            sam3Recommendation.RepairSam3 ||
+            sam3Recommendation.offline.Enabled || sam3Recommendation.vitMatte.Enabled)
+            return false;
+        sam3Recommendation.repairSam3.Checked = true;
+        if (!sam3Recommendation.RepairSam3) return false;
+        sam3Recommendation.sam3.Checked = false;
+        if (sam3Recommendation.RepairSam3 ||
+            !sam3Recommendation.offline.Enabled || !sam3Recommendation.vitMatte.Enabled)
+            return false;
         return form.InstallOfflineProcessing && !form.InstallRvmOnnx &&
+            !form.InstallSam3 && !form.RepairSam3 &&
             !form.InstallYtDlp &&
             form.InstallTransNetV2 && !form.InstallOmniShotCut && form.InstallMatAnyone2 &&
             form.InstallSam2Matting &&

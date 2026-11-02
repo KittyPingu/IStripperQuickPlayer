@@ -59,6 +59,8 @@ internal sealed class CustomShowConfiguration
     public int VitMatteSmallPreferredBatchSize { get; set; } = 2;
     public int VitMatteBasePreferredBatchSize { get; set; } = 1;
     public string LastProcessingAlgorithm { get; set; } = "quality";
+    public string LastSam3ForegroundConcepts { get; set; } = Sam3PipelineSupport.DefaultConcepts;
+    public bool LastSam3SelectiveBackwardRepair { get; set; } = true;
     public string LastRvmOnnxModel { get; set; } = "mobilenetv3";
     public string LastRvmOnnxQuality { get; set; } = "balanced";
     public bool LastRvmOnnxTemporal { get; set; } = true;
@@ -159,8 +161,11 @@ internal sealed class CustomShowConfiguration
             if (configuration.LastProcessingAlgorithm is not
                 ("quality" or "fast" or "rvm-matanyone2" or "rvm-vitmatte-s" or "rvm-vitmatte-b" or
                  "matanyone2" or "vitmatte-s" or "vitmatte-b" or
-                 "sam2matting" or "rvm-onnx"))
+                 "sam2matting" or "sam3-person" or "rvm-onnx"))
                 configuration.LastProcessingAlgorithm = "quality";
+            if (configuration.LastSam3ForegroundConcepts is
+                "person, clothing" or "person\r\nclothing" or "person\nclothing")
+                configuration.LastSam3ForegroundConcepts = Sam3PipelineSupport.DefaultConcepts;
             if (configuration.LastRvmOnnxQuality is not
                 ("fast" or "balanced" or "quality" or
                     RvmOnnxSupport.FullResolution))
@@ -343,6 +348,8 @@ internal sealed class CustomShowProcessing
     public string? Tracker { get; set; }
     public string? PromptMode { get; set; }
     public string[] ForegroundConcepts { get; set; } = [];
+    public double[]? ForegroundConfidences { get; set; }
+    public bool? Sam3SelectiveBackwardRepair { get; set; }
     public string? EnvironmentSpecVersion { get; set; }
     public string? SourceRevision { get; set; }
     public string? CheckpointRevision { get; set; }
@@ -973,7 +980,7 @@ internal sealed partial class CustomShowStore
     static readonly HashSet<string> ProcessingAlgorithms =
         ["quality", "fast", "matanyone2", "rvm-matanyone2",
          "vitmatte-s", "vitmatte-b", "rvm-vitmatte-s", "rvm-vitmatte-b", "sam2matting",
-         "rvm-onnx",
+         "rvm-onnx", "sam3-person",
          // Retained only so already-published shows remain playable.
          "videomama"];
     static readonly HashSet<int> MattingDetailValues = [0, 256, 384, 512, 768, 1024];
@@ -1613,6 +1620,12 @@ internal sealed partial class CustomShowStore
             throw new InvalidDataException("Unknown custom-show processing algorithm.");
         bool sam2Matting = processing.Algorithm == Sam2MattingSupport.Algorithm;
         bool rvmOnnx = processing.Algorithm == CustomClipMedia.RvmOnnxMode;
+        bool sam3 = processing.Algorithm == Sam3PipelineSupport.Algorithm;
+        if (sam3) Sam3PipelineSupport.ValidateConcepts(
+            processing.ForegroundConcepts, processing.ForegroundConfidences);
+        else if ((processing.ForegroundConfidences?.Length ?? 0) != 0 ||
+            processing.Sam3SelectiveBackwardRepair != null)
+            throw new InvalidDataException("SAM3 confidence and repair options require the SAM3 algorithm.");
         if (sam2Matting)
         {
             if (processing.Tracker == null ||
@@ -1645,7 +1658,7 @@ internal sealed partial class CustomShowStore
         }
         else if (processing.ProcessingOptionVersion != 0 ||
             processing.Tracker != null || processing.PromptMode != null ||
-            (processing.ForegroundConcepts?.Length ?? 0) != 0 ||
+            !sam3 && (processing.ForegroundConcepts?.Length ?? 0) != 0 ||
             processing.EnvironmentSpecVersion != null ||
             processing.SourceRevision != null ||
             processing.CheckpointRevision != null ||
@@ -1661,7 +1674,7 @@ internal sealed partial class CustomShowStore
             throw new InvalidDataException("Unknown matting-detail resolution.");
         if (processing.VitMatteInferenceDetailPx is int vitMatteDetail &&
             (processing.Algorithm is not ("vitmatte-s" or "vitmatte-b" or
-                "rvm-vitmatte-s" or "rvm-vitmatte-b") || vitMatteDetail is not (0 or 512 or 768 or 1024)))
+                "rvm-vitmatte-s" or "rvm-vitmatte-b" or "sam3-person") || vitMatteDetail is not (0 or 512 or 768 or 1024)))
             throw new InvalidDataException("Unknown ViTMatte inference-detail resolution.");
         if (!BatchSizeValues.Contains(processing.BatchSize))
             throw new InvalidDataException("Unknown processing batch size.");
@@ -1755,7 +1768,7 @@ internal sealed partial class CustomShowStore
             throw new InvalidDataException("Unknown mask-generation algorithm.");
         if (!trackedMasks && processing.MaskEngine != null)
             throw new InvalidDataException("Mask-engine metadata is not valid for this algorithm.");
-        bool needsSam2 = processing.Algorithm == "matanyone2" ||
+        bool needsSam2 = sam3 || processing.Algorithm == "matanyone2" ||
             trackedMasks && maskEngine != "rvm";
         bool allowsInitialMask = processing.Algorithm is
             "matanyone2" or "rvm-matanyone2" ||
@@ -1765,7 +1778,11 @@ internal sealed partial class CustomShowStore
             throw new InvalidDataException("A valid SAM2 model is required for this algorithm.");
         if (!needsSam2 && processing.Sam2Model != null)
             throw new InvalidDataException("SAM2 model metadata is not valid for this algorithm.");
-        string expectedExecutionPolicy = sam2Matting ? "eager" :
+        if (sam3 && (processing.Sam2Model != "base-plus" ||
+            processing.MattingDetailPx != 1024 || processing.VitMatteInferenceDetailPx != 1024 ||
+            processing.BatchSize != 3 || processing.PrecisionPolicy != "bf16-tracking-fp16-matting"))
+            throw new InvalidDataException("Invalid optimized SAM3 processing recipe.");
+        string expectedExecutionPolicy = sam2Matting || sam3 ? "eager" :
             rvmOnnx ? "realtime-playback" : "auto";
         if (processing.ExecutionPolicy != expectedExecutionPolicy ||
             string.IsNullOrWhiteSpace(processing.PrecisionPolicy) ||
@@ -2208,6 +2225,34 @@ internal sealed partial class CustomShowStore
             "rvm-vitmatte-s" or "rvm-vitmatte-b" ||
         sam2MattingRvmInitializer || maskEngine == "rvm-sam2";
 
+    static bool VerifySam3Processing()
+    {
+        CustomShowProcessing options = new() { Algorithm = Sam3PipelineSupport.Algorithm };
+        Sam3PipelineSupport.ApplyRecipe(options, ["person", "clothing", "red shoes"],
+            [.35, .20, .65], selectiveBackwardRepair: false);
+        options = JsonSerializer.Deserialize<CustomShowProcessing>(
+            JsonSerializer.Serialize(options, JsonOptions), JsonOptions)!;
+        ValidateProcessing(options, []);
+        if (!options.ForegroundConcepts.SequenceEqual(["person", "clothing", "red shoes"]) ||
+            options.ForegroundConfidences == null ||
+            !options.ForegroundConfidences.SequenceEqual([.35, .20, .65]) ||
+            options.Sam3SelectiveBackwardRepair != false ||
+            CustomShowEditorForm.QueueAction(options.Algorithm, true) != "Queue") return false;
+        options.ForegroundConfidences = [.2];
+        try { ValidateProcessing(options, []); return false; }
+        catch (InvalidDataException) { }
+        options.ForegroundConfidences = null;
+        options.Sam3SelectiveBackwardRepair = null;
+        ValidateProcessing(options, []);
+        options.ForegroundConcepts = [];
+        try { ValidateProcessing(options, []); return false; }
+        catch (InvalidDataException) { }
+        options.ForegroundConcepts = ["person"];
+        options.Algorithm = "quality";
+        try { ValidateProcessing(options, []); return false; }
+        catch (InvalidDataException) { return true; }
+    }
+
     internal static bool VerifyCoreLogic()
     {
         return AgeAt(new DateOnly(2000, 8, 8), new DateOnly(2026, 8, 7)) == 25 &&
@@ -2221,6 +2266,8 @@ internal sealed partial class CustomShowStore
             (FindPythonForVerification() is string python &&
                 (python.Length == 0 || File.Exists(python))) &&
             Sam2MattingSupport.VerifyPromptModes() &&
+            Sam3PipelineSupport.VerifyConcepts() &&
+            VerifySam3Processing() &&
             Sam2MattingScenePlanner.VerifySceneValidation() &&
             PropSegmenterCompatible("rvm-matanyone2", false, null) &&
             PropSegmenterCompatible("rvm-vitmatte-s", false, null) &&

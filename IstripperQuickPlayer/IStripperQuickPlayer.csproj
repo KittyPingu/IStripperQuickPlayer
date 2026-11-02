@@ -1,5 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\HoverReady.cur" LogicalName="HoverReady.cur" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
@@ -66,6 +70,12 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\tools\custom-shows\nvidia_optical_flow.py" Link="custom-shows\nvidia_optical_flow.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam3_pipeline_worker.py" Link="custom-shows\sam3_pipeline_worker.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\tools\custom-shows\sam3_tracking_repair.py" Link="custom-shows\sam3_tracking_repair.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="..\tools\custom-shows\vitmatte_worker.py" Link="custom-shows\vitmatte_worker.py">

@@ -15,3 +15,5 @@ void SuspendOpenGlHdrSurface();
 void ResumeOpenGlHdr();
 long OpenGlHdrStatus();
 long OpenGlHdrFrameCount();
+
+void SetOpenGlHdrInteractionCursor(HCURSOR cursor);

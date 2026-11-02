@@ -846,7 +846,7 @@ internal sealed class CustomShowQueueManager : IDisposable
         {
             CustomShowQueueJob? job = document.Jobs.FirstOrDefault(value => value.Id == id);
             if (job == null || job.Status != CustomShowQueueStatus.Running) return;
-            double next = Math.Clamp(percent, 0, 100);
+            double next = Math.Clamp(percent, 0, 99);
             // A worker stage with no percentage must not erase valid global
             // progress from a prior stage. Older SAM2Matting workers emitted
             // zero during tracking even though the job was still advancing.
@@ -1086,28 +1086,7 @@ internal static class CustomShowJobRunner
         {
             show = store.LoadManifest(job.TargetShowId!);
             previousProcessing = show.Processing == null ? null : Clone(show.Processing);
-            CopyDirectory(Path.Combine(store.ShowsFolder, show.Id), staging);
-            if (job.Operation == CustomShowQueueOperation.Reprocess &&
-                !job.KeepExistingMasks)
-            {
-                string masks = Path.Combine(staging, "masks");
-                string[] replacedIds = (job.ReprocessClipIds.Length == 0
-                    ? job.Clips.Where(clip => clip.Included).Select(clip => clip.Id)
-                    : job.ReprocessClipIds).ToArray();
-                foreach (string clipId in replacedIds)
-                    CustomShowQueueStore.TryDelete(Path.Combine(masks, clipId));
-                string retainedPath = Path.Combine(masks, "retained-masks.json");
-                CustomRetainedMasksManifest? retained = CustomShowMaskDraft.Load<
-                    CustomRetainedMasksManifest>(retainedPath);
-                if (retained != null)
-                {
-                    HashSet<string> replaced = replacedIds.ToHashSet(
-                        StringComparer.OrdinalIgnoreCase);
-                    retained.Clips = retained.Clips.Where(clip =>
-                        !replaced.Contains(clip.ClipId)).ToArray();
-                    CustomShowStore.WriteJsonAtomic(retainedPath, retained);
-                }
-            }
+            PrepareExistingShow(job, Path.Combine(store.ShowsFolder, show.Id), staging);
             existing = show.Clips;
             offset = job.Operation == CustomShowQueueOperation.Append
                 ? show.Media.DurationMs : 0;
@@ -1126,6 +1105,8 @@ internal static class CustomShowJobRunner
             configuration, queue, log, initialMasks, retainedMasks,
             generatedMasks, progress, token, generatePreviews,
             pauseAfterClipRequested);
+        progress.Report(new CustomShowProgress("finalizing", 98,
+            CustomShowQueueEta.FinalizationMarker + " Preparing source media and show details"));
         ApplySourceCopySplitChoice(job, show, existing, clips, staging);
         if (generatedMasks.Count > 0 && job.Operation != CustomShowQueueOperation.Append)
         {
@@ -1180,15 +1161,23 @@ internal static class CustomShowJobRunner
         }
         show.Processing = Processing(job, result, show.Clips, clipsToProcess,
             previousProcessing, offset, configuration.DefaultAlphaThreshold);
+        progress.Report(new CustomShowProgress("finalizing", 98.5,
+            CustomShowQueueEta.FinalizationMarker + " Preparing cover image"));
         await SaveCover(job, show, staging, queue, token);
+        progress.Report(new CustomShowProgress("finalizing", 99,
+            CustomShowQueueEta.FinalizationMarker + " Saving show metadata"));
         CustomShowStore.WriteJsonAtomic(Path.Combine(staging, "show.json"), show);
         job.ReadyToPublish = true;
-        if (reviewBeforePublication != null &&
-            !await reviewBeforePublication(staging, show))
+        if (reviewBeforePublication != null)
         {
-            job.ReadyToPublish = false;
-            throw new OperationCanceledException(
-                "Process and Preview was cancelled before publication.");
+            progress.Report(new CustomShowProgress("finalizing", 99,
+                CustomShowQueueEta.FinalizationMarker + " Waiting for result review"));
+            if (!await reviewBeforePublication(staging, show))
+            {
+                job.ReadyToPublish = false;
+                throw new OperationCanceledException(
+                    "Process and Preview was cancelled before publication.");
+            }
         }
         await PublishAsync(job, show, staging, store, progress,
             preparePublication, token);
@@ -1303,8 +1292,8 @@ internal static class CustomShowJobRunner
         string staging, CustomShowStore store, IProgress<CustomShowProgress> progress,
         Func<string?, Task> preparePublication, CancellationToken token)
     {
-        progress.Report(new CustomShowProgress("Waiting to publish", 100,
-            "Processing complete; preparing the library update"));
+        progress.Report(new CustomShowProgress("Waiting to publish", 99,
+            CustomShowQueueEta.FinalizationMarker + " Preparing the library update"));
         try
         {
             await preparePublication(job.Operation == CustomShowQueueOperation.New
@@ -1338,8 +1327,9 @@ internal static class CustomShowJobRunner
                         "existing show because its folder remained in use. Retry this " +
                         "queue entry to publish the completed output without processing again.",
                         error);
-                progress.Report(new CustomShowProgress("Waiting to publish", 100,
-                    $"Waiting for the existing show files to be released ({attempt}/{attempts})"));
+                progress.Report(new CustomShowProgress("Waiting to publish", 99,
+                    CustomShowQueueEta.FinalizationMarker +
+                    $" Waiting for existing show files to be released ({attempt}/{attempts})"));
                 await Task.Delay(250, token);
             }
         }
@@ -1351,7 +1341,7 @@ internal static class CustomShowJobRunner
         if (job.Manifest.Processing?.Algorithm is not
             ("quality" or "fast" or "rvm-matanyone2" or
              "rvm-vitmatte-s" or "rvm-vitmatte-b" or "matanyone2" or
-             "sam2matting" or "rvm-onnx"))
+             "sam2matting" or "sam3-person" or "rvm-onnx"))
             throw new CustomShowQueueAttentionException(
                 "This processing algorithm cannot run unattended.");
         bool installed = job.Manifest.Processing.Algorithm switch
@@ -1362,6 +1352,7 @@ internal static class CustomShowJobRunner
             "matanyone2" => CustomShowProcessor.IsMatAnyone2Installed(configuration),
             "sam2matting" => Sam2MattingSupport.IsInstalled(configuration,
                 job.Manifest.Processing.Tracker),
+            Sam3PipelineSupport.Algorithm => Sam3PipelineSupport.IsInstalled(configuration),
             "rvm-onnx" => true,
             _ => File.Exists(CustomShowProcessor.WorkerPath)
         };
@@ -1508,6 +1499,12 @@ internal static class CustomShowJobRunner
         bool generatePreviews, Func<bool>? pauseAfterClipRequested)
     {
         CustomShowProcessing options = job.Manifest.Processing!;
+        bool archiveMasks = options.Algorithm is
+            "rvm-vitmatte-s" or "rvm-vitmatte-b" or "sam3-person";
+        IProgress<CustomShowProgress> jobProgress = progress;
+        double renderingLimit = archiveMasks ? 90 : 98;
+        progress = new Progress<CustomShowProgress>(value => jobProgress.Report(
+            value with { Percent = value.Percent * renderingLimit / 100 }));
         string? propSegmenterPath = PropSegmenterPath(options);
         CustomShowClip[] included = clips.Where(value => value.Included).ToArray();
         long total = included.Sum(value => Math.Max(1, value.EndMs - value.StartMs));
@@ -1647,8 +1644,13 @@ internal static class CustomShowJobRunner
             IProgress<CustomShowProgress> cleanupProgress = new Progress<CustomShowProgress>(value =>
                 aggregate.Report(value with { Percent = 90 + value.Percent * .1 }));
             string output = Path.Combine(staging, "clips", clip.Id);
-            if (TryLoadCompletedClip(output, cleanup, out CustomShowProcessResult? resumed))
+            if (TryLoadCompletedClip(output, job.Id, out CustomShowProcessResult? resumed))
             {
+                if (options.Algorithm == Sam3PipelineSupport.Algorithm)
+                {
+                    string masks = Path.Combine(output, ".rvm-masks");
+                    if (Directory.Exists(masks)) generatedMasks[clip.Id] = masks;
+                }
                 SetMedia(clip, resumed);
                 completed += clipDuration;
                 firstResult ??= resumed;
@@ -1656,6 +1658,8 @@ internal static class CustomShowJobRunner
                     "Reusing completed clip"));
                 continue;
             }
+            string completion = Path.Combine(output, ".queue-complete");
+            if (File.Exists(completion)) File.Delete(completion);
             string? mask = job.InitialMaskAssets.TryGetValue(clip.Id, out string? relative)
                 ? Path.Combine(queue.Assets(job.Id), relative.Replace('/',
                     Path.DirectorySeparatorChar))
@@ -1678,11 +1682,14 @@ internal static class CustomShowJobRunner
                 matAnyoneUseLongTermMemory: options.MatAnyoneUseLongTermMemory,
                 vitMatteInferenceDetailPx:
                     options.VitMatteInferenceDetailPx ?? 1024,
-                propSegmenterModelPath: propSegmenterPath);
+                propSegmenterModelPath: propSegmenterPath,
+                foregroundConcepts: options.ForegroundConcepts,
+                foregroundConfidences: options.ForegroundConfidences,
+                sam3SelectiveBackwardRepair: options.Sam3SelectiveBackwardRepair ?? true);
             if (cleanup)
                 await CleanupAlpha(output, cleanupProgress);
-            File.WriteAllText(Path.Combine(output, ".queue-complete"), "complete");
-            if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
+            File.WriteAllText(completion, job.Id);
+            if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b" or "sam3-person")
             {
                 string masks = Path.Combine(output, ".rvm-masks");
                 if (Directory.Exists(masks)) generatedMasks[clip.Id] = masks;
@@ -1693,27 +1700,50 @@ internal static class CustomShowJobRunner
             if (pauseAfterClipRequested?.Invoke() == true)
                 throw new CustomShowQueueClipPauseException();
         }
-        if (options.Algorithm is "rvm-vitmatte-s" or "rvm-vitmatte-b")
-            foreach ((string clipId, string masks) in generatedMasks)
+        if (archiveMasks && generatedMasks.Count > 0)
+        {
+            jobProgress.Report(new CustomShowProgress("mask-archive", 90,
+                CustomShowQueueEta.MaskMarker + " Scanning retained masks"));
+            var archives = generatedMasks.Select(item => new
             {
-                string folder = Path.Combine(staging, "masks", clipId);
+                ClipId = item.Key, Folder = item.Value,
+                Frames = Directory.EnumerateFiles(item.Value, "*.png").LongCount()
+            }).ToArray();
+            long totalFrames = archives.Sum(item => item.Frames), savedFrames = 0;
+            for (int index = 0; index < archives.Length; index++)
+            {
+                var archive = archives[index];
+                string folder = Path.Combine(staging, "masks", archive.ClipId);
                 Directory.CreateDirectory(folder);
-                CustomMaskArchive.Create(masks, Path.Combine(folder,
-                    "tracked-masks.iqpmask"));
-                Directory.Delete(masks, true);
+                void ReportArchive(string stage, long frames)
+                {
+                    long completedFrames = savedFrames + frames;
+                    jobProgress.Report(new CustomShowProgress("mask-archive",
+                        90 + 8d * completedFrames / Math.Max(1, totalFrames),
+                        $"{CustomShowQueueEta.MaskMarker} {stage} clip {index + 1}/{archives.Length}: " +
+                        $"{completedFrames}/{totalFrames} frames"));
+                }
+                CustomMaskArchive.Create(archive.Folder, Path.Combine(folder,
+                    "tracked-masks.iqpmask"), value => ReportArchive(value.Stage,
+                        value.Stage == "Compressing" ? value.Frames : archive.Frames));
+                ReportArchive("Cleaning up temporary masks for", archive.Frames);
+                Directory.Delete(archive.Folder, true);
+                savedFrames += archive.Frames;
             }
+        }
         return firstResult!;
     }
 
-    static bool TryLoadCompletedClip(string output, bool cleanup,
+    static bool TryLoadCompletedClip(string output, string jobId,
         out CustomShowProcessResult result)
     {
         result = new();
         string resultPath = Path.Combine(output, "result.json");
-        if (!File.Exists(resultPath) || cleanup &&
-            !File.Exists(Path.Combine(output, ".queue-complete"))) return false;
         try
         {
+            string completed = Path.Combine(output, ".queue-complete");
+            if (!File.Exists(resultPath) || !File.Exists(completed) ||
+                File.ReadAllText(completed) != jobId) return false;
             result = JsonSerializer.Deserialize<CustomShowProcessResult>(
                 File.ReadAllText(resultPath), CustomShowStore.JsonOptions) ?? new();
             string foreground = Path.Combine(output,
@@ -2070,13 +2100,48 @@ internal static class CustomShowJobRunner
             return result;
         }).ToArray();
 
-    static void CopyDirectory(string source, string destination)
+    static void PrepareExistingShow(CustomShowQueueJob job, string source, string staging)
+    {
+        string prepared = Path.Combine(staging, ".queue-prepared");
+        if (File.Exists(prepared) && File.ReadAllText(prepared) == job.Id) return;
+        // Published files are a starting snapshot, never resumable work for this job.
+        Directory.CreateDirectory(staging);
+        File.Delete(Path.Combine(staging, "show.json"));
+        CopyDirectory(source, staging, new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            Path.Combine(source, "show.json"), Path.Combine(source, "processing.log"),
+            Path.Combine(source, ".queue-prepared")
+        });
+        if (job.Operation == CustomShowQueueOperation.Reprocess && !job.KeepExistingMasks)
+        {
+            string masks = Path.Combine(staging, "masks");
+            HashSet<string> replaced = ClipsToProcess(job, job.Clips)
+                .Select(clip => clip.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (string clipId in replaced)
+                CustomShowQueueStore.TryDelete(Path.Combine(masks, clipId));
+            string retainedPath = Path.Combine(masks, "retained-masks.json");
+            CustomRetainedMasksManifest? retained = CustomShowMaskDraft.Load<
+                CustomRetainedMasksManifest>(retainedPath);
+            if (retained != null)
+            {
+                retained.Clips = retained.Clips.Where(clip =>
+                    !replaced.Contains(clip.ClipId)).ToArray();
+                CustomShowStore.WriteJsonAtomic(retainedPath, retained);
+            }
+        }
+        File.WriteAllText(prepared, job.Id);
+    }
+
+    static void CopyDirectory(string source, string destination,
+        IReadOnlySet<string> excludedFiles)
     {
         Directory.CreateDirectory(destination);
         foreach (string file in Directory.EnumerateFiles(source))
-            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
+            if (!excludedFiles.Contains(file))
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), true);
         foreach (string folder in Directory.EnumerateDirectories(source))
-            CopyDirectory(folder, Path.Combine(destination, Path.GetFileName(folder)));
+            CopyDirectory(folder, Path.Combine(destination, Path.GetFileName(folder)),
+                excludedFiles);
     }
 
     internal static void PreserveLog(string work, string assets)
@@ -2090,6 +2155,78 @@ internal static class CustomShowJobRunner
     static T Clone<T>(T value) => JsonSerializer.Deserialize<T>(
         JsonSerializer.Serialize(value, CustomShowStore.JsonOptions),
         CustomShowStore.JsonOptions)!;
+
+    internal static bool VerifyReprocessResume()
+    {
+        string root = Path.Combine(Path.GetTempPath(),
+            "iqp-reprocess-resume-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string source = Path.Combine(root, "published");
+            string staging = Path.Combine(root, "work");
+            CustomShowQueueJob job = new()
+            {
+                Operation = CustomShowQueueOperation.Reprocess,
+                Clips = [new() { Id = "selected", Included = true },
+                    new() { Id = "untouched", Included = true }],
+                ReprocessClipIds = ["selected"]
+            };
+            foreach (string clipId in new[] { "selected", "untouched" })
+            {
+                string output = Path.Combine(source, "clips", clipId);
+                Directory.CreateDirectory(output);
+                File.WriteAllText(Path.Combine(output, "foreground.mp4"), "old video");
+                File.WriteAllText(Path.Combine(output, "alpha.mkv"), "old alpha");
+                File.WriteAllText(Path.Combine(output, ".queue-complete"), "old-job");
+                CustomShowStore.WriteJsonAtomic(Path.Combine(output, "result.json"),
+                    new CustomShowProcessResult
+                    {
+                        Width = 1280, Height = 720, FrameRate = "25/1", DurationMs = 1000
+                    });
+                string masks = Path.Combine(source, "masks", clipId);
+                Directory.CreateDirectory(masks);
+                File.WriteAllText(Path.Combine(masks, "tracked-masks.iqpmask"), "old masks");
+            }
+            CustomShowStore.WriteJsonAtomic(Path.Combine(source, "masks", "retained-masks.json"),
+                new CustomRetainedMasksManifest
+                {
+                    Clips = job.Clips.Select(clip => new CustomRetainedMaskClip
+                        { ClipId = clip.Id }).ToArray()
+                });
+            File.WriteAllText(Path.Combine(source, "show.json"), "old manifest");
+            File.WriteAllText(Path.Combine(source, "processing.log"), "old log");
+            File.WriteAllText(Path.Combine(source, ".queue-prepared"), "old-job");
+            PrepareExistingShow(job, source, staging);
+            string selected = Path.Combine(staging, "clips", "selected");
+            string selectedMasks = Path.Combine(staging, "masks", "selected");
+            if (TryLoadCompletedClip(selected, job.Id, out _) ||
+                File.Exists(Path.Combine(staging, "show.json")) ||
+                File.Exists(Path.Combine(staging, "processing.log")) ||
+                Directory.Exists(selectedMasks) ||
+                !File.Exists(Path.Combine(staging, "masks", "untouched", "tracked-masks.iqpmask")) ||
+                CustomShowMaskDraft.Load<CustomRetainedMasksManifest>(Path.Combine(staging,
+                    "masks", "retained-masks.json"))?.Clips.Single().ClipId != "untouched")
+                return false;
+            File.WriteAllText(Path.Combine(selected, "foreground.mp4"), "new video");
+            File.WriteAllText(Path.Combine(selected, ".queue-complete"), job.Id);
+            Directory.CreateDirectory(selectedMasks);
+            File.WriteAllText(Path.Combine(selectedMasks, "tracked-masks.iqpmask"), "new masks");
+            File.WriteAllText(Path.Combine(staging, "processing.log"), "new log");
+            PrepareExistingShow(job, source, staging);
+            if (!TryLoadCompletedClip(selected, job.Id, out _) ||
+                File.ReadAllText(Path.Combine(selected, "foreground.mp4")) != "new video" ||
+                File.ReadAllText(Path.Combine(selectedMasks, "tracked-masks.iqpmask")) != "new masks" ||
+                File.ReadAllText(Path.Combine(staging, "processing.log")) != "new log" ||
+                File.ReadAllText(Path.Combine(staging, "clips", "untouched", "foreground.mp4")) != "old video")
+                return false;
+            job.KeepExistingMasks = true;
+            string reuse = Path.Combine(root, "reuse");
+            PrepareExistingShow(job, source, reuse);
+            return !TryLoadCompletedClip(Path.Combine(reuse, "clips", "selected"), job.Id, out _) &&
+                File.Exists(Path.Combine(reuse, "masks", "selected", "tracked-masks.iqpmask"));
+        }
+        finally { CustomShowQueueStore.TryDelete(root); }
+    }
 
     internal static bool VerifyQueuePersistence()
     {
@@ -2228,11 +2365,14 @@ internal static class CustomShowJobRunner
                 {
                     Width = 1280, Height = 720, FrameRate = "25/1", DurationMs = 1000
                 });
-            if (!TryLoadCompletedClip(resumable, false, out CustomShowProcessResult resumed) ||
-                resumed.DurationMs != 1000 || TryLoadCompletedClip(resumable, true, out _))
+            if (TryLoadCompletedClip(resumable, running.Id, out _))
                 return false;
             File.WriteAllText(Path.Combine(resumable, ".queue-complete"), "complete");
-            if (!TryLoadCompletedClip(resumable, true, out _)) return false;
+            if (TryLoadCompletedClip(resumable, running.Id, out _)) return false;
+            File.WriteAllText(Path.Combine(resumable, ".queue-complete"), running.Id);
+            if (!TryLoadCompletedClip(resumable, running.Id,
+                    out CustomShowProcessResult resumed) || resumed.DurationMs != 1000 ||
+                TryLoadCompletedClip(resumable, pending.Id, out _)) return false;
             CustomShowQueueManager manager = new(shows,
                 new CustomShowConfiguration { LibraryRoot = root }, () => { });
             manager.Move(running.Id, -1);
@@ -2365,9 +2505,11 @@ internal static class CustomShowJobRunner
     }
 }
 
-internal sealed class CustomShowAlphaEta
+internal sealed class CustomShowQueueEta
 {
     const string Marker = "NVIDIA alpha stabilization:";
+    internal const string MaskMarker = "Saving retained masks:";
+    internal const string FinalizationMarker = "Finalizing:";
     readonly List<(double Seconds, long Frames)> samples = [];
     string? clip;
     DateTime? started;
@@ -2377,16 +2519,55 @@ internal sealed class CustomShowAlphaEta
         job.Status == CustomShowQueueStatus.Running && job.Message.Contains(Marker,
             StringComparison.Ordinal);
 
+    internal static bool IsArchiving(CustomShowQueueJob job) =>
+        job.Status == CustomShowQueueStatus.Running &&
+        job.Message.StartsWith(MaskMarker, StringComparison.Ordinal);
+
+    internal static double DisplayPercent(CustomShowQueueJob job) =>
+        job.Status == CustomShowQueueStatus.Running ? Math.Min(99, job.Percent) : job.Percent;
+
+    internal static string FormatTiming(CustomShowQueueJob job,
+        TimeSpan? phaseRemaining, DateTime now)
+    {
+        if (job.Status == CustomShowQueueStatus.Pending ||
+            job.StartedUtc is not DateTime started) return "";
+        TimeSpan elapsed = (job.CompletedUtc ?? now) - started;
+        if (IsStabilizing(job))
+            return $"{Format(elapsed)} / " + (phaseRemaining is TimeSpan alpha
+                ? $"~{Format(alpha)} (pass)" : "estimating pass...");
+        if (IsArchiving(job))
+            return $"{Format(elapsed)} / " + (phaseRemaining is TimeSpan masks
+                ? $"~{Format(masks)} (masks)" :
+                job.Message.Contains("Validating", StringComparison.Ordinal)
+                    ? "validating masks..." :
+                job.Message.Contains("Cleaning up", StringComparison.Ordinal)
+                    ? "cleaning up masks..." : "estimating masks...");
+        if (job.Status == CustomShowQueueStatus.Running &&
+            (job.Message.StartsWith(FinalizationMarker, StringComparison.Ordinal) ||
+                job.Percent >= 99))
+            return $"{Format(elapsed)} / finalizing...";
+        if (job.Status != CustomShowQueueStatus.Running || job.Percent < 1)
+            return Format(elapsed);
+        TimeSpan remaining = TimeSpan.FromSeconds(elapsed.TotalSeconds *
+            (100 - job.Percent) / job.Percent);
+        return $"{Format(elapsed)} / ~{Format(remaining)}";
+    }
+
+    static string Format(TimeSpan value) => value.TotalHours >= 1
+        ? value.ToString(@"h\:mm\:ss") : value.ToString(@"m\:ss");
+
     internal TimeSpan? Update(CustomShowQueueJob job, double seconds)
     {
-        int marker = job.Message.IndexOf(Marker, StringComparison.Ordinal);
-        if (!IsStabilizing(job) || !CustomShowProcessingForm.TryParseFrameProgress(
+        string phase = IsArchiving(job) ? MaskMarker : Marker;
+        int marker = job.Message.IndexOf(phase, StringComparison.Ordinal);
+        if (!(IsStabilizing(job) || IsArchiving(job)) ||
+            !CustomShowProcessingForm.TryParseFrameProgress(
                 job.Message, out long frames, out long frameTotal))
         {
             samples.Clear();
             return null;
         }
-        string currentClip = job.Message[..marker];
+        string currentClip = phase + job.Message[..marker];
         if (started != job.StartedUtc || clip != currentClip || total != frameTotal ||
             samples.Count > 0 && frames < samples[^1].Frames)
             samples.Clear();
@@ -2408,7 +2589,7 @@ internal sealed class CustomShowAlphaEta
         CustomShowQueueJob job = new() { Status = CustomShowQueueStatus.Running,
             StartedUtc = DateTime.UtcNow,
             Message = "Clip 1/2: NVIDIA alpha stabilization: Processed 100/1000 frames" };
-        CustomShowAlphaEta estimate = new();
+        CustomShowQueueEta estimate = new();
         if (estimate.Update(job, 0) != null) return false;
         job.Message = "Clip 1/2: NVIDIA alpha stabilization: Processed 200/1000 frames";
         if (estimate.Update(job, 10) != TimeSpan.FromSeconds(80)) return false;
@@ -2418,7 +2599,30 @@ internal sealed class CustomShowAlphaEta
         job.Message = "Clip 2/2: NVIDIA alpha stabilization: Processed 400/1000 frames";
         if (estimate.Update(job, 52) != null) return false;
         job.Message = "Clip 2/2: NVIDIA alpha stabilization: Encoding alpha";
-        return estimate.Update(job, 53) == null;
+        if (estimate.Update(job, 53) != null) return false;
+        job.Message = MaskMarker + " Compressing clip 1/2: 100/1000 frames";
+        if (estimate.Update(job, 60) != null) return false;
+        job.Message = MaskMarker + " Compressing clip 1/2: 200/1000 frames";
+        if (estimate.Update(job, 70) != TimeSpan.FromSeconds(80)) return false;
+        job.Message = MaskMarker + " Compressing clip 2/2: 300/1000 frames";
+        if (estimate.Update(job, 80) != TimeSpan.FromSeconds(70) ||
+            estimate.Update(job, 111) != null) return false;
+        DateTime now = DateTime.UtcNow;
+        job.StartedUtc = now - TimeSpan.FromHours(1);
+        if (FormatTiming(job, TimeSpan.FromMinutes(2), now) !=
+            "1:00:00 / ~2:00 (masks)") return false;
+        job.Message = MaskMarker + " Validating clip 2/2: 1000/1000 frames";
+        if (estimate.Update(job, 112) != null ||
+            FormatTiming(job, null, now) != "1:00:00 / validating masks...") return false;
+        job.Message = FinalizationMarker + " Preparing cover image";
+        job.Percent = 99;
+        if (FormatTiming(job, null, now) != "1:00:00 / finalizing...") return false;
+        job.Percent = 100;
+        if (DisplayPercent(job) != 99 || FormatTiming(job, null, now) !=
+            "1:00:00 / finalizing...") return false;
+        job.Status = CustomShowQueueStatus.Completed;
+        job.CompletedUtc = now;
+        return DisplayPercent(job) == 100 && FormatTiming(job, null, now) == "1:00:00";
     }
 }
 
@@ -2426,7 +2630,7 @@ internal sealed class CustomShowQueueForm : Form
 {
     const int MessageColumnIndex = 7;
     readonly CustomShowQueueManager manager;
-    readonly Dictionary<string, CustomShowAlphaEta> alphaEstimates = [];
+    readonly Dictionary<string, CustomShowQueueEta> phaseEstimates = [];
     readonly Stopwatch estimateClock = Stopwatch.StartNew();
     readonly Action<CustomShowQueueJob> edit;
     readonly Action<CustomShowQueueJob, string> duplicate;
@@ -2440,7 +2644,7 @@ internal sealed class CustomShowQueueForm : Form
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
         ScrollBars = ScrollBars.Both
     };
-    readonly Button run = new() { Text = "Run", AutoSize = true };
+    readonly Button run = new() { Text = "&Run", AutoSize = true };
     readonly Button pause = new() { Text = "Pause", AutoSize = true };
     readonly Button stop = new() { Text = "Stop", AutoSize = true };
     readonly Button up = new() { Text = "Move Up", AutoSize = true };
@@ -2540,8 +2744,8 @@ internal sealed class CustomShowQueueForm : Form
         CustomShowQueueJob[] jobs = manager.Jobs.ToArray();
         QueueRow[] values = jobs.Select(job =>
         {
-            if (!alphaEstimates.TryGetValue(job.Id, out CustomShowAlphaEta? estimate))
-                alphaEstimates[job.Id] = estimate = new();
+            if (!phaseEstimates.TryGetValue(job.Id, out CustomShowQueueEta? estimate))
+                phaseEstimates[job.Id] = estimate = new();
             return new QueueRow(job, estimate.Update(job, estimateClock.Elapsed.TotalSeconds));
         }).ToArray();
         bool structureChanged = grid.Rows.Count != values.Length ||
@@ -2710,7 +2914,13 @@ internal sealed class CustomShowQueueForm : Form
                     : $"{(processing.PromptMode == "rvm-initial-mask" ?
                         "Automatic RVM initial masks" : "Interactive initial masks")}: " +
                         $"{job.ScenePrompts.Length}/{processing.Scenes.Length} scenes"
-                : "Prompt: existing pipeline";
+                : processing?.Algorithm == Sam3PipelineSupport.Algorithm
+                    ? "SAM3 concepts: " + Sam3PipelineSupport.FormatPrompts(
+                        processing.ForegroundConcepts, processing.ForegroundConfidences)
+                        .ReplaceLineEndings(", ") +
+                        (processing.Sam3SelectiveBackwardRepair ?? true
+                            ? "; selective repair" : "; no repair")
+                    : "Prompt: existing pipeline";
         string detail =
             $"Tracker: {(processing?.Tracker == null ? "—" : Sam2MattingSupport.DisplayName(processing.Tracker))}\r\n" +
             $"Prompt type: {processing?.PromptMode ?? "—"}\r\n{prompt}\r\n" +
@@ -2763,46 +2973,31 @@ internal sealed class CustomShowQueueForm : Form
     sealed class QueueRow
     {
         readonly CustomShowQueueJob job;
-        readonly TimeSpan? alphaRemaining;
+        readonly TimeSpan? phaseRemaining;
         internal string Id => job.Id;
         public string Operation => job.Operation.ToString();
         public string Title => job.Manifest.Title;
         public string Model => job.Performer.ModelName;
         public string Algorithm => job.Manifest.Processing?.Algorithm == "sam2matting"
             ? Sam2MattingSupport.DisplayName(job.Manifest.Processing.Tracker)
+            : job.Manifest.Processing?.Algorithm == Sam3PipelineSupport.Algorithm
+                ? "SAM3 foreground"
             : job.Manifest.Processing?.Algorithm ?? "";
         public string Source => Path.GetFileName(job.SourcePath);
         public string Status => job.Status == CustomShowQueueStatus.NeedsAttention
             ? "Needs attention" : job.Status.ToString();
-        public string Progress => $"{job.Percent:0}%";
+        public string Progress => $"{CustomShowQueueEta.DisplayPercent(job):0}%";
         public string Message => job.Error ?? job.Message;
-        public string Timing
-        {
-            get
-            {
-                if (job.Status == CustomShowQueueStatus.Pending) return "";
-                if (job.StartedUtc is not DateTime started) return "";
-                TimeSpan elapsed = (job.CompletedUtc ?? DateTime.UtcNow) - started;
-                if (CustomShowAlphaEta.IsStabilizing(job))
-                    return $"{Format(elapsed)} / " + (alphaRemaining is TimeSpan alpha
-                        ? $"~{Format(alpha)} (pass)" : "estimating pass...");
-                if (job.Status != CustomShowQueueStatus.Running || job.Percent < 1)
-                    return Format(elapsed);
-                TimeSpan remaining = TimeSpan.FromSeconds(elapsed.TotalSeconds *
-                    (100 - job.Percent) / job.Percent);
-                return $"{Format(elapsed)} / ~{Format(remaining)}";
-            }
-        }
+        public string Timing => CustomShowQueueEta.FormatTiming(job,
+            phaseRemaining, DateTime.UtcNow);
         public string Completed => job.CompletedUtc?.ToLocalTime().ToString("g") ?? "";
-        internal QueueRow(CustomShowQueueJob job, TimeSpan? alphaRemaining)
+        internal QueueRow(CustomShowQueueJob job, TimeSpan? phaseRemaining)
         {
             this.job = job;
-            this.alphaRemaining = alphaRemaining;
+            this.phaseRemaining = phaseRemaining;
         }
         internal object[] Values() => [Operation, Title, Model, Algorithm, Source,
             Status, Progress, Message, Timing, Completed];
-        static string Format(TimeSpan value) => value.TotalHours >= 1
-            ? value.ToString(@"h\:mm\:ss") : value.ToString(@"m\:ss");
     }
 
     sealed class QueueGrid : DataGridView

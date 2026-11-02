@@ -159,6 +159,7 @@ internal static class CustomShowWizardRecommendations
         MatAnyone => "MatAnyone 2",
         VitMatteSmall => "ViTMatte S",
         Sam2MattingSupport.Algorithm => "SAM2Matting",
+        Sam3PipelineSupport.Algorithm => "SAM3 foreground",
         RvmOnnxSupport.Algorithm => "RVM ONNX",
         _ => algorithm
     };

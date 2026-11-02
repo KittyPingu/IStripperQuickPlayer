@@ -4,6 +4,7 @@
 #include <dcomp.h>
 #include <d3dcompiler.h>
 #include <mutex>
+#include <atomic>
 #include <vector>
 #include <cwchar>
 #include "OpenGlHdr.h"
@@ -15,6 +16,13 @@
 
 namespace
 {
+    std::atomic<HCURSOR> interactionCursor{nullptr};
+    HCURSOR InteractionCursor()
+    {
+        const HCURSOR cursor = interactionCursor.load();
+        return cursor != nullptr ? cursor : LoadCursorW(nullptr, IDC_ARROW);
+    }
+
     constexpr unsigned GlTexture2D = 0x0DE1;
     constexpr unsigned GlTextureBinding2D = 0x8069;
     constexpr unsigned WglAccessWriteDiscardNv = 0x0002;
@@ -132,7 +140,7 @@ namespace
         if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
         if (message == WM_SETCURSOR)
         {
-            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            SetCursor(InteractionCursor());
             return TRUE;
         }
         if (message == WM_CLOSE)
@@ -275,7 +283,7 @@ namespace
             return MA_NOACTIVATE;
         if (message == WM_SETCURSOR)
         {
-            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            SetCursor(InteractionCursor());
             return TRUE;
         }
         WNDPROC original = state.sourceWindowProc;
@@ -286,7 +294,7 @@ namespace
         // after WM_SETCURSOR has already returned. Apply our cursor last so
         // its transient busy/pointing-hand cursors cannot leak through.
         if (message == WM_MOUSEMOVE)
-            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            SetCursor(InteractionCursor());
         return result;
     }
 
@@ -1152,4 +1160,9 @@ long OpenGlHdrStatus() { return InterlockedCompareExchange(&status, 0, 0); }
 long OpenGlHdrFrameCount()
 {
     return InterlockedCompareExchange(&frameCount, 0, 0);
+}
+
+void SetOpenGlHdrInteractionCursor(HCURSOR cursor)
+{
+    interactionCursor = cursor;
 }

@@ -2,15 +2,21 @@
 param(
     [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'IStripperQuickPlayer\sam2matting-worker\v1'),
     [string]$PythonLauncher = 'py',
+    [switch]$InstallSam3,
     [switch]$Repair
 )
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
+$toolName = if ($InstallSam3) { 'SAM3 foreground' } else { 'SAM2Matting' }
+if ($InstallSam3 -and -not $PSBoundParameters.ContainsKey('RuntimeRoot')) {
+    $RuntimeRoot = Join-Path $env:LOCALAPPDATA 'IStripperQuickPlayer\sam2matting-sam3-worker\v1'
+}
+$lockName = if ($InstallSam3) { 'Sam3Setup' } else { 'Sam2MattingSetup' }
 $setupLock = [System.Threading.Semaphore]::new(
-    1, 1, 'Local\IStripperQuickPlayer.Sam2MattingSetup')
+    1, 1, "Local\IStripperQuickPlayer.$lockName")
 if (-not $setupLock.WaitOne(0)) {
-    throw 'SAM2Matting setup is already running.'
+    throw "$toolName setup is already running."
 }
 
 $sourceRevision = '73dd721d77b56749248aefe5e8824d7f61b9d13c'
@@ -170,11 +176,22 @@ try {
 
     New-Item -ItemType Directory -Force -Path $runtime,$checkpoints,$cache,
         (Split-Path $sourceRoot -Parent) | Out-Null
+    if ($InstallSam3) {
+        Remove-Item -LiteralPath (Join-Path $runtime 'environment.json') `
+            -Force -ErrorAction SilentlyContinue
+    }
     if ($Repair -and (Test-Path -LiteralPath $venv)) {
+        $resolvedVenv = (Resolve-Path -LiteralPath $venv).ProviderPath
+        if ([System.IO.Path]::GetDirectoryName($resolvedVenv) -ne $runtime -or
+            ((Get-Item -LiteralPath $venv).Attributes -band
+                [System.IO.FileAttributes]::ReparsePoint)) {
+            throw 'Refusing to recreate a Python environment outside the selected runtime.'
+        }
         Remove-Item -LiteralPath $venv -Recurse -Force
     }
     if (-not (Test-Path -LiteralPath (Join-Path $venv 'Scripts\python.exe'))) {
         & $basePython -m venv $venv
+        if ($LASTEXITCODE -ne 0) { throw 'Python environment creation failed.' }
     }
     $python = Join-Path $venv 'Scripts\python.exe'
     & $python -m pip install --disable-pip-version-check 'pip==25.2'
@@ -185,17 +202,22 @@ try {
 
     if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot '.git'))) {
         git clone 'https://github.com/FudanCVL/SAM2Matting.git' $sourceRoot
+        if ($LASTEXITCODE -ne 0) { throw 'Fudan source download failed.' }
     }
     git -C $sourceRoot fetch --depth 1 origin $sourceRevision
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned Fudan source fetch failed.' }
     git -C $sourceRoot checkout --detach $sourceRevision
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned Fudan source checkout failed.' }
     if ((git -C $sourceRoot rev-parse HEAD).Trim() -ne $sourceRevision) {
         throw 'Fudan source revision verification failed.'
     }
 
-    $files = @(
+    $files = if ($InstallSam3) { @(
+        @{ Name='SAM2Matting-SAM3.pt'; Size=3509720141L; Hash='7102D695BE6070B39ACD67464F93207DF725514A688B545ED1267D913D3B9C7D' }
+    ) } else { @(
         @{ Name='SAM2Matting-SAM2.1Tiny.pt'; Size=215569778L; Hash='5B9321E3B51BC20F5B84C208746CC083DD3053DD701590F2E88DC8640AFCC39D' },
         @{ Name='SAM2Matting-SAM2.1Base+.pt'; Size=383180506L; Hash='1F0EB2EDA3E8BC9101EAFC0B30B8B8FCAE1FF83D8FD3ADC18E2F3B410FDAAE60' }
-    )
+    ) }
     foreach ($file in $files) {
         $uri = "https://huggingface.co/FudanCVL/SAM2Matting/resolve/$checkpointRevision/checkpoints/$($file.Name)?download=true"
         Get-VerifiedDownload $uri (Join-Path $checkpoints $file.Name) `
@@ -203,7 +225,7 @@ try {
     }
 
     $environment = [ordered]@{
-        environmentSpecVersion = 'sam2matting-v1'
+        environmentSpecVersion = if ($InstallSam3) { 'sam3-foreground-v1' } else { 'sam2matting-v1' }
         sourceRevision = $sourceRevision
         checkpointRevision = $checkpointRevision
         pythonVersion = '3.10'
@@ -215,23 +237,34 @@ try {
         encoderPolicy = 'quickplayer-h264-aac'
         alphaEncodingPolicy = 'ffv1-gray16le-linear'
         requirementsLockSha256 = (Get-Sha256 $requirementsLock).ToLowerInvariant()
-        checkpoints = $files
+        checkpoints = @($files)
     }
-    $environment | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath `
-        (Join-Path $runtime 'environment.json') -Encoding utf8
+    if (-not $InstallSam3) {
+        $environment | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath `
+            (Join-Path $runtime 'environment.json') -Encoding utf8
+    }
 
     $worker = Join-Path $PSScriptRoot 'sam2matting_worker.py'
     try {
-        & $python $worker --validate --runtime $runtime --full-hash
+        if ($InstallSam3) {
+            $worker = Join-Path $PSScriptRoot 'sam3_pipeline_worker.py'
+            & $python $worker --validate --sam3-runtime $runtime
+        } else {
+            & $python $worker --validate --runtime $runtime --full-hash
+        }
         if ($LASTEXITCODE -ne 0) {
-            throw 'SAM2Matting environment validation failed.'
+            throw "$toolName environment validation failed."
         }
     } catch {
         Remove-Item -LiteralPath (Join-Path $runtime 'environment.json') `
             -Force -ErrorAction SilentlyContinue
         throw
     }
-    Write-Host "SAM2Matting setup complete: $runtime"
+    if ($InstallSam3) {
+        $environment | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath `
+            (Join-Path $runtime 'environment.json') -Encoding utf8
+    }
+    Write-Host "$toolName setup complete: $runtime"
 } finally {
     $setupLock.Release() | Out-Null
     $setupLock.Dispose()

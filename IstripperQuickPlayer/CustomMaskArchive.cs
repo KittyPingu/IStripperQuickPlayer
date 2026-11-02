@@ -16,14 +16,17 @@ internal static class CustomMaskArchive
 
     internal sealed record Info(int Width, int Height, int FrameCount,
         int ChunkFrameCount);
+    internal sealed record Progress(string Stage, int Frames, int FrameCount);
 
-    internal static Info Create(string framesFolder, string destination)
+    internal static Info Create(string framesFolder, string destination,
+        Action<Progress>? progress = null)
     {
         string[] paths = Directory.EnumerateFiles(framesFolder, "*.png")
             .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
             .ToArray();
         if (paths.Length == 0) throw new InvalidDataException(
             "The tracked mask sequence contains no PNG frames.");
+        progress?.Invoke(new("Compressing", 0, paths.Length));
         using Bitmap first = new(paths[0]);
         int width = first.Width, height = first.Height;
         int packedLength = checked((width * height + 7) / 8);
@@ -58,10 +61,11 @@ internal static class CustomMaskArchive
                     writer.Write(compressed.Length);
                     writer.Write(SHA256.HashData(raw));
                     writer.Write(compressed);
+                    progress?.Invoke(new("Compressing", start + count, paths.Length));
                 }
                 writer.Flush(); stream.Flush(true);
             }
-            Validate(temporary);
+            Validate(temporary, progress);
             File.Move(temporary, destination, true);
             return new(width, height, paths.Length, ChunkFrames);
         }
@@ -99,11 +103,12 @@ internal static class CustomMaskArchive
         return info;
     }
 
-    internal static Info Validate(string archive)
+    internal static Info Validate(string archive, Action<Progress>? progress = null)
     {
         using FileStream stream = File.OpenRead(archive);
         using BinaryReader reader = new(stream, Encoding.UTF8, leaveOpen: true);
         (Info info, _) = ReadHeader(reader);
+        progress?.Invoke(new("Validating", 0, info.FrameCount));
         int packedLength = checked((info.Width * info.Height + 7) / 8);
         using Decompressor decompressor = new();
         int expectedStart = 0;
@@ -112,6 +117,7 @@ internal static class CustomMaskArchive
             (_, int count, _) = ReadChunk(reader, decompressor, packedLength,
                 info.FrameCount, expectedStart);
             expectedStart += count;
+            progress?.Invoke(new("Validating", expectedStart, info.FrameCount));
         }
         if (stream.Position != stream.Length)
             throw new InvalidDataException("The mask archive has trailing data.");
@@ -246,7 +252,7 @@ internal static class CustomMaskArchive
             string source = Path.Combine(root, "source");
             string restored = Path.Combine(root, "restored");
             Directory.CreateDirectory(source);
-            for (int frame = 0; frame < 17; frame++)
+            for (int frame = 0; frame < 317; frame++)
             {
                 using Bitmap mask = new(19, 11, PixelFormat.Format8bppIndexed);
                 ColorPalette palette = mask.Palette;
@@ -270,13 +276,23 @@ internal static class CustomMaskArchive
                     ImageFormat.Png);
             }
             string archive = Path.Combine(root, "masks.iqpmask");
-            Info created = Create(source, archive);
+            List<Progress> reported = [];
+            Info created = Create(source, archive, reported.Add);
             Info extracted = Extract(archive, restored);
-            if (created != extracted || extracted.FrameCount != 17)
+            if (created != extracted || extracted.FrameCount != 317)
             {
                 Console.Error.WriteLine("Mask archive metadata round trip failed.");
                 return false;
             }
+            foreach (string stage in new[] { "Compressing", "Validating" })
+                if (!reported.Where(value => value.Stage == stage)
+                        .Select(value => value.Frames).SequenceEqual([0, 300, 317]) ||
+                    reported.Any(value => value.FrameCount != 317))
+                    return false;
+            string withoutProgress = Path.Combine(root, "without-progress.iqpmask");
+            Create(source, withoutProgress);
+            if (!File.ReadAllBytes(archive).SequenceEqual(File.ReadAllBytes(withoutProgress)))
+                return false;
             string[] original = Directory.GetFiles(source, "*.png");
             string[] copies = Directory.GetFiles(restored, "*.png");
             for (int index = 0; index < original.Length; index++)

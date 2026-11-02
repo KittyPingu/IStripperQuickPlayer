@@ -59,6 +59,8 @@ internal static class CustomShowProcessor
         AppContext.BaseDirectory, "custom-shows", "rvm_worker.py");
     internal static string MatAnyoneWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "matanyone2_worker.py");
+    internal static string Sam3PipelineWorkerPath => Path.Combine(
+        AppContext.BaseDirectory, "custom-shows", "sam3_pipeline_worker.py");
     internal static string ViTMatteWorkerPath => Path.Combine(
         AppContext.BaseDirectory, "custom-shows", "vitmatte_worker.py");
     internal static string RvmViTMatteWorkerPath => Path.Combine(
@@ -857,7 +859,10 @@ internal static class CustomShowProcessor
         bool matAnyoneUseLongTermMemory = true,
         int vitMatteInferenceDetailPx = 1024,
         bool matAnyoneInteractiveCorrections = false,
-        string? propSegmenterModelPath = null)
+        string? propSegmenterModelPath = null,
+        IReadOnlyList<string>? foregroundConcepts = null,
+        IReadOnlyList<double>? foregroundConfidences = null,
+        bool sam3SelectiveBackwardRepair = true)
     {
         using IDisposable gpuLease = await CustomShowGpuScheduler.AcquireAsync(
             cancellationToken);
@@ -870,6 +875,7 @@ internal static class CustomShowProcessor
             "matanyone2" or "rvm-matanyone2" => MatAnyoneWorkerPath,
             "rvm-vitmatte-s" or "rvm-vitmatte-b" => RvmViTMatteWorkerPath,
             "vitmatte-s" or "vitmatte-b" => ViTMatteWorkerPath,
+            Sam3PipelineSupport.Algorithm => Sam3PipelineWorkerPath,
             _ => WorkerPath
         };
         if (!File.Exists(worker))
@@ -905,7 +911,30 @@ internal static class CustomShowProcessor
             worker, "--source", source, "--output", stagingFolder,
             "--runtime", runtime
         }) start.ArgumentList.Add(argument);
-        if (preset is "matanyone2" or "rvm-matanyone2")
+        if (preset == Sam3PipelineSupport.Algorithm)
+        {
+            Sam3PipelineSupport.ValidateConcepts(foregroundConcepts?.ToArray(),
+                foregroundConfidences?.ToArray());
+            if (!Sam3PipelineSupport.IsInstalled(configuration))
+                throw new InvalidOperationException(
+                    "SAM3 processing requires the SAM3 runtime, SAM2 Base+ and ViTMatte S checkpoints.");
+            start.ArgumentList.Add("--sam3-runtime");
+            start.ArgumentList.Add(Sam3PipelineSupport.RuntimeRoot);
+            start.ArgumentList.Add("--sam3-python");
+            start.ArgumentList.Add(Sam3PipelineSupport.PythonExecutable);
+            for (int index = 0; index < foregroundConcepts!.Count; index++)
+            {
+                start.ArgumentList.Add("--concept");
+                start.ArgumentList.Add(foregroundConcepts[index]);
+                start.ArgumentList.Add("--confidence");
+                start.ArgumentList.Add((foregroundConfidences is { Count: > 0 }
+                    ? foregroundConfidences[index] : Sam3PipelineSupport.DefaultConfidence)
+                    .ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            start.ArgumentList.Add(sam3SelectiveBackwardRepair
+                ? "--selective-backward-repair" : "--no-selective-backward-repair");
+        }
+        else if (preset is "matanyone2" or "rvm-matanyone2")
         {
             bool automaticRvmInitializer = preset == "rvm-matanyone2" &&
                 !File.Exists(initialMask);

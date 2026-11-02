@@ -920,6 +920,52 @@ namespace
     LONG volatile g_fastDecodeInstallStage = 0;
     LONG volatile g_playerLocked = 0;
     LONG volatile g_playerClickThrough = 0;
+    LONG volatile g_playerHoverDelay = 0;
+    std::atomic<ULONGLONG> g_playerHoverStarted{0};
+    std::atomic<HWND> g_playerHoverWindow{nullptr};
+
+    PVOID volatile g_nativeDragWindow = nullptr;
+
+    bool PlayerClickThrough()
+    {
+        if (InterlockedCompareExchangePointer(&g_nativeDragWindow, nullptr, nullptr) != nullptr) return false;
+        if (InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
+            InterlockedCompareExchange(&g_playerClickThrough, 0, 0) != 0) return true;
+        const LONG delay = InterlockedCompareExchange(&g_playerHoverDelay, 0, 0);
+        return delay > 0 && (g_playerHoverStarted == 0 ||
+            GetTickCount64() - g_playerHoverStarted < static_cast<ULONGLONG>(delay));
+    }
+
+    HCURSOR HoverReadyCursor()
+    {
+        static const HCURSOR cursor = []()
+        {
+            HMODULE module = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&HoverReadyCursor), &module);
+            return LoadCursorW(module, MAKEINTRESOURCEW(101));
+        }();
+        return cursor != nullptr ? cursor : LoadCursorW(nullptr, IDC_HAND);
+    }
+
+    bool PlayerHoverReady()
+    {
+        return InterlockedCompareExchange(&g_playerHoverDelay, 0, 0) > 0 &&
+            g_playerHoverWindow != nullptr && g_playerHoverStarted != 0 &&
+            !PlayerClickThrough();
+    }
+
+    void UpdatePlayerHover(HWND window, bool visible)
+    {
+        if (!visible || window != g_playerHoverWindow)
+        {
+            g_playerHoverStarted = 0;
+            g_playerHoverWindow = visible ? window : nullptr;
+        }
+        if (visible && g_playerHoverStarted == 0) g_playerHoverStarted = GetTickCount64();
+        SetOpenGlHdrInteractionCursor(PlayerHoverReady() ? HoverReadyCursor() : nullptr);
+    }
     LONG volatile g_playerWheelResize = 0;
     LONG volatile g_playerWheelWhileLocked = 0;
     LONG volatile g_playerWheelDelta = 0;
@@ -928,7 +974,7 @@ namespace
     LONG volatile g_playerLargeSizePercent = 0;
     LONG volatile g_playerMode = 2;
     PVOID volatile g_pointerMovieWindow = nullptr;
-    PVOID volatile g_nativeDragWindow = nullptr;
+
     LONG volatile g_pointerOverVisiblePixel = 0;
     LONGLONG volatile g_lastHitTestRefreshTick = 0;
     std::uintptr_t g_liveVtableRva = 0;
@@ -4911,8 +4957,9 @@ namespace
             }
             const bool locked = InterlockedCompareExchange(
                 &g_playerLocked, 0, 0) != 0;
-            const bool clickThrough = locked && InterlockedCompareExchange(
-                &g_playerClickThrough, 0, 0) != 0;
+            UpdatePlayerHover(search.window, search.visiblePixel);
+            const bool clickThrough = PlayerClickThrough();
+            if (PlayerHoverReady()) SetCursor(HoverReadyCursor());
             if (previousWindow != nullptr && previousWindow != search.window &&
                 !clickThrough)
             {
@@ -5113,14 +5160,14 @@ namespace
             // a stable arrow; transparent pixels bypass this HWND through
             // WS_EX_TRANSPARENT and inherit the underlying application's
             // cursor instead.
-            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            SetCursor(PlayerHoverReady() ? HoverReadyCursor() : LoadCursorW(nullptr, IDC_ARROW));
             return TRUE;
         }
+        if (message == WM_NCHITTEST && PlayerClickThrough()) return HTTRANSPARENT;
         if (message == WM_NCHITTEST &&
             InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
         {
-            if (InterlockedCompareExchange(
-                    &g_playerClickThrough, 0, 0) != 0)
+            if (PlayerClickThrough())
             {
                 RefreshStaleMovieHitTest(window);
                 return HTTRANSPARENT;
@@ -5202,12 +5249,14 @@ namespace
         }
         if (message == WM_STYLECHANGING &&
             static_cast<int>(wParam) == GWL_EXSTYLE && lParam != 0 &&
-            InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
-            InterlockedCompareExchange(&g_playerClickThrough, 0, 0) != 0)
+            PlayerClickThrough())
         {
             reinterpret_cast<STYLESTRUCT*>(lParam)->styleNew |=
                 WS_EX_TRANSPARENT;
         }
+        // Qt may replace the cursor while handling movement, after WM_SETCURSOR.
+        if ((message == WM_MOUSEMOVE || message == WM_NCMOUSEMOVE) && PlayerHoverReady())
+            SetCursor(HoverReadyCursor());
         return result;
     }
 
@@ -5242,9 +5291,7 @@ namespace
                 SWP_NOSENDCHANGING);
         }
 
-        const bool clickThrough =
-            InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0 &&
-            InterlockedCompareExchange(&g_playerClickThrough, 0, 0) != 0;
+        const bool clickThrough = PlayerClickThrough();
         const HWND pointerWindow = static_cast<HWND>(
             InterlockedCompareExchangePointer(
                 &g_pointerMovieWindow, nullptr, nullptr));
@@ -5388,8 +5435,31 @@ namespace
         const UINT_PTR movieWindowHealthTimer =
             SetTimer(nullptr, 0, 1'000, nullptr);
 
+        const UINT_PTR hoverTimer = SetTimer(nullptr, 0, 50, nullptr);
         while (GetMessageW(&message, nullptr, 0, 0) > 0)
         {
+            if (message.message == WM_TIMER && hoverTimer != 0 && message.wParam == hoverTimer)
+            {
+                if (InterlockedCompareExchange(&g_playerHoverDelay, 0, 0) > 0)
+                {
+                    POINT cursor{};
+                    if (GetCursorPos(&cursor))
+                    {
+                        const auto target = FindVisibleMovieWindowAtPoint(cursor);
+                        const HWND previous = g_playerHoverWindow;
+                        InterlockedExchangePointer(&g_pointerMovieWindow, target.window);
+                        InterlockedExchange(&g_pointerOverVisiblePixel, target.visiblePixel ? 1 : 0);
+                        UpdatePlayerHover(target.window, target.visiblePixel);
+                        if (previous != nullptr && previous != target.window)
+                            SetMovieWindowClickThrough(previous, false);
+                        if (target.window != nullptr)
+                            SetMovieWindowClickThrough(target.window,
+                                PlayerClickThrough() || !target.visiblePixel);
+                        if (PlayerHoverReady()) SetCursor(HoverReadyCursor());
+                    }
+                }
+                continue;
+            }
             if (message.message == WM_TIMER &&
                 movieWindowHealthTimer != 0 &&
                 message.wParam == movieWindowHealthTimer)
@@ -5403,6 +5473,7 @@ namespace
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        if (hoverTimer != 0) KillTimer(nullptr, hoverTimer);
         if (movieWindowHealthTimer != 0)
         {
             KillTimer(nullptr, movieWindowHealthTimer);
@@ -5482,6 +5553,7 @@ namespace
 
     HRESULT SetPlayerLocked(bool locked)
     {
+        g_playerHoverStarted = 0;
         SetOpenGlHdrPlayerLocked(locked);
         if (locked)
         {
@@ -5515,9 +5587,14 @@ namespace
         return BridgeSuccess;
     }
 
-    HRESULT SetPlayerClickThrough(bool enabled)
+    HRESULT SetPlayerClickThrough(SIZE_T options)
     {
-        InterlockedExchange(&g_playerClickThrough, enabled ? 1 : 0);
+        const bool enabled = options != 0;
+        g_playerHoverStarted = 0;
+        SetOpenGlHdrInteractionCursor(nullptr);
+        InterlockedExchange(&g_playerClickThrough, options == 1 ? 1 : 0);
+        InterlockedExchange(&g_playerHoverDelay, options >= 102 && options <= 30002
+            ? static_cast<LONG>(options - 2) : 0);
         if (enabled && InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
         {
             EnumWindows(&FindMovieWindow, 0);
@@ -12974,7 +13051,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperSetPlayerClickThrough(
 {
     __try
     {
-        return SetPlayerClickThrough(enabled != 0);
+        return SetPlayerClickThrough(enabled);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {

@@ -260,6 +260,17 @@ methods publish synchronized RGB/alpha media; **RVM ONNX real-time playback**
 stores RGB-only clips and generates their matte during playback through
 DirectML. Processing also supports interactive clip boundaries, per-clip
 metadata, mask-guided tools, SAM2 correction, and post-processing alpha tuning.
+**SAM3 foreground (optimized SAM2 + ViTMatte S)** adds automatic multi-object
+discovery and tracking, with an editable **Foreground concepts** text area
+defaulting to `person`, `clothing`, `hand`, `mouth`, `skin`, and `leg`, each on
+its own line. See the [custom-show guide](CUSTOM_SHOWS.md)
+for its installed-model requirements and processing tradeoffs.
+Each prompt accepts its own confidence (`hand = 0.20`; default 0.35).
+Selective backward repair is enabled by default and can be unchecked for
+forward-only processing.
+Install or repair SAM3 from **Custom Shows → Settings → Maintenance →
+Install / Update Processing Tools…**; its checkbox includes the shared SAM2
+and ViTMatte dependencies.
 An unsplit, seekable real-time source is copied byte-for-byte instead of being
 transcoded; splitting it later re-encodes the ranges and offers to remove the
 superseded library copy without touching the user's external source.

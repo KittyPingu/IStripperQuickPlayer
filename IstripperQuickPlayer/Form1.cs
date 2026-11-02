@@ -1,4 +1,4 @@
-using DesktopWallpaper;
+﻿using DesktopWallpaper;
 using EnumDescription;
 using IStripperQuickPlayer.BLL;
 using IStripperQuickPlayer.DataModel;
@@ -196,6 +196,9 @@ namespace IStripperQuickPlayer
             new("Avoid recently played clips");
         private readonly ToolStripMenuItem clickThroughLockedPlayerToolStripMenuItem =
             new("Click through locked player") { CheckOnClick = true };
+        private readonly ToolStripMenuItem hoverActivatePlayerMenu =
+            new("Activate player after hovering") { CheckOnClick = true };
+        private readonly ToolStripMenuItem hoverDelayPlayerMenu = new("Player hover delay");
         private readonly ToolStripMenuItem wheelResizePlayerToolStripMenuItem =
             new("Resize player with mouse wheel") { CheckOnClick = true };
         private readonly ToolStripMenuItem iStripperRtxHdrToolStripMenuItem =
@@ -859,7 +862,46 @@ namespace IStripperQuickPlayer
             {
                 Properties.Settings.Default.ClickThroughLockedPlayer =
                     clickThroughLockedPlayerToolStripMenuItem.Checked;
+                if (clickThroughLockedPlayerToolStripMenuItem.Checked) hoverActivatePlayerMenu.Checked = false;
                 ChangePlayerClickThrough();
+            };
+            hoverActivatePlayerMenu.Checked = Properties.Settings.Default.HoverActivatePlayer;
+            hoverActivatePlayerMenu.CheckedChanged += (_, _) =>
+            {
+                Properties.Settings.Default.HoverActivatePlayer = hoverActivatePlayerMenu.Checked;
+                if (hoverActivatePlayerMenu.Checked) clickThroughLockedPlayerToolStripMenuItem.Checked = false;
+                ChangePlayerClickThrough();
+            };
+            foreach (int milliseconds in new[] { 100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000, 30000 })
+            {
+                ToolStripMenuItem item = new($"{milliseconds:N0} ms")
+                {
+                    Tag = milliseconds,
+                    Checked = Properties.Settings.Default.PlayerHoverDelayMs == milliseconds
+                };
+                item.Click += (_, _) => SetPlayerHoverDelay(milliseconds);
+                hoverDelayPlayerMenu.DropDownItems.Add(item);
+            }
+            hoverDelayPlayerMenu.DropDownItems.Add(new ToolStripSeparator());
+            ToolStripMenuItem customHoverDelay = new("Custom...");
+            hoverDelayPlayerMenu.DropDownItems.Add(customHoverDelay);
+            hoverDelayPlayerMenu.DropDownOpening += (_, _) => RefreshPlayerHoverDelayMenu();
+            customHoverDelay.Click += (_, _) =>
+            {
+                using Form dialog = new() { Text = "Player hover delay", ClientSize = new Size(310, 115),
+                    StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog,
+                    MaximizeBox = false, MinimizeBox = false };
+                NumericUpDown delay = new() { Minimum = 100, Maximum = 30000, Increment = 100,
+                    Value = Math.Clamp(Properties.Settings.Default.PlayerHoverDelayMs, 100, 30000),
+                    Location = new Point(155, 18), Width = 120 };
+                Button ok = new() { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(195, 65) };
+                dialog.Controls.AddRange([new Label { Text = "Hover time (ms)", Location = new Point(15, 20), AutoSize = true }, delay, ok]);
+                dialog.AcceptButton = ok;
+                AppTheme.Apply(dialog);
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    SetPlayerHoverDelay((int)delay.Value);
+                }
             };
             wheelResizePlayerToolStripMenuItem.Checked =
                 Properties.Settings.Default.EnablePlayerWheelResize;
@@ -4567,7 +4609,9 @@ namespace IStripperQuickPlayer
             }
 
             return CallPlaybackBridgeApi("IStripperSetPlayerClickThrough",
-                enabled ? 1UL : 0UL);
+                Properties.Settings.Default.HoverActivatePlayer
+                    ? (ulong)Math.Clamp(Properties.Settings.Default.PlayerHoverDelayMs, 100, 30000) + 2
+                    : enabled ? 1UL : 0UL);
         }
 
         private int SetVghdPlayerWheelResize(bool enabled)
@@ -6966,10 +7010,29 @@ namespace IStripperQuickPlayer
             UpdateWindowTitle();
         }
 
+        private void SetPlayerHoverDelay(int milliseconds)
+        {
+            Properties.Settings.Default.PlayerHoverDelayMs = Math.Clamp(milliseconds, 100, 30000);
+            Properties.Settings.Default.Save();
+            RefreshPlayerHoverDelayMenu();
+            ChangePlayerClickThrough();
+        }
+
+        private void RefreshPlayerHoverDelayMenu()
+        {
+            int delay = Properties.Settings.Default.PlayerHoverDelayMs;
+            bool preset = hoverDelayPlayerMenu.DropDownItems.OfType<ToolStripMenuItem>()
+                .Any(choice => choice.Tag is int value && value == delay);
+            foreach (ToolStripMenuItem choice in hoverDelayPlayerMenu.DropDownItems.OfType<ToolStripMenuItem>())
+                choice.Checked = choice.Tag is int value ? value == delay : !preset;
+        }
+
         private async void ChangePlayerClickThrough()
         {
+            customPlayer?.SetHoverActivation(Properties.Settings.Default.HoverActivatePlayer
+                ? Math.Clamp(Properties.Settings.Default.PlayerHoverDelayMs, 100, 30000) : 0);
             customPlayer?.SetClickThroughLocked(
-                Properties.Settings.Default.ClickThroughLockedPlayer);
+                !Properties.Settings.Default.HoverActivatePlayer && Properties.Settings.Default.ClickThroughLockedPlayer);
             if (!playerLockBridgeLoaded)
                 return;
 

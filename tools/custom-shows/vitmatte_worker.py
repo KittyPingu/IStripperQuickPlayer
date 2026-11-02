@@ -57,6 +57,30 @@ PREVIEW_INTERVAL = .5
 PREVIEW_MAXIMUM = (960, 540)
 
 
+def preprocessing_lookup(processor):
+    import numpy as np
+    ramp = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    rgb = np.repeat(ramp[:, :, None], 3, axis=2)
+    values = processor(images=[rgb], trimaps=[ramp], return_tensors="np")["pixel_values"]
+    return values[0, :, :16, :16].reshape(4, 256).copy()
+
+
+def prepare_pixel_values(frames, trimaps, lookup, divisor, pin_memory=False):
+    import torch
+    height, width = frames[0].shape[:2]
+    padded_height = math.ceil(height / divisor) * divisor
+    padded_width = math.ceil(width / divisor) * divisor
+    tensor = torch.empty((len(frames), 4, padded_height, padded_width),
+                         dtype=torch.float32, pin_memory=pin_memory)
+    pixels = tensor.numpy()
+    pixels.fill(0)
+    for index, frame in enumerate(frames):
+        for channel in range(3):
+            pixels[index, channel, :height, :width] = lookup[channel][frame[:, :, channel]]
+        pixels[index, 3, :height, :width] = lookup[3][trimaps[index]]
+    return tensor
+
+
 class Timings:
     def __init__(self):
         self.values = {}
@@ -254,6 +278,8 @@ def process(args):
          f"{device.type.upper()}/{('FP16' if fp16 else 'FP32')}...")
     load_started = time.perf_counter()
     processor = VitMatteImageProcessor.from_pretrained(model_path, local_files_only=True)
+    # Byte-valued inputs have only 256 possible normalization results per channel.
+    lookup = preprocessing_lookup(processor)
     eager_model = VitMatteForImageMatting.from_pretrained(
         model_path, local_files_only=True).eval().to(device)
     timings.add("modelLoad", time.perf_counter() - load_started)
@@ -351,12 +377,8 @@ def process(args):
                 if not frames:
                     break
                 stage = time.perf_counter()
-                # The processor already converts PIL inputs to NumPy internally; passing the
-                # arrays directly removes two full-frame copies per image.
-                tensor = processor(images=frames, trimaps=trimaps,
-                    return_tensors="pt")["pixel_values"]
-                if device.type == "cuda":
-                    tensor = tensor.pin_memory()
+                tensor = prepare_pixel_values(frames, trimaps, lookup, divisor,
+                                               pin_memory=device.type == "cuda")
                 timings.add("preprocess", time.perf_counter() - stage)
                 if not put_bounded(input_queue, InputBatch(frames, trimaps, tensor), stop):
                     return
@@ -688,6 +710,16 @@ def self_test():
     assert inference_size(1920, 1080, 1024) == (1024, 576)
     with torch.inference_mode(): alpha = torch.tensor([0., .5, 1.])
     assert alpha_bytes(alpha).tolist() == [0, 127, 255]
+    from transformers import VitMatteImageProcessor
+    processor = VitMatteImageProcessor()
+    lookup = preprocessing_lookup(processor)
+    random = np.random.default_rng(42)
+    for height, width in ((16, 16), (31, 33), (32, 64)):
+        frames = [random.integers(0, 256, (height, width, 3), dtype=np.uint8) for _ in range(2)]
+        trimaps = [random.integers(0, 256, (height, width), dtype=np.uint8) for _ in range(2)]
+        expected = processor(images=frames, trimaps=trimaps, return_tensors="pt")["pixel_values"]
+        actual = prepare_pixel_values(frames, trimaps, lookup, processor.size_divisor)
+        assert torch.equal(actual, expected), "Fast preprocessing changed model inputs"
     print("ViTMatte worker self-test passed")
 
 

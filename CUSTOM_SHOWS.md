@@ -222,6 +222,7 @@ For most users, choose one of these methods:
 | **MatAnyone 2** | You want to choose the exact person or people and manually correct the initial mask before processing. | Scrub to a clear frame, create the mask, then use **Standard (512 px)** detail. |
 | **RVM-ViTMatte S** | You want a fully automatic RVM mask for every frame followed by softer ViTMatte edge refinement. | Keep the recommended ViTMatte-S batch; lower it if VRAM is tight. |
 | **SAM2Matting** | You want scene-aware SAM2.1 tracking with a separate initial mask for each detected scene. | Start with **RVM → SAM2.1-B+** for automatic person masks. |
+| **SAM3 foreground (optimized SAM2 + ViTMatte S)** | Another person or clothing disappears from automatic results, or you want to search for specific objects. | Leave **Foreground concepts** at `person`, `clothing`, `hand`, `mouth`, `skin`, and `leg`, each on its own line, or enter your own concepts. |
 | **RVM ONNX (real-time playback)** | You want RGB-only clips and an alpha generated locally during playback. | **Balanced** with temporal memory enabled. |
 
 **RVM-MatAnyone is the recommended automatic starting point.** Use plain
@@ -230,6 +231,39 @@ RVM includes the wrong foreground. Try **RVM-ViTMatte S** when hair and soft-edg
 quality justify a slower, more VRAM-intensive run. Use **RVM Quality** when you
 want a very fast automatic result and its simpler matte quality is sufficient.
 Use **SAM2Matting** when scene changes inside a clip need independent prompts.
+Try **SAM3 foreground** when retaining multiple people, clothing, or named props
+matters more than processing speed. Its multiline **Foreground concepts** box
+accepts commas or new lines, such as `person, clothing, handbag`. Multi-word
+phrases stay together. Prompts are remembered and saved with queued jobs and
+processed shows; reopening a show for reprocessing restores them.
+Set confidence on individual prompts with `person = 0.35` or `hand = 0.20`.
+Bare prompts use 0.35; valid values are 0–1 with a decimal point. Lower values
+can recover more detail and include unwanted background.
+
+**Selective backward repair** is enabled by default. It runs backward tracking
+from a reliable later keyframe only when combined foreground coverage is lost.
+Uncheck it for forward-only processing with no repair analysis or backward pass.
+Confidence values and the checkbox are saved with the show and queue job.
+
+SAM3 searches keyframes every five seconds and at scene cuts. Each detected
+object gets its own SAM2 Base+ track, and ViTMatte S softens the combined mask.
+The optimized preset fixes tracking to eager mode and matting to 1024 px,
+batch three, while preserving the source output dimensions and frame rate.
+Enable **Automatically accept result with alpha threshold** to use **Queue**.
+Additional concepts increase keyframe detection time, and extra detected objects
+increase SAM2 tracking time. Objects appearing briefly
+between keyframes can still be missed, so review both people and any props.
+
+Install it from **Custom Shows → Settings → Maintenance → Install / Update
+Processing Tools…** by selecting **SAM3 foreground + SAM2 / ViTMatte
+dependencies**. This also selects the shared offline environment and ViTMatte
+tools, which include SAM2 Base+. The detector download alone is about 3.5 GB.
+
+Run that installer again to check and update an existing installation. Select
+**Repair SAM3** to recreate only its Python environment while keeping verified
+downloaded models. The preset appears once its requirements are installed. See
+[SAM3 setup and recipe](docs/custom-shows.md#optimized-sam3-foreground) for paths
+and the measured comparison. Existing benchmark outputs remain available.
 
 Higher **Matting detail** can improve fine edges in RVM and MatAnyone-based
 methods, but increases processing time and VRAM use. It does not change the
@@ -267,6 +301,9 @@ Choose **File > Custom Shows > Install / Update Processing Tools...**.
   mask editor. This is selected by default.
 - Select **ViTMatte S + B** to install ViTMatte and the SAM2 components used by
   its editable workflow. The same install also enables **RVM-ViTMatte S**.
+- Select **SAM3 foreground + SAM2 / ViTMatte dependencies** for automatic
+  multi-object foreground discovery. **Repair SAM3** recreates its separate
+  Python environment while retaining downloaded models.
 - Select **URL video downloader** to install or update the official standalone
   Windows yt-dlp executable and its recommended Deno JavaScript runtime. Setup
   verifies both official downloads with SHA-256, test-runs them, and only then
@@ -391,6 +428,12 @@ Trimming is non-destructive: reopening the editor restores the saved markers,
 and **Reset to full clip** makes all of the processed media playable again.
 
 ## Processing methods
+
+The processing queue's **Current work** field continues updating after rendering
+finishes, showing mask compression/validation, temporary-mask cleanup, cover and
+metadata preparation, and publication. Mask saving has a frame-based ETA marked
+**(masks)**; the final save/publish steps show **finalizing…**. Overall progress
+reaches 100% only after the show is published successfully.
 
 ### Recommended methods
 
@@ -535,6 +578,16 @@ folder still cannot be replaced, the completed staging output is retained and
 
 ## Reprocessing and adding clips
 
+Right-click a custom clip and choose **Reprocess Custom Clip...** to open the
+processing editor with only that clip checked. Choose a different method or
+settings, then process or queue it. Existing clip divisions are kept, and mask
+reuse starts unchecked so new masks are generated. You can enable reuse or
+explicitly select additional clips in the editor.
+
+A queued reprocess generates new output for the selected clips. Only clips
+completed by that same queue job can be reused when it resumes; completed files
+from the published show do not count as newly processed results.
+
 Right-click a custom card and choose **Reprocess Custom Show...**. Keep existing
 clip divisions and masks unless you need to correct them. This lets you compare,
 for example, MatAnyone 2 with RVM-MatAnyone or ViTMatte without recreating all
@@ -632,3 +685,18 @@ custom show.
 Only process videos you have permission to use. Review the individual model
 licences before commercial use. See the [technical reference](docs/custom-shows.md)
 for exact licence terms and pinned upstream versions.
+
+
+Player hover activation is available under **Settings → Activate
+player after hovering**, as an alternative to **Click through locked player**.
+Choose **Player hover delay...** to set 100–30,000 milliseconds (default 1,000).
+While waiting, clicks pass through visible model pixels. After the delay, the
+player accepts mouse input. Unlocked players can be dragged; locking still
+prevents dragging. Hover activation applies in both lock states. Leaving the visible model
+resets the delay; transparent gaps remain click-through. This applies to custom
+shows and the iStripper bridge. The two modes are mutually exclusive and the
+existing default is unchanged.
+
+The cursor changes to a bright green hand with a dark outline when hover activation completes, indicating that
+the model accepts mouse input. During the delay, the underlying application
+continues to control its cursor.

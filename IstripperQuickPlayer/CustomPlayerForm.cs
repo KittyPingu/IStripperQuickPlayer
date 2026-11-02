@@ -64,6 +64,40 @@ internal sealed class CustomPlayerForm : Form
     readonly CancellationTokenSource cancellation = new();
     readonly System.Windows.Forms.Timer settleTimer = new() { Interval = 15 };
     readonly Stopwatch settleClock = new();
+    static readonly Cursor hoverReadyCursor = LoadHoverReadyCursor();
+    static Cursor LoadHoverReadyCursor()
+    {
+        using Stream stream = typeof(CustomPlayerForm).Assembly.GetManifestResourceStream("HoverReady.cur")
+            ?? throw new InvalidDataException("The hover-ready cursor resource is missing.");
+        return new Cursor(stream);
+    }
+
+    readonly System.Windows.Forms.Timer hoverTimer = new() { Interval = 50 };
+    int hoverDelayMs;
+    long hoverStarted = -1;
+    bool EffectiveClickThrough => locked && clickThroughLocked || !movingWindow && HoverWaiting();
+
+    bool HoverWaiting()
+    {
+        bool visible = Visible && GetCursorPos(out Point screen) &&
+            TryClientPoint(screen, out Point client) && IsAlphaVisible(client);
+        return HoverWaiting(ref hoverStarted, visible, Environment.TickCount64, hoverDelayMs);
+    }
+
+    static bool HoverWaiting(ref long started, bool visible, long now, int delay)
+    {
+        if (!visible || delay <= 0) { started = -1; return delay > 0; }
+        if (started < 0) started = now;
+        return now - started < delay;
+    }
+
+    internal void SetHoverActivation(int milliseconds)
+    {
+        hoverDelayMs = Math.Clamp(milliseconds, 0, 30000);
+        hoverStarted = -1;
+        hoverTimer.Enabled = hoverDelayMs > 0;
+        QueuePointerTransparencyRefresh();
+    }
     PairedRenderer? renderer;
     AlphaHitMap? hitTestAlpha;
     volatile bool paused, locked, clickThroughLocked, pointerClickThrough, wheelResize,
@@ -212,8 +246,10 @@ internal sealed class CustomPlayerForm : Form
             ReleaseGlobalWheelHook();
             cancellation.Cancel();
             settleTimer.Dispose();
+            hoverTimer.Dispose();
         };
         settleTimer.Tick += (_, _) => SettleTick();
+        hoverTimer.Tick += (_, _) => QueuePointerTransparencyRefresh();
         KeyPreview = true;
         KeyDown += (_, e) =>
         {
@@ -402,7 +438,7 @@ internal sealed class CustomPlayerForm : Form
                     BeginInvoke(() => PreloadRequested?.Invoke(
                         this, EventArgs.Empty));
                 }
-                bool captureHitMap = !(locked && clickThroughLocked) ||
+                bool captureHitMap = hoverDelayMs > 0 || !(locked && clickThroughLocked) ||
                     allowWheelWhileLocked;
                 if (renderer.TryRenderDue(captureHitMap, out AlphaHitMap? alpha))
                 {
@@ -501,6 +537,7 @@ internal sealed class CustomPlayerForm : Form
     internal void SetLocked(bool value)
     {
         locked = value;
+        hoverStarted = -1;
         UpdateMouseTransparency();
         QueuePointerTransparencyRefresh();
         UpdateGlobalWheelHook();
@@ -882,7 +919,7 @@ internal sealed class CustomPlayerForm : Form
     void UpdateMouseTransparency()
     {
         if (!IsHandleCreated) return;
-        bool transparent = locked && clickThroughLocked || pointerClickThrough;
+        bool transparent = EffectiveClickThrough || pointerClickThrough;
         long style = GetWindowLongPtr(Handle, GwlExStyle).ToInt64();
         const long transparentStyles = WsExTransparent | WsExLayered;
         bool styleMatches = transparent
@@ -922,6 +959,9 @@ internal sealed class CustomPlayerForm : Form
                 bool transparent = inside && !movingWindow &&
                     !IsAlphaVisible(client);
                 SetPointerClickThrough(transparent);
+                Cursor = hoverDelayMs > 0 && hoverStarted >= 0 && mouseTransparent == false
+                    ? hoverReadyCursor : Cursors.Default;
+                if (Cursor == hoverReadyCursor) Cursor.Current = hoverReadyCursor;
             });
         }
         catch (InvalidOperationException)
@@ -1065,7 +1105,7 @@ internal sealed class CustomPlayerForm : Form
             bool inside = player.TryClientPoint(mouse.Point, out Point client);
             bool alphaVisible = inside && player.IsAlphaVisible(client);
             bool passThrough = inside &&
-                (player.locked && player.clickThroughLocked || !alphaVisible);
+                (player.EffectiveClickThrough || !alphaVisible);
             if (mouseMessage != WmMouseWheel)
                 player.SetPointerClickThrough(passThrough);
             if (mouseMessage == WmMouseMove)
@@ -1215,7 +1255,7 @@ internal sealed class CustomPlayerForm : Form
                 (short)((coordinates >> 16) & 0xffff));
             ScreenToClient(Handle, ref point);
             message.Result = new IntPtr(HitTest(
-                locked, clickThroughLocked, movingWindow,
+                locked, EffectiveClickThrough, movingWindow,
                 IsAlphaVisible(point)));
             return;
         }
@@ -1246,8 +1286,10 @@ internal sealed class CustomPlayerForm : Form
     }
 
     internal static bool VerifyHitTesting() =>
-        VerifyDpiBounds() &&
+        hoverReadyCursor.Handle != Cursors.Hand.Handle && hoverReadyCursor.Size.Width >= 32 &&
+        VerifyHoverActivation() && VerifyDpiBounds() &&
         VerifyBottomAnchoredResize() &&
+        HitTest(false, true, false, true) == HtTransparent &&
         HitTest(false, false, false, false) == HtTransparent &&
         HitTest(false, false, false, true) == HtCaption &&
         HitTest(true, false, false, true) == HtClient &&
@@ -1314,6 +1356,7 @@ internal sealed class CustomPlayerForm : Form
         {
             Marshal.FreeHGlobal(rectangle);
             player.settleTimer.Dispose();
+            player.hoverTimer.Dispose();
         }
     }
 
@@ -1333,7 +1376,8 @@ internal sealed class CustomPlayerForm : Form
             player.ResizeAtBottom(player.Size, work);
             return player.Bottom == work.Bottom;
         }
-        finally { player.settleTimer.Dispose(); }
+        finally { player.settleTimer.Dispose();
+            player.hoverTimer.Dispose(); }
     }
 
     static bool IsEstablishedWindow(bool configured, int width, int height) =>
@@ -1367,9 +1411,20 @@ internal sealed class CustomPlayerForm : Form
         alpha < Math.Clamp(lower, 0, 255) ? (byte)0 :
         alpha >= Math.Clamp(upper, 1, 255) ? (byte)255 : alpha;
 
+    static bool VerifyHoverActivation()
+    {
+        long start = -1;
+        return HoverWaiting(ref start, true, 100, 500) &&
+            HoverWaiting(ref start, true, 599, 500) &&
+            !HoverWaiting(ref start, true, 600, 500) &&
+            HoverWaiting(ref start, false, 601, 500) && start == -1 &&
+            HoverWaiting(ref start, true, 700, 500) &&
+            !HoverWaiting(ref start, true, 701, 0) && start == -1;
+    }
+
     static int HitTest(bool locked, bool clickThrough,
         bool moving, bool alphaVisible) =>
-        locked && clickThrough || !moving && !alphaVisible
+        clickThrough || !moving && !alphaVisible
             ? HtTransparent : locked ? HtClient : HtCaption;
 
     internal sealed class PreparedPlayback : IDisposable

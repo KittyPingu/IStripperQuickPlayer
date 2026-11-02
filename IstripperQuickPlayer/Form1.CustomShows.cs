@@ -50,6 +50,8 @@ public partial class Form1
     readonly ContextMenuStrip customClipContextMenu = new();
     readonly ToolStripMenuItem trimCustomClipMenu =
         new("Trim Custom Clip...");
+    readonly ToolStripMenuItem reprocessCustomClipMenu =
+        new("Reprocess Custom Clip...");
     readonly ToolStripMenuItem cleanCustomClipAlphaMenu =
         new("Automatically Stabilize Alpha...");
     readonly ToolStripMenuItem realtimeForegroundSettingsMenu =
@@ -191,6 +193,7 @@ public partial class Form1
             await DeleteSelectedCustomClipAsync();
         trimCustomClipMenu.Click += async (_, _) =>
             await TrimSelectedCustomClipAsync();
+        reprocessCustomClipMenu.Click += (_, _) => ReprocessSelectedCustomClip();
         cleanCustomClipAlphaMenu.Click += (_, _) =>
             CompareSelectedCustomClipAlpha();
         realtimeForegroundSettingsMenu.Click += async (_, _) =>
@@ -232,6 +235,7 @@ public partial class Form1
             customClipHotnessMenu, customClipTypesMenu,
             new ToolStripSeparator(),
             openCustomClipFolderMenu, cleanCustomClipAlphaMenu,
+            reprocessCustomClipMenu,
             realtimeForegroundSettingsMenu,
             virtualGreenScreenCustomClipMenu,
             trimCustomClipMenu, deleteCustomClipMenu]);
@@ -245,6 +249,7 @@ public partial class Form1
             customClipHotnessMenu.Visible = custom;
             customClipTypesMenu.Visible = custom;
             openCustomClipFolderMenu.Visible = custom;
+            reprocessCustomClipMenu.Visible = custom;
             bool rvmOnnx = custom && clip?.customMediaMode ==
                 CustomClipMedia.RvmOnnxMode;
             cleanCustomClipAlphaMenu.Visible = custom && !rvmOnnx;
@@ -952,7 +957,8 @@ public partial class Form1
     bool EditCustomShow(string? showId, bool reprocess = false,
         string? initialSourcePath = null, string? initialTitle = null,
         string? initialSourceUrl = null, bool retainInitialSource = false,
-        bool forceRvmOnnx = false, bool withWizard = false)
+        bool forceRvmOnnx = false, bool withWizard = false,
+        string? initialReprocessClipId = null)
     {
         using CustomShowEditorForm form = new(
             new CustomShowStore(customShowConfiguration.LibraryRoot),
@@ -964,7 +970,8 @@ public partial class Form1
             startWithWizard: withWizard,
             wizardInstallTools: withWizard
                 ? (owner, algorithm) => InstallCustomShowTools(owner, algorithm)
-                : null);
+                : null,
+            initialReprocessClipId: initialReprocessClipId);
         DialogResult result = form.ShowDialog(this);
         if (result == DialogResult.OK || form.SavedShowId != null)
         {
@@ -1518,6 +1525,19 @@ public partial class Form1
                         "Setup completed but its Python environment was not found.");
                 customShowConfiguration.PythonExecutable = python;
             }
+            if (options.InstallSam3)
+            {
+                string script = Path.Combine(AppContext.BaseDirectory,
+                    "custom-shows", "setup-sam2matting.ps1");
+                if (!File.Exists(script))
+                    throw new FileNotFoundException("The SAM3 setup script is missing.", script);
+                using CustomShowSam2MattingSetupForm setup = new(script,
+                    installSam3: true, repair: options.RepairSam3);
+                if (setup.ShowDialog(owner) != DialogResult.OK) return null;
+                if (!Sam3PipelineSupport.IsInstalled(customShowConfiguration))
+                    throw new InvalidOperationException(
+                        "SAM3 setup finished, but the detector or its SAM2 / ViTMatte dependencies are missing.");
+            }
             if (options.InstallRvmOnnx)
             {
                 using RvmOnnxSetupForm setup = new();
@@ -1663,6 +1683,32 @@ public partial class Form1
             return;
         }
         Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+    }
+
+    void ReprocessSelectedCustomClip()
+    {
+        if (customClipAlphaCard?.customShowId == null || customClipAlphaClip == null)
+            return;
+        try
+        {
+            CustomShowManifest show = new CustomShowStore(customShowConfiguration.LibraryRoot)
+                .LoadManifest(customClipAlphaCard.customShowId);
+            CustomShowClip[] included = show.Clips.Where(clip => clip.Included).ToArray();
+            string showName = "custom:" + show.Id;
+            CustomShowClip? selected = included.FirstOrDefault(clip =>
+                string.Equals(customClipAlphaClip.clipName, $"{showName}:{clip.Id}",
+                    StringComparison.OrdinalIgnoreCase) || included.Length == 1 &&
+                string.Equals(customClipAlphaClip.clipName, showName,
+                    StringComparison.OrdinalIgnoreCase));
+            if (selected == null)
+                throw new InvalidDataException("The selected clip no longer matches the saved show.");
+            EditCustomShow(show.Id, reprocess: true, initialReprocessClipId: selected.Id);
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(this, error.Message, "Reprocess Custom Clip",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     async Task TrimSelectedCustomClipAsync()
@@ -2013,7 +2059,10 @@ public partial class Form1
         });
         player.HoldFinalFrameOnCompletion = true;
         player.SetLocked(playerlocked);
-        player.SetClickThroughLocked(Properties.Settings.Default.ClickThroughLockedPlayer);
+        player.SetHoverActivation(Properties.Settings.Default.HoverActivatePlayer
+            ? Math.Clamp(Properties.Settings.Default.PlayerHoverDelayMs, 100, 30000) : 0);
+        player.SetClickThroughLocked(!Properties.Settings.Default.HoverActivatePlayer &&
+            Properties.Settings.Default.ClickThroughLockedPlayer);
         player.SetWheelResize(Properties.Settings.Default.EnablePlayerWheelResize);
         player.SetAllowWheelWhileLocked(
             Properties.Settings.Default.AllowWheelWhileLocked);

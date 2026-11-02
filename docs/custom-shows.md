@@ -210,13 +210,17 @@ QuickPlayer pins:
 - Every mask-guided algorithm uses [SAM2](https://github.com/facebookresearch/sam2) commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`; setup verifies the Hiera Base+, Small, and Tiny checkpoints.
 - Optional [ViTMatte](https://github.com/hustvl/ViTMatte) S revision `6a58ad7646403c1df626fbd746900aec7361ea1d` and B revision `bf486d01a7d9e3dbcc8400f7942835caf0eaf76e`; setup SHA-256 verifies both official Hugging Face model repositories.
 - Optional [SAM2Matting](https://github.com/FudanCVL/SAM2Matting) source revision `73dd721d77b56749248aefe5e8824d7f61b9d13c`. Its separate Python 3.10 environment verifies the SAM2.1 Tiny and SAM2.1 Base+ checkpoints by exact size and SHA-256 before use.
+- Optional **SAM3 foreground** uses a separate Python 3.10 environment with the
+  same pinned Fudan source and its verified 3.5 GB SAM3 checkpoint. Selecting it
+  in setup also installs the shared SAM2 and ViTMatte tools.
 - Optional [streaming ProPainter](https://github.com/osmr/propainter) commit `c8983a445720450bf2fd976cab0adb1cad19547d` and PyTorchCV `0.0.74`. Its RAFT, flow-completion, and ProPainter files are verified against upstream SHA-1 values `d74fed4b7511a95ca9713b69ff19a132210a1016`, `a865ddc0281f27ff0814939a8c0101e936678312`, and `5f3cc1e7083fb5c49a7e5c574a06d41c763550a5`.
 
 ## Exact setup
 
 The simplest method is **File → Custom Shows → Install / Update Processing
-Tools…**. TransNetV2 and MatAnyone 2 + SAM2 are selected by default; ViTMatte
-and ProPainter are initially cleared. Select the tools to install or
+Tools…**, also available in **Settings → Maintenance**. TransNetV2 and
+MatAnyone 2 + SAM2 are selected by default; SAM3, ViTMatte, and ProPainter are
+initially cleared. Select the tools to install or
 update in the choices dialog, then leave
 the setup window open until it finishes. Selecting any mask-guided method
 installs SAM2 for interactive source-frame selection. ViTMatte uses SAM2 for the
@@ -271,7 +275,7 @@ The default isolated runtime is `%LOCALAPPDATA%\IStripperQuickPlayer\rvm-runtime
 .\custom-shows\setup.ps1 -RuntimeRoot 'D:\QuickPlayer-RVM' -PythonLauncher 'C:\Windows\py.exe'
 ```
 
-QuickPlayer only lists TransNetV2, OmniShotCut, MatAnyone2, ViTMatte, and
+QuickPlayer only lists TransNetV2, OmniShotCut, MatAnyone2, ViTMatte, SAM3, and
 ProPainter in operational selectors when their installation markers, source
 folders, workers, and required model files are present. The setup choices remain
 visible so missing tools can be installed.
@@ -323,6 +327,110 @@ have identical decoded frame counts, dimensions, and timing.
 VideoMaMa is not installed, offered, or accepted for new processing or queue
 jobs. Its identifier remains valid only when loading legacy published manifests,
 so shows created by older QuickPlayer versions remain playable.
+
+## Optimized SAM3 foreground
+
+The Create/Reprocess method **SAM3 foreground (optimized SAM2 + ViTMatte S)**
+uses algorithm ID `sam3-person`. Its **Foreground concepts** text area defaults
+to `person`, `clothing`, `hand`, `mouth`, `skin`, and `leg`, each on its own line.
+Existing factory-default prompts are upgraded; saved custom prompts are preserved.
+Each line can include its own confidence, for example `person = 0.35` or
+`hand = 0.20`. Use a decimal point and a value from 0 to 1. Bare prompts use
+0.35. Commas and semicolons can also separate entries; multi-word phrases stay
+together. Identical repeated entries are removed; conflicting confidence values
+for the same concept are rejected. Processing accepts 1–16 concepts, up to
+200 characters each. Lower confidence can recover more foreground and include
+unwanted background or additional tracks.
+
+**Selective backward repair** is checked by default. It checks combined
+foreground coverage, so losing a duplicate track alone does not request repair.
+Sustained motion-adjusted coverage loss or missing foreground at the next
+keyframe requests a backward SAM2 pass from that keyframe when the seed is
+reliable and no scene cut intervenes. Reverse-supported foreground is added to
+the forward mask before matting. Unchecking the option disables repair analysis,
+the additional ending keyframe, and all backward passes.
+
+Prompts and their confidences are stored in `processing.foregroundConcepts` and
+the matching `processing.foregroundConfidences` array. The checkbox is stored in
+`processing.sam3SelectiveBackwardRepair`. Queue jobs, copied shows, and
+reprocessing retain both settings; the last-used values are remembered for new
+shows. Older records without these fields use 0.35 and repair enabled.
+
+The recipe uses SAM3 image detection on keyframes every five seconds and at
+FFmpeg scene changes above 0.3, plus the final frame when repair needs an ending
+seed. Each concept uses its configured confidence. Image embeddings are
+shared across concepts on each keyframe. Separate detected objects receive
+separate eager SAM2.1 Base+ tracking memories; their positive masks are unioned
+only for output. Near-duplicate detections are discarded when they add fewer
+than 16 pixels or less than 5% new foreground. Tracking uses bounded prefetch
+and history and asynchronous mask writes. ViTMatte S runs eagerly at 1024 px,
+batch three, channels-last enabled, with explicit model half conversion off.
+The normal GPU autocast paths remain BF16 for detection/tracking and FP16 for
+matting. Output keeps the source dimensions and frame rate.
+
+This requires an NVIDIA CUDA GPU, the configured custom-show Python environment
+with SAM2 Base+ and ViTMatte S, and a separate SAM3 runtime:
+
+```text
+%LOCALAPPDATA%\IStripperQuickPlayer\sam2matting-sam3-worker\v1\
+  venv\Scripts\python.exe
+  source\SAM2Matting\sam3\bpe_simple_vocab_16e6.txt.gz
+  checkpoints\SAM2Matting-SAM3.pt
+```
+
+The SAM3 checkpoint is 3,509,720,141 bytes with SHA-256
+`7102d695be6070b39acd67464f93207df725514a688b545ed1267d913d3b9c7d`.
+Its source revision is `73dd721d77b56749248aefe5e8824d7f61b9d13c` and
+checkpoint revision is `4315db9c60d27fde396b09765748a0ca6c97bed5`.
+The worker verifies the checkpoint before loading detector weights strictly.
+SAM3 detection and SAM2 tracking run in separate processes/environments to avoid
+package conflicts.
+
+In **Custom Shows → Settings → Maintenance → Install / Update Processing
+Tools…**, select **SAM3 foreground + SAM2 / ViTMatte dependencies**. This also
+selects and locks on the shared offline environment and ViTMatte installation
+(which installs SAM2). SAM3 is optional and unchecked by default because its
+detector alone is about 3.5 GB. Re-running installation verifies existing model
+sizes and SHA-256 hashes, resumes partial downloads, installs pinned Python
+dependencies, checks out the pinned source, and validates text prompting with
+a small CUDA inference pass.
+
+**Repair SAM3** recreates only the separate SAM3 Python environment. Verified
+checkpoints and source are kept; corrupt or missing model downloads are
+replaced. The SAM2Matting tracker environment and saved shows are separate.
+The preset appears when its local requirements are present. The equivalent
+detector-only commands are:
+
+```powershell
+.\custom-shows\setup-sam2matting.ps1 -InstallSam3
+.\custom-shows\setup-sam2matting.ps1 -InstallSam3 -Repair
+```
+
+These commands reuse `sam2matting-requirements.lock` and install under
+`sam2matting-sam3-worker\v1`, independently of `sam2matting-worker\v1`.
+The command-line detector setup does not install the shared SAM2/ViTMatte
+dependencies; the app's combined selection handles those first. A successful
+SAM3 setup records environment specification `sam3-foreground-v1` and validates
+Python 3.10, PyTorch 2.8.0 + CUDA 12.8, pinned source/checkpoint, and GPU inference.
+
+Both immediate processing and the unattended queue use this recipe. Enable
+automatic result acceptance to queue it. Generated masks use the existing
+retained-mask archive path; normal mask-retention choices apply. Temporary
+JPEG frames and seeds are removed after processing. The published clip also
+includes `sam3-pipeline.json` recording concepts, object counts, and the recipe.
+If no keyframe contains any matching objects, processing fails with an
+instruction to adjust the concepts instead of accepting an empty result.
+
+The two-minute, two-person **person-only** benchmark took about **12:54** with
+this optimized recipe versus **14:41** before optimization (12.2% less elapsed
+time). All 7,193 raw tracking masks matched the reference exactly; final binary
+alpha IoU was 0.999942, with small soft-edge differences. This is a single-clip
+measurement on the reference RTX 4080, not a guarantee for other clips or
+concept sets. Adding `clothing` or other concepts adds keyframe detection work
+and can add tracks. Objects briefly entering between keyframes can still be
+missed; inspect foreground retention and edges before accepting a result.
+The original and optimized benchmark outputs are preserved under
+`%LOCALAPPDATA%\IStripperQuickPlayer\benchmarks`.
 
 ## Automatic processing queue
 
@@ -460,14 +568,31 @@ current show before pausing or cancel it back to Pending for a full restart. Sto
 also returns the active job to Pending. Closing QuickPlayer while a job runs asks
 for confirmation and, if confirmed, safely cancels it back to Pending.
 
+**Current work** also reports the steps after rendering: compressing retained
+masks, validating each archive, cleaning up temporary masks, preparing the cover
+and metadata, and publishing the library update. Mask-saving messages include
+the clip number and a completed/total frame count across all mask sequences.
+SAM3 and RVM–ViTMatte rendering occupy 0–90% of overall queue progress; saving
+retained masks occupies 90–98%, followed by finalization. Other methods reserve
+the final 2% for finalization. A running entry stays below 100%; only a completed
+published show reaches 100%.
+
+During mask saving, **Elapsed / ETA** keeps the full job elapsed time and
+estimates the remaining mask work from recent frame throughput across clips,
+labelled **(masks)**. It shows **estimating masks…** until enough samples exist,
+and removes stale estimates if frame progress stops for 30 seconds. Cover,
+metadata, and publication steps show **finalizing…**, rather than a misleading
+zero-second ETA. Mask validation and cleanup are named explicitly when no
+usable frame-rate estimate remains.
+
 For append and reprocess jobs, publication first advances playback away from the
 target show, or stops playback if no other valid card is available, and waits for
 the previous custom decoder to close. The atomic directory replacement retries
 transient Windows sharing/permission errors for ten seconds. If publication still
 fails, the fully processed staging folder remains owned by the queue; **Retry**
 revalidates the source and target manifest and retries only publication rather
-than running matting again. The queue displays **Waiting to publish** during this
-phase instead of presenting processing as complete prematurely.
+than running matting again. The queue identifies the library update or the wait
+for existing show files in **Current work** during this phase.
 
 In QuickPlayer, open **File → Custom Shows → Settings**:
 
@@ -1178,6 +1303,20 @@ changed because the old and new clips can no longer be matched safely. Partial
 reprocessing keeps the show's existing processing provenance; a full reprocess
 updates it to the newly selected method and settings.
 
+For a single clip, right-click its row and choose **Reprocess Custom Clip…**.
+The same editor opens at the processing settings with only that clip checked.
+Existing clip divisions are kept; **Keep existing masks** starts unchecked so
+the new processing choices generate new masks. The user can enable mask reuse
+or explicitly expand the selection. Source-clip IDs are validated before opening
+the editor, so a stale or removed clip cannot silently select the whole show.
+
+Queued reprocessing accepts completed clip output only when its completion marker
+belongs to the current queue job. The published show's results are regenerated.
+The existing show is copied into staging once, so resuming cannot overwrite new
+clip output, retained masks, or logs with the previous version. The published
+manifest is excluded from that copy so interrupted processing is not mistaken for
+completed work awaiting publication.
+
 Interactive MatAnyone retains the initial mask selected for every included
 clip. RVM-MatAnyone retains the cleaned binary initializer generated by RVM and
 its selected frame. A later RVM-MatAnyone reprocessing pass uses that retained
@@ -1395,3 +1534,18 @@ from the upstream project. OmniShotCut is MIT. MatAnyone2 and ProPainter use the
 S-Lab License 1.0 and are limited to non-commercial use unless their authors grant
 permission. ViTMatte is MIT; SAM and SAM2 are Apache 2.0. The custom player uses
 FFmpeg 8, FFmpeg.AutoGen, NAudio, Direct3D 11, and DirectComposition.
+
+
+Player hover activation is available under **Settings → Activate
+player after hovering**, as an alternative to **Click through locked player**.
+Choose **Player hover delay...** to set 100–30,000 milliseconds (default 1,000).
+While waiting, clicks pass through visible model pixels. After the delay, the
+player accepts mouse input. Unlocked players can be dragged; locking still
+prevents dragging. Hover activation applies in both lock states. Leaving the visible model
+resets the delay; transparent gaps remain click-through. This applies to custom
+shows and the iStripper bridge. The two modes are mutually exclusive and the
+existing default is unchanged.
+
+The cursor changes to a bright green hand with a dark outline when hover activation completes, indicating that
+the model accepts mouse input. During the delay, the underlying application
+continues to control its cursor.
