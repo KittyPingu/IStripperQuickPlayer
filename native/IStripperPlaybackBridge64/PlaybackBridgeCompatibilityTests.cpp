@@ -177,6 +177,60 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-window-diagnostics") == 0)
+    {
+        const HINSTANCE instance = GetModuleHandleW(nullptr);
+        WNDCLASSW cls{};
+        cls.hInstance = instance;
+        cls.lpfnWndProc = DefWindowProcW;
+        cls.lpszClassName = L"QuickPlayerWindowDiagnosticTest";
+        if (!RegisterClassW(&cls)) return 140;
+        HWND owner = CreateWindowW(cls.lpszClassName, L"Private title", WS_POPUP,
+            0, 0, 32, 32, nullptr, nullptr, instance, nullptr);
+        HWND owned = CreateWindowExW(WS_EX_TOOLWINDOW, cls.lpszClassName, L"", WS_POPUP,
+            0, 0, 32, 32, owner, nullptr, instance, nullptr);
+        HWND child = CreateWindowW(cls.lpszClassName, L"", WS_CHILD,
+            0, 0, 16, 16, owned, nullptr, instance, nullptr);
+        if (!owner || !owned || !child) return 141;
+        WindowDiagnosticSnapshot snapshot;
+        CollectTopLevelWindowDiagnostic(owned, reinterpret_cast<LPARAM>(&snapshot));
+        wchar_t expected[128]{};
+        swprintf_s(expected, L"owner=%p ownerClass=[%s]", owner, cls.lpszClassName);
+        bool passed = snapshot.count == 2 && !snapshot.truncated &&
+            snapshot.matches == 0 &&
+            snapshot.windows.find(expected) != std::wstring::npos &&
+            snapshot.windows.find(L"exStyle=0x00000080") != std::wstring::npos &&
+            snapshot.windows.find(L"movieMatch=0") != std::wstring::npos &&
+            snapshot.windows.find(L"rejectedBy=[class-mismatch;not-layered;has-owner;]") != std::wstring::npos &&
+            snapshot.windows.find(L"Private title") == std::wstring::npos;
+        cls.lpszClassName = L"QuickPlayerQWindowToolSaveBitsOwnDCTest";
+        if (!RegisterClassW(&cls)) return 143;
+        HWND movie = CreateWindowExW(WS_EX_LAYERED, cls.lpszClassName, L"", WS_POPUP,
+            0, 0, 32, 32, nullptr, nullptr, instance, nullptr);
+        if (!movie) return 144;
+        WindowDiagnosticSnapshot matching;
+        CollectWindowDiagnostic(movie, reinterpret_cast<LPARAM>(&matching));
+        passed = passed && matching.matches == 1 &&
+            matching.windows.find(L"movieMatch=1 rejectedBy=[]") != std::wstring::npos;
+        SetWindowLongPtrW(movie, GWL_EXSTYLE, 0);
+        WindowDiagnosticSnapshot missingLayered;
+        CollectWindowDiagnostic(movie, reinterpret_cast<LPARAM>(&missingLayered));
+        passed = passed && missingLayered.matches == 0 &&
+            missingLayered.windows.find(L"rejectedBy=[not-layered;]") != std::wstring::npos;
+        DestroyWindow(movie);
+        UnregisterClassW(cls.lpszClassName, instance);
+        snapshot.count = 256;
+        const auto length = snapshot.windows.size();
+        passed = passed && !CollectWindowDiagnostic(owner, reinterpret_cast<LPARAM>(&snapshot)) &&
+            snapshot.truncated && snapshot.windows.size() == length;
+        DestroyWindow(child);
+        DestroyWindow(owned);
+        DestroyWindow(owner);
+        UnregisterClassW(L"QuickPlayerWindowDiagnosticTest", instance);
+        if (!passed) return 142;
+        std::printf("Window diagnostic inventory checks passed.\n");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-alpha-presentation") == 0)
     {
         const HINSTANCE instance = GetModuleHandleW(nullptr);

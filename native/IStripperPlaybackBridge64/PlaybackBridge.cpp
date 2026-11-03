@@ -1250,6 +1250,111 @@ namespace
             GetWindow(window, GW_OWNER) == nullptr;
     }
 
+    struct WindowDiagnosticSnapshot
+    {
+        std::wstring windows;
+        unsigned count = 0;
+        unsigned matches = 0;
+        bool truncated = false;
+    };
+
+    BOOL CALLBACK CollectWindowDiagnostic(HWND window, LPARAM parameter)
+    {
+        DWORD processId = 0;
+        const DWORD threadId = GetWindowThreadProcessId(window, &processId);
+        if (processId != GetCurrentProcessId()) return TRUE;
+        auto& snapshot = *reinterpret_cast<WindowDiagnosticSnapshot*>(parameter);
+        if (snapshot.count >= 256)
+        {
+            snapshot.truncated = true;
+            return FALSE;
+        }
+        wchar_t className[256] = {};
+        SetLastError(ERROR_SUCCESS);
+        const int classLength = GetClassNameW(window, className, static_cast<int>(_countof(className)));
+        const DWORD classError = classLength == 0 ? GetLastError() : ERROR_SUCCESS;
+        SetLastError(ERROR_SUCCESS);
+        const auto style = static_cast<unsigned>(GetWindowLongPtrW(window, GWL_STYLE));
+        const DWORD styleError = style == 0 ? GetLastError() : ERROR_SUCCESS;
+        SetLastError(ERROR_SUCCESS);
+        const auto exStyle = static_cast<unsigned>(GetWindowLongPtrW(window, GWL_EXSTYLE));
+        const DWORD exStyleError = exStyle == 0 ? GetLastError() : ERROR_SUCCESS;
+        const HWND owner = GetWindow(window, GW_OWNER);
+        wchar_t ownerClass[256] = {};
+        if (owner != nullptr)
+            GetClassNameW(owner, ownerClass, static_cast<int>(_countof(ownerClass)));
+        RECT bounds{};
+        SetLastError(ERROR_SUCCESS);
+        const BOOL boundsOk = GetWindowRect(window, &bounds);
+        const DWORD boundsError = boundsOk ? ERROR_SUCCESS : GetLastError();
+        std::wstring rejectedBy;
+        if (classLength == 0) rejectedBy += L"class-query-failed;";
+        else if (std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") == nullptr)
+            rejectedBy += L"class-mismatch;";
+        if (exStyleError != ERROR_SUCCESS) rejectedBy += L"exStyle-query-failed;";
+        if ((exStyle & WS_EX_LAYERED) == 0) rejectedBy += L"not-layered;";
+        if (owner != nullptr) rejectedBy += L"has-owner;";
+        const bool movieMatch = IsMovieWindow(window);
+        if (movieMatch) ++snapshot.matches;
+        wchar_t line[1536] = {};
+        swprintf_s(line,
+            L"\nwindow=%p class=[%s] style=0x%08X exStyle=0x%08X owner=%p ownerClass=[%s] parent=%p visible=%d movieMatch=%d rejectedBy=[%s] thread=%lu bounds=%ld,%ld,%ld,%ld classError=%lu styleError=%lu exStyleError=%lu boundsError=%lu",
+            window, className, style, exStyle,
+            owner, ownerClass, GetAncestor(window, GA_PARENT), IsWindowVisible(window),
+            movieMatch, rejectedBy.c_str(), threadId, bounds.left, bounds.top, bounds.right, bounds.bottom,
+            classError, styleError, exStyleError, boundsError);
+        snapshot.windows += line;
+        ++snapshot.count;
+        return TRUE;
+    }
+
+    BOOL CALLBACK CollectTopLevelWindowDiagnostic(HWND window, LPARAM parameter)
+    {
+        DWORD processId = 0;
+        GetWindowThreadProcessId(window, &processId);
+        if (processId != GetCurrentProcessId()) return TRUE;
+        if (!CollectWindowDiagnostic(window, parameter)) return FALSE;
+        EnumChildWindows(window, &CollectWindowDiagnostic, parameter);
+        return !reinterpret_cast<WindowDiagnosticSnapshot*>(parameter)->truncated;
+    }
+
+    bool ImageVersion(wchar_t (&version)[64]);
+
+    void LogPlayerWindowDiagnostics(SIZE_T options)
+    {
+        WindowDiagnosticSnapshot snapshot;
+        SetLastError(ERROR_SUCCESS);
+        const BOOL enumerationCompleted = EnumWindows(&CollectTopLevelWindowDiagnostic,
+            reinterpret_cast<LPARAM>(&snapshot));
+        const DWORD enumerationError = enumerationCompleted || snapshot.truncated
+            ? ERROR_SUCCESS : GetLastError();
+        wchar_t version[64] = L"unknown";
+        ImageVersion(version);
+        OSVERSIONINFOW osVersion{};
+        osVersion.dwOSVersionInfoSize = sizeof(osVersion);
+        using RtlGetVersionAction = LONG(WINAPI*)(OSVERSIONINFOW*);
+        const auto rtlGetVersion = reinterpret_cast<RtlGetVersionAction>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
+        const LONG osVersionStatus = rtlGetVersion ? rtlGetVersion(&osVersion) : E_NOTIMPL;
+        SYSTEM_INFO systemInfo{};
+        GetNativeSystemInfo(&systemInfo);
+        DWORD sessionId = 0;
+        const BOOL sessionKnown = ProcessIdToSessionId(GetCurrentProcessId(), &sessionId);
+        wchar_t header[768] = {};
+        swprintf_s(header, L"pid=%lu istripperVersion=%s qt5Loaded=%d qt6Loaded=%d options=%llu locked=%ld count=%u matches=%u truncated=%d enumerationCompleted=%d enumerationError=%lu windows=%lu.%lu.%lu osVersionStatus=0x%08lX nativeArchitecture=%u remoteSession=%d sessionKnown=%d sessionId=%lu",
+            GetCurrentProcessId(), version, GetModuleHandleW(L"Qt5Core.dll") != nullptr,
+            GetModuleHandleW(L"Qt6Core.dll") != nullptr,
+            static_cast<unsigned long long>(options),
+            InterlockedCompareExchange(&g_playerLocked, 0, 0), snapshot.count, snapshot.matches,
+            snapshot.truncated, enumerationCompleted, enumerationError,
+            osVersion.dwMajorVersion, osVersion.dwMinorVersion, osVersion.dwBuildNumber,
+            osVersionStatus, static_cast<unsigned>(systemInfo.wProcessorArchitecture),
+            GetSystemMetrics(SM_REMOTESESSION), sessionKnown, sessionId);
+        // One event preserves the inventory through the coalescing event transport.
+        const std::wstring message = header + snapshot.windows;
+        QueueBridgeDiagnostic(message.c_str(), L"desktop-native-player-windows");
+    }
+
     BOOL CALLBACK FindVisibleMovieWindow(HWND window, LPARAM parameter)
     {
         if (!IsWindowVisible(window) || !IsMovieWindow(window))
@@ -5632,6 +5737,7 @@ namespace
 
     HRESULT SetPlayerClickThrough(SIZE_T options)
     {
+        LogPlayerWindowDiagnostics(options);
         const bool enabled = options != 0;
         g_playerHoverStarted = 0;
         SetOpenGlHdrInteractionCursor(nullptr);

@@ -349,6 +349,16 @@ kept at the top level.
 
 ## Playback compatibility and limitations
 
+- To diagnose click-through or hover activation, reproduce the issue while a
+  model is visible and toggle **Activate player after hovering** or change its
+  delay. Send `%LOCALAPPDATA%\IStripperQuickPlayer\desktop-playback.jsonl`.
+  The `desktop-native-player-windows` record includes iStripper's executable
+  version, loaded Qt5/Qt6 status, and up to 256 of its top-level/child windows
+  with classes, styles, owners, bounds, visibility and movie-detection results.
+  It also records rejection reasons, window-query/enumeration errors, Windows
+  version/build, native processor architecture and Remote Desktop session status.
+  Window titles are not collected; the rest of the playback log can contain
+  clip names and local paths.
 - QuickPlayer controls one active desktop movie. It does not synchronize
   several simultaneous performer windows.
 - Controls fail closed if the running x64 `vghd.exe` cannot be matched safely.
