@@ -203,22 +203,32 @@ int wmain(int argc, wchar_t** argv)
             snapshot.windows.find(L"movieMatch=0") != std::wstring::npos &&
             snapshot.windows.find(L"rejectedBy=[class-mismatch;not-layered;has-owner;]") != std::wstring::npos &&
             snapshot.windows.find(L"Private title") == std::wstring::npos;
-        cls.lpszClassName = L"QuickPlayerQWindowToolSaveBitsOwnDCTest";
-        if (!RegisterClassW(&cls)) return 143;
-        HWND movie = CreateWindowExW(WS_EX_LAYERED, cls.lpszClassName, L"", WS_POPUP,
-            0, 0, 32, 32, nullptr, nullptr, instance, nullptr);
-        if (!movie) return 144;
-        WindowDiagnosticSnapshot matching;
-        CollectWindowDiagnostic(movie, reinterpret_cast<LPARAM>(&matching));
-        passed = passed && matching.matches == 1 &&
-            matching.windows.find(L"movieMatch=1 rejectedBy=[]") != std::wstring::npos;
-        SetWindowLongPtrW(movie, GWL_EXSTYLE, 0);
-        WindowDiagnosticSnapshot missingLayered;
-        CollectWindowDiagnostic(movie, reinterpret_cast<LPARAM>(&missingLayered));
-        passed = passed && missingLayered.matches == 0 &&
-            missingLayered.windows.find(L"rejectedBy=[not-layered;]") != std::wstring::npos;
-        DestroyWindow(movie);
-        UnregisterClassW(cls.lpszClassName, instance);
+        for (const auto windowClass : { L"Qt51519QWindowToolSaveBits", L"Qt6120QWindowToolSaveBitsOwnDC" })
+        {
+            cls.lpszClassName = windowClass;
+            cls.style = std::wcsstr(windowClass, L"OwnDC") ? CS_OWNDC : 0;
+            if (!RegisterClassW(&cls)) return 143;
+            HWND movie = CreateWindowExW(WS_EX_LAYERED, cls.lpszClassName, L"", WS_POPUP,
+                0, 0, 32, 32, nullptr, nullptr, instance, nullptr);
+            if (!movie) return 144;
+            WindowDiagnosticSnapshot matching;
+            CollectWindowDiagnostic(movie, reinterpret_cast<LPARAM>(&matching));
+            passed = passed && matching.matches == 1 &&
+                matching.windows.find(L"movieMatch=1 rejectedBy=[]") != std::wstring::npos;
+            SetWindowLongPtrW(movie, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner));
+            WindowDiagnosticSnapshot hasOwner;
+            CollectWindowDiagnostic(movie, reinterpret_cast<LPARAM>(&hasOwner));
+            passed = passed && hasOwner.matches == 0 &&
+                hasOwner.windows.find(L"rejectedBy=[has-owner;]") != std::wstring::npos;
+            SetWindowLongPtrW(movie, GWLP_HWNDPARENT, 0);
+            SetWindowLongPtrW(movie, GWL_EXSTYLE, 0);
+            WindowDiagnosticSnapshot missingLayered;
+            CollectWindowDiagnostic(movie, reinterpret_cast<LPARAM>(&missingLayered));
+            passed = passed && missingLayered.matches == 0 &&
+                missingLayered.windows.find(L"rejectedBy=[not-layered;]") != std::wstring::npos;
+            DestroyWindow(movie);
+            UnregisterClassW(cls.lpszClassName, instance);
+        }
         snapshot.count = 256;
         const auto length = snapshot.windows.size();
         passed = passed && !CollectWindowDiagnostic(owner, reinterpret_cast<LPARAM>(&snapshot)) &&

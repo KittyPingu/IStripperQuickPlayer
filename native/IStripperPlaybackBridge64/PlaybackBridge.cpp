@@ -1245,7 +1245,7 @@ namespace
             processId == GetCurrentProcessId() &&
             GetClassNameW(window, className,
                 static_cast<int>(_countof(className))) > 0 &&
-            std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") != nullptr &&
+            std::wcsstr(className, L"QWindowToolSaveBits") != nullptr &&
             (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_LAYERED) != 0 &&
             GetWindow(window, GW_OWNER) == nullptr;
     }
@@ -1289,7 +1289,7 @@ namespace
         const DWORD boundsError = boundsOk ? ERROR_SUCCESS : GetLastError();
         std::wstring rejectedBy;
         if (classLength == 0) rejectedBy += L"class-query-failed;";
-        else if (std::wcsstr(className, L"QWindowToolSaveBitsOwnDC") == nullptr)
+        else if (std::wcsstr(className, L"QWindowToolSaveBits") == nullptr)
             rejectedBy += L"class-mismatch;";
         if (exStyleError != ERROR_SUCCESS) rejectedBy += L"exStyle-query-failed;";
         if ((exStyle & WS_EX_LAYERED) == 0) rejectedBy += L"not-layered;";
