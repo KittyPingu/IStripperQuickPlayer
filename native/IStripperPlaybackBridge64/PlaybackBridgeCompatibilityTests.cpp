@@ -177,6 +177,87 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-cpu-hit-mask") == 0)
+    {
+        HDC source = CreateCompatibleDC(nullptr);
+        if (!source) return 145;
+        bool passed = true;
+        const LONG bitmapHeight = -4;
+        {
+            BITMAPINFO bitmapInfo{};
+            bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bitmapInfo.bmiHeader.biWidth = 4;
+            bitmapInfo.bmiHeader.biHeight = bitmapHeight;
+            bitmapInfo.bmiHeader.biPlanes = 1;
+            bitmapInfo.bmiHeader.biBitCount = 32;
+            void* pixels = nullptr;
+            HBITMAP bitmap = CreateDIBSection(source, &bitmapInfo, DIB_RGB_COLORS, &pixels, nullptr, 0);
+            if (!bitmap || !pixels) return 146;
+            const auto previous = SelectObject(source, bitmap);
+            std::memset(pixels, 0, 64);
+            auto alpha = static_cast<unsigned char*>(pixels);
+            const int firstRow = 1;
+            const int secondRow = 2;
+            alpha[(firstRow * 4 + 1) * 4 + 3] = 255;
+            alpha[(secondRow * 4 + 2) * 4 + 3] = 255;
+            const auto mask = CpuMovieHitMask(source, SIZE{ 2, 2 }, POINT{ 1, 1 });
+            const RECT bounds = { -200, 100, 0, 300 };
+            passed = passed && mask && mask->pixels == std::vector<unsigned char>({ 255, 0, 0, 255 }) &&
+                HitMovieMask(*mask, bounds, POINT{ -190, 110 }, false) &&
+                !HitMovieMask(*mask, bounds, POINT{ -10, 110 }, false) &&
+                HitMovieMask(*mask, bounds, POINT{ -10, 290 }, false) &&
+                !CpuMovieHitMask(source, SIZE{ 2, 2 }, POINT{ 3, 3 }) &&
+                !CpuMovieHitMask(source, SIZE{ 2, 2 }, POINT{ -1, 0 });
+            if (!passed) { std::fprintf(stderr, "CPU bitmap extraction failed.\n"); return 149; }
+            {
+                const auto previousDpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+                WNDCLASSW cls{};
+                cls.hInstance = GetModuleHandleW(nullptr);
+                cls.lpfnWndProc = DefWindowProcW;
+                cls.lpszClassName = L"QuickPlayerCpuTestQWindowToolSaveBits";
+                if (!RegisterClassW(&cls) || InstallCpuMovieMaskHook() < 0) return 147;
+                HWND windows[2]{};
+                POINT destination{ 40, 40 }, origin{ 1, 1 };
+                SIZE size{ 2, 2 };
+                BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+                UPDATELAYEREDWINDOWINFO update{ sizeof(update), nullptr, &destination, &size,
+                    source, &origin, 0, &blend, ULW_ALPHA, nullptr };
+                for (int index = 0; index < 2; ++index)
+                {
+                    windows[index] = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                        cls.lpszClassName, L"", WS_POPUP, 40, 40, 2, 2, nullptr, nullptr, cls.hInstance, nullptr);
+                    if (!windows[index]) return 148;
+                    g_movieWindows[index].window = windows[index];
+                    const BOOL updated = index == 0 ? UpdateLayeredWindowIndirect(windows[index], &update) :
+                        UpdateLayeredWindow(windows[index], nullptr, &destination, &size, source, &origin, 0, &blend, ULW_ALPHA);
+                    passed = passed && updated &&
+                        g_movieWindows[index].cpuMask &&
+                        g_movieWindows[index].cpuMask->pixels[0] == (index == 0 ? 255 : 0);
+                    if (!passed) { std::fprintf(stderr, "CPU window capture failed (index=%d error=%lu mask=%d).\n", index, GetLastError(), g_movieWindows[index].cpuMask != nullptr); return 149; }
+                    ShowWindow(windows[index], SW_SHOWNOACTIVATE);
+                    alpha[(firstRow * 4 + 1) * 4 + 3] = 0;
+                    alpha[(firstRow * 4 + 2) * 4 + 3] = 255;
+                }
+                passed = passed && IsPointOverVisibleMoviePixel(windows[0], POINT{ 40, 40 }) &&
+                    !IsPointOverVisibleMoviePixel(windows[0], POINT{ 41, 40 }) &&
+                    IsPointOverVisibleMoviePixel(windows[1], POINT{ 41, 40 }) &&
+                    FindVisibleMovieWindowAtPoint(POINT{ 41, 40 }).window == windows[1];
+                if (!passed) { std::fprintf(stderr, "CPU window hit test failed: first=%d firstGap=%d second=%d.\n",
+                    IsPointOverVisibleMoviePixel(windows[0], POINT{ 40, 40 }),
+                    IsPointOverVisibleMoviePixel(windows[0], POINT{ 41, 40 }),
+                    IsPointOverVisibleMoviePixel(windows[1], POINT{ 41, 40 })); return 149; }
+                for (int index = 0; index < 2; ++index) { g_movieWindows[index] = {}; DestroyWindow(windows[index]); }
+                UnregisterClassW(cls.lpszClassName, cls.hInstance);
+                SetThreadDpiAwarenessContext(previousDpi);
+            }
+            SelectObject(source, previous);
+            DeleteObject(bitmap);
+        }
+        DeleteDC(source);
+        if (!passed) return 149;
+        std::printf("CPU rendered-alpha capture, crop, orientation and per-window hit checks passed.\n");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-window-diagnostics") == 0)
     {
         const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -834,6 +915,7 @@ int wmain(int argc, wchar_t** argv)
         const auto previousDpi = SetThreadDpiAwarenessContext(
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         WNDCLASSW definition = {};
+        definition.style = CS_OWNDC;
         definition.lpfnWndProc = DefWindowProcW;
         definition.hInstance = GetModuleHandleW(nullptr);
         definition.lpszClassName = windowClass;

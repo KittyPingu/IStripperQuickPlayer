@@ -393,7 +393,7 @@ internal sealed class LockStateOverlay : Form
 
     internal static bool IsMovieWindowCandidate(string className,
         long extendedStyle, bool hasOwner) =>
-        className.Contains("QWindowToolSaveBitsOwnDC",
+        className.Contains("QWindowToolSaveBits",
             StringComparison.Ordinal) &&
         (extendedStyle & WsExLayered) != 0 &&
         !hasOwner;

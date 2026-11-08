@@ -1144,10 +1144,12 @@ namespace
     LONG volatile g_wmvClockResult = E_PENDING;
     LONG volatile g_wmvClockWorkerResult = E_PENDING;
 
+    struct MovieHitMask;
     struct MovieWindowSubclass
     {
         HWND window = nullptr;
         WNDPROC original = nullptr;
+        std::shared_ptr<const MovieHitMask> cpuMask;
     };
 
     // ponytail: fixed storage keeps window callbacks allocation-free; raise
@@ -1396,6 +1398,7 @@ namespace
         }
         ReleaseSRWLockShared(&g_movieWindowLock);
 
+        MovieWindowAtPoint transparent = { point, nullptr, false };
         for (HWND window : windows)
         {
             RECT bounds = {};
@@ -1407,10 +1410,10 @@ namespace
             {
                 continue;
             }
-            return { point, window,
-                IsPointOverVisibleMoviePixel(window, point) };
+            if (IsPointOverVisibleMoviePixel(window, point)) return { point, window, true };
+            if (transparent.window == nullptr) transparent.window = window;
         }
-        return { point, nullptr, false };
+        return transparent;
     }
 
     struct QtGenericArgument
@@ -5633,9 +5636,17 @@ namespace
         return 0;
     }
 
+    HRESULT InstallCpuMovieMaskHook();
+
     BOOL CALLBACK StartMovieWindowWatcher(
         PINIT_ONCE, PVOID, PVOID*)
     {
+        const HRESULT maskHookResult = InstallCpuMovieMaskHook();
+        if (FAILED(maskHookResult))
+        {
+            InterlockedExchange(&g_movieWindowWatcherResult, maskHookResult);
+            return TRUE;
+        }
         const HANDLE readyEvent =
             CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (readyEvent == nullptr)
@@ -10259,18 +10270,111 @@ namespace
         std::atomic_store(&g_movieHitMask, std::shared_ptr<const MovieHitMask>(mask));
     }
 
-    bool HitMovieMask(const MovieHitMask& mask, const RECT& bounds, POINT point)
+    bool HitMovieMask(const MovieHitMask& mask, const RECT& bounds, POINT point, bool mirror = true)
     {
         const int width = bounds.right - bounds.left;
         const int height = bounds.bottom - bounds.top;
         if (width <= 0 || height <= 0 || !PtInRect(&bounds, point) ||
             mask.width <= 0 || mask.height <= 0 ||
             mask.pixels.size() != static_cast<std::size_t>(mask.width) * mask.height) return false;
-        const int x = mask.width - 1 - static_cast<int>(
+        int x = static_cast<int>(
             static_cast<long long>(point.x - bounds.left) * mask.width / width);
+        if (mirror) x = mask.width - 1 - x;
         const int y = static_cast<int>(
             static_cast<long long>(point.y - bounds.top) * mask.height / height);
         return mask.pixels[static_cast<std::size_t>(y) * mask.width + x] >= 128;
+    }
+
+    std::shared_ptr<const MovieHitMask> CpuMovieHitMask(HDC source, SIZE size, POINT origin)
+    {
+        DIBSECTION dib{};
+        if (source == nullptr || size.cx <= 0 || size.cy <= 0 || origin.x < 0 || origin.y < 0 ||
+            GetObjectW(GetCurrentObject(source, OBJ_BITMAP), sizeof(dib), &dib) != sizeof(dib) ||
+            dib.dsBm.bmBitsPixel != 32 || dib.dsBm.bmBits == nullptr ||
+            dib.dsBm.bmWidth <= 0 || dib.dsBm.bmHeight <= 0 || dib.dsBm.bmWidthBytes <= 0 ||
+            origin.x > dib.dsBm.bmWidth || size.cx > dib.dsBm.bmWidth - origin.x ||
+            origin.y > dib.dsBm.bmHeight || size.cy > dib.dsBm.bmHeight - origin.y) return {};
+        const auto bytes = static_cast<std::size_t>(dib.dsBm.bmWidthBytes) * dib.dsBm.bmHeight;
+        if (bytes > MaximumAlphaOutputSize ||
+            static_cast<std::size_t>(dib.dsBm.bmWidth) * 4 >
+                static_cast<std::size_t>(dib.dsBm.bmWidthBytes) || !IsReadable(dib.dsBm.bmBits, bytes)) return {};
+        auto mask = std::make_shared<MovieHitMask>();
+        mask->width = std::min<int>(size.cx, 256);
+        mask->height = std::min<int>(size.cy, 256);
+        mask->pixels.resize(static_cast<std::size_t>(mask->width) * mask->height);
+        const auto pixels = static_cast<const unsigned char*>(dib.dsBm.bmBits);
+        for (int y = 0; y < mask->height; ++y)
+        {
+            // Qt backing stores are top-down; GetObject normalizes biHeight to positive.
+            const int row = origin.y + static_cast<int>(static_cast<long long>(y) * size.cy / mask->height);
+            for (int x = 0; x < mask->width; ++x)
+            {
+                const int column = origin.x + static_cast<int>(static_cast<long long>(x) * size.cx / mask->width);
+                mask->pixels[static_cast<std::size_t>(y) * mask->width + x] =
+                    pixels[static_cast<std::size_t>(row) * dib.dsBm.bmWidthBytes + column * 4 + 3];
+            }
+        }
+        return mask;
+    }
+
+    decltype(&UpdateLayeredWindowIndirect) g_originalUpdateLayeredWindowIndirect = nullptr;
+    decltype(&UpdateLayeredWindow) g_originalUpdateLayeredWindow = nullptr;
+
+    void CaptureCpuMovieMask(HWND window, HDC source, const SIZE* size, const POINT* origin,
+        const BLENDFUNCTION* blend, DWORD flags)
+    {
+        if (size != nullptr && blend != nullptr &&
+            (flags & ULW_ALPHA) != 0 && (blend->AlphaFormat & AC_SRC_ALPHA) != 0 &&
+            IsMovieWindow(window) && (GetClassLongPtrW(window, GCL_STYLE) & CS_OWNDC) == 0)
+        {
+            try
+            {
+                auto mask = CpuMovieHitMask(source, *size, origin ? *origin : POINT{});
+                AcquireSRWLockExclusive(&g_movieWindowLock);
+                for (auto& entry : g_movieWindows)
+                    if (entry.window == window) { entry.cpuMask = mask; break; }
+                ReleaseSRWLockExclusive(&g_movieWindowLock);
+            }
+            catch (...) { /* Mask capture must never interrupt presentation. */ }
+        }
+    }
+
+    BOOL WINAPI CapturingUpdateLayeredWindowIndirect(HWND window, const UPDATELAYEREDWINDOWINFO* info)
+    {
+        const BOOL result = g_originalUpdateLayeredWindowIndirect(window, info);
+        const DWORD error = GetLastError();
+        if (result && info) CaptureCpuMovieMask(window, info->hdcSrc, info->psize, info->pptSrc, info->pblend, info->dwFlags);
+        SetLastError(error);
+        return result;
+    }
+
+    BOOL WINAPI CapturingUpdateLayeredWindow(HWND window, HDC destination, POINT* position,
+        SIZE* size, HDC source, POINT* origin, COLORREF key, BLENDFUNCTION* blend, DWORD flags)
+    {
+        const BOOL result = g_originalUpdateLayeredWindow(window, destination, position, size, source, origin, key, blend, flags);
+        const DWORD error = GetLastError();
+        if (result) CaptureCpuMovieMask(window, source, size, origin, blend, flags);
+        SetLastError(error);
+        return result;
+    }
+
+    HRESULT InstallCpuMovieMaskHook()
+    {
+        const auto initialized = MH_Initialize();
+        if (initialized != MH_OK && initialized != MH_ERROR_ALREADY_INITIALIZED) return E_FAIL;
+        struct Hook { void* target; void* callback; void** original; };
+        const Hook hooks[] = {
+            { reinterpret_cast<void*>(&UpdateLayeredWindowIndirect), reinterpret_cast<void*>(&CapturingUpdateLayeredWindowIndirect),
+                reinterpret_cast<void**>(&g_originalUpdateLayeredWindowIndirect) },
+            { reinterpret_cast<void*>(&UpdateLayeredWindow), reinterpret_cast<void*>(&CapturingUpdateLayeredWindow),
+                reinterpret_cast<void**>(&g_originalUpdateLayeredWindow) }
+        };
+        for (const auto& hook : hooks)
+        {
+            if (MH_CreateHook(hook.target, hook.callback, hook.original) != MH_OK ||
+                MH_EnableHook(hook.target) != MH_OK) return E_FAIL;
+        }
+        return BridgeSuccess;
     }
 
     bool MovieHitMaskCurrent(void* movie)
@@ -10306,14 +10410,24 @@ namespace
 
     bool IsPointOverVisibleMoviePixel(HWND window, POINT point)
     {
+        RECT bounds{};
+        if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))))
+            return false;
+        if ((GetClassLongPtrW(window, GCL_STYLE) & CS_OWNDC) == 0)
+        {
+            std::shared_ptr<const MovieHitMask> cpuMask;
+            AcquireSRWLockShared(&g_movieWindowLock);
+            for (const auto& entry : g_movieWindows)
+                if (entry.window == window) { cpuMask = entry.cpuMask; break; }
+            ReleaseSRWLockShared(&g_movieWindowLock);
+            return cpuMask && HitMovieMask(*cpuMask, bounds, point, false);
+        }
         auto mask = std::atomic_load(&g_movieHitMask);
         void* movie = ActiveMovie();
         if (mask == nullptr || mask->movie != movie || !IsMovie(movie) ||
             mask->animation != *reinterpret_cast<void**>(
                 reinterpret_cast<unsigned char*>(movie) + MovieAnimationOffset)) return false;
-        RECT bounds = {};
-        return SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS,
-            &bounds, sizeof(bounds))) && HitMovieMask(*mask, bounds, point);
+        return HitMovieMask(*mask, bounds, point);
     }
 
     bool PrimeAnimationAlphaIndex(void* animation, int currentFrame)

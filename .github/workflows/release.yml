@@ -94,6 +94,11 @@ jobs:
             exit $LASTEXITCODE
           }
           & .\native\IStripperPlaybackBridge64\obj\verification\PlaybackBridgeCompatibilityTests.exe `
+            --verify-cpu-hit-mask
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          & .\native\IStripperPlaybackBridge64\obj\verification\PlaybackBridgeCompatibilityTests.exe `
             --verify-window-diagnostics
           if ($LASTEXITCODE) {
             exit $LASTEXITCODE

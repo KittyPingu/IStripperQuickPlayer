@@ -453,6 +453,12 @@ namespace IStripperQuickPlayer
                         GetThreadDpiAwarenessContext(), new IntPtr(-4)) ||
                     !LockStateOverlay.IsMovieWindowCandidate(
                         "Qt51519QWindowToolSaveBitsOwnDC", 0x80000, false) ||
+                    !LockStateOverlay.IsMovieWindowCandidate(
+                        "Qt6120QWindowToolSaveBits", 0x80000, false) ||
+                    LockStateOverlay.IsMovieWindowCandidate(
+                        "Qt6120QWindowToolSaveBits", 0x80, false) ||
+                    LockStateOverlay.IsMovieWindowCandidate(
+                        "Qt6120QWindowToolSaveBits", 0x80000, true) ||
                     LockStateOverlay.IsMovieWindowCandidate(
                         "Qt51519QWindowToolSaveBitsOwnDC", 0x80, false) ||
                     LockStateOverlay.IsMovieWindowCandidate(
