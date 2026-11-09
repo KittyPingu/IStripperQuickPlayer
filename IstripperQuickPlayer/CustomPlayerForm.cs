@@ -65,11 +65,19 @@ internal sealed class CustomPlayerForm : Form
     readonly System.Windows.Forms.Timer settleTimer = new() { Interval = 15 };
     readonly Stopwatch settleClock = new();
     static readonly Cursor hoverReadyCursor = LoadHoverReadyCursor();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr LoadLibraryEx(string fileName, IntPtr file, uint flags);
+    [DllImport("user32.dll", EntryPoint = "LoadCursorW", SetLastError = true)]
+    static extern IntPtr LoadCursor(IntPtr instance, IntPtr resource);
     static Cursor LoadHoverReadyCursor()
     {
-        using Stream stream = typeof(CustomPlayerForm).Assembly.GetManifestResourceStream("HoverReady.cur")
-            ?? throw new InvalidDataException("The hover-ready cursor resource is missing.");
-        return new Cursor(stream);
+        // Use the bridge's native color cursor loader; its shared resource stays loaded for the process lifetime.
+        IntPtr module = LoadLibraryEx(Path.Combine(AppContext.BaseDirectory,
+            "IStripperPlaybackBridge64.dll"), IntPtr.Zero, 0x22); // Data/image resources only.
+        if (module == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        IntPtr handle = LoadCursor(module, new IntPtr(101));
+        if (handle == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return new Cursor(handle);
     }
 
     readonly System.Windows.Forms.Timer hoverTimer = new() { Interval = 50 };
@@ -1307,6 +1315,7 @@ internal sealed class CustomPlayerForm : Form
 
     internal static bool VerifyHitTesting() =>
         hoverReadyCursor.Handle != Cursors.Hand.Handle && hoverReadyCursor.Size.Width >= 32 &&
+        VerifyHoverCursorColor() &&
         ResetPositionBounds(new Size(400, 600), new Rectangle(0, 0, 1920, 1080)) ==
             new Rectangle(760, 480, 400, 600) &&
         ResetPositionBounds(new Size(3840, 2160), new Rectangle(-1920, 0, 1920, 1080)) ==
@@ -1440,6 +1449,21 @@ internal sealed class CustomPlayerForm : Form
     static byte ApplyOpacityThresholds(byte alpha, int lower, int upper) =>
         alpha < Math.Clamp(lower, 0, 255) ? (byte)0 :
         alpha >= Math.Clamp(upper, 1, 255) ? (byte)255 : alpha;
+
+    internal static bool VerifyHoverCursorColor()
+    {
+        using Bitmap bitmap = new(64, 64);
+        using (Graphics graphics = Graphics.FromImage(bitmap))
+            hoverReadyCursor.DrawStretched(graphics, new Rectangle(0, 0, 64, 64));
+        int greenPixels = 0;
+        for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                Color color = bitmap.GetPixel(x, y);
+                if (color.G > 160 && color.G > color.R + 40 && color.G > color.B + 40) greenPixels++;
+            }
+        return greenPixels > 100;
+    }
 
     static bool VerifyHoverActivation()
     {

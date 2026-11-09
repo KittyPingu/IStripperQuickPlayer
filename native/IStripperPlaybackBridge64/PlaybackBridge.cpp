@@ -1124,6 +1124,8 @@ namespace
     UINT g_wheelResizeMessage = 0;
     UINT g_volumeWheelMessage = 0;
     LONG volatile g_movieWindowWatcherResult = E_PENDING;
+    std::atomic<DWORD> g_movieWindowWatcherThreadId{0};
+    constexpr UINT MovieHoverTimerUpdateMessage = WM_APP + 1;
     UINT g_movieWindowProbeMessage = 0;
     UINT g_movieWindowBeginDragMessage = 0;
     UINT g_movieWindowEndDragMessage = 0;
@@ -5497,6 +5499,11 @@ namespace
         SetMovieWindowClickThrough(window, clickThrough ||
             pointerWindow == window && !pointerOverVisiblePixel);
 
+        // Keep installed/wrapped procedures; only Qt's class-procedure reset needs repair.
+        if (OriginalMovieWindowProc(window) != nullptr &&
+            static_cast<ULONG_PTR>(GetWindowLongPtrW(window, GWLP_WNDPROC)) !=
+                GetClassLongPtrW(window, GCLP_WNDPROC)) return true;
+
         bool alreadySubclassed = false;
         const bool probeCompleted =
             TryHasMovieWindowProc(window, alreadySubclassed);
@@ -5543,9 +5550,23 @@ namespace
         {
             RemoveMovieWindow(window);
         }
-        else
+        else if ((event == EVENT_OBJECT_CREATE || event == EVENT_OBJECT_SHOW) &&
+            OriginalMovieWindowProc(window) == nullptr)
         {
             SubclassMovieWindow(window);
+        }
+    }
+
+    void UpdateMovieHoverTimer(UINT_PTR& timer)
+    {
+        if (InterlockedCompareExchange(&g_playerHoverDelay, 0, 0) > 0)
+        {
+            if (timer == 0) timer = SetTimer(nullptr, 0, 50, nullptr);
+        }
+        else if (timer != 0)
+        {
+            KillTimer(nullptr, timer);
+            timer = 0;
         }
     }
 
@@ -5558,8 +5579,9 @@ namespace
         const HANDLE readyEvent = static_cast<HANDLE>(parameter);
         MSG message = {};
         PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+        g_movieWindowWatcherThreadId = GetCurrentThreadId();
         g_movieWindowEventHook = SetWinEventHook(
-            EVENT_OBJECT_CREATE, EVENT_OBJECT_LOCATIONCHANGE,
+            EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW,
             g_bridgeModule, &MovieWindowEvent,
             GetCurrentProcessId(), 0, WINEVENT_OUTOFCONTEXT);
         g_movieMouseHook = SetWindowsHookExW(
@@ -5574,6 +5596,7 @@ namespace
         SetEvent(readyEvent);
         if (result < 0)
         {
+            g_movieWindowWatcherThreadId = 0;
             if (g_movieMouseHook != nullptr)
             {
                 UnhookWindowsHookEx(g_movieMouseHook);
@@ -5585,9 +5608,15 @@ namespace
         const UINT_PTR movieWindowHealthTimer =
             SetTimer(nullptr, 0, 1'000, nullptr);
 
-        const UINT_PTR hoverTimer = SetTimer(nullptr, 0, 50, nullptr);
+        UINT_PTR hoverTimer = 0;
+        UpdateMovieHoverTimer(hoverTimer);
         while (GetMessageW(&message, nullptr, 0, 0) > 0)
         {
+            if (message.message == MovieHoverTimerUpdateMessage && message.hwnd == nullptr)
+            {
+                UpdateMovieHoverTimer(hoverTimer);
+                continue;
+            }
             if (message.message == WM_TIMER && hoverTimer != 0 && message.wParam == hoverTimer)
             {
                 if (InterlockedCompareExchange(&g_playerHoverDelay, 0, 0) > 0 &&
@@ -5625,6 +5654,7 @@ namespace
             DispatchMessageW(&message);
         }
         if (hoverTimer != 0) KillTimer(nullptr, hoverTimer);
+        g_movieWindowWatcherThreadId = 0;
         if (movieWindowHealthTimer != 0)
         {
             KillTimer(nullptr, movieWindowHealthTimer);
@@ -5755,6 +5785,9 @@ namespace
         InterlockedExchange(&g_playerClickThrough, options == 1 ? 1 : 0);
         InterlockedExchange(&g_playerHoverDelay, options >= 102 && options <= 30002
             ? static_cast<LONG>(options - 2) : 0);
+        const DWORD watcherThread = g_movieWindowWatcherThreadId.load();
+        if (watcherThread != 0 && !PostThreadMessageW(watcherThread, MovieHoverTimerUpdateMessage, 0, 0))
+            return HRESULT_FROM_WIN32(GetLastError());
         if (enabled && InterlockedCompareExchange(&g_playerLocked, 0, 0) != 0)
         {
             EnumWindows(&FindMovieWindow, 0);

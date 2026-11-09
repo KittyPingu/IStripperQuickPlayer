@@ -134,7 +134,7 @@ internal sealed class LockStateOverlay : Form
             return false;
         current?.Close();
         current = new LockStateOverlay(CalculateImageBounds(window.Bounds,
-            (int)GetDpiForWindow(window.Handle), image.Size), false, image);
+            (int)GetDpiForWindow(window.Handle), image.Size, widthPercent: 50), false, image);
         current.Show();
         return true;
     }
@@ -304,14 +304,29 @@ internal sealed class LockStateOverlay : Form
     }
 
     private static Rectangle CalculateImageBounds(Rectangle movieBounds,
-        int movieDpi, Size imageSize)
+        int movieDpi, Size imageSize, int widthPercent = 30)
     {
-        Rectangle bounds = CalculateBounds(movieBounds, movieDpi);
-        int height = bounds.Width * imageSize.Height / imageSize.Width;
+        int width = movieBounds.Height * widthPercent * movieDpi / (100 * (int)GetDpiForSystem());
+        int height = width * imageSize.Height / imageSize.Width;
         return new Rectangle(
-            movieBounds.Left + (movieBounds.Width - bounds.Width) / 2,
+            movieBounds.Left + (movieBounds.Width - width) / 2,
             movieBounds.Top + (movieBounds.Height - height) / 2,
-            bounds.Width, height);
+            width, height);
+    }
+
+    internal static bool VerifyImageSizing()
+    {
+        int dpi = (int)GetDpiForSystem();
+        Size image = new(100, 150);
+        Rectangle portrait = CalculateImageBounds(new Rectangle(100, 200, 300, 600), dpi, image);
+        Rectangle landscape = CalculateImageBounds(new Rectangle(100, 200, 1200, 600), dpi, image);
+        Rectangle enlarged = CalculateImageBounds(new Rectangle(100, 200, 600, 1200), dpi, image);
+        Rectangle custom = CalculateImageBounds(new Rectangle(100, 200, 300, 600), dpi, image, 50);
+        Rectangle customEnlarged = CalculateImageBounds(new Rectangle(100, 200, 600, 1200), dpi, image, 50);
+        return portrait == new Rectangle(160, 365, 180, 270) &&
+            portrait.Size == landscape.Size && enlarged.Size == new Size(360, 540) &&
+            custom == new Rectangle(100, 275, 300, 450) &&
+            customEnlarged == new Rectangle(100, 350, 600, 900);
     }
 
     private static Rectangle CalculateTextBounds(Rectangle movieBounds, int movieDpi)
@@ -407,7 +422,7 @@ internal sealed class LockStateOverlay : Form
         Rectangle imageBounds = CalculateImageBounds(
             new Rectangle(100, 200, 300, 600), (int)GetDpiForSystem(),
             new Size(100, 150));
-        Debug.Assert(imageBounds == new Rectangle(205, 432, 90, 135));
+        Debug.Assert(imageBounds == new Rectangle(160, 365, 180, 270));
         Rectangle textBounds = CalculateTextBounds(
             new Rectangle(100, 200, 300, 600), (int)GetDpiForSystem());
         Debug.Assert(textBounds == new Rectangle(227, 477, 45, 45));

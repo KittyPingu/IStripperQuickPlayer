@@ -15,6 +15,13 @@ LRESULT CALLBACK TestOpenGlWrapper(HWND window, UINT message, WPARAM wParam, LPA
     return CallWindowProcW(&MovieWindowProc, window, message, wParam, lParam);
 }
 
+int watcherProbeCount = 0;
+LRESULT CALLBACK TestWatcherWindow(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == g_movieWindowProbeMessage) ++watcherProbeCount;
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
 int __cdecl TestScale() { return 777; }
 const void* slowSceneCandidate = nullptr;
 ULONGLONG sceneLookupDeadline = 0;
@@ -177,6 +184,73 @@ bool ResolveTestImports()
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-window-watcher") == 0)
+    {
+        MSG message{};
+        PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+        UINT_PTR timer = 0;
+        g_playerHoverDelay = 0;
+        UpdateMovieHoverTimer(timer);
+        if (timer != 0) return 151;
+        g_playerHoverDelay = 1000;
+        UpdateMovieHoverTimer(timer);
+        if (timer == 0) return 152;
+        const auto initialTimer = timer;
+        UpdateMovieHoverTimer(timer);
+        if (timer != initialTimer || MsgWaitForMultipleObjects(0, nullptr, FALSE, 500, QS_TIMER) != WAIT_OBJECT_0 ||
+            !PeekMessageW(&message, nullptr, WM_TIMER, WM_TIMER, PM_REMOVE) || message.wParam != timer) return 153;
+        g_playerHoverDelay = 0;
+        UpdateMovieHoverTimer(timer);
+        if (timer != 0 || MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_TIMER) != WAIT_TIMEOUT) return 154;
+        g_playerHoverDelay = 1500;
+        UpdateMovieHoverTimer(timer);
+        if (timer == 0) return 155;
+        g_playerHoverDelay = 0;
+        UpdateMovieHoverTimer(timer);
+
+        g_movieWindowWatcherThreadId = GetCurrentThreadId();
+        if (SetPlayerClickThrough(1002) < 0 ||
+            !PeekMessageW(&message, nullptr, MovieHoverTimerUpdateMessage, MovieHoverTimerUpdateMessage, PM_REMOVE)) return 159;
+        UpdateMovieHoverTimer(timer);
+        if (timer == 0 || SetPlayerClickThrough(0) < 0 ||
+            !PeekMessageW(&message, nullptr, MovieHoverTimerUpdateMessage, MovieHoverTimerUpdateMessage, PM_REMOVE)) return 160;
+        UpdateMovieHoverTimer(timer);
+        g_movieWindowWatcherThreadId = 0;
+        if (timer != 0) return 161;
+
+        const HINSTANCE instance = GetModuleHandleW(nullptr);
+        WNDCLASSW cls{};
+        cls.hInstance = instance;
+        cls.lpfnWndProc = TestWatcherWindow;
+        cls.style = CS_OWNDC;
+        cls.lpszClassName = L"QuickPlayerWatcherQWindowToolSaveBitsOwnDC";
+        if (!RegisterClassW(&cls)) return 156;
+        g_movieWindowProbeMessage = RegisterWindowMessageW(L"QuickPlayerWatcherTest.Probe");
+        HWND window = CreateWindowExW(WS_EX_LAYERED, cls.lpszClassName, L"", WS_POPUP,
+            0, 0, 2, 2, nullptr, nullptr, instance, nullptr);
+        if (!window) return 157;
+        MovieWindowEvent(nullptr, EVENT_OBJECT_CREATE, window, OBJID_WINDOW, CHILDID_SELF, 0, 0);
+        const int initialProbes = watcherProbeCount;
+        bool passed = initialProbes == 1 && OriginalMovieWindowProc(window) == TestWatcherWindow;
+        for (int index = 0; index < 100; ++index)
+        {
+            MovieWindowEvent(nullptr, EVENT_OBJECT_LOCATIONCHANGE, window, OBJID_WINDOW, CHILDID_SELF, 0, 0);
+            MovieWindowEvent(nullptr, EVENT_OBJECT_STATECHANGE, window, OBJID_WINDOW, CHILDID_SELF, 0, 0);
+            MovieWindowEvent(nullptr, EVENT_OBJECT_SHOW, window, OBJID_WINDOW, CHILDID_SELF, 0, 0);
+        }
+        passed = passed && SubclassMovieWindow(window) && watcherProbeCount == initialProbes;
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&TestWatcherWindow));
+        passed = passed && SubclassMovieWindow(window) && watcherProbeCount == initialProbes + 1 &&
+            GetWindowLongPtrW(window, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&MovieWindowProc);
+        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&TestWatcherWindow));
+        MovieWindowEvent(nullptr, EVENT_OBJECT_DESTROY, window, OBJID_WINDOW, CHILDID_SELF, 0, 0);
+        passed = passed && OriginalMovieWindowProc(window) == nullptr;
+        DestroyWindow(window);
+        UnregisterClassW(cls.lpszClassName, instance);
+        if (!passed) return 158;
+        std::printf("Hover timer lifecycle and cached window-event checks passed; Qt reset repair preserved.\n");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-cpu-hit-mask") == 0)
     {
         HDC source = CreateCompatibleDC(nullptr);

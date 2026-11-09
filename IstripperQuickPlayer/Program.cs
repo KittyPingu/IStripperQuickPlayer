@@ -449,7 +449,8 @@ namespace IStripperQuickPlayer
             }
             if (args.Length == 1 && args[0] == "--verify-controls")
             {
-                if (!AreDpiAwarenessContextsEqual(
+                if (!LockStateOverlay.VerifyImageSizing() || !CustomPlayerForm.VerifyHoverCursorColor() ||
+                    !AreDpiAwarenessContextsEqual(
                         GetThreadDpiAwarenessContext(), new IntPtr(-4)) ||
                     !LockStateOverlay.IsMovieWindowCandidate(
                         "Qt51519QWindowToolSaveBitsOwnDC", 0x80000, false) ||
