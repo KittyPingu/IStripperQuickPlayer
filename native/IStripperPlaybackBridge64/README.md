@@ -185,13 +185,23 @@ offset. At startup the bridge resolves `QOpenGLShaderProgram::bind`,
 table, and resolves core texture calls from `opengl32.dll`. The current
 context's `glActiveTexture` entry point is obtained dynamically through
 `wglGetProcAddress` on the render thread. The bind hook sets
-`u_QuickPlayerData`, `u_QuickPlayerSequence`, the clip-bounds capture/publish
+`u_QuickPlayerData`, `u_QuickPlayerSequence`, `u_QuickPlayerMouse`, the clip-bounds capture/publish
 uniforms, and the named
 `u_QuickPlayerTexture_<name>`, `u_QuickPlayerTextureSize_<name>`, and
 `u_QuickPlayerTextureSequence_<name>` uniforms only for linked programs that
 declare them. Texture objects and uploads are context-specific and run only on
 the OpenGL render thread. Missing or incompatible Qt/OpenGL exports make
 fullscreen hook setup fail closed.
+
+Bridge v165 adds opt-in `vec4 u_QuickPlayerMouse` independently of external
+shader-data/texture packets. On shader bind it samples the Windows cursor and
+maps it to the current WGL DC's window client area. XY is normalized with a
+bottom-left origin, Z indicates inside, and W indicates valid coordinates.
+Unavailable cursor/window data is published as zero; coordinates outside the
+window remain unclamped. No mouse hook, IPC request or fixed engine offset is
+needed. Run `PlaybackBridgeCompatibilityTests.exe --verify-fullscreen-mouse`
+for centre, edges, outside-window and unavailable-window checks without
+moving the user's pointer or injecting into iStripper.
 
 The resolver produced this profile for the 2.4.0.0 baseline:
 

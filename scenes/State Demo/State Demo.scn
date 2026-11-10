@@ -1,0 +1,82 @@
+text: README.txt
+
+// Framebuffer state example; mouse-facing requires QuickPlayer bridge v165.
+// Based on the Empty/ feedback pattern credited to Z22 in Calgon's Fingals Cave.
+// The visible actor also supplies the native fullscreen playback lifetime.
+clip {
+    id: Actor
+}
+
+texture {
+    id: Memory
+    size: 64, 64
+    source: Empty/
+}
+
+// 1. Copy the previous frame's stored pixels before updating them.
+framebuffer {
+    id: PreviousState
+    size: 64, 64
+    pos: 32, 32
+    sprite {
+        size: 64, 64
+        source: Memory
+    }
+}
+
+// 2. Read old position/direction and write the next state.
+framebuffer {
+    id: NextState
+    size: 64, 64
+    pos: 32, 32
+    sprite {
+        size: 64, 64
+        source: PreviousState, 0
+        shader: fragment, update.fsh
+    }
+}
+
+camera {
+    type: 2D
+    size: 960, 540
+
+    // 3. Draw the ball using the updated state.
+    sprite {
+        pos: 480, 270
+        size: 960, 540
+        hotspot: 0.5, 0.5
+        source: NextState, 0
+        shader: fragment, draw.fsh
+        uniform: ballOnly, float, 0.0
+        material: false
+    }
+
+    // The bridge supplies mouse coordinates directly to the actor vertex shader.
+    clipSprite {
+        pos: 480, 450
+        standingHeight: 360
+        sittingHeight: 300
+        source: Actor, 0
+        shader: vertex, face-mouse.vsh
+        shader: fragment, actor.fsh
+        blend: true
+    }
+
+    // Draw the ball again with a transparent background so it stays visible.
+    sprite {
+        pos: 480, 270
+        size: 960, 540
+        hotspot: 0.5, 0.5
+        source: NextState, 0
+        shader: fragment, draw.fsh
+        uniform: ballOnly, float, 1.0
+        blend: true
+        material: false
+    }
+
+    // 4. Required feedback trigger: keep this LAST, even though it is invisible.
+    sprite {
+        opacity: 0.0
+        source: NextState
+    }
+}

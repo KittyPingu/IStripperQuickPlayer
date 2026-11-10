@@ -378,14 +378,20 @@ lack it return `409`. Restart iStripper after updating the native bridge.
 
 Bridge v163 distinguishes these launch failures in the `409` error message:
 
-- `0x800705B4`: controller lookup timed out. Retry the request to continue the
-  memory search where it stopped, including within a large memory region.
+- `0x800705B4`: controller lookup still timed out after automatic retries. A
+  scene-start request resumes the bounded memory search for up to fifteen
+  seconds, including within a large memory region, without blocking QuickPlayer's
+  UI thread. This also applies in API-only mode; opening the full QuickPlayer
+  interface is not needed to warm the controller cache. Retry the request to
+  continue searching after that budget expires.
 - `0x80070490`: a complete controller lookup found no live scene controller.
 - `0x80070578`: iStripper's main window could not be found for focus acquisition.
   Open the iStripper interface and retry.
 
 These failures occur before scene dispatch. Cached controllers are validated on
 each launch; discovery resumes if iStripper destroys or replaces the controller.
+Only the native lookup-timeout result is retried. Transport timeouts and other
+failures are not retried, because a scene might already have been dispatched.
 
 Bridge v164 logs scene-controller lookup start/results to
 `%LOCALAPPDATA%\IStripperQuickPlayer\desktop-playback.jsonl` under
@@ -459,6 +465,29 @@ selected logical slot is replaced.
 
 The targeted play endpoints create iStripper's native `PlayableCard` and give
 it to the selected scene node.
+
+### Mouse input for fullscreen shaders
+
+Bridge v165 supplies cursor input automatically to shaders that declare:
+
+```glsl
+uniform vec4 u_QuickPlayerMouse;
+```
+
+`xy` is the cursor position normalized to the current OpenGL window's client
+area: `(0,0)` is bottom-left and `(1,1)` is top-right. Coordinates can extend
+outside that range when the cursor leaves the window. `z` is 1 when the cursor
+is inside the client area, otherwise 0. `w` is 1 when coordinates are available;
+all four components are zero when the render window or cursor is unavailable.
+These flags are not mouse-button states. This uses the render window rather
+than the primary monitor, including when the window is on another monitor.
+The coordinates refer to the whole window, not a sprite or framebuffer.
+
+No REST request, shader-data packet, or extra SCN uniform declaration is needed.
+QuickPlayer's fullscreen bridge hook must be active. Restart iStripper when
+upgrading an already loaded bridge because its DLL remains pinned until exit.
+See [State Demo](../../scenes/State%20Demo/README.txt) for a plane that turns
+toward the mouse while a ball independently demonstrates retained state.
 
 ### External shader data
 

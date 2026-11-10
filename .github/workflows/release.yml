@@ -94,6 +94,11 @@ jobs:
             exit $LASTEXITCODE
           }
           & .\native\IStripperPlaybackBridge64\obj\verification\PlaybackBridgeCompatibilityTests.exe `
+            --verify-fullscreen-mouse
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          & .\native\IStripperPlaybackBridge64\obj\verification\PlaybackBridgeCompatibilityTests.exe `
             --verify-window-watcher
           if ($LASTEXITCODE) {
             exit $LASTEXITCODE
@@ -177,6 +182,20 @@ jobs:
           .\tools\Prepare-ShaderVideoStreamerPackage.ps1 `
             -MainPublishDirectory "$env:GITHUB_WORKSPACE\artifacts\publish" `
             -PlayerPublishDirectory "$env:GITHUB_WORKSPACE\artifacts\publish\ShaderVideoStreamer"
+
+      - name: Verify fullscreen API regression checks
+        shell: pwsh
+        run: |
+          $player = "$env:GITHUB_WORKSPACE\artifacts\publish\IStripperQuickPlayer.exe"
+          & $player --verify-desktop-playback
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          & $player --verify-fullscreen-scenes
+          if ($LASTEXITCODE) {
+            exit $LASTEXITCODE
+          }
+          .\tools\Test-FullscreenApiOnly.ps1 -SelfTest
 
       - name: Smoke-test WinForms controls
         shell: pwsh

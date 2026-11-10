@@ -333,7 +333,9 @@ namespace IStripperQuickPlayer
                 ApiFullscreenSceneRequest body =
                     await ReadRestApiJsonAsync<ApiFullscreenSceneRequest>(
                         request, cancellationToken);
-                return await InvokeAsync(() => StartRestApiFullscreenScene(body));
+                return await InvokeAsync(
+                    async token => await StartRestApiFullscreenSceneAsync(body, token),
+                    cancellationToken);
             }
 
             if (method == "GET" &&
@@ -793,7 +795,8 @@ namespace IStripperQuickPlayer
                 FullscreenSceneCatalog.Read(Path.Combine(dataPath, "scenes"));
         }
 
-        private ApiResult StartRestApiFullscreenScene(ApiFullscreenSceneRequest body)
+        private async Task<ApiResult> StartRestApiFullscreenSceneAsync(
+            ApiFullscreenSceneRequest body, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(body.SceneId) || body.SceneId.Contains('\0'))
                 return Error(400, "Supply a sceneId from GET /api/v1/fullscreen/scenes.");
@@ -802,14 +805,15 @@ namespace IStripperQuickPlayer
                     StringComparison.OrdinalIgnoreCase));
             if (scene == null)
                 return Error(404, "The fullscreen scene is not installed.");
-            if (playbackBridgeClient?.IsConnected != true)
+            PlaybackBridgeClient? bridge = playbackBridgeClient;
+            if (bridge?.IsConnected != true)
                 return Error(409, "The iStripper bridge is not connected.");
-            int result = playbackBridgeClient.CallUtf8(
-                "IStripperStartFullscreenScene", scene.Path.Replace('\\', '/'));
+            int result = await bridge.StartFullscreenSceneAsync(
+                scene.Path.Replace('\\', '/'), cancellationToken);
             if (result == unchecked((int)0x80070005))
                 return Error(409, "Windows could not give iStripper foreground focus. The scene was not dispatched.");
             if (result == unchecked((int)0x800705B4))
-                return Error(409, "The fullscreen scene controller lookup timed out (0x800705B4). Retry to continue the search. The scene was not dispatched.");
+                return Error(409, "The fullscreen scene controller lookup timed out after automatic retries (0x800705B4). Retry to continue the search. The scene was not dispatched.");
             if (result == unchecked((int)0x80070490))
                 return Error(409, "The fullscreen scene controller was not found (0x80070490). The scene was not dispatched.");
             if (result == unchecked((int)0x80070578))

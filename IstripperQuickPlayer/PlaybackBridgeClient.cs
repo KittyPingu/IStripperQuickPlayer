@@ -196,6 +196,25 @@ public sealed class PlaybackBridgeClient : IDisposable
         return CallBuffer(apiName, packet, packet.Length);
     }
 
+    public Task<int> StartFullscreenSceneAsync(string path, CancellationToken cancellationToken) =>
+        ResumeFullscreenSceneLookupAsync(
+            () => CallUtf8("IStripperStartFullscreenScene", path), cancellationToken);
+
+    private static async Task<int> ResumeFullscreenSceneLookupAsync(
+        Func<int> request, CancellationToken cancellationToken)
+    {
+        long started = Stopwatch.GetTimestamp();
+        int result;
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            result = await Task.Run(request, cancellationToken);
+            // This HRESULT guarantees no dispatch; a transport timeout does not.
+            if (result != unchecked((int)0x800705B4)) return result;
+        } while (Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(15));
+        return result;
+    }
+
     public int StartFullscreenShaderClipBounds(int channel)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(channel);
@@ -482,6 +501,7 @@ public sealed class PlaybackBridgeClient : IDisposable
     internal static async Task<bool> VerifyDeadlineAsync()
     {
         if (!VerifyEventStartup()) return false;
+        if (!await VerifyFullscreenSceneLookupAsync()) return false;
         string name = "QuickPlayer.DeadlineTest." + Guid.NewGuid().ToString("N");
         using var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
@@ -518,6 +538,51 @@ public sealed class PlaybackBridgeClient : IDisposable
             Stopwatch.GetElapsedTime(started).TotalMilliseconds > 3000) return false;
         try { bridge.Call("Test"); return false; }
         catch (IOException) { return !bridge.IsConnected; }
+    }
+
+    private static async Task<bool> VerifyFullscreenSceneLookupAsync()
+    {
+        const int lookupTimeout = unchecked((int)0x800705B4);
+        int attempts = 0;
+        int dispatched = 0;
+        int result = await ResumeFullscreenSceneLookupAsync(() =>
+        {
+            if (++attempts < 4) return lookupTimeout;
+            ++dispatched;
+            return 1;
+        }, CancellationToken.None);
+        if (result != 1 || attempts != 4 || dispatched != 1) return false;
+        attempts = 0;
+        result = await ResumeFullscreenSceneLookupAsync(() =>
+        {
+            ++attempts;
+            return unchecked((int)0x80070490);
+        }, CancellationToken.None);
+        if (result != unchecked((int)0x80070490) || attempts != 1) return false;
+        attempts = 0;
+        try
+        {
+            await ResumeFullscreenSceneLookupAsync(() =>
+            {
+                ++attempts;
+                throw new TimeoutException("Dispatch status is unknown.");
+            }, CancellationToken.None);
+            return false;
+        }
+        catch (TimeoutException) { if (attempts != 1) return false; }
+        using var cancellation = new CancellationTokenSource();
+        attempts = 0;
+        try
+        {
+            await ResumeFullscreenSceneLookupAsync(() =>
+            {
+                ++attempts;
+                cancellation.Cancel();
+                return lookupTimeout;
+            }, cancellation.Token);
+            return false;
+        }
+        catch (OperationCanceledException) { return attempts == 1; }
     }
 
     private static bool VerifyEventStartup()

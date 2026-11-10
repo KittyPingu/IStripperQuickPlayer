@@ -3627,6 +3627,35 @@ namespace
         }
     }
 
+    void FullScreenShaderMousePosition(HWND window, POINT cursor, float (&values)[4])
+    {
+        std::fill(std::begin(values), std::end(values), 0.0f);
+        RECT client{};
+        if (window == nullptr || !GetClientRect(window, &client) ||
+            client.right <= 0 || client.bottom <= 0 ||
+            !ScreenToClient(window, &cursor)) return;
+        values[0] = static_cast<float>(cursor.x) / client.right;
+        values[1] = 1.0f - static_cast<float>(cursor.y) / client.bottom;
+        values[2] = PtInRect(&client, cursor) ? 1.0f : 0.0f;
+        values[3] = 1.0f;
+    }
+
+    void ApplyFullScreenShaderMouse(void* program)
+    {
+        if (!g_qOpenGLShaderUniformLocation || !g_qOpenGLShaderSetUniform4) return;
+        const int location = g_qOpenGLShaderUniformLocation(program, "u_QuickPlayerMouse");
+        if (location < 0) return;
+        HMODULE openGl = GetModuleHandleW(L"opengl32.dll");
+        const auto currentDc = openGl == nullptr ? nullptr :
+            reinterpret_cast<WglGetCurrentDc>(GetProcAddress(openGl, "wglGetCurrentDC"));
+        float values[4] = {};
+        POINT cursor{};
+        if (currentDc && GetCursorPos(&cursor))
+            FullScreenShaderMousePosition(WindowFromDC(currentDc()), cursor, values);
+        g_qOpenGLShaderSetUniform4(program, location,
+            values[0], values[1], values[2], values[3]);
+    }
+
     bool __fastcall CapturingQOpenGLShaderProgramBind(void* program)
     {
         const auto original = reinterpret_cast<QOpenGLShaderProgramBind>(
@@ -3635,6 +3664,8 @@ namespace
         const bool bound = original != nullptr && original(program);
         if (!bound)
             return bound;
+        // Cursor input is opt-in and independent of external data/texture packets.
+        ApplyFullScreenShaderMouse(program);
         RefreshMovieHitMask(InterlockedCompareExchangePointer(&g_activeMovie, nullptr, nullptr));
 
         if (InterlockedCompareExchange(
@@ -13912,7 +13943,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 164;
+    return 165;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI

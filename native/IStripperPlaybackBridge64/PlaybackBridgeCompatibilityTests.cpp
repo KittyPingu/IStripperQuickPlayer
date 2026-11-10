@@ -182,8 +182,50 @@ bool ResolveTestImports()
     return true;
 }
 
+bool __fastcall TestMouseShaderBind(void*) { return true; }
+int mouseUniformWrites = 0;
+int __fastcall TestMouseUniformLocation(const void*, const char* name)
+{
+    return std::strcmp(name, "u_QuickPlayerMouse") == 0 ? 7 : -1;
+}
+void __fastcall TestMouseUniform4(void*, int location, float x, float y, float inside, float valid)
+{
+    if (location == 7 && x == 0 && y == 0 && inside == 0 && valid == 0)
+        ++mouseUniformWrites;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-fullscreen-mouse") == 0)
+    {
+        HWND window = CreateWindowExW(0, L"STATIC", L"Mouse uniform test",
+            WS_POPUP, -100, 200, 200, 100, nullptr, nullptr, nullptr, nullptr);
+        if (!window) return 1;
+        bool passed = true;
+        for (POINT point : { POINT{100, 50}, POINT{0, 0}, POINT{200, 100}, POINT{-20, 50} })
+        {
+            POINT screen = point;
+            if (!ClientToScreen(window, &screen)) { passed = false; break; }
+            float values[4] = {};
+            FullScreenShaderMousePosition(window, screen, values);
+            passed &= std::abs(values[0] - point.x / 200.0f) < 0.00001f &&
+                std::abs(values[1] - (1.0f - point.y / 100.0f)) < 0.00001f &&
+                values[2] == (point.x >= 0 && point.x < 200 && point.y >= 0 && point.y < 100 ? 1.0f : 0.0f) &&
+                values[3] == 1.0f;
+        }
+        DestroyWindow(window);
+        float invalid[4] = {1, 1, 1, 1};
+        FullScreenShaderMousePosition(nullptr, {}, invalid);
+        passed &= std::all_of(std::begin(invalid), std::end(invalid), [](float v) { return v == 0; });
+        // No GL context or external packets: still publish unavailable mouse input.
+        g_originalQOpenGLShaderProgramBind = reinterpret_cast<void*>(&TestMouseShaderBind);
+        g_qOpenGLShaderUniformLocation = &TestMouseUniformLocation;
+        g_qOpenGLShaderSetUniform4 = &TestMouseUniform4;
+        passed &= CapturingQOpenGLShaderProgramBind(nullptr) && mouseUniformWrites == 1;
+        if (!passed) return 2;
+        std::puts("Fullscreen mouse coordinates: centre, edges, outside and unavailable checks passed.");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-window-watcher") == 0)
     {
         MSG message{};
