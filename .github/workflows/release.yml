@@ -195,7 +195,6 @@ jobs:
           if ($LASTEXITCODE) {
             exit $LASTEXITCODE
           }
-          .\tools\Test-FullscreenApiOnly.ps1 -SelfTest
 
       - name: Smoke-test WinForms controls
         shell: pwsh

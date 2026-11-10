@@ -486,8 +486,6 @@ The coordinates refer to the whole window, not a sprite or framebuffer.
 No REST request, shader-data packet, or extra SCN uniform declaration is needed.
 QuickPlayer's fullscreen bridge hook must be active. Restart iStripper when
 upgrading an already loaded bridge because its DLL remains pinned until exit.
-See [State Demo](../../scenes/State%20Demo/README.txt) for a plane that turns
-toward the mouse while a ball independently demonstrates retained state.
 
 ### External shader data
 
