@@ -638,3 +638,22 @@ index repair. The first early 1.033 s to 60 s seek with priming took 1.880 s.
 Visual acceptance is pending. Fixtures cover short clips, repeated priming and
 skipping priming after startup. The previous blanket slow-forward workaround
 and unsuccessful conversion/worker diagnostics were removed.
+
+## Initial placement on mixed-DPI monitors (v167)
+
+iStripper's native `SetWindowPos` can move a hidden playback window from a
+150% monitor to a 300% monitor after calculating its physical-pixel size.
+Qt then applies the DPI change's suggested rectangle, doubling that size.
+The bridge scopes a physical rectangle to synchronous, same-thread initial
+placements made directly by the host executable. It installs the existing
+window procedure before that move and supplies the physical rectangle to
+`WM_DPICHANGED`, while still forwarding the notification to Qt. The scope is
+restored even when placement fails. Visible moves, asynchronous calls, Qt's
+own placements, and unrelated windows retain their original handling.
+
+No delayed resizing or percentage changes are added. Existing oversized windows
+are not repaired by this hook; the fix applies when subsequent windows are placed.
+Run `PlaybackBridgeCompatibilityTests.exe --verify-native-dpi-placement` for
+the isolated regression. On the installed Qt 6.12 host, three consecutive table
+clips at 120% on the 300% monitor advanced at 0.990-0.993x, with native window
+dimensions matching the host's cached rectangle before the windows became visible.

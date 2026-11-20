@@ -521,3 +521,39 @@ and the saved wet room. No iStripper process was running during that check.
 The dialog was closed and iStripper relaunched afterward. Buying a new room was
 not exercised; subsequent dialog opens refresh ownership through the same live
 query used before caching was added.
+
+## Initial mixed-DPI desktop placement (bridge v167, 2026-11-20)
+
+Read-only inspection on installed iStripper 2.5.0.0 / Qt 6.12.0 captured a
+hidden window changing from 144 DPI, 5964 x 3146 pixels, to 288 DPI,
+11928 x 6292 pixels. The host's cached physical rectangle retained the smaller
+dimensions. A later percentage change corrected one table window, while a
+consecutive table window retained doubled dimensions.
+
+The bridge now preserves the host's physical rectangle only during its initial
+native placement. Qt still receives the DPI notification and updates its state.
+The regression forwards a synthetic 144-to-288 DPI transition through the real
+bridge window procedure, checks the corrected rectangle and unchanged notification,
+and verifies unrelated windows, visible moves, asynchronous/partial placements,
+invalid sizes, scope cleanup, and Win32 error/result preservation.
+
+Release/x64 native and application builds, the new regression, window-watcher,
+OpenGL subclass/context-replacement, subclass-race, CPU hit-mask, window diagnostics,
+installed-host compatibility, desktop coordinator/transport, and diff whitespace
+checks passed. After the user authorized restarting both applications, published
+the self-contained win-x64 Release build to the prescribed main Release directory
+and restarted only those exact executables. The user moved playback back onto the
+Shift screen; subsequent testing used the local playback API without desktop input.
+
+Three consecutive table clips at 120%, DPI 288, measured 0.992x (f0588_41503),
+0.993x (f2142_41504), and 0.990x (f2239_41504). Their native bounds were respectively
+8276 x 4364, 8193 x 4320, and 8765 x 4622, matching the host's cached rectangles.
+New windows had those dimensions before becoming visible, and retained them during
+playback. Dedicated GPU allocations measured 2.69-2.93 GB. Both processes remained
+responsive with unchanged process IDs throughout the test. Timestamped records are
+in the investigation artifact folder under `v167-live/consecutive-table-v167.jsonl`
+and `v167-live/dpi-creation-transition-20261120.jsonl`.
+
+Extended playback, repeated cross-monitor dragging, and a live Qt5 host remain
+unverified. A backup of the previously published bridge/application was retained
+under the investigation artifact folder's `pre-v167` directory.

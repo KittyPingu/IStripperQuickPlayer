@@ -3,6 +3,95 @@
 #include <gl/GL.h>
 #pragma comment(lib, "opengl32.lib")
 
+HWND dpiPlacementOtherWindow = nullptr;
+RECT dpiPlacementReceived[2] = {};
+RECT dpiPlacementSuggested = {-3200, 1900, 8728, 8192};
+WPARAM dpiPlacementNotification = 0;
+int dpiPlacementNotifications = 0;
+DWORD dpiPlacementEntryError = 0;
+BOOL dpiPlacementResult = TRUE;
+
+LRESULT CALLBACK TestDpiPlacementWindow(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_DPICHANGED)
+    {
+        dpiPlacementReceived[window == dpiPlacementOtherWindow ? 1 : 0] =
+            *reinterpret_cast<const RECT*>(lParam);
+        dpiPlacementNotification = wParam;
+        ++dpiPlacementNotifications;
+        return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+BOOL WINAPI TestNativeMovieSetWindowPos(HWND window, HWND, int, int, int, int, UINT)
+{
+    dpiPlacementEntryError = GetLastError();
+    SendMessageW(window, WM_DPICHANGED, MAKEWPARAM(288, 288),
+        reinterpret_cast<LPARAM>(&dpiPlacementSuggested));
+    SendMessageW(dpiPlacementOtherWindow, WM_DPICHANGED, MAKEWPARAM(288, 288),
+        reinterpret_cast<LPARAM>(&dpiPlacementSuggested));
+    SetLastError(ERROR_ACCESS_DENIED);
+    return dpiPlacementResult;
+}
+
+bool VerifyNativeDpiPlacement()
+{
+    const auto previousDpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    WNDCLASSW cls{};
+    cls.hInstance = GetModuleHandleW(nullptr);
+    cls.lpfnWndProc = &TestDpiPlacementWindow;
+    cls.lpszClassName = L"QuickPlayerDpiTestQWindowToolSaveBits";
+    if (!RegisterClassW(&cls)) return false;
+    HWND window = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        cls.lpszClassName, L"", WS_POPUP, -20000, -20000, 20, 20,
+        nullptr, nullptr, cls.hInstance, nullptr);
+    dpiPlacementOtherWindow = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        cls.lpszClassName, L"", WS_POPUP, -20000, -20000, 20, 20,
+        nullptr, nullptr, cls.hInstance, nullptr);
+    if (!window || !dpiPlacementOtherWindow) return false;
+    const auto originalApi = g_originalMovieSetWindowPos;
+    g_originalMovieSetWindowPos = &TestNativeMovieSetWindowPos;
+    const RECT physical = {-3200, 1900, 2764, 5046};
+    SetLastError(1234);
+    bool passed = PreservingMovieSetWindowPos(window, nullptr, -3200, 1900, 5964, 3146, 0) &&
+        GetLastError() == ERROR_ACCESS_DENIED && dpiPlacementEntryError == 1234 &&
+        EqualRect(&dpiPlacementReceived[0], &physical) &&
+        EqualRect(&dpiPlacementReceived[1], &dpiPlacementSuggested) &&
+        dpiPlacementNotifications == 2 && dpiPlacementNotification == MAKEWPARAM(288, 288) &&
+        g_nativeMoviePlacement.window == nullptr;
+    // A normal DPI notification after placement must reach the original procedure unchanged.
+    SendMessageW(window, WM_DPICHANGED, MAKEWPARAM(144, 144),
+        reinterpret_cast<LPARAM>(&dpiPlacementSuggested));
+    passed = passed && EqualRect(&dpiPlacementReceived[0], &dpiPlacementSuggested) &&
+        dpiPlacementNotification == MAKEWPARAM(144, 144);
+    for (const UINT flags : {UINT(SWP_NOMOVE), UINT(SWP_NOSIZE), UINT(SWP_ASYNCWINDOWPOS)})
+    {
+        PreservingMovieSetWindowPos(window, nullptr, -3200, 1900, 5964, 3146, flags);
+        passed = passed && EqualRect(&dpiPlacementReceived[0], &dpiPlacementSuggested);
+    }
+    PreservingMovieSetWindowPos(window, nullptr, INT_MAX, 1900, 5964, 3146, 0);
+    passed = passed && EqualRect(&dpiPlacementReceived[0], &dpiPlacementSuggested);
+    PreservingMovieSetWindowPos(window, nullptr, -3200, 1900, 0, 3146, 0);
+    passed = passed && EqualRect(&dpiPlacementReceived[0], &dpiPlacementSuggested);
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    PreservingMovieSetWindowPos(window, nullptr, -3200, 1900, 5964, 3146, 0);
+    passed = passed && EqualRect(&dpiPlacementReceived[0], &dpiPlacementSuggested);
+    ShowWindow(window, SW_HIDE);
+    dpiPlacementResult = FALSE;
+    passed = passed && !PreservingMovieSetWindowPos(window, nullptr, -3200, 1900, 5964, 3146, 0) &&
+        GetLastError() == ERROR_ACCESS_DENIED &&
+        EqualRect(&dpiPlacementReceived[0], &physical) && g_nativeMoviePlacement.window == nullptr;
+    g_originalMovieSetWindowPos = originalApi;
+    DestroyWindow(window);
+    RemoveMovieWindow(window);
+    DestroyWindow(dpiPlacementOtherWindow);
+    dpiPlacementOtherWindow = nullptr;
+    UnregisterClassW(cls.lpszClassName, cls.hInstance);
+    SetThreadDpiAwarenessContext(previousDpi);
+    return passed;
+}
+
 LRESULT CALLBACK TestArrowCursor(HWND, UINT, WPARAM, LPARAM)
 {
     SetCursor(LoadCursorW(nullptr, IDC_ARROW));
@@ -196,6 +285,12 @@ void __fastcall TestMouseUniform4(void*, int location, float x, float y, float i
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-native-dpi-placement") == 0)
+    {
+        if (!VerifyNativeDpiPlacement()) return 159;
+        std::puts("Native initial placement preserves physical size and Qt DPI notifications; visible moves and unrelated windows pass through.");
+        return 0;
+    }
     if (argc == 2 && wcscmp(argv[1], L"--verify-fullscreen-mouse") == 0)
     {
         HWND window = CreateWindowExW(0, L"STATIC", L"Mouse uniform test",

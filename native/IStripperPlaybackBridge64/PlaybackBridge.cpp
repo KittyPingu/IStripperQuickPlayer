@@ -3,6 +3,7 @@
 #include "DesktopPlayback.h"
 #include "OpenGlHdr.h"
 #include <MinHook.h>
+#include <intrin.h>
 #include <TlHelp32.h>
 #include <dwmapi.h>
 #include <compressapi.h>
@@ -5251,6 +5252,14 @@ namespace
             (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0;
     }
 
+    struct NativeMoviePlacement
+    {
+        HWND window = nullptr;
+        RECT bounds = {};
+    };
+    thread_local NativeMoviePlacement g_nativeMoviePlacement;
+    decltype(&SetWindowPos) g_originalMovieSetWindowPos = nullptr;
+
     LRESULT CALLBACK MovieWindowProc(HWND window, UINT message,
         WPARAM wParam, LPARAM lParam)
     {
@@ -5372,6 +5381,11 @@ namespace
             return 0;
         }
 
+        // Native placement already uses physical pixels; Qt must not scale them again.
+        RECT physicalBounds = g_nativeMoviePlacement.bounds;
+        if (message == WM_DPICHANGED && lParam != 0 &&
+            g_nativeMoviePlacement.window == window)
+            lParam = reinterpret_cast<LPARAM>(&physicalBounds);
         WNDPROC original = OriginalMovieWindowProc(window);
         if (original == &MovieWindowProc) original = nullptr;
         const LRESULT result = original == nullptr
@@ -5503,6 +5517,19 @@ namespace
         return true;
     }
 
+    bool EnsureMovieWindowProc(HWND window)
+    {
+        // Keep installed/wrapped procedures; only Qt's class-procedure reset needs repair.
+        if (OriginalMovieWindowProc(window) != nullptr &&
+            static_cast<ULONG_PTR>(GetWindowLongPtrW(window, GWLP_WNDPROC)) !=
+                GetClassLongPtrW(window, GCLP_WNDPROC)) return true;
+
+        bool alreadySubclassed = false;
+        const bool probeCompleted =
+            TryHasMovieWindowProc(window, alreadySubclassed);
+        return InstallMovieWindowProc(window, probeCompleted, alreadySubclassed);
+    }
+
     bool SubclassMovieWindow(HWND window)
     {
         if (!IsMovieWindow(window))
@@ -5530,15 +5557,51 @@ namespace
         SetMovieWindowClickThrough(window, clickThrough ||
             pointerWindow == window && !pointerOverVisiblePixel);
 
-        // Keep installed/wrapped procedures; only Qt's class-procedure reset needs repair.
-        if (OriginalMovieWindowProc(window) != nullptr &&
-            static_cast<ULONG_PTR>(GetWindowLongPtrW(window, GWLP_WNDPROC)) !=
-                GetClassLongPtrW(window, GCLP_WNDPROC)) return true;
+        return EnsureMovieWindowProc(window);
+    }
 
-        bool alreadySubclassed = false;
-        const bool probeCompleted =
-            TryHasMovieWindowProc(window, alreadySubclassed);
-        return InstallMovieWindowProc(window, probeCompleted, alreadySubclassed);
+    BOOL WINAPI PreservingMovieSetWindowPos(HWND window, HWND insertAfter,
+        int x, int y, int width, int height, UINT flags)
+    {
+        const DWORD entryError = GetLastError();
+        HMODULE callerModule = nullptr;
+        const auto right = static_cast<std::int64_t>(x) + width;
+        const auto bottom = static_cast<std::int64_t>(y) + height;
+        const bool preserve =
+            (flags & (SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS)) == 0 &&
+            width > 0 && height > 0 && right <= LONG_MAX && bottom <= LONG_MAX &&
+            !IsWindowVisible(window) &&
+            GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId() &&
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(_ReturnAddress()), &callerModule) &&
+            callerModule == GetModuleHandleW(nullptr) && IsMovieWindow(window) &&
+            EnsureMovieWindowProc(window);
+        if (!preserve)
+        {
+            SetLastError(entryError);
+            return g_originalMovieSetWindowPos(window, insertAfter,
+                x, y, width, height, flags);
+        }
+
+        const NativeMoviePlacement previous = g_nativeMoviePlacement;
+        g_nativeMoviePlacement = { window,
+            {x, y, static_cast<LONG>(right), static_cast<LONG>(bottom)} };
+        BOOL result = FALSE;
+        DWORD error = ERROR_SUCCESS;
+        __try
+        {
+            SetLastError(entryError);
+            result = g_originalMovieSetWindowPos(window, insertAfter,
+                x, y, width, height, flags);
+            error = GetLastError();
+        }
+        __finally
+        {
+            g_nativeMoviePlacement = previous;
+        }
+        SetLastError(error);
+        return result;
     }
 
     void RemoveMovieWindow(HWND window)
@@ -10428,6 +10491,8 @@ namespace
         if (initialized != MH_OK && initialized != MH_ERROR_ALREADY_INITIALIZED) return E_FAIL;
         struct Hook { void* target; void* callback; void** original; };
         const Hook hooks[] = {
+            { reinterpret_cast<void*>(&SetWindowPos), reinterpret_cast<void*>(&PreservingMovieSetWindowPos),
+                reinterpret_cast<void**>(&g_originalMovieSetWindowPos) },
             { reinterpret_cast<void*>(&UpdateLayeredWindowIndirect), reinterpret_cast<void*>(&CapturingUpdateLayeredWindowIndirect),
                 reinterpret_cast<void**>(&g_originalUpdateLayeredWindowIndirect) },
             { reinterpret_cast<void*>(&UpdateLayeredWindow), reinterpret_cast<void*>(&CapturingUpdateLayeredWindow),
@@ -13943,7 +14008,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI IStripperPlaybackBridgeVersion()
 {
     HasCompatibleEngine();
     HasFastForwardEngine();
-    return 165;
+    return 167;
 }
 
 extern "C" __declspec(dllexport) HRESULT WINAPI
