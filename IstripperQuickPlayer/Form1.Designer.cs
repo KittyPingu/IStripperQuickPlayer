@@ -79,6 +79,7 @@
             automaticWallpaperToolStripMenuItem = new ToolStripMenuItem();
             trackbarWallpaperBrightness = new TrackBarMenuItem();
             showTextToolStripMenuItem = new ToolStripMenuItem();
+            removeLogoToolStripMenuItem = new ToolStripMenuItem();
             wallpaperTextSizeToolStripMenuItem = new ToolStripMenuItem();
             trackBarWallpaperTextSize = new TrackBarMenuItem();
             wallpaperLabelOpacityToolStripMenuItem = new ToolStripMenuItem();
@@ -536,10 +537,14 @@
             // 
             // wallpaperToolStripMenuItem
             // 
-            wallpaperToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { automaticWallpaperToolStripMenuItem, trackbarWallpaperBrightness, showTextToolStripMenuItem, blurImageToolStripMenuItem, hideDesktopIconsToolStripMenuItem });
+            wallpaperToolStripMenuItem.DropDownItems.AddRange(new ToolStripItem[] { automaticWallpaperToolStripMenuItem, trackbarWallpaperBrightness, showTextToolStripMenuItem, blurImageToolStripMenuItem, removeLogoToolStripMenuItem, hideDesktopIconsToolStripMenuItem });
             wallpaperToolStripMenuItem.Name = "wallpaperToolStripMenuItem";
             wallpaperToolStripMenuItem.Size = new Size(342, 34);
             wallpaperToolStripMenuItem.Text = "Wallpaper";
+            removeLogoToolStripMenuItem.Name = "removeLogoToolStripMenuItem";
+            removeLogoToolStripMenuItem.Text = "Remove Logo";
+            removeLogoToolStripMenuItem.CheckOnClick = true;
+            removeLogoToolStripMenuItem.Click += removeLogoToolStripMenuItem_Click;
             // 
             // automaticWallpaperToolStripMenuItem
             // 
@@ -1347,6 +1352,7 @@
         private CheckBox chkPublic;
         private Button cmdWallpaper;
         private ToolStripMenuItem wallpaperToolStripMenuItem;
+        private ToolStripMenuItem removeLogoToolStripMenuItem;
         private ToolStripMenuItem automaticWallpaperToolStripMenuItem;
         private TrackBarMenuItem trackbarWallpaperBrightness;
         private ToolStripMenuItem showTextToolStripMenuItem;

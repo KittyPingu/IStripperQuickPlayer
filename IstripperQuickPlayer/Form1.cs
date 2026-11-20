@@ -2781,6 +2781,7 @@ namespace IStripperQuickPlayer
             trackBarBlur.Value = Properties.Settings.Default.BlurRadius;
             automaticWallpaperToolStripMenuItem.Checked = Properties.Settings.Default.AutoWallpaper;
             showTextToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperDetails;
+            removeLogoToolStripMenuItem.Checked = Properties.Settings.Default.WallpaperRemoveLogo;
             showKittyToolStripMenuItem.Checked = Properties.Settings.Default.ShowKitty;
             minimizeToTrayToolStripMenuItem.Checked = Properties.Settings.Default.MinimizeToTray;
             hideDesktopIconsToolStripMenuItem.Checked = Properties.Settings.Default.HideDesktopIcons;
@@ -6193,7 +6194,7 @@ namespace IStripperQuickPlayer
                     if (canChange)
                         await Wallpaper.ChangeWallpaper(monitorNumber,
                             wallpaperSource, modelname,
-                            model.outfit);
+                            model.outfit, model.collection == Enums.CollectionType.IStripperClassic);
                 }
                 else
                 {
@@ -6254,6 +6255,12 @@ namespace IStripperQuickPlayer
 
             Properties.Settings.Default.WallpaperBrightness = trackbarWallpaperBrightness.Value;
             this.BeginInvoke((Action)(() => Wallpaper.RedrawImage()));
+        }
+
+        private void removeLogoToolStripMenuItem_Click(object? sender, EventArgs e)
+        {
+            Properties.Settings.Default.WallpaperRemoveLogo = removeLogoToolStripMenuItem.Checked;
+            Wallpaper.RedrawImage();
         }
 
         private async void showTextToolStripMenuItem_Click(object sender, EventArgs e)

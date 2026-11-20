@@ -11,6 +11,7 @@ using System.Drawing.Imaging;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Threading;
+using System.Diagnostics;
 
 namespace IStripperQuickPlayer.BLL
 {
@@ -18,7 +19,7 @@ namespace IStripperQuickPlayer.BLL
     {
         private static readonly HttpClient client = new();
         public static Dictionary<uint, string> originalWallpaper = new Dictionary<uint, string>();
-        public static Dictionary<uint, Bitmap> initialImages = new Dictionary<uint, Bitmap>();
+        private static readonly Dictionary<uint, WallpaperImage> initialImages = [];
         public static string _modelname = "";
         public static string _outfit = "";
         private static volatile bool suspended;
@@ -28,6 +29,63 @@ namespace IStripperQuickPlayer.BLL
         private static readonly Dictionary<Size, DirectBitmap> blurBuffers = [];
         private static int[] blurScratch = [];
         private static int redrawVersion;
+
+        private sealed class WallpaperImage(string url, Bitmap original, bool legacyLogo = false) : IDisposable
+        {
+            public string Url { get; } = url;
+            public Bitmap Original { get; } = original;
+            public Bitmap? Cleaned { get; set; }
+            public bool LegacyLogo { get; } = legacyLogo;
+            public bool HasLogo { get; } = Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) &&
+                (uri.Scheme == "http" || uri.Scheme == "https") &&
+                (uri.Host.Equals("istripper.com", StringComparison.OrdinalIgnoreCase) ||
+                 uri.Host.EndsWith(".istripper.com", StringComparison.OrdinalIgnoreCase));
+
+            public void Dispose()
+            {
+                Cleaned?.Dispose();
+                Original.Dispose();
+            }
+        }
+
+        private static void SetWallpaperImage(uint monitor, WallpaperImage image)
+        {
+            lock (initialImagesLock)
+            {
+                initialImages.TryGetValue(monitor, out WallpaperImage? previous);
+                initialImages[monitor] = image;
+                if (previous != null && !initialImages.ContainsValue(previous))
+                    previous.Dispose();
+            }
+        }
+
+        private static void ReleaseWallpaperImage(uint monitor)
+        {
+            lock (initialImagesLock)
+                if (initialImages.Remove(monitor, out WallpaperImage? image) &&
+                    !initialImages.ContainsValue(image))
+                    image.Dispose();
+        }
+
+        // Called under renderGate: monitors share one download and cleanup for each active iStripper URL.
+        private static async Task<WallpaperImage?> LoadWallpaperImage(uint monitor, string url, bool legacyLogo = false)
+        {
+            lock (initialImagesLock)
+            {
+                WallpaperImage? existing = initialImages.Values.FirstOrDefault(image =>
+                    image.HasLogo && image.Url == url && image.LegacyLogo == legacyLogo);
+                if (existing != null)
+                {
+                    SetWallpaperImage(monitor, existing);
+                    return existing;
+                }
+            }
+            Bitmap? downloaded = await GetImageBitmapFromUrl(url).ConfigureAwait(false);
+            if (downloaded == null) return null;
+            WallpaperImage image = new(url, downloaded, legacyLogo);
+            SetWallpaperImage(monitor, image);
+            return image;
+        }
 
         public static void CaptureOriginalDesktopState()
         {
@@ -47,7 +105,8 @@ namespace IStripperQuickPlayer.BLL
             finally { ReleaseDesktopWallpaper(wallpaper); }
         }
 
-        public static async Task ChangeWallpaper(uint monitorNumber, string? url, string modelname, string outfit)
+        public static async Task ChangeWallpaper(uint monitorNumber, string? url, string modelname, string outfit,
+            bool legacyLogo)
         {
             if (suspended) return;
             bool hideDesktopIcons =
@@ -62,14 +121,12 @@ namespace IStripperQuickPlayer.BLL
             if (url == null) return;
             _modelname = modelname;
             _outfit = outfit;
-            using Bitmap? downloaded =
-                await GetImageBitmapFromUrl(url).ConfigureAwait(false);
-            if (downloaded == null) return;
-
             int version = Interlocked.Increment(ref redrawVersion);
             await renderGate.WaitAsync().ConfigureAwait(false);
             try
             {
+                WallpaperImage? image = await LoadWallpaperImage(monitorNumber, url, legacyLogo).ConfigureAwait(false);
+                if (image == null) return;
                 await Task.Run(() =>
                 {
                     IDesktopWallpaper? wallpaper = null;
@@ -87,20 +144,9 @@ namespace IStripperQuickPlayer.BLL
                         }
 
                         string wpfilepath = WallpaperPath(monitorNumber);
-                        using Bitmap resized =
-                            ResizeBitmap(downloaded, monitorRect);
                         using Bitmap rendered = CreateRenderedWallpaper(
-                            resized, monitorRect, modelname, outfit);
+                            image, monitorRect, modelname, outfit);
                         rendered.Save(wpfilepath, ImageFormat.Jpeg);
-
-                        lock (initialImagesLock)
-                        {
-                            if (initialImages.Remove(monitorNumber,
-                                    out Bitmap? previous))
-                                previous.Dispose();
-                            initialImages.Add(
-                                monitorNumber, new Bitmap(resized));
-                        }
                         if (!suspended &&
                             version == Volatile.Read(ref redrawVersion))
                             wallpaper.SetWallpaper(monitorId, wpfilepath);
@@ -120,9 +166,10 @@ namespace IStripperQuickPlayer.BLL
                 Environment.SpecialFolder.LocalApplicationData),
             "IStripperQuickPlayer", $"wallpaper{monitorNumber}.jpg");
 
-        private static Bitmap CreateRenderedWallpaper(Bitmap source, Rect rect,
+        private static Bitmap CreateRenderedWallpaper(WallpaperImage source, Rect rect,
             string modelname, string outfit)
         {
+            using Bitmap resized = PrepareWallpaper(source, rect);
             Bitmap rendered;
             float brightness = (float)(
                 (double)Properties.Settings.Default.WallpaperBrightness / 100);
@@ -130,7 +177,7 @@ namespace IStripperQuickPlayer.BLL
             {
                 lock (blurBuffersLock)
                     rendered = AdjustBrightness(
-                        AddBlur(source,
+                        AddBlur(resized,
                             Convert.ToInt32(
                                 Properties.Settings.Default.BlurRadius)),
                         brightness);
@@ -138,12 +185,169 @@ namespace IStripperQuickPlayer.BLL
             else
             {
                 ReleaseBlurCache();
-                rendered = AdjustBrightness(source, brightness);
+                rendered = AdjustBrightness(resized, brightness);
             }
 
             if (Properties.Settings.Default.WallpaperDetails)
                 AddDetails(rendered, rect, modelname, outfit);
             return rendered;
+        }
+
+        private static Bitmap PrepareWallpaper(WallpaperImage source, Rect rect)
+        {
+            if (!Properties.Settings.Default.WallpaperRemoveLogo || !source.HasLogo)
+                return ResizeBitmap(source.Original, rect);
+            if (source.Cleaned == null)
+            {
+                try { source.Cleaned = RemoveLogo(source.Original, source.LegacyLogo); }
+                catch (Exception error)
+                {
+                    Trace.TraceWarning("Wallpaper logo removal failed: " + error.Message);
+                    source.Cleaned = new Bitmap(source.Original);
+                }
+            }
+            return ResizeBitmap(source.Cleaned, rect);
+        }
+
+        internal static Rectangle LogoRectangle(Size size, bool legacyLogo = false)
+        {
+            int shorter = Math.Min(size.Width, size.Height);
+            if (shorter < 100) return Rectangle.Empty;
+            // shortcut: fixed VirtuaGirlHD bounds for Classic cards; revisit if branding changes.
+            if (legacyLogo)
+                return Rectangle.FromLTRB(12, Math.Max(1, size.Height - 295),
+                    74, size.Height - 18);
+            int left = Math.Max(1, (int)(shorter * .014));
+            int top = size.Height - (int)Math.Ceiling(shorter * .222);
+            int right = (int)Math.Ceiling(shorter * .057);
+            int bottom = size.Height - Math.Max(1, (int)(shorter * .014));
+            return Rectangle.FromLTRB(left, top, right, bottom);
+        }
+
+        internal static Bitmap RemoveLogo(Bitmap source, bool legacyLogo = false)
+        {
+            Rectangle area = LogoRectangle(source.Size, legacyLogo);
+            if (area.IsEmpty) return new Bitmap(source);
+            string temporary = Path.Combine(Path.GetTempPath(), "iqp-wallpaper-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temporary);
+            try
+            {
+                string input = Path.Combine(temporary, "source.png");
+                string output = Path.Combine(temporary, "clean.png");
+                source.Save(input, ImageFormat.Png);
+                ProcessStartInfo start = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe"))
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardError = true, RedirectStandardOutput = true
+                };
+                foreach (string argument in new[] { "-nostdin", "-v", "error", "-i", input,
+                    "-vf", $"delogo=x={area.X}:y={area.Y}:w={area.Width}:h={area.Height}:show=0",
+                    "-frames:v", "1", "-pix_fmt", "rgb24", output })
+                    start.ArgumentList.Add(argument);
+                using Process process = Process.Start(start) ?? throw new IOException("FFmpeg did not start.");
+                Task<string> errors = process.StandardError.ReadToEndAsync();
+                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                if (!process.WaitForExit(15000))
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit();
+                    throw new TimeoutException("FFmpeg logo removal timed out.");
+                }
+                if (process.ExitCode != 0)
+                    throw new IOException("FFmpeg logo removal failed: " + errors.GetAwaiter().GetResult());
+                stdout.GetAwaiter().GetResult();
+                using Bitmap cleaned = new(output);
+                Bitmap result = new(source);
+                using Graphics graphics = Graphics.FromImage(result);
+                graphics.DrawImage(cleaned, area, area, GraphicsUnit.Pixel);
+                return result;
+            }
+            finally { Directory.Delete(temporary, recursive: true); }
+        }
+
+        internal static void VerifyLogoRemoval()
+        {
+            if (!LogoRectangle(new Size(20, 30)).IsEmpty)
+                throw new InvalidOperationException("Tiny images must be skipped.");
+            foreach (Size legacySize in new[] { new Size(4500, 3003), new Size(1200, 1800) })
+            {
+                Rectangle legacyLogo = new(16, legacySize.Height - 290, 54, 268);
+                if (!LogoRectangle(legacySize, true).Contains(legacyLogo))
+                    throw new InvalidOperationException("Legacy VirtuaGirlHD logo falls outside the patch.");
+            }
+            if (LogoRectangle(new Size(3375, 2252)) != Rectangle.FromLTRB(31, 1752, 129, 2221))
+                throw new InvalidOperationException("Modern logo bounds changed.");
+            foreach (var (size, legacy) in new[] {
+                (new Size(600, 400), false), (new Size(400, 600), false),
+                (new Size(600, 400), true), (new Size(400, 600), true) })
+            {
+                using Bitmap source = new(size.Width, size.Height);
+                Rectangle area = LogoRectangle(size, legacy);
+                using (Graphics graphics = Graphics.FromImage(source))
+                {
+                    graphics.Clear(Color.White);
+                    graphics.FillRectangle(Brushes.Black, area.X + 3, area.Y + 3,
+                        area.Width - 6, area.Height - 6);
+                }
+                using Bitmap cleaned = RemoveLogo(source, legacy);
+                if (cleaned.Size != size ||
+                    cleaned.GetPixel(area.X + area.Width / 2, area.Y + area.Height / 2).R < 240 ||
+                    source.GetPixel(area.X + area.Width / 2, area.Y + area.Height / 2).R != 0)
+                    throw new InvalidOperationException("Logo removal failed or changed the source.");
+                for (int y = 0; y < size.Height; y++)
+                    for (int x = 0; x < size.Width; x++)
+                        if (!area.Contains(x, y) && source.GetPixel(x, y) != cleaned.GetPixel(x, y))
+                            throw new InvalidOperationException("Logo removal changed pixels outside the patch.");
+
+                bool previous = Properties.Settings.Default.WallpaperRemoveLogo;
+                const uint monitor = uint.MaxValue;
+                const uint secondMonitor = uint.MaxValue - 1;
+                Rect rect = new() { Right = size.Width, Bottom = size.Height };
+                WallpaperImage image = new("https://www.istripper.com/test.jpg", new Bitmap(source), legacy);
+                try
+                {
+                    SetWallpaperImage(monitor, image);
+                    Properties.Settings.Default.WallpaperRemoveLogo = true;
+                    using Bitmap enabled = PrepareWallpaper(image, rect);
+                    Bitmap? cached = image.Cleaned;
+                    WallpaperImage shared = LoadWallpaperImage(secondMonitor, image.Url, legacy).GetAwaiter().GetResult()
+                        ?? throw new InvalidOperationException("Could not reuse the active photo.");
+                    using Bitmap repeated = PrepareWallpaper(shared,
+                        new Rect { Right = size.Width / 2, Bottom = size.Height / 2 });
+                    if (!ReferenceEquals(image, shared) || !ReferenceEquals(cached, shared.Cleaned) ||
+                        repeated.Size != new Size(size.Width / 2, size.Height / 2) ||
+                        enabled.GetPixel(area.X + 4, area.Y + 4).R < 240)
+                        throw new InvalidOperationException("Monitors did not share cleanup with independent sizes.");
+                    Properties.Settings.Default.WallpaperRemoveLogo = false;
+                    using Bitmap disabled = PrepareWallpaper(shared, rect);
+                    if (disabled.GetPixel(area.X + 4, area.Y + 4).R != 0)
+                        throw new InvalidOperationException("Disabling removal did not restore the logo.");
+                    Properties.Settings.Default.WallpaperRemoveLogo = true;
+                    WallpaperImage localImage = new("test-local.jpg", new Bitmap(source));
+                    SetWallpaperImage(monitor, localImage);
+                    using Bitmap retained = PrepareWallpaper(shared, rect);
+                    if (retained.GetPixel(area.X + 4, area.Y + 4).R < 240)
+                        throw new InvalidOperationException("Replacing one monitor disposed the shared photo.");
+                    using Bitmap local = PrepareWallpaper(localImage, rect);
+                    if (local.GetPixel(area.X + 4, area.Y + 4).R != 0)
+                        throw new InvalidOperationException("Non-iStripper photos must be unchanged.");
+                    ReleaseWallpaperImage(secondMonitor);
+                    foreach (Bitmap released in new[] { image.Original, image.Cleaned! })
+                    {
+                        bool disposed = false;
+                        try { _ = released.GetPixel(0, 0); }
+                        catch (ArgumentException) { disposed = true; }
+                        if (!disposed)
+                            throw new InvalidOperationException("Unused shared photo was not disposed.");
+                    }
+                }
+                finally
+                {
+                    Properties.Settings.Default.WallpaperRemoveLogo = previous;
+                    ReleaseWallpaperImage(monitor);
+                    ReleaseWallpaperImage(secondMonitor);
+                }
+            }
         }
 
         private static void showIcons()
@@ -435,41 +639,28 @@ namespace IStripperQuickPlayer.BLL
                     {
                         wallpaper =
                             (IDesktopWallpaper)(new DesktopWallpaperClass());
-                        KeyValuePair<uint, Bitmap>[] sources;
+                        KeyValuePair<uint, WallpaperImage>[] sources;
                         lock (initialImagesLock)
-                        {
-                            sources = initialImages.Select(pair =>
-                                new KeyValuePair<uint, Bitmap>(
-                                    pair.Key,
-                                    new Bitmap(pair.Value))).ToArray();
-                        }
+                            sources = initialImages.ToArray();
 
-                        try
+                        foreach (KeyValuePair<uint, WallpaperImage> source in sources)
                         {
-                            foreach (KeyValuePair<uint, Bitmap> source in sources)
-                            {
-                                if (suspended ||
-                                    version != Volatile.Read(ref redrawVersion))
-                                    break;
-                                string monitorId = wallpaper
-                                    .GetMonitorDevicePathAt(source.Key);
-                                Rect monitorRect =
-                                    wallpaper.GetMonitorRECT(monitorId);
-                                using Bitmap rendered =
-                                    CreateRenderedWallpaper(
-                                        source.Value, monitorRect,
-                                        _modelname, _outfit);
-                                string path = WallpaperPath(source.Key);
-                                rendered.Save(path, ImageFormat.Jpeg);
-                                if (!suspended &&
-                                    version == Volatile.Read(ref redrawVersion))
-                                    wallpaper.SetWallpaper(monitorId, path);
-                            }
-                        }
-                        finally
-                        {
-                            foreach (KeyValuePair<uint, Bitmap> source in sources)
-                                source.Value.Dispose();
+                            if (suspended ||
+                                version != Volatile.Read(ref redrawVersion))
+                                break;
+                            string monitorId = wallpaper
+                                .GetMonitorDevicePathAt(source.Key);
+                            Rect monitorRect =
+                                wallpaper.GetMonitorRECT(monitorId);
+                            using Bitmap rendered =
+                                CreateRenderedWallpaper(
+                                    source.Value, monitorRect,
+                                    _modelname, _outfit);
+                            string path = WallpaperPath(source.Key);
+                            rendered.Save(path, ImageFormat.Jpeg);
+                            if (!suspended &&
+                                version == Volatile.Read(ref redrawVersion))
+                                wallpaper.SetWallpaper(monitorId, path);
                         }
                     }
                     finally { ReleaseDesktopWallpaper(wallpaper); }
@@ -593,6 +784,7 @@ namespace IStripperQuickPlayer.BLL
 
         internal static void RestoreWallpaperByID(uint monitorNumber)
         {
+            renderGate.Wait();
             IDesktopWallpaper? wallpaper = null;
             try
             {
@@ -603,16 +795,15 @@ namespace IStripperQuickPlayer.BLL
                 {
                     var monitorId = wallpaper.GetMonitorDevicePathAt(monitorNumber);
                     wallpaper.SetWallpaper(monitorId.ToString(), originalWallpaper[monitorNumber]);
-                    lock (initialImagesLock)
-                    {
-                        if (initialImages.Remove(monitorNumber,
-                                out Bitmap? removed))
-                            removed.Dispose();
-                    }
                 }
             }
             catch (Exception){}
-            finally { ReleaseDesktopWallpaper(wallpaper); }
+            finally
+            {
+                ReleaseWallpaperImage(monitorNumber);
+                ReleaseDesktopWallpaper(wallpaper);
+                renderGate.Release();
+            }
         }
 
         private static void ReleaseDesktopWallpaper(

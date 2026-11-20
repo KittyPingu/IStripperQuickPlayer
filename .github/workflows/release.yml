@@ -222,6 +222,16 @@ jobs:
             exit $process.ExitCode
           }
 
+      - name: Verify wallpaper logo removal
+        shell: pwsh
+        run: |
+          $process = Start-Process `
+            "$env:GITHUB_WORKSPACE\artifacts\publish\IStripperQuickPlayer.exe" `
+            -ArgumentList "--verify-wallpaper-logo" -Wait -PassThru
+          if ($process.ExitCode) {
+            exit $process.ExitCode
+          }
+
       - name: Build installer
         shell: pwsh
         run: |

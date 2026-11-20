@@ -340,7 +340,10 @@ kept at the top level.
 - **Lock Player** makes every detected animation window click-through and also
   handles animation windows created later.
 - **Wallpaper** controls automatic wallpaper generation and per-monitor
-  options.
+  options. **Remove Logo** fills the bottom-left branding area on iStripper
+  photos, including Classic VirtuaGirlHD photos, before generating the wallpaper.
+  It is off by default, keeps the source photo intact, and reuses cleanup across
+  monitors displaying the same photo. Turning it off restores the original image.
 - **Player size by clip type** sets independent percentages for standing,
   table, pole, swing and cage clips in small and large playback modes. A
   value of `0` leaves that size under iStripper's normal control.

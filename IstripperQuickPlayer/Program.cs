@@ -34,6 +34,17 @@ namespace IStripperQuickPlayer
 
             ApplicationConfiguration.Initialize();
 
+            if (args.Length == 1 && args[0] == "--verify-wallpaper-logo")
+            {
+                try { Wallpaper.VerifyLogoRemoval(); }
+                catch (Exception error)
+                {
+                    Console.Error.WriteLine(error);
+                    Environment.ExitCode = 1;
+                }
+                return;
+            }
+
             if (args.Length == 1 && args[0] == "--verify-rtx-video")
             {
                 try
@@ -1139,6 +1150,8 @@ namespace IStripperQuickPlayer
                     "Set wallpaper blur from off to maximum.",
                 ["hideDesktopIconsToolStripMenuItem"] =
                     "Hide desktop icons while QuickPlayer wallpaper is active.",
+                ["removeLogoToolStripMenuItem"] =
+                    "Fill the bottom-left iStripper/XXX logo area using FFmpeg. Applies to iStripper photos only; originals are unchanged.",
                 ["showKittyToolStripMenuItem"] =
                     "Include the built-in Kitty card in the library.",
                 ["minimizeToTrayToolStripMenuItem"] =

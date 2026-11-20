@@ -446,6 +446,14 @@ namespace IStripperQuickPlayer.Properties {
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool WallpaperRemoveLogo {
+            get { return ((bool)(this["WallpaperRemoveLogo"])); }
+            set { this["WallpaperRemoveLogo"] = value; }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
         public bool WallpaperDetails {
             get {
                 return ((bool)(this["WallpaperDetails"]));
