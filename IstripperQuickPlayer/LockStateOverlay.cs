@@ -23,7 +23,7 @@ internal sealed class LockStateOverlay : Form
         string? text = null, bool statusText = false)
     {
         this.locked = locked;
-        this.image = image;
+        this.image = image == null ? null : new Bitmap(image);
         this.text = text;
         this.statusText = statusText;
         if (image != null) closeTimer.Interval = 4_000;
@@ -58,6 +58,13 @@ internal sealed class LockStateOverlay : Form
     }
 
     protected override bool ShowWithoutActivation => true;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+            image?.Dispose();
+        base.Dispose(disposing);
+    }
 
     private void ApplyRoundedRegion()
     {

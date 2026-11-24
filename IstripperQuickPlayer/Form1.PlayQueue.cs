@@ -831,6 +831,18 @@ private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
 
         private void GroupSettingsMenu()
         {
+            ToolStripMenuItem playbackDiagnosticLogs = new("Playback Logs")
+            {
+                CheckOnClick = true,
+                Checked = Properties.Settings.Default.PlaybackLogs
+            };
+            playerSettingsToolStripMenuItem.DropDownOpening += (_, _) =>
+                playbackDiagnosticLogs.Checked =
+                    Properties.Settings.Default.PlaybackLogs;
+            playbackDiagnosticLogs.Click += (_, _) =>
+                Properties.Settings.Default.PlaybackLogs =
+                    playbackDiagnosticLogs.Checked;
+
             settingsToolStripMenuItem.DropDownItems.Clear();
             playbackSettingsToolStripMenuItem.DropDownItems.AddRange(
             [
@@ -856,7 +868,8 @@ private sealed record SmartQueueCandidate(PlayQueueEntry Entry,
                 enablePlaybackControlToolStripMenuItem,
                 iStripperRtxHdrToolStripMenuItem,
                 alphaCheckpointCacheToolStripMenuItem,
-                alphaCheckpointCacheSizeToolStripMenuItem
+                alphaCheckpointCacheSizeToolStripMenuItem,
+                playbackDiagnosticLogs
             ]);
             librarySettingsToolStripMenuItem.DropDownItems.AddRange(
             [

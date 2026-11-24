@@ -346,13 +346,17 @@ namespace IStripperQuickPlayer
             ModelCard? card = Datastore.findCardByTag(cardTag);
             if (card == null)
                 return;
-            card.image ??= ModelsLstLoader.LoadCardImage(card);
-            if (card.image != null)
+            using System.Drawing.Image? originalCover = card.IsCustom
+                ? ModelsLstLoader.LoadCardImage(card)
+                : null;
+            System.Drawing.Image? image = originalCover ??
+                (card.image ??= ModelsLstLoader.LoadCardImage(card));
+            if (image != null)
             {
                 if (customPlayer != null)
-                    LockStateOverlay.ShowImageForWindow(customPlayer, card.image);
+                    LockStateOverlay.ShowImageForWindow(customPlayer, image);
                 else
-                    LockStateOverlay.ShowImageForProcess(vghd_procID, card.image);
+                    LockStateOverlay.ShowImageForProcess(vghd_procID, image);
             }
         }
 
@@ -1230,7 +1234,8 @@ namespace IStripperQuickPlayer
                 ReloadStaticProperties();
                 lstLoader = new ModelsLstLoader(loadCardImages: !apiOnlyMode);
                 Datastore.modelcards = [];
-                lstLoader.LoadModels();
+                Action<int>? reportLoadedCards = apiOnlyMode ? null : UpdateLoadedCardCount;
+                lstLoader.LoadModels(reportLoadedCards);
                 int loadedCards = Datastore.modelcards?.Count ?? 0;
                 int physicalFolders = rootFolders.Values
                     .SelectMany(folders => folders)
@@ -1247,7 +1252,7 @@ namespace IStripperQuickPlayer
                         "previous cards retained");
                     return;
                 }
-                AppendCustomCards(diagnostics);
+                AppendCustomCards(diagnostics, reportLoadedCards);
                 if (!apiOnlyMode)
                     listModelsNew.Items.Clear();
                 if (!apiOnlyMode)
@@ -1391,6 +1396,18 @@ namespace IStripperQuickPlayer
                         exception.Message);
                 }
             }
+        }
+
+        private void UpdateLoadedCardCount(int count)
+        {
+            Rectangle previousBounds = lblModelsLoaded.Bounds;
+            lblModelsLoaded.Text = "Models Loaded: " + count;
+            // Resizing the counter shifts the search controls in the same row.
+            if (lblModelsLoaded.Bounds != previousBounds &&
+                lblModelsLoaded.Parent is Control searchRow)
+                searchRow.Refresh();
+            else
+                lblModelsLoaded.Update();
         }
 
         private async Task RunLibraryHealthCheckAsync()
@@ -2230,7 +2247,8 @@ namespace IStripperQuickPlayer
                 List<ModelCard> models = Persistence.Load<List<ModelCard>>(filename);
                 if (!apiOnlyMode)
                     foreach (ModelCard card in models)
-                        card.image = ModelsLstLoader.LoadCardImage(card);
+                        if (!card.IsCustom)
+                            card.image = ModelsLstLoader.LoadCardImage(card);
                 return models;
             }
             catch (Exception)
@@ -4274,16 +4292,10 @@ namespace IStripperQuickPlayer
                     {
                         finalPosition = decodedPosition.Value;
                     }
-                    else if (apiOnlyMode)
-                    {
-                        finalPosition = await ReloadApiOnlyAnimationAsync(
-                            animationAtStart, current, target,
-                            cancellationToken);
-                    }
                     else
                     {
-                        throw new NotSupportedException(
-                            "This clip's decoder cannot rewind without changing the active animation.");
+                        finalPosition = await ReplayAnimationForSeekAsync(
+                            animationAtStart, target, cancellationToken);
                     }
                 }
                 else if (target > current + 75)
@@ -4360,47 +4372,42 @@ namespace IStripperQuickPlayer
 #endif
         }
 
-        private async Task<int> ReloadApiOnlyAnimationAsync(
-            string animationPath, int previousElapsed, int target,
+        private async Task<int> ReplayAnimationForSeekAsync(
+            string animationPath, int target,
             CancellationToken cancellationToken)
         {
-            ApiResult reload = ForceApiOnlyAnimation(animationPath);
-            if (reload.StatusCode >= 400)
+            DesktopBridgeSnapshot? original = Volatile.Read(ref desktopSnapshot);
+            if (original == null || !string.Equals(
+                    original.Path, animationPath, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException(
-                    "iStripper could not reload the active clip.");
+                    "The active clip changed before it could be replayed.");
 
-            bool cleared = false;
-            DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+            long request = (long)Invoke(() =>
+                RequestDesktopAnimation(animationPath, preserveQueue: true)
+                    ? desktopPlayback.Pending!.Id : 0L);
+            if (request == 0)
+                throw new InvalidOperationException("iStripper could not replay the active clip.");
+
+            DateTime deadline = DateTime.UtcNow.AddSeconds(10);
             while (DateTime.UtcNow < deadline)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                string current = GetCurrentAnimationPath();
-                cleared |= string.IsNullOrEmpty(current);
-                if (cleared && string.Equals(current, animationPath,
-                        StringComparison.OrdinalIgnoreCase))
+                DesktopBridgeSnapshot? replay = Volatile.Read(ref desktopSnapshot);
+                if (replay != null && replay.Instance != original.Instance &&
+                    replay.Path.Length != 0 && replay.State is 3 or 4)
                 {
-                    RefreshApiOnlyPlaybackState();
-                    if (playbackMovieRegistered &&
-                        CallPlaybackApi("IStripperGetState") is 3 or 4)
-                    {
-                        int elapsed = RequirePlaybackResult(
-                            "IStripperGetElapsedMilliseconds");
-                        if (previousElapsed >= 1_000 &&
-                            elapsed + 250 >= previousElapsed)
-                        {
-                            await Task.Delay(100, cancellationToken);
-                            continue;
-                        }
-                        return target > elapsed + 75
-                            ? await ScanForwardToAsync(elapsed, target,
-                                animationPath, cancellationToken)
-                            : elapsed;
-                    }
+                    if (replay.Request != (ulong)request || !string.Equals(
+                            replay.Path, animationPath, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("iStripper started a different playback request while rewinding.");
+                    int elapsed = Math.Max(0, replay.Elapsed);
+                    return target > elapsed + 75
+                        ? await ScanForwardToAsync(elapsed, target, animationPath,
+                            cancellationToken, tryDecode: false)
+                        : elapsed;
                 }
                 await Task.Delay(100, cancellationToken);
             }
-            throw new TimeoutException(
-                "iStripper did not finish reloading the active clip.");
+            throw new TimeoutException("iStripper did not confirm the clip replay.");
         }
 
         private async Task<int?> TryDecodeTargetFrameAsync(int current, int target,
@@ -4477,17 +4484,16 @@ namespace IStripperQuickPlayer
 
         private async Task<int> ScanForwardToAsync(int current, int target,
             string animationAtStart,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, bool tryDecode = true)
         {
             int initialDistance = target - current;
             double timeoutSeconds = Math.Clamp(initialDistance / 650.0 + 15.0, 20.0, 1200.0);
             DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
 
-            int? decodedPosition = await TryDecodeTargetFrameAsync(current, target,
-                animationAtStart, cancellationToken);
-            if (decodedPosition.HasValue)
+            if (tryDecode && await TryDecodeTargetFrameAsync(current, target,
+                    animationAtStart, cancellationToken) is int decodedPosition)
             {
-                return decodedPosition.Value;
+                return decodedPosition;
             }
 
             // ponytail: keep the old rate scan as the compatibility fallback.

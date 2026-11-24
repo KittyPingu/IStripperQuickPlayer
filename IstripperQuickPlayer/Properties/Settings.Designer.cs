@@ -573,6 +573,18 @@ namespace IStripperQuickPlayer.Properties {
 
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool PlaybackLogs {
+            get {
+                return ((bool)(this["PlaybackLogs"]));
+            }
+            set {
+                this["PlaybackLogs"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("True")]
         public bool EnableAlphaCheckpointCache {
             get {

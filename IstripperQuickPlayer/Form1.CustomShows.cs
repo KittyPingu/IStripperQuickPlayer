@@ -844,12 +844,16 @@ public partial class Form1
         loadingCustomEdgeChoke = false;
     }
 
-    void AppendCustomCards(StringBuilder? diagnostics = null)
+    void AppendCustomCards(StringBuilder? diagnostics = null,
+        Action<int>? reportLoadedCards = null)
     {
         try
         {
             CustomShowStore store = new(customShowConfiguration.LibraryRoot);
-            IReadOnlyList<ModelCard> cards = store.LoadCards(!apiOnlyMode);
+            int catalogueCount = Datastore.modelcards?.Count ?? 0;
+            IReadOnlyList<ModelCard> cards = store.LoadCards(!apiOnlyMode,
+                reportLoadedCards == null ? null :
+                    count => reportLoadedCards(catalogueCount + count));
             Datastore.modelcards ??= [];
             Datastore.modelcards.AddRange(cards);
             diagnostics?.AppendLine($"Custom shows: loaded={cards.Count} " +
@@ -2559,6 +2563,8 @@ public partial class Form1
     {
         try
         {
+            if (!Properties.Settings.Default.PlaybackLogs)
+                return;
             Directory.CreateDirectory(Path.GetDirectoryName(
                 customPlayerPositionLog)!);
             File.AppendAllText(customPlayerPositionLog,

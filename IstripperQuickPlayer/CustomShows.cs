@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -1045,7 +1048,8 @@ internal sealed partial class CustomShowStore
         return profiles.OrderBy(profile => profile.ModelName).ToArray();
     }
 
-    internal IReadOnlyList<ModelCard> LoadCards(bool loadImages = true)
+    internal IReadOnlyList<ModelCard> LoadCards(bool loadImages = true,
+        Action<int>? reportLoadedCards = null)
     {
         LoadWarnings.Clear();
         Dictionary<string, CustomPerformerProfile> performers =
@@ -1069,7 +1073,9 @@ internal sealed partial class CustomShowStore
             catch (Exception error)
             {
                 LoadWarnings.Add($"{manifestPath}: {error.Message}");
+                continue;
             }
+            reportLoadedCards?.Invoke(cards.Count);
         }
         return cards;
     }
@@ -2031,6 +2037,89 @@ internal sealed partial class CustomShowStore
             throw new InvalidDataException("Foreground and alpha timestamps do not match.");
     }
 
+    const int CoverThumbnailWidth = 162;
+    const int CoverThumbnailHeight = 242;
+
+    static Bitmap LoadCoverThumbnail(string path, string showFolder)
+    {
+        string cachePath = Path.GetFullPath(Path.Combine(
+            showFolder, "quickplayer-cover-thumbnail.png"));
+        bool useCache = !string.Equals(Path.GetFullPath(path), cachePath,
+            StringComparison.OrdinalIgnoreCase);
+        DateTime sourceWriteTime = File.GetLastWriteTimeUtc(path);
+        if (useCache)
+        {
+            try
+            {
+                if (File.GetLastWriteTimeUtc(cachePath) == sourceWriteTime)
+                {
+                    using Image cached = Image.FromFile(cachePath);
+                    if (cached.Width <= CoverThumbnailWidth &&
+                        cached.Height <= CoverThumbnailHeight)
+                        return new Bitmap(cached);
+                }
+            }
+            catch (Exception error) when (error is IOException or
+                UnauthorizedAccessException or ArgumentException or
+                ExternalException or OutOfMemoryException)
+            {
+                // GDI+ can report an invalid image as OutOfMemoryException.
+                Debug.WriteLine($"Could not read cached cover thumbnail: {error.Message}");
+            }
+        }
+
+        using Image source = Image.FromFile(path);
+        if (source.Width <= CoverThumbnailWidth && source.Height <= CoverThumbnailHeight)
+            return new Bitmap(source);
+
+        double scale = Math.Min((double)CoverThumbnailWidth / source.Width,
+            (double)CoverThumbnailHeight / source.Height);
+        int width = Math.Max(1, (int)Math.Round(source.Width * scale));
+        int height = Math.Max(1, (int)Math.Round(source.Height * scale));
+        Bitmap thumbnail = new(width, height);
+        try
+        {
+            using Graphics graphics = Graphics.FromImage(thumbnail);
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.CompositingMode = CompositingMode.SourceCopy;
+            graphics.DrawImage(source, 0, 0, width, height);
+        }
+        catch
+        {
+            thumbnail.Dispose();
+            throw;
+        }
+
+        if (useCache && File.GetLastWriteTimeUtc(path) == sourceWriteTime)
+            CacheCoverThumbnail(thumbnail, cachePath, sourceWriteTime);
+        return thumbnail;
+    }
+
+    static void CacheCoverThumbnail(Bitmap thumbnail, string path,
+        DateTime sourceWriteTime)
+    {
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            try
+            {
+                thumbnail.Save(temporary, ImageFormat.Png);
+                // Matching timestamps let us detect both older and newer replacement covers.
+                File.SetLastWriteTimeUtc(temporary, sourceWriteTime);
+                File.Move(temporary, path, overwrite: true);
+            }
+            finally
+            {
+                File.Delete(temporary);
+            }
+        }
+        catch (Exception error) when (error is IOException or
+            UnauthorizedAccessException or ExternalException)
+        {
+            Debug.WriteLine($"Could not save cached cover thumbnail: {error.Message}");
+        }
+    }
+
     static ModelCard ToModelCard(CustomShowManifest show,
         CustomPerformerProfile performer, string folder, string manifestPath,
         bool loadImage)
@@ -2093,10 +2182,7 @@ internal sealed partial class CustomShowStore
             cardEnabled = true
         };
         if (loadImage)
-        {
-            using Image source = Image.FromFile(cover);
-            card.image = new Bitmap(source);
-        }
+            card.image = LoadCoverThumbnail(cover, folder);
         card.clips = show.Clips.Where(clip => clip.Included).Select((clip, index) =>
             {
                 CustomClipMedia media = clip.Media!;

@@ -23,6 +23,8 @@ internal static class CustomRtxDiagnostics
     {
         try
         {
+            if (!Properties.Settings.Default.PlaybackLogs)
+                return;
             StringBuilder line = new();
             line.Append(DateTimeOffset.Now.ToString("O"));
             line.Append(" seq=").Append(NewId());
@@ -39,6 +41,8 @@ internal static class CustomRtxDiagnostics
             line.AppendLine();
             lock (sync)
             {
+                if (!Properties.Settings.Default.PlaybackLogs)
+                    return;
                 Directory.CreateDirectory(folder);
                 RotateIfNeeded();
                 using FileStream stream = new(Path, FileMode.Append,

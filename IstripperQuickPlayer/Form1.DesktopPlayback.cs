@@ -411,11 +411,12 @@ public partial class Form1
             desktopPlayback.ActiveManualQueueEntry, desktopPlayback.ActiveAutomaticQueueEntry });
     }
 
-    bool RequestDesktopAnimation(string path)
+    bool RequestDesktopAnimation(string path, bool preserveQueue = false)
     {
-        if (InvokeRequired) return (bool)Invoke(() => RequestDesktopAnimation(path));
+        if (InvokeRequired) return (bool)Invoke(() => RequestDesktopAnimation(path, preserveQueue));
         desktopManualTakeover = false;
-        object? reservation = desktopPlayback.Pending?.Path == path ? desktopPlayback.Pending.Reservation : null;
+        object? reservation = preserveQueue ? unqueuedDesktopContinuation :
+            desktopPlayback.Pending?.Path == path ? desktopPlayback.Pending.Reservation : null;
         DesktopBridgeSnapshot? snapshot = Volatile.Read(ref desktopSnapshot);
         long attachment = Volatile.Read(ref desktopAttachment);
         DesktopPlaybackCoordinator.Observation? baseline = customIstripperSuspended && snapshot != null

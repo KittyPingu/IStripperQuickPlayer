@@ -285,6 +285,30 @@ void __fastcall TestMouseUniform4(void*, int location, float x, float y, float i
 
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 2 && wcscmp(argv[1], L"--verify-guarded-scale") == 0)
+    {
+        int video[] = { 0, 10 };
+        static void* currentThread;
+        g_currentQtThread = []() -> void* { return currentThread; };
+        g_originalGuardedScale = [](void*, const std::uint8_t* const*, const int*,
+            int, int height, std::uint8_t* const*, const int*) { return height; };
+        VideoCurrentFrameOffset = sizeof(int);
+        g_decoderCatchupVideo = video;
+        g_fastForwardTargetFrame = 12;
+        currentThread = nullptr;
+        if (GuardedDecodeScale(nullptr, nullptr, nullptr, 0, 8, nullptr, nullptr) != 8)
+            return 52;
+        currentThread = video;
+        if (GuardedDecodeScale(nullptr, nullptr, nullptr, 0, 8, nullptr, nullptr) != 0 ||
+            g_skippedScaleCount != 1)
+            return 53;
+        video[1] = 12;
+        if (GuardedDecodeScale(nullptr, nullptr, nullptr, 0, 8, nullptr, nullptr) != 8)
+            return 54;
+        std::printf("Guarded scaling skips intermediate frames only for the seeking decoder.\n");
+        return 0;
+    }
+
     if (argc == 2 && wcscmp(argv[1], L"--verify-native-dpi-placement") == 0)
     {
         if (!VerifyNativeDpiPlacement()) return 159;
@@ -816,9 +840,11 @@ int wmain(int argc, wchar_t** argv)
     }
     if (argc == 2 && wcscmp(argv[1], L"--verify-fullscreen-controller-lookup") == 0)
         return 0;
-    if (argc != 2)
+    const bool verifyVideoOffsets = argc == 3 &&
+        wcscmp(argv[1], L"--verify-video-offsets") == 0;
+    if (argc != 2 && !verifyVideoOffsets)
     {
-        std::fprintf(stderr, "Usage: PlaybackBridgeCompatibilityTests <vghd.exe>\n");
+        std::fprintf(stderr, "Usage: PlaybackBridgeCompatibilityTests [--verify-video-offsets] <vghd.exe>\n");
         return 2;
     }
 
@@ -895,7 +921,8 @@ int wmain(int argc, wchar_t** argv)
         return 7;
 
     wchar_t fullPath[MAX_PATH] = {};
-    if (!GetFullPathNameW(argv[1], _countof(fullPath), fullPath, nullptr))
+    if (!GetFullPathNameW(argv[verifyVideoOffsets ? 2 : 1],
+            _countof(fullPath), fullPath, nullptr))
         return 8;
     wchar_t* separator = wcsrchr(fullPath, L'\\');
     if (separator == nullptr)
@@ -909,6 +936,26 @@ int wmain(int argc, wchar_t** argv)
     if (core == nullptr || LoadLibraryExW(fullPath, nullptr,
             DONT_RESOLVE_DLL_REFERENCES) == nullptr)
         return 9;
+
+    if (verifyVideoOffsets)
+    {
+        if (!ResolveMovieOffsets() || !ResolveAnimationLayout() ||
+            !ResolveVideoOffsets())
+        {
+            std::fprintf(stderr,
+                "Video resolution failed: frame %zX, queue %zX, format %zX, seek %zX; "
+                "WMV reader %zX held %zX interface %zX advanced %zX event %zX result %zX "
+                "count %zX paused %zX mutex %zX color %zX clear %zX peek %zX\n",
+                VideoCurrentFrameOffset, VideoFrameQueueOffset, VideoFormatContextOffset,
+                AvSeekFrameSlotRva, WmvReaderObjectOffset, WmvFrameHeldOffset,
+                WmvReaderInterfaceOffset, WmvAdvancedInterfaceOffset, WmvStatusEventOffset,
+                WmvLastResultOffset, WmvSampleCounterOffset, WmvReaderPausedOffset,
+                WmvQueueMutexOffset, WmvColorQueueOffset, WmvClearQueuesRva, WmvPeekFrameRva);
+            return 14;
+        }
+        std::printf("Installed engine video layout resolved.\n");
+        return 0;
+    }
 
     // Exercise actual Qt5/Qt6 string assignment and QVariant ownership reads.
     {
@@ -1378,15 +1425,28 @@ int wmain(int argc, wchar_t** argv)
             RunTestThunk(g_decoderWorkerTargetThunk, video, true) != 5) return 22;
 
         auto scaleSlot = reinterpret_cast<void**>(ImageBase() + DecodeScaleSlotRva);
-        DWORD protection = 0, ignored = 0;
-        VirtualProtect(scaleSlot, sizeof(void*), PAGE_READWRITE, &protection);
-        *scaleSlot = reinterpret_cast<void*>(&TestScale);
-        VirtualProtect(scaleSlot, sizeof(void*), protection, &ignored);
-        if (InstallScaleSkipPatch() < 0) return 23;
-        InterlockedExchange(&g_fastForwardTargetFrame, 50);
-        if (RunTestThunk(g_decodeScaleThunk, video, false) != 0 || g_skippedScaleCount != 1) return 24;
-        *reinterpret_cast<int*>(video + VideoCurrentFrameOffset) = 50;
-        if (RunTestThunk(g_decodeScaleThunk, video, false) != 777 || g_skippedScaleCount != 1) return 25;
+        auto scaleCall = ImageBase() + DecodeScaleCallRva;
+        if (GuardedIndirectCallSlot(scaleCall) == DecodeScaleSlotRva)
+        {
+            unsigned char originalCall[13];
+            std::memcpy(originalCall, scaleCall, sizeof(originalCall));
+            if (InstallScaleSkipPatch() < 0 ||
+                *scaleSlot != reinterpret_cast<void*>(&GuardedDecodeScale) ||
+                std::memcmp(originalCall, scaleCall, sizeof(originalCall)) != 0)
+                return 23;
+        }
+        else
+        {
+            DWORD protection = 0, ignored = 0;
+            VirtualProtect(scaleSlot, sizeof(void*), PAGE_READWRITE, &protection);
+            *scaleSlot = reinterpret_cast<void*>(&TestScale);
+            VirtualProtect(scaleSlot, sizeof(void*), protection, &ignored);
+            if (InstallScaleSkipPatch() < 0) return 23;
+            InterlockedExchange(&g_fastForwardTargetFrame, 50);
+            if (RunTestThunk(g_decodeScaleThunk, video, false) != 0 || g_skippedScaleCount != 1) return 24;
+            *reinterpret_cast<int*>(video + VideoCurrentFrameOffset) = 50;
+            if (RunTestThunk(g_decodeScaleThunk, video, false) != 777 || g_skippedScaleCount != 1) return 25;
+        }
         InterlockedExchangePointer(&g_decoderCatchupVideo, nullptr);
     }
     std::printf("Qt %d container, string, audio, decoder, seek and fullscreen resolver checks passed.\n",

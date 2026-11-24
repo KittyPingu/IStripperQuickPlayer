@@ -361,6 +361,10 @@ namespace
     using AvcodecFlushBuffers = void(__cdecl*)(void* codecContext);
     using AvSeekFrame = int(__cdecl*)(void* formatContext, int streamIndex,
         std::int64_t timestamp, int flags);
+    using SwsScale = int(__cdecl*)(void* context,
+        const std::uint8_t* const* source, const int* sourceStride,
+        int sourceStart, int sourceHeight, std::uint8_t* const* destination,
+        const int* destinationStride);
     using AvOptSetInt = int(__cdecl*)(void* target, const char* name,
         std::int64_t value, int searchFlags);
     using AvformatVersion = unsigned(__cdecl*)();
@@ -377,6 +381,7 @@ namespace
     using QThreadRequestInterruption = void(__fastcall*)(void* thread);
     using QThreadWait = bool(__fastcall*)(void* thread, unsigned long milliseconds);
     using QThreadStart = void(__fastcall*)(void* thread, int priority);
+    using QThreadCurrent = void*(__fastcall*)();
     using QAudioAction = void(__fastcall*)(void* output);
     using QAudioStart = void*(__fastcall*)(void* output);
     using QByteArrayAction = void(__fastcall*)(void* bytes);
@@ -894,6 +899,8 @@ namespace
     LONG volatile g_lastThreadOptionResult = (-2147483647L - 1);
     LONG volatile g_skippedScaleCount = 0;
     PVOID volatile g_decodeScaleThunk = nullptr;
+    SwsScale g_originalGuardedScale = nullptr;
+    QThreadCurrent g_currentQtThread = nullptr;
     PVOID volatile g_decoderWorkerTargetThunk = nullptr;
     PVOID volatile g_audioWriteThunk = nullptr;
     PVOID volatile g_originalBpkSoundWrite = nullptr;
@@ -8221,6 +8228,65 @@ namespace
         return false;
     }
 
+    bool IsGuardDispatchCall(const unsigned char* instruction)
+    {
+        if (!IsReadable(instruction, 6) ||
+            instruction[0] != 0xFF || instruction[1] != 0x15)
+            return false;
+        const auto headers = ImageHeaders();
+        if (headers == nullptr || headers->OptionalHeader.NumberOfRvaAndSizes <=
+                IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG)
+            return false;
+        const auto directory =
+            headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG];
+        constexpr std::size_t requiredSize =
+            offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardCFDispatchFunctionPointer) +
+            sizeof(ULONGLONG);
+        if (directory.Size < requiredSize ||
+            !IsRvaInImage(directory.VirtualAddress, requiredSize))
+            return false;
+        const auto config = reinterpret_cast<const IMAGE_LOAD_CONFIG_DIRECTORY64*>(
+            ImageBase() + directory.VirtualAddress);
+        if (!IsReadable(config, requiredSize) || config->Size < requiredSize)
+            return false;
+        const auto dispatch = instruction + 6 +
+            *reinterpret_cast<const std::int32_t*>(instruction + 2);
+        return reinterpret_cast<std::uintptr_t>(dispatch) ==
+            config->GuardCFDispatchFunctionPointer;
+    }
+
+    std::uintptr_t GuardedIndirectCallSlot(const unsigned char* instruction)
+    {
+        if (!IsReadable(instruction, 13) || instruction[0] != 0x48 ||
+            instruction[1] != 0x8B || instruction[2] != 0x05 ||
+            !IsGuardDispatchCall(instruction + 7))
+            return 0;
+        return RvaFromAddress(instruction + 7 +
+            *reinterpret_cast<const std::int32_t*>(instruction + 3));
+    }
+
+    std::uintptr_t Qt6VideoSeekSlot(const unsigned char* instruction)
+    {
+        if (IsReadable(instruction, 6) &&
+            instruction[0] == 0xFF && instruction[1] == 0x15)
+        {
+            return RvaFromAddress(instruction + 6 +
+                *reinterpret_cast<const std::int32_t*>(instruction + 2));
+        }
+
+        // CFG builds load the FFmpeg target before calling the guard dispatcher.
+        return GuardedIndirectCallSlot(instruction);
+    }
+
+    bool IsVideoVirtualCall(const unsigned char* instruction, unsigned char method)
+    {
+        return (instruction[0] == 0xFF && instruction[1] == 0x50 &&
+                instruction[2] == method) ||
+            (instruction[0] == 0x48 && instruction[1] == 0x8B &&
+                instruction[2] == 0x40 && instruction[3] == method &&
+                IsGuardDispatchCall(instruction + 4));
+    }
+
     bool ResolveVideoOffsets()
     {
         VideoFfmpegVtableRva = FindVtableRva(".?AVVideoFFmpeg@@");
@@ -8351,26 +8417,32 @@ namespace
             seekSuffix, sizeof(seekSuffix));
         if (UsesQt6())
         {
-            if (suffix == nullptr || suffix[18] != 0xFF || suffix[19] != 0x15)
+            if (suffix == nullptr)
                 return false;
-            AvSeekFrameSlotRva = RvaFromAddress(suffix + 24 +
-                *reinterpret_cast<const std::int32_t*>(suffix + 20));
+            AvSeekFrameSlotRva = Qt6VideoSeekSlot(suffix + 18);
+            if (!IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)))
+                return false;
             VideoFormatContextOffset = suffix[17];
         }
         else
         {
-        if (suffix == nullptr || suffix < seek + 7 ||
-            suffix[-7] != 0x48 || suffix[-6] != 0x8B ||
-            suffix[-5] != 0x05)
-        {
-            return false;
-        }
-        const auto slotInstruction = suffix - 7;
-        const std::int32_t slotDisplacement =
-            *reinterpret_cast<const std::int32_t*>(slotInstruction + 3);
-        AvSeekFrameSlotRva = RvaFromAddress(
-            slotInstruction + 7 + slotDisplacement);
-        VideoFormatContextOffset = suffix[16];
+            if (suffix == nullptr)
+                return false;
+            AvSeekFrameSlotRva = GuardedIndirectCallSlot(suffix + 17);
+            if (AvSeekFrameSlotRva == 0)
+            {
+                if (suffix < seek + 7 || suffix[-7] != 0x48 ||
+                    suffix[-6] != 0x8B || suffix[-5] != 0x05)
+                    return false;
+                const auto slotInstruction = suffix - 7;
+                const std::int32_t slotDisplacement =
+                    *reinterpret_cast<const std::int32_t*>(slotInstruction + 3);
+                AvSeekFrameSlotRva = RvaFromAddress(
+                    slotInstruction + 7 + slotDisplacement);
+            }
+            if (!IsRvaInImage(AvSeekFrameSlotRva, sizeof(void*)))
+                return false;
+            VideoFormatContextOffset = suffix[16];
         }
 
         const unsigned char* currentClear = nullptr;
@@ -8446,8 +8518,7 @@ namespace
             if (candidate[0] == 0x48 && candidate[1] == 0x8B &&
                 candidate[2] == 0x4E && candidate[4] == 0x48 &&
                 candidate[5] == 0x8B && candidate[6] == 0x01 &&
-                candidate[7] == 0xFF && candidate[8] == 0x50 &&
-                candidate[9] == 0x60)
+                IsVideoVirtualCall(candidate + 7, 0x60))
             {
                 WmvReaderInterfaceOffset = candidate[3];
             }
@@ -8516,8 +8587,7 @@ namespace
                 candidate[2] == 0x4B && candidate[4] == 0x48 &&
                 candidate[5] == 0x8B && candidate[6] == 0x01 &&
                 candidate[7] == 0x33 && candidate[8] == 0xD2 &&
-                candidate[9] == 0xFF && candidate[10] == 0x50 &&
-                candidate[11] == 0x28)
+                IsVideoVirtualCall(candidate + 9, 0x28))
             {
                 WmvAdvancedInterfaceOffset = candidate[3];
             }
@@ -8574,8 +8644,8 @@ namespace
                 const auto candidate = onSample + offset;
                 if (std::memcmp(candidate, interfaceLoad, sizeof(interfaceLoad)) == 0 &&
                     candidate[4] == 0x48 && candidate[5] == 0x8B &&
-                    candidate[6] == 0x01 && candidate[7] == 0xFF &&
-                    candidate[8] == 0x50 && candidate[9] == 0x60)
+                    candidate[6] == 0x01 &&
+                    IsVideoVirtualCall(candidate + 7, 0x60))
                     WmvReaderInterfaceOffset = candidate[3];
             }
         }
@@ -8983,8 +9053,15 @@ namespace
             const unsigned char videoArguments[] = {
                 0x4C,0x8B,0xC6,0x48,0x8D,0x54,0x24,0x40,0x48,0x8B,0xCF,0xE8
             };
-            const auto videoCall = decode == nullptr ? nullptr :
-                FindSequence(decode, 128, videoArguments, sizeof(videoArguments));
+            const unsigned char guardedVideoArguments[] = {
+                0x4C,0x8B,0xC6,0x48,0x8D,0x54,0x24,0x40,0x48,0x8B,0xCB,0xE8
+            };
+            if (decode == nullptr) return finish(mask, false);
+            auto videoCall = FindSequence(decode, 128, videoArguments,
+                sizeof(videoArguments));
+            if (videoCall == nullptr)
+                videoCall = FindSequence(decode, 128, guardedVideoArguments,
+                    sizeof(guardedVideoArguments));
             if (videoCall == nullptr) return finish(mask, false);
             scaleFunction = DirectCallTarget(videoCall + 11);
             const unsigned char registers[] = { 0x4D,0x8B,0xF8,0x48,0x8B,0xFA,0x48,0x8B,0xE9 };
@@ -9046,9 +9123,10 @@ namespace
             auto slot = instruction + 7 + displacement;
             if (IsReadable(slot, sizeof(void*)) &&
                 *reinterpret_cast<void**>(slot) == expectedOpen &&
-                FindSequence(instruction + 7, 24,
+                (IsGuardDispatchCall(instruction + 7) ||
+                    FindSequence(instruction + 7, 24,
                     reinterpret_cast<const unsigned char*>("\xFF\xD0"),
-                    2) != nullptr)
+                    2) != nullptr))
             {
                 const std::uintptr_t candidate = RvaFromAddress(slot);
                 if (openSlot != 0 && openSlot != candidate)
@@ -9064,30 +9142,25 @@ namespace
             offset + DecodeScaleCallLength <= scaleLength; offset++)
         {
             auto instruction = scaleFunction + offset;
+            std::uintptr_t candidateSlot = 0;
             if (instruction[0] == 0xFF && instruction[1] == 0x15)
+                candidateSlot = RvaFromAddress(instruction +
+                    DecodeScaleCallLength +
+                    *reinterpret_cast<const std::int32_t*>(instruction + 2));
+            else if (offset + 13 <= scaleLength)
+                candidateSlot = GuardedIndirectCallSlot(instruction);
+            if (IsRvaInImage(candidateSlot, sizeof(void*)) &&
+                IsReadable(base + candidateSlot, sizeof(void*)) &&
+                *reinterpret_cast<void**>(base + candidateSlot) == expectedScale)
             {
-                const std::int32_t displacement =
-                    *reinterpret_cast<const std::int32_t*>(
-                        instruction + 2);
-                auto slot = instruction + DecodeScaleCallLength +
-                    displacement;
-                if (IsReadable(slot, sizeof(void*)) &&
-                    *reinterpret_cast<void**>(slot) == expectedScale)
+                const std::uintptr_t candidateCall = RvaFromAddress(instruction);
+                if ((scaleSlot != 0 && scaleSlot != candidateSlot) ||
+                    (scaleCall != 0 && scaleCall != candidateCall))
                 {
-                    const std::uintptr_t candidateSlot =
-                        RvaFromAddress(slot);
-                    const std::uintptr_t candidateCall =
-                        RvaFromAddress(instruction);
-                    if ((scaleSlot != 0 &&
-                            scaleSlot != candidateSlot) ||
-                        (scaleCall != 0 &&
-                            scaleCall != candidateCall))
-                    {
-                        return finish(mask, false);
-                    }
-                    scaleSlot = candidateSlot;
-                    scaleCall = candidateCall;
+                    return finish(mask, false);
                 }
+                scaleSlot = candidateSlot;
+                scaleCall = candidateCall;
             }
         }
         mask |= scaleSlot != 0 && scaleCall != 0 ? 16 : 0;
@@ -9133,7 +9206,7 @@ namespace
         const auto call = ImageBase() + callRva;
         if (call[0] != 0xFF || call[1] != 0x15)
         {
-            return false;
+            return GuardedIndirectCallSlot(call) == slotRva;
         }
         const auto displacement =
             *reinterpret_cast<const std::int32_t*>(call + 2);
@@ -12929,6 +13002,51 @@ namespace
         return result;
     }
 
+    int __cdecl GuardedDecodeScale(void* context,
+        const std::uint8_t* const* source, const int* sourceStride,
+        int sourceStart, int sourceHeight, std::uint8_t* const* destination,
+        const int* destinationStride)
+    {
+        auto video = static_cast<const unsigned char*>(
+            InterlockedCompareExchangePointer(&g_decoderCatchupVideo, nullptr, nullptr));
+        const LONG target = InterlockedCompareExchange(&g_fastForwardTargetFrame, 0, 0);
+        if (video != nullptr && target >= 0 && g_currentQtThread() == video &&
+            *reinterpret_cast<const int*>(video + VideoCurrentFrameOffset) < target)
+        {
+            InterlockedIncrement(&g_skippedScaleCount);
+            return 0;
+        }
+
+        return g_originalGuardedScale(context, source, sourceStride,
+            sourceStart, sourceHeight, destination, destinationStride);
+    }
+
+    HRESULT InstallGuardedScaleCallback(void* originalScale)
+    {
+        const auto swscale = GetModuleHandleW(L"swscale-4.dll");
+        auto slot = reinterpret_cast<PVOID volatile*>(ImageBase() + DecodeScaleSlotRva);
+        if (swscale == nullptr || originalScale != reinterpret_cast<void*>(
+                GetProcAddress(swscale, "sws_scale")) ||
+            !IsWritable(const_cast<PVOID*>(slot), sizeof(void*)))
+            return EngineError();
+        const auto qtCore = QtCoreModule();
+        if (qtCore == nullptr)
+            return EngineError();
+        const auto currentThread = reinterpret_cast<QThreadCurrent>(
+            GetProcAddress(qtCore, "?currentThread@QThread@@SAPEAV1@XZ"));
+        if (currentThread == nullptr)
+            return EngineError();
+
+        // Replace only the scaler's data pointer; the host's CFG call stays intact.
+        g_currentQtThread = currentThread;
+        g_originalGuardedScale = reinterpret_cast<SwsScale>(originalScale);
+        void* callback = reinterpret_cast<void*>(&GuardedDecodeScale);
+        if (InterlockedCompareExchangePointer(slot, callback, originalScale) != originalScale)
+            return EngineError();
+        InterlockedExchangePointer(&g_decodeScaleThunk, callback);
+        return BridgeSuccess;
+    }
+
     HRESULT InstallScaleSkipPatch()
     {
         AcquireSRWLockExclusive(&g_decodePatchLock);
@@ -12954,6 +13072,12 @@ namespace
         {
             ReleaseSRWLockExclusive(&g_decodePatchLock);
             return EngineError();
+        }
+        if (GuardedIndirectCallSlot(call) == DecodeScaleSlotRva)
+        {
+            result = InstallGuardedScaleCallback(originalScale);
+            ReleaseSRWLockExclusive(&g_decodePatchLock);
+            return result;
         }
 
         unsigned char* thunk = AllocateNear(call + 5, 80);

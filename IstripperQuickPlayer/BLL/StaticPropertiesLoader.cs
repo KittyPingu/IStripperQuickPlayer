@@ -15,10 +15,10 @@ namespace IStripperQuickPlayer.BLL
     internal static class StaticPropertiesLoader
     {
         private static readonly HttpClient client = new();
-        internal static XmlDocument PropertiesXML = new XmlDocument();
-        internal static XmlNodeList? cnode;
-        internal static XmlNodeList? mnode;
-        internal static XmlNodeList? dnode;
+        private static ILookup<string?, XmlNode>? cardsById;
+        private static ILookup<string?, XmlNode>? modelsById;
+        private static ILookup<string?, XmlNode>? modelsByName;
+        private static ILookup<string?, XmlNode>? biosById;
         internal static void loadXML()
         {
             FileInfo? path = null;
@@ -35,20 +35,16 @@ namespace IStripperQuickPlayer.BLL
             string fulltext = System.IO.File.ReadAllText(path.FullName);
             int start = fulltext.IndexOf('<');
             fulltext = fulltext.Substring(start);
-            PropertiesXML = new XmlDocument();
-            PropertiesXML.LoadXml(fulltext);
-            if (PropertiesXML != null && PropertiesXML.ChildNodes != null)
-            {
-#pragma warning disable CS8601 // Possible null reference assignment.
-                mnode = PropertiesXML.SelectNodes("/root/m");
-#pragma warning restore CS8601 // Possible null reference assignment.
-#pragma warning disable CS8601 // Possible null reference assignment.
-                cnode = PropertiesXML.SelectNodes("/root/c");
-#pragma warning restore CS8601 // Possible null reference assignment.
-#pragma warning disable CS8601 // Possible null reference assignment.
-                dnode = PropertiesXML.SelectNodes("/root/d");
-#pragma warning restore CS8601 // Possible null reference assignment.
-            }         
+            XmlDocument document = new();
+            document.LoadXml(fulltext);
+            var models = document.SelectNodes("/root/m")!.Cast<XmlNode>().ToArray();
+            modelsById = models.ToLookup(node => node.Attributes?["id"]?.Value);
+            modelsByName = models.ToLookup(node => node.Attributes?["na"]?.Value,
+                StringComparer.OrdinalIgnoreCase);
+            cardsById = document.SelectNodes("/root/c")!.Cast<XmlNode>()
+                .ToLookup(node => node.Attributes?["id"]?.Value);
+            biosById = document.SelectNodes("/root/d")!.Cast<XmlNode>()
+                .ToLookup(node => node.Attributes?["id"]?.Value);
             }
             catch (Exception exception)
             {
@@ -85,54 +81,23 @@ namespace IStripperQuickPlayer.BLL
         internal static string? getModelXmlByName(string? name) =>
             getModelNodeByName(name)?.OuterXml;
 
-        private static XmlNode? getCardNodeByID(string ID)
-        {
-            if (cnode == null)
-                return null;
-            ID = ID.Split('-')[0];
-            foreach (XmlNode node in cnode)
-                if (node.Attributes?["id"]?.Value == ID)
-                    return node;
-            return null;
-        }
+        private static XmlNode? getCardNodeByID(string ID) =>
+            cardsById?[ID.Split('-')[0]].FirstOrDefault();
 
-        private static XmlNode? getModelNodeByID(string ID)
-        {
-            if (mnode == null)
-                return null;
-            foreach (XmlNode node in mnode)
-                if (node.Attributes?["id"]?.Value == ID)
-                    return node;
-            return null;
-        }
+        private static XmlNode? getModelNodeByID(string ID) =>
+            modelsById?[ID].FirstOrDefault();
 
         private static XmlNode? getModelNodeByName(string? name)
         {
-            if (mnode == null || string.IsNullOrWhiteSpace(name))
+            if (string.IsNullOrWhiteSpace(name))
                 return null;
-            foreach (XmlNode node in mnode)
-                if (string.Equals(node.Attributes?["na"]?.Value, name,
-                    StringComparison.OrdinalIgnoreCase))
-                    return node;
-            return null;
+            return modelsByName?[name].FirstOrDefault();
         }
 
         internal static BioProperties? getBioByID(string ID)
         {
-            if (dnode == null) return null;
-            foreach(XmlNode n in dnode)
-            {
-                if (n.Attributes != null)
-                {
-                    var attribute = n.Attributes["id"];
-                    if (attribute != null && attribute.Value == ID)
-                    {
-                        BioProperties bio = new BioProperties(n);         
-                        return bio;
-                    }
-                }
-            }
-            return null;
+            XmlNode? node = biosById?[ID].FirstOrDefault();
+            return node == null ? null : new BioProperties(node);
         }
 
         private static FileInfo? findXMLFile()

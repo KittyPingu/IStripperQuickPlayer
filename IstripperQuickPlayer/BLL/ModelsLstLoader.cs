@@ -39,7 +39,7 @@ namespace IStripperQuickPlayer.BLL
         internal List<ZeroClipCard> ZeroClipCards { get; } = [];
 
         //load the models.lst file
-        internal Int16 LoadModels()
+        internal Int16 LoadModels(Action<int>? reportLoadedCards = null)
         {
             MetadataDiagnostics.Begin();
             try
@@ -54,15 +54,15 @@ namespace IStripperQuickPlayer.BLL
             //ImageList largeimagelist = new ImageList();
             //largeimagelist.ImageSize = new Size(130,180);
             //largeimagelist.ColorDepth = ColorDepth.Depth32Bit;
-            FileInfo? file = findModelFile();
+            string dataPath = getDataFolderPath();
+            string cataloguePath = Path.Combine(dataPath, "models.lst");
             var style = NumberStyles.AllowDecimalPoint;
             var culture = CultureInfo.CreateSpecificCulture(CultureInfo.CurrentCulture.Name);
             culture.NumberFormat.NumberDecimalSeparator = ".";
-            if (file != null)
+            if (File.Exists(cataloguePath))
             {
                 
-                Form1? frm = Utils.GetMainForm();
-                using (var stream = File.Open(file.FullName, FileMode.Open))
+                using (var stream = File.Open(cataloguePath, FileMode.Open))
                 {
                     try
                     {
@@ -141,7 +141,7 @@ namespace IStripperQuickPlayer.BLL
                             card.r = reader.ReadByte();
                             card.s = reader.ReadByte();
 
-                            card.XML = loadCardXML(card.name);
+                            card.XML = loadCardXML(dataPath, card.name);
                             if (card.XML != null)
                             {
                                 card.description = getXMLValue(card, "description");
@@ -161,7 +161,7 @@ namespace IStripperQuickPlayer.BLL
                                     out card.modelAge);
                                 if (card.modelAge > 50) card.modelAge = 50;
                                 if (loadCardImages)
-                                    card.image = LoadCardImage(card);
+                                    card.image = LoadCardImage(card, dataPath);
                             }
 
                             ApplyStaticProperties(card);
@@ -244,8 +244,7 @@ namespace IStripperQuickPlayer.BLL
                                 if (Datastore.modelcards != null)
                                 { 
                                     Datastore.modelcards.Add(card);                            
-                                    if (frm != null) frm.lblModelsLoaded.Text = "Models Loaded: " + Datastore.modelcards.Count;
-                                    Application.DoEvents();
+                                    reportLoadedCards?.Invoke(Datastore.modelcards.Count);
                                 }
                             }
                             else
@@ -334,7 +333,7 @@ namespace IStripperQuickPlayer.BLL
                                 card.r = reader.ReadByte();
                                 card.s = reader.ReadByte();
 
-                                card.XML = loadCardXML(
+                                card.XML = loadCardXML(dataPath,
                                     card.name.Split(new char[] { '-' }).First());
                                 if (card.XML != null)
                                 {
@@ -355,7 +354,7 @@ namespace IStripperQuickPlayer.BLL
                                         out card.modelAge);
                                     if (card.modelAge > 50) card.modelAge = 50;
                                     if (loadCardImages)
-                                        card.image = LoadCardImage(card);
+                                        card.image = LoadCardImage(card, dataPath);
                                 }
 
                                 ApplyStaticProperties(card);
@@ -439,8 +438,7 @@ namespace IStripperQuickPlayer.BLL
                                     {
                                         card.name = card.name.Split("-")[0];
                                         Datastore.modelcards.Add(card);
-                                        if (frm != null) frm.lblModelsLoaded.Text = "Models Loaded: " + Datastore.modelcards.Count;
-                                        Application.DoEvents();
+                                        reportLoadedCards?.Invoke(Datastore.modelcards.Count);
                                     }
                                 }
                                 else
@@ -608,15 +606,22 @@ namespace IStripperQuickPlayer.BLL
         private static void RecordUnresolvedMetadata(ModelCard card)
         {
             var missing = GetMissingMetadata(card);
+            if (!missing.ModelName && !missing.Outfit && !missing.Age &&
+                !missing.Height && !missing.ReleaseDate)
+                return;
+
             string? cardXml = card.XML?.OuterXml ??
                 StaticPropertiesLoader.getCardXmlByID(card.name) ??
                 PropertiesLoader.getCardXmlByID(card.name);
             string? modelXml = null;
-            if (!string.IsNullOrWhiteSpace(card.modelId))
-                modelXml = StaticPropertiesLoader.getModelXmlByID(
-                    card.modelId.Split(',')[0]);
-            modelXml ??=
-                StaticPropertiesLoader.getModelXmlByName(card.modelName);
+            if (missing.Age || missing.Height)
+            {
+                if (!string.IsNullOrWhiteSpace(card.modelId))
+                    modelXml = StaticPropertiesLoader.getModelXmlByID(
+                        card.modelId.Split(',')[0]);
+                modelXml ??=
+                    StaticPropertiesLoader.getModelXmlByName(card.modelName);
+            }
 
             if (missing.ModelName)
                 MetadataDiagnostics.Record(card.name, "final card metadata",
@@ -699,10 +704,13 @@ namespace IStripperQuickPlayer.BLL
                          .Select(w => w.Substring(0,1).ToUpper() + w.Substring(1).ToLower()));
         }
 
-        internal static Image? LoadCardImage(ModelCard card) {
+        internal static Image? LoadCardImage(ModelCard card) =>
+            LoadCardImage(card, getDataFolderPath());
+
+        private static Image? LoadCardImage(ModelCard card, string localapp)
+        {
 
             Image? image = null;
-            string localapp = getDataFolderPath();
             string fullpath = card.imagefile ?? "";
             if (!File.Exists(fullpath))
                 fullpath = Path.Combine(localapp, card.name.Split(new char[] { '-' }).First(), card.name + ".jpg");
@@ -749,9 +757,8 @@ namespace IStripperQuickPlayer.BLL
             
         }
 
-        private XmlDocument? loadCardXML(string cardnumber)
+        private static XmlDocument? loadCardXML(string localapp, string cardnumber)
         {
-            string localapp = getDataFolderPath();
             string fullpath = Path.Combine(localapp, cardnumber, cardnumber + ".xml");
             try
             {
@@ -859,19 +866,6 @@ namespace IStripperQuickPlayer.BLL
 
             DateTime dt = new DateTime(1926,11,12);
             return dt.AddDays(b[2] << 8 | b[3]);
-        }
-
-        //find the models.lst file
-        private FileInfo? findModelFile()
-        {
-            string localapp = getDataFolderPath();
-            string fullpath = Path.Combine(localapp, "models.lst");
-            if (File.Exists(fullpath))
-            {
-                return new FileInfo(fullpath);
-            }
-            else
-                return null;
         }
 
         private static string getDataFolderPath()

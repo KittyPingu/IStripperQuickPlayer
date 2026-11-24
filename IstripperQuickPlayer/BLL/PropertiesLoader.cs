@@ -19,8 +19,7 @@ namespace IStripperQuickPlayer.BLL
     internal static class PropertiesLoader
     {
         private static readonly HttpClient client = new();
-        internal static XmlDocument PropertiesXML = new XmlDocument();
-        internal static XmlNodeList? cnode;
+        private static ILookup<string?, XmlNode>? cardsById;
 
         internal static void loadXML()
         {
@@ -38,14 +37,10 @@ namespace IStripperQuickPlayer.BLL
             string fulltext = System.IO.File.ReadAllText(path.FullName);
             int start = fulltext.IndexOf('<');
             fulltext = fulltext.Substring(start);
-            PropertiesXML = new XmlDocument();
-            PropertiesXML.LoadXml(fulltext);
-            if (PropertiesXML != null && PropertiesXML.ChildNodes != null)
-            {
-#pragma warning disable CS8601 // Possible null reference assignment.
-                cnode = PropertiesXML.SelectNodes("/root/c");
-#pragma warning restore CS8601 // Possible null reference assignment.
-            }         
+            XmlDocument document = new();
+            document.LoadXml(fulltext);
+            cardsById = document.SelectNodes("/root/c")!.Cast<XmlNode>()
+                .ToLookup(node => node.Attributes?["i"]?.Value);
             }
             catch (Exception exception)
             {
@@ -64,16 +59,8 @@ namespace IStripperQuickPlayer.BLL
         internal static string? getCardXmlByID(string ID) =>
             getCardNodeByID(ID)?.OuterXml;
 
-        private static XmlNode? getCardNodeByID(string ID)
-        {
-            if (cnode == null)
-                return null;
-            ID = ID.Split('-')[0];
-            foreach (XmlNode node in cnode)
-                if (node.Attributes?["i"]?.Value == ID)
-                    return node;
-            return null;
-        }
+        private static XmlNode? getCardNodeByID(string ID) =>
+            cardsById?[ID.Split('-')[0]].FirstOrDefault();
 
         private static FileInfo? findXMLFile()
         {
